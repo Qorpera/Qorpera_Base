@@ -484,7 +484,9 @@ member or the agent from the lists it already holds.
   compare it in the statement that writes. A row larger than a page gives an empty page with `tooLarge` and the
   `next` past it.
 - **Who gets the list, at its edges.** A `[list] members` value other than `"readers"` counts as `"writers"`, and so
-  does a `[list]` written in a way the gateway does not read, a `database.toml` or a question file too large to read,
+  does a `database.toml` that is not one key, one header or one comment a line with every value on its line (a
+  multi-line string or array, an escaped key: the gateway reads that much of TOML and no more), a `database.toml` or a
+  question file too large to read,
   and a `queries/` listing that does not fit the platform's one page of 1,000 entries. The gateway sees only the question files the member
   may list: a question hidden from a member by a path resource does not make the database writers-only for them.
   Until part a is live, the platform has no write check (404) and a writers' list is shown to nobody.
