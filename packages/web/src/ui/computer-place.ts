@@ -2,9 +2,13 @@
  * or resized by hand any more. What is left of the preview's own handling:
  * - a press on the preview focuses it, and that focus is marked (is-pointer-focus, read by the stylesheet) so it does
  *   not keep the hover controls up once the pointer has left; keyboard focus clears the mark and shows them;
- * - the large view covers the thread the row stands in (its `.thread-body`): the panel is fixed to that box while it
- *   is entered, since the row scrolls with the thread. Called as the view enters, and again whenever the thread's size
- *   changes: also WHILE the view's zoom moves and scales the panel, so nothing here is read from the panel itself.
+ * - the large view takes up the thread the row stands in (its `.thread-body`), from the top of its own area (below
+ *   the thread's header where one shows: a phone's) down to its foot, the composer and the notices above it, which stay
+ *   visible and usable under it (Jonas, 14 Nov 2026: "it should probably fill the top and not leave that space, and let
+ *   you use the chat composer"). The panel is fixed to that box while it is entered, since the row scrolls with the
+ *   thread. Called as the view enters, and again whenever the thread's size or the foot's (a long draft, an
+ *   attachment, a notice) changes: also WHILE the view's zoom moves and scales the panel, so nothing here is read from
+ *   the panel itself.
  * Returns `place`, which sets that box from the thread's place on the page (or clears it while not entered). */
 export function attachComputerPlace(panel: HTMLElement, signal: AbortSignal): () => void {
 	// Only the primary button moves focus: a press that moves none (a right click, or a button in a browser whose buttons
@@ -56,16 +60,23 @@ export function attachComputerPlace(panel: HTMLElement, signal: AbortSignal): ()
 	const BOX = ["--computer-box-top", "--computer-box-left", "--computer-box-right", "--computer-box-bottom"] as const;
 	let observer: ResizeObserver | undefined;
 	let observed: HTMLElement | undefined;
+	let observedFoot: HTMLElement | undefined;
 	const place = () => {
 		const thread = panel.classList.contains("is-entered")
 			? (panel.closest<HTMLElement>(".thread-body") ?? undefined)
 			: undefined;
-		if (thread !== observed) {
+		// The thread's own header and foot: the conversation pane the row stands in has them as its children.
+		const pane = thread ? panel.closest<HTMLElement>(".thread-conversation") : null;
+		const header = pane?.querySelector<HTMLElement>(":scope > .thread-header") ?? undefined;
+		const foot = pane?.querySelector<HTMLElement>(":scope > .thread-foot") ?? undefined;
+		if (thread !== observed || foot !== observedFoot) {
 			observer?.disconnect();
 			observed = thread;
+			observedFoot = foot;
 			if (thread && typeof ResizeObserver === "function") {
 				observer ??= new ResizeObserver(() => place());
 				observer.observe(thread);
+				if (foot) observer.observe(foot);
 			}
 		}
 		const parent = panel.parentElement;
@@ -87,7 +98,13 @@ export function attachComputerPlace(panel: HTMLElement, signal: AbortSignal): ()
 		const frame = probe.getBoundingClientRect();
 		probe.remove();
 		const box = thread.getBoundingClientRect();
-		const values = [box.top - frame.top, box.left - frame.left, frame.right - box.right, frame.bottom - box.bottom];
+		// A header that shows (a phone's) stays above the view; one that does not (the desktop's) takes no room.
+		const head = header?.getBoundingClientRect();
+		const top = head && head.height > 0 ? Math.max(box.top, head.bottom) : box.top;
+		// The foot lies over the thread's bottom: the view ends where it begins, so the composer and the notices above it
+		// stay in sight and in reach.
+		const bottom = foot ? Math.min(box.bottom, foot.getBoundingClientRect().top) : box.bottom;
+		const values = [top - frame.top, box.left - frame.left, frame.right - box.right, frame.bottom - bottom];
 		for (const [index, name] of BOX.entries()) panel.style.setProperty(name, `${Math.round(values[index] ?? 0)}px`);
 	};
 	window.addEventListener("resize", place, { signal });
