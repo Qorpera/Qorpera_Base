@@ -19,7 +19,9 @@ import {
 	type FolderActor,
 	type FolderCore,
 	type GitPublish,
+	type MachineDataPass,
 	MEMBER_HELD_READS,
+	NO_SUCH_DATABASE,
 	type ReleaseAnswer,
 	type ReleasedRead,
 	type UploadSeal,
@@ -889,6 +891,51 @@ export class FakeCore implements FolderCore {
 					codingMachineId: view.codingMachineId,
 				}
 			: { state: "closed", reason: "ended" };
+	}
+
+	// ---- Data passes (company databases, slice 8a: 20260930775000), in memory -----------------------------------------
+
+	/** Every pass made, in order: the view it was made as, and the database it named. */
+	readonly dataPasses: { viewId: string; database: string | null; pass: string }[] = [];
+	/** What the next passes fail with, while set: a refusal, or the database not answering. */
+	dataPassFailure: Error | undefined;
+	/** When set, a pass waits for it. */
+	dataPassGate: Promise<void> | undefined;
+
+	/** A pass for a test machine's view: each database's `database.toml` and the files directly in its `tables`,
+	 * `queries` and `actions`, as the view reads them now. A folder without a `database.toml` is no database. */
+	async machineDataPass(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		database: string | null,
+	): Promise<MachineDataPass> {
+		await this.dataPassGate;
+		const view = this.#check(actor, environmentId);
+		if (this.dataPassFailure) throw this.dataPassFailure;
+		if (view?.kind !== "test_machine")
+			throw new CoreRefusal("invalid", "A machine's data pass is for a company machine's view");
+		const files = this.#visible(actor).filter((e) => e.kind === "file");
+		const names = files.flatMap((e) => /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/.exec(e.path)?.[1] ?? []);
+		const entries = names
+			.filter((name) => database === null || name === database)
+			.flatMap((name) => [
+				...files.filter((e) => e.path === `data/${name}/database.toml`),
+				...["tables", "queries", "actions"].flatMap((part) =>
+					files.filter(
+						(e) =>
+							e.path.startsWith(`data/${name}/${part}/`) &&
+							!e.path.includes("/", `data/${name}/${part}/`.length),
+					),
+				),
+			])
+			.map((e) => {
+				const authority = this.receipts?.(e.path);
+				return { path: e.path, version: e.version, ...(authority ? { authority } : {}) };
+			});
+		if (database !== null && entries.length === 0) throw new CoreRefusal("invalid", NO_SUCH_DATABASE);
+		const pass = `${String(this.dataPasses.length + 1).padStart(4, "0")}-data-pass-`.padEnd(43, "x");
+		this.dataPasses.push({ viewId: actor.viewId, database, pass });
+		return { pass, entries };
 	}
 
 	async serviceStopped(service: string): Promise<number> {

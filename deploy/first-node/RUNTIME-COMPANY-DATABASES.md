@@ -476,7 +476,8 @@ command has the other three verbs.
    other role's requests stay at 64 KiB). The folder service asks the core for a data pass as the view (below) and
    sends the body with the pass to the gateway's run door on its own node, with the node's token and the kit's CA
    pinned, as a provider host does for a run (§3). The answer goes back as one frame, so it is at most 1 MiB (a
-   frame holds 2 MiB); a larger one is refused with words that say to name one database.
+   frame holds 2 MiB); a larger one is refused with words that say to name one database. The frames, the answer's
+   form and the service's own refusals are in RUNTIME-FOLDER-SERVICE.md, "The `data` role".
 4. The gateway redeems the pass: it names the company, the member and each file the view may read under the
    database's folder, with its hash. When the gateway asks for a file's text (`need`), the command reads it from
    `/company` and sends the call again. A text counts only by its hash, so nothing a machine sends is trusted. A
@@ -499,7 +500,9 @@ and to read the change's or the step's file at that moment, which the pass prove
 and writes into a row is not followed, as a copy on the machine's disk is not.
 
 The folder service gains two credentials on the node host, each a systemd credential of its own: the run door's token
-and the CA's pin, as the provider hosts hold them. It forwards nothing but the four verbs with a JSON body. Whether
+and the CA's pin, as the provider hosts hold them (`qorpera-folder-company-data-token`,
+`qorpera-folder-company-data-ca`; the door's origin is `companyDataUrl` in its configuration:
+`deploy/folder-service/README.md`). It forwards nothing but the four verbs with a JSON body. Whether
 the node host itself reaches the run door's forward (it listens on the node's own `qorpera0` address for the provider
 hosts) is read on a node before this is built; if it does not, the folder service gets a forward of its own.
 

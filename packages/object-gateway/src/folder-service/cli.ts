@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { leaveCleanStop, takeCleanStop } from "./clean-stop.ts";
 import { CONTROL_SOCKET, createControlServer } from "./control.ts";
 import { SupabaseFolderCore } from "./core.ts";
+import { httpsDataDoor } from "./data-door.ts";
 import { parseMachineProject, parseMachineRef } from "./machines.ts";
 import { MountGrants, parseOperatorMounts } from "./mounts.ts";
 import { NasObjects } from "./objects.ts";
@@ -12,7 +13,8 @@ import { FolderService } from "./service.ts";
 import { FolderStaging, GatewayUploads } from "./staging.ts";
 
 /** The node's folder service. Under systemd it takes its configuration and the service credential from
- * `LoadCredential=` (qorpera-folder-config, qorpera-supabase-service-key, and for writes qorpera-folder-gateway-token),
+ * `LoadCredential=` (qorpera-folder-config, qorpera-supabase-service-key, for writes qorpera-folder-gateway-token, and
+ * for the machines' `data` command qorpera-folder-company-data-token and qorpera-folder-company-data-ca),
  * its socket from `qorpera-folder-service.socket`, and on a node with coding or test machines its control socket from
  * `qorpera-folder-control.socket` (named `control`), and its own folder from `RuntimeDirectory=`, where a clean stop
  * leaves its note (clean-stop.ts); see deploy/folder-service/. */
@@ -43,6 +45,11 @@ interface Config {
 	/** Writes through the mount (F3 step 3): the object gateway that stores the views' bytes. Without it, every view is
 	 * read-only. Its token is the credential qorpera-folder-gateway-token. */
 	readonly gatewayUrl?: string;
+	/** The data gateway's run door (company databases, slice 8a): the origin this node reaches it at. With it, a test
+	 * machine's `data` command reaches the company's databases. Its token is the credential
+	 * qorpera-folder-company-data-token and the store's CA, which alone its certificate is checked against, the
+	 * credential qorpera-folder-company-data-ca. */
+	readonly companyDataUrl?: string;
 }
 
 function config(): Config {
@@ -58,6 +65,7 @@ function config(): Config {
 		"testMachineProjects",
 		"codingExecutorUid",
 		"gatewayUrl",
+		"companyDataUrl",
 	];
 	for (const key of Object.keys(value)) if (!known.includes(key)) throw new Error(`Unknown configuration key ${key}`);
 	if (typeof value.supabaseUrl !== "string" || typeof value.storageRoot !== "string")
@@ -79,6 +87,8 @@ function config(): Config {
 		throw new Error("codingExecutorUid must be the coding executor's uid, not root's");
 	if (value.gatewayUrl !== undefined && typeof value.gatewayUrl !== "string")
 		throw new Error("gatewayUrl must be a URL");
+	if (value.companyDataUrl !== undefined && typeof value.companyDataUrl !== "string")
+		throw new Error("companyDataUrl must be a URL");
 	return value as unknown as Config;
 }
 
@@ -118,6 +128,16 @@ const service = new FolderService({
 	),
 	vouched,
 	log,
+	// A bad URL, token or CA stops the service at its start, as a bad mount does.
+	...(settings.companyDataUrl
+		? {
+				dataDoor: httpsDataDoor({
+					url: settings.companyDataUrl,
+					token: credential("qorpera-folder-company-data-token"),
+					ca: credential("qorpera-folder-company-data-ca"),
+				}),
+			}
+		: {}),
 });
 
 /** Socket activation: systemd passes the listening sockets from fd 3 on, named by the units' FileDescriptorName=, and

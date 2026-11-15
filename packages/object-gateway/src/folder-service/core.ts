@@ -170,7 +170,32 @@ export interface FolderCore {
 		units: readonly unknown[],
 		signal?: AbortSignal,
 	): Promise<GitPublish>;
+	/** A data pass for a company machine's view (company databases, slice 8a: `qorpera_machine_data_pass`, migration
+	 * 20260930775000): the core keeps each file the view may read now under `data/<database>/` (under every database's
+	 * folder, for none named) and answers the pass with those files as the view read them. Refused for a view that is
+	 * not an open test machine's (`denied`), while the company is paused (`stopped`), for a database that is not there
+	 * (`invalid`, NO_SUCH_DATABASE) and past the listing's bounds (`invalid`). */
+	machineDataPass(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		database: string | null,
+		signal?: AbortSignal,
+	): Promise<MachineDataPass>;
 }
+
+/** A machine's data pass: 32 random bytes the data gateway redeems once, within 60 s. */
+export interface MachineDataPass {
+	readonly pass: string;
+	/** Each file the pass kept, as the view read it: the path, the version, and the receipt it was read under (none
+	 * where the path has no resource). What the service records as the view's reads. */
+	readonly entries: readonly { readonly path: string; readonly version: string; readonly authority?: CoreReceipt }[];
+}
+
+/** The core's refusal of a pass for a database that is not there, or that the view may not read (20260930775000). */
+export const NO_SUCH_DATABASE = "Data pass has no such database";
+/** The core's two bounds on what a pass looks through and keeps (20260930775000), each refused with 54000. */
+export const TOO_MANY_DATA_FOLDERS = "Data pass would look through more than 5,000 folders under data/";
+export const TOO_MANY_DATA_FILES = "Data pass would keep more than 1,000 files";
 
 /** One file or link a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it.
  * A link's copy holds its target and no manifest. */
@@ -433,6 +458,32 @@ export function parseReleaseAnswer(value: unknown, releaseId: string, reads: num
 	)
 		invalidAnswer("release");
 	return { releaseId, replay: answer.replay };
+}
+
+export function parseMachineDataPass(value: unknown): MachineDataPass {
+	const answer = answerRecord(value, "machine data pass");
+	if (
+		answer.schema !== "qorpera.machine-data-pass/v1" ||
+		typeof answer.pass !== "string" ||
+		!/^[A-Za-z0-9_-]{43}$/.test(answer.pass) ||
+		!Array.isArray(answer.entries)
+	)
+		invalidAnswer("machine data pass");
+	return {
+		pass: answer.pass,
+		entries: answer.entries.map((item) => {
+			const entry = answerRecord(item, "machine data pass entry");
+			if (typeof entry.path !== "string" || !entry.path.startsWith("data/"))
+				invalidAnswer("machine data pass entry");
+			return {
+				path: entry.path,
+				version: versionOf(entry.version),
+				...(entry.authority === undefined || entry.authority === null
+					? {}
+					: { authority: receiptOf(entry.authority) }),
+			};
+		}),
+	};
 }
 
 /** The versions a git lease's holder writes over (5b): the file, its reflog and `packed-refs`, each null when no such
@@ -1000,14 +1051,38 @@ export class SupabaseFolderCore implements FolderCore {
 		);
 	}
 
-	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal);
+	async machineDataPass(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		database: string | null,
+		signal?: AbortSignal,
+	) {
+		return parseMachineDataPass(
+			await this.#rpc(
+				"qorpera_machine_data_pass",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_database: database },
+				signal,
+				// The pass's bounds (54000) are this company's folders, not the database's health.
+				["54000"],
+			),
+		);
 	}
 
+	async #rpc(
+		name: string,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+		invalid: readonly string[] = [],
+	): Promise<unknown> {
+		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal, invalid);
+	}
+
+	/** `invalid`: more of PostgREST's error codes this call reads as the core's refusal `invalid`. */
 	async #request(
 		path: string,
 		init: { method: "GET" | "POST"; body?: string },
 		caller?: AbortSignal,
+		invalid: readonly string[] = [],
 	): Promise<unknown> {
 		return this.#api.run(async (signal) => {
 			const response = await this.#transport(
@@ -1036,7 +1111,12 @@ export class SupabaseFolderCore implements FolderCore {
 						said,
 					);
 				if (error.code === "55000") throw new CoreRefusal("stopped", said);
-				if (error.code === "22023" || error.code === "0A000" || error.code === "P0002")
+				if (
+					error.code === "22023" ||
+					error.code === "0A000" ||
+					error.code === "P0002" ||
+					(typeof error.code === "string" && invalid.includes(error.code))
+				)
 					throw new CoreRefusal("invalid", said);
 				throw new ObjectDependencyError(response.status >= 500 || response.status === 0 ? 503 : response.status);
 			}

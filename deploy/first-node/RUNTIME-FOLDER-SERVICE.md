@@ -116,6 +116,26 @@ checked yet, answers `{nonce: null, notices: [], last: 0, more: false}`, and a p
 does not match is `VIEW_REFUSED`. Any other frame is `BAD_REQUEST`, and any error ends the connection. A service
 before this role answers the hello `BAD_REQUEST` ("Bad role"), which the helper reads as no notices.
 
+**The `data` role (protocol 5, company databases slice 8a: `RUNTIME-COMPANY-DATABASES.md` §9a).** A company machine's
+`data` command says `role: "data"` in a protocol-5 hello with the boot's view id and pass (no `previous`, no
+`abandon`). The service takes it only for a `test_machine` view it holds open now, whose pass the core has checked
+and which that machine's folder program has joined, from that very machine: anything else is `VIEW_REFUSED`, as for any
+hello. `h` answers `{protocol, viewId}`. The connection then only asks `T` `{verb, body}` (`describe`, `apply`,
+`query` or `change`, and the body the data gateway takes for it, without a pass; a frame of up to 1 MiB) and is
+answered `t` `{status, value}`: the gateway's status and JSON, or the service's own refusal in the same form
+(`value.error` says why). For each call the service asks the core for a data pass as the view
+(`qorpera_machine_data_pass`), sends the body with the pass to the gateway's run door, and, before the answer leaves,
+records as reads served under the view the files the answer can show, as the core read them for the pass: each
+database's `database.toml`, and the question's, the change's or the steps' files (for a describe, the questions' and
+changes' files). They are released as every read served to the machine is. The service's own statuses: 400 no
+database named, 403 the view may not ask now, 404 no such database, 413 a call or an answer past 1 MiB or a pass past
+its bounds, 423 the company is stopped, 429 the machine's limits (4 calls at once, 120 a minute), 503 the databases
+cannot be reached now, and 504 for an apply or a change that ended without an answer, whose outcome no one knows. A
+call takes 30 s at most (an apply 120 s) and ends with its connection. Such a connection never opens or holds a
+view; past the view's lease it is `UNAVAILABLE`; any other frame is `BAD_REQUEST`, and any error ends the connection.
+A node whose configuration names no run door answers the hello `UNAVAILABLE`. The `io` and `feed` roles are at
+protocol 5 what they are at 4.
+
 `version` is the core's version id of the path (a uuid), opaque to the machine. A read names the version the machine
 was shown, and the service serves exactly that version: the current one, or one of the last 16 replaced on the
 feed, so a file opened before a change reads its own version to the end. Replaced versions go at the next full
@@ -127,7 +147,9 @@ pages of two versions in one file.
 
 Memory per connection is bounded in the service: frames from a machine are at most 4 KiB until the hello is accepted
 and 64 KiB after (2 MiB on a writing connection: a chunk part is up to 1 MiB, streamed on to the gateway, never
-gathered), one request is handled at a time with the socket paused, the next waits until the machine has
+gathered; 1 MiB on a `data` connection, at most 4 of whose calls run at once for a machine), one request is handled
+at a time with the socket paused (a `data` call's is read meanwhile, so the command's end ends the call), the next
+waits until the machine has
 read the last answer, and a feed connection whose machine leaves 4 MiB unread is ended (the machine reconnects and
 drops its caches).
 

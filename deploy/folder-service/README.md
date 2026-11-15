@@ -109,6 +109,22 @@ connection starts it again on the new mount; after the share is mounted again by
 - a mount with `"write": true`, and for a desktop's save rule `"quietMs": 2000` (500–60000): its pending changes are
   published that long after the last change; without it, only when the machine asks (`qorpera-folder publish`).
 
+**The machines' `data` command (company databases slice 8a, `deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §9a)** is
+off until all of these, on a node with test machines:
+- `"companyDataUrl": "https://<this node's forward to the data gateway's run door>"` in `config.json`: an exact HTTPS
+  origin, the one the node's provider hosts call (`shared-execution.env` `QORPERA_COMPANY_DATA_URL`) where the node
+  host reaches it, else a forward of the service's own;
+- the run door's token at `/etc/qorpera-folder-service/company-data-token` and the store's own CA at
+  `/etc/qorpera-folder-service/company-data-ca.crt` (both 0400), each loaded by a drop-in line of its own:
+  `LoadCredential=qorpera-folder-company-data-token:/etc/qorpera-folder-service/company-data-token` and
+  `LoadCredential=qorpera-folder-company-data-ca:/etc/qorpera-folder-service/company-data-ca.crt` (the unit names
+  neither, so a node without the door needs no file). The service checks the gateway's certificate against that CA
+  alone. With `companyDataUrl` set and a file missing or not one, the service does not start.
+
+Without them a machine's `data` hears that this node does not reach the company's databases. With them, each call
+is one data pass asked of the core as the machine's view and one call to the run door; what its answer can show is
+recorded as the view's reads (`RUNTIME-FOLDER-SERVICE.md`, "The `data` role").
+
 A member's or the platform's operator mount writes from step 3, a company machine's desktop view from step 4a (it
 publishes 2 s after its last change, and when its last connection leaves), and a shell command's view from step 4b (it
 publishes only when asked, or before a change that needs what is pending published first, is kept when its last

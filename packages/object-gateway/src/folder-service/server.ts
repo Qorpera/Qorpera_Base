@@ -1,6 +1,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import {
 	type BridgeInfo,
+	DATA_MAX_PAYLOAD,
 	ErrorCode,
 	encodeFrame,
 	encodeJson,
@@ -14,6 +15,7 @@ import {
 	parseBridge,
 	parseChunkPart,
 	parseClose,
+	parseDataCall,
 	parseExecutable,
 	parseGetChunk,
 	parseHello,
@@ -32,7 +34,7 @@ import {
 	REQUEST_MAX_PAYLOAD,
 	type Role,
 } from "./protocol.ts";
-import type { ChangeMessage, FolderService, NoticesHandle, ViewHandle } from "./service.ts";
+import type { ChangeMessage, DataHandle, FolderService, NoticesHandle, ViewHandle } from "./service.ts";
 
 /** The bridge's frame must arrive this soon after it connects, and the machine's hello this soon after that. */
 const BRIDGE_MS = 5_000;
@@ -48,7 +50,11 @@ const FEED_BACKLOG = 4 * 1024 * 1024;
  * read the last answer.
  *
  * A `notices` connection (F3 4f-2b-2) holds no view: after its hello it only asks for the view's notices (Q), and any
- * other frame, or any error, ends it. */
+ * other frame, or any error, ends it.
+ *
+ * A `data` connection (company databases, slice 8a) holds no view either: after its hello it only makes calls to the
+ * company's databases (T), each a frame of up to 1 MiB, answered one at a time; any other frame, or any error, ends
+ * it, and its end ends the call it waits for. */
 export function createFolderServer(service: FolderService, log: (line: string) => void): Server {
 	return createServer((socket) => serve(service, socket, log));
 }
@@ -58,6 +64,9 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 	let bridge: BridgeInfo | undefined;
 	let handle: ViewHandle | undefined;
 	let notices: NoticesHandle | undefined;
+	let data: DataHandle | undefined;
+	/** Ends with the connection: a data call then waits for nothing more. */
+	const gone = new AbortController();
 	let role: Role | undefined;
 	/** The machine speaks protocol 2 (3 for a core view: it logs its reads) and its view takes writes. */
 	let writes = false;
@@ -97,6 +106,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 		if (ended) return;
 		ended = true;
 		clearTimeout(deadline);
+		gone.abort();
 		handle?.release();
 		socket.end();
 		socket.destroySoon();
@@ -128,7 +138,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			bridge = parseBridge(frame.payload);
 			clearTimeout(deadline);
 			deadline = setTimeout(() => {
-				if (!handle && !notices && !opening) end();
+				if (!handle && !notices && !data && !opening) end();
 			}, HELLO_MS);
 			return;
 		}
@@ -140,9 +150,27 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			send(encodeJson(Kind.noticed, notices.page(parseNotices(frame.payload))));
 			return;
 		}
+		if (data) {
+			if (frame.kind !== Kind.dataCall)
+				throw new ProtocolError(ErrorCode.badRequest, "A data connection only makes data calls", true);
+			const call = parseDataCall(frame.payload);
+			// A call takes up to two minutes: the socket is read meanwhile, so that the command's end is heard and ends
+			// the call. A frame sent meanwhile waits its turn, and the socket is then paused again as for any role.
+			if (queue.length === 0) socket.resume();
+			send(encodeJson(Kind.dataAnswer, await data.call(call, gone.signal)));
+			return;
+		}
 		if (!handle) {
 			if (frame.kind !== Kind.hello) throw new ProtocolError(ErrorCode.badRequest, "Expected a hello");
 			const hello = parseHello(frame.payload);
+			if (hello.role === "data") {
+				data = service.data(hello, bridge);
+				role = hello.role;
+				clearTimeout(deadline);
+				reader.limit = DATA_MAX_PAYLOAD;
+				send(encodeJson(Kind.helloOk, { protocol: hello.protocol, viewId: hello.viewId }));
+				return;
+			}
 			if (hello.role === "notices") {
 				notices = service.notices(hello, bridge);
 				role = hello.role;
