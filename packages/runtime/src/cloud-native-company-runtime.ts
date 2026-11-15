@@ -639,11 +639,21 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					platformUpdates: await updatesRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, reading, openWork, senses, proposals, platformUpdates } =
-				await composeContext().catch(async (error) => {
-					await connectorTools();
-					throw error;
-				});
+			const {
+				initialPresence,
+				gateway,
+				memory,
+				skills,
+				vision,
+				reading,
+				openWork,
+				senses,
+				proposals,
+				platformUpdates,
+			} = await composeContext().catch(async (error) => {
+				await connectorTools();
+				throw error;
+			});
 			const connectorDescriptors = await connectorTools();
 			const viewed = await viewedRequest;
 			signal.throwIfAborted();
