@@ -83,7 +83,10 @@ function boxSql() {
 function machineSql() {
 	const read = (name) => readFileSync(join(root, "supabase/tests", name), "utf8");
 	const fixture = expandTestFixture("1273_machine_data_pass.test.sql", read);
-	const end = fixture.indexOf("-- 1. The grants, and the table's two kinds.");
+	const end = fixture.lastIndexOf(
+		"do $$",
+		fixture.indexOf("if has_function_privilege('anon', 'public.qorpera_machine_data_pass(uuid,jsonb,text)', 'EXECUTE')"),
+	);
 	if (end < 0) throw new Error("The machine data pass test's databases section moved: update this script");
 	const call = (label, sql) => `select '@@shape-${label} ' || (${sql})::text;\n`;
 	const view = "(select s from shape_machine)";
