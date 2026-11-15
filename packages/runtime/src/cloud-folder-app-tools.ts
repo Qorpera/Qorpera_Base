@@ -11,8 +11,9 @@
  *   a line to know, which asks for no fix, so `next` asks for a fix only when another note stands.
  *   An app made from a kit (`manifest.kit`, §3a and §3b) gets the kit's own files from this call: for an explainer the
  *   engine and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts);
- *   for a data kit (model, board, path, object, curve, stack, shelf, map) the kit's engine and a page that names the
- *   pictures its data refers to, beside the agent's `<kit>.json`, whose read is the `look` (cloud-app-kits.ts).
+ *   for a data kit (model, board, path, object, curve, stack, shelf, map, ring, flow) the kit's engine and a page
+ *   that names the pictures its data refers to, beside the agent's `<kit>.json`, whose read is the `look`
+ *   (cloud-app-kits.ts).
  *   An app's own icons (`icons/<id>.svg`, @qorpera/cloud-client/app-icons), which members pick for their drawer, are
  *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
@@ -25,6 +26,8 @@
  *   description being read.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
  * (cloud-folder-file-tools.ts, `appManifestCheck`).
+ * An interface a member retired (`apps/retired.md`, cloud-folder-app-retired.ts) is refused by `save_app` and
+ * `post_app`, as by the file tools and `make_picture`, until a member brings it back.
  */
 
 import { createHash } from "node:crypto";
@@ -97,6 +100,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { placeAppInGroup } from "./cloud-folder-app-groups.ts";
+import { refuseRetiredApp } from "./cloud-folder-app-retired.ts";
 import {
 	args,
 	cloudFolderRefusal,
@@ -145,7 +149,7 @@ const SAVE_APP_EMBLEM =
 const APP_GUIDE_DESCRIPTION = [
 	"Read the guide to one part of an interface app before you make it with save_app. It reads nothing of the company and changes nothing.",
 	"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
-	"- about a kit (model, board, path, object, curve, stack, shelf, map, explainer): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
+	"- about a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, explainer): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
 	"- style, reads, writes: for a page written by hand: the base style and the company's colours as CSS variables, in light and dark; how its script reads the company's live data through the qorpera object, and how often; how it lets a member answer a question or change a table's row.",
 	"- icons: how an app's own icons are drawn.",
 	"The answer is the guide's text: read it again when you no longer have it.",
@@ -377,6 +381,8 @@ const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly strin
 	stack: [KIT_ENGINE, KIT_PAGE],
 	shelf: [KIT_ENGINE, KIT_PAGE],
 	map: [KIT_ENGINE, KIT_PAGE],
+	ring: [KIT_ENGINE, KIT_PAGE],
+	flow: [KIT_ENGINE, KIT_PAGE],
 };
 
 /** The one file of a kit's app that its maker writes: an explainer's scenes, a data kit's data. */
@@ -567,11 +573,11 @@ export function appLookNotes(html: string): string[] {
 		);
 	if (words > LOOK_WORDS)
 		notes.push(
-			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map or explainer: kit's schema says what each draws), and keep the text in its file.`,
+			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws), and keep the text in its file.`,
 		);
 	if (!shown && words > LOOK_WORDS_UNSHOWN)
 		notes.push(
-			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map or explainer: kit's schema says what each draws).",
+			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws).",
 		);
 	return notes;
 }
@@ -840,6 +846,9 @@ export function cloudAppTools(options: {
 		// its owner to members. Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as SaveRequest;
+			// A retired interface is the members' alone (cloud-folder-app-retired.ts): neither changed nor made again under
+			// its name, refused before the review.
+			await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
@@ -854,6 +863,9 @@ export function cloudAppTools(options: {
 			});
 			const root = appFolder(request.name) as string;
 			const reads: CloudCompanyFolderEntry[] = [];
+			// Again at the save, since a member may have retired it since the review: the read is released with the answer.
+			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
+			if (retired.entry) reads.push(retired.entry);
 			const at = await read(root, context.signal);
 			if (at !== null && at.kind !== "folder")
 				throw new CloudToolRefusal(
@@ -1231,6 +1243,8 @@ export function cloudAppTools(options: {
 		// version read here, so an app made or changed in between is refused, never posted under the wrong class.
 		async prepare(value, context) {
 			const request = value as unknown as { name: string };
+			// A retired interface is posted or taken away by no agent, refused before the review.
+			await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			// A manifest that cannot be read or does not parse names no owner: it is reviewed as another's.
@@ -1250,6 +1264,7 @@ export function cloudAppTools(options: {
 				checkedVersion?: string | null;
 			};
 			writable();
+			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const path = `${appFolder(request.name)}/${APP_MANIFEST}`;
 			const stored = await manifestText(path, context.signal);
 			// The review judged the manifest read in prepare: one made or changed since is not the one it judged.
@@ -1273,7 +1288,7 @@ export function cloudAppTools(options: {
 						operationKey: request.operationKey,
 						...answer,
 					}),
-					[cloudCompanyFolderRelease(stored.entry)],
+					[stored.entry, ...(retired.entry ? [retired.entry] : [])].map(cloudCompanyFolderRelease),
 				);
 			if (!parsed.ok)
 				return show({
@@ -1325,7 +1340,7 @@ export function cloudAppTools(options: {
 				},
 				context,
 			);
-			return showCommitted(context, answer, [stored.entry]);
+			return showCommitted(context, answer, [stored.entry, ...(retired.entry ? [retired.entry] : [])]);
 		},
 	};
 

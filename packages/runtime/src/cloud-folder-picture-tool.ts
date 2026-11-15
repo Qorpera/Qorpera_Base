@@ -41,6 +41,7 @@ import {
 	sha256,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import { refuseRetiredPath } from "./cloud-folder-app-retired.ts";
 import { APP_LIST_LIMIT, appFileSizes } from "./cloud-folder-app-tools.ts";
 import {
 	cloudFolderRefusal,
@@ -264,6 +265,8 @@ export function cloudPictureTool(options: {
 			const request = value as unknown as PictureRequest;
 			const app = appPath(request.path);
 			if (!app) return value;
+			// A retired interface is the members' alone: refused before the review, and before a picture is paid for.
+			await refuseRetiredPath(folder, request.path, context.signal, "saved");
 			let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
 			try {
 				stored = await folder.readText(
@@ -312,6 +315,7 @@ export function cloudPictureTool(options: {
 				return { ...earlier.reply };
 			}
 			// What would refuse the picture anyway is checked before it is made: the member's plan pays for each one.
+			await refuseRetiredPath(folder, request.path, context.signal, "saved");
 			const parent = request.path.split("/").slice(0, -1).join("/");
 			if (parent !== "") {
 				const into = await read(parent, context.signal);
