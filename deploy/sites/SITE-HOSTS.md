@@ -329,6 +329,9 @@ qorpera.com, Cloudflare's abuse reports, or a member.
 
 ## Rollout (release 5.1), in the lead's order
 
+Rolled with release v247 on 15 Nov 2026: steps 1 to 9 are done and hosts are on since 09:01:48Z. Step 10 (D1b) is open.
+The steps stay here as the record of what each one does and of its way back.
+
 Each operator step is a tool with a read-only pre-check, an apply, a smoke and a way back (as `front-timeout` was for
 v238). **Never** turn hosts on before E1a is live, before the relay's check (P1) is live, or before the front answers a
 site host.
@@ -386,13 +389,16 @@ primary (mode 0644; the container's user only reads it). `client.mjs` does not c
    before 5.1); the new file's sum is the merged file's; `docker compose ps app-relay` is healthy; the forged POST below
    answers **401** today (the old relay forwards it to the gate, which shows the password page).
 2. **Apply.** Copy the live file outside the mounted folder (`front/backup/relay.mjs.pre-5.1-<sha12>-<UTC>`), write the
-   new file as `front/app-relay/.relay.mjs.new` (0644), check its syntax in the relay's own image
-   (`docker compose run --rm --no-deps --entrypoint node app-relay --check /app/.relay.mjs.new`), then one rename
-   (`mv -f front/app-relay/.relay.mjs.new front/app-relay/relay.mjs`) and
-   `docker compose up -d --no-deps --force-recreate app-relay`. Node has the old code loaded, so the restart is what
-   takes the new file. Its effect: app links answer 503 for the seconds the relay takes to start; connected link
-   programs lose their connection and come back with their keys within 1 to 30 seconds; visitors keep their sessions
-   (the database holds them), so nobody types a password again. Nothing else restarts; no run is in the relay's path.
+   new file as `front/app-relay/.relay.new.mjs` (0644), check its syntax in the relay's own image
+   (`docker compose run --rm --no-deps --entrypoint node app-relay --check /app/.relay.new.mjs`), then one rename
+   (`mv -f front/app-relay/.relay.new.mjs front/app-relay/relay.mjs`) and
+   `docker compose up -d --no-deps --force-recreate app-relay`. The temporary file's name must end in `.mjs`:
+   `node --check` goes by the file's extension and refuses any other (`ERR_UNKNOWN_FILE_EXTENSION`), which stopped
+   v247's first apply with a name ending in `.new` (nothing had changed in service). Node has the old code loaded,
+   so the restart is what takes the new file. Its effect: app links answer 503 for the seconds the relay takes to
+   start; connected link programs lose their connection and come back with their keys within 1 to 30 seconds;
+   visitors keep their sessions (the database holds them), so nobody types a password again. Nothing else restarts;
+   no run is in the relay's path.
 3. **Smoke** (from the operator's Mac, through Cloudflare):
    ```
    curl -sS -o /dev/null -w '%{http_code}\n' https://qorpera-health-preview.qorpera.com/.qorpera/health   # 200
@@ -410,7 +416,8 @@ primary (mode 0644; the container's user only reads it). `client.mjs` does not c
    ```
    No probe needs a session: the check comes before the gate. The relay writes no log line for a refusal (one line each
    would let any page fill the log).
-4. **Way back.** Copy the backup to `.relay.mjs.new`, one rename, the same recreate; the forged POST answers 401 again.
+4. **Way back.** Copy the backup to `.relay.new.mjs`, check it the same way, one rename, the same recreate; the forged
+   POST answers 401 again.
    Hosts must be off first (`hosts_enabled = false`): without P1, every site is an unchecked neighbour of every app.
 
 ### Step 7: the front (R1)
