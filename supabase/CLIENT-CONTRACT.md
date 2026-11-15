@@ -2008,8 +2008,9 @@ text, an account number, a single payment or the summary's items. Design: the co
     never one order. Days and months are the company's, by the zone rule above; refunds count on the order's day.
   - `orders-now` (`currency`, `test`): one row always: `stripe` (`none` no Stripe hook, `waiting` none has verified a
     delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, a free one too, no state of the
-    company's yet; null while the company has set no state of its own in 90 days, so it never grows for a shop that
-    ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
+    company's yet, and made no earlier than the first order of the same mode, live or test, that the company ever gave
+    a state of its own, so a shop that starts marking on day 40 sees only orders from then on; null while the company
+    has set no state of its own in 90 days, so it never grows for a shop that ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
     `last_order_at` (ISO, UTC, or null). `to_pack`, `on_the_way`, `disputes_open` and `last_order_at` count every
     currency; the rest the one asked.
   - `orders-hours` (`currency`, `test`, `from`, `to` as `site-hours` takes them; default the 48 hours to this one, at

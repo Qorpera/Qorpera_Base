@@ -55,8 +55,9 @@
 --    pending and failed payments are not orders. Only counts and sums are answered, never one order.
 --      orders-now     one row always: stripe (none: no Stripe hook; waiting: none verified a delivery yet; live),
 --                     orders_today, sales_today, to_pack (paid, not refunded in full (a free one counts), no state of
---                     the company's yet;
---                     null when the company set none in 90 days), on_the_way, refunds_30d (refunded on the orders of
+--                     the company's yet, and made no earlier than the first order of the same mode the company ever
+--                     gave a state of its own, so a shop that starts marking late never sees its whole history; null
+--                     when the company set none in 90 days), on_the_way, refunds_30d (refunded on the orders of
 --                     the 30 days to today), disputes_open, last_order_at (ISO, UTC). to_pack, on_the_way,
 --                     disputes_open and last_order_at count every currency; the rest the one asked.
 --      orders-hours   hour (ISO, UTC), hour_local, orders, sales: every hour from `from` to `to`, zeros included; by
@@ -134,6 +135,9 @@ create index qorpera_orders_company on public.qorpera_orders(profile_id, environ
 create index qorpera_orders_unrolled on public.qorpera_orders(changed_at) where not rolled;
 create index qorpera_orders_age on public.qorpera_orders((coalesce(ordered_at, made_at)));
 create index qorpera_orders_hook on public.qorpera_orders(hook_id);
+-- The orders the company gave a state of its own: to_pack's start is their earliest (an indexed min).
+create index qorpera_orders_marked on public.qorpera_orders(profile_id, environment_id, live, ordered_at)
+	where state in ('packed', 'on_the_way', 'delivered', 'cancelled');
 
 create table public.qorpera_order_days (
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
@@ -613,6 +617,7 @@ declare
 	v_hour_from timestamptz;
 	v_hour_to timestamptz;
 	v_stripe text;
+	v_marked_since timestamptz;
 	v_columns text[];
 	v_rows jsonb;
 begin
@@ -678,6 +683,11 @@ begin
 					where hook.profile_id = p_profile_id and hook.environment_id = p_environment_id
 						and hook.proof = 'stripe' and delivery.status = 'verified') then 'live'
 			else 'waiting' end;
+		-- to_pack starts at the first order of this mode the company gave a state of its own: what came before it was
+		-- never marked and is not waiting to be packed.
+		select min(o.ordered_at) into v_marked_since from public.qorpera_orders as o
+		where o.profile_id = p_profile_id and o.environment_id = p_environment_id and o.live = v_live
+			and o.state in ('packed', 'on_the_way', 'delivered', 'cancelled');
 		v_columns := array['stripe', 'orders_today', 'sales_today', 'to_pack', 'on_the_way', 'refunds_30d',
 			'disputes_open', 'last_order_at'];
 		select jsonb_build_array(v_stripe,
@@ -690,7 +700,7 @@ begin
 			-- Null for a company that set no state of its own in 90 days: "to pack" never grows for nobody.
 			case when bool_or(o.state in ('packed', 'on_the_way', 'delivered', 'cancelled')
 					and o.state_at >= p_now - interval '90 days')
-				then count(*) filter (where o.state = 'paid'
+				then count(*) filter (where o.state = 'paid' and o.ordered_at >= v_marked_since
 					and (o.refunded_minor < o.amount_minor or o.amount_minor = 0)) end,
 			count(*) filter (where o.state = 'on_the_way'),
 			public.qorpera_order_major(coalesce(sum(least(o.refunded_minor, o.amount_minor)) filter (

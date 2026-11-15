@@ -689,6 +689,35 @@ begin
 		'true', 'the etag');
 end $$;
 
+-- 10b. to_pack starts at the first order the company marked (the same mode): a shop that starts marking late does not
+--      see its whole history. A test order marked earlier does not move the live start; an order made with the first
+--      marked one counts.
+do $$
+declare v_now timestamptz := pg_temp.o_at(); v_n integer;
+begin
+	perform pg_temp.o_clean();
+	foreach v_n in array array[40, 20, 10, 5, 0] loop
+		perform pg_temp.o_send(pg_temp.o_event('evt_L' || v_n, 'checkout.session.completed',
+			pg_temp.o_session('cs_L' || v_n, 'pi_L' || v_n, 1000, v_now - make_interval(days => v_n))));
+	end loop;
+	-- An order made the same second as the first marked one.
+	perform pg_temp.o_send(pg_temp.o_event('evt_LSame', 'checkout.session.completed',
+		pg_temp.o_session('cs_LSame', 'pi_LSame', 1000, v_now - interval '10 days')));
+	-- A test order, marked, before them all.
+	perform pg_temp.o_send(pg_temp.o_event('evt_LTest', 'checkout.session.completed',
+		pg_temp.o_session('cs_LTest', 'pi_LTest', 1000, v_now - interval '50 days', 'dkk', false)));
+	update public.qorpera_orders set state = 'packed', state_at = clock_timestamp(), state_by = 'member', rolled = false
+	where ref_sha256 = public.qorpera_order_ref_sha256('92400000-0000-4000-8000-000000000010', 'pi_LTest');
+	perform pg_temp.o_same(coalesce((pg_temp.o_now() -> 'to_pack')::text, 'sql null') || ' '
+		|| (pg_temp.o_now('{"test": true}') -> 'to_pack')::text, 'null 0', 'live marked nothing yet; test from its own');
+	-- The company starts marking with the order of 10 days ago.
+	update public.qorpera_orders set state = 'packed', state_at = clock_timestamp(), state_by = 'agent', rolled = false
+	where ref_sha256 = public.qorpera_order_ref_sha256('92400000-0000-4000-8000-000000000010', 'pi_L10');
+	-- Not 40 or 20 days ago (before it); the one of its second, 5 days ago and today.
+	perform pg_temp.o_same((pg_temp.o_now() -> 'to_pack')::text, '3', 'to pack from the first marked order on');
+	perform pg_temp.o_same((pg_temp.o_now('{"test": true}') -> 'to_pack')::text, '0', 'the test side its own');
+end $$;
+
 -- 11. Bounds and refusals, in the gateway's words.
 do $$
 begin
