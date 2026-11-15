@@ -569,6 +569,55 @@ image, an image answer of `app_guide`) is a mechanism of its own, so the guide t
 For any tool: what a model must choose by goes in the description (4096 bytes) or in field descriptions of a schema
 that stays under the bound; a bound on a number or a length is said in words; anything longer is an answer.
 
+## 3e. Retired interfaces (15 November 2026)
+
+The founder, 15 November 2026: "users should also get a "retire interface" config when rightclicking an interface to
+stop maintaining it, and hide it". What follows is the lane's design (lanes/company-reading-20261114), not his words.
+
+**The state** is one company file, `apps/retired.md` (`cloud-client/app-retired.ts`, `APP_RETIRED_PATH`), one line an
+interface:
+
+```
+# Retired interfaces
+- old-plan | 6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8 | 2026-11-15T09:30:00Z
+```
+
+the app's folder name, the member who retired it (their user id) and when (ISO, UTC). An app is retired while its name
+has a line that reads; the first line of a name says who and when; any other line is kept as written and means
+nothing; at most the first 200 lines are read, of a file of at most 1 MiB (a larger one, or one that is not text,
+retires nothing). It is not a key of `app.toml`: an unknown key fails the manifest's parse in every older reader and
+hides the app, `save_app` rebuilds the manifest from its fields, and a Restore of an old `app.toml` would undo it.
+`retired.md` is no app's folder (`appPath` reads none in it), so the drawer, `organize_apps` and `save_app`, which list
+the folders of `apps/`, never take it for an app. `parseRetiredApps` reads it, `retireApp` adds a line at the end and
+`bringBackApp` takes a name's lines out, every other byte as written.
+
+**Who writes it: members only.** A member retires an interface, or brings it back, from their own sidebar (§4); the
+web writes the file through the member's folder client, as its other member writes. No SQL rule guards it: the member
+commit route is open for `apps/`, and the runtime's tools are where an agent is held.
+
+**The agents** (the runtime, `cloud-folder-app-retired.ts`) read the file as the run's own read of the folder, as
+`organize_apps` reads `apps/groups.md`, and a tool that answers releases it with its other reads:
+
+- `save_app` on a retired name, an existing app or a new one under that name, `post_app` on a retired app either way,
+  and `make_picture` into a retired app's folder are refused before their review, and again before they write.
+- `company_write`, `company_edit`, `company_mkdir`, `company_delete` and either end of `company_move` are refused for a
+  path in a retired app's folder, the folder itself included.
+
+  The refusal, as the agent receives it (the tool boundary puts `REFUSED: ` in front): "APP_RETIRED: a member retired
+  the interface <name> on <day month year>. Leave it: do not change it, post it or remake it under another name, and
+  conclude any routine you keep only for it. A member brings it back from their own sidebar; tell whoever asked for
+  the change."
+- The file itself is closed to every agent write, edit, new folder, move and deletion, and so is a move of the `apps`
+  folder while the file is in it: `APP_RETIRED_MEMBERS_ONLY: nothing was changed; apps/retired.md lists the interfaces
+  members retired, and only a member retires an interface or brings one back, from their own sidebar. Leave the file
+  as it is.` (A deletion of `apps` itself is refused already: only an empty folder is deleted.)
+- `organize_apps list` ends a retired app's line with ` (retired by a member)` and counts it in no group's and no loose
+  number of apps, since no member's drawer shows it; moving it in the layout stays allowed.
+
+No tool's description, no role text and no context prose says any of this yet: an agent learns it from the refusal and
+the list. Not held: a company machine's own writes into an app's folder (the machine's file channel is not a tool of
+the run), and a member's own changes.
+
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
@@ -1085,6 +1134,9 @@ thread's "Quoted from an email" title).
     `save_app`'s fields a line each and its rule that a kit's file needs its guide read, and a model of no input
     refused. One migration (20260930762000: the tool's name in the observations' list); no node change and no change
     to the web.
+12. Retired interfaces (§3e, 15 November 2026): the file's format (`cloud-client/app-retired.ts`) and the runtime's
+    refusals and list label (`cloud-folder-app-retired.ts`). No migration, no tool name, no node change. The web's part
+    (the menu item, hiding, the retired page and the way back) is a change of its own, released after the runtime.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

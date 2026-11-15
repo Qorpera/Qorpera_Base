@@ -31,6 +31,7 @@ import {
 	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import { readRetiredApps } from "./cloud-folder-app-retired.ts";
 import { releaseId, unavailable } from "./cloud-folder-file-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -120,6 +121,8 @@ interface Company {
 	readonly have: readonly string[];
 	readonly titles: ReadonlyMap<string, string>;
 	readonly unposted: ReadonlySet<string>;
+	/** The keys of the apps a member retired (apps/retired.md): hidden from every member, still in the layout. */
+	readonly retired: ReadonlySet<string>;
 	/** The names of the app folders, concepts and apps with broken manifests included. */
 	readonly folders: ReadonlySet<string>;
 	readonly concepts: ReadonlySet<string>;
@@ -403,6 +406,7 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 		have: pages,
 		titles,
 		unposted: new Set(),
+		retired: new Set(),
 		folders: new Set(),
 		concepts: new Set(),
 		appsUsable,
@@ -448,7 +452,11 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 				manifests.set(name, stored ? parseAppManifest(stored.text) : null);
 			}),
 		);
+	// The members' retired interfaces, read as the manifests are and released with them.
+	const retiredRead = await readRetiredApps(folder, signal, "saved");
+	if (retiredRead.entry) reads.push(retiredRead.entry);
 	const unposted = new Set<string>();
+	const retired = new Set<string>();
 	const concepts = new Set<string>();
 	const have: string[] = [...pages];
 	for (const name of names) {
@@ -463,9 +471,20 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 		have.push(key);
 		titles.set(key, manifest?.name ?? name);
 		if (!manifest?.posted) unposted.add(key);
+		if (retiredRead.apps.has(name)) retired.add(key);
 	}
 	if (concepts.size > 0) have.push("concepts");
-	return { have, titles, unposted, folders: new Set(names), concepts, appsUsable: true, appsExists: true, reads };
+	return {
+		have,
+		titles,
+		unposted,
+		retired,
+		folders: new Set(names),
+		concepts,
+		appsUsable: true,
+		appsExists: true,
+		reads,
+	};
 }
 
 /** Whether the company has a drawer key. Sites is the company's while it has a published site, and What's new (own
@@ -704,7 +723,7 @@ function layout(
 	let looseApps = 0;
 	let groups = 0;
 	const entry = (key: string, level: number) =>
-		`${"  ".repeat(level)}${key} ${oneLine(company.titles.get(key) ?? key)}${company.unposted.has(key) ? " (not posted)" : ""}`;
+		`${"  ".repeat(level)}${key} ${oneLine(company.titles.get(key) ?? key)}${company.unposted.has(key) ? " (not posted)" : ""}${company.retired.has(key) ? " (retired by a member)" : ""}`;
 	/** Writes the nodes' lines; answers how many posted apps they hold. */
 	const walk = (nodes: readonly Node[], level: number): number => {
 		let apps = 0;
@@ -779,9 +798,10 @@ function listPage(items: readonly Node[], company: Company, cursor: number): str
 /** A title as one line of a list. */
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
-/** A loose entry the Co-Founder's tidy pass counts: a posted app (pages, Concepts, Sites and What's new are the
- * drawer's own). */
-const looseCounts = (key: string, company: Company) => key.startsWith("app:") && !company.unposted.has(key);
+/** A loose entry the Co-Founder's tidy pass counts: a posted app no member retired (pages, Concepts, Sites and What's
+ * new are the drawer's own; a retired app is in no member's drawer). */
+const looseCounts = (key: string, company: Company) =>
+	key.startsWith("app:") && !company.unposted.has(key) && !company.retired.has(key);
 
 /** At most this many keys a result names of a kind (tidied, not in the company); it says how many more. */
 const NAMED_MAX = 20;

@@ -24,6 +24,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyFolderRpcError } from "./cloud-company-path-refusal.ts";
+import { refuseRetiredPath } from "./cloud-folder-app-retired.ts";
 import {
 	FolderImageRefusal,
 	folderImageFormat,
@@ -1326,6 +1327,7 @@ export function cloudFolderFileTools(options: {
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string; expectedVersion: string | null; text: string };
 				context.observation?.update({ inputBytes: Buffer.byteLength(input.text) });
+				await refuseRetiredPath(folder, input.path, context.signal, "written");
 				// A change of a file keeps its media type and executable bit (a script stays runnable). Read before the receipt
 				// and changing nothing: a file at another version makes the commit a conflict anyway.
 				const current = input.expectedVersion === null ? null : await read(input.path, "written", context.signal);
@@ -1434,6 +1436,7 @@ export function cloudFolderFileTools(options: {
 					oldTextSha256: createHash("sha256").update(input.oldText, "utf8").digest("hex"),
 					newTextSha256: createHash("sha256").update(input.newText, "utf8").digest("hex"),
 				};
+				await refuseRetiredPath(folder, input.path, context.signal, "edited");
 				// The edit is made on the file's text at the version the model read. Another version (this call's own saved
 				// edit included, so a replay reaches its receipt), or nothing at the path, is the folder core's conflict:
 				// the write names the model's version and saves nothing.
@@ -1545,6 +1548,9 @@ export function cloudFolderFileTools(options: {
 					throw new CloudToolRefusal(
 						"A move needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 					);
+				// A retired interface, and the members' list of them, are the members' alone, from either end of a move.
+				await refuseRetiredPath(folder, input.from, context.signal, "moved", true);
+				await refuseRetiredPath(folder, input.to, context.signal, "moved");
 				// An app comes into apps/ only through save_app, so its manifest is checked (who owns it, whether it is
 				// posted): a folder or a manifest moved in from elsewhere is refused. Files moved into an app are its files.
 				const into = appPath(input.to);
@@ -1608,6 +1614,7 @@ export function cloudFolderFileTools(options: {
 			refused: cloudFolderRefusal,
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string };
+				await refuseRetiredPath(folder, input.path, context.signal, "written");
 				return change("company_mkdir", input, { path: input.path }, [{ op: "mkdir", path: input.path }], context);
 			},
 		},
@@ -1642,6 +1649,7 @@ export function cloudFolderFileTools(options: {
 					throw new CloudToolRefusal(
 						"A deletion needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 					);
+				await refuseRetiredPath(folder, input.path, context.signal, "deleted");
 				// Checked before the receipt, and still true once this call's own deletion is saved (the path is then gone),
 				// so a replay of the call reaches its receipt: only an empty folder is deleted, as of the listing that
 				// found it empty (a change under it after that is a conflict).
