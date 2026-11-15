@@ -425,8 +425,6 @@ export function cloudWorkerTools(
 				harness: {
 					type: "string",
 					enum: ["codex", "claude-code"],
-					// The tool's description is at its 4,096 bytes (20260930770000): this field says it, in a schema the model
-					// receives with its field descriptions (under 5,000 bytes as sent).
 					description:
 						"A coding session's agent. On any other worker, claude-code: Claude Code does the work instead of a run of you, on your machine and on the asking member's own Claude sign-in, one at a time for that member; only when a member asks for Claude Code.",
 				},
