@@ -1,3 +1,4 @@
+import { POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import { companyPathKey } from "./company-state-shared.ts";
 import { isInterfaceName } from "./interfaces.ts";
 
@@ -36,7 +37,6 @@ export interface RetiredApp {
 	readonly at: string;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z$/;
 // Linear in its line whatever it holds: no two quantifiers next to each other take the same character.
 const LINE = /^[ \t]*-[ \t]+([^\s|]+)[ \t]*\|[ \t]*([^\s|]+)[ \t]*\|[ \t]*([^\s|]+)[ \t\r]*$/;
@@ -51,7 +51,12 @@ function readLine(line: string): RetiredApp | null {
 	const found = LINE.exec(line);
 	if (!found) return null;
 	const [, name = "", by = "", at = ""] = found;
-	if (!isInterfaceName(name) || !UUID.test(by.toLowerCase()) || !ISO.test(at) || !Number.isFinite(Date.parse(at)))
+	if (
+		!isInterfaceName(name) ||
+		!POSTGRES_UUID_PATTERN.test(by.toLowerCase()) ||
+		!ISO.test(at) ||
+		!Number.isFinite(Date.parse(at))
+	)
 		return null;
 	return { name, by: by.toLowerCase(), at };
 }
