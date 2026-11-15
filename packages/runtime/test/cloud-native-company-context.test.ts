@@ -1951,12 +1951,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // v247's release merged up through T3-2 (15 November 2026): Code projects says, in one voice, that changes/index.md also tells a site still being prepared; all three measured once more.
 // Master and v247's release merged up through T3-3 (15 November 2026) under no-wall: the staff pairs measured once more.
 // Master and v247's release merged up through T3-5 into T3-6 (15 November 2026): the staff pairs measured once more.
+// Own code storage, D1b (15 November 2026, on T3-6): Going live says a repository's website shows under the agent's
+// thread and in What's new, where an owner or admin may look at it first, and the one line is what changes for
+// customers; the staff instructions measured once more (the worker's and the three prompts do not move).
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "6976a390bb15d39d40a4e089b47a0be8a99123749b61069e062c1d1c63f632c3",
+			instructions: "c7c73a8cca2165000db17316cfeeac2cf3d9d17a0d4133214bcf890a41e8e475",
 			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
 		},
 	],
@@ -1972,7 +1975,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "6976a390bb15d39d40a4e089b47a0be8a99123749b61069e062c1d1c63f632c3",
+			instructions: "c7c73a8cca2165000db17316cfeeac2cf3d9d17a0d4133214bcf890a41e8e475",
 			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
 		},
 	],
@@ -2282,17 +2285,19 @@ it("holds changes until a member says yes, and puts a repository's website live 
 		// What "live" means, so the rule holds back a release and nothing else.
 		"A change goes live when people outside the team meet it: an update to a published site, a new version of the product, a new price, a mail or post to many. Until then it is ready, and it goes live on a member's yes, because customers cannot unsee it.",
 		// Step 4's live proof (11 November 2026): an agent read "nothing ready" seconds after a change went in, and spent a
-		// turn on it.
-		"A website from a repository kept in Qorpera goes live only in What's new, where each change that passes its checks appears within a minute and a member puts it live",
-		"tell them in one line that it waits there; never publish it yourself or ask about it on a card.",
+		// turn on it. Step 5.1 (v247) and web #1848: the change also shows under the agent's thread, an owner or admin may
+		// look at it first, and the agent's one line says what changes for customers, not where it waits.
+		"A website from a repository kept in Qorpera goes live only when an owner or admin puts it live: each change that passes its checks shows within a minute under your thread and in What's new, where they can look at it first.",
+		"Tell them in one line what changes for customers; never publish it yourself or ask about it on a card.",
 		"Anything else: one question card that shows what changes, with Put it live and Not yet. On yes, put it live in that run; on not yet, ask what to change.",
 		"A fix for something broken for customers right now goes live at once, and you tell the members that day.",
 	]) {
 		expect(instructions).toContain(rule);
 		expect(worker).not.toContain(rule);
 	}
-	// The app agents kept for it, and its rundown and buttons, are gone.
+	// The app agents kept for it, and its rundown and buttons, are gone; so is the line that said only where it waits.
 	for (const gone of [
+		"tell them in one line that it waits there",
 		"whats-new",
 		"(publish_site on a live site)",
 		"show them together as one rundown",
