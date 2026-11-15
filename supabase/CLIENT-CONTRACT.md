@@ -1380,7 +1380,7 @@ request of another shape.
     no answer: moving the epoch is the only thing that voids that take-over whenever it arrives. It also ends another
     tab's hold of the member's under that epoch: a tab that closes while a take-over of its own is unanswered, while
     another tab of the same member holds the desktop under the same epoch, ends that tab's hold (it hears so at its
-    next heartbeat or action, and its window offers Take over again). This race is the one place a closing tab ends
+    next heartbeat or action, and its window shows the hold no more; the web begins no take-over since 14 Nov 2026). This race is the one place a closing tab ends
     another's; it keeps a take-over that outlives its window from seating anyone.
   A lease of the caller's that ran out is closed as it ended when the epoch moves. Which form each release sends:
   a close, a switch away, pagehide and leaving the page send VOID when uncertain, else EXACT by the seat the page's
@@ -1402,10 +1402,11 @@ request of another shape.
   A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
   the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
   member does a moment later.
-- A page uses a hold (input, heartbeats) only after a Take over pressed on that page (review r14 of #1661): a hold of
+- A page uses a hold (input, heartbeats) only after a take-over of that page's own (review r14 of #1661): a hold of
   the member's that the list shows from another window, or from before the page was loaded again, is shown, never
-  taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch takes
-  their own lease over, in a new seat), and without that the old lease ends by itself.
+  taken up, and ends with the window's Done or by itself. Since 14 Nov 2026 the web begins no take-over at all (Jonas:
+  private typing removed; no Take over, no Type privately): the take-over call stays in the database, unused by the
+  web, until it is retired.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat)`: one action, begun as the member.
   Clients do not call it: the action route (§4) does, with the member's own token, the action as SQL keeps it (a text
   by its length), `epoch` and `seat`, the hold the page captured the input under (release review r1 of #1667, F24 and
@@ -1887,6 +1888,28 @@ with the member folder client. Storage → the repository's folder → "Download
   same place and project it answers `queued` with the request that has it (the open one, or the one that brought it
   in). The list says how it goes (`bringing`, `lastImport`, `importedFrom`).
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
+
+### The company's reading and standing (20260930765000_company_reading)
+
+The company keeps one short reading of itself, `QorperaOS/vision/reading.md` (Jonas, 14 Nov 2026: "It should feel
+like the company is conscious almost"). It is a structured file like the vision: members read it with the company
+folder reads above and parse it with `parseCompanyStateFile` (kind `reading`, format in
+deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §2). There is none until the Co-Founder writes the first one; a
+member may delete it. A company whose routines stand still cannot write its own reading, so the platform says it:
+
+- `qorpera_read_company_standing(profile)`: `{schema: "qorpera.company-standing/v1", stopped, since, why, member,
+  resetsAt, waiting}`. `waiting` counts the company's routine wakes that are due and still queued; `since` is the
+  time the oldest of them has waited from (null when none waits). `stopped` is true when that one has waited more than
+  30 minutes and no routine wake of the company was given a run in the last 30 minutes: a member's own turn, a room
+  delivery or a worker's run does not count, so a company whose members chat while its routines wait for days reads
+  as stopped. `why` reads the login of the member each waiting wake would
+  be paid by (its routine's payer, the member who saved it; else the member its agent works for), in the order the
+  wakes wait, and names the first that is not ready: `login_full` (with `resetsAt`, when the login's window resets),
+  `sign_in` (a new sign-in is needed) or `no_login`; `member` is that member's user id. `why`, `member` and `resetsAt`
+  are null when every such login is ready. Any member reads it, a viewer too; anyone else is 42501 "Standing
+  unavailable". Read it when the company page opens and every 30 s while it is open.
+- The Co-Founder's facts for the reading are a host call of its run, never a member's:
+  `qorpera_describe_company_senses(binding)`.
 
 ## 3. Realtime
 
