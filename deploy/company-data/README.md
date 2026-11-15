@@ -176,7 +176,7 @@ runs an agent's read on it, known by its pid.
 `[list] members` is `"readers"` and the member may read `data/<database>/database.toml`, or when it is `"writers"`
 (any other value, and a `[list]` it cannot read, counts as it) and the platform's `qorpera_member_folder_may_write` says the member may write
 `data/<database>/` (kept 10 s). Without the line it is readers, unless a question file of the database
-(`queries/*.sql`, as the member lists them) names `:viewer`, or cannot be read, or the listing passes 1,000 files: then writers. A platform without
+(`queries/*.sql`, as the member lists them) names `:viewer`, or cannot be read, or the listing does not fit the platform's one page of 1,000 entries: then writers. A platform without
 `qorpera_member_folder_may_write` (it answers 404) lets nobody write, so a list for writers is shown to nobody.
 
 A refusal is `{ error }` with its status: 400 (the call or the SQL), 401 (sign in), 403 (a table of a database whose

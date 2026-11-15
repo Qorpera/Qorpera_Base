@@ -144,6 +144,7 @@ async function platformFetch(url, init) {
 				reads: args.p_paths.map((path) => (files.has(path) && mayRead(env, userId, path) ? { found: true, entry: entry(path) } : { found: false })),
 			});
 		case "/rest/v1/rpc/qorpera_member_folder_list": {
+			if (!Number.isInteger(args.p_limit) || args.p_limit < 1 || args.p_limit > 1000) return reply(400, { code: "22023", message: "Listing is invalid" });
 			const prefix = `${args.p_parent}/`;
 			const folders = new Set(
 				[...files.keys()]
@@ -151,13 +152,12 @@ async function platformFetch(url, init) {
 					.map((path) => `${prefix}${path.slice(prefix.length).split("/")[0]}`)
 					.filter((path) => mayRead(env, userId, path)),
 			);
-			const entries = [
+			const all = [
 				...[...files.keys()].filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/") && mayRead(env, userId, path)).map(entry),
 				...[...folders].map((path) => ({ path, kind: "folder" })),
-			]
-				.sort((a, b) => (a.path < b.path ? -1 : 1))
-				.slice(0, args.p_limit);
-			return reply(200, { entries });
+			].sort((a, b) => (a.path < b.path ? -1 : 1));
+			const entries = all.slice(0, args.p_limit);
+			return reply(200, { entries, next: all.length > args.p_limit ? entries.at(-1).path : null });
 		}
 		case "/rest/v1/rpc/qorpera_member_folder_may_write":
 			if (writeCheckMissing) return reply(404, { code: "PGRST202", message: "Could not find the function" });
@@ -371,6 +371,11 @@ it("reads who gets the list from database.toml's [list], and counts any spelling
 		['[list.more]\nmembers = "readers"\n', [], false, "writers"],
 		['[other]\nmembers = "readers"\n', [viewer], false, "writers"],
 		['about = "A list of members"\n', [], false, "readers"],
+		['tags = [\n  ["a"],\n]\nlist.members = "writers"\n', [], false, "writers"],
+		['[other]\nx = [\n  [1],\n]\n[list]\nmembers = "writers"\n', [], false, "writers"],
+		['["li\\u0073t"]\nmembers = "readers"\n', [], false, "writers"],
+		['[list]\n"mem\\u0062ers" = "readers"\n', [], false, "writers"],
+		['[list]\r\nmembers = "readers"\r\n', [viewer], false, "readers"],
 	])
 		assert.equal(listMembers(toml, questions, cut), members, `${JSON.stringify(toml)} ${JSON.stringify(questions)} ${cut}`);
 });
@@ -2347,6 +2352,21 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 			writeCheckMissing = false;
 		}
 		assert.equal((await ask(viewer, "rows", { database: "hr", table: "salaries" }, ENV_E)).status, 404);
+	});
+
+	it("keeps the tables with the writers when the member's listing of the questions is cut at the platform's page", async () => {
+		put(ENV_B, {
+			"data/many/database.toml": 'format = "qorpera.database/v1"\n',
+			"data/many/tables/001-items.sql": "create table items (id int primary key);\n",
+			...Object.fromEntries(Array.from({ length: 1001 }, (_, index) => [`data/many/queries/q${String(index).padStart(4, "0")}.sql`, "select 1 as one;\n"])),
+		});
+		assert.equal((await ask(bMember, "apply", { database: "many" }, ENV_B)).value.applied, true);
+		const cut = await ask(bMember, "rows", { database: "many", table: "items" }, ENV_B);
+		assert.deepEqual([cut.status, cut.value.error], [403, "The tables of many are shown to those who may change it"], JSON.stringify(cut.value).slice(0, 300));
+		assert.equal((await ask(bMember, "describe", { database: "many" }, ENV_B)).value.databases[0].list, false);
+		remove(ENV_B, "data/many/queries/q1000.sql");
+		assert.equal((await ask(bMember, "rows", { database: "many", table: "items" }, ENV_B)).status, 200, "1,000 questions fit one page");
+		assert.equal((await ask(bMember, "describe", { database: "many" }, ENV_B)).value.databases[0].list, true);
 	});
 
 	it("pages a table by its key, in the order asked, and never by offset", async () => {

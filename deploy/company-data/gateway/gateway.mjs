@@ -138,14 +138,18 @@ const LIST_DOTTED = new RegExp(`^\\s*${LIST_KEY("list")}\\s*\\.\\s*${LIST_KEY("m
 const LIST_INLINE = new RegExp(`^\\s*${LIST_KEY("list")}\\s*=\\s*\\{\\s*${LIST_KEY("members")}\\s*=\\s*(?:"(readers|writers)"|'(readers|writers)')\\s*\\}\\s*(?:#.*)?$`);
 const LIST_NAMED = new RegExp(`^\\s*(?:\\[+\\s*)?${LIST_KEY("list")}\\s*[.=\\]]`);
 
+const LIST_SIMPLE_HEADER = /^\s*\[\s*[A-Za-z0-9_.\-"' ]+\s*\]\s*(?:#.*)?$/;
+
 function listLine(toml) {
 	let table = "";
-	for (const line of toml.split("\n")) {
+	for (const line of toml.split(/\r?\n/)) {
 		if (/^\s*\[/.test(line)) {
+			if (line.includes("\\") || !LIST_SIMPLE_HEADER.test(line)) return "writers";
 			table = LIST_HEADER.test(line) ? "list" : LIST_NAMED.test(line) ? "unread" : "other";
 			if (table === "unread") return "writers";
 			continue;
 		}
+		if ((table === "" || table === "list") && line.split("=")[0].includes("\\")) return "writers";
 		const value = table === "list" ? LIST_MEMBERS.exec(line)?.[1] : table === "" ? LIST_DOTTED.exec(line)?.[1] : undefined;
 		if (value !== undefined) {
 			const said = LIST_VALUE.exec(value);
@@ -270,15 +274,19 @@ export class Platform {
 	}
 	/** The files directly in a folder, as the member may list it. */
 	async memberList(token, environmentId, parent, limit) {
+		return (await this.memberListPage(token, environmentId, parent, limit)).files;
+	}
+	async memberListPage(token, environmentId, parent, limit) {
 		const answer = await this.#rpc(token, "qorpera_member_folder_list", {
 			p_environment_id: environmentId,
 			p_parent: parent,
 			p_after: null,
 			p_limit: limit,
 		});
-		return (Array.isArray(answer?.entries) ? answer.entries : [])
+		const files = (Array.isArray(answer?.entries) ? answer.entries : [])
 			.filter((entry) => entry.kind === "file" && SHA.test(entry.fileSha256 ?? ""))
 			.map((entry) => ({ name: entry.path.slice(entry.path.lastIndexOf("/") + 1), sha256: entry.fileSha256, bytes: entry.bytes }));
+		return { files, more: answer?.next !== null && answer?.next !== undefined };
 	}
 	/** What a run's data pass kept (`qorpera_data_pass_redeem`, with the publishable key alone), once: `{ environmentId,
 	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }>, allow }`, or null for a pass that answers
@@ -631,13 +639,17 @@ export class Gateway {
 
 	/** The files directly in a folder that the caller may list: a member's from the platform, a run's from its pass. */
 	async #listed(caller, environmentId, parent, limit) {
-		if (!caller.files) return this.#platform.memberList(caller.token, environmentId, parent, limit);
+		return (await this.#listedPage(caller, environmentId, parent, limit)).files;
+	}
+
+	async #listedPage(caller, environmentId, parent, limit) {
+		if (!caller.files) return this.#platform.memberListPage(caller.token, environmentId, parent, limit);
 		const prefix = `${parent}/`;
-		return [...caller.files]
+		const files = [...caller.files]
 			.filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
 			.sort(([a], [b]) => (a < b ? -1 : 1))
-			.slice(0, limit)
 			.map(([path, file]) => ({ name: path.slice(prefix.length), sha256: file.sha256, bytes: file.bytes }));
+		return { files: files.slice(0, limit), more: files.length > limit };
 	}
 
 	/** A statement's values in its parameters' order. `:viewer` is the member looking; a run, which may read everything in
@@ -914,7 +926,7 @@ export class Gateway {
 	async #folderFiles(caller, environmentId, name, texts, database, toml, { changes = true } = {}) {
 		const root = `data/${name}`;
 		const [questions, actions] = await Promise.all([
-			this.#listed(caller, environmentId, `${root}/queries`, 1001),
+			this.#listedPage(caller, environmentId, `${root}/queries`, 1000),
 			changes ? this.#listed(caller, environmentId, `${root}/actions`, 1000) : [],
 		]);
 		const need = [];
@@ -932,9 +944,9 @@ export class Gateway {
 			);
 		const found = {
 			toml: await read(`${root}/database.toml`, toml),
-			questions: await each("queries", questions.slice(0, 1000)),
+			questions: await each("queries", questions.files),
 			changes: await each("actions", actions),
-			cut: questions.length > 1000,
+			cut: questions.more,
 		};
 		return need.length > 0 ? { need } : found;
 	}

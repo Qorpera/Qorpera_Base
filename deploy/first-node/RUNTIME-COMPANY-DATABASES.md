@@ -485,7 +485,7 @@ member or the agent from the lists it already holds.
   `next` past it.
 - **Who gets the list, at its edges.** A `[list] members` value other than `"readers"` counts as `"writers"`, and so
   does a `[list]` written in a way the gateway does not read, a `database.toml` or a question file too large to read,
-  and a `queries/` listing past 1,000 files. The gateway sees only the question files the member
+  and a `queries/` listing that does not fit the platform's one page of 1,000 entries. The gateway sees only the question files the member
   may list: a question hidden from a member by a path resource does not make the database writers-only for them.
   Until part a is live, the platform has no write check (404) and a writers' list is shown to nobody.
 - **The 80 % warning.** The watcher's look answers `near` (companies past 80 % of their own data) beside `full`;
