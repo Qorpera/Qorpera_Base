@@ -3374,6 +3374,17 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
 	// again.
 	// Both together (master merged into T3-1, 15 November 2026): measured once more on node 2's test machine.
+	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
+	// views plan step 1), and save_app's kit says to read it first, so they moved again.
+	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
+	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
+	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
+	// (20260930764000), so they moved again.
+	// The same day ask_member's takeover says that the member signs in on the screen the agent and they both use, not
+	// that the agent's calls are refused meanwhile (the web begins no private hold any more: #1812), in its description
+	// and in the takeover surface's schema, so both moved again, measured on master with data_change and data_apply's
+	// allow.
+	// Master 01c90ff7a merged into T3-1 for landing (15 November 2026): measured once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3392,6 +3403,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"data_describe",
 		"data_apply",
 		"data_query",
+		"data_change",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -3425,10 +3437,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"c21949f75dbfde0841c5331b4b96ccd62352526b06893a5c527e25a523867f7b",
+		"db66d8e958985fb01ceb84f86b7f179c27421c13439bffcb8d488b7fc89fa0ff",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"90273f6edb0a5b358698438c53f721e6e320ef68e2a9861471ed7132cc97df8f",
+		"56471830bceb4518063a5661879b00729a580b052abeb7b16f67448df968a5b5",
 	);
 });
 
