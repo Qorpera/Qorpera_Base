@@ -408,7 +408,7 @@
 - A file preview opened from a message no longer closes when another message arrives.
 - Screen readers read a member's own message once. Before, it was read again when the cloud took it, when the agent started on it and when it reached the transcript; now the message stays in place and only "Processing" is read. An answered card is read again once, when it turns from question to answer, not when the answer is confirmed. A message's day separator stays where it was when the message changes, and a new one is read just before its message.
 - After midnight a thread no longer draws every message again at its next update. Only times that now name their day change, in place; older messages stay as they are, and a card being answered keeps what the member typed and the keyboard.
-- The "Ready to go live" card in a thread keeps its three buttons on one row at every width of the card (seen live 15 Nov 2026 in a window of about 1000 px: beside the rail the card is as narrow as on a phone, and "Not yet" fell to a row of its own). The buttons now tighten by the width of their own row, not by the window's.
+- The "Ready to go live" card in a thread keeps its three buttons on one row (seen live 15 Nov 2026 in a window of about 1000 px: beside the rail the card is as narrow as on a phone, and "Not yet" fell to a row of its own). The buttons now tighten by the width of their own row, not by the window's, and in a thread they always say the same short words: "Put it live" for a project's first version too (What's new's page still names the first version), and no other words while a press is on its way (the pressed button is marked busy and all three are off), so the row never changes width.
 
 ### Added
 

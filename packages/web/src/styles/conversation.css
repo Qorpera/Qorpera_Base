@@ -1561,9 +1561,10 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .thread-ready-card.is-asking .interaction-call { padding-right: 0; }
 .thread-ready-card .interaction-call > strong { flex: none; }
 @media (max-width: 900px) { .thread-ready-card.is-asking { max-width: 82%; } }
-/* The three buttons keep one row at any width of the card: their row is the measure, not the window (beside the rail
- * a thread, and so the card, is as narrow in a window of 1000 px as on a phone: "Not yet" fell to a row of its own
- * there). */
+/* The three buttons keep one row down to the narrowest card a 360 px phone draws: their row is the measure, not the
+ * window (beside the rail a thread, and so the card, is as narrow in a window of 1000 px as on a phone: "Not yet" fell
+ * to a row of its own there). The card's buttons always say the same short words (views/release-desk.ts, `here`), so
+ * the measure holds for a first version and while a press is on its way. */
 .thread-ready-card > .whats-new-actions { container-type: inline-size; }
 @container (max-width: 19em) {
 	.thread-ready-card .whats-new-actions .btn { min-height: 34px; padding-inline: 11px; font-size: 13.5px; }

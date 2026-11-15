@@ -648,7 +648,10 @@ export class ReleaseDesk {
 	 * a project with a site), Put it live and Not yet, each saying while it works ("Putting it live…", "Opening…",
 	 * "Working…"), all off while anything works (`busy`); for anyone else the sentence that says who does. A site Qorpera
 	 * took down (`down`) keeps only Not yet: the kernel refuses Look first and Put it live until it is restored (the review
-	 * of #1774, round 3). From the agent's own thread (`here`, its session) Not yet stays there (`notYet`). */
+	 * of #1774, round 3). From the agent's own thread (`here`, its session) Not yet stays there (`notYet`), and the buttons
+	 * keep their short words whatever happens: "Put it live" for a first version too, and no other words while a press
+	 * is on its way (the pressed one is marked busy and all are off), so the card's one row of them never changes width
+	 * (the review of #1850). */
 	actions(
 		site: CodeReleaseSite,
 		can: boolean,
@@ -660,28 +663,38 @@ export class ReleaseDesk {
 		if (!can) return h("p", { class: "whats-new-managers" }, t("Founders and admins put changes live."));
 		const key = keyOf(site);
 		const working = this.#working?.site === key ? this.#working.action : undefined;
+		const short = Boolean(here);
 		let put: HTMLButtonElement | null = null;
 		if (!down) {
 			put = button(
-				working === "live" ? t("Putting it live…") : site.live ? t("Put it live") : t("Put the first version live"),
+				short
+					? t("Put it live")
+					: working === "live"
+						? t("Putting it live…")
+						: site.live
+							? t("Put it live")
+							: t("Put the first version live"),
 				() => void this.putLive(site),
 				{ primary: true, disabled: busy },
 			);
 			put.dataset.focusKey = `live:${key}`;
+			if (short && working === "live") put.setAttribute("aria-busy", "true");
 		}
 		const notYet = button(
-			working === "talk" ? t("Working…") : t("Not yet"),
+			working === "talk" && !short ? t("Working…") : t("Not yet"),
 			() => void (here ? this.notYet(site, here.sessionId).then(here.done) : this.notYet(site)),
 			{ disabled: busy },
 		);
 		notYet.dataset.focusKey = `talk:${key}`;
+		if (short && working === "talk") notYet.setAttribute("aria-busy", "true");
 		// Look first, before Put it live: a project with a site, while the read offers it.
 		let first: HTMLButtonElement | null = null;
 		if (look && site.site && !down) {
-			first = button(working === "look" ? t("Opening…") : t("Look first"), () => void this.lookFirst(site), {
+			first = button(working === "look" && !short ? t("Opening…") : t("Look first"), () => void this.lookFirst(site), {
 				disabled: busy,
 			});
 			first.dataset.focusKey = `look:${key}`;
+			if (short && working === "look") first.setAttribute("aria-busy", "true");
 		}
 		return h("div", { class: "whats-new-actions" }, first, put, notYet);
 	}
