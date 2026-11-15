@@ -80,12 +80,17 @@ export function nativeIsolationInvocation(options: {
 	codexHome: string;
 	relayPath: string;
 	fenceSocket?: string;
+	/** The agent's home (slice 1): the host's socket in this same scratch root, which Codex reaches with
+	 * `stdio-to-uds` to run its own shell and file tools on the run's machine. Never a path outside the root. */
+	homeSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
 	harness?: "claude-code";
 }): { args: string[]; environment: Record<string, string> } {
 	const plan = options.chatGptPlan;
 	const claude = options.harness === "claude-code";
-	if (claude && (plan || options.fenceSocket)) throw new Error("A Claude sign-in runs alone");
+	if (claude && (plan || options.fenceSocket || options.homeSocket)) throw new Error("A Claude sign-in runs alone");
+	if (options.homeSocket && dirname(options.homeSocket) !== options.scratchRoot)
+		throw new Error("The home's socket is the run's own");
 	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
 	const planToken = plan && "accessToken" in plan ? plan.accessToken : undefined;
 	if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
@@ -150,6 +155,8 @@ export function nativeIsolationInvocation(options: {
 		// each newer token.
 		...(planDirectory ? ["--ro-bind", planDirectory, planDirectory] : []),
 		...(options.fenceSocket ? ["--ro-bind", options.fenceSocket, options.fenceSocket] : []),
+		// Read-only, as the fence's socket is: the namespace writes JSON-RPC lines to it, nothing else.
+		...(options.homeSocket ? ["--ro-bind", options.homeSocket, options.homeSocket] : []),
 	];
 	const environment = {
 		HOME: join(options.scratchRoot, "home"),
@@ -206,6 +213,8 @@ export async function launchIsolatedNativeProcess(options: {
 	scratchRoot: string;
 	codexHome: string;
 	fenceSocket?: string;
+	/** The agent's home socket, in the scratch root beside the fence's (cloud-codex-home.ts). */
+	homeSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
 	/** A Claude sign-in: `codexHome` is Claude Code's config directory (the vault's helper only). */
 	harness?: "claude-code";
@@ -244,15 +253,19 @@ export async function launchIsolatedNativeProcess(options: {
 	});
 	let child: ChildProcessWithoutNullStreams | undefined;
 	try {
-		if (options.fenceSocket) {
-			const metadata = await lstat(options.fenceSocket);
+		for (const [socket, what] of [
+			[options.fenceSocket, "result-fence"],
+			[options.homeSocket, "home"],
+		] as const) {
+			if (!socket) continue;
+			const metadata = await lstat(socket);
 			if (
-				dirname(options.fenceSocket) !== options.scratchRoot ||
+				dirname(socket) !== options.scratchRoot ||
 				!metadata.isSocket() ||
 				metadata.uid !== process.getuid?.() ||
 				(metadata.mode & 0o077) !== 0
 			)
-				throw new Error("Unsafe native result-fence socket");
+				throw new Error(`Unsafe native ${what} socket`);
 		}
 		const invocation = nativeIsolationInvocation({ ...options, relayPath: relay.path });
 		options.signal.throwIfAborted();

@@ -28,6 +28,7 @@ import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/r
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
+import { NativeHostDispatch } from "@qorpera/runtime/cloud-native-host-dispatch";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type NativeCompanyExecutionRequest,
@@ -72,6 +73,9 @@ const binarySha256 = createHash("sha256")
 	.update(await readFile(process.execPath))
 	.digest("hex");
 let root: string;
+/** What a real host holds instead of the service key (G2-5), and its job's lease token, for `wiring.dispatch`. */
+const DISPATCH_KEY = "sb_publishable_runtimeSuite0123456789";
+const DISPATCH_LEASE = "J".repeat(43);
 const assertBundle = runtimeBundle.assertCloudRuntimeBundle;
 beforeEach(async () => {
 	root = await mkdtemp(join(tmpdir(), "qorpera-company-runtime-test-"));
@@ -117,6 +121,9 @@ async function fixture(
 	folderSearch = false,
 	timeoutMs = 10_000,
 	companyData = false,
+	/** `home`: the host has the home's channel (it asks for the run's home); `dispatch`: the path control reaches SQL
+	 * as on a real host, through the native host's dispatch and its entry point, with a stand-in only below `fetch`. */
+	wiring: { home?: boolean; dispatch?: boolean } = {},
 ) {
 	const f = nativeCompanyContextFixture();
 	// A light ask's run (the fake Codex's compactor modes: only side threads answer there) has no conversation either.
@@ -329,6 +336,8 @@ async function fixture(
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
+	/** SQL's answer to whether the run has a home (an Error: the call fails); none: SQL's own "no home". */
+	let homeAnswer: unknown = { schema: "qorpera.company-home/v1", available: false };
 	const folderReads: string[] = [];
 	const folderReleases: Record<string, unknown>[] = [];
 	/** The kernel's page of the run's open proposals (P40b); none set: the list is refused, as for a run with none. */
@@ -362,6 +371,11 @@ async function fixture(
 			if (method === "qorpera_company_machines_available") {
 				if (machinesAnswer instanceof Error) throw machinesAnswer;
 				return machinesAnswer;
+			}
+			if (method === "qorpera_company_home_available") {
+				expect(args).toEqual({ p_binding: f.binding });
+				if (homeAnswer instanceof Error) throw homeAnswer;
+				return homeAnswer;
 			}
 			if (method === "qorpera_record_runtime_observation_batch") {
 				expect(args.p_run_id).toBe(f.binding.runId);
@@ -679,24 +693,56 @@ async function fixture(
 		});
 		return { tools: session.tools, close: officeClose };
 	});
+	// The native host's dispatch with the job begun, as the provider service begins it; below its fetch, the entry point
+	// as SQL answers it: the call it names, with its arguments, or a test's own answer for one call.
+	const entryCalls: { entry: string; name: string; args: Record<string, unknown>; apikey: string | null }[] = [];
+	let entryAnswer: ((name: string) => Response | undefined) | undefined;
+	const dispatch = new NativeHostDispatch({
+		supabaseUrl: "https://authority.example",
+		identity: { computeIdentityId: randomUUID(), credential: "I".repeat(43), publishableKey: DISPATCH_KEY },
+		fetch: async (input, init) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			expect(body.p_job_id).toBe(f.binding.jobId);
+			expect(body.p_job_lease_token).toBe(DISPATCH_LEASE);
+			const name = body.p_name as CloudCompanyPathRpc;
+			const args = body.p_args as Record<string, unknown>;
+			entryCalls.push({
+				entry: String(input).replace("https://authority.example/rest/v1/rpc/", ""),
+				name,
+				args,
+				apikey: new Headers(init?.headers).get("apikey"),
+			});
+			const own = entryAnswer?.(name);
+			if (own) return own;
+			if (!init?.signal) throw new Error("Invalid synthetic HTTP call");
+			return Response.json((await pathCall(name, args, init.signal)) ?? null);
+		},
+	});
+	if (wiring.dispatch) dispatch.begin(f.binding.jobId, { leaseToken: DISPATCH_LEASE, publishableKey: DISPATCH_KEY });
 	const runtime = new CloudNativeCompanyRuntime({
 		presence,
 		controlPlane: control,
-		pathControl: httpPathControl
+		pathControl: wiring.dispatch
 			? new HttpCloudCompanyPathControl({
 					supabaseUrl: "https://authority.example",
-					serviceRoleKey: "synthetic-service-key",
-					fetch: async (input, init) => {
-						expect(init?.method).toBe("POST");
-						if (typeof init?.body !== "string" || !init.signal) throw new Error("Invalid synthetic HTTP call");
-						const method = String(input).split("/").at(-1) as CloudCompanyPathRpc;
-						const value = await pathCall(method, JSON.parse(init.body), init.signal);
-						return method === "qorpera_assert_company_path_reads"
-							? new Response(null, { status: 204 })
-							: Response.json(value);
-					},
+					serviceRoleKey: DISPATCH_KEY,
+					fetch: dispatch.fetch,
 				})
-			: { call: pathCall },
+			: httpPathControl
+				? new HttpCloudCompanyPathControl({
+						supabaseUrl: "https://authority.example",
+						serviceRoleKey: "synthetic-service-key",
+						fetch: async (input, init) => {
+							expect(init?.method).toBe("POST");
+							if (typeof init?.body !== "string" || !init.signal) throw new Error("Invalid synthetic HTTP call");
+							const method = String(input).split("/").at(-1) as CloudCompanyPathRpc;
+							const value = await pathCall(method, JSON.parse(init.body), init.signal);
+							return method === "qorpera_assert_company_path_reads"
+								? new Response(null, { status: 204 })
+								: Response.json(value);
+						},
+					})
+				: { call: pathCall },
 		command: [process.execPath, rpcFixture, mode, evidence],
 		binarySha256,
 		timeoutMs,
@@ -745,6 +791,16 @@ async function fixture(
 				return new TextEncoder().encode(text).subarray(offset, offset + length);
 			},
 		}),
+		// The home's channel only makes the run ask for its home here; no run of this suite gets one.
+		...(wiring.home
+			? {
+					homeChannel: () => ({
+						open: async () => {
+							throw new Error("No home channel in this suite");
+						},
+					}),
+				}
+			: {}),
 		// A machines gateway only offers the tools here; this suite never runs a command.
 		...(machines
 			? {
@@ -796,6 +852,15 @@ async function fixture(
 		pathCall,
 		machinesAnswer: (value: unknown) => {
 			machinesAnswer = value;
+		},
+		homeAnswer: (value: unknown) => {
+			homeAnswer = value;
+		},
+		/** What reached the native host's entry points, in order (with `wiring.dispatch`). */
+		entryCalls,
+		/** A test's own answer for a call at the entry point, as PostgREST would give it. */
+		entryAnswer: (answer: (name: string) => Response | undefined) => {
+			entryAnswer = answer;
 		},
 		proposalsAnswer: (value: unknown) => {
 			proposalsAnswer = value;
@@ -2787,6 +2852,130 @@ it("never asks about machines on a node without the machines gateway", async () 
 	const f = await fixture("company-runtime");
 	expect(await machineToolNames(f)).toEqual([]);
 	expect(machinesAsked(f)).toHaveLength(0);
+});
+
+// The agent's home's offer (20260930752000), as a real host asks it. Found 14 Nov 2026: neither the path control's list
+// nor the native host's entry point named the ask, and the runtime took the refusal for "no home".
+describe("the run's ask for its home", () => {
+	const homeFixture = (dispatch: boolean) =>
+		fixture("company-runtime", false, undefined, false, false, 10_000, false, { home: true, dispatch });
+	const homeAsked = (f: Awaited<ReturnType<typeof fixture>>) =>
+		f.entryCalls.filter(({ name }) => name === "qorpera_company_home_available");
+
+	it("goes through the native host's entry point with the run's binding, and a run SQL gives no home runs as today", async () => {
+		const f = await homeFixture(true);
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+		expect(homeAsked(f)).toEqual([
+			{
+				entry: "qorpera_native_host_call",
+				name: "qorpera_company_home_available",
+				args: { p_binding: f.binding },
+				apikey: DISPATCH_KEY,
+			},
+		]);
+		// The whole run reached SQL through the entry points: none of its calls is one this host cannot make.
+		expect(f.entryCalls.length).toBeGreaterThan(5);
+		expect(
+			f.entryCalls.filter(
+				({ entry }) => entry !== "qorpera_native_host_call" && entry !== "qorpera_native_host_call_long",
+			),
+		).toEqual([]);
+		// No home: no environment, as today.
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		expect(evidence.threadParameters.environments ?? []).toEqual([]);
+	});
+
+	it("is never made on a host without the home's channel", async () => {
+		const f = await fixture("company-runtime", false, undefined, false, false, 10_000, false, { dispatch: true });
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(f.entryCalls.length).toBeGreaterThan(5);
+		expect(homeAsked(f)).toEqual([]);
+	});
+
+	it.each([
+		[
+			"the entry point refuses it (no row for the call)",
+			true,
+			() =>
+				Response.json(
+					{ code: "42501", message: "native host call is refused", details: null, hint: null },
+					{ status: 401 },
+				),
+		],
+		[
+			"SQL answers in another shape",
+			true,
+			() => Response.json({ schema: "qorpera.company-home/v1", machineId: randomUUID() }),
+		],
+		[
+			"SQL fails it with an internal error (500, XX000)",
+			true,
+			() =>
+				Response.json(
+					{ code: "XX000", message: "Folder run is unavailable", details: null, hint: null },
+					{ status: 500 },
+				),
+		],
+		[
+			"a function it needs is missing (404, 42883)",
+			true,
+			() =>
+				Response.json(
+					{ code: "42883", message: "function public.qorpera_x(uuid) does not exist", details: null, hint: null },
+					{ status: 404 },
+				),
+		],
+		["the path control does not know the call", false, undefined],
+	] as const)("fails the run in the home's own stage, before Codex starts, when %s", async (_, dispatch, answer) => {
+		const f = await homeFixture(dispatch);
+		if (answer) f.entryAnswer((name) => (name === "qorpera_company_home_available" ? answer() : undefined));
+		else f.homeAnswer(new Error("Unknown Company File control operation"));
+		const error = await f.runtime
+			.execute(f.request, f.identityRoot, new AbortController().signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(Error);
+		expect(nativeRuntimeFailureMetadata(error)?.stage).toBe("codex-home");
+		expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution_v3")).toBe(
+			false,
+		);
+	});
+
+	it.each([
+		["a 5xx that is not PostgREST's", () => new Response("upstream unavailable", { status: 503 })],
+		[
+			"PostgREST's word that the statement ran out of time (500, 57014)",
+			() =>
+				Response.json(
+					{ code: "57014", message: "canceling statement due to statement timeout", details: null, hint: null },
+					{ status: 500 },
+				),
+		],
+		[
+			"PostgREST's pool wait (504, PGRST003)",
+			() =>
+				Response.json(
+					{
+						code: "PGRST003",
+						message: "Timed out acquiring connection from connection pool.",
+						details: null,
+						hint: null,
+					},
+					{ status: 504 },
+				),
+		],
+	] as const)(
+		"leaves an attempt whose ask lost its answer (%s) without a home, and says so in the host's journal",
+		async (_, answer) => {
+			const journal = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			const f = await homeFixture(true);
+			f.entryAnswer((name) => (name === "qorpera_company_home_available" ? answer() : undefined));
+			const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+			expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+			expect(homeAsked(f)).toHaveLength(1);
+			expect(journal).toHaveBeenCalledWith("The agent's home was not asked (transport_unavailable)");
+		},
+	);
 });
 
 it("starts the run without the open-work count when the kernel cannot give it", async () => {
