@@ -32,12 +32,20 @@ import {
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { codeImportShown } from "./code-import.ts";
-import { type CodeSiteCollected, codeSiteRefusedSummary, codeSiteReported } from "./code-site.ts";
+import {
+	CODE_CHECKS_DRILL,
+	CODE_DRILL_WORDS,
+	CODE_SITE_DRILL_FOLDER,
+	type CodeSiteCollected,
+	codeSiteRefusedSummary,
+	codeSiteReported,
+} from "./code-site.ts";
 import { CodingLandConflict, CodingLandRefused, CodingWorkspaceFailed, landRefusal } from "./coding-executor.ts";
 import {
 	CODING_FOLDER_COMPANY_ROOT,
 	type CodeChangeReport,
 	type CodeChangeReportV2,
+	type CodeChecksSwitched,
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
 	type CodingFolderStart,
@@ -223,7 +231,14 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	 * The candidate's checks file may say where its checks leave the repository's website (step 4): the run then takes it
 	 * once every check passed, unless the switch says sites are off. A site the code made wrong fails the turn as a failed
 	 * check does (`CODING_CHECKS_SITE_REFUSED`, no row). A run that passed is reported as v3, with what became of its
-	 * site; after a landing whose report says the site was made, the upload pass is woken (`sites`). */
+	 * site; after a landing whose report says the site was made, the upload pass is woken (`sites`).
+	 *
+	 * From step 5 the switch may say that sites have hosts of their own (`rootLinks`): the run then lets a site's links
+	 * from `/` through. And it may hand over an operator's drill, once: a `check` drill runs one more check after the
+	 * repository's own (`CODE_CHECKS_DRILL`), which fails; a `site` drill takes no site, and once every check passed the
+	 * host itself refuses the site as not there, naming `CODE_SITE_DRILL_FOLDER`, whatever the repository holds (the
+	 * review of #1774, F3: a repository may hold a folder of that name). Either way the turn fails on the platform's own
+	 * refusal path, with its usual code, and its words start with `CODE_DRILL_WORDS`. */
 	async land(
 		session: CodingFolderRepositorySession,
 		headSha: string,
@@ -234,13 +249,18 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
 		const { checksSwitch, runChecks } = session;
 		// The switch's answer lost is read as on: a landing never goes in unchecked for want of an answer.
-		const switched =
+		const switched: CodeChecksSwitched =
 			checksSwitch !== undefined && runChecks !== undefined
 				? await checksSwitch(signal)
 				: { checks: false, site: false };
 		const enabled = switched.checks;
 		const told = (step: string, extra: Record<string, unknown> = {}) =>
 			this.#report({ event: "code-checks", step, ...named(session), ...extra });
+		// An operator's drill the switch handed over (step 5): the kernel hands it to no other answer, so it acts on this
+		// landing's run or on none (no checks file, nothing to check, no site to take: spent, and the operator sets it
+		// again). The log says it was taken.
+		const drill = switched.drill;
+		if (drill !== undefined) told("drill", { drill });
 		let runs = 0;
 		for (let tries: 1 | 2 = 1; ; tries = 2) {
 			const found = await this.#landing(
@@ -259,9 +279,20 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				told("refused", { tries });
 				throw new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary);
 			}
-			// The candidate's site is taken only while the switch says sites are on.
-			const site = switched.site ? gate.site : null;
-			const input = { commit: found.mainAfter, checks: gate.checks, site };
+			// The candidate's site is taken only while the switch says sites are on. A site drill takes none: the host refuses
+			// the site itself once every check passed (below), so nothing the repository holds decides it; a check drill runs
+			// one more check after the repository's own, which says it is a drill and fails (step 5, D17). Links from / are
+			// let through only while the switch says sites have hosts of their own (step 5, D15); else the input is as before.
+			const recipe = switched.site ? gate.site : null;
+			const siteDrill = recipe !== null && drill === "site";
+			const site = siteDrill ? null : recipe;
+			const checks = drill === "check" ? [...gate.checks, CODE_CHECKS_DRILL] : gate.checks;
+			const input = {
+				commit: found.mainAfter,
+				checks,
+				site,
+				...(switched.rootLinks === true ? { rootLinks: true } : {}),
+			};
 			let run = await runChecks({ ...input, attempt: ++runs }, signal);
 			// Checks that could not run are the machine's or Qorpera's fault, never the code's: once more.
 			if (run.state === "not_run") {
@@ -273,14 +304,36 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				throw new CodingLandRefused("CODING_CHECKS_DID_NOT_RUN", codeChecksNotRunSummary(run));
 			}
 			if (run.state === "failed") {
-				told("failed", { attempt: runs, exitCode: run.failed.exitCode, atLimit: run.failed.atLimit });
-				throw new CodingLandRefused("CODING_CHECKS_FAILED", codeChecksFailedSummary(run, found.how));
+				// The drill's own check failed, the last of the run: its words say first that it was a drill.
+				const drilled = drill === "check" && run.notRun.length === 0 && run.failed.name === CODE_CHECKS_DRILL.name;
+				told("failed", {
+					attempt: runs,
+					exitCode: run.failed.exitCode,
+					atLimit: run.failed.atLimit,
+					...(drilled ? { drill } : {}),
+				});
+				throw new CodingLandRefused(
+					"CODING_CHECKS_FAILED",
+					drilled
+						? codeChecksFailedSummary(run, found.how, `${CODE_DRILL_WORDS} `)
+						: codeChecksFailedSummary(run, found.how),
+				);
 			}
 			// Every check passed, but the site the code left cannot go: nothing goes in, as for a failed check.
 			if (run.state === "site_refused") {
 				if (site === null) throw new Error("CODE_HOST_LANDING_INVALID");
 				told("site-refused", { attempt: runs, problem: run.problem.code, variable: run.problem.variable });
 				throw new CodingLandRefused("CODING_CHECKS_SITE_REFUSED", codeSiteRefusedSummary(run.problem, site.folder));
+			}
+			// A site drill: every check passed, and the host refuses the site as not there, on the same path and in the same
+			// words as a site the code did not leave, its words first saying it was a drill. Nothing goes in.
+			if (siteDrill) {
+				const problem = { code: "SITE_FOLDER_MISSING", path: null, variable: null } as const;
+				told("site-refused", { attempt: runs, problem: problem.code, variable: problem.variable, drill });
+				throw new CodingLandRefused(
+					"CODING_CHECKS_SITE_REFUSED",
+					codeSiteRefusedSummary(problem, CODE_SITE_DRILL_FOLDER, `${CODE_DRILL_WORDS} `),
+				);
 			}
 			const result = codeChecksPassed({
 				commit: found.mainAfter,

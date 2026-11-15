@@ -76,8 +76,14 @@ export function cloudControlEndedCode(code: string): boolean {
 /** A lost or late answer PostgREST itself gave, whose statement ended or never started. It carries no `code`, so it is
  * asked again as any other lost answer is (cloudControlRetryable). */
 export class CloudControlRpcEnded extends CloudRuntimeDiagnosticError {
-	constructor(safeMessage?: string) {
+	/** The SQLSTATE (or PostgREST's own code) the answer named, where the thrower kept it. Never `code`: what is asked
+	 * again (cloudControlRetryable, cloudControlEnded) does not read it. A caller that must not take a deterministic
+	 * fault for a lost answer (the agent's home's ask) reads it. */
+	readonly sqlstate: string | undefined;
+
+	constructor(safeMessage?: string, sqlstate?: string) {
 		super("transport_unavailable", safeMessage);
+		this.sqlstate = sqlstate;
 	}
 }
 

@@ -180,7 +180,7 @@ export interface ComputerPanelOptions {
 }
 
 /** How a window is opened: `asked` when the member's own click just asked for it (the agent's card, the thread's
- * agent details, a take-over card); false, the default, when the page opens or shows it by itself. */
+ * agent details); false, the default, when the page opens or shows it by itself. */
 export interface ComputerOpen {
 	readonly asked?: boolean;
 }
@@ -247,7 +247,7 @@ interface SharedInput {
 	sending: boolean;
 	/** It ended without the member's doing (the predicate turned false: review r5 F2 of #1701), and whether they were told
 	 * that input of it was dropped (once, from its queue or from the picture's buffer); an end they made (a switch, Back,
-	 * Type privately, a close) says nothing. */
+	 * private typing beginning, a close) says nothing. */
 	endedLost: boolean;
 	told: boolean;
 	/** Where the picture gives the input it gathers while this computer is shared: to this computer alone, while this
@@ -336,8 +336,8 @@ function togetherWords(names: readonly string[]): string {
 	});
 }
 
-/** A press of Take over (the window's button or the agent's take-over card): the machine chosen at it, and the ledger's
- * answer it waits for (review r12 F19). */
+/** A take-over (the one kept for the tests: nothing in the web begins one since 14 Nov 2026): the machine chosen at it,
+ * and the ledger's answer it waits for (review r12 F19). */
 interface TakeAttempt {
 	readonly machineId: string | undefined;
 	/** The press's stamp in the ledger (review r13 F20). */
@@ -357,14 +357,16 @@ interface TakeAttempt {
  * a time, while the agent goes on working on the same screen; a click on the preview's picture opens the large view.
  * More than one member may act; the window names the others who did in the last minute. Viewers watch.
  *
- * Typing privately is the take-over of migration 20260930713000 (stage 1b), for passwords: Type privately, here or the
- * agent's take-over card, holds the desktop for this member alone while the agent gets no pictures of it and waits, and
- * everyone else's shared input is refused; Done, the card's I'm done, closing the window or leaving the page ends it.
+ * Typing privately is the take-over of migration 20260930713000 (stage 1b): a hold of the desktop for one member alone
+ * while the agent gets no pictures of it and waits, and everyone else's shared input is refused. NOTHING IN THE WEB BEGINS
+ * ONE ANY MORE (Jonas, 14 Nov 2026: "Yes, remove it"); the server still knows it until it is retired, so the window still
+ * says when someone else types privately (controlled), takes the database's refusals for it, and ends a hold an older
+ * page of the member's still has: Done, the card's I'm done, closing the window or leaving the page ends it.
  * The hold is the database's, renewed every minute while the window shows it; other members see who types privately,
  * not the screen. While the picture changes or the member acts, the window looks every 450 ms. What the member may
  * hold, and every hand-back until it is confirmed, is the company's ledger's (DesktopHoldLedger), not the window's:
  * closing the window forgets nothing (review r2 of #1661). The picture takes the member's input only in the large view
- * (entered in the thread, or full screen; v234 in production: in the preview a press drags the window, and a desktop
+ * (entered over the thread; v234 in production: in the preview a press drags the window, and a desktop
  * cannot be driven at that size): a private hold of this page's enters the frame in the thread by itself once a picture
  * shows, and back in the preview the picture is watched only and the words say how to use it.
  *
@@ -501,16 +503,20 @@ export class ComputerPanel {
 	/** The hold of the desktop on this page, while there is one (review r17 F25): a new object at every take-over that
 	 * succeeds, gone at every release. */
 	#hold: PageHold | undefined;
-	/** A press of Take over waiting for the machine to run (its stamp in the ledger): dropped, silently, once any release
-	 * came after it (review r13 F20). */
+	/** A take-over (kept for the tests) waiting for the machine to run (its stamp in the ledger): dropped, silently, once
+	 * any release came after it (review r13 F20). */
 	#wantTakeOver: number | undefined;
 	/** The window's last Hand back (or the card's I'm done through it) was not confirmed: said until one is (review r15). */
 	#handBackFailed = false;
-	/** A take-over of this page's (its button, the agent's take-over card) enters the large view once a picture shows: the
-	 * picture takes input there only. Once: back in the preview it stays there until the member presses Enter. Only in a
-	 * thread: leaving it cancels the entry, and a take-over answered out of one enters nothing (review r1 F1 of #1685);
-	 * back in the thread the member has the preview, the hold and the words that say how to use it. */
+	/** A take-over of this page's (kept for the tests; nothing in the web begins one) enters the large view once a
+	 * picture shows: the picture takes input there only. Once: back in the preview it stays there until the member
+	 * presses Enter. Only in a thread: leaving it cancels the entry, and a take-over answered out of one enters nothing
+	 * (review r1 F1 of #1685); back in the thread the member has the preview, the hold and the words that say how to use
+	 * it. */
 	#enterOnHold = false;
+	/** The take-over card's Open computer (enterWhenShown): the large view once a picture shows, with no hold. Once, and
+	 * only in a thread, as entering on a hold is. */
+	#enterOnShow = false;
 	/** The window's take-over: the latest press's attempt, of the machine chosen at it, and the ledger's answer it waits
 	 * for (review r12 F19). An older attempt's answer is not the window's. */
 	#taking: TakeAttempt | undefined;
@@ -533,7 +539,7 @@ export class ComputerPanel {
 	readonly #controlWho = h("span", { class: "machine-screen-control-who" });
 	readonly #controlNote = h("span", { class: "machine-screen-control-note", role: "status", "aria-live": "polite" });
 	readonly #controlButton = h("button", { type: "button", class: "machine-screen-control-button" });
-	/** Done, beside Type privately, while the member types privately in another window (review r14). */
+	/** Done, while the member types privately in another window (review r14): it ends that hold from here. */
 	readonly #controlHandBack = h(
 		"button",
 		{ type: "button", class: "machine-screen-control-hand-back", hidden: true },
@@ -603,7 +609,6 @@ export class ComputerPanel {
 				if (!matchesKey(event, "dismiss")) return;
 				// The member holds the desktop and the picture has the keyboard: Escape is the computer's.
 				if (this.#view?.takesKeysFrom(event.target)) return;
-				if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
 				event.preventDefault();
 				event.stopPropagation();
 				if (this.#view?.entered) this.#view.back();
@@ -641,11 +646,9 @@ export class ComputerPanel {
 		// The controls are the member's, not the start of a panel drag.
 		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
 		// The controls' button and its stand-in without a picture do one thing: Done (a hand-back; or Try again) while the
-		// member types privately or the end of it is asking or failed, else Type privately (a take-over).
-		const press = () =>
-			void (this.#holding || this.#handBackFailed || (this.#machineId && this.#ledger.releasing(this.#machineId))
-				? this.handBack()
-				: this.takeOver());
+		// member types privately or the end of it is asking or failed. They show for nothing else: private typing is begun
+		// nowhere in the web any more (Jonas, 14 Nov 2026: "Yes, remove it").
+		const press = () => void this.handBack();
 		this.#controlButton.addEventListener("click", press, { signal });
 		this.#loadingHandBack.addEventListener("click", press, { signal });
 		this.#controlHandBack.addEventListener("click", () => void this.handBack(), { signal });
@@ -734,14 +737,16 @@ export class ComputerPanel {
 		return this.el.parentElement !== null;
 	}
 
-	/** The window stands in the thread's log: while the large view is open, everything of the conversation but the header
-	 * and the way down to the window is covered, so nothing under it is reachable (review r1 F1 of #1685). */
+	/** The window stands in the thread's log: while the large view is open, everything of the conversation but the header,
+	 * the foot (the composer and the notices above it, which the view leaves in sight: computer-place.ts) and the way down
+	 * to the window is covered, so nothing under it is reachable (review r1 F1 of #1685). */
 	#coverThread(): void {
 		const pane = this.el.closest(".thread-conversation");
 		for (let node: Element = this.el; pane && node !== pane && node.parentElement; node = node.parentElement)
 			for (const child of node.parentElement.children) {
 				if (child === node || !(child instanceof HTMLElement)) continue;
-				if (child.classList.contains("thread-header") || this.#covered.has(child)) continue;
+				if (child.classList.contains("thread-header") || child.classList.contains("thread-foot")) continue;
+				if (this.#covered.has(child)) continue;
 				this.#covered.set(child, child.inert);
 				child.inert = true;
 			}
@@ -781,8 +786,21 @@ export class ComputerPanel {
 		this.#poke();
 	}
 
-	/** Take the desktop over (the window's Take over, or the agent's take-over card): at once when the window shows a
-	 * running desktop, or as soon as it does. */
+	/** The take-over card's Open computer (review r1 F1 of #1812): the large view once a picture shows, at once when one
+	 * shows now; the member uses the computer there as it is shared. It begins no hold. */
+	enterWhenShown(): void {
+		if (this.#stop.signal.aborted) return;
+		this.#enterOnShow = true;
+		this.#touched();
+		this.#poke();
+		this.#syncControls();
+	}
+
+	/** Take the desktop over, at once when the window shows a running desktop, or as soon as it does. NOTHING IN THE WEB
+	 * CALLS THIS since private typing was taken out of it (Jonas, 14 Nov 2026: "Yes, remove it"): no button, card or key
+	 * begins a hold. It stays, with the ledger's take, only as the way the tests of a hold (Done, its end, its input, its
+	 * heartbeat, the company's ledger by epoch) begin one, the hold an older page could still have, until the server side
+	 * is retired and the whole hold machinery goes with it. */
 	takeOver(): void {
 		if (this.#stop.signal.aborted || !this.#computer) return;
 		// Shared input on its way goes no further: what comes next is private (review r1 F1 of #1701).
@@ -873,6 +891,7 @@ export class ComputerPanel {
 		// A member who left mid-screen returns to a preview; the thread it covered is gone. An entry still pending is
 		// cancelled: nothing enters out of a thread (review r1 F1 of #1685).
 		this.#enterOnHold = false;
+		this.#enterOnShow = false;
 		this.#view?.back();
 		this.el.remove();
 		// Removal takes focus without a focusout in every browser; the next focus in the panel starts clean.
@@ -996,7 +1015,7 @@ export class ComputerPanel {
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
 				// The last machine's picture stays, marked, until the next one's comes (or the next one says why there is
-				// none): a member who switches full screen stays full screen.
+				// none): a member who switches in the entered frame stays in it.
 				this.#view?.updating();
 				// The member's word is per machine: the next machine's first look says it again, so its desktop stays on
 				// while they watch it (review r1 F2).
@@ -1171,7 +1190,7 @@ export class ComputerPanel {
 	 * and decides (a list below the epoch it knows says nothing; an epoch above ends what the page had under the older
 	 * one; a lost answer of this page's take-over that the list shows is held), and the window's hold follows the
 	 * ledger. A hold of the member's from elsewhere (another window, or this page before it was loaded again) is never
-	 * taken up (review r14): the window shows it, with Take over and Hand back. */
+	 * taken up (review r14): the window shows it, with Done to end it. */
 	#heldPerList(): void {
 		const list = this.#listed;
 		if (!list) return;
@@ -2137,22 +2156,24 @@ export class ComputerPanel {
 	}
 
 	/** The controls under the picture (20260930734000). Shared, in the large view: the computer takes the member's input at
-	 * once, the first time a quiet line says that they share it with the agent, and Type privately (a lock) starts the
-	 * private mode; in the preview nothing but who else uses it (a click on the picture opens the large view). Typing
-	 * privately: what it means and Done, in both. A viewer is told they watch. Who else used the shared desktop in the
-	 * last minute is said in every case. The picture takes input only in the large view; a private hold of this page's
-	 * enters the frame in the thread once a picture shows. Without a picture, the same words, label and state stand in
-	 * the state's place for a private hold or its end (review r2 F1 of #1681). */
+	 * once, the first time a quiet line says that they share it with the agent (nothing begins private typing any more:
+	 * Jonas, 14 Nov 2026); in the preview nothing but who else uses it (a click on the picture opens the large view). A
+	 * private hold (one an older page of the member's still has): what it means and Done, in both. A viewer is told they
+	 * watch. Who else used the shared desktop in the last minute is said in every case. The picture takes input only in
+	 * the large view; a private hold of this page's, or the take-over card's Open computer, enters the frame in the thread
+	 * once a picture shows. Without a picture, the same words, label and state stand in the state's place for a private
+	 * hold or its end (review r2 F1 of #1681). */
 	#syncControls(): void {
 		// The predicate is checked at every change the window draws: once false, the sharing and its queue are gone, and a
 		// new one is made only when it holds again (review r3 of #1701). Input that was waiting is said lost.
 		if (this.#shared && !this.#sharingOf(this.#shared)) this.#endShared(true);
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
-		// Never full screen here: only the member's own press on Enter asks for that.
-		const entering = this.#enterOnHold && holding && picture && this.el.parentElement !== null;
+		const entering =
+			((this.#enterOnHold && holding) || this.#enterOnShow) && picture && this.el.parentElement !== null;
 		if (entering) {
 			this.#enterOnHold = false;
+			this.#enterOnShow = false;
 			this.#view?.enterFrame();
 		}
 		const entered = this.#view?.entered === true;
@@ -2162,9 +2183,9 @@ export class ComputerPanel {
 		const shown = this.#pick();
 		const mayAct = this.#listed?.canTakeOver === true;
 		// The member types privately from elsewhere (another window, or this page before it was loaded again): shown,
-		// never used here; Type privately makes it this window's, Done ends it (review r14).
+		// never used here; Done ends it (review r14).
 		const elsewhere = !holding && !release && picture && mayAct && shown?.control?.mine === true;
-		// No one types privately: the member shares the computer with the agent, and may start typing privately.
+		// No one types privately: the member shares the computer with the agent.
 		const open = !holding && !release && !elsewhere && picture && mayAct && !shown?.control;
 		const sharing = open && this.#sharing();
 		const who = picture && !holding && !release ? togetherWords(shown?.others ?? []) : "";
@@ -2184,9 +2205,8 @@ export class ComputerPanel {
 			this.#introShown = true;
 		} else if (picture && entered && !mayAct)
 			text = t("You can watch. Someone with edit access can use the computer.");
-		// The button: Done while typing privately (Try again for an end that failed), Type privately where the member may
-		// start it (the large view) or holds it elsewhere.
-		const button = holding || release !== undefined || elsewhere || (open && entered);
+		// The button: Done while typing privately (Try again for an end that failed), and nothing else.
+		const button = holding || release !== undefined;
 		// A note (private typing could not start, an input did not go through) shows in the preview too.
 		const note = this.#controlNote.textContent !== "";
 		this.#controls.hidden = !(picture && (button || text !== "" || who !== "" || note));
@@ -2202,24 +2222,13 @@ export class ComputerPanel {
 		for (const words of [this.#controlText, this.#loadingControlText])
 			if (words.textContent !== text) words.textContent = text;
 		if (this.#controlWho.textContent !== who) this.#controlWho.textContent = who;
-		const lock = !holding && release === undefined;
-		const label = holding
-			? t("Done")
-			: release === "failed"
-				? t("Try again")
-				: release
-					? t("Done")
-					: t("Type privately");
+		const label = release === "failed" ? t("Try again") : t("Done");
 		const disabled = this.#takingLive(this.#machineId) || release === "asking";
 		this.#controlButton.hidden = !button;
-		this.#controlButton.classList.toggle("is-secondary", open);
-		this.#label(this.#controlButton, label, lock);
-		this.#label(this.#loadingHandBack, label, false);
-		const tip = lock
-			? t("For passwords: {name} gets no pictures of the screen until you're done.", { name: this.#name })
-			: "";
-		if (this.#controlButton.title !== tip) this.#controlButton.title = tip;
-		for (const each of [this.#controlButton, this.#loadingHandBack]) each.disabled = disabled;
+		for (const each of [this.#controlButton, this.#loadingHandBack]) {
+			if (each.textContent !== label) each.textContent = label;
+			each.disabled = disabled;
+		}
 		// Each hold and each sharing has an input of its own: at every change the picture hands what it gathered to the input
 		// it gathered it for (review r2 F1 of #1701).
 		const hold = holding ? this.#hold : undefined;
@@ -2235,18 +2244,14 @@ export class ComputerPanel {
 		// Handing the picture another input can drop input it held for a sharing that ended without the member's doing, which
 		// says so (review r5 F2 of #1701): the note shows at once.
 		if (!note && this.#controlNote.textContent !== "") this.#controls.hidden = !picture;
-		if (entering) this.#view?.focusScreen();
+		// An entry that comes late (a computer that woke a while after the card's Open computer) never takes the keyboard
+		// from where the member went meanwhile: the composer stays usable under the frame, and keys go where the focus is
+		// (review r2 F1 of #1812). The picture gets the keyboard only from the window itself, or from nowhere.
+		const active = document.activeElement;
+		if (entering && (active === null || active === document.body || this.el.contains(active)))
+			this.#view?.focusScreen();
 		// The live picture follows the input the picture takes (20260930745000): of that hold or that sharing, or none.
 		this.#syncStream(picture && entered ? (hold ?? (sharing ? this.#shared : undefined)) : undefined);
-	}
-
-	/** A control's label, with the lock of private typing before it where it starts it; drawn again only when it changes. */
-	#label(button: HTMLButtonElement, label: string, lock: boolean): void {
-		const key = `${lock ? "lock:" : ""}${label}`;
-		if (button.dataset.label === key) return;
-		button.dataset.label = key;
-		if (lock) replace(button, icon("lock"), h("span", null, label));
-		else button.textContent = label;
 	}
 
 	/** Waits `ms` (at most until the next machines read is due), or until something pokes the loop. */
@@ -2747,14 +2752,11 @@ export class ComputerPanel {
 				event.stopPropagation();
 				const rect = button.getBoundingClientRect();
 				const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
-				// Full screen, the browser shows only the full-screen element: the menu goes inside it (review r1 F3).
-				const full = document.fullscreenElement;
 				openContextMenu({
 					label: t("Choose a computer"),
 					x: rect.left,
 					y: rect.bottom + 4,
 					opener: button,
-					...(full instanceof HTMLElement && full.contains(button) ? { container: full } : {}),
 					items: desktops.map((machine) => ({
 						label: machine.name,
 						hint: machine.purpose.length > 60 ? `${machine.purpose.slice(0, 59)}…` : machine.purpose,

@@ -35,8 +35,8 @@ that are visual-first to let you see the company." So an app is one of four form
 | a video | watches an explanation that moves and speaks | the `explainer` kit (§3a) |
 
 An app is made for a thing (the product, its business model, its market, its customers, its look), one app a thing,
-not for an area and not for an agent. The state of an agent's work is not an app: members read it on the line under
-the agent's name, on its wall and in its questions.
+not for an area and not for an agent. The state of an agent's work is not an app: members read it in the agent's
+thread and in its questions (until 14 November 2026 also on its wall, which the web no longer shows).
 
 ## 2. Format
 
@@ -153,7 +153,7 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
 | `save_app` | creates an app (its folder, `app.toml`, files) or changes its manifest and files, in one call | `internal`: applies at once |
 | `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `internal` for its own app (Jonas, 7 November 2026); `delegation` for another agent's or a member's |
 | `make_picture` | makes one picture and saves it as a PNG, such as an app's picture before the save_app that shows it (§3c) | `internal`; `delegation` into another agent's or a member's app |
-| `app_guide` | answers how one part of an app is made: a kit's file, a hand-written page's base style, live data and changes, an app's icons (§3d) | `read` |
+| `app_guide` | answers how one part of an app is made: the look every app is held to, a kit's file, a hand-written page's base style, live data and changes, an app's icons (§3d) | `read` |
 
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
@@ -539,9 +539,9 @@ agent's answer to the refusal "model.json has no groups".
 
 So a guide is a tool's answer, read when the part is made:
 
-- `app_guide {about}` answers one guide's text (`cloud-app-guides.ts`), with `about` one of `model`, `board`,
-  `path`, `object`, `explainer` (a kit: what its one file holds, field by field, with an example; a data kit's guide
-  starts with what the four share), `style` (the base style, §2), `reads` and `writes` (§5) and `icons` (§2). It
+- `app_guide {about}` answers one guide's text (`cloud-app-guides.ts`), with `about` one of `look` (below), `model`,
+  `board`, `path`, `object`, `explainer` (a kit: what its one file holds, field by field, with an example; a data kit's
+  guide starts with what the four share), `style` (the base style, §2), `reads` and `writes` (§5) and `icons` (§2). It
   reads nothing of the company and changes nothing: review class `read`, no receipt, no operationKey. Its one
   database change is its name in the closed list of a run's observations (20260930762000).
 - **`save_app` saves a kit's own file (`<kit>.json`, `scenes.js`) only in a run that has read the kit's guide**:
@@ -553,6 +553,18 @@ So a guide is a tool's answer, read when the part is made:
   without them.
 - `save_app`'s fields say a line each: which kit draws which thing stays on `kit`, where the agent chooses; the
   rest point at their guide. A test holds the schema under 4,600 bytes, so its descriptions arrive.
+
+**The look (14 November 2026, company views plan §3 "Taste").** `look` is the bar every app is held to, from Jonas's
+reactions to 44 sketched screens of a company: Qorpera's own plain look (the base style's page, `--q-bg`, and the
+system font; no scenes, skies or themed backdrops), the company's real things (products, shop, money, dates, customers' words), one big shape
+a screen with colour as large soft fields and very few words, never grids of small controls, chip rows, scattered dots,
+text cards or labelled diagram lines, and **copy the quality, not the layout**. A kit keeps its own form (the model
+kit's sliders and chips, the explainer's arrows): for a kit, the look decides what goes in it; for a page written by
+hand, the page too. It tells seven screens he liked and
+three he did not in a line each. `app_guide`'s description and `save_app`'s `kit` say to read it before the first
+app; no save is held to it, since a page is still a page without it. The pictures of those screens are in no
+company's folder: every way to put them there (a seed at creation and a backfill, a platform writer, the machine
+image, an image answer of `app_guide`) is a mechanism of its own, so the guide tells them in words until one is chosen.
 
 For any tool: what a model must choose by goes in the description (4096 bytes) or in field descriptions of a schema
 that stays under the bound; a bound on a number or a length is said in words; anything longer is an answer.
@@ -582,7 +594,7 @@ that stays under the bound; a bound on a number or a length is said in words; an
   emblem, the title, one line under it and a chevron: drawn plain it has a page's emblem and "App"; once the
   company's apps are read it shows the app as the drawer does (the member's own icon and colour for it, or its
   group's colour; an app that is not in the drawer as its manifest says) and the app's `about` in one line, whole
-  on a hover, or "App" where it has none. Wall posters and choice cards draw the same card, and so does a member's
+  on a hover, or "App" where it has none. Choice cards draw the same card, and so does a member's
   note sent from an app's page (§5 "A note to the app's owner"), above the member's words, with the app's own name
   and what the note is about as its line.
 - **Concepts viewer.** `#/c/<profileId>/concepts[/<name>]` shows the company's concepts (`concept = true`): the open
@@ -855,7 +867,7 @@ without `#<at>` when the page named no thing. The web sends a member's message o
 which named the agent, stands for that (`CompanyController.sendNote`), and every other check of a send holds. The
 Mailbox's notes, and Generate icon in the apps drawer (`requestAppIcons`), met the same check before and so never
 went from where the member pressed: they failed with "Company access is unavailable." They go now too. The line is
-plain text, as a wall answer's quoted question is
+plain text, as a wall answer's quoted question was
 (`cloud/wall-reply.ts`), so nothing in the cloud changes. The thread draws it as the app's card, standing above the
 member's words as an agent's message has its cards, with what the note is about as the card's line; once the
 company's apps are read the card has the app's own name, emblem and colour, and a press on it opens the app.
@@ -863,7 +875,7 @@ company's apps are read the card has the app's own name, emblem and colour, and 
 **When it waits.** A note goes from the bar only into a thread with nothing drafted in it (the member's draft in this
 browser, and the room's shared draft as it is now). When something is drafted there, or when the send does not go (no
 model account for the member, or the cloud refused it), the note waits in that thread's composer. Its first line is
-never in the composer: the draft answers it, as a draft answers a wall question (`answering`), and the composer shows
+never in the composer: the draft answers it (`answering`), and the composer shows
 it above the field as the app (its emblem in its colour, its name) and what the note is about, with a way to leave it
 out. Where the draft is saved and shared (the room's shared draft, `app/room-drafts.ts`), the line is the text's first
 line (`> app:…`, then an empty line), put there and taken out again by the company's room hooks (`app/company.ts`), so
@@ -876,7 +888,7 @@ there, so the earlier draft and the note are one message under one card, which t
 Open, which goes there, and stays until the member opens or closes it.
 
 One message answers one line: a thread whose draft answers something already (another app's note, here or in the
-room's text; a wall question), or whose message is on its way or waits to be tried again, takes no note. The note
+room's text; a line that names no app), or whose message is on its way or waits to be tried again, takes no note. The note
 then stays on the bar with its words, a line says "<agent>'s thread has a message started. Send or clear it there,
 then send this note." with Open, and Send tries again. It is kept for the app by the company, with the member's words
 as they change them (`HeldNote`), so following Open loses nothing: whenever the app's page is shown again, or its
@@ -891,11 +903,12 @@ first" otherwise, and the kept note is on the bar again where no bar shows it. A
 thread can't be opened) is still the app's note: its bar stays, says why, and keeps the member's words.
 
 The Mailbox's notes to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`); they
-have no line of their own, so they wait after a wall answer under way rather than be sent under its question.
+have no line of their own, so they wait after a line being answered rather than be sent under it.
 
-A wall question being answered is still this browser's alone (`answering`, not in the shared text): a reload or
-another tab finds the answer's words without the question. Fencing it the same way needs a way to tell a quoted
-question from words the member quoted themself, so it is left as it was.
+A line that names no app, being answered, is this browser's alone (`answering`, not in the shared text). Only the
+agents' wall set one (its questions' Answer), and the web shows no wall since 14 November 2026 (Jonas: "rather drop the
+wall - it's the wrong medium for activity"), so nothing sets one now; a message that opens with such a quoted line is
+still drawn with the line above the member's words.
 
 **The page's answer.** `{sent: true}` when the note went, `{sent: false, waiting: true}` when it waits in the
 agent's thread; while the note stays on the bar the page waits on. The promise rejects with a plain reason when the
@@ -1025,7 +1038,7 @@ full where it will be sent from, and it goes only to the app's own agent.
 **The remaining risk, accepted.** The 60-character `about` goes in the member's message, on its first line, as the
 member's words: the agent reads it as theirs, and so does the action review, which leaves out quoted words but not
 this line (`cloud-action-review.ts`). So a page can put up to 60 characters of its own into a message the member
-sends. That is the standing a wall headline already has: an agent writes it, and a member's answer carries it as a
+sends. That is the standing a wall headline had: an agent wrote it, and a member's answer carried it as a
 quoted first line (`cloud/wall-reply.ts`). It is accepted because the member sees it on the bar before the press, it is
 one line that names nobody and quotes nothing, and it reaches only the agent that owns the app, which wrote the page,
 or the Co-Founder. The upgrade path, if it should be fenced: a quote source `app` (its ref the app's name and the
