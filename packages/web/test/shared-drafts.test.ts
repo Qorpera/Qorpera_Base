@@ -668,7 +668,7 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		s.live(draft(userA.id, "Earlier words\n\nGet a quote.", 4));
 		await settle();
 		expect([answered(s), s.composer().value]).toEqual([undefined, "Earlier words\n\nGet a quote."]);
-		// A wall question being answered is this browser's own: the room's text does not take it away.
+		// A line that names no app is this browser's own: the room's text does not take it away.
 		s.company.conversation(session.sessionId).set({ answering: "Who first?" });
 		s.live(draft(userA.id, "Earlier words", 5));
 		await settle();

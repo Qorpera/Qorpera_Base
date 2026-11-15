@@ -10,20 +10,30 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-/** A thread with the window standing in a row of its log, as conversation.ts lays it out. */
-function setup() {
+/** A thread with the window standing in a row of its log, as conversation.ts lays it out; with `pane`, the log stands in
+ * the conversation pane between the thread's header and its foot (the composer and the notices above it). */
+function setup(options: { pane?: boolean } = {}) {
 	const stop = new AbortController();
 	const body = document.createElement("div"),
+		pane = document.createElement("div"),
+		header = document.createElement("header"),
+		foot = document.createElement("div"),
 		log = document.createElement("div"),
 		row = document.createElement("div"),
 		panel = document.createElement("aside"),
 		canvas = document.createElement("canvas");
 	body.className = "thread-body";
+	pane.className = "thread-conversation";
+	header.className = "thread-header";
+	foot.className = "thread-foot";
 	panel.tabIndex = 0;
 	panel.append(canvas);
 	row.append(panel);
 	log.append(row);
-	body.append(log);
+	if (options.pane) {
+		pane.append(header, log, foot);
+		body.append(pane);
+	} else body.append(log);
 	document.body.append(body);
 	// What a fixed box is placed against: the whole window here. The window's place is read from a still probe beside
 	// the panel (fixed, at nothing on every side), never from the panel, which the large view's zoom moves and scales
@@ -60,7 +70,7 @@ function setup() {
 	);
 	const fit = attachComputerPlace(panel, stop.signal);
 	cleanup.push(() => stop.abort());
-	return { body, panel, canvas, stop, observe, disconnect, resized: () => resized(), fit, frame, rects };
+	return { body, header, foot, panel, canvas, stop, observe, disconnect, resized: () => resized(), fit, frame, rects };
 }
 
 function pointer(target: HTMLElement, type: string, options: MouseEventInit & { isPrimary?: boolean } = {}) {
@@ -136,6 +146,30 @@ describe("the computer's window in its thread", () => {
 		f.panel.classList.add("is-entered");
 		f.fit();
 		expect(box(f.panel)).toEqual(["20px", "200px", "0px", "40px"]);
+	});
+
+	it("fills the thread from the top of its own area down to its foot, which stays in sight and follows its size (Jonas, 14 Nov 2026)", () => {
+		const f = setup({ pane: true });
+		// The desktop: the thread's header takes no room; the foot (composer and notices) lies over the thread's bottom.
+		f.rects.set(f.header, DOMRect.fromRect({ x: 300, y: 40, width: 0, height: 0 }));
+		f.rects.set(f.foot, DOMRect.fromRect({ x: 300, y: 640, width: 900, height: 100 }));
+		f.panel.classList.add("is-entered");
+		f.fit();
+		expect(box(f.panel)).toEqual(["40px", "300px", "80px", "160px"]);
+		expect(f.observe).toHaveBeenCalledWith(f.body);
+		expect(f.observe).toHaveBeenCalledWith(f.foot);
+		// A long draft, an attachment or a notice makes the foot taller: the view ends higher.
+		f.rects.set(f.foot, DOMRect.fromRect({ x: 300, y: 560, width: 900, height: 180 }));
+		f.resized();
+		expect(box(f.panel)).toEqual(["40px", "300px", "80px", "240px"]);
+		// A phone: the thread's header shows at its top, and the view starts under it.
+		f.rects.set(f.header, DOMRect.fromRect({ x: 300, y: 40, width: 900, height: 62 }));
+		f.resized();
+		expect(box(f.panel)).toEqual(["102px", "300px", "80px", "240px"]);
+		// Still nothing is read from the panel, wherever its zoom has it.
+		f.rects.set(f.panel, DOMRect.fromRect({ x: 452, y: -9, width: 915, height: 951 }));
+		f.resized();
+		expect(box(f.panel)).toEqual(["102px", "300px", "80px", "240px"]);
 	});
 
 	it("does nothing while the panel stands in no document", () => {

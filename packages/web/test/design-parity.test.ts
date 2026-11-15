@@ -480,7 +480,7 @@ describe("shell presentation lifecycle", () => {
 			const status = link.querySelector(".rail-row-status, .alert-mark");
 			expect(figures.get(agent.id), agent.displayName).toBe(figure);
 			// Agents show no title (Jonas, 10 Nov 2026). An idle one says what holds instead (Jonas, 11 Nov 2026): with
-			// nothing on its wall and no routine, when it was hired; a failed one, that its run did not finish.
+			// no routine, when it was hired; a failed one, that its run did not finish.
 			const idle =
 				shown === "red"
 					? "Didn't finish"
@@ -539,23 +539,41 @@ describe("shell presentation lifecycle", () => {
 		draw();
 		expect(disc()).toBeNull();
 	});
-	it("says under an idle agent's name what its wall and routines say, and gives way to work", () => {
+	it("says under an idle agent's name what its routines say, and gives way to work", () => {
 		stubFigureMotion();
 		const f = companyFixture();
 		const { rail, draw } = mountRail(f);
 		const row = () => rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!;
 		const line = () => row().querySelector("small")?.textContent;
 		expect(line()).toBe(`Hired ${dayLabel(timestamp.slice(0, 10))}`);
-		const today = new Date().toISOString().slice(0, 10);
-		f.company.store.set({ agentNotes: { [staff.id]: { done: { text: "Made the new logo", day: today } } } });
+		// Its next planned run, however far off; nothing of its wall (Jonas, 14 Nov 2026: "rather drop the wall").
+		const next = { title: "Market check", at: new Date(Date.now() + 20 * 86_400_000).toISOString() };
+		f.company.store.set({ agentNotes: { [staff.id]: { next } } });
 		draw();
-		expect(line()).toBe(`Made the new logo · ${dayLabel(today)}`);
-		expect(row().getAttribute("aria-label")).toBe(`${staff.displayName} · Made the new logo · ${dayLabel(today)}`);
+		expect(line()).toMatch(/^Next: Market check · /);
+		expect(row().getAttribute("aria-label")).toBe(`${staff.displayName} · ${line()}`);
+		// A run that waits at its login's usage limit says until when, before the next run.
 		f.company.store.set({
-			agentNotes: { [staff.id]: { waits: "Pick a shop name", done: { text: "Made the new logo", day: today } } },
+			activity: [
+				{
+					runId: id(73),
+					staffAgentId: staff.id,
+					sourceKind: "wake",
+					jobStatus: "queued",
+					activity: "waiting",
+					paused: {
+						until: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+						sponsorBindingId: id(75),
+						paidByChatgptPlan: false,
+						paidWhileAway: true,
+						movable: true,
+					},
+					updatedAt: timestamp,
+				},
+			],
 		});
 		draw();
-		expect(line()).toBe("Waits on you: Pick a shop name");
+		expect(line()).toMatch(/^Resting until /);
 		// Work has its own line, and the selected row keeps its colour.
 		f.company.store.set({
 			activity: [

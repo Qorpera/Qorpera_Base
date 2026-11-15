@@ -1,22 +1,17 @@
-import { parseWall, wallItemText } from "@qorpera/cloud-client/agent-wall";
 import type { CloudRoutine } from "@qorpera/cloud-client/cloud-routines";
 
 /* What the rail says of an agent between runs (Jonas, 11 Nov 2026: the line under an agent's name was empty unless it
- * worked, and its last message is not worth much there). It comes from two things the company already keeps: the
- * agent's wall (QorperaOS/agents/<handle>/wall.md, app/agent-wall.ts), for its Now line (where its work stands), what
- * waits on a member and what the agent last got done, and the company's routines, for its next planned run. Both are read with the member's own access, once
- * when the company opens and again after a change hint of its folder (walls and routines are files of it) or when the
- * window comes back; the routines also when a listed next run has passed, since a run moves it without a file change.
- * app/agent-line.ts picks the one line the rail shows. */
+ * worked, and its last message is not worth much there): its next planned run, from the company's routines. They are
+ * read with the member's own access, once when the company opens and again after a change hint of its folder
+ * (routines are files of it) or when the window comes back, and also when a listed next run has passed, since a run
+ * moves it without a file change. app/agent-line.ts picks the one line the rail shows.
+ *
+ * The agent's wall (QorperaOS/agents/<handle>/wall.md) is no longer read here: its Now line, what waited on a member
+ * and what the agent last got done went with the wall (Jonas, 14 Nov 2026: "rather drop the wall - it's the wrong
+ * medium for activity"; of the Now line: "Let it go too"). */
 
 /** One agent's note. */
 export interface AgentNote {
-	/** Its wall's Now line: where its work stands, written for the line under its name. */
-	readonly now?: string;
-	/** The first thing its wall says waits on a member. */
-	readonly waits?: string;
-	/** Its wall's newest done item, with the day it was done (`YYYY-MM-DD`). */
-	readonly done?: { readonly text: string; readonly day: string };
 	/** Its active routine that runs next. */
 	readonly next?: { readonly title: string; readonly at: string };
 }
@@ -25,19 +20,6 @@ export type AgentNotesState = Readonly<Record<string, AgentNote>>;
 
 type ListedRoutine = Pick<CloudRoutine, "status" | "staffAgentId" | "title" | "nextRunAt"> &
 	Partial<Pick<CloudRoutine, "triggers">>;
-
-/** What a wall says for the rail; nothing for a wall that has neither. */
-export function wallNote(text: string): Pick<AgentNote, "now" | "waits" | "done"> {
-	const { wall } = parseWall(text);
-	const now = wall.now && wallItemText(wall.now);
-	const waits = wall.waiting[0] && wallItemText(wall.waiting[0].text);
-	const done = wall.done[0];
-	return {
-		...(now ? { now } : {}),
-		...(waits ? { waits } : {}),
-		...(done && wallItemText(done.text) ? { done: { text: wallItemText(done.text), day: done.day } } : {}),
-	};
-}
 
 /** Each agent's active routine that runs next, after `now`. */
 export function nextRuns(routines: readonly ListedRoutine[], now: number): Map<string, { title: string; at: string }> {
@@ -68,8 +50,6 @@ export function unsettledRuns(routines: readonly ListedRoutine[], now: number): 
 export interface AgentNotesSource {
 	/** The active agents of the company. */
 	agents(): readonly string[];
-	/** An agent's wall text; null without one. A read that fails throws, and the agent keeps what it had. */
-	readWall(staffAgentId: string, signal: AbortSignal): Promise<string | null>;
 	listRoutines(): Promise<readonly ListedRoutine[]>;
 	readonly signal: AbortSignal;
 }
@@ -89,7 +69,6 @@ const UNSETTLED_MS = 5 * 60 * 1000;
 export class AgentNotes {
 	readonly #source: AgentNotesSource;
 	readonly #publish: (notes: AgentNotesState) => void;
-	readonly #walls = new Map<string, Pick<AgentNote, "now" | "waits" | "done">>();
 	#next = new Map<string, { title: string; at: string }>();
 	#unsettled = false;
 	/** The agents the last read was for: when the roster changes, the new ones are read at once. */
@@ -162,27 +141,14 @@ export class AgentNotes {
 		const { signal } = this.#source;
 		const agents = this.#source.agents();
 		this.#readFor = agents.join("\n");
-		const walls = Promise.all(
-			agents.map(async (id) => {
-				try {
-					const text = await this.#source.readWall(id, signal);
-					if (text === null) this.#walls.delete(id);
-					else this.#walls.set(id, wallNote(text));
-				} catch {
-					// The agent keeps what it showed.
-				}
-			}),
-		);
-		const routines = this.#source.listRoutines().then(
+		await this.#source.listRoutines().then(
 			(listed) => {
 				this.#next = nextRuns(listed, Date.now());
 				this.#unsettled = unsettledRuns(listed, Date.now());
 			},
 			() => {},
 		);
-		await Promise.all([walls, routines]);
 		if (this.#disposed || signal.aborted) return;
-		for (const id of [...this.#walls.keys()]) if (!agents.includes(id)) this.#walls.delete(id);
 		this.#emit(agents);
 		this.#watchNextRun();
 	}
@@ -190,8 +156,8 @@ export class AgentNotes {
 	#emit(agents: readonly string[]): void {
 		const notes: Record<string, AgentNote> = {};
 		for (const id of agents) {
-			const note = { ...this.#walls.get(id), ...(this.#next.has(id) ? { next: this.#next.get(id) } : {}) };
-			if (Object.keys(note).length) notes[id] = note;
+			const next = this.#next.get(id);
+			if (next) notes[id] = { next };
 		}
 		const shown = JSON.stringify(notes);
 		if (shown === this.#shown) return;
