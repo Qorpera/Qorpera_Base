@@ -88,14 +88,11 @@ const REMEMBERED_PICTURES = 4;
 const APP_PICTURE_ROOM_BYTES = 4 * MIB;
 
 /** What make_picture tells the agent (at most 4096 bytes, as every tool's description). */
-export const CLOUD_MAKE_PICTURE_DESCRIPTION =
-	"Make one picture of something that does not exist yet, such as the company's own product idea, a scene, a look or an illustration for an app, and save it as a PNG file at path in the company folder. One picture per call. " +
-	"A real thing is shown by its real picture, never a generated one: for a real product, person or place, or a competitor's product, save a screenshot of the maker's own picture instead. Never pass a generated picture off as a photo of something real: where an app shows one, it says drawn or illustration. " +
-	"Write the prompt as a short description that says the subject, the view, the light and the background; for a thing that will stand on a page, ask for a plain or transparent-looking background. " +
-	"The answer shows you the picture: look at it, and when it is not good enough, call again with a better prompt and a new operationKey, giving the answer's version as expectedVersion to replace it. " +
-	"Pictures for an app go into the app's folder, such as apps/<name>/pictures/, before the save_app that shows them. " +
-	`path ends in .png, and its folder must exist (COMPANY_FILE_PARENT_MISSING otherwise; make it with company_mkdir). Leave expectedVersion out for a new file, or give the version company_read reported to replace one; a changed version is COMPANY_FILE_VERSION_CHANGED and nothing is saved. A picture is at most ${MAX_CLOUD_PICTURE_BYTES / MIB} MiB. ` +
-	"Each picture uses the member's own ChatGPT plan, which limits how many it makes: make the ones the work needs. Keep operationKey for the same call, and use a new one for any other. The result's state is applied only when it was saved.";
+export const CLOUD_MAKE_PICTURE_DESCRIPTION = [
+	"Make one picture of something that does not exist yet (the company's own product idea, a scene, a look, an illustration for an app) and save it as a PNG at path; one picture per call. A real thing is shown by its real picture: for a real product, person or place, or a competitor's product, save a screenshot of the maker's own picture instead. A generated picture is never passed off as a photo of something real: where an app shows one, it says drawn or illustration.",
+	"The answer shows you the picture: look at it, and when it is not good enough, call again with a better prompt and a new operationKey, with the answer's version as expectedVersion to replace it. The result's state is applied only when it was saved.",
+	`path ends in .png, in a folder that exists (COMPANY_FILE_PARENT_MISSING otherwise: make it with company_mkdir); pictures for an app go into its folder, such as apps/<name>/pictures/, before the save_app that shows them. A picture is at most ${MAX_CLOUD_PICTURE_BYTES / MIB} MiB. Each picture uses the member's own ChatGPT plan, which limits how many it makes: make the ones the work needs.`,
+].join("\n");
 
 /** What follows a saved picture's answer. */
 const SAVED_NEXT =
@@ -215,9 +212,15 @@ export function cloudPictureTool(options: {
 					type: "string",
 					minLength: 1,
 					maxLength: MAX_CLOUD_PICTURE_PROMPT_BYTES,
-					description: "What to draw, in words: the subject, the view, the light and the background.",
+					description:
+						"A short description of what to draw: the subject, the view, the light and the background; for a thing that will stand on a page, a plain or transparent-looking background.",
 				},
-				expectedVersion: { type: ["string", "null"], pattern: UUID_PATTERN.source },
+				expectedVersion: {
+					type: ["string", "null"],
+					pattern: UUID_PATTERN.source,
+					description:
+						"Left out for a new file; to replace one, the version company_read or the last answer reported (a changed version is COMPANY_FILE_VERSION_CHANGED, and nothing is saved).",
+				},
 			},
 		},
 		parseArguments(value) {
