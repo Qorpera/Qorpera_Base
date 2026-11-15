@@ -502,9 +502,10 @@ and writes into a row is not followed, as a copy on the machine's disk is not.
 The folder service gains two credentials on the node host, each a systemd credential of its own: the run door's token
 and the CA's pin, as the provider hosts hold them (`qorpera-folder-company-data-token`,
 `qorpera-folder-company-data-ca`; the door's origin is `companyDataUrl` in its configuration:
-`deploy/folder-service/README.md`). It forwards nothing but the four verbs with a JSON body. Whether
-the node host itself reaches the run door's forward (it listens on the node's own `qorpera0` address for the provider
-hosts) is read on a node before this is built; if it does not, the folder service gets a forward of its own.
+`deploy/folder-service/README.md`). It forwards nothing but the four verbs with a JSON body. The node host
+itself reaches the run door's forward, which listens on the node's own `qorpera0` address for the provider hosts
+(read on both nodes on 15 November 2026: a call from the host without a token is answered 401 by the gateway), so the
+folder service calls the provider hosts' origin and needs no forward of its own.
 
 ### The pass
 

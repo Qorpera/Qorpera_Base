@@ -1175,8 +1175,8 @@ export class FolderService {
 	/** Checks a `data` hello (company databases, slice 8a; RUNTIME-COMPANY-DATABASES.md §9a): a company machine's `data`
 	 * command calls the company's databases as the view this service serves that machine. It never opens, holds or
 	 * keeps a view. The hello, and each call after it, is taken only for a test machine's view this service holds open,
-	 * its pass checked by the core, which its machine has joined, from that very machine with the view's pass: anything
-	 * else gets the one refusal a hello has. */
+	 * its pass checked by the core, from the machine the view is served to, with the view's pass: anything else gets
+	 * the one refusal a hello has. A view is held only while a machine it admits holds it, or shortly after. */
 	data(hello: Hello, bridge: BridgeInfo): DataHandle {
 		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
 		const grant = this.#grants.admit(hello, bridge);
@@ -1187,7 +1187,6 @@ export class FolderService {
 				view.closed ||
 				view.moving ||
 				view.movedTo ||
-				!view.admitted ||
 				!view.access?.testMachine ||
 				!view.access.admits(bridge) ||
 				view.environmentId !== grant.environmentId ||
@@ -1311,6 +1310,8 @@ export class FolderService {
 			this.#log(`folder-service: ${view.key}: the data door's answer (${answer.status}) is not JSON`);
 			return unanswered();
 		}
+		// No answer of the gateway's: a status no HTTP answer has.
+		if (!Number.isInteger(answer.status) || answer.status < 200 || answer.status > 599) return unanswered();
 		// The door took neither the node's token nor the pass (a view that ended since, a company stopped since).
 		if (answer.status === 401) {
 			this.#log(`folder-service: ${view.key}: the data door refused the node's token or the pass`);

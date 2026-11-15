@@ -118,9 +118,9 @@ before this role answers the hello `BAD_REQUEST` ("Bad role"), which the helper 
 
 **The `data` role (protocol 5, company databases slice 8a: `RUNTIME-COMPANY-DATABASES.md` §9a).** A company machine's
 `data` command says `role: "data"` in a protocol-5 hello with the boot's view id and pass (no `previous`, no
-`abandon`). The service takes it only for a `test_machine` view it holds open now, whose pass the core has checked
-and which that machine's folder program has joined, from that very machine: anything else is `VIEW_REFUSED`, as for any
-hello. `h` answers `{protocol, viewId}`. The connection then only asks `T` `{verb, body}` (`describe`, `apply`,
+`abandon`). The service takes it only for a `test_machine` view it holds open now (a machine's folder program holds
+it, or did a moment ago), whose pass the core has checked, from the machine the view is served to: anything else is
+`VIEW_REFUSED`, as for any hello. `h` answers `{protocol, viewId}`. The connection then only asks `T` `{verb, body}` (`describe`, `apply`,
 `query` or `change`, and the body the data gateway takes for it, without a pass; a frame of up to 1 MiB) and is
 answered `t` `{status, value}`: the gateway's status and JSON, or the service's own refusal in the same form
 (`value.error` says why). For each call the service asks the core for a data pass as the view
@@ -148,8 +148,7 @@ pages of two versions in one file.
 Memory per connection is bounded in the service: frames from a machine are at most 4 KiB until the hello is accepted
 and 64 KiB after (2 MiB on a writing connection: a chunk part is up to 1 MiB, streamed on to the gateway, never
 gathered; 1 MiB on a `data` connection, at most 4 of whose calls run at once for a machine), one request is handled
-at a time with the socket paused (a `data` call's is read meanwhile, so the command's end ends the call), the next
-waits until the machine has
+at a time with the socket paused, the next waits until the machine has
 read the last answer, and a feed connection whose machine leaves 4 MiB unread is ended (the machine reconnects and
 drops its caches).
 

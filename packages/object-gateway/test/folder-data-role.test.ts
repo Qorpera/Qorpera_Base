@@ -227,12 +227,17 @@ describe("the data role's protocol", () => {
 describe("the data role", () => {
 	it("takes a data hello only for the test machine's view it serves that machine now", async () => {
 		const { core, service, mount } = await company({ mounted: false });
-		// A view no machine has joined is none to act as.
+		const at = (machine: BridgeInfo["machine"], cid: number): BridgeInfo => ({ cid, lookup: "found", machine });
+		const otherMachine = at({ ...TEST_MACHINE, name: `qorpera-machine-${"f".repeat(32)}` }, 97);
+		// A view no machine has joined is none to act as: not one the service does not hold, and not one it listed for
+		// a machine it then refused.
+		expect(() => service.data(HELLO, AT_TEST)).toThrow(/did not match/);
+		await expect(service.open({ ...HELLO, protocol: 4, role: "io" }, otherMachine)).rejects.toMatchObject({
+			code: "VIEW_REFUSED",
+		});
 		expect(() => service.data(HELLO, AT_TEST)).toThrow(/did not match/);
 		const view = await mount();
 		expect(service.data(HELLO, AT_TEST)).toMatchObject({ call: expect.any(Function) });
-		const at = (machine: BridgeInfo["machine"], cid: number): BridgeInfo => ({ cid, lookup: "found", machine });
-		const otherMachine = at({ ...TEST_MACHINE, name: `qorpera-machine-${"f".repeat(32)}` }, 97);
 		for (const bridge of [otherMachine, at(OFFICE, 90), at(CODING, 91), at(EXEC_HOST, 77)])
 			expect(() => service.data(HELLO, bridge)).toThrow(/did not match/);
 		expect(() => service.data({ ...HELLO, pass: OTHER_PASS }, AT_TEST)).toThrow(/did not match/);
@@ -450,6 +455,12 @@ describe("the data role", () => {
 		});
 		// The door took neither the node's token nor the pass: nothing of the gateway's 401 goes to the machine.
 		door.answer = () => json(401, { error: "Not allowed" });
+		expect(await ask(data, "query", { database: "shop", question: "count" })).toEqual({
+			status: 503,
+			value: { error: "The company's databases cannot be reached now: try again" },
+		});
+		// Nor an answer that is none: a status no HTTP answer has, or words that are not JSON.
+		door.answer = () => json(0, { rows: [[1]] });
 		expect(await ask(data, "query", { database: "shop", question: "count" })).toEqual({
 			status: 503,
 			value: { error: "The company's databases cannot be reached now: try again" },

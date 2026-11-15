@@ -54,7 +54,7 @@ const FEED_BACKLOG = 4 * 1024 * 1024;
  *
  * A `data` connection (company databases, slice 8a) holds no view either: after its hello it only makes calls to the
  * company's databases (T), each a frame of up to 1 MiB, answered one at a time; any other frame, or any error, ends
- * it, and its end ends the call it waits for. */
+ * it, and its end ends the call it waits for (a paused socket with nothing unread still hears its peer go). */
 export function createFolderServer(service: FolderService, log: (line: string) => void): Server {
 	return createServer((socket) => serve(service, socket, log));
 }
@@ -153,11 +153,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 		if (data) {
 			if (frame.kind !== Kind.dataCall)
 				throw new ProtocolError(ErrorCode.badRequest, "A data connection only makes data calls", true);
-			const call = parseDataCall(frame.payload);
-			// A call takes up to two minutes: the socket is read meanwhile, so that the command's end is heard and ends
-			// the call. A frame sent meanwhile waits its turn, and the socket is then paused again as for any role.
-			if (queue.length === 0) socket.resume();
-			send(encodeJson(Kind.dataAnswer, await data.call(call, gone.signal)));
+			send(encodeJson(Kind.dataAnswer, await data.call(parseDataCall(frame.payload), gone.signal)));
 			return;
 		}
 		if (!handle) {

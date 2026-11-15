@@ -112,8 +112,8 @@ connection starts it again on the new mount; after the share is mounted again by
 **The machines' `data` command (company databases slice 8a, `deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §9a)** is
 off until all of these, on a node with test machines:
 - `"companyDataUrl": "https://<this node's forward to the data gateway's run door>"` in `config.json`: an exact HTTPS
-  origin, the one the node's provider hosts call (`shared-execution.env` `QORPERA_COMPANY_DATA_URL`) where the node
-  host reaches it, else a forward of the service's own;
+  origin, the one the node's provider hosts call (`shared-execution.env` `QORPERA_COMPANY_DATA_URL`), which the node
+  host reaches too;
 - the run door's token at `/etc/qorpera-folder-service/company-data-token` and the store's own CA at
   `/etc/qorpera-folder-service/company-data-ca.crt` (both 0400), each loaded by a drop-in line of its own:
   `LoadCredential=qorpera-folder-company-data-token:/etc/qorpera-folder-service/company-data-token` and
