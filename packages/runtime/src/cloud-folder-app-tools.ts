@@ -26,6 +26,8 @@
  *   description being read.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
  * (cloud-folder-file-tools.ts, `appManifestCheck`).
+ * An interface a member retired (`apps/retired.md`, cloud-folder-app-retired.ts) is refused by `save_app` and
+ * `post_app`, as by the file tools and `make_picture`, until a member brings it back.
  */
 
 import { createHash } from "node:crypto";
@@ -98,6 +100,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { placeAppInGroup } from "./cloud-folder-app-groups.ts";
+import { refuseRetiredApp } from "./cloud-folder-app-retired.ts";
 import {
 	args,
 	cloudFolderRefusal,
@@ -843,6 +846,9 @@ export function cloudAppTools(options: {
 		// its owner to members. Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as SaveRequest;
+			// A retired interface is the members' alone (cloud-folder-app-retired.ts): neither changed nor made again under
+			// its name, refused before the review.
+			await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
@@ -857,6 +863,9 @@ export function cloudAppTools(options: {
 			});
 			const root = appFolder(request.name) as string;
 			const reads: CloudCompanyFolderEntry[] = [];
+			// Again at the save, since a member may have retired it since the review: the read is released with the answer.
+			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
+			if (retired.entry) reads.push(retired.entry);
 			const at = await read(root, context.signal);
 			if (at !== null && at.kind !== "folder")
 				throw new CloudToolRefusal(
@@ -1234,6 +1243,8 @@ export function cloudAppTools(options: {
 		// version read here, so an app made or changed in between is refused, never posted under the wrong class.
 		async prepare(value, context) {
 			const request = value as unknown as { name: string };
+			// A retired interface is posted or taken away by no agent, refused before the review.
+			await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			// A manifest that cannot be read or does not parse names no owner: it is reviewed as another's.
@@ -1253,6 +1264,7 @@ export function cloudAppTools(options: {
 				checkedVersion?: string | null;
 			};
 			writable();
+			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const path = `${appFolder(request.name)}/${APP_MANIFEST}`;
 			const stored = await manifestText(path, context.signal);
 			// The review judged the manifest read in prepare: one made or changed since is not the one it judged.
@@ -1276,7 +1288,7 @@ export function cloudAppTools(options: {
 						operationKey: request.operationKey,
 						...answer,
 					}),
-					[cloudCompanyFolderRelease(stored.entry)],
+					[stored.entry, ...(retired.entry ? [retired.entry] : [])].map(cloudCompanyFolderRelease),
 				);
 			if (!parsed.ok)
 				return show({
@@ -1328,7 +1340,7 @@ export function cloudAppTools(options: {
 				},
 				context,
 			);
-			return showCommitted(context, answer, [stored.entry]);
+			return showCommitted(context, answer, [stored.entry, ...(retired.entry ? [retired.entry] : [])]);
 		},
 	};
 
