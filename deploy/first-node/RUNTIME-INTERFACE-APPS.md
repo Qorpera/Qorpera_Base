@@ -627,7 +627,9 @@ commit route is open for `apps/`, and the runtime's tools are where an agent is 
   conclude any routine you keep only for it. A member brings it back from their own sidebar; tell whoever asked for
   the change."
 - The file itself is closed to every agent write, edit, new folder, move and deletion, and so is a move of the `apps`
-  folder while the file is in it: `APP_RETIRED_MEMBERS_ONLY: nothing was changed; apps/retired.md lists the interfaces
+  folder while anything stands at its `retired.md`, and a move of a folder holding a `retired.md` onto the `apps`
+  folder's own path (moving the `apps` folder away with no list in it stays allowed; that second rule closes the way
+  back in): `APP_RETIRED_MEMBERS_ONLY: nothing was changed; apps/retired.md lists the interfaces
   members retired, and only a member retires an interface or brings one back, from their own sidebar. Leave the file
   as it is.` (A deletion of `apps` itself is refused already: only an empty folder is deleted.)
 - `organize_apps list` ends a retired app's line with ` (retired by a member)` and counts it in no group's and no loose
