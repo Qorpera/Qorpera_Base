@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { APP_KITS } from "@qorpera/cloud-client/interface-apps";
 import {
 	compileCloudNativeCompanyInstructions,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
+import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { describe, expect, it } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -1819,6 +1821,24 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 
 	// The founder dropped the wall for agents (14 November 2026): no run names it or its tool. The board kit's mode that
 	// lays pictures out as a wall of references is save_app's own word, not the agent's wall.
+	it("names only kits save_app takes", () => {
+		const named = new Set<string>();
+		const NOT_A_KIT = new Set(["a", "the", "no", "each", "one", "any", "its", "that", "this", "another", "which"]);
+		for (const text of [
+			...compiled.values(),
+			cloudRuntimeHireBehavior("cofounder"),
+			cloudRuntimeHireBehavior("employee"),
+		]) {
+			for (const [, kit] of text.matchAll(/\b([a-z]+) kit(?:'s)?\b/g)) if (!NOT_A_KIT.has(kit!)) named.add(kit!);
+			const list = /so use one nearly always: ([^.]+)\./.exec(text)?.[1] ?? "";
+			for (const [, kit] of list.matchAll(/(?:^|, )([a-z]+) \(/g)) named.add(kit!);
+		}
+		expect([...named]).toContain("map");
+		expect([...named]).toContain("board");
+		expect([...named]).toContain("explainer");
+		for (const kit of named) expect(APP_KITS as readonly string[], kit).toContain(kit);
+	});
+
 	it("names no wall and no update_wall in any run", () => {
 		for (const [run, text] of compiled) {
 			expect(text, run).not.toContain("update_wall");

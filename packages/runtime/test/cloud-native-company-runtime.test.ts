@@ -1261,7 +1261,7 @@ it.each([
 				"ask_member",
 				"update_memory",
 				"more_tools",
-				...(agentKind === "cofounder" ? ["hire_agent"] : []),
+				...(agentKind === "cofounder" ? ["hire_agent", "update_reading"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -3566,6 +3566,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"app_guide",
 		"read_context",
 		"send_coworker_message",
+		"update_reading",
 		"update_memory",
 		"recall_memory",
 		"read_skill",
@@ -3596,7 +3597,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"good_will_mark",
 		"crew_and_members",
 		"offer_agents_to_member",
-		"update_reading",
 		"list_hooks",
 		"read_event",
 		"send_mail",
@@ -3612,10 +3612,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"17d09d4f61658a5284fc49bfc542493a6696d1d45df9a0a492eb71fe69c1687c",
+		"577d5cdfb74aa1645283d4035dc36bcf7c1d4ebcf93c5f11d3b0a081f5d0de0c",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"e0bc4b6acb73eb3e1b2407e520873499db20746c7386760d11f871d54e8dde08",
+		"26c6e06a9c021bd66d38f6b7086fc5e7b1d0d0566d1d139a2c82a05ffcf2f9bf",
 	);
 });
 
