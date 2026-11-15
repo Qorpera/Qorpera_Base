@@ -3225,6 +3225,8 @@ export class ComputerPanel {
 		const machine = this.#pick();
 		// What #choose asks of the list it reads, it asks of this one: the machine is the one shown, and the member may
 		// act on it. Else the pick is no choice, as it would not have been one on this list: nothing was sent for it.
+		// (While the choice stands #pick keeps the window on its computer, whatever the fresh list names first: review r7
+		// F1 of #1781. So the machine differs here only when that computer is no longer the agent's with a screen.)
 		if (machine?.machineId !== choice.machineId || this.#listed?.canTakeOver !== true) {
 			this.#endChoice("replaced");
 			return;
