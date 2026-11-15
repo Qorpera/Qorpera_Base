@@ -294,13 +294,14 @@ interface Prepared extends Attached {
 	 * machine's package caches are ready at this turn's mount (own code storage, step 6). */
 	folder?: { uid: number; cwd: string; packageCaches: boolean };
 }
-/** A run of the checks that takes the site its checks left (own code storage, step 4): the recipe, the commit, the run's
- * folder, the environment every command of the run gets, the repository's storage, the host's authority, the run's
- * wall budget, its commands' ids, the collect's place after the checks (the drop's is the next), and its log lines'
- * names. */
+/** A run of the checks that takes the site its checks left (own code storage, step 4): the recipe, the commit, whether
+ * links from `/` are let through (step 5), the run's folder, the environment every command of the run gets, the
+ * repository's storage, the host's authority, the run's wall budget, its commands' ids, the collect's place after the
+ * checks (the drop's is the next), and its log lines' names. */
 interface SiteRun {
 	recipe: CodeSiteRecipe;
 	commit: string;
+	rootLinks: boolean;
 	dir: string;
 	base: Readonly<Record<string, string>>;
 	repository: string;
@@ -1880,7 +1881,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 			// Asked of the executor that holds the turn's lease. An answer lost, or not the switch's, reads as on: the
 			// landing is then checked, never let in unchecked, and its site taken. A kernel from before step 4 says
-			// nothing of the site: on. Only the kernel's refusal ends it.
+			// nothing of the site: on. Only the kernel's refusal ends it. From step 5 (migration 20260930756000) the
+			// answer says `rootLinks` while sites have hosts of their own, and hands over an operator's drill once: each is
+			// read only when said, so a kernel before that, an answer lost or sites' hosts off leave links from / refused
+			// and no drill (a drill in an answer lost is spent: the operator sets it again).
 			checksSwitch: async (checked) => {
 				try {
 					const answer = record(
@@ -1893,10 +1897,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					if (
 						answer.schema !== "qorpera.code-checks-switch/v1" ||
 						typeof answer.enabled !== "boolean" ||
-						!(answer.site === undefined || typeof answer.site === "boolean")
+						!(answer.site === undefined || typeof answer.site === "boolean") ||
+						!(answer.rootLinks === undefined || typeof answer.rootLinks === "boolean") ||
+						!(answer.drill === undefined || answer.drill === "check" || answer.drill === "site")
 					)
 						throw new Error("CODING_HOST_CODE_CHECKS_SWITCH_UNCONFIRMED");
-					return { checks: answer.enabled, site: typeof answer.site === "boolean" ? answer.site : true };
+					return {
+						checks: answer.enabled,
+						site: typeof answer.site === "boolean" ? answer.site : true,
+						...(answer.rootLinks === true ? { rootLinks: true as const } : {}),
+						...(answer.drill === "check" || answer.drill === "site" ? { drill: answer.drill } : {}),
+					};
 				} catch (error) {
 					if (checked.aborted || error instanceof CodingControlRefused) throw error;
 					this.#checksReport({
@@ -1945,10 +1956,18 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * When `site` is a recipe and every check passed, the run takes the site the checks left (own code storage, step 4;
 	 * #takeSite): its collect and, when needed, its drop are two more commands of the run, under every rule above, and
 	 * the run's wall budget gains 240 s for them. A site the code made wrong is `site_refused`; a run that passed says
-	 * what became of its site (null without a recipe). Its `ms` is the checks' own, the site's time aside. */
+	 * what became of its site (null without a recipe). Its `ms` is the checks' own, the site's time aside. `rootLinks`
+	 * true lets the site's links from `/` through (step 5: the collect's QORPERA_SITE_ROOT_LINKS is `allowed`); else they
+	 * are refused as before (`refused`, always set, so no value of the session's of that name reaches the collect). */
 	async #runChecks(
 		claim: CodingSessionClaim,
-		input: { commit: string; checks: readonly CodeCheck[]; attempt: number; site: CodeSiteRecipe | null },
+		input: {
+			commit: string;
+			checks: readonly CodeCheck[];
+			attempt: number;
+			site: CodeSiteRecipe | null;
+			rootLinks?: boolean;
+		},
 		signal: AbortSignal,
 	): Promise<CodeChecksRun> {
 		signal.throwIfAborted();
@@ -2172,6 +2191,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			{
 				recipe,
 				commit: input.commit,
+				rootLinks: input.rootLinks === true,
 				dir,
 				base,
 				repository,
@@ -2226,10 +2246,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<CodeSiteCollected | { problem: CodeSiteProblem }> {
 		const { recipe, budget } = run;
 		const missed = (code: string): CodeSiteCollected => ({ state: "missed", code });
+		// Links from the root (step 5): always one of the two values, so a secret of the session's of that name never
+		// decides it (the command's own environment wins over the secrets, coding-folder-command-transport.ts).
 		const own: Record<string, string> = {
 			...run.base,
 			QORPERA_CHECKS_REPOSITORY: run.repository,
 			QORPERA_SITE_FOLDER: recipe.folder,
+			QORPERA_SITE_ROOT_LINKS: run.rootLinks ? "allowed" : "refused",
 		};
 		let names: string[];
 		try {
@@ -2395,6 +2418,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 								schema: "qorpera.code-site-command/v1",
 								commit: run.commit,
 								folder: run.recipe.folder,
+								// Step 5: said only when links from / are let through, so the input is as before otherwise.
+								...(run.rootLinks ? { rootLinks: true } : {}),
 							}),
 						),
 						command: CODE_SITE_COLLECT,

@@ -15,8 +15,12 @@ IDLE=${QORPERA_DESKTOP_IDLE_SECONDS:-3600}
 # qorpera-machine-desktop.service): every desktop command of root touches it, and this account only reads when.
 LAST=/run/qorpera-desktop/last-use
 STARTED=$(date +%s)
+# No pointer is drawn on the screen (-nocursor; Jonas, 14 Nov 2026: "let's actually hide the agent cursor when inside of
+# the agents computer"). The member's live picture never moves the pointer itself, so TigerVNC drew the agent's arrow
+# into its pixels wherever the agent or another viewer left it; with no pointer it draws nothing and sends an empty
+# shape. Clicks, moves and screenshots work as before (a screenshot never showed the pointer).
 Xvnc :1 -geometry "$SIZE" -depth 24 -SecurityTypes None -localhost yes -rfbport 5901 -nolisten tcp -AlwaysShared \
-	-desktop "Qorpera machine" &
+	-nocursor -desktop "Qorpera machine" &
 export DISPLAY=:1
 # The display answers: the socket alone may be one a killed display left.
 for _ in $(seq 1 100); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
@@ -28,7 +32,7 @@ xset s off -dpms s noblank
 # image, and nothing that was changed or removed in the account can leave it bare. It is only a look: XFCE starts
 # whatever came of it.
 /opt/qorpera-machine/desktop-look write || echo "the desktop starts without its whole look" >&2
-# One still pointer of the image's icon set, where the image has it.
+# One pointer set for the programs, where the image has it (none is drawn: -nocursor above).
 if [[ -d /usr/share/icons/Adwaita/cursors ]]; then export XCURSOR_THEME=Adwaita XCURSOR_SIZE=24; fi
 # One session bus at a known address, so a program started later (desktop run, desktop open) joins it.
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
