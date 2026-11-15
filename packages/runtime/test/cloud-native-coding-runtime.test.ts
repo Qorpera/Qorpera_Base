@@ -26,6 +26,7 @@ import {
 	CloudRuntimeObservability,
 	type CloudRuntimeObservation,
 } from "../src/cloud-runtime-observability.ts";
+import { SITE_NAME_RULE } from "../src/cloud-site-tools.ts";
 import type { CloudWakeEnvelope } from "../src/cloud-wake-bus.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -286,11 +287,13 @@ describe("the coding composition of a native turn", () => {
 					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
 					"once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session's secret values.",
 					// Step 4's live proof (11 November 2026): What's new showed the site's address; a site's title is its name there.
-					'It may also give "name", the site\'s address (3 to 48 lower-case letters, digits and hyphens), used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
-					// The first live site (Wristband, 11 November 2026) loaded /src/style.css from the top of the sites' domain: a site
-					// links its files relatively, and the collect refuses pages and styles that link from the top.
-					'The site is served under an address of its own, never at the top of a domain: its pages, styles and scripts link its files with relative links (src/app.js, ../img/logo.png), never with links that start with /; a bundler needs its base path set, such as Vite\'s base: "./".',
-					"Qorpera refuses a site whose pages or styles link from the top.",
+					// Step 5.1 (v247): the name makes the site's own host, and follows the kernel's name rule in its own words.
+					'It may also give "name", the name in the site\'s address https://<name>.qorpera.com/, used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
+					`no space at either end). ${SITE_NAME_RULE} The site is served`,
+					// The first live site (Wristband, 11 November 2026) loaded /src/style.css from the top of the sites' domain,
+					// which the old host never served. Since site hosts (v247) a site is served at the top of its own address,
+					// so links from / work, and the collect lets them through while hosts are on.
+					"The site is served at the top of an address of its own, so its pages, styles and scripts may link its files from / (/src/app.js) or relatively (src/app.js): both work.",
 					"Never build a key into the site.",
 					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
 					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
@@ -314,8 +317,16 @@ describe("the coding composition of a native turn", () => {
 					"Neither is required: never hold work back for them.",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
-				// Step 1's words said nothing checks a landing.
-				for (const gone of ["nothing stands between your finish", "since it would land", "the landing is at once"])
+				// Step 1's words said nothing checks a landing; step 4's that a site links only relatively.
+				for (const gone of [
+					"nothing stands between your finish",
+					"since it would land",
+					"the landing is at once",
+					"never at the top of a domain",
+					"never with links that start with /",
+					"link from the top",
+					'base: "./"',
+				])
 					expect(options.runtimeInstructions).not.toContain(gone);
 				await options.beginExecution(
 					{
