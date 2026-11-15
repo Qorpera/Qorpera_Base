@@ -82,6 +82,7 @@ async function bundle(scratch) {
 				`export {cloudReviewRuleTools} from "${src("cloud-review-rule-tools")}";`,
 				`export {cloudGoodWillTools} from "${src("cloud-good-will-tools")}";`,
 				`export {cloudMemberOfferTools} from "${src("cloud-member-offer-tools")}";`,
+				`export {cloudRecordReflectionTool, cloudPlatformUpdatesContext, PLATFORM_UPDATES} from "${src("cloud-platform-updates")}";`,
 				`export {cloudEventTools} from "${src("cloud-event-tools")}";`,
 				`export {cloudSiteTools} from "${src("cloud-site-tools")}";`,
 				`export {cloudMachineTools} from "${src("cloud-machine-tools")}";`,
@@ -328,6 +329,7 @@ function toolsOf(mine, kind, context, wake, { binding, folder, operations, ident
 					...mine.cloudReviewRuleTools(binding, identity, standIn()),
 					...mine.cloudGoodWillTools(binding, identity, standIn()),
 					...(context.agentKind === "cofounder" ? mine.cloudMemberOfferTools(binding, identity, standIn()) : []),
+					...(context.agentKind === "cofounder" ? [mine.cloudRecordReflectionTool({ folder, operations, identity })] : []),
 					...mine.cloudEventTools(binding, identity, standIn(), folder),
 					...mine.cloudSiteTools({ binding, identity, control: standIn(), folder, machines }),
 				]),
@@ -457,7 +459,19 @@ async function main() {
 				tools: names,
 				visionAgreed: agreed,
 			});
-			const prompt = mine.composeCloudNativeCompanyPrompt(shown, shownWake);
+			const prompt = mine.composeCloudNativeCompanyPrompt(
+				shown,
+				shownWake,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				[],
+				kind === "cofounder-routine" ? mine.cloudPlatformUpdatesContext(mine.PLATFORM_UPDATES) : undefined,
+			);
 			// A company run's instructions carry the tool-result rules after its purpose and files (track 3, T3-3).
 			const developer = mine.redactCloudWebhookSecrets(instructions);
 			let tools;
