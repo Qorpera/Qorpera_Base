@@ -8,8 +8,8 @@
 -- kroner rounded to øre; the etag (the same for the same answer, a member's and a run's alike, and new when the summary
 -- changes); privacy (no name, transfer text, account number or item of the summary in any answer); rights (an
 -- outsider, a member of another company, a member and a run that may not read bank/summary.json, a run asking another
--- company); the site questions' "not counted yet"; unknown questions and bad parameters; "today" in the company's own
--- time zone, Copenhagen's while it has none or one the database does not know.
+-- company); the site questions answer since 20260930768000 (1266 checks them); unknown questions and bad parameters;
+-- "today" in the company's own time zone, Copenhagen's while it has none or one the database does not know.
 
 create function pg_temp.n_same(p_got text, p_want text, p_what text) returns void language plpgsql as $$
 begin
@@ -431,18 +431,16 @@ begin
 	perform pg_temp.base_claims('service_role');
 end $$;
 
--- 13. The site questions are not counted yet; any other question is not there, in the same words as one the caller may
---     not read; a name of another shape is refused.
+-- 13. The site questions answer (20260930768000, test 1266) any member or run; any other question is not there,
+--     in the same words as one the caller may not read; a name of another shape is refused.
 do $$
 declare v_question text; o constant uuid := '92400000-0000-4000-8000-000000000001';
 begin
 	foreach v_question in array array['sites', 'site-now', 'site-hours', 'site-days', 'site-pages'] loop
-		perform pg_temp.n_same(pg_temp.n_refused(o, v_question),
-			format('0A000 qorpera/%s is not counted yet: the sites'' numbers come later', v_question), v_question);
+		perform pg_temp.n_same(pg_temp.n_refused(o, v_question), 'ok', v_question);
 	end loop;
-	perform pg_temp.n_same(pg_temp.n_state($s$select pg_temp.n_run('site-now')$s$),
-		'0A000 qorpera/site-now is not counted yet: the sites'' numbers come later', 'a run''s site-now');
-	foreach v_question in array array['money-days', 'money', 'orders-now', 'balance'] loop
+	perform pg_temp.n_same(pg_temp.n_state($s$select pg_temp.n_run('site-now')$s$), 'ok', 'a run''s site-now');
+	foreach v_question in array array['money-days', 'money', 'stock-now', 'balance'] loop
 		perform pg_temp.n_same(pg_temp.n_refused(o, v_question),
 			format('P0002 No question qorpera/%s that you may read', v_question), v_question);
 	end loop;

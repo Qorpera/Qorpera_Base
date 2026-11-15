@@ -57,6 +57,12 @@ const companyCalls = mode === "company-office"
 			{ tool: "decide_routine", arguments: { action: "next", operationKey: "next-1", at: "2026-09-02T12:00:00+02:00", intent: "Invoice 42 was still open at 10:00. Look again at noon." } },
 			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "Invoice 42 is still open; I will look again at noon.", phase: "final" } },
 		]
+	: mode === "company-describe"
+	? [
+			// Tools on demand (T3-6): four tools' descriptions and forms through more_tools, then the answer.
+			{ tool: "more_tools", arguments: { action: "describe", names: ["organize_sidebar", "hire_agent", "create_group_chat", "manage_routine"] } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } },
+		]
 	: mode === "company-limit-after-answer"
 	? [{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } }]
 	: mode === "company-cards-unavailable"
@@ -789,7 +795,7 @@ async function handle(message) {
 	} else if (message.id === "first_1") {
 		outputOf(message);
 		// After the answer: bookkeeping, the answer again exactly, or anything else.
-		if (mode === "final-send-then-tail") write(call("tail_1", "update_wall", {}));
+		if (mode === "final-send-then-tail") write(call("tail_1", "manage_todo", {}));
 		else if (mode === "final-send-replay") write(call("first_2", "send_message", { idempotencyKey: "k1", text: "Done.", phase: "final" }));
 		else write(call("note_1", "read_note", {}));
 	} else if (message.id === "tail_1" || message.id === "first_2") {

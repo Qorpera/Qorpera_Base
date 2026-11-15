@@ -2,7 +2,7 @@
 # Build the reviewed company machine image on an LXD node (run as root).
 #
 #   build-machine-image.sh <guest-package-dir> <node-version> <node-linux-x64-tar.xz-sha256> \
-#     <build-project> <build-network> <storage-pool> [machines-project]
+#     <build-project> <build-network> <storage-pool> <machines-project> <pinned-codex>
 #
 # One image for every machine: Ubuntu 26.04 with rootful Docker Engine and
 # Compose, Node, Python 3, Git and build tools, the toolbox every Qorpera
@@ -58,6 +58,11 @@ PROJECT=${4:?the build space project, for example qorpera-build}
 NETWORK=${5:?the build space network, for example qorpera0}
 POOL=${6:?the storage pool for the builder root, for example qorpera-vm}
 MACHINES=${7:-machines}
+# The pinned Codex for the agent's home (lanes/agent-box-20261113, slice 1): the same artifact the execution host
+# runs, so the model's own tools on a machine are the build its slot was proven with. REQUIRED: an image without it
+# would look like any other (the same bootstrap digest) while every home on it is refused HOME_CODEX_NOT_PINNED, so no
+# image is built without it. Its sha-256 and size must be the pin's (deploy/first-node/native-codex/linux-x64-artifact.json).
+CODEX=${8:?argument 8: the pinned Codex, the build deploy/first-node/native-codex/linux-x64-artifact.json records (node 2 keeps it at /home/company41-admin/cut-v55-a1/native-company-fence-t2a/codex, deploy/test-machine/README.md); every machine image carries it at /opt/qorpera-machine/codex}
 # The toolbox's own pins beside apt's: uv and mise from their release pages, tsc and tsx from npm.
 UV_VERSION=0.13.1
 UV_SHA256=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220
@@ -80,6 +85,15 @@ BLENDER_SHA256=4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
 EXPECTED_FOLDER_PROGRAM_SHA256="43cdaff6367d5dd8edc65eaed4607faf9889478e248102ccbe3cc637c0b82fdd"
+# The pin: the record's artifact, its sha-256 and its size (both under "artifact").
+EXPECTED_CODEX_SHA256= EXPECTED_CODEX_BYTES=
+read -r EXPECTED_CODEX_SHA256 EXPECTED_CODEX_BYTES < <(python3 -c 'import json,sys;a=json.load(open(sys.argv[1]))["artifact"];print(a["sha256"],a["bytes"])' \
+	"$(dirname "$0")/../first-node/native-codex/linux-x64-artifact.json") || true
+[[ $EXPECTED_CODEX_SHA256 =~ ^[0-9a-f]{64}$ && $EXPECTED_CODEX_BYTES =~ ^[1-9][0-9]*$ ]] ||
+	{ echo "no pinned Codex in deploy/first-node/native-codex/linux-x64-artifact.json" >&2; exit 1; }
+[[ -f $CODEX ]] || { echo "argument 8 is not a file: $CODEX" >&2; exit 1; }
+[[ $(stat -Lc %s "$CODEX") == "$EXPECTED_CODEX_BYTES" && $(sha256sum <"$CODEX" | cut -d' ' -f1) == "$EXPECTED_CODEX_SHA256" ]] ||
+	{ echo "the Codex given is not the pinned build ($EXPECTED_CODEX_SHA256, $EXPECTED_CODEX_BYTES bytes)" >&2; exit 1; }
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 # Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
 exec 3>&1 1>&2
@@ -91,7 +105,7 @@ for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
 	machine-memory lxd-agent-memory.conf qorpera-machine-desktop-dock.path qorpera-machine-desktop-dock.service \
 	desktop-look desktop-dock-open desktop-files qorpera-machine-desktop.tmpfiles render-check.py render-assets.tsv \
-	render-assets.md render-assets-preview.jpg desktop-art.tar qorpera-folder manifest.json; do
+	render-assets.md render-assets-preview.jpg desktop-art.tar qorpera-folder qorpera-agent.sudoers manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
 [[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
@@ -139,7 +153,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
-	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
+	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config sudo \
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
 		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
 		imagemagick webp python3-pil python3-numpy libxrender1 libxxf86vm1 libxi6 libsm6 libice6 libgl1 \
@@ -192,6 +206,54 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	echo "${BLENDER_SHA256}  /tmp/blender.tar.xz" | sha256sum -c -
 	tar -xJf /tmp/blender.tar.xz -C /opt --no-same-owner
 	rm -f /tmp/blender.tar.xz
+	# WHY: no machine has a graphics card, and these load only for one (the blender program links to none of them).
+	removed=0
+	for part in \
+		4.3/scripts/addons_core/cycles/lib/kernel_compute_75.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1010.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1011.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1012.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1030.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1031.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1032.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1034.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1035.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1036.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1100.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1101.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1102.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1103.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1150.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1151.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_osl.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_osl_services.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_shader_raytrace.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_rt_gfx.hipfb.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_30.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_35.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_37.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_50.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_52.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_60.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_61.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_70.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_75.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_86.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_89.cubin.zst \
+		lib/hiprt02003_6.1_amd.hipfb \
+		lib/oro_compiled_kernels.hipfb \
+		lib/libhiprt64.so \
+		lib/libpi_level_zero.so \
+		lib/libOpenImageDenoise_device_cuda.so.2.3.0 \
+		lib/libOpenImageDenoise_device_hip.so.2.3.0 \
+		lib/libOpenImageDenoise_device_sycl.so.2.3.0; do
+		path="/opt/blender-${BLENDER_VERSION}-linux-x64/$part"
+		[[ -f $path && ! -L $path ]] || { echo "Blender ${BLENDER_VERSION} has no $part: the graphics card parts to remove are listed for another version" >&2; exit 1; }
+		removed=$((removed + $(stat -c %s "$path")))
+		rm -f -- "$path"
+	done
+	echo "removed $((removed / 1048576)) MiB of graphics card parts from Blender" >&2
 	chmod -R u=rwX,go=rX "/opt/blender-${BLENDER_VERSION}-linux-x64"
 	ln -sfn "/opt/blender-${BLENDER_VERSION}-linux-x64" /opt/blender
 	ln -sf /opt/blender/blender /usr/local/bin/blender
@@ -200,6 +262,19 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	install -d -o root -g root -m 0755 /opt/qorpera-assets
 	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
 	useradd --create-home --shell /bin/bash --user-group desktop
+	# The home of an agent (slice 1) runs the exec-server of Codex as this account: the shell and file tools of the
+	# model go through it. A non-root default, so what it writes is owned by the agent and tools that refuse root work;
+	# with a way to root of its own (qorpera-agent.sudoers, pushed below), because that shell must be able to do on the
+	# machine everything `machine_run` does there as root. The uid and gid are fixed (CLOUD_MACHINE_HOME), so the
+	# executor names them to LXD without reading anything of the guest. Made AFTER the desktop account: useradd gives the
+	# next id above the highest one in use, so made first it would move the desktop account from the id it has on every
+	# earlier image to 2001.
+	groupadd --gid 2000 qorpera-agent
+	useradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent --create-home --shell /bin/bash qorpera-agent
+	# The home of Codex in that account (CODEX_HOME, which the executor names): the exec-server makes its PATH aliases
+	# there at every start. Without the folder it only warns and goes on, and `apply_patch` typed in the shell, as models
+	# often do, is "command not found" (proven on a real machine of the live image, 14 Nov 2026).
+	install -d -o qorpera-agent -g qorpera-agent -m 0700 /var/lib/qorpera-agent/.codex
 	# Its look (the dock, the backdrop, the windows) is written into the account by its session at every start
 	# (desktop-look, which the package brings), from the pictures unpacked here; nothing of it is kept in the account.
 	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder /usr/share/qorpera-desktop
@@ -230,6 +305,8 @@ lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cl
 lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/cloud-machine-screen.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-screen.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
+# The agent's home (slice 1): the pinned Codex, readable and runnable by everything on the machine, writable by none.
+lx file push "$CODEX" "$BUILDER/opt/qorpera-machine/codex" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-session" "$BUILDER/opt/qorpera-machine/desktop-session" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop" "$BUILDER/usr/local/bin/desktop" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-chromium.apparmor" "$BUILDER/etc/apparmor.d/qorpera-chromium" --uid 0 --gid 0 --mode 0644
@@ -244,6 +321,9 @@ lx file push "$PACKAGE/desktop-look" "$BUILDER/opt/qorpera-machine/desktop-look"
 lx file push "$PACKAGE/desktop-dock-open" "$BUILDER/opt/qorpera-machine/desktop-dock-open" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-files" "$BUILDER/opt/qorpera-machine/desktop-files" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-machine-desktop.tmpfiles" "$BUILDER/etc/tmpfiles.d/qorpera-machine-desktop.conf" --uid 0 --gid 0 --mode 0644
+# The agent's home (slice 1): the account Codex's own shell runs as reaches root without a password, so that shell can
+# do on the machine everything `machine_run` does there as root. The desktop's account gets none of it.
+lx file push "$PACKAGE/qorpera-agent.sudoers" "$BUILDER/etc/sudoers.d/qorpera-agent" --uid 0 --gid 0 --mode 0440
 lx file push "$PACKAGE/render-check.py" "$BUILDER/opt/qorpera-machine/render-check.py" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/render-assets.tsv" "$BUILDER/opt/qorpera-assets/SOURCES.tsv" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/render-assets.md" "$BUILDER/opt/qorpera-assets/README.md" --uid 0 --gid 0 --mode 0444
@@ -255,7 +335,7 @@ for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machi
 	qorpera-machine-desktop-dock.path qorpera-machine-desktop-dock.service; do
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
-lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" \
+lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" EXPECTED_CODEX_SHA256="$EXPECTED_CODEX_SHA256" \
 	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" BLENDER_VERSION="$BLENDER_VERSION" bash -euo pipefail -c '
 	systemctl daemon-reload
 	systemctl enable qorpera-machine-watchdog.timer qorpera-machine-memory.service qorpera-machine-memory-guard.service
@@ -305,6 +385,39 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		{ echo "the unit that hears a press on the dock is not enabled, or its service starts by itself" >&2; exit 1; }
 	[[ -d /etc/qorpera-machine && -z $(ls -A /etc/qorpera-machine) ]] ||
 		{ echo "the image names a figure of its own" >&2; exit 1; }
+	# The home of an agent (13 Nov 2026): Codex runs its own shell as qorpera-agent, which must be able to do all that
+	# machine_run does on this machine as root, so the account reaches root without a password, as the user of a coding
+	# session does. The desktop account must not: Chromium keeps its sandbox there, and the root helpers are hardened
+	# against it. (No apostrophe in this block: it is one single-quoted script.)
+	visudo -cf /etc/sudoers.d/qorpera-agent
+	[[ $(stat -c "%U:%G %a" /etc/sudoers.d/qorpera-agent) == "root:root 440" ]] ||
+		{ echo "the sudo rule of the agent account is not a root file of mode 0440" >&2; exit 1; }
+	[[ $(stat -c "%U:%G %a" /var/lib/qorpera-agent/.codex) == "qorpera-agent:qorpera-agent 700" ]] ||
+		{ echo "the home of Codex in the agent account is not its own: Codex makes no PATH aliases, apply_patch in its shell fails" >&2; exit 1; }
+	[[ $(runuser -u qorpera-agent -- sudo -n id -u) == 0 ]] ||
+		{ echo "the agent account cannot reach root: the shell of Codex would be weaker than machine_run" >&2; exit 1; }
+	runuser -u qorpera-agent -- sudo -n install -o root -g root -m 0644 /dev/null /etc/qorpera-agent-root-check ||
+		{ echo "the agent account cannot write under /etc" >&2; exit 1; }
+	rm -f /etc/qorpera-agent-root-check
+	# A file root wrote (as a machine_run command does) refuses a plain write from that shell and takes it through sudo.
+	install -o root -g root -m 0644 /dev/null /company/root-owned-check
+	! runuser -u qorpera-agent -- sh -c "echo plain >>/company/root-owned-check" 2>/dev/null ||
+		{ echo "the agent account wrote a root file without sudo" >&2; exit 1; }
+	runuser -u qorpera-agent -- sh -c "echo changed | sudo -n tee -a /company/root-owned-check >/dev/null" ||
+		{ echo "the agent account cannot change a root file through sudo" >&2; exit 1; }
+	rm -f /company/root-owned-check
+	! runuser -u desktop -- sudo -n true 2>/dev/null ||
+		{ echo "the desktop account can reach root" >&2; exit 1; }
+	# The pinned Codex is in every image (argument 8 is required): root, 0555, the pin of linux-x64-artifact.json. The
+	# executor hashes it before the first home of a boot and opens none on another build.
+	[[ $(stat -c "%U:%G %a" /opt/qorpera-machine/codex) == "root:root 555" &&
+		$(sha256sum </opt/qorpera-machine/codex | cut -d" " -f1) == "$EXPECTED_CODEX_SHA256" ]] ||
+		{ echo "the image holds no pinned Codex at /opt/qorpera-machine/codex (root, 0555, $EXPECTED_CODEX_SHA256)" >&2; exit 1; }
+	# The two accounts: the agent has its fixed ids, and the desktop keeps the id every earlier image gave it (made
+	# before the agent account, so below 2000).
+	echo "accounts: desktop $(id -u desktop):$(id -g desktop), qorpera-agent $(id -u qorpera-agent):$(id -g qorpera-agent)" >&2
+	[[ $(id -u qorpera-agent):$(id -g qorpera-agent) == 2000:2000 && $(id -u desktop) -lt 2000 ]] ||
+		{ echo "the agent account is not 2000:2000, or the desktop account moved to $(id -u desktop)" >&2; exit 1; }
 	# Memory (12 Nov 2026). Every kernel this image holds has the zram module: a later kernel without it would leave
 	# every machine without compressed memory, with only a line in each journal to say so.
 	[[ -n $(ls /lib/modules) ]] || { echo "the image holds no kernel modules" >&2; exit 1; }
@@ -1218,5 +1331,6 @@ fi
 BOOTSTRAP=$(cat "$0" "$PACKAGE/manifest.json" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \
 	--arg helperSha256 "$(jq -r '.artifacts[0].sha256' "$PACKAGE/manifest.json")" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" --arg playwright "$PLAYWRIGHT_VERSION" \
+	--arg codexSha256 "$EXPECTED_CODEX_SHA256" \
 	'{schema: "qorpera.machine-image-build/v1", alias: $alias, imageFingerprint: $imageFingerprint,
-	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, node: $node, chromium: $chromium, playwright: $playwright}' >&3
+	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, codexSha256: $codexSha256, node: $node, chromium: $chromium, playwright: $playwright}' >&3

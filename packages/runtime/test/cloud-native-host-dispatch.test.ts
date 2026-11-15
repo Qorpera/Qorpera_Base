@@ -113,6 +113,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			// carries a member's yes to a step that destroys data (slice 7, 20260930764000).
 			"_company_data_pass.sql",
 			"_data_step_approval.sql",
+			// The agent's home: the run's offer and its session's close (agent-box slice 1, 20260930752000).
+			"_home_exec_sessions.sql",
 			// A light ask's run stores its answer (light asks, 20260930761000).
 			"_light_asks.sql",
 		].flatMap((suffix) =>
@@ -147,7 +149,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(135);
+	expect(rows).toHaveLength(137);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

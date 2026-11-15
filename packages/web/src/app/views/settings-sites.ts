@@ -127,7 +127,7 @@ export function siteEmblem(): SVGSVGElement {
 }
 
 /** Why a change was refused, in the interface language. */
-function changeError(error: unknown, fallback: string): string {
+export function changeError(error: unknown, fallback: string): string {
 	const code = error instanceof CloudRpcError ? error.code : undefined;
 	if (code === "42501") return t(MANAGERS_ONLY);
 	if (code === "22023") return t("A site password is 10 to 128 characters.");
@@ -150,7 +150,7 @@ function pressToCopy(): string {
 /** Puts a text on the clipboard; false when the browser refuses. A text still being read is handed over as it is read,
  * where the browser takes that (a ClipboardItem of a promise), so the copy keeps the press it came from: Safari copies
  * only within the press. */
-async function toClipboard(text: string | Promise<string>): Promise<boolean> {
+export async function toClipboard(text: string | Promise<string>): Promise<boolean> {
 	const clipboard = navigator.clipboard as Clipboard | undefined;
 	if (typeof text !== "string" && typeof ClipboardItem === "function" && typeof clipboard?.write === "function") {
 		try {
@@ -185,7 +185,7 @@ interface Moment {
 
 /** The site's state as a dot and a word; when and by whom it was published as its tip. A site Qorpera took down is that,
  * whatever the list says of it. */
-function stateOf(site: CompanySite, down: boolean): HTMLElement {
+export function stateOf(site: CompanySite, down: boolean): HTMLElement {
 	const published = site.publishedAt
 		? site.publishedBy
 			? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
