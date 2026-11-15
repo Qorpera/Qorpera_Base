@@ -34,9 +34,13 @@ const POINTER_TIMEOUT_MS = 5_000;
 /** How long a browser keeps a preflight of the pointer route (seconds). On production the API gateway in front of the
  * functions answers every preflight itself, so this is for a bridge without one; nothing depends on a preflight. */
 const POINTER_PREFLIGHT_SECONDS = 600;
-/** A member's call to the company's databases, for one environment (RUNTIME-COMPANY-DATABASES.md section 3): a
- * question, a held watch, steps to apply, or what a database holds. The node's mux sends it to the data gateway. */
-const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe)$`);
+const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe|rows|edit|change)$`);
+const LARGE_DATA_CALLS: ReadonlySet<string> = new Set(["apply", "rows", "edit"]);
+const DATA_WRITES: Record<string, string> = {
+	apply: "Company data is unavailable just now. Steps sent may still apply.",
+	edit: "Company data is unavailable just now. A change sent may still apply.",
+	change: "Company data is unavailable just now. A change sent may still apply.",
+};
 /** A question or a look at a database: names, parameters, and a question's text when asked for. */
 const MAX_DATA_BYTES = 64 * 1024;
 /** A watch: up to 24 questions with their etags, and their texts of up to 16 KiB each when asked for. */
@@ -214,18 +218,14 @@ function route(path: string): RoutePolicy | undefined {
 			maxBody: MAX_START_BYTES,
 			unavailable: "The computer is unavailable just now.",
 		};
-	// Steps to apply may carry their texts, at most 1 MiB. A held watch gets 30 s, the others the default.
-	const data = COMPANY_DATA.exec(path);
-	if (data)
+	const verb = COMPANY_DATA.exec(path)?.[1];
+	if (verb)
 		return {
 			method: "POST",
 			headers: ["authorization", "content-type"],
-			maxBody: data[1] === "apply" ? MAX_WRITE_BYTES : data[1] === "watch" ? MAX_WATCH_BYTES : MAX_DATA_BYTES,
-			...(data[1] === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
-			unavailable:
-				data[1] === "apply"
-					? "Company data is unavailable just now. Steps sent may still apply."
-					: "Company data is unavailable just now.",
+			maxBody: LARGE_DATA_CALLS.has(verb) ? MAX_WRITE_BYTES : verb === "watch" ? MAX_WATCH_BYTES : MAX_DATA_BYTES,
+			...(verb === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
+			unavailable: DATA_WRITES[verb] ?? "Company data is unavailable just now.",
 		};
 	const erase = ERASE.exec(path);
 	if (erase)

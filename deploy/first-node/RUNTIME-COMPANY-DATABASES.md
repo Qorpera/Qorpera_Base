@@ -495,6 +495,31 @@ member or the agent from the lists it already holds.
 - **Granted now for parts c and f:** the keeper reads `row_changes` and reads, adds and removes `change_log` lines, so
   the store is updated once. Keeping lines 30 days is not built.
 
+**Part c as built** (`deploy/company-data/`, `supabase/functions/member-company-gateway/`). Where it differs from the
+text above:
+
+- **The edge function** lets `rows`, `edit` and `change` through, with 1 MiB for `rows` and `edit` (they may carry the
+  question texts the list's rule reads) and 64 KiB for `change`. `changes` stays refused until part f builds it.
+- **What cannot be changed** answers 400: a view (also for an add: an updatable view would take one), and a change or
+  a removal in a table without a primary key, whose rows can still be added. A trigger of the company's that keeps a
+  changed row as it was answers 409 in its own words; one that keeps an added row out, 400.
+- **A value is cast to its column's type without its length or precision** (`varchar`, not `varchar(4)`): an explicit
+  cast cuts a value that is too long where storing it refuses it, so the column's own rule decides.
+- **The same row prints the same text.** `rows` and `edit` both set `intervalstyle`, `extra_float_digits`,
+  `bytea_output` and `lc_monetary` beside UTC and ISO dates, because the write login may give itself other defaults
+  (a role sets its own, through a function a step made and a change that calls it), and `seen` must not change with
+  the login that reads the row. Questions and named changes keep the database's own settings.
+- **The answers.** An add or a change answers `{ columns, key, row: { values, seen } }`, a removal `row: null`; a
+  refusal for a row changed or gone since is 409 `{ error, row }` with the row as it is now, or null. A row larger
+  than a question's 256 KiB answers its `seen` with `values: null` and `tooLarge`.
+- **The actor's line is written when the write's transaction has begun**, before its statement runs, so a write that
+  runs long has its actor all the while; a write that is refused after that leaves an aborted line for the watcher. A
+  step's line names in `by_id` whoever's `apply` ran it (the member, the run or the machine); a held step's dry run
+  (`check`) writes none.
+- **How the watcher finds aborted lines.** At each look it reads the lines of the writes this gateway began and has
+  not seen end; once an hour, and at its first look on a company's database, it reads every line, so a line left by a
+  gateway that stopped is removed too, and one it finds running is read again at the next look.
+
 ## 6. Agents
 
 | Tool | What |
