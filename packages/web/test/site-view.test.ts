@@ -379,11 +379,11 @@ describe("the site's view", () => {
 				},
 			],
 		]);
-		const list = [...document.querySelectorAll<HTMLButtonElement>(".site-page")];
+		const list = [...document.querySelectorAll<HTMLButtonElement>(".site-top")];
 		expect(
 			list.map((item) => [
-				item.querySelector(".site-page-name")?.textContent,
-				item.querySelector(".site-page-count")?.textContent,
+				item.querySelector(".site-top-name")?.textContent,
+				item.querySelector(".site-top-count")?.textContent,
 			]),
 		).toEqual([
 			["Front page", "61"],
@@ -426,6 +426,7 @@ describe("the site's view", () => {
 		await settle();
 		expect(text(".site-now-number")).toBe("–");
 		expect(text(".site-today")).toBe("– visits today");
+		expect(document.querySelector(".site-view")!.classList.contains("is-unknown")).toBe(true);
 		expect(document.querySelector(".site-curve")!.classList.contains("is-unknown")).toBe(true);
 		expect(document.querySelector<HTMLElement>(".site-pages")!.hidden).toBe(true);
 		expect(document.querySelector(".site-view")!.textContent).not.toMatch(/error|can't be asked/i);

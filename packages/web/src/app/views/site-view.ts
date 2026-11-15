@@ -471,6 +471,7 @@ export class SiteView {
 		this.#nowNumber.textContent = now ? format.format(now.here) : DASH;
 		this.#nowLabel.textContent = now?.here === 1 ? t("person here now") : t("people here now");
 		this.el.classList.toggle("has-people", (now?.here ?? 0) > 0);
+		this.el.classList.toggle("is-unknown", !now);
 		this.#today.textContent = !now
 			? t("{count} visits today", { count: DASH })
 			: now.visits === 0
@@ -541,12 +542,12 @@ export class SiteView {
 					"button",
 					{
 						type: "button",
-						class: "site-page",
+						class: "site-top",
 						title: t("Show {page}", { page: name }),
 						onclick: () => this.#open(page.address),
 					},
-					h("span", { class: "site-page-name" }, name),
-					h("span", { class: "site-page-count" }, format.format(page.views)),
+					h("span", { class: "site-top-name" }, name),
+					h("span", { class: "site-top-count" }, format.format(page.views)),
 				);
 				item.style.setProperty("--share", (page.views / most).toFixed(3));
 				return h("li", null, item);

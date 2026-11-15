@@ -88,6 +88,8 @@
 	grid-area: number; font-size: 64px; font-weight: 700; line-height: 1; letter-spacing: -0.035em;
 	font-variant-numeric: tabular-nums;
 }
+/* A number that can't be read is a quiet dash, not a heavy bar. */
+.site-view.is-unknown .site-now-number { color: var(--text-soft); font-weight: 300; }
 .site-now-label { grid-area: label; margin-top: 4px; color: var(--text-muted); font-size: 15px; font-weight: 500; }
 /* The one live mark: a dot that breathes while anyone is on the site. */
 .site-live {
@@ -109,21 +111,22 @@
 
 .site-pages { display: grid; gap: 6px; margin: 22px 0 0; padding: 0; list-style: none; }
 .site-pages[hidden] { display: none; }
-.site-page {
+.site-top {
 	position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
-	min-height: 38px; padding: 0 12px; border: 0; border-radius: 10px; background: none; color: var(--text);
-	font: inherit; font-size: 14px; text-align: left; cursor: pointer; isolation: isolate;
+	min-height: 38px; padding: 0 12px; border: 0; border-radius: 10px; color: var(--text); font: inherit; font-size: 14px;
+	text-align: left; cursor: pointer; isolation: isolate; overflow: hidden;
+	background: color-mix(in srgb, var(--site-ink) 5%, transparent);
 }
-/* Its share of today's views, as a soft field behind it. */
-.site-page::before {
-	content: ""; position: absolute; inset: 0; z-index: -1; width: calc(var(--share, 0) * 100%); min-width: 6px;
-	border-radius: inherit; background: var(--site-field);
+/* Its share of today's views, as a soft field over the row's own paler one. */
+.site-top::before {
+	content: ""; position: absolute; inset: 0 auto 0 0; z-index: -1; width: calc(var(--share, 0) * 100%);
+	background: var(--site-field);
 	transition: width var(--motion-slow) var(--ease-out), background-color var(--motion-fast) ease;
 }
-.site-page:hover::before { background: color-mix(in srgb, var(--site-ink) 20%, transparent); }
-.site-page:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.site-page-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
-.site-page-count { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.site-top:hover::before { background: color-mix(in srgb, var(--site-ink) 20%, transparent); }
+.site-top:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.site-top-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.site-top-count { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 /* ---- wide: the window fills the page, the numbers stand beside it ----------------------------------- */
 @container site-view (min-width: 52em) {
@@ -153,5 +156,5 @@
 @keyframes site-live { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
 	.site-window, .site-glass.is-opening::before, .site-view.has-people .site-live { animation: none; }
-	.site-frame, .site-page::before { transition: none; }
+	.site-frame, .site-top::before { transition: none; }
 }
