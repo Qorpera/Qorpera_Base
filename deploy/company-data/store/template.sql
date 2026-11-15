@@ -64,7 +64,11 @@ begin
 	return null;
 end $$;
 
--- Records deleted rows (with their count) and an emptied table.
+-- Records an emptied table, and the rows a step deleted (with their count). Deleted rows are recorded only in a step's
+-- session, which is logged in as its database folder's owner (session_user stays the login inside a function, also one
+-- made as another's): a step that deletes rows is held and rolled back, so its record goes with it. A change deletes
+-- rows as its own defined act and is committed (§8), as the write login: a record of its deletes would be kept for
+-- good, one for every change, and nothing reads it. (store/update.sql carries this to a store made before it.)
 create function qorpera_data.rows_gone() returns trigger language plpgsql security definer set search_path = '' as $$
 declare v_rows bigint;
 begin
@@ -73,7 +77,7 @@ begin
 			raise exception 'A step may not destroy data after it was checked: % was emptied', tg_table_schema || '.' || tg_table_name;
 		end if;
 		insert into qorpera_data.step_effects (kind, object) values ('emptied table', tg_table_schema || '.' || tg_table_name);
-	else
+	elsif session_user::text ~ '^c_[0-9a-f]{32}_o[0-9]+$' then
 		select count(*) into v_rows from gone;
 		if v_rows > 0 and exists (select 1 from qorpera_data.sealed s where s.txid = txid_current()) then
 			raise exception 'A step may not destroy data after it was checked: rows of % were deleted', tg_table_schema || '.' || tg_table_name;

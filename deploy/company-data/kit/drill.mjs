@@ -301,6 +301,16 @@ try {
 	check("(a) the gateway makes the company database and applies its step through an apply call", applied.value.applied === true, JSON.stringify(applied.value).slice(0, 200));
 	const first = await ask(A, "query", { database: "shop", question: "count" });
 	check("(a) the gateway answers a question", first.status === 200 && first.value.rows?.[0]?.[0] === 10, JSON.stringify(first.value).slice(0, 200));
+	// A store made from an earlier template is brought to this one: here it is this one already, so nothing differs.
+	const rowsGone = "select md5(prosrc) from pg_proc where oid = 'qorpera_data.rows_gone()'::regprocedure";
+	const sourceBefore = sql(A, rowsGone, STORE);
+	const updated = script(A, "update-store.sh");
+	show("update-store", updated);
+	check(
+		"(a) update-store.sh, run from / with the kit's .env, runs store/update.sql in the template and in the company's database, and may run again",
+		updated.ok && /the template and 1 companies' databases/.test(updated.out) && script(A, "update-store.sh").ok && sql(A, rowsGone, STORE) === sourceBefore && sql(A, rowsGone, "qorpera_company_template") === sourceBefore,
+		tail(updated.err, 2),
+	);
 	const mounts = run("docker", ["inspect", "-f", "{{range .Mounts}}{{.Destination}}={{.Source}} {{end}}", container(A, "data-gateway")]).out;
 	const gatewayLog = run("docker", ["logs", container(A, "data-gateway")]);
 	check("(a) the gateway that answers is the packaged file: /app is the package folder, and it started from it",
@@ -575,6 +585,8 @@ rm -f "$f" "$src" "$src.back"`]);
 	show("status on the primary", statusA);
 	check("standby.sh status, run from / with the kit's .env, reads the primary", statusA.ok && /^company_data_standby\|streaming\|t\|/m.test(statusA.out), tail(statusA.err, 2));
 	show("status on the standby", script(B, "standby.sh", ["status"]));
+	const onStandby = script(B, "update-store.sh");
+	check("(d) update-store.sh is refused on the standby's machine: a standby follows its primary", !onStandby.ok && /follows a primary/.test(onStandby.err), tail(onStandby.err, 2));
 	check("(d) the standby replayed every committed row", caught, lsn);
 	const committed = sql(A, ROWS, STORE);
 	const stopped = compose(A, ["stop", "--timeout", "30"]);

@@ -3358,6 +3358,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
 	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
 	// views plan step 1), and save_app's kit says to read it first, so they moved again.
+	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
+	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3376,6 +3378,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"data_describe",
 		"data_apply",
 		"data_query",
+		"data_change",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -3409,10 +3412,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"6d947f015911e32163addf82e581d15474f29af350111dcaf1f31d0392337f3f",
+		"24bd53f6cf40199733c60ef36240a1d0f51751d9c9d88de773810dffc49a4f49",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"a0b7202b401099c8f037d667bdb6c7d2070421d37ce690e2ea2d0ddd517d9abb",
+		"486db34bbf9c4747e8769a4a35331d4aad69f8dceae387fffda13730729e7ac4",
 	);
 });
 

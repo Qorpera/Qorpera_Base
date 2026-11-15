@@ -142,8 +142,8 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	);
 });
 
-// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
-// the three tools, and never a secret in a step.
+// Company databases (slice 5, 20260930750000; changes, slice 7, 20260930763000): when a database is the right home and
+// when a file is, the folder's shape, the tools, and never a secret in a step.
 it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
 	for (const said of [
 		"When data_query is offered, the company can keep data in databases of its own.",
@@ -153,9 +153,12 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		"tables/NNN-<name>.sql are its steps",
 		"Never change an applied step; write a new one with a higher number.",
 		"queries/<name>.sql are its questions: one select each",
+		"actions/<name>.sql are its changes: one insert, update, delete or merge each",
+		"that say what it does in words a member can read, such as -- Mark order :id as shipped.",
 		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
+		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
 		"is held until a member says yes: tell them what it would destroy.",
-		"Never put a password, key or other secret in a step, a question or a row.",
+		"Never put a password, key or other secret in a step, a question, a change or a row.",
 	])
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
 });
@@ -1647,12 +1650,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // With a render's final frames kept in the company folder and no person built from plain shapes (the first real job
 // on the image with Blender and the starter set, 14 November 2026), all three were measured once more, and the
 // conversation's and a private conversation's again on the tree with release v247 (15 November 2026).
+// With a database's changes (actions/, data_change; company databases, slice 7, 20260930763000) in the staff's
+// "Company databases" paragraph, on release v247's tree (15 November 2026), the conversation's and a private
+// conversation's instructions moved; a worker's do not name databases.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "df6160007aa08111b7a17ed5577bce97dcb6a8764252532b81186652ff8d9377",
+			instructions: "ab1e3c7d0be83efe41431445b0e18272a2a781a46a8d3d7535c46686ac5a5359",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1668,7 +1674,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "df6160007aa08111b7a17ed5577bce97dcb6a8764252532b81186652ff8d9377",
+			instructions: "ab1e3c7d0be83efe41431445b0e18272a2a781a46a8d3d7535c46686ac5a5359",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],

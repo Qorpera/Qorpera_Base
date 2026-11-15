@@ -389,7 +389,16 @@ data/shop/snapshot/
   role, 5 s. A member who may read a database may run its named changes; a database only some members may change is
   a folder only they may read.
   Deleting rows inside a named change is the company's own defined act and runs; the file says what it does.
-- A member's change from an interface is asked on the bar the platform draws, with the file's words and values.
+- The statement is an insert, an update, a delete, a merge or a select that calls a function a step made, and nothing
+  else. What it did is read before it is committed, as a step's is: a change that dropped or emptied a table or
+  dropped a column (which the write role can only do through a function a step made as its owner) is rolled back,
+  because that is a step's work and waits for a member. A change's transaction is not sealed as a step's is: a seal
+  is a row kept for good, one for every change, and a change may delete rows anyway. The answer is
+  `{ changed, columns, rows, more, asOf }`: how many rows the statement wrote, and what it gives back (`returning`),
+  cut as a question's answer is. A statement that sends back more than 1 MiB is stopped and rolled back.
+- A member's change from an interface is asked on the bar the platform draws, with the file's words and values. The
+  gateway gives the bar the words with the values in place, each value apart from the words, every value the
+  statement takes, and the file's hash; the member's yes runs the file with that hash and no other.
 - A step or a folder delete that destroys data becomes a member's approval (§3).
 - A routine may wake on a database: `when: data-change` with `watch: data/shop` and optionally a table. The gateway
   listens on a database a routine watches and turns a notice into a wake, claimed once, at most one a minute per
@@ -562,7 +571,7 @@ registry when a slice starts.
 | 4 | Interfaces: `query` and `watch` in the bridge, bindings in the kits | none; web tests | the web |
 | 5 | Agents: the run's data pass, `data_describe`, `data_apply`, `data_query`, their instructions; removal with the company | one migration (the pass, the tools' names in the observation list, the removal's call), one SQL test | the migration, a runtime bundle and image, the node release |
 | 6 | The nightly snapshot and the 7-day rule for its old versions | one migration, one SQL test | the migration, the node release |
-| 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change | one migration, one SQL test | bundle, node release, web |
+| 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change. Built in parts: (a) the gateway's `change` call and `data_change`; (b) the member's approval for a step that destroys; (c) `act` and the bar; (d) routines on a change | a migration and an SQL test for each of (a) and (b) | bundle, node release, a later gateway on the store's machines, web |
 | 8 | The product's doors, each after its own design | | |
 | 8a | The `data` command on a company machine (§9a), in four parts, after slice 7 | one migration, one SQL test; the gateway's, the folder service's and the folder program's tests; a proof on a machine | the migration, a later gateway, the node release (the folder service and its two credentials), the folder program and the machine image |
 | 9 | Qorpera's own data as tables | | |
