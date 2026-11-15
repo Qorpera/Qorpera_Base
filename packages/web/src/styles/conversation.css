@@ -1317,6 +1317,10 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-card:hover .app-card-go { opacity: 1; transform: translateX(2px); }
 /* The app's name among the words: the words' own colour, a little heavier, as its card stands right under them. */
 .message-prose .folder-link.app-link { color: inherit; font-weight: 600; }
+/* A site of the company among the words: a link still, in the words' own colour and as heavy as an app's name, as the
+ * site's card stands right under them (app/views/thread-sites.ts). */
+.message-prose a.site-link-word { color: inherit; font-weight: 600; text-decoration: none; }
+.message-prose a.site-link-word:hover { text-decoration: underline; text-underline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) {
 	.app-card, .app-card-emblem .interface-emblem, .app-card-go { transition: none; }
 	.app-card:hover .app-card-emblem .interface-emblem, .app-card:hover .app-card-go { transform: none; }
@@ -1506,6 +1510,24 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 @media (max-width: 900px) {
 	.is-exchange > .interaction-ask, .is-exchange > .interaction-result.is-said:not(.mine) { max-width: 82%; }
 }
+/* A change of the agent's that is ready to go live, below the thread (app/views/thread-ready.ts): the widget that
+ * waits for the member, with What's new's picture large, its one line and What's new's buttons. Once put live it is the
+ * exchange it was, as an answered question, its last line the version live and the site's link pill. */
+.thread-ready { display: flex; flex-direction: column; align-self: stretch; gap: 10px; }
+.thread-ready-card .whats-new-change.is-thread { gap: 8px; margin-top: 12px; padding: 0; border: 0; border-radius: 0; background: none; }
+.whats-new-change.is-thread > .choice-picture { aspect-ratio: 16 / 10; border-radius: 12px; }
+.whats-new-change.is-thread > .choice-picture img { object-fit: cover; object-position: top; }
+.whats-new-change.is-thread > .whats-new-line { padding: 0; font-size: 15px; line-height: 1.35; }
+.whats-new-change.is-thread.is-plain > .whats-new-line { display: block; aspect-ratio: auto; padding: 0; border-radius: 0; background: none; text-align: left; }
+.thread-ready-card > .whats-new-line { margin: 12px 0 0; padding: 0; font-size: 15px; }
+.thread-ready-card > :is(.whats-new-behind, .whats-new-managers) { margin: 6px 0 0; font-size: 13.5px; }
+.thread-ready-card > .whats-new-actions { margin-top: 14px; }
+.thread-ready-card .whats-new-actions .btn { min-height: 36px; padding-inline: 16px; }
+.thread-ready-card > .service-outcome { margin: 10px 0 0; font-size: 13px; }
+.thread-ready-card > .interaction-call + .service-outcome { margin-top: 10px; }
+.thread-ready-live { flex-wrap: wrap; row-gap: 8px; }
+.thread-ready-live .site-pill { height: 34px; max-width: 100%; }
+.thread-ready-live .site-pill-main { font-size: 13.5px; }
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
 .interaction-secret { flex: 1 1 200px; }
 

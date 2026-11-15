@@ -50,7 +50,7 @@ import {
 } from "../../ui/interface-change-line.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { appCard, markdownBubbles } from "../../ui/markdown.ts";
+import { appCard, type LinkedSite, markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { easing, foldFrom, leave, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
@@ -100,6 +100,8 @@ import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
 import { type AppLook, appLook } from "./shell.ts";
+import { ThreadReady } from "./thread-ready.ts";
+import { ThreadSites } from "./thread-sites.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * pill's figures follow them. Nothing is read once they all settled. */
@@ -474,6 +476,13 @@ export class ConversationView {
 	/** The day each shown moment falls on in #daysZone, so a redraw need not work it out again. */
 	readonly #days = new Map<string, string>();
 	#daysZone = "";
+	/** "A change is ready" (own code storage): a card below the thread for each project with a change ready from this
+	 * thread's agent, with What's new's own buttons (views/thread-ready.ts). Made once the company has a project that
+	 * makes a website, in an agent's thread. */
+	#ready: ThreadReady | undefined;
+	/** The company's sites, for the card of a site a message links (views/thread-sites.ts). Made once the company has a
+	 * site. */
+	#siteCards: ThreadSites | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -1950,6 +1959,61 @@ export class ConversationView {
 	 * is about as its line: it stands on the thread above the member's words, as an agent's message has its cards, and a
 	 * press on it opens the app. */
 	#memberParts(text: string, quotes: readonly MessageQuote[] = []): HTMLElement[] {
+		const parts = this.#memberWords(text, quotes);
+		// A site of the company the member's words link: its card under them, as under an agent's.
+		const sites = new Map<string, HTMLElement>();
+		for (const [href] of text.matchAll(/https:\/\/[^\s<>"'`]+/g)) {
+			const site = this.#linkedSite(href.replace(/[.,;:!?)\]]+$/, ""));
+			if (site && !sites.has(site.id)) sites.set(site.id, site.card());
+		}
+		return sites.size ? [...parts, h("div", { class: "app-cards site-cards" }, [...sites.values()])] : parts;
+	}
+
+	/** The card of the company's site a link leads to, once the thread knows the company's sites. */
+	#linkedSite(href: string): LinkedSite | undefined {
+		const cards = this.#siteCards;
+		const site = cards?.match(href);
+		return cards && site ? { id: site.id, card: () => cards.card(site) } : undefined;
+	}
+
+	/** Brings in the thread's pieces of the company's projects and sites once the company has any: the card of a change
+	 * ready from this thread's agent (not in a group chat), and the cards of sites its messages link. */
+	#threadPieces(room: boolean, known: boolean): void {
+		const company = this.#company.store.get();
+		const signal = AbortSignal.any([this.#lifetime.signal, this.#company.signal]);
+		const releases = this.#actions.codeReleases;
+		if (!this.#ready && releases && known && !room && company.whatsNew !== undefined)
+			this.#ready = new ThreadReady(this.#company, this.#sessionId, releases.client, releases.options, signal, {
+				agentId: () =>
+					this.#isRoom
+						? undefined
+						: this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId)?.staffAgentId,
+				focusComposer: () => {
+					this.focus();
+					const end = this.#composer.value.length;
+					this.#composer.setSelectionRange(end, end);
+				},
+				shownChanged: () => this.#redrawItems(),
+			});
+		this.#ready?.update();
+		const sites = this.#actions.companySites;
+		if (!this.#siteCards && sites && (company.siteCount ?? 0) > 0)
+			this.#siteCards = new ThreadSites(sites.client, sites.canManage, signal, () => this.#redrawItems());
+		this.#siteCards?.update();
+	}
+
+	/** Draws the thread's items again, after the update that asked for it: a card came or went, or the company's sites
+	 * changed what a message's links show. */
+	#redrawItems(): void {
+		queueMicrotask(() => {
+			if (this.#disposed) return;
+			this.#renderedKey = "";
+			this.update();
+		});
+	}
+
+	/** A member's words, as #memberParts draws them before any card of a site they link. */
+	#memberWords(text: string, quotes: readonly MessageQuote[]): HTMLElement[] {
 		const reply = splitReply(text);
 		if (!reply) return [h("div", { class: "text" }, ...(text ? this.#withMentions(text, quotes) : [t("(empty)")]))];
 		const shift = [...text.slice(0, reply.start)].length;
@@ -2149,6 +2213,7 @@ export class ConversationView {
 		this.#working = agentWorks(this.#agentState);
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
+		this.#threadPieces(room, Boolean(session));
 		if (!room) this.#computerByItself(agent);
 		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
@@ -2500,6 +2565,8 @@ export class ConversationView {
 			[...this.#undos],
 			// A sent message learns its input id: the element passes on by it (see `handedOver`).
 			conversation.optimistic.map((item) => item.inputId ?? null),
+			this.#ready?.shown,
+			this.#siteCards?.key,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -2615,7 +2682,9 @@ export class ConversationView {
 			// A "/name" may be a skill. (An item that arrives without text still draws, as "(empty)".)
 			const skilled = item.text?.includes("/") === true;
 			// The mention targets and skill names go in as they are, once serialized for the render.
-			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`;
+			// A link may lead to one of the company's sites, whose card stands under the words: the sites as read go in too.
+			const linked = this.#siteCards && item.text?.includes("https://") ? `\n${this.#siteCards.key}` : "";
+			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`;
 			const time = `${zone} ${when(item.createdAt)}`;
 			// The input this form stands for, which the next form finds it by.
 			const input = optimisticInputs.has(item.id)
@@ -2638,7 +2707,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -3038,6 +3107,9 @@ export class ConversationView {
 					h("div", { class: "conversation-note", role: "note" }, t("More saved changes wait after these.")),
 				),
 			);
+		// A change of this agent's that is ready to go live waits below them; the card draws itself in place.
+		const ready = this.#ready;
+		if (ready?.shown) nodes.push(keep("code ready", "", "", () => ready.el));
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
@@ -3065,6 +3137,7 @@ export class ConversationView {
 			!items.length &&
 			!codingSessions.length &&
 			!proposals.length &&
+			!this.#ready?.shown &&
 			!conversation.error &&
 			!this.#working &&
 			!conversation.hasEarlier
@@ -3421,7 +3494,7 @@ export class ConversationView {
 				item.erased
 					? [h("div", { class: "text" }, t("(erased)"))]
 					: item.kind === "agent"
-						? markdownBubbles(item.text)
+						? markdownBubbles(item.text, (href) => this.#linkedSite(href))
 						: item.text || !item.attachmentCount
 							? this.#memberParts(item.text, item.quotes)
 							: []

@@ -14,7 +14,7 @@ import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
-import { codeReleaseCalls } from "../cloud/releases.ts";
+import { type CodeReleases, codeReleaseCalls } from "../cloud/releases.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -1294,6 +1294,39 @@ export function mountApplication(
 		// The apps that question options' previews name, as the company's apps were last read; a card drawn before they
 		// were read is brought up to date by decorateAppCards.
 		const cardApp = (name: string) => cardAppOf(controller.store.get().apps, name);
+		// What's new's calls and what it reads beside them: its page and the "a change is ready" card in an agent's thread
+		// share them (views/release-desk.ts).
+		const releaseDesk = () => ({
+			client: codeReleaseCalls(cloud, controller.profile.profileId),
+			options: {
+				image: (path: string, signal: AbortSignal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				listed: (read: CodeReleases) =>
+					controller.store.set({
+						whatsNew: whatsNewEntry(controller, read),
+						siteVersions: liveVersions(read),
+					}),
+				// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
+				// project's site that never went live is one too (the review of #1774, F4); the list is read only for an
+				// entry that names none.
+				takenDown: async (signal: AbortSignal) => {
+					const sites = createWebSites(cloud, controller.profile);
+					const access = await sites.access(signal);
+					const slugs = new Set<string>();
+					for (const id of access.takenDown.keys()) {
+						const named = access.named.get(id);
+						if (named) slugs.add(named.slug);
+					}
+					if ([...access.takenDown.keys()].every((id) => access.named.has(id))) return slugs;
+					for (const site of await sites.list(signal)) if (access.takenDown.has(site.id)) slugs.add(site.slug);
+					return slugs;
+				},
+			},
+		});
+		// Who may see a site's password and change it: owners and admins (the kernel enforces the same rule).
+		const managesSites = () => {
+			const role = controller.store.get().team?.role;
+			return role === "owner" || role === "admin";
+		};
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
@@ -2233,12 +2266,7 @@ export function mountApplication(
 				// them offline (the kernel enforces the same rule).
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
-						access: {
-							canManage: () => {
-								const role = controller.store.get().team?.role;
-								return role === "owner" || role === "admin";
-							},
-						},
+						access: { canManage: managesSites },
 						listed: (list) => controller.store.set({ siteCount: list.length }),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {
@@ -2269,35 +2297,8 @@ export function mountApplication(
 				// The changes to the company's sites made from its code, ready to go live, and what is live (own code storage
 				// step 4). Every member sees it; owners and admins put a version live and go back (the kernel's own rule).
 				if (!whatsNewPage) {
-					const view = new WhatsNewView(
-						controller,
-						codeReleaseCalls(cloud, controller.profile.profileId),
-						controller.signal,
-						{
-							image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
-							listed: (read) =>
-								controller.store.set({
-									whatsNew: whatsNewEntry(controller, read),
-									siteVersions: liveVersions(read),
-								}),
-							// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
-							// project's site that never went live is one too (the review of #1774, F4); the list is read only
-							// for an entry that names none.
-							takenDown: async (signal) => {
-								const sites = createWebSites(cloud, controller.profile);
-								const access = await sites.access(signal);
-								const slugs = new Set<string>();
-								for (const id of access.takenDown.keys()) {
-									const named = access.named.get(id);
-									if (named) slugs.add(named.slug);
-								}
-								if ([...access.takenDown.keys()].every((id) => access.named.has(id))) return slugs;
-								for (const site of await sites.list(signal))
-									if (access.takenDown.has(site.id)) slugs.add(site.slug);
-								return slugs;
-							},
-						},
-					);
+					const desk = releaseDesk();
+					const view = new WhatsNewView(controller, desk.client, controller.signal, desk.options);
 					whatsNewPage = {
 						company: controller,
 						view,
