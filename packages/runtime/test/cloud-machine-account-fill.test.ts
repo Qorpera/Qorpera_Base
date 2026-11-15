@@ -21,7 +21,6 @@ import {
 } from "@qorpera/runtime/cloud-machine-account-fill";
 import { describe, expect, it, vi } from "vitest";
 
-
 const now = 1_790_000_000_000;
 const secret = "hunter2-Correct-Horse";
 

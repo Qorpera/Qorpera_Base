@@ -12,7 +12,6 @@ import {
 	companyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
 
-
 export const MACHINE_ACCOUNT_FILL_TARGET_SCHEMA = "qorpera.machine-account-fill-target/v1";
 export const MACHINE_ACCOUNT_FILL_READY_SCHEMA = "qorpera.machine-account-fill-ready/v1";
 export const MACHINE_ACCOUNT_FILL_RESULT_SCHEMA = "qorpera.machine-account-fill-result/v1";
