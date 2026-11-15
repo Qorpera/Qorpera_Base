@@ -1912,7 +1912,7 @@ function drawInterfaces(
 			kept?.shown === model ? kept.element : withEmblem(appIcon(entry, `#/c/${profileId}/i/${name}`, count), choice);
 		rows.set(name, { shown: model, element });
 		element.dataset.appKey = name;
-		element.dataset.ownEmblem = name === "bank" ? "bank" : (file.emblem ?? "page");
+		element.dataset.ownEmblem = pageEmblem(name, file.emblem) ?? "page";
 		element.classList.toggle("active", name === activeName);
 		if (name === activeName) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -2103,7 +2103,11 @@ export function appLook(company: CompanyController, app: CompanyApp): AppLook | 
 
 /** Each page's colour; an agent's app takes the colour its manifest names (Jonas, 11 Nov 2026: black only had
  * "little distinction and contrast"). Charcoal and none draw in the text's colour. */
-const PAGE_COLOURS: Record<string, string> = { mailbox: "blue", members: "purple", bank: "green" };
+const PAGE_COLOURS: Record<string, string> = { mailbox: "blue", members: "purple", bank: "green", data: "purple" };
+
+function pageEmblem(name: string, emblem: Emblem | null): Emblem | null {
+	return name === "bank" ? "bank" : name === "data" ? "drawers" : emblem;
+}
 function colourHex(colour: string | undefined): string | undefined {
 	return colour && colour !== "charcoal" ? colourNameHex(colour) : undefined;
 }
@@ -2350,7 +2354,7 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 		h(
 			"span",
 			{ class: "rail-app-stand" },
-			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, 34),
+			interfaceEmblem(pageEmblem(entry.name, file.emblem), 34),
 			countBadge(count),
 		),
 		h("span", { class: "rail-app-name" }, file.name),
@@ -3244,7 +3248,7 @@ function hiddenPageRow(model: {
 			"data-page-name": model.title,
 			"aria-haspopup": "menu",
 		},
-		h("span", { class: "rail-row-stand" }, interfaceEmblem(model.name === "bank" ? "bank" : model.emblem, 34)),
+		h("span", { class: "rail-row-stand" }, interfaceEmblem(pageEmblem(model.name, model.emblem), 34)),
 		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, t("Hidden for you"))),
 	);
 	row.addEventListener("click", (event) => {

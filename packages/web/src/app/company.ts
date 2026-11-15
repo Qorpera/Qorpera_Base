@@ -1,3 +1,4 @@
+import type { CloudMemberDataDescription } from "@qorpera/cloud-client/cloud-member-data";
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
@@ -266,6 +267,7 @@ export interface CompanyState {
 	/** Which of the two pages, Mailbox and Members, the company shows (Interfaces C6a; app/interface-pages.ts). Unset
 	 * until the first read lands, and on a cloud without the calls: no page shows then. */
 	interfacePages?: InterfacePagesState;
+	companyData?: CloudMemberDataDescription | null;
 	/** The tables and files the shown pages read, as the company's folder holds them (Interfaces step I7;
 	 * app/interface-folder.ts). Unset until the first read lands. */
 	interfaceFolder?: InterfaceFolderState;

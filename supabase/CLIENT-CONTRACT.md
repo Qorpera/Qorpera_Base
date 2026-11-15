@@ -1088,22 +1088,24 @@ by their keys, never with a lowercase literal.
   `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
   admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
-### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank, 20260930697000_interface_pages_hidden_per_member)
+### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank, 20260930697000_interface_pages_hidden_per_member, 20260930782000_interface_page_data)
 
 Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
-three pages in its Interfaces tab, Mailbox, Members and Bank. Mailbox and Bank are on and Members off until an owner or admin switches one (20260930583000). A client draws
+four pages in its Interfaces tab, Mailbox, Members, Bank and Data. Mailbox, Bank and Data are on and Members off until an owner or admin switches one (20260930583000, 20260930782000). A client draws
 them from the definitions it ships, never from a definition in the folder's `QorperaOS/interfaces/`: Pulse, a page an agent wrote
 and any other page name are pages that aren't there, in the tab, a direct link or a fallback. Switching changes no
 data: the pages' tables, the areas' consents and offers, and who pays stay as they are. Each call answers 42501 for a
 caller who is not a member of a folder-v2 company with that environment.
 
 - `qorpera_member_interface_pages(environment)`: `{schema: "qorpera.member-interface-pages/v1", pages, mayChange}`,
-  `pages` being `[{page, on, hidden}]` for `mailbox`, `members` then `bank`, and `mayChange` whether the caller is an
+  `pages` being `[{page, on, hidden}]` for `mailbox`, `members`, `bank` then `data`, and `mayChange` whether the caller is an
   owner or admin. `hidden` (20260930697000) is whether the caller hid the page from their own rail: a client that reads
   it shows a page unless the member hid it (Members once the company has a second member), whatever `on` says, and
   offers Hide and Show; a client finds `hidden` on every page or treats the answer as one from before it, where `on`
   decides. A client refuses a page name it doesn't know, so a web that knows `bank` goes live before or with
-  20260930520000.
+  20260930520000, and one that knows `data` before or with 20260930782000. The web shows Data only while the company
+  data gateway's `describe` lists a database the member may read (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §5a).
+  A member's own drawer (20260930728000) takes `page:data` as it takes the other pages.
   Read it when the company opens, on focus, and after switching.
 - `qorpera_set_interface_page(environment, page, on)`: owners and admins only (42501 "Only the company's owners and
   admins can switch its pages"); another page name or a null is 22023, and a company being deleted 55000. Answers

@@ -43,7 +43,8 @@ create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boo
 	select jsonb_build_object('schema', 'qorpera.member-interface-pages/v1', 'pages', jsonb_build_array(
 		jsonb_build_object('page', 'mailbox', 'on', p_mailbox, 'hidden', 'mailbox' = any(p_hidden)),
 		jsonb_build_object('page', 'members', 'on', p_members, 'hidden', 'members' = any(p_hidden)),
-		jsonb_build_object('page', 'bank', 'on', p_bank, 'hidden', 'bank' = any(p_hidden))),
+		jsonb_build_object('page', 'bank', 'on', p_bank, 'hidden', 'bank' = any(p_hidden)),
+		jsonb_build_object('page', 'data', 'on', true, 'hidden', 'data' = any(p_hidden))),
 		'mayChange', p_may)
 $$;
 create function pg_temp.c6_hide(p_by integer, p_page text, p_hidden boolean,

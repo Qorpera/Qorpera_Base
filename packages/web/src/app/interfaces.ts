@@ -33,6 +33,7 @@ import { INTERFACE_PAGES } from "../cloud/interface-pages.ts";
 import { presentationLocale, t } from "../ui/preferences.ts";
 import { BANK_INTERFACE } from "./bank-page.ts";
 import { agentWorks, type CompanyController, isAgentPairSession } from "./company.ts";
+import { DATA_INTERFACE, DATA_PAGE } from "./data-page.ts";
 import type { FolderProblem, FolderTable } from "./interface-folder.ts";
 import { isMailSource, mailSource, mailSourceRows } from "./interface-mail.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
@@ -139,7 +140,11 @@ let shipped: readonly CompanyInterface[] | undefined;
  * others (Pulse) are not among them. A definition that doesn't parse is a bug in the library; it is left out rather
  * than drawn wrong. */
 function shippedInterfaces(): readonly CompanyInterface[] {
-	shipped ??= [...INTERFACE_LIBRARY, { name: "bank", interface: BANK_INTERFACE }].flatMap((entry) => {
+	shipped ??= [
+		...INTERFACE_LIBRARY,
+		{ name: "bank", interface: BANK_INTERFACE },
+		{ name: DATA_PAGE, interface: DATA_INTERFACE },
+	].flatMap((entry) => {
 		if (!(INTERFACE_PAGES as readonly string[]).includes(entry.name)) return [];
 		const parsed = parseInterfaceFile(entry.interface);
 		return parsed.ok ? [{ name: entry.name, file: withoutHiddenSources(parsed.file) }] : [];
@@ -525,10 +530,18 @@ function listed(file: InterfaceFile, company: CompanyController): boolean {
 	);
 }
 
+export function companyHasData(company: CompanyController): boolean {
+	return (company.store.get().companyData?.databases.length ?? 0) > 0;
+}
+
+const pageHere = (company: CompanyController, name: string) => name !== DATA_PAGE || companyHasData(company);
+
 /** The pages the Interfaces tab lists: of Mailbox and Members, those that are on and listed for this member. Until the
  * company's pages are read, and on a cloud that can't say, there are none. */
 export function companyInterfaces(company: CompanyController): CompanyInterface[] {
-	return pagesShown(company.store.get().interfacePages).filter(({ file }) => listed(file, company));
+	return pagesShown(company.store.get().interfacePages).filter(
+		({ name, file }) => listed(file, company) && pageHere(company, name),
+	);
 }
 
 /** The pages the member hid from their own rail that would show there again: they may see them and their needs are
@@ -538,7 +551,9 @@ export function hiddenInterfaces(company: CompanyController): CompanyInterface[]
 	if (!pages?.personal) return [];
 	return pages.pages.flatMap(({ page, hidden }) => {
 		const entry = hidden ? shippedInterfaces().find((candidate) => candidate.name === page) : undefined;
-		return entry && memberMaySee(entry.file, company) && needsMet(entry.file, company) ? [entry] : [];
+		return entry && memberMaySee(entry.file, company) && needsMet(entry.file, company) && pageHere(company, page)
+			? [entry]
+			: [];
 	});
 }
 

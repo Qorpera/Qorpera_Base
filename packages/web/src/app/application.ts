@@ -38,9 +38,11 @@ import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { agentWorks, CompanyController } from "./company.ts";
+import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
+import { DATA_PAGE } from "./data-page.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
 import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
@@ -453,6 +455,7 @@ export function mountApplication(
 	let notices: ExecutionNotices | undefined;
 	/** Which of the open company's two pages are on (Interfaces C6a), read with its folder. */
 	let interfacePages: CompanyInterfacePages | undefined;
+	let companyDatabases: CompanyDatabases | undefined;
 	/** What the open company's pages read from its folder, its tables and files, followed there (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
 	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
@@ -667,6 +670,8 @@ export function mountApplication(
 		notices = undefined;
 		interfacePages?.dispose();
 		interfacePages = undefined;
+		companyDatabases?.dispose();
+		companyDatabases = undefined;
 		interfaceFolder?.dispose();
 		interfaceFolder = undefined;
 		interfaceOffers?.dispose();
@@ -1501,6 +1506,8 @@ export function mountApplication(
 			notices = undefined;
 			interfacePages?.dispose();
 			interfacePages = undefined;
+			companyDatabases?.dispose();
+			companyDatabases = undefined;
 			interfaceFolder?.dispose();
 			interfaceFolder = undefined;
 			interfaceOffers?.dispose();
@@ -1604,7 +1611,9 @@ export function mountApplication(
 		if (interfaceFolder && !state.team?.capabilities.read) {
 			interfacePages?.dispose();
 			interfacePages = undefined;
-			controller.store.set({ interfacePages: undefined });
+			companyDatabases?.dispose();
+			companyDatabases = undefined;
+			controller.store.set({ interfacePages: undefined, companyData: undefined });
 			interfaceFolder.dispose();
 			interfaceFolder = undefined;
 			interfaceOffers?.dispose();
@@ -1658,6 +1667,20 @@ export function mountApplication(
 				controller.store.set({ interfaceFolder: folder });
 				void offers.refresh();
 			});
+			const databases = cloud.config.memberCompanyGatewayUrl
+				? new CompanyDatabases(
+						() => {
+							const client = files.data();
+							if (!client) throw new Error(t("Company access changed."));
+							return client;
+						},
+						(described) => {
+							if (companyDatabases === databases) controller.store.set({ companyData: described });
+						},
+						controller.signal,
+					)
+				: undefined;
+			companyDatabases = databases;
 			// The folder is read for the pages that are on: a page switched on is read for at the next sync.
 			const pages = new CompanyInterfacePages(
 				interfacePageCalls(cloud, controller.profile.environmentId),
@@ -1665,6 +1688,7 @@ export function mountApplication(
 					if (interfacePages !== pages) return;
 					controller.store.set({ interfacePages: next });
 					reader.read(pagesOn(next));
+					if (next?.pages.some((page) => page.page === DATA_PAGE)) databases?.open();
 				},
 				controller.signal,
 			);
@@ -2339,6 +2363,7 @@ export function mountApplication(
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
 					openSettings: (tab) => openSettings(tab),
+					data: () => companyDatabases,
 				});
 				return;
 			case "sites": {
