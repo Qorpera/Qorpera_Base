@@ -187,9 +187,6 @@ export class Platform {
 			.filter((entry) => entry.kind === "file" && SHA.test(entry.fileSha256 ?? ""))
 			.map((entry) => ({ name: entry.path.slice(entry.path.lastIndexOf("/") + 1), sha256: entry.fileSha256, bytes: entry.bytes }));
 	}
-	/** What a run's data pass kept (`qorpera_data_pass_redeem`, with the publishable key alone), once: `{ environmentId,
-	 * runId, machineId, requesterUserId, database, files: Map<path, { sha256, bytes }>, allow }`, or null for a pass
-	 * that answers nothing. A run's pass has a runId; a company machine's has a machineId. */
 	async redeemPass(pass) {
 		const headers = { apikey: this.#key, "content-type": "application/json" };
 		// A legacy anon key is a JWT and goes as the bearer too; a publishable key goes alone.
@@ -209,8 +206,6 @@ export class Platform {
 		const answer = await response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
 		if (answer === null) return null;
 		const files = Array.isArray(answer?.files) ? answer.files : null;
-		// A run's pass names its run. A company machine's (slice 8a, 20260930775000) names its folder view and the
-		// view's machine, and never carries a member's yes: that is asked through an agent's data_apply only.
 		const machine = answer?.kind === "machine";
 		if (
 			answer?.schema !== "qorpera.data-pass-redeemed/v1" ||

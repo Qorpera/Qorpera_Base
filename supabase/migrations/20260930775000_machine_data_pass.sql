@@ -1,33 +1,4 @@
--- 20260930775000: a company machine's data pass (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §9a, slice 8a part 1;
--- Jonas, 14 November 2026: "Yes, build them"). A program on an agent's machine reaches the company's databases with
--- the command `data`, through the machine's one folder view: the node's folder service, which serves that view to
--- that machine only, asks for a data pass as the view and sends the call to the data gateway's run door. No database
--- login and no new secret is in the machine. This migration is the platform's half:
---
--- 1. qorpera_data_passes.kind gains `machine`. Such a pass names its view and the view's machine (the placement), no
---    run and no job.
--- 2. qorpera_data_pass_listing(p_environment_id, p_actor, p_database): what a pass keeps, as the actor may read it
---    now: database.toml and the files directly in tables/, queries/ and actions/ of the database named (or of every
---    database, for null), each with its hash and size, and with the version and authority it was read under. It is
---    qorpera_run_data_pass's own listing (20260930750000), moved here so that a run's pass and a machine's keep the
---    same files; qorpera_run_data_pass answers exactly what it did.
--- 3. qorpera_machine_data_pass(p_environment_id, p_actor, p_database): for the service role (the folder service).
---    p_actor is {"kind":"view", viewId, pass}; the view must be an open, valid test_machine view, which the folder
---    core's own resolution checks (its pass, its placement and boot, the starter's agent and member still reading the
---    root) and refuses while the company's execution is paused (55000), as a run is. It answers the pass and
---    `entries`, each kept file's {path, version, authority}: what the folder service records as the view's reads
---    before an answer that shows rows leaves it (RUNTIME-FOLDER-TEST-MACHINES.md, "Reads").
--- 4. qorpera_data_pass_redeem answers a machine's pass once, within its 60 s, while its view is open and valid and
---    the company's execution is not paused (a machine that keeps running through a pause reads and writes no rows,
---    also with a pass made just before it), with kind `machine`, the view and the machine. A run's pass is answered
---    byte for byte as before (SQL tests 1244, 1262).
---
--- Locks: the table's constraints change under a short lock; the functions read as a folder read does and write only
--- their own new row.
-
 set local lock_timeout = '3s';
-
--- 1. The passes --------------------------------------------------------------------------------------------------------
 
 do $$
 declare v_name text;
@@ -48,20 +19,16 @@ alter table public.qorpera_data_passes
 		(kind = 'run' and run_id is not null and job_id is not null and view_id is null and machine_id is null)
 		or (kind = 'machine' and run_id is null and job_id is null and view_id is not null and machine_id is not null));
 
--- 2. What a pass keeps -------------------------------------------------------------------------------------------------
-
 create function public.qorpera_data_pass_listing(p_environment_id uuid, p_actor jsonb, p_database text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_databases text[] := '{}'; v_database text; v_entries jsonb := '[]'::jsonb; v_count integer := 0;
 	v_read jsonb; v_page jsonb; v_after text; v_entry jsonb; v_part text; v_name text;
 begin
-	-- Company databases, slice 8a (20260930775000): what was qorpera_run_data_pass's own listing, for a run's pass and
-	-- a machine's alike.
+	-- WHY: marker 20260930775000, read in pg_proc.prosrc by SQL test 1273.
 	if p_database is not null then
 		v_databases := array[p_database];
 	else
-		-- Every folder data/<name>/ the actor may list whose name is a database's.
 		loop
 			v_page := public.qorpera_folder_list(p_environment_id, p_actor, 'data', v_after, 1000, false);
 			for v_entry in select e.value from jsonb_array_elements(v_page -> 'entries') e loop
@@ -70,8 +37,6 @@ begin
 						and v_name !~ '^(pg_|qorpera_)' then
 					v_databases := v_databases || v_name; end if;
 			end loop;
-			-- A bound on the looking alone: a folder without a database.toml keeps nothing, so the cap on files kept is
-			-- checked as files are kept, below.
 			if cardinality(v_databases) > 5000 then
 				raise exception 'Data pass would look through more than 5,000 folders under data/' using errcode = '54000'; end if;
 			v_after := v_page ->> 'next';
@@ -80,14 +45,12 @@ begin
 	end if;
 
 	foreach v_database in array v_databases loop
-		-- A database exists when its database.toml does; a folder without one the actor may read keeps nothing.
 		v_read := public.qorpera_folder_read(p_environment_id, p_actor, 'data/' || v_database || '/database.toml');
 		continue when v_read ->> 'found' is distinct from 'true' or v_read #>> '{entry,kind}' is distinct from 'file';
 		v_entries := v_entries || jsonb_build_array(jsonb_build_object('path', 'data/' || v_database || '/database.toml',
 			'sha256', v_read #>> '{entry,fileSha256}', 'bytes', (v_read #>> '{entry,bytes}')::bigint,
 			'version', v_read #> '{entry,version}', 'authority', v_read #> '{entry,authority}'));
 		v_count := v_count + 1;
-		-- Checked as each file is kept, so the listings below always ask for at least one.
 		if v_count > 1000 then
 			raise exception 'Data pass would keep more than 1,000 files' using errcode = '54000'; end if;
 		foreach v_part in array array['tables', 'queries', 'actions'] loop
@@ -110,13 +73,11 @@ begin
 			end loop;
 		end loop;
 	end loop;
-	-- A database named that is not there, and one the actor may not read: no pass, the same answer for both.
 	if p_database is not null and v_count = 0 then
 		raise exception 'Data pass has no such database' using errcode = 'P0002'; end if;
 	return v_entries;
 end $$;
 
--- The files a pass row keeps: each entry's path, hash and size, in the listing's order.
 create function public.qorpera_data_pass_files(p_entries jsonb) returns jsonb language sql immutable
 set search_path = '' as $$
 	select coalesce(jsonb_agg(jsonb_build_object('path', e.value ->> 'path', 'sha256', e.value ->> 'sha256',
@@ -124,14 +85,12 @@ set search_path = '' as $$
 	from jsonb_array_elements(p_entries) with ordinality as e
 $$;
 
--- 3. A run's pass, on the shared listing; a machine's pass -------------------------------------------------------------
-
 create or replace function public.qorpera_run_data_pass(p_environment_id uuid, p_actor jsonb, p_database text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_auth jsonb; v_entries jsonb; v_pass text; v_expires timestamptz;
 begin
-	-- Company databases, slice 5 (20260930750000); its listing is qorpera_data_pass_listing since 20260930775000.
+	-- WHY: markers 20260930750000 and 20260930775000, read in pg_proc.prosrc by SQL test 1273.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if jsonb_typeof(p_actor) is distinct from 'object' or p_actor ->> 'kind' is distinct from 'run' then
@@ -139,7 +98,6 @@ begin
 	if p_database is not null and (p_database !~ '^[a-z][a-z0-9_]{0,39}$' or p_database = 'qorpera'
 			or p_database ~ '^(pg_|qorpera_)') then
 		raise exception 'Database name is invalid' using errcode = '22023'; end if;
-	-- The run as a read resolves it, with plain reads: its job leased to it, its requester a member, its agent active.
 	v_auth := public.qorpera_folder_read_actor(p_environment_id, p_actor);
 	if v_auth ->> 'kind' is distinct from 'staff_agent' or v_auth ->> 'runId' is null or v_auth ->> 'jobId' is null then
 		raise exception 'A data pass is for a run' using errcode = '22023'; end if;
@@ -160,7 +118,7 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_auth jsonb; v_view public.qorpera_folder_views%rowtype; v_entries jsonb; v_pass text; v_expires timestamptz;
 begin
-	-- Company databases, slice 8a (20260930775000)
+	-- WHY: marker 20260930775000, read in pg_proc.prosrc by SQL test 1273.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if jsonb_typeof(p_actor) is distinct from 'object' or p_actor ->> 'kind' is distinct from 'view' then
@@ -168,8 +126,6 @@ begin
 	if p_database is not null and (p_database !~ '^[a-z][a-z0-9_]{0,39}$' or p_database = 'qorpera'
 			or p_database ~ '^(pg_|qorpera_)') then
 		raise exception 'Database name is invalid' using errcode = '22023'; end if;
-	-- The view as a read resolves it: its pass, its placement and boot, the starter's agent and member still reading
-	-- the root; refused while the company's execution is paused, as a run is.
 	v_auth := public.qorpera_folder_read_actor(p_environment_id, p_actor);
 	if v_auth #>> '{view,kind}' is distinct from 'test_machine' or v_auth ->> 'kind' is distinct from 'staff_agent' then
 		raise exception 'A machine''s data pass is for a company machine''s view' using errcode = '22023'; end if;
@@ -191,15 +147,11 @@ begin
 			from jsonb_array_elements(v_entries) with ordinality as e), '[]'::jsonb));
 end $$;
 
--- 4. The gateway's redeem ----------------------------------------------------------------------------------------------
-
 create or replace function public.qorpera_data_pass_redeem(p_pass text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_row public.qorpera_data_passes%rowtype;
 begin
-	-- Company databases, slice 5 (20260930750000): once, within its 60 s, while its run's job is leased. Slice 7
-	-- (20260930764000): with the held step a member said yes to, when the pass was made for one. Slice 8a
-	-- (20260930775000): a machine's pass, while its view is open and valid and the company's execution is not paused.
+	-- WHY: markers 20260930750000, 20260930764000 and 20260930775000, read in pg_proc.prosrc by SQL tests 1262 and 1273.
 	if p_pass is null or p_pass !~ '^[A-Za-z0-9_-]{43}$' then return null; end if;
 	update public.qorpera_data_passes set redeemed_at = clock_timestamp()
 	where pass_sha256 = extensions.digest(p_pass, 'sha256') and redeemed_at is null and expires_at > clock_timestamp()
@@ -224,8 +176,6 @@ begin
 		'requesterUserId', v_row.requester_user_id, 'database', v_row.database, 'files', v_row.files)
 		|| case when v_row.allow is null then '{}'::jsonb else jsonb_build_object('allow', v_row.allow) end;
 end $$;
-
--- 5. Grants ------------------------------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_data_pass_listing(uuid, jsonb, text) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_data_pass_files(jsonb) from public, anon, authenticated, service_role;
