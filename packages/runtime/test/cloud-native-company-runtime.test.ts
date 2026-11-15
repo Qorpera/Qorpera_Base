@@ -3478,13 +3478,12 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// update_memory came to be carried in full.
 	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
 	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
-	// again.
+	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
+	// views plan step 1), and save_app's kit says to read it first, so they moved again.
 	// Both together (master merged into T3-1, 15 November 2026): measured once more on node 2's test machine.
 	// Master and v247's release (app_guide) merged up through T3-3 under no-wall (15 November 2026): measured once more.
 	// T3-5's contracts with app_guide (its own in contract form, save_app's naming it) and master's machine words, merged up through no-wall (15 November 2026): measured once more.
 	// app_guide carried in full where save_app is (T3-6 with #1804, 15 November 2026): measured once more.
-	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
-	// views plan step 1), and save_app's kit says to read it first, so they moved again.
 	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
 	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
 	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
