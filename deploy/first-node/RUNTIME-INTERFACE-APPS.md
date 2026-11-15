@@ -756,9 +756,10 @@ Rules:
   questions of the reserved database `qorpera`, which no company database may carry. `money` in `reads` asks
   `qorpera/money-now`, `money-balance` (`from`, `to`), `money-expected`, `money-months` and `money-kinds` (`month`):
   the bank's sums, never a name, a transfer's text, an account or a single payment. `site` asks `qorpera/sites` and
-  `qorpera/site-*`, which the cloud answers "not counted yet" until slice S1. Neither needs `data`, and `data` reads
-  neither: each question needs its own read (`appNumbersRead`, cloud-client `interface-apps.ts`); another `qorpera/*`
-  name is refused as no question. The web asks them as the member with a plain cloud call
+  `qorpera/site-*`, the site's visits counted by site-serve (slice S1, migration `20260930768000`). Neither needs
+  `data`, and `data` reads neither: each question needs its own read (`appNumbersRead`, cloud-client
+  `interface-apps.ts`); another `qorpera/*` name is refused as no question. The web asks them as the member with a
+  plain cloud call
   (`qorpera_member_company_numbers`, supabase/CLIENT-CONTRACT.md "The company's numbers"), so they work without a
   member gateway too, and the cloud answers only a member who may read `bank/summary.json` (money). The answer has the
   databases' shape, `{columns, rows, more, asOf}`. A watch is not held by any gateway: the web asks a watched
