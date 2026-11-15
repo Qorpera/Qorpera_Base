@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import {
 	chmod,
 	lstat,
@@ -20,8 +20,11 @@ import { promisify } from "node:util";
 import { inflateSync } from "node:zlib";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+	CODE_CHECKS_DRILL,
 	CODE_CHECKS_NEWER_RUN,
+	CODE_DRILL_WORDS,
 	CODE_SITE_COLLECT,
+	CODE_SITE_DRILL_FOLDER,
 	CODE_SITE_DROP,
 	CODE_SITE_EXTENSIONS,
 	CODE_SITE_MAX_BYTES,
@@ -29,12 +32,15 @@ import {
 	CODE_SITE_MAX_FILES,
 	CODE_SITE_MAX_FOLDERS,
 	CODE_SITE_MAX_PATH_BYTES,
+	CODE_SITE_NAME_RULE,
 	CODE_SITE_PATH,
+	CODE_SITE_RESERVED_NAMES,
 	type CodeSiteProblem,
 	codeSiteCollectAnswer,
 	codeSiteDropAnswer,
 	codeSiteFolderValid,
 	codeSiteManifest,
+	codeSiteNameRefusal,
 	codeSiteNameValid,
 	codeSiteRefusedSummary,
 	codeSiteReported,
@@ -60,6 +66,26 @@ const sqlFunction = (name: string) => {
 	const start = SITES_SQL.indexOf(`create function public.${name}(`);
 	return SITES_SQL.slice(start, SITES_SQL.indexOf("$$;", start));
 };
+/** The names a site never takes, as the newest migration that defines `qorpera_site_reserved_names()` has them, with
+ * that migration's name and text; null while no migration of this tree names the function (step 5's,
+ * `20260930756000_site_hosts.sql`, is not in it yet). One that names it in a way this does not read throws. */
+const RESERVED_SQL = () => {
+	const folder = new URL("../../../supabase/migrations/", import.meta.url);
+	const naming = readdirSync(folder)
+		.filter((name) => name.endsWith(".sql"))
+		.sort()
+		.map((name) => ({ name, text: readFileSync(new URL(name, folder), "utf8") }))
+		.filter(({ text }) => text.includes("qorpera_site_reserved_names"));
+	if (naming.length === 0) return null;
+	const newest = naming.filter(({ text }) => text.includes("function public.qorpera_site_reserved_names()")).at(-1);
+	const text =
+		newest &&
+		/function public\.qorpera_site_reserved_names\(\)[^$]*\$\$\s*--[^\n]*\n\s*select '([^']*)'::text\s*\$\$;/.exec(
+			newest.text,
+		)?.[1];
+	if (!newest || text === undefined) throw new Error("qorpera_site_reserved_names() is not as this test reads it");
+	return { name: newest.name, text, migration: newest.text };
+};
 
 describe("the site's rules, as the database's", () => {
 	it("has the plan's bounds", () => {
@@ -78,18 +104,129 @@ describe("the site's rules, as the database's", () => {
 		expect(sqlFunction("qorpera_site_path_valid")).toContain("char_length(p_path) <= 512");
 	});
 
-	it("takes a site's name as qorpera_site_slug_valid does", () => {
+	it("takes a site's name as qorpera_site_slug_valid does: 550000's rule and its 24 names, and D20 of 756000", () => {
 		const body = sqlFunction("qorpera_site_slug_valid");
 		const reserved = [...(/not in \(([^)]+)\)/.exec(body)?.[1] ?? "").matchAll(/'([a-z-]+)'/g)].map(
 			(m) => m[1] as string,
 		);
-		expect(reserved.length).toBeGreaterThan(20);
+		expect(reserved).toHaveLength(24);
 		expect(body).toContain("'^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$'");
 		for (const name of reserved) expect(codeSiteNameValid(name)).toBe(false);
-		for (const name of ["abc", "gift-message", "a".repeat(48), "a--b", "000"])
-			expect(codeSiteNameValid(name)).toBe(true);
-		for (const name of ["ab", "a".repeat(49), "-ab", "ab-", "aBc", "a_b", "a.b", ""])
-			expect(codeSiteNameValid(name)).toBe(false);
+		// Today's 24 open the text 756000 keeps, in their order (build5/A1.md counts them 25; the text is 24 of them).
+		expect(CODE_SITE_RESERVED_NAMES.startsWith(`${reserved.join(" ")} `)).toBe(true);
+		for (const name of ["abc", "gift-message", "saml-gift-message", "a".repeat(48), "000", "a-b-c"])
+			expect(codeSiteNameValid(name), name).toBe(true);
+		for (const name of ["ab", "a".repeat(49), "-ab", "ab-", "aBc", "a_b", "a.b", "", " abc", "abc\n", "ab c"])
+			expect(codeSiteNameValid(name), JSON.stringify(name)).toBe(false);
+		// D20 (STEP5-BUILD.md): never two hyphens in a row, never ending -preview, never holding qorpera, and none of the
+		// 118 names. A1's own cases (1252, section 3) among them: look-shop, webshop and shop-next are names; shop is not.
+		for (const name of [
+			"look-shop",
+			"webshop",
+			"shop-next",
+			"next-shop",
+			"preview-shop",
+			"shop-previews",
+			"shoppreview",
+			"my-app",
+			"qorper-a",
+			`${"a".repeat(39)}-preview1`,
+		])
+			expect(codeSiteNameValid(name), name).toBe(true);
+		for (const name of [
+			"a--b",
+			"shop--app",
+			"look--shop",
+			"xn--abc",
+			"ab--next",
+			"shop---next",
+			"x--next--next",
+			"shop-preview",
+			"app-preview",
+			"a-preview",
+			"qorpera",
+			"qorpera-shop",
+			"myqorpera",
+			"shop-qorpera-x",
+			"shop",
+			"docs",
+			"next",
+			"preview",
+			"screens",
+			"edge",
+			"inbox",
+			"beta",
+		])
+			expect(codeSiteNameValid(name), name).toBe(false);
+	});
+
+	it("keeps the reserved text byte for byte as migration 20260930756000 has it, and fails while they differ", () => {
+		// A1's text (build5/A1.md): 118 names, 775 bytes, this SHA-256. It pins the copy while the migration is not yet in
+		// this tree; once it is, its own text is read and compared, so a change to either fails here.
+		expect(createHash("sha256").update(CODE_SITE_RESERVED_NAMES, "utf8").digest("hex")).toBe(
+			"e3f73121ff872bb8b690df2a702addf2b39285e2ef4543c8fc198fd1ffbc6745",
+		);
+		expect(bytes(CODE_SITE_RESERVED_NAMES)).toBe(775);
+		const names = CODE_SITE_RESERVED_NAMES.split(" ");
+		expect(names).toHaveLength(118);
+		expect(new Set(names).size).toBe(118);
+		for (const name of names) {
+			expect(name, name).toMatch(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/);
+			expect(codeSiteNameValid(name), name).toBe(false);
+			// Only the name itself is refused: one more part makes it a name (but where it then holds qorpera).
+			if (!name.includes("qorpera")) expect(codeSiteNameValid(`${name}-x1`), name).toBe(true);
+		}
+		const kept = RESERVED_SQL();
+		if (kept === null) return;
+		expect(kept.text).toBe(CODE_SITE_RESERVED_NAMES);
+		// The rule beside it, as that migration writes it into qorpera_site_slug_valid.
+		for (const clause of [
+			"and strpos(p_slug, '--') = 0 and right(p_slug, 8) <> '-preview' and strpos(p_slug, 'qorpera') = 0",
+			"and p_slug <> all (string_to_array(public.qorpera_site_reserved_names(), ' ')), false)",
+		])
+			expect(kept.migration, clause).toContain(clause);
+	});
+
+	it("says the rule in the kernel's one sentence, byte for byte (migration 20260930756000's qorpera_site_name_words)", () => {
+		// The lead's words (13 Nov 2026, the cross-check's seam 2), the same on every path that refuses a name.
+		expect(CODE_SITE_NAME_RULE).toBe(
+			"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).",
+		);
+		const migration = readFileSync(
+			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
+			"utf8",
+		);
+		const words =
+			/create function public\.qorpera_site_name_words\(\)[^\n]*\n\t-- 20260930756000\n\tselect '((?:[^']|'')*)'::text\n\$\$;/.exec(
+				migration,
+			)?.[1];
+		expect(words?.replaceAll("''", "'")).toBe(CODE_SITE_NAME_RULE);
+		// And every refusal of a name in that migration says it.
+		expect(migration.split("'SITE_NAME_INVALID: ' || public.qorpera_site_name_words()").length - 1).toBe(5);
+	});
+
+	it("says which part of the rule a name breaks, within the 300 bytes a refusal shows whole", () => {
+		const rule = CODE_SITE_NAME_RULE;
+		const after = " Pick another, or leave name out.";
+		for (const [name, broken] of [
+			["ab", ""],
+			["Shop", ""],
+			["a".repeat(49), ""],
+			["a--b", " This one has two hyphens in a row."],
+			["shop--preview", " This one has two hyphens in a row."],
+			["shop-preview", " This one ends in -preview."],
+			["qorpera-shop", " This one contains qorpera."],
+			["shopqorpera", " This one contains qorpera."],
+			["qorpera", " This one contains qorpera."],
+			["shop", " This one is a reserved name."],
+			["well-known", " This one is a reserved name."],
+		] as const) {
+			const words = codeSiteNameRefusal(name);
+			expect(words, name).toBe(`${rule}${broken}${after}`);
+			expect(bytes(words as string)).toBeLessThanOrEqual(300);
+		}
+		for (const name of ["look-shop", "saml-gift-message", "a".repeat(48)])
+			expect(codeSiteNameRefusal(name)).toBeNull();
 	});
 
 	it("takes a folder and a title as the kernel keeps a made site's", () => {
@@ -326,20 +463,20 @@ describe("the report's site", () => {
 				title: null,
 			},
 		});
-		expect(codeSiteReported({ ...MADE, folder: ".", name: "shop", title: "The shop", files: 500, bytes: 0 })).toEqual(
-			{
-				state: "made",
-				site: {
-					schema: "qorpera.code-site/v1",
-					tree: TREE,
-					files: 500,
-					bytes: 0,
-					folder: ".",
-					name: "shop",
-					title: "The shop",
-				},
+		expect(
+			codeSiteReported({ ...MADE, folder: ".", name: "look-shop", title: "The shop", files: 500, bytes: 0 }),
+		).toEqual({
+			state: "made",
+			site: {
+				schema: "qorpera.code-site/v1",
+				tree: TREE,
+				files: 500,
+				bytes: 0,
+				folder: ".",
+				name: "look-shop",
+				title: "The shop",
 			},
-		);
+		});
 		expect(codeSiteReported({ state: "missed", code: "CODE_SITE_COLLECT_EXIT_4" })).toEqual({
 			state: "missed",
 			code: "CODE_SITE_COLLECT_EXIT_4",
@@ -356,6 +493,11 @@ describe("the report's site", () => {
 			{ ...MADE, bytes: 25 * MiB + 1 },
 			{ ...MADE, folder: "../x" },
 			{ ...MADE, name: "api" },
+			// The name rule of step 5 (D20), which the kernel holds from migration 20260930756000 on.
+			{ ...MADE, name: "shop" },
+			{ ...MADE, name: "look--shop" },
+			{ ...MADE, name: "look-preview" },
+			{ ...MADE, name: "qorpera-look" },
 			{ ...MADE, title: " x" },
 			{ ...MADE, title: "" },
 		])
@@ -436,6 +578,52 @@ describe("the words of a refused site", () => {
 		expect(long).not.toContain("pppppppp");
 		const whole = links(`a/${"b".repeat(500)}.html`);
 		expect(whole).toContain(`has links that start with / in a/${"b".repeat(500)}.html (2 of them). A site`);
+	});
+
+	it("starts with an operator's drill's words when given them, counted within the 3,500 bytes (step 5)", () => {
+		expect(CODE_DRILL_WORDS).toBe(
+			"This was a drill by Qorpera's operator: nothing is wrong with your work, and the next try goes through. Finish again.",
+		);
+		const opening = `${CODE_DRILL_WORDS} `;
+		// The site drill's own refusal, byte for byte.
+		expect(codeSiteRefusedSummary(problem("SITE_FOLDER_MISSING"), CODE_SITE_DRILL_FOLDER, opening)).toBe(
+			`${CODE_DRILL_WORDS} Nothing went into main: every check passed, but the site in "qorpera-drill-missing" is not there (no folder of that name once the checks ran; a link is not followed). Fix it in the code or in the checks file's "site", and finish again. [code=CODING_CHECKS_SITE_REFUSED]`,
+		);
+		for (const value of [problem("SITE_NO_INDEX"), problem("SITE_FILE_NAME", "a b.html")])
+			expect(codeSiteRefusedSummary(value, "dist", opening)).toBe(
+				`${opening}${codeSiteRefusedSummary(value, "dist")}`,
+			);
+		// A path that fits without the words but not with them is left out, never cut; the words stay.
+		const path = `a/${"b".repeat(3000)}.html`;
+		const without = codeSiteRefusedSummary(problem("SITE_FILE_NAME", path), "dist");
+		expect(without).toContain(path);
+		const said = codeSiteRefusedSummary(
+			problem("SITE_FILE_NAME", path),
+			"dist",
+			`${"w".repeat(3500 - bytes(without) + 1)} `,
+		);
+		expect(bytes(said)).toBeLessThanOrEqual(3500);
+		expect(said).not.toContain("bbbbbbbb");
+		expect(said.startsWith("www")).toBe(true);
+	});
+});
+
+describe("an operator's drill (step 5, D17)", () => {
+	it("is a check the checks file could hold, which says it is a drill and fails, and a folder that can be a site's", async () => {
+		expect(CODE_CHECKS_DRILL).toEqual({
+			name: "qorpera-drill",
+			run: `echo "A drill by Qorpera's operator: this check fails on purpose, once."; exit 1`,
+			timeoutSeconds: 10,
+			cwd: ".",
+		});
+		expect(CODE_SITE_DRILL_FOLDER).toBe("qorpera-drill-missing");
+		expect(codeSiteFolderValid(CODE_SITE_DRILL_FOLDER)).toBe(true);
+		// Run as a check runs it (bash -c, no profile): its words, then exit 1.
+		const ran = await exec("bash", ["--noprofile", "--norc", "-c", CODE_CHECKS_DRILL.run]).then(
+			(done) => ({ code: 0, out: done.stdout }),
+			(error: { code: number; stdout: string }) => ({ code: error.code, out: error.stdout }),
+		);
+		expect(ran).toEqual({ code: 1, out: "A drill by Qorpera's operator: this check fails on purpose, once.\n" });
 	});
 });
 
@@ -1613,6 +1801,53 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 					for (const text of [run.output, err]) expect(text).not.toContain(value.slice(at, at + 8));
 			expect(await run.m.wrote(run.name)).toEqual([]);
 		}
+	});
+
+	it("lets links from the root through only while QORPERA_SITE_ROOT_LINKS is exactly allowed (step 5, D15)", async () => {
+		// The first live site's page (11 Nov), and a style sheet that links from the root.
+		const rooted = {
+			"index.html": page(
+				'<link rel="stylesheet" href="/src/style.css"><script type="module" src="/src/app.js"></script>',
+			),
+			"src/style.css": "body { background: url(/img/bg.png) }",
+			"src/app.js": "import '/src/x.js';",
+		};
+		// Refused as before: the host's `refused`, no variable at all (a host before step 5), and every other value.
+		const refusing: Record<string, string>[] = [
+			{ QORPERA_SITE_ROOT_LINKS: "refused" },
+			{},
+			...["ALLOWED", "allowed ", " allowed", "yes", "1", ""].map((v) => ({ QORPERA_SITE_ROOT_LINKS: v })),
+		];
+		for (const value of refusing)
+			expect(await collectOf(rooted, value), JSON.stringify(value)).toMatchObject({
+				code: 3,
+				signal: null,
+				output: "SITE_LINKS_FROM_ROOT index.html 2\n",
+			});
+		// Allowed: the site is made, its files whole.
+		const made = await collectOf(rooted, { QORPERA_SITE_ROOT_LINKS: "allowed" });
+		expect(made).toMatchObject({ code: 0, signal: null });
+		expect(made.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\nbytes \d+\n$/);
+		const tree = await made.m.treeOf(treeIn(made.output));
+		expect([...tree.keys()].sort()).toEqual(Object.keys(rooted).sort());
+		// Every other rule still holds: a secret value, a missing index, a missing folder.
+		const environment = {
+			QORPERA_SITE_ROOT_LINKS: "allowed",
+			QORPERA_SITE_SECRET_NAMES: "LINK_KEY",
+			LINK_KEY: "link-secret-4242",
+		};
+		expect(await collectOf({ ...rooted, "a.js": "link-secret-4242" }, environment)).toMatchObject({
+			code: 3,
+			output: "SITE_HOLDS_SECRET LINK_KEY a.js\n",
+		});
+		expect(await collectOf({ "a.html": page('<a href="/">x</a>') }, environment)).toMatchObject({
+			code: 3,
+			output: "SITE_NO_INDEX\n",
+		});
+		expect(await collectOf(rooted, { ...environment, QORPERA_SITE_FOLDER: CODE_SITE_DRILL_FOLDER })).toMatchObject({
+			code: 3,
+			output: "SITE_FOLDER_MISSING\n",
+		});
 	});
 
 	it("reads 25 MiB of pages and styles within the collect's time", async () => {
