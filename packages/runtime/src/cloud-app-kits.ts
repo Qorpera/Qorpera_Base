@@ -12,7 +12,10 @@
  * - `curve`: one value over time, drawn big, with the expected part as a band and a safe level (Jonas, 14 November
  *   2026, "Yes, start building" on lanes/company-views-20261114/PLAN.md's shape kits);
  * - `stack`: things that want a member's yes, one big card at a time, answered from the card;
- * - `shelf`: the company's real things side by side, each with one level behind it.
+ * - `shelf`: the company's real things side by side, each with one level behind it;
+ * - `ring`: a year, a month or a week as a ring, with marks for points in time, wedges for stretches, a hand at now and
+ *   the next thing in its middle (Jonas, 14 November 2026, PLAN.md step 5);
+ * - `flow`: money or people as wide bands from where they come, through the company, to where they go.
  * An app made from one holds:
  * - `engine.js`, the kit's engine (packages/runtime/kits/<kit>/engine.js; `KIT_ENGINE_JS` holds each one's text);
  * - `index.html`, the page (`kitPage`), which names the data file and every picture and video the data refers to: a
@@ -30,12 +33,16 @@ import {
 	BOARD_KIT_GUIDE,
 	CURVE_ENGINE_JS,
 	CURVE_KIT_GUIDE,
+	FLOW_ENGINE_JS,
+	FLOW_KIT_GUIDE,
 	MODEL_ENGINE_JS,
 	MODEL_KIT_GUIDE,
 	OBJECT_ENGINE_JS,
 	OBJECT_KIT_GUIDE,
 	PATH_ENGINE_JS,
 	PATH_KIT_GUIDE,
+	RING_ENGINE_JS,
+	RING_KIT_GUIDE,
 	SHELF_ENGINE_JS,
 	SHELF_KIT_GUIDE,
 	STACK_ENGINE_JS,
@@ -44,7 +51,17 @@ import {
 import { KIT_FIGURES } from "./cloud-app-kit-figures.generated.ts";
 
 /** The kits whose agent writes one data file. */
-export const DATA_KITS = Object.freeze(["model", "board", "path", "object", "curve", "stack", "shelf"] as const);
+export const DATA_KITS = Object.freeze([
+	"model",
+	"board",
+	"path",
+	"object",
+	"curve",
+	"stack",
+	"shelf",
+	"ring",
+	"flow",
+] as const);
 export type DataKit = (typeof DATA_KITS)[number];
 
 export const isDataKit = (kit: string | null | undefined): kit is DataKit =>
@@ -67,6 +84,8 @@ export const KIT_ENGINE_JS: Readonly<Record<DataKit, string>> = Object.freeze({
 	curve: CURVE_ENGINE_JS,
 	stack: STACK_ENGINE_JS,
 	shelf: SHELF_ENGINE_JS,
+	ring: RING_ENGINE_JS,
+	flow: FLOW_ENGINE_JS,
 });
 
 /** What an agent is told of each kit (packages/runtime/kits/<kit>/KIT.md): what it draws and what its data holds.
@@ -79,6 +98,8 @@ export const KIT_GUIDE: Readonly<Record<DataKit, string>> = Object.freeze({
 	curve: CURVE_KIT_GUIDE,
 	stack: STACK_KIT_GUIDE,
 	shelf: SHELF_KIT_GUIDE,
+	ring: RING_KIT_GUIDE,
+	flow: FLOW_KIT_GUIDE,
 });
 
 /** What each kit's data must hold for its engine to have anything to draw. */
@@ -90,6 +111,8 @@ const KIT_NEEDS: Readonly<Record<DataKit, readonly string[]>> = Object.freeze({
 	curve: ["points"],
 	stack: ["cards"],
 	shelf: ["things"],
+	ring: [],
+	flow: ["from", "to"],
 });
 
 /** A text a member reads on a kit's page is a label or a short note: past this many characters an engine cuts it. */
@@ -283,7 +306,134 @@ export function parseKitData(
 	if (kit === "shelf" && !(Array.isArray(data.things) && data.things.length > 0))
 		return { problem: `${file} has no thing in things: the shelf kit has nothing to stand on its shelf` };
 	if (kit === "stack" && !Array.isArray(data.cards)) return { problem: `${file}'s cards must be a list` };
+	if (kit === "ring") {
+		const problem = ringProblem(data);
+		if (problem) return { problem: `${file} ${problem}` };
+	}
+	if (kit === "flow") {
+		const problem = flowProblem(data);
+		if (problem) return { problem: `${file} ${problem}` };
+	}
 	return { data };
+}
+
+/** The ring kit's bounds (packages/runtime/kits/ring/KIT.md): marks and wedges on one ring. */
+export const RING_BOUNDS = Object.freeze({ marks: 12, wedges: 8 });
+/** The ring's spans. */
+const RING_SPANS: readonly unknown[] = ["year", "month", "week"];
+const DAY_MS = 86_400_000;
+
+/** A day as the ring kit takes it, `YYYY-MM-DD` of a real date, as its number of days since 1970; null for any other. */
+function ringDay(value: unknown): number | null {
+	const m = typeof value === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim()) : null;
+	if (!m) return null;
+	const time = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+	const day = new Date(time);
+	return day.getUTCMonth() === Number(m[2]) - 1 && day.getUTCDate() === Number(m[3]) ? time / DAY_MS : null;
+}
+
+/** What is wrong with a ring's data for its engine, or null: a span it draws, dates it can place, and one mark or
+ * wedge at least, within the kit's bounds and each named, so what save_app takes is what the page draws. */
+function ringProblem(data: Readonly<Record<string, unknown>>): string | null {
+	if (data.span !== undefined && !RING_SPANS.includes(data.span))
+		return 'has a span the ring kit does not draw: "year", "month" or "week"';
+	for (const key of ["start", "now"] as const)
+		if (data[key] !== undefined && ringDay(data[key]) === null) return `has a ${key} that is not a date (YYYY-MM-DD)`;
+	const marks = data.marks ?? [];
+	const wedges = data.wedges ?? [];
+	if (!Array.isArray(marks)) return "has marks that are no list";
+	if (!Array.isArray(wedges)) return "has wedges that are no list";
+	if (marks.length + wedges.length === 0)
+		return "has no mark and no wedge: the ring kit has nothing to put on its ring";
+	if (marks.length > RING_BOUNDS.marks)
+		return `has ${marks.length} marks: the ring kit draws ${RING_BOUNDS.marks} at most`;
+	if (wedges.length > RING_BOUNDS.wedges)
+		return `has ${wedges.length} wedges: the ring kit draws ${RING_BOUNDS.wedges} at most`;
+	const things: [string, readonly unknown[], readonly string[]][] = [
+		["mark", marks, ["at"]],
+		["wedge", wedges, ["from"]],
+	];
+	for (const [kind, list, needs] of things)
+		for (const [index, thing] of list.entries()) {
+			if (typeof thing !== "object" || thing === null || Array.isArray(thing))
+				return `has a ${kind} that is no object (number ${index + 1})`;
+			const each = thing as Record<string, unknown>;
+			if (typeof each.name !== "string" || each.name.trim() === "")
+				return `has a ${kind} with no name (number ${index + 1})`;
+			for (const key of [...needs, ...(kind === "wedge" && each.to !== undefined ? ["to"] : [])])
+				if (ringDay(each[key]) === null)
+					return `has a ${kind} ${each.name} whose ${key} is not a date (YYYY-MM-DD)`;
+		}
+	return null;
+}
+
+/** The first day of a ring's span and the day after its last, as day numbers: the span that holds `start`, or the one
+ * that holds `today`, as the engine draws it (a week given no start begins on a Monday). */
+function ringSpan(data: Readonly<Record<string, unknown>>, today: Date): readonly [number, number] {
+	const span = RING_SPANS.includes(data.span) ? data.span : "year";
+	const start = ringDay(data.start);
+	const y = today.getFullYear();
+	const m = today.getMonth();
+	const first =
+		start !== null
+			? new Date(start * DAY_MS)
+			: new Date(
+					span === "year"
+						? Date.UTC(y, 0, 1)
+						: span === "month"
+							? Date.UTC(y, m, 1)
+							: Date.UTC(y, m, today.getDate() - ((today.getDay() + 6) % 7)),
+				);
+	const end =
+		span === "year"
+			? Date.UTC(first.getUTCFullYear() + 1, first.getUTCMonth(), first.getUTCDate())
+			: span === "month"
+				? Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, first.getUTCDate())
+				: first.getTime() + 7 * DAY_MS;
+	return [first.getTime() / DAY_MS, end / DAY_MS];
+}
+
+/** The flow kit's bounds (packages/runtime/kits/flow/KIT.md): the ends a side may name, of which its page draws a few
+ * and joins the rest into one band, and the bands straight through. */
+export const FLOW_BOUNDS = Object.freeze({ side: 24, drawn: 6, links: 24 });
+
+/** What is wrong with a flow's data for its engine, or null: one end at least on each side, each named and told apart,
+ * and bands straight through that join ends it has. */
+function flowProblem(data: Readonly<Record<string, unknown>>): string | null {
+	const ids = new Map<string, Set<string>>();
+	for (const side of ["from", "to"] as const) {
+		const ends = data[side];
+		if (!Array.isArray(ends) || ends.length === 0)
+			return `has no end in ${side}: the flow kit draws a band from each`;
+		if (ends.length > FLOW_BOUNDS.side)
+			return `has ${ends.length} ends in ${side}: the flow kit takes ${FLOW_BOUNDS.side} at most`;
+		const seen = new Set<string>();
+		for (const [index, end] of ends.entries()) {
+			if (typeof end !== "object" || end === null || Array.isArray(end))
+				return `has an end in ${side} that is no object (number ${index + 1})`;
+			const { id, name } = end as { id?: unknown; name?: unknown };
+			if (typeof name !== "string" || name.trim() === "")
+				return `has an end in ${side} with no name (number ${index + 1})`;
+			if (id !== undefined && (typeof id !== "string" || !/^[A-Za-z0-9-]{1,64}$/.test(id)))
+				return `has an end ${name} in ${side} whose id is not letters, digits and -`;
+			const key = typeof id === "string" ? id : name.trim();
+			if (seen.has(key)) return `has ${key} twice in ${side}`;
+			seen.add(key);
+		}
+		ids.set(side, seen);
+	}
+	if (data.links === undefined) return null;
+	if (!Array.isArray(data.links)) return "has links that are no list";
+	if (data.links.length > FLOW_BOUNDS.links)
+		return `has ${data.links.length} links: the flow kit draws ${FLOW_BOUNDS.links} at most`;
+	for (const [index, link] of data.links.entries()) {
+		const { from, to } = (typeof link === "object" && link !== null ? link : {}) as { from?: unknown; to?: unknown };
+		if (typeof from !== "string" || !ids.get("from")?.has(from))
+			return `has a link (number ${index + 1}) whose from is no id of an end in from`;
+		if (typeof to !== "string" || !ids.get("to")?.has(to))
+			return `has a link (number ${index + 1}) whose to is no id of an end in to`;
+	}
+	return null;
 }
 
 /**
@@ -395,11 +545,14 @@ export function kitPage(
  *   written and the app is saved again (the page names its pictures when it is written).
  * - More questions of the company's databases than a page keeps live: the rest show as not known.
  * - Texts longer than a kit shows: a page of a kit holds labels and short notes, and an engine cuts the rest.
+ * - A ring's marks and wedges outside its span (the one that holds `start`, or `today`), which its page does not draw.
+ * - A flow's side of more ends than its page draws: the smallest join one band.
  */
 export function kitNotes(
 	kit: DataKit,
 	data: Readonly<Record<string, unknown>>,
 	holds: (path: string) => boolean,
+	today: Date = new Date(),
 ): string[] {
 	const notes: string[] = [];
 	const missing = kitMedia(data).filter((path) => !holds(path));
@@ -427,5 +580,32 @@ export function kitNotes(
 		notes.push(
 			`${long.length === 1 ? "1 text is" : `${long.length} texts are`} longer than a ${kit} page shows (in ${[...new Set(long)].slice(0, 4).join(", ")}): the page cuts ${long.length === 1 ? "it" : "them"}. A kit's page holds names, numbers and notes of a line; the reasoning stays in its file, linked as a source.`,
 		);
+	if (kit === "ring") {
+		const [first, after] = ringSpan(data, today);
+		const day = (thing: unknown, key: string) =>
+			ringDay(typeof thing === "object" && thing !== null ? (thing as Record<string, unknown>)[key] : null);
+		const outside = (thing: unknown, from: string, to: string) => {
+			const a = day(thing, from);
+			const b = day(thing, to) ?? a;
+			return a !== null && b !== null && (Math.max(a, b) < first || Math.min(a, b) >= after);
+		};
+		const count =
+			(Array.isArray(data.marks) ? data.marks.filter((mark) => outside(mark, "at", "at")).length : 0) +
+			(Array.isArray(data.wedges) ? data.wedges.filter((wedge) => outside(wedge, "from", "to")).length : 0);
+		const date = (n: number) => new Date(n * DAY_MS).toISOString().slice(0, 10);
+		if (count > 0)
+			notes.push(
+				`${count === 1 ? "1 mark or wedge is" : `${count} marks or wedges are`} outside the ring's ${typeof data.span === "string" ? data.span : "year"}, ${date(first)} to ${date(after - 1)}: the page leaves ${count === 1 ? "it" : "them"} out. Give start, or take ${count === 1 ? "it" : "them"} away.`,
+			);
+	}
+	if (kit === "flow")
+		for (const side of ["from", "to"] as const) {
+			const list = data[side];
+			const ends = Array.isArray(list) ? list.length : 0;
+			if (ends > FLOW_BOUNDS.drawn)
+				notes.push(
+					`${side} names ${ends} ends: the page draws the ${FLOW_BOUNDS.drawn - 1} largest and joins the other ${ends - FLOW_BOUNDS.drawn + 1} into one band (words.other). Fewer bands read better.`,
+				);
+		}
 	return notes;
 }

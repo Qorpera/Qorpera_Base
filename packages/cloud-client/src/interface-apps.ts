@@ -88,7 +88,8 @@ export function parseAppWrites(
  * videos that are visual-first to let you see the company"): the kit writes `engine.js` and `index.html`, the agent
  * `<kit>.json` and the pictures it names. `curve`, `stack` and `shelf` are data kits of the same kind, each one big
  * shape (Jonas, 14 November 2026): a value over time, things that want a member's yes, the company's things side by
- * side. */
+ * side; `ring` and `flow` too: a year, a month or a week as a ring, and money or people from where they come to where
+ * they go. */
 export const APP_KITS = Object.freeze([
 	"explainer",
 	"model",
@@ -98,6 +99,8 @@ export const APP_KITS = Object.freeze([
 	"curve",
 	"stack",
 	"shelf",
+	"ring",
+	"flow",
 ] as const);
 export type AppKit = (typeof APP_KITS)[number];
 

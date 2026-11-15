@@ -354,6 +354,8 @@ in every app of the kit.
 | `curve` | where is it going? | one value over time, big: the past as a filled area, what is expected as a dotted line inside a band as wide as it is unsure, a "now" line, a dashed safe level, up to three marked points, and the value that matters large at the top, which follows a finger, the pointer or the arrow keys along the curve; a future nobody has said anything about is fog (14 November 2026) |
 | `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
 | `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
+| `ring` | when is it? | a year, a month or a week as one ring, its months or days round it and the part gone by a shade darker, a hand at now, marks for points in time (a deadline, a launch, a payday) and wedges for stretches (a campaign, a holiday, a season) that reach out as far as their amount where they have one; the middle holds the next thing and how many days off it is, or a number, and follows a finger, the pointer or the arrow keys round the ring; at most 12 marks and 8 wedges, and what falls outside the span is not drawn (15 November 2026) |
+| `flow` | where does it come from, and where does it go? | money or people as wide soft bands from where they come, through the company's bar in the middle (or straight from each source to each end, with `links`), to where they go, each band as wide as its amount and what is kept last in green; past six ends on a side the smallest join one band, Other; one big number, all that came in, which becomes a band's amount and share as a member points at it or steps with the arrow keys; an amount nobody knows is an open band with "?" (15 November 2026) |
 
 An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
 call the web does not already answer.
@@ -367,7 +369,10 @@ call the web does not already answer.
 
 - **`save_app` writes the two that are Qorpera's.** With `manifest.kit` a data kit, a new app needs its data file
   among its files (`APP_DATA_MISSING` without it), and the data must read as the kit's (`APP_DATA_INVALID`, with why:
-  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without). A call that names
+  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without; a ring's dates that are
+  no `YYYY-MM-DD`, a ring of more than 12 marks or 8 wedges, a flow's end with no name or an id twice, a flow of more
+  than 24 ends a side or 24 links, and a link to an end it lacks). Its answer's `look` also names a ring's marks and
+  wedges outside its span and a flow's side whose smallest ends join Other. A call that names
   `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
   (`APP_KIT_ENTRY`). On a later save the two are written again only where the folder holds none or other text (by
   hash): new data, a new title, a picture that has arrived, or the engine of a newer runtime. An existing app takes
