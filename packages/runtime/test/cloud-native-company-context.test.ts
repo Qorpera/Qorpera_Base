@@ -1644,12 +1644,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // received; 20260930762000, 14 November 2026), all three instructions were measured once more.
 // With all of it on one tree (step 5.1's D1a and app_guide; release v247, 14 November 2026) the conversation's
 // and a private conversation's instructions were measured once more.
+// With a render's final frames kept in the company folder and no person built from plain shapes (the first real job
+// on the image with Blender and the starter set, 14 November 2026), all three were measured once more, and the
+// conversation's and a private conversation's again on the tree with release v247 (15 November 2026).
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "80d863024aee068befff119c6665150b25d8511dee39341ea1f28d5846623af2",
+			instructions: "df6160007aa08111b7a17ed5577bce97dcb6a8764252532b81186652ff8d9377",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1657,7 +1660,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "1d31664cbdb78bd48da2f14d3e4e553bf3dba87bb555423d9f21c8e42def3daa",
+			instructions: "7a1285e939be0a9e60ab1b880872d7d6b38ba34a178ee98b674902c718d84886",
 			prompt: "b4741a3a02dab33d704e68e7e1354607ee354a922f42c7eac4f1560e7a566b78",
 		},
 	],
@@ -1665,7 +1668,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "80d863024aee068befff119c6665150b25d8511dee39341ea1f28d5846623af2",
+			instructions: "df6160007aa08111b7a17ed5577bce97dcb6a8764252532b81186652ff8d9377",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],
@@ -1841,6 +1844,34 @@ it("has a render lit and looked at like a photograph, on a machine sized for it 
 	expect(staff.indexOf("Checking how a page looks, taking pictures of it or filming it")).toBeLessThan(
 		staff.indexOf(sized),
 	);
+});
+
+// The first real job after the image with Blender and the starter set went live (a company's storyboard as real
+// photos, 14 November 2026): its worker took an 8-processor machine, the set's light and materials and a small frame
+// first, as told. Two things were still wrong. The six final frames lay on the machine's disk when the run ended
+// before it had copied them (the model account's usage limit). And the hand that reaches for the lamp was a ribbed
+// tube: the set has a room, not people. Jonas, the same day: "are they implemented in the best possible way, or are
+// we still using the wrong processes/machine sizes?", and to these two sentences: "Yes, build it".
+it("keeps a render's final frames in the folder and builds no person from plain shapes (14 November 2026)", () => {
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	const staff = cloudCompanyRuntimeInstructions(null, false);
+	const frames =
+		"Save each final frame into the company folder as it is finished (on a machine, under /company), not only on the machine's disk: a run can end before it has copied them.";
+	const people =
+		"A person, a hand or a face put together from plain shapes gives a render away at once: frame the shot so that no person is in it, or, where the person is the point of the shot, make that picture with make_picture when this run has it, describing the product as the render shows it.";
+	// A worker renders too, so both are in what every run reads, right after the look step they finish.
+	for (const instructions of [staff, worker]) {
+		const look = instructions.indexOf("because a render uses every processor it is given.");
+		expect(look).toBeGreaterThan(-1);
+		expect(instructions.indexOf(frames)).toBeGreaterThan(look);
+		expect(instructions.indexOf(people)).toBeGreaterThan(instructions.indexOf(frames));
+		expect(instructions.indexOf("Founders may not know which tools a part needs")).toBeGreaterThan(
+			instructions.indexOf(people),
+		);
+	}
 });
 
 it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {
