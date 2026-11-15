@@ -60,9 +60,9 @@ export function parseRoute(hash: string): Route {
 		// A page's, an app's and a concept's names keep one rule (cloud-client isInterfaceName). This parse is in
 		// theme.js too (ui/boot.ts), whose size is pinned: keep it short.
 		const named = id !== undefined && id.length <= 64 && INTERFACE_NAME.test(id);
-		if (section === "i" && named) return { name: "company", profileId, section: "interface", id };
-		if (section === "a" && named) return { name: "company", profileId, section: "app", id };
-		if (section === "site" && named) return { name: "company", profileId, section, id };
+		// A page (`i`), an app (`a`) and a website (`site`) by its name, in one return: shorter in theme.js.
+		const by = section === "i" ? "interface" : section === "a" ? "app" : section === "site" ? section : undefined;
+		if (by && named) return { name: "company", profileId, section: by, id };
 		if (section === "concepts") return { name: "company", profileId, section: "concepts", ...(named && { id }) };
 		if ((section === "chat" || section === "staff" || section === "member") && id) {
 			return { name: "company", profileId, section, id };
