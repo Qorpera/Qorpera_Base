@@ -449,6 +449,19 @@ member or the agent from the lists it already holds.
 - Not in this slice: safe copies (going back a night and taking a copy home need slice 6's snapshot, a restore and
   an export, each with its own design), and a named change as a button on a row (slice 7c's `act`).
 
+**Part e as built** (#1869):
+
+- Migration `20260930782000` adds `data` to the page lists, on by default. The web shows the page only while
+  `describe` lists a database.
+- Kept questions are tabs only when they take no parameters, or only `:viewer`. The rest wait for part g.
+- A removal asks on the app's own ask bar (`.app-ask`), the bar apps' requests use.
+- The page holds its own watch of the open table's first page and does not share the apps' held call. When an answer
+  changes, it reads again as many pages as are shown.
+- A changed field is written when the member leaves it. A new row is added once what is filled in is enough; a missing
+  required value names its field.
+- On a narrow page the list is two lines a row, with no column heads.
+- The member's own drawer takes `page:data`. Agents' `organize_apps` does not know it yet.
+
 ### Parts
 
 | Part | What | Tests |

@@ -448,11 +448,83 @@ describe("a row, changed as the member types (app/views/data.ts)", () => {
 	});
 });
 
+describe("a new row and a toggle, while the store answers", () => {
+	it("keeps a field filled in while the first add is on its way, and writes it to the new row", async () => {
+		const { container, calls, edits } = await open(describedWith());
+		let land: () => void = () => {};
+		const first = calls.edit.getMockImplementation()!;
+		calls.edit.mockImplementationOnce(
+			(edit: CloudMemberDataEdit) =>
+				new Promise((resolve) => {
+					land = () => resolve(first(edit));
+				}),
+		);
+		button(container, "New row").click();
+		const bike = container.querySelector<HTMLInputElement>("#data-field-bike")!;
+		bike.value = "Kildemoes";
+		bike.dispatchEvent(new Event("input"));
+		bike.dispatchEvent(new Event("change"));
+		await settle();
+		const price = container.querySelector<HTMLInputElement>("#data-field-price")!;
+		price.value = "180";
+		price.dispatchEvent(new Event("input"));
+		price.dispatchEvent(new Event("change"));
+		land();
+		await settle();
+		expect(edits[0]).toEqual({ database: "shop", table: "repairs", op: "add", values: { bike: "Kildemoes" } });
+		expect(edits[1]).toMatchObject({ op: "change", key: { id: 9 }, values: { price: "180" } });
+		expect(edits).toHaveLength(2);
+		expect(container.querySelector<HTMLInputElement>("#data-field-price")?.value).toBe("180");
+	});
+
+	it("keeps the field a member is typing in when the add lands", async () => {
+		const { container, calls } = await open(describedWith());
+		let land: () => void = () => {};
+		const first = calls.edit.getMockImplementation()!;
+		calls.edit.mockImplementationOnce(
+			(edit: CloudMemberDataEdit) =>
+				new Promise((resolve) => {
+					land = () => resolve(first(edit));
+				}),
+		);
+		button(container, "New row").click();
+		const bike = container.querySelector<HTMLInputElement>("#data-field-bike")!;
+		bike.value = "Kildemoes";
+		bike.dispatchEvent(new Event("input"));
+		bike.dispatchEvent(new Event("change"));
+		await settle();
+		const price = container.querySelector<HTMLInputElement>("#data-field-price")!;
+		price.focus();
+		price.value = "18";
+		price.dispatchEvent(new Event("input"));
+		land();
+		await settle();
+		const now = container.querySelector<HTMLInputElement>("#data-field-price")!;
+		expect(now.value).toBe("18");
+		expect(document.activeElement).toBe(now);
+	});
+
+	it("puts a refused toggle back", async () => {
+		const { container, calls } = await open(describedWith());
+		calls.edit.mockRejectedValueOnce(new CloudMemberDataError("check", 400, { code: "23514" }));
+		button(container, "Gazelle Orange C7450Yes1").click();
+		await settle();
+		const ready = container.querySelector<HTMLButtonElement>("#data-field-ready")!;
+		ready.click();
+		await settle();
+		expect(ready.textContent).toBe("Yes");
+		expect(container.querySelector("[data-column='ready'] .data-field-note")?.textContent).toBe(
+			"That value isn't allowed here.",
+		);
+	});
+});
+
 describe("the page's words for values and refusals", () => {
 	it("reads a column's type, names it, and shows its values", () => {
 		expect(
 			["boolean", "integer", "numeric(10,2)", "date", "timestamp with time zone", "jsonb", "text"].map(columnKind),
 		).toEqual(["boolean", "number", "number", "date", "time", "json", "text"]);
+		expect(["integer[]", "numeric(10,2)[]", "integer"].map(columnKind)).toEqual(["text", "text", "number"]);
 		expect(humanName("open_repairs")).toBe("Open repairs");
 		expect(humanName("waited-over-a-week")).toBe("Waited over a week");
 		expect(shownValue(true, "boolean")).toBe("Yes");

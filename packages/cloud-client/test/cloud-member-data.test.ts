@@ -447,6 +447,17 @@ describe("a member's questions to the company's databases", () => {
 
 		it("reads a description with closed shapes", () => {
 			expect(parseCloudMemberDataDescription(described)).toEqual(described);
+			const long = {
+				...described,
+				databases: [
+					{
+						...described.databases[0]!,
+						about: "a".repeat(16 * 1024),
+						questions: [{ name: "q".repeat(250), words: null, parameters: [] }],
+					},
+				],
+			};
+			expect(parseCloudMemberDataDescription(long)).toEqual(long);
 			const shop = described.databases[0]!;
 			for (const odd of [
 				{ ...described, extra: 1 },

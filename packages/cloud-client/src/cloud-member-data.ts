@@ -63,7 +63,7 @@ const FOLDER_BODY_BYTES: Readonly<Record<string, number>> = {
 	edit: 900 * 1024,
 	watch: 448 * 1024,
 };
-const FOLDER_FILE = /^data\/([a-z][a-z0-9_]{0,39})\/(?:database\.toml|(queries|actions)\/[^/\0\\]{1,200}\.sql)$/;
+const FOLDER_FILE = /^data\/([a-z][a-z0-9_]{0,39})\/(?:database\.toml|(queries|actions)\/[^/\0\\]{1,1024}\.sql)$/;
 const UTF8 = new TextEncoder();
 
 export interface CloudMemberDataColumn {
@@ -288,7 +288,7 @@ const texts = (value: unknown, max = 1024): string[] => {
 
 function parseNamed(value: unknown): CloudMemberDataNamed {
 	const named = shapedKeys(value, ["name", "words", "parameters"], ["problem"]);
-	if (!isText(named.name, 200) || (named.words !== null && !isText(named.words, 16 * 1024))) invalid();
+	if (!isText(named.name, 1024) || (named.words !== null && !isText(named.words, 16 * 1024))) invalid();
 	if (named.problem !== undefined && !isText(named.problem, 1000)) invalid();
 	const parameters = named.parameters === null ? null : texts(named.parameters, 200);
 	return {
@@ -310,7 +310,7 @@ function parseTable(value: unknown): CloudMemberDataTable {
 	if (!Array.isArray(table.columns)) invalid();
 	const columns = table.columns.map((item) => {
 		const column = closed(item, ["name", "type", "settable"]);
-		if (!isText(column.name, 200) || !isText(column.type, 200) || typeof column.settable !== "boolean") invalid();
+		if (!isText(column.name, 200) || !isText(column.type, 1024) || typeof column.settable !== "boolean") invalid();
 		return { name: column.name, type: column.type, settable: column.settable };
 	});
 	const key = texts(table.key, 200);
@@ -336,7 +336,8 @@ export function parseCloudMemberDataDescription(value: unknown): CloudMemberData
 			["applied", "tables"],
 		);
 		if (typeof one.database !== "string" || !CLOUD_MEMBER_DATA_DATABASE.test(one.database)) invalid();
-		if ((one.name !== null && !isText(one.name, 1000)) || (one.about !== null && !isText(one.about, 4000))) invalid();
+		if ((one.name !== null && !isText(one.name, 16 * 1024)) || (one.about !== null && !isText(one.about, 16 * 1024)))
+			invalid();
 		if (typeof one.write !== "boolean" || typeof one.list !== "boolean") invalid();
 		if (!Array.isArray(one.questions) || !Array.isArray(one.changes)) invalid();
 		if (!one.list && (one.tables !== undefined || one.applied !== undefined)) invalid();
@@ -347,7 +348,7 @@ export function parseCloudMemberDataDescription(value: unknown): CloudMemberData
 						if (!Array.isArray(one.applied)) invalid();
 						return one.applied.map((step) => {
 							const done = closed(step, ["name", "at"]);
-							if (!isText(done.name, 200) || !isText(done.at, 64) || !Number.isFinite(Date.parse(done.at)))
+							if (!isText(done.name, 1024) || !isText(done.at, 64) || !Number.isFinite(Date.parse(done.at)))
 								invalid();
 							return { name: done.name, at: done.at };
 						});

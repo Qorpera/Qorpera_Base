@@ -74,7 +74,8 @@ export function humanName(name: string): string {
 export function columnKind(type: string): Kind {
 	const base = type.toLowerCase();
 	if (base === "boolean") return "boolean";
-	if (/^(smallint|integer|bigint|real|double precision|numeric|decimal|money)\b/.test(base)) return "number";
+	if (/^(smallint|integer|bigint|real|double precision|numeric|decimal|money)(\([0-9, ]*\))?$/.test(base))
+		return "number";
 	if (base === "date") return "date";
 	if (/^(timestamp|time)\b/.test(base)) return "time";
 	if (base === "json" || base === "jsonb") return "json";
@@ -109,6 +110,11 @@ export function shownValue(value: unknown, kind: Kind): string {
 			});
 	}
 	return value;
+}
+
+function editText(value: unknown, kind: Kind): string {
+	if (kind === "json" && value !== null && value !== undefined) return JSON.stringify(value);
+	return typedText(value);
 }
 
 function typedText(value: unknown): string {
@@ -278,9 +284,10 @@ class DataListView {
 	}
 
 	update(described: CloudMemberDataDescription | null | undefined): void {
-		if (described === this.#described && this.el.childElementCount > 0 && this.#top.childElementCount > 0) return;
+		const fresh = described !== this.#described;
+		if (!fresh && this.#top.childElementCount > 0) return;
 		this.#described = described;
-		this.#counted.clear();
+		if (fresh) this.#counted.clear();
 		const databases = described?.databases ?? [];
 		if (!databases.some((one) => one.database === this.#database)) this.#database = databases[0]?.database;
 		const database = this.#current();
@@ -1024,7 +1031,7 @@ class DataListView {
 			this.#inputs.set(name, toggle);
 			return toggle;
 		}
-		const multi = kind === "json" || (kind === "text" && typedText(this.#valueOf(open, name)).length > 60);
+		const multi = kind === "json" || (kind === "text" && editText(this.#valueOf(open, name), kind).length > 60);
 		const field = multi
 			? h("textarea", { class: "data-field-input", id, rows: "2", spellcheck: "false" })
 			: h("input", {
@@ -1038,7 +1045,7 @@ class DataListView {
 		if (kind === "date")
 			field.addEventListener("focus", () => {
 				if (field.dataset.dirty !== "1")
-					field.value = open.row ? typedText(this.#valueOf(open, name)) : (open.draft.get(name) ?? "");
+					field.value = open.row ? editText(this.#valueOf(open, name), kind) : (open.draft.get(name) ?? "");
 			});
 		field.addEventListener("blur", () => {
 			if (kind === "date") queueMicrotask(() => this.#syncRow());
@@ -1057,7 +1064,7 @@ class DataListView {
 				event.preventDefault();
 				delete field.dataset.dirty;
 				field.value = open.row
-					? typedText(open.row.values[open.columns.indexOf(name)])
+					? editText(open.row.values[open.columns.indexOf(name)], kind)
 					: (open.draft.get(name) ?? "");
 				field.blur();
 			}
@@ -1088,7 +1095,7 @@ class DataListView {
 	#commit(open: OpenRow, name: string, value: unknown, kind: Kind): Promise<void> {
 		open.notes.delete(name);
 		if (!open.row) {
-			open.draft.set(name, kind === "boolean" ? String(value) : typedText(value));
+			open.draft.set(name, kind === "boolean" ? String(value) : editText(value, kind));
 			this.#syncRow();
 			return this.#queue(open, () => this.#add(open));
 		}
@@ -1096,15 +1103,17 @@ class DataListView {
 			this.#syncRow();
 			return Promise.resolve();
 		}
-		if (kind === "boolean" && open.row) {
-			const values = [...open.row.values];
+		const before = open.row;
+		if (kind === "boolean") {
+			const values = [...before.values];
 			values[open.columns.indexOf(name)] = value;
-			open.row = { values, seen: open.row.seen };
-			this.#syncRow();
+			open.row = { values, seen: before.seen };
 		}
 		open.saving.add(name);
 		this.#syncRow();
-		return this.#queue(open, () => this.#change(open, name, value)).finally(() => {
+		return this.#queue(open, () =>
+			this.#change(open, { [name]: value }, kind === "boolean" ? before : undefined),
+		).finally(() => {
 			open.saving.delete(name);
 			if (this.#open === open) this.#syncRow();
 		});
@@ -1132,6 +1141,7 @@ class DataListView {
 
 	async #add(open: OpenRow): Promise<void> {
 		if (open.row || this.#open !== open) return;
+		const sent = new Map(open.draft);
 		const values = this.#draftValues(open);
 		try {
 			const added = await this.#calls().edit(
@@ -1144,11 +1154,22 @@ class DataListView {
 			open.row = { values: added.row.values, seen: added.row.seen };
 			open.notice = undefined;
 			for (const name of Object.keys(values)) open.saved.add(name);
+			const typing = this.#typing();
+			const later = new Map(
+				[...open.draft].filter(([name, text]) => sent.get(name) !== text && name !== typing?.name),
+			);
+			open.draft.clear();
+			for (const [name, text] of later) open.draft.set(name, text);
+			const rest = this.#draftValues(open);
 			open.draft.clear();
 			this.#list?.rows.unshift(open.row);
 			this.#bumpCount(1);
-			if (this.#open === open) this.#buildRow();
+			if (this.#open === open) {
+				this.#buildRow();
+				this.#retype(typing);
+			}
 			this.#flashSaved(open);
+			if (Object.keys(rest).length > 0) await this.#change(open, rest);
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			const column = /column "([^"]+)"/.exec((error as Error)?.message ?? "")?.[1];
@@ -1159,9 +1180,31 @@ class DataListView {
 		}
 	}
 
-	async #change(open: OpenRow, name: string, value: unknown): Promise<void> {
+	#typing(): { name: string; value: string; start: number | null; end: number | null } | undefined {
+		const active = document.activeElement;
+		if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return undefined;
+		if (active.dataset.dirty !== "1") return undefined;
+		const name = [...this.#inputs].find(([, input]) => input === active)?.[0];
+		return name === undefined
+			? undefined
+			: { name, value: active.value, start: active.selectionStart, end: active.selectionEnd };
+	}
+
+	#retype(typing: { name: string; value: string; start: number | null; end: number | null } | undefined): void {
+		if (!typing) return;
+		const input = this.#inputs.get(typing.name);
+		if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return;
+		input.value = typing.value;
+		input.dataset.dirty = "1";
+		input.focus({ preventScroll: true });
+		if (typing.start !== null) input.setSelectionRange(typing.start, typing.end ?? typing.start);
+	}
+
+	async #change(open: OpenRow, values: Record<string, unknown>, undo?: Row): Promise<void> {
 		const row = open.row;
-		if (!row?.seen || open.gone) return;
+		const names = Object.keys(values);
+		const name = names[0] ?? null;
+		if (!row?.seen || open.gone || name === null) return;
 		const key = Object.fromEntries(
 			open.key.map((column) => [column, row.values[open.columns.indexOf(column)] ?? null]),
 		);
@@ -1173,7 +1216,7 @@ class DataListView {
 					op: "change",
 					key,
 					seen: row.seen,
-					values: { [name]: value },
+					values,
 				},
 				this.#lifetime.signal,
 			);
@@ -1182,13 +1225,15 @@ class DataListView {
 			this.#replaceRow(open, row, now);
 			open.row = now;
 			open.notice = undefined;
-			open.saved.add(name);
+			for (const one of names) open.saved.add(one);
 			if (this.#open === open) {
 				this.#syncRow();
 				this.#flashSaved(open);
 			}
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
+			if (undo && (error as { status?: unknown }).status !== 409 && open.row === row)
+				open.row = { values: undo.values, seen: row.seen };
 			this.#refused(open, row, error, name);
 		}
 	}
@@ -1280,7 +1325,7 @@ class DataListView {
 				input.classList.toggle("is-on", value === true);
 				input.classList.toggle("is-empty", value === null);
 			} else if (input && document.activeElement !== input && input.dataset.dirty !== "1") {
-				const typed = open.row ? typedText(value) : (open.draft.get(name) ?? "");
+				const typed = open.row ? editText(value, kind) : (open.draft.get(name) ?? "");
 				const text = kind === "date" ? shownValue(typed === "" ? null : typed, "date") : typed;
 				if (input.value !== text) input.value = text;
 			} else if (!input) {
