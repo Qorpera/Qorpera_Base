@@ -295,8 +295,12 @@ export function mountApplication(
 		navigate({ name: "company", profileId: controller.profile.profileId, section: "app", id: name });
 	}
 	/** Whether the open company's app `name` is a concept of its product, as its apps were last read. */
+	/** A concept the Concepts viewer shows: one a member retired opens as a page of its own, which says so. */
 	function isConcept(controller: CompanyController, name: string): boolean {
-		return companyConcepts(controller.store.get().apps ?? []).some((app) => app.name === name);
+		return (
+			companyConcepts(controller.store.get().apps ?? []).some((app) => app.name === name) &&
+			!controller.retiredApp(name)
+		);
 	}
 	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
 	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
@@ -351,10 +355,13 @@ export function mountApplication(
 			const app = apps.find((entry) => entry.name === card.dataset.appName);
 			const look = app && appLook(company, app);
 			if (!app?.manifest || !look) continue;
+			// A card of an app a member retired is muted and says so; it still opens the app's page, which says it too.
+			const retired = company.retiredApp(app.name) !== undefined;
 			const about = app.manifest.about ?? "";
-			const shown = JSON.stringify([look.key, about, app.manifest.name]);
+			const shown = JSON.stringify([look.key, about, app.manifest.name, retired]);
 			if (card.dataset.shown === shown) continue;
 			card.dataset.shown = shown;
+			card.classList.toggle("is-retired", retired);
 			card.querySelector(".app-card-emblem")?.replaceChildren(look.emblem());
 			if (look.colour) card.style.setProperty("--app-colour", look.colour);
 			else card.style.removeProperty("--app-colour");
@@ -365,8 +372,8 @@ export function mountApplication(
 			}
 			const note = card.querySelector<HTMLElement>(".app-card-note");
 			if (!note) continue;
-			note.textContent = about || t("App");
-			if (about) note.title = about;
+			note.textContent = retired ? t("Retired") : about || t("App");
+			if (about && !retired) note.title = about;
 			else note.removeAttribute("title");
 		}
 	};
@@ -822,6 +829,15 @@ export function mountApplication(
 				timeZone: () => controller.store.get().team?.timeZone,
 			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
+			// An app retired or brought back: the cards of it in the page are muted, or not, at once.
+			let retiredShown = controller.store.get().appsRetired;
+			const syncRetired = controller.store.subscribe(() => {
+				const now = controller.store.get().appsRetired;
+				if (now === retiredShown) return;
+				retiredShown = now;
+				if (company === controller) decorateAppCards();
+			});
+			controller.signal.addEventListener("abort", syncRetired, { once: true });
 			void controller.start();
 			return controller;
 		})();
@@ -1234,6 +1250,11 @@ export function mountApplication(
 			apps: () => companyApps?.apps ?? [],
 			agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
 			onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
+			// Retired by a member (apps/retired.md): the page says so and runs nothing; Bring back for a member who may.
+			retired: (name) => controller.retiredApp(name) !== undefined,
+			mayRetire: () => controller.mayRetireApps(),
+			setRetired: (name, retired) => controller.setAppRetired(name, retired),
+			picture: (path, signal) => cardImages.get(controller)?.(path, signal) ?? Promise.resolve(null),
 			// Beside the chat, as a folder link in it: closing Storage gives the composer focus again.
 			openInStorage: (path) => {
 				const open = settings;
@@ -1574,8 +1595,17 @@ export function mountApplication(
 					if (companyApps !== apps) return;
 					controller.store.set({ appGroups: groups });
 				},
+				// The interfaces members retired (apps/retired.md), read with the apps: one retired by another member
+				// leaves this member's drawer at the next read.
+				(retired, startedAt) => {
+					if (companyApps !== apps) return;
+					controller.publishRetiredApps(retired, startedAt);
+				},
 			);
 			companyApps = apps;
+			// Retire interface and Bring back write apps/retired.md as this member, then read the apps again.
+			controller.appsFolder = () => memberFolder(companyCurrent, t("Company access changed."));
+			controller.appsReread = () => void apps.read();
 			controller.appIconReader = (app) => apps.icons(app);
 			// Generate icon's message takes the thread's own model account, as an answer from an app does.
 			controller.appIconAccounts = createWebNativeSubscription(
@@ -2061,7 +2091,11 @@ export function mountApplication(
 					);
 					return;
 				}
-				if (appPage && main.contains(appPage.el)) return;
+				if (appPage && main.contains(appPage.el)) {
+					// Retired or brought back, by this member or another: the page shows it at once.
+					appPage.retiredChanged();
+					return;
+				}
 				const home = `#/c/${controller.profile.profileId}`;
 				// A deep link or a reload: the page waits for the company's first read, so its header names the agent that
 				// made it and the app's first `agents()` gets the whole roster (the staff read may land after the folder's).
@@ -2120,7 +2154,8 @@ export function mountApplication(
 				}
 				// An app the route names that is no concept opens as a page of its own.
 				const named = route.id ? (state.apps ?? []).find((app) => app.name === route.id) : undefined;
-				if (route.id && named?.manifest && !named.manifest.concept) {
+				// A retired concept, too: its own page says it is retired.
+				if (route.id && named?.manifest && (!named.manifest.concept || controller.retiredApp(route.id))) {
 					navigate(
 						{ name: "company", profileId: controller.profile.profileId, section: "app", id: route.id },
 						true,

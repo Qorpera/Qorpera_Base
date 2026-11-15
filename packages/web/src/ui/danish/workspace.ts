@@ -671,6 +671,15 @@ export const WORKSPACE: Record<string, string> = {
 	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	"Hidden for you": "Skjult for dig",
+	// Retire interface and Bring back (the founder, 15 Nov 2026), in the drawer, the Concepts viewer, Hidden and an app's
+	// page; an app's card says Retired.
+	"Retire interface": "Udfas interfacet",
+	"Bring back": "Hent tilbage",
+	Retired: "Udfaset",
+	"{name} could not be retired. Try again.": "{name} kunne ikke udfases. Prøv igen.",
+	"{name} could not be brought back. Try again.": "{name} kunne ikke hentes tilbage. Prøv igen.",
+	"The company has too many retired interfaces. Bring one back first.":
+		"Virksomheden har for mange udfasede interfaces. Hent et tilbage først.",
 	Delete: "Slet",
 	"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.":
 		"Slet {name}? Agenten forlader virksomheden for alle, med sine samtaler og rutiner. Det kan ikke fortrydes.",

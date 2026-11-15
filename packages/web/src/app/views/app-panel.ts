@@ -4,6 +4,7 @@ import { h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
+import { forgetPictureUrl, pictureUrl } from "../folder-images.ts";
 import { type AppBrand, type AppLook, readAppBrand } from "../interface-app-style.ts";
 import {
 	AppBridge,
@@ -35,6 +36,9 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   13 November 2026): what Qorpera draws there is the bar of a request and the questions dock.
  * - When an app's page can't be shown, the line that says why carries the ways on a header had: Reload, the app's
  *   folder in Storage, and the way back when the app is gone.
+ * - An app a member retired (apps/retired.md; the founder, 15 November 2026: "stop maintaining it, and hide it") is not
+ *   run: its page shows the app's cover or emblem in grey, one line that it is retired, and Bring back for a member who
+ *   may write the company's folder. A retire or a bring-back, here or by another member, shows at once.
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
  * - An app's page may ask the member to change something (an answer to such a question, a row of a table), or to send
@@ -88,6 +92,14 @@ export interface AppPanelHost extends AppBridgeHost {
 	/** The agents' open questions about the app, answered on its page (views/question-dock.ts); absent where the
 	 * company has none to show. */
 	readonly questions?: QuestionDockHost;
+	/** Whether a member retired the app (apps/retired.md): its page is not run then. Absent: none is. */
+	readonly retired?: (name: string) => boolean;
+	/** Whether this member may bring a retired app back. */
+	readonly mayRetire?: () => boolean;
+	/** Retires an app, or brings it back, for the whole company; answers whether it was written. */
+	readonly setRetired?: (name: string, retired: boolean) => Promise<boolean>;
+	/** A picture of the company's folder (a retired app's cover): null when it is none, or too large. */
+	readonly picture?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 }
 
 /** Who answers the frame's calls: the bridge of the app as its manifest was last read (`version`, the manifest's). */
@@ -158,6 +170,10 @@ export class AppPanel {
 	#data: (AppDataPage & { readonly frame: AppFrame; readonly stop: AbortController }) | undefined;
 	/** Stops the serving bridge hearing that the app's held note is back (app/app-actions.ts `HeldNote`). */
 	#unlisten: (() => void) | undefined;
+	/** The page shows the app as retired. */
+	#shownRetired = false;
+	/** The retired app's cover, as shown. */
+	#coverUrl: string | undefined;
 
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
@@ -254,7 +270,15 @@ export class AppPanel {
 		this.#unlisten?.();
 		this.#unlisten = undefined;
 		this.#serving = undefined;
+		this.#forgetCover();
 		this.el.remove();
+	}
+
+	/** The app was retired or brought back (by this member or another): the page is shown afresh when it shows the other
+	 * state. */
+	retiredChanged(): void {
+		if (this.target.kind !== "app") return;
+		if (Boolean(this.#host.retired?.(this.target.name)) !== this.#shownRetired) void this.reload(false);
 	}
 
 	/** Reads the app or page and shows it: afresh when `fresh` (the member asked: Reload, or opening it again) or when
@@ -342,6 +366,70 @@ export class AppPanel {
 				),
 			),
 		);
+	}
+
+	/** A retired app's page (the founder, 15 November 2026): its cover or emblem in grey, the one line that it is retired,
+	 * and Bring back for a member who may. Pure visual: no header, box or section. */
+	#retiredView(name: string, path: string, manifest: AppManifest): void {
+		this.#frame?.dispose();
+		this.#frame = undefined;
+		this.#serve(null);
+		this.#page = undefined;
+		this.#withdraw();
+		this.#body.classList.remove("is-dark");
+		this.#shownRetired = true;
+		const mark = h(
+			"span",
+			{ class: "side-panel-retired-mark", "aria-hidden": "true" },
+			interfaceEmblem(manifest.emblem, 64),
+		);
+		const signal = this.#lifetime.signal;
+		const picture = this.#host.picture;
+		if (manifest.cover && picture)
+			void picture(`${path}/${manifest.cover}`, signal)
+				.then(async (blob) => {
+					const url = blob ? await pictureUrl(blob) : null;
+					if (!url) return;
+					if (signal.aborted || !this.#shownRetired || !mark.isConnected) {
+						forgetPictureUrl(url);
+						return;
+					}
+					this.#forgetCover();
+					this.#coverUrl = url;
+					replace(mark, h("img", { src: url, alt: "", draggable: "false" }));
+					mark.classList.add("is-cover");
+				})
+				.catch(() => {
+					/* The emblem stands. */
+				});
+		const setRetired = this.#host.setRetired;
+		let back: HTMLButtonElement | null = null;
+		if (setRetired && this.#host.mayRetire?.()) {
+			const button = h("button", { type: "button", class: "side-panel-way" }, t("Bring back"));
+			button.addEventListener("click", async () => {
+				button.disabled = true;
+				const done = await setRetired(name, false);
+				if (signal.aborted) return;
+				if (done) void this.reload(false);
+				else button.disabled = false;
+			});
+			back = button;
+		}
+		replace(
+			this.#body,
+			h(
+				"div",
+				{ class: "side-panel-retired" },
+				mark,
+				h("p", { class: "side-panel-retired-line" }, t("This interface is retired.")),
+				back,
+			),
+		);
+	}
+
+	#forgetCover(): void {
+		if (this.#coverUrl) forgetPictureUrl(this.#coverUrl);
+		this.#coverUrl = undefined;
 	}
 
 	/** Opens what a link in the app's page leads to, already checked (app/interface-apps.ts `appLink`): another app
@@ -490,6 +578,12 @@ export class AppPanel {
 			name = manifest.name;
 			this.#emblemName = manifest.emblem;
 			this.#heading(manifest.name, manifest, this.#host.agentName(manifest.owner));
+			// Retired by a member: nothing of the app runs.
+			if (this.#host.retired?.(target.name)) return this.#retiredView(target.name, app.path, manifest);
+			if (this.#shownRetired) {
+				this.#shownRetired = false;
+				this.#forgetCover();
+			}
 			served = { ...app, manifest };
 			// The page that stands follows the manifest from the moment it is read, before its files are read again:
 			// putting the page together may fail and leave the earlier page standing, and that page must not keep what

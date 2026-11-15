@@ -26,7 +26,9 @@ import { QuestionDock } from "./question-dock.ts";
  *   them: "get rid of this at the bottom of the concepts sidepanel").
  * - A concept's row has a menu of its own, the rail's (ui/context-menu.ts): a right-click, a long press on a touch
  *   screen, or Shift+F10 or the menu key on the focused row. It has Show in Storage, and for the open concept Reload,
- *   which also lets a concept that was told "Not now" three times ask again (views/app-ask-bar.ts).
+ *   which also lets a concept that was told "Not now" three times ask again (views/app-ask-bar.ts), and Retire
+ *   interface for a member who may write the company's folder (the founder, 15 November 2026).
+ * - A concept a member retired (apps/retired.md) is not listed: it is in Hidden in the rail, where it is brought back.
  * - The strip that said whose the open concept is and that Qorpera never asks for passwords in it (security review r1
  *   H2, #1539 round 1) is gone on Jonas's word of 13 November 2026, and nothing replaces it: nothing on screen tells a
  *   member that a sign-in the page draws is not Qorpera's. Who made each concept still stands in its row. What else
@@ -253,7 +255,8 @@ export class ConceptsView {
 	}
 
 	#concepts(): Concept[] {
-		return companyConcepts(this.#apps);
+		const retired = this.#host.panel.retired;
+		return companyConcepts(this.#apps).filter((concept) => !retired?.(concept.name));
 	}
 
 	#selected(): Concept | undefined {
@@ -453,6 +456,17 @@ export class ConceptsView {
 				: []),
 			{ label: t("Show in Storage"), icon: "folder", select: () => this.#host.panel.openInStorage(concept.path) },
 		];
+		const setRetired = this.#host.panel.setRetired;
+		if (setRetired && this.#host.panel.mayRetire?.())
+			items.push({
+				label: t("Retire interface"),
+				icon: "hide",
+				select: () => {
+					// The open concept leaves: the viewer shows the newest one left.
+					if (this.#asked === name) location.replace(conceptsHash(this.#host.profileId));
+					void setRetired(name, true);
+				},
+			});
 		const point = menuPoint(event, row);
 		openContextMenu({
 			label: t("{name} actions", { name: concept.manifest.name }),

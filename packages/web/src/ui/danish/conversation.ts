@@ -279,6 +279,7 @@ export const CONVERSATION: Record<string, string> = {
 	"A page of the Company File": "En side i Virksomhedsfilen",
 	"Qorpera never asks for passwords here": "Qorpera beder aldrig om adgangskoder her",
 	"This app isn't in the company anymore.": "Appen er ikke i virksomheden længere.",
+	"This interface is retired.": "Dette interface er udfaset.",
 	"This app's app.toml has problems: {problems}": "Appens app.toml har fejl: {problems}",
 	"This can't be opened right now.": "Det kan ikke åbnes lige nu.",
 	"This page can't be shown here.": "Siden kan ikke vises her.",
