@@ -1,11 +1,13 @@
 #!/bin/bash
 # The look of a machine's desktop (12 Nov 2026): what the office desktops had (deploy/lxd-company-computer-guest,
-# "One flat dock is the whole desktop chrome"), on a machine's own desktop. One flat dark bar along the bottom edge
-# with exactly three tools (browser, files, terminal) under Qorpera's own icon drawings, the date at its left and the
-# time at its right; no top bar, no window list, no desktop icons; a backdrop with the figure of the machine's agent,
-# one frame for each hour of the day; windows set up for a screen that is only ever seen from afar (no compositor, one
-# workspace); and a calm dark terminal. Installed as /opt/qorpera-machine/desktop-look; it runs as the account
-# `desktop`, inside the desktop's unit.
+# "One flat dock is the whole desktop chrome"), on a machine's own desktop. One flat bar along the bottom edge with
+# exactly three tools (browser, files, terminal) under Qorpera's own icon drawings, the date at its left and the time
+# at its right; no top bar, no window list, no desktop icons; a backdrop with the figure of the machine's agent, its
+# eyes on it, one frame for each hour of the day; windows set up for a screen that is only ever seen from afar (no
+# compositor, one workspace); and a calm dark terminal. The bar has no colour of its own: it is the backdrop's ground
+# for the hour, so the dock stands on the wallpaper (14 Nov 2026; Jonas: "the docker should also not be black - it
+# should be transparrant/wallpapers color"), and what is written on it is dark by day and light at night. Installed as
+# /opt/qorpera-machine/desktop-look; it runs as the account `desktop`, inside the desktop's unit.
 #
 #   desktop-look write        before XFCE starts (desktop-session, so at EVERY `desktop start`): writes the dock, its
 #                             launchers and look, the window manager's and the terminal's settings and the backdrop
@@ -13,7 +15,8 @@
 #                             (/usr/share/qorpera-desktop). Written every time, so a desktop never drifts from the
 #                             image: whatever was changed or removed in the account is put back at the next start.
 #   desktop-look watch        beside the session: the mark under a dock icon whose program has a window, the backdrop's
-#                             frame for the hour, and a figure or a time zone that was set while the desktop runs.
+#                             frame for the hour with the dock's ground and ink, and a figure or a time zone that was
+#                             set while the desktop runs.
 #   desktop-look press APP    a press on a dock icon (browser, files or terminal): brings back the window the program
 #                             already has, else asks for the program and shows its window when it comes.
 #
@@ -41,6 +44,11 @@ TEMPLATES=$CONFIG/qorpera-dock
 # before XFCE draws anything, so a desktop is never black.
 GROUND=(0e0f11 0e0f11 0e0f11 0e0f11 0e0f11 0e0f11 42454e b5b7be f1f2f3 f1f2f3 f1f2f3 f1f2f3
 	f1f2f3 f1f2f3 f1f2f3 f1f2f3 f1f2f3 f1f2f3 f1f2f3 b5b7be 42454e 0e0f11 0e0f11 0e0f11)
+# The dock is that ground, and what is written on it follows its tone: on a light ground the date and the time are
+# dark and a program's mark is dark (the pictures in dock-light); on a dark ground they are light, as the office dock
+# had them. The date is the quieter of the two.
+unset DATE_INK TIME_INK
+declare -A DATE_INK=([dark]=a3abba [light]=4b515c) TIME_INK=([dark]=eef0f4 [light]=1d2026)
 # A program's windows, by the class the window manager knows them by (instance or class). The image's browser is a
 # Chrome for Testing build, which does not call itself Chromium. (Unset first: a variable of that name handed in by
 # the environment could not become a table.)
@@ -81,6 +89,23 @@ share() {
 	printf '%d.%06d' $(( millionths / 1000000 )) $(( millionths % 1000000 ))
 }
 
+# The tone of a ground: light from the middle of the scale up.
+tone_of() { if (( 16#${1:0:2} >= 128 )); then echo light; else echo dark; fi; }
+# A clock's format in an ink: the panel's clock reads its format as Pango markup, so the colour goes with the words
+# and changes with them while the panel runs. `inked_xml` is the same as an XML attribute keeps it.
+inked() { printf '<span foreground="#%s">%s</span>' "$1" "$2"; } # ink, format
+inked_xml() { printf '&lt;span foreground=&quot;#%s&quot;&gt;%s&lt;/span&gt;' "$1" "$2"; } # ink, format
+# The dock's ground and its ink, told to a panel that runs: it takes both at once, with no restart. The ground is four
+# shares (red, green, blue, and 1: nothing shows through), the ink is in the two clocks' formats.
+dock_ground() { # ground
+	xfconf-query -c xfce4-panel -p /panels/panel-1/background-rgba -n -t double -s "$(share "${1:0:2}")" \
+		-t double -s "$(share "${1:2:2}")" -t double -s "$(share "${1:4:2}")" -t double -s 1 >/dev/null 2>&1
+}
+dock_ink() { # tone
+	xfconf-query -c xfce4-panel -p /plugins/plugin-3/digital-time-format -n -t string -s "$(inked "${TIME_INK[$1]}" %H:%M)" >/dev/null 2>&1 &&
+		xfconf-query -c xfce4-panel -p /plugins/plugin-7/digital-date-format -n -t string -s "$(inked "${DATE_INK[$1]}" '%a %d %b')" >/dev/null 2>&1
+}
+
 # One file of the look, whole or not at all: written beside its place and renamed into it.
 put() { # target, the content on stdin
 	local target=$1
@@ -91,14 +116,22 @@ put() { # target, the content on stdin
 # TEMPLATES survive every change (the office dock's way, proven on a real xfce4-panel on 20 September 2026).
 # What an icon shows is kept in the desktop's runtime folder (idle until told otherwise), so the watcher and a press
 # tell the panel only a change, never the state it already shows.
+# A state with a mark under the tile has a second entry for a light ground, its mark dark (dock-light): which of the
+# two shows follows the tone the dock has now (RUN/dock.tone, kept by `write` and the watcher), and is kept with the
+# state ("running" on a dark ground, "running light" on a light one).
 show() { # app state
-	local entry="qorpera-$1-$2.desktop" shown=idle
+	local entry="qorpera-$1-$2.desktop" shown=idle want=$2 tone=dark
 	[[ $2 != idle ]] || entry="qorpera-$1.desktop"
+	if [[ -s $RUN/dock.tone ]]; then read -r tone <"$RUN/dock.tone" || true; fi
+	if [[ $tone == light && -f $TEMPLATES/qorpera-$1-$2-light.desktop ]]; then
+		entry="qorpera-$1-$2-light.desktop"
+		want="$2 light"
+	fi
 	[[ -f $TEMPLATES/$entry ]] || return 0
 	if [[ -s $RUN/dock-$1.shows ]]; then read -r shown <"$RUN/dock-$1.shows" || true; fi
-	[[ $shown != "$2" ]] || return 0
+	[[ $shown != "$want" ]] || return 0
 	xfconf-query -c xfce4-panel -p "/plugins/plugin-${PANEL_PLUGIN[$1]}/items" -n -a -t string -s "$TEMPLATES/$entry" >/dev/null 2>&1 || return 0
-	echo "$2" >"$RUN/dock-$1.shows"
+	echo "$want" >"$RUN/dock-$1.shows"
 }
 # The window manager's client list: every window it manages, minimised ones too. The dock is the only window list.
 clients() { xprop -root _NET_CLIENT_LIST 2>/dev/null; }
@@ -125,12 +158,15 @@ raise() { # app
 }
 
 write() {
-	local figure zone hour ground monitor=VNC-0 candidate state app label comment entry
+	local figure zone hour ground tone time_format date_format monitor=VNC-0 candidate state app label comment entry
 	local bookmarks=$CONFIG/gtk-3.0/bookmarks company="file:///company Company folder"
 	figure=$(backdrop_set)
 	zone=$(desktop_zone)
 	hour=$(hour_in "$zone")
 	ground=${GROUND[10#$hour]}
+	tone=$(tone_of "$ground")
+	time_format=$(inked_xml "${TIME_INK[$tone]}" %H:%M)
+	date_format=$(inked_xml "${DATE_INK[$tone]}" '%a %d %b')
 	# Never a black screen: the bare screen gets the ground of the hour's frame until XFCE has drawn the backdrop.
 	xsetroot -solid "#$ground" 2>/dev/null || true
 	# The backdrop is set by the screen's name, which the display tells.
@@ -141,9 +177,11 @@ write() {
 	rm -rf -- "$CONFIG/xfce4/panel" "$TEMPLATES"
 	mkdir -p "$CONFIG/xfce4/xfconf/xfce-perchannel-xml" "$CONFIG/xfce4/panel/launcher-4" "$CONFIG/xfce4/panel/launcher-5" \
 		"$CONFIG/xfce4/panel/launcher-6" "$CONFIG/xfce4/terminal" "$CONFIG/gtk-3.0" "$TEMPLATES" || return 1
-	# One flat dark bar along the bottom edge is the whole desktop chrome: full width, 80 px, 64 px icons, the three
-	# tools centred between two gaps that take the room, the date at the left and the time at the right.
-	put "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml" <<'PANEL' || return 1
+	# One flat bar along the bottom edge is the whole desktop chrome: full width, 80 px, 64 px icons, the three tools
+	# centred between two gaps that take the room, the date at the left and the time at the right. Its colour is the
+	# ground of the hour's frame and its clocks are written in that ground's ink; the watcher moves both on with the
+	# hours.
+	put "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml" <<PANEL || return 1
 <?xml version="1.0" encoding="UTF-8"?>
 
 <channel name="xfce4-panel" version="1.0">
@@ -161,9 +199,9 @@ write() {
       <property name="icon-size" type="uint" value="64"/>
       <property name="background-style" type="uint" value="1"/>
       <property name="background-rgba" type="array">
-        <value type="double" value="0.062745"/>
-        <value type="double" value="0.070588"/>
-        <value type="double" value="0.094118"/>
+        <value type="double" value="$(share "${ground:0:2}")"/>
+        <value type="double" value="$(share "${ground:2:2}")"/>
+        <value type="double" value="$(share "${ground:4:2}")"/>
         <value type="double" value="1"/>
       </property>
       <property name="plugin-ids" type="array">
@@ -189,20 +227,20 @@ write() {
     <property name="plugin-3" type="string" value="clock">
       <property name="mode" type="uint" value="2"/>
       <property name="digital-layout" type="uint" value="3"/>
-      <property name="digital-time-format" type="string" value="%H:%M"/>
+      <property name="digital-time-format" type="string" value="$time_format"/>
       <property name="digital-time-font" type="string" value="Liberation Sans 13"/>
-      <property name="digital-format" type="string" value="%H:%M"/>
+      <property name="digital-format" type="string" value="$time_format"/>
       <property name="tooltip-format" type="string" value="%A %d %B %Y"/>
-      <property name="timezone" type="string" value="@ZONE@"/>
+      <property name="timezone" type="string" value="$zone"/>
     </property>
     <property name="plugin-7" type="string" value="clock">
       <property name="mode" type="uint" value="2"/>
       <property name="digital-layout" type="uint" value="2"/>
-      <property name="digital-date-format" type="string" value="%a %d %b"/>
+      <property name="digital-date-format" type="string" value="$date_format"/>
       <property name="digital-date-font" type="string" value="Liberation Sans 13"/>
-      <property name="digital-format" type="string" value="%a %d %b"/>
+      <property name="digital-format" type="string" value="$date_format"/>
       <property name="tooltip-format" type="string" value="%A %d %B %Y"/>
-      <property name="timezone" type="string" value="@ZONE@"/>
+      <property name="timezone" type="string" value="$zone"/>
     </property>
     <property name="plugin-4" type="string" value="launcher">
       <property name="show-label" type="bool" value="false"/>
@@ -228,11 +266,12 @@ write() {
   </property>
 </channel>
 PANEL
-	# The clocks follow the desktop's time zone; the plain machine is on UTC.
-	sed -i "s|@ZONE@|$zone|" "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml" || return 1
-	# The launchers. Each state of an icon is an entry of its own (idle; running, with the white mark under the tile;
-	# for the browser also opening, its pulse's second frame, and did not open); the panel starts with a copy of the
-	# idle one in its own folder. The pictures are the office dock's drawings, read from the image.
+	# What the dock shows now, for the watcher and for a press (the runtime folder is the desktop's own, new at each start).
+	echo "$ground" >"$RUN/dock.ground" && echo "$tone" >"$RUN/dock.tone" || return 1
+	# The launchers. Each state of an icon is an entry of its own (idle; running, with the mark under the tile; for the
+	# browser also opening, its pulse's second frame, and did not open); the panel starts with a copy of the idle one in
+	# its own folder. The pictures are the office dock's drawings, read from the image; a state with a mark has a second
+	# drawing for a light ground (dock-light: the mark dark), and so a second entry.
 	for app in terminal files browser; do
 		case $app in
 		terminal) label=Terminal comment="A shell on this computer" ;;
@@ -254,13 +293,17 @@ Icon=$ART/dock/$app-$state.png
 Terminal=false
 StartupNotify=false
 DESKTOP
+			[[ -f $ART/dock-light/$app-$state.png ]] || continue
+			sed "s|^Icon=.*|Icon=$ART/dock-light/$app-$state.png|" "$TEMPLATES/$entry" | put "$TEMPLATES/qorpera-$app-$state-light.desktop" || return 1
 		done
 		[[ -f $TEMPLATES/qorpera-$app.desktop ]] || return 1
 		put "$CONFIG/xfce4/panel/launcher-${PANEL_PLUGIN[$app]}/qorpera-$app.desktop" <"$TEMPLATES/qorpera-$app.desktop" || return 1
 	done
 	# The panel draws with GTK 3, so its look is plain GTK CSS, every rule scoped to the panel: no button boxes, a soft
-	# hover and press highlight, the date dimmer than the time, and click feedback on the icon itself (pushed in while
-	# the button is held, one short jump when it is let go; nothing repeats). Nothing here needs a compositor.
+	# hover and press highlight that reads on a light ground and on a dark one, and click feedback on the icon itself
+	# (pushed in while the button is held, one short jump when it is let go; nothing repeats). The bar's colour is not
+	# here: the panel paints the ground it is told (background-rgba), and a colour named here would stand over it. The
+	# clocks' colours are in their formats. Nothing here needs a compositor.
 	put "$CONFIG/gtk-3.0/gtk.css" <<'CSS' || return 1
 @keyframes qorpera-dock-jump {
 	0% { -gtk-icon-transform: translateY(2px) scale(0.9); }
@@ -270,11 +313,9 @@ DESKTOP
 	100% { -gtk-icon-transform: translateY(0) scale(1); }
 }
 .xfce4-panel {
-	background-color: #101218;
 	background-image: none;
 	border: none;
 	box-shadow: none;
-	color: #e6e9ef;
 }
 .xfce4-panel button {
 	background-color: transparent;
@@ -287,18 +328,12 @@ DESKTOP
 	padding: 0 5px;
 	transition: background-color 90ms ease-out;
 }
-.xfce4-panel button:hover { background-color: rgba(255, 255, 255, 0.10); }
+.xfce4-panel button:hover { background-color: rgba(128, 134, 148, 0.18); }
 .xfce4-panel button:active,
-.xfce4-panel button:checked { background-color: rgba(255, 255, 255, 0.22); }
+.xfce4-panel button:checked { background-color: rgba(128, 134, 148, 0.32); }
 /* The date at the left and the time at the right take the same width, so the
-   three icons between the two expanding gaps sit on the screen's centre line.
-   The time is the brighter of the two. */
-.xfce4-panel #clock-button label {
-	min-width: 120px;
-	color: #c9ced8;
-}
-.xfce4-panel #clock-7 #clock-button label { color: #a3abba; }
-.xfce4-panel #clock-3 #clock-button label { color: #eef0f4; }
+   three icons between the two expanding gaps sit on the screen's centre line. */
+.xfce4-panel #clock-button label { min-width: 120px; }
 .xfce4-panel #clock-button:hover,
 .xfce4-panel #clock-button:active,
 .xfce4-panel #clock-button:checked { background-color: transparent; }
@@ -457,10 +492,13 @@ TERMINAL
 # seconds (an announcement may be lost; the hour, the figure and the time zone change without one): one xprop call and
 # two small reads, and nothing more while nothing changed.
 watch() {
-	local list last=unread kinds= id class app state status zone now figure hour image backdrop
-	# What `write` made is what shows: idle icons, the hour's frame, the clocks' zone. Only a change is told to XFCE.
+	local list last=unread kinds= id class app state status zone now figure hour image backdrop ground tone ground_shown= tone_shown=
+	# What `write` made is what shows: idle icons, the hour's frame, the clocks' zone, the dock's ground and ink (which
+	# it noted). Only a change is told to XFCE.
 	zone=$(desktop_zone)
 	backdrop=$ART/backdrops/$(backdrop_set)/$(hour_in "$zone").png
+	if [[ -s $RUN/dock.ground ]]; then read -r ground_shown <"$RUN/dock.ground" || true; fi
+	if [[ -s $RUN/dock.tone ]]; then read -r tone_shown <"$RUN/dock.tone" || true; fi
 	while :; do
 		if read -r -t 3 _; then
 			sleep 0.3
@@ -471,7 +509,25 @@ watch() {
 			status=$?
 			((status > 128)) || break
 		fi
-		# The marks: a program with a window, minimised or not, has the white mark under its icon.
+		# The time zone the desktop has now, and the hour in it. The dock's clocks follow the zone.
+		now=$(desktop_zone)
+		if [[ $now != "$zone" ]]; then
+			zone=$now
+			for id in 3 7; do
+				xfconf-query -c xfce4-panel -p "/plugins/plugin-$id/timezone" -n -t string -s "$zone" >/dev/null 2>&1 || true
+			done
+		fi
+		hour=$(hour_in "$zone")
+		# The dock stands on the wallpaper: its ground is the hour's, and its ink the ground's tone. The tone is noted
+		# first, so the marks below and a press take it.
+		ground=${GROUND[10#$hour]}
+		tone=$(tone_of "$ground")
+		if [[ $ground != "$ground_shown" ]] && dock_ground "$ground"; then
+			ground_shown=$ground
+			echo "$ground" >"$RUN/dock.ground"
+		fi
+		if [[ $tone != "$tone_shown" ]] && echo "$tone" >"$RUN/dock.tone" && dock_ink "$tone"; then tone_shown=$tone; fi
+		# The marks: a program with a window, minimised or not, has the mark under its icon.
 		list=$(clients) || list=
 		if [[ $list != "$last" ]]; then
 			last=$list
@@ -491,16 +547,7 @@ watch() {
 			show "$app" "$state"
 		done
 		# The backdrop: the set of the figure the machine names now, the frame of the hour in the desktop's time zone.
-		# The dock's clocks follow that zone too.
 		figure=$(backdrop_set)
-		now=$(desktop_zone)
-		if [[ $now != "$zone" ]]; then
-			zone=$now
-			for id in 3 7; do
-				xfconf-query -c xfce4-panel -p "/plugins/plugin-$id/timezone" -n -t string -s "$zone" >/dev/null 2>&1 || true
-			done
-		fi
-		hour=$(hour_in "$zone")
 		image=$ART/backdrops/$figure/$hour.png
 		if [[ $image != "$backdrop" && -f $image ]]; then
 			while read -r id; do
