@@ -286,6 +286,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_read_company_founding(uuid)', false, true, 'member: always raises'),
 	('public.qorpera_read_company_path(uuid,text,jsonb)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_read_company_sidebar(uuid)', false, true, 'member: self-scoped or pure helper'),
+	('public.qorpera_read_company_standing(uuid)', false, true, 'member: auth.uid() + membership; whether the company''s routines stand still and whose login holds them (20260930765000)'),
 	('public.qorpera_read_light_ask(uuid,uuid)', false, true, 'member: auth.uid() + membership; reads only the caller''s own light ask (20260930761000)'),
 	('public.qorpera_read_member_company_snapshot_path(uuid,uuid,text)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_read_member_chat(uuid,uuid,bigint,integer)', false, true, 'member: auth.uid() + both are members; only the caller''s own chat with that member (20260930715000)'),
