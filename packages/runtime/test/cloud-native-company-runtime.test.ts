@@ -1152,6 +1152,8 @@ it.each([
 				"table_write",
 				"save_app",
 				"post_app",
+				// How a part of an app is made, read before it is made (20260930762000).
+				"app_guide",
 				// A picture the agent makes, on a Codex login's run (20260930746000).
 				"make_picture",
 				"company_account",
@@ -3352,8 +3354,11 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// measured on the tree with the kits, the company databases and the answer-first change.
 	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
-	// On 14 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
-	// 20260930763000), so they moved again.
+	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
+	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
+	// again.
+	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
+	// 20260930763000), measured on release v247's tree, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3366,6 +3371,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"table_write",
 		"save_app",
 		"post_app",
+		"app_guide",
 		"make_picture",
 		"update_wall",
 		"data_describe",
@@ -3405,10 +3411,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"0cc161816f9bc8c09b9243dcd57b2f8603018556fe25611a5faaf0cdc9e0b615",
+		"5b28e771f9a142137e491201bd6e7408d0d69a9e53ed8d44cd95f37fc3017618",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"7a34fbb6712e0f1e65a3c50245877b4b55eca0cbd1159662728140c587aad5ec",
+		"55c382c7cfb4960feac71de8d0d7353010bb13c1cf2ec3775693de3b6a1aab62",
 	);
 });
 

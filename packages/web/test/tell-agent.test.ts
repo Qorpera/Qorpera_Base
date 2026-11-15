@@ -131,7 +131,7 @@ describe("a note to an agent", () => {
 		}
 	});
 
-	it("waits after a wall question being answered when it is a note of the Mailbox's, which has no line of its own", async () => {
+	it("waits after a line being answered that names no app when it is a note of the Mailbox's, which has no line of its own", async () => {
 		const controller = company();
 		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
 		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
@@ -141,7 +141,7 @@ describe("a note to an agent", () => {
 		expect(send).not.toHaveBeenCalled();
 		const waiting = controller.conversation(session.sessionId).get();
 		expect([waiting.draft, waiting.answering]).toEqual([mail.text, "Who first?"]);
-		// Also when the question is picked while the thread's account is chosen.
+		// Also when the line comes while the thread's account is chosen.
 		const later = company();
 		vi.spyOn(later, "openStaffConversation").mockResolvedValue(session.sessionId);
 		const held = vi.spyOn(later, "sendPrompt").mockResolvedValue(true);

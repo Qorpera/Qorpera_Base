@@ -152,6 +152,8 @@ describe("which calls are reviewed", () => {
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
+		// How a part of an interface app is made: the runtime's own text (20260930762000).
+		["app_guide", { about: "model" }, "read"],
 		// Summary trees (M1b-3): zoom reads a conversation.
 		["zoom", { conversation: "thread:ada", line: "0+8" }, "read"],
 		// The node's folder search (F3): a read with the run's own view.
