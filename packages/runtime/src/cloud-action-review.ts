@@ -268,7 +268,7 @@ export function cloudActionEffect(
 		// An offer of agents moves nothing until the member says yes on the Members page.
 		case "offer_agents_to_member":
 		// The company's reading of itself (20260930766000) is the company's bookkeeping, like a todo: members see it as the
-		// company's page and say when it is wrong.
+		// first layer of the company's map and say when it is wrong.
 		case "update_reading":
 		// Company databases (slice 5): the store made to match steps someone the folder let write them put there; a step
 		// that would destroy data is held until a member says yes.

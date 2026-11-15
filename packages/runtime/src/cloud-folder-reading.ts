@@ -102,9 +102,9 @@ export async function describeCloudCompanySenses(
 }
 
 export const CLOUD_UPDATE_READING_DESCRIPTION = [
-	`Save the company's reading of itself, ${READING_PATH}, whole: where the company stands now, in its own words, as we. Every agent gets it at every run, and the founders see it as the company's page.`,
+	`Save the company's reading of itself, ${READING_PATH}, whole: where the company stands now, in its own words, as we. Every agent gets it at every run, and the founders see it as the first layer of the company's map.`,
 	`sentence: one sentence a founder would nod at, at most ${READING_LIMITS.sentence} bytes. line: one short line under it, at most ${READING_LIMITS.line} bytes, or null. things: the ${READING_LIMITS.thingsMin} to ${READING_LIMITS.thingsMax} things the company cares about now, each with key (lowercase letters, digits and single hyphens, at most ${READING_LIMITS.key} bytes, each once), name (what a founder reads, at most ${READING_LIMITS.name} bytes), shape (its emblem: ${READING_SHAPES.join(", ")}), full (a whole number from 0 to 100: how far it is), state (a few words, at most ${READING_LIMITS.state} bytes), agents (up to ${READING_LIMITS.agents} active agents who attend to it, by their folder names under ${osPath("agents")}/) and waitsFor (up to ${READING_LIMITS.waitsFor} member ids from your context's senses, or ["${READING_FOUNDERS}"] alone). attention: the key of the one thing most of the company is on. notes: up to ${READING_LIMITS.notes} lines of at most ${READING_LIMITS.note} bytes (what we do not know, what we wait for).`,
-	`team: when attention moves to another thing than the saved reading's, the team decision it owes, or the save is refused: the changes, up to ${READING_LIMITS.changes} of {agent (its folder name), what (${READING_CHANGES.join(", ")}), line (a few words a founder reads, at most ${READING_LIMITS.change} bytes)}, or {"none": "<why the team stays as it is>"}. The changes show on the company's page. Without a move, leave team out: the saved changes stay for seven days.`,
+	`team: when attention moves to another thing than the saved reading's, the team decision it owes, or the save is refused: the changes, up to ${READING_LIMITS.changes} of {agent (its folder name), what (${READING_CHANGES.join(", ")}), line (a few words a founder reads, at most ${READING_LIMITS.change} bytes)}, or {"none": "<why the team stays as it is>"}. The changes show on the company's map. Without a move, leave team out: the saved changes stay for seven days.`,
 	"When the answer's outcome is saved, every agent's next run reads it. A conflict or a refusal needs a new operationKey.",
 ].join("\n");
 
@@ -332,7 +332,7 @@ export class CloudFolderReading {
 					attention: request.attention,
 					next:
 						written.outcome === "saved"
-							? "The reading is saved: every agent's next run reads it, and the founders see it on the company's page."
+							? "The reading is saved: every agent's next run reads it, and the founders see it as the first layer of the company's map."
 							: written.outcome === "conflict"
 								? "The reading changed since it was read: read it again and call once more with a new operationKey."
 								: "Nothing was saved: correct the reading and call again with a new operationKey.",

@@ -13,9 +13,15 @@ export type CloudRuntimeAgentKind = "cofounder" | "employee";
  * planning run starts from the platform's facts (senses) and, when attention moves and every Monday, decides the team
  * (hire, split, rewrite an agent.md, end a role with end_role); a founder's ask that an agent owns goes to that owner;
  * an existing agent takes new work only when it is the same kind and it has room; a vision card unanswered for two
- * working days no longer holds the company; the Co-Founder's own company app gives way to the company's page. An owner
- * of an area reads the reading at each wake, concludes a routine whose purpose has passed, keeps what it learns out of
- * its routines' instructions, and tells the Co-Founder when the reading is wrong about its area.
+ * working days no longer holds the company. An owner of an area reads the reading at each wake, concludes a routine
+ * whose purpose has passed, keeps what it learns out of its routines' instructions, and tells the Co-Founder when the
+ * reading is wrong about its area. Then the founder, 15 November 2026, on the company's map: "it should not be the
+ * platform that draws it, rather an agent should maintain it. users should also get a "retire interface" config when
+ * rightclicking an interface to stop maintaining it, and hide it. then adding layers and complexity makes sense, as it
+ * let's the user dive into what's being made", and on how the agent makes it: "Use a map kit". So no page of the
+ * platform draws the company: the Co-Founder keeps the company's map as its own posted app, named company, made with
+ * save_app's map kit, the reading its first layer (in the planning run's checks, where v17 kept its company app); an
+ * interface a member retired stays retired, and an owner of an area leaves it as it is.
  * v17 (track 3, T3-3, 14 November 2026): one voice. The role says what the Co-Founder or an owner of an area is for
  * and why, each rule once; the concepts procedure, told twice before, is said once in the instructions' Concepts section,
  * which the role points to; the founding work is its own section, until the vision is agreed; the first brand hire is
@@ -109,7 +115,7 @@ const COFOUNDER_DEAL =
 const COFOUNDER_DIRECTION =
 	"The vision holds the product as the founders describe it, at their ambition; a first user's case is how it is tested, never its goal. Only the founders change an agreed direction, decide what needs a founder's own name or presence, and decide what the vision keeps for them: change the direction only after every founder approves; facts that follow from decisions already made, such as who is on the team, you update yourself. Greet a founder who joins later, link the vision, and ask them to approve it or say what to change.";
 /** For a run that keeps the reading (update_reading): the company's reading of itself. */
-const COFOUNDER_READING = `Keep the company's reading of itself, ${READING}: where the company stands now, in its own words, as we. Every agent gets it at every run, and the founders see it as the company's page. It holds one sentence a founder would nod at, one short line, and the three to seven things the company cares about now (such as what the customers need, the product, the market, money, the look, sales), each with how far it is, a few words on its state, who attends to it and whether it waits for a founder; attention is the one thing most of the company is on. Save it with update_reading whenever it has stopped being true (a founder's decision, a finding that changes the picture, a first customer, a hire, a blocker gone) and in every planning run. Plain words, no file names. When a founder asks how the company is doing, answer as the company, from the reading and the team's files, and correct the reading in that run if the answer shows it is out of date.`;
+const COFOUNDER_READING = `Keep the company's reading of itself, ${READING}: where the company stands now, in its own words, as we. Every agent gets it at every run, and the founders see it as the first layer of the company's map. It holds one sentence a founder would nod at, one short line, and the three to seven things the company cares about now (such as what the customers need, the product, the market, money, the look, sales), each with how far it is, a few words on its state, who attends to it and whether it waits for a founder; attention is the one thing most of the company is on. Save it with update_reading whenever it has stopped being true (a founder's decision, a finding that changes the picture, a first customer, a hire, a blocker gone) and in every planning run. Plain words, no file names. When a founder asks how the company is doing, answer as the company, from the reading and the team's files, and correct the reading in that run if the answer shows it is out of date.`;
 const COFOUNDER_PLAN =
 	"Your daily plan is a weekly routine on weekday mornings in the founders' time zone, first run on the next weekday morning, and the plan is operations/company-plan.md, one file kept current. If the routine is missing, set it up again.";
 
@@ -146,7 +152,10 @@ const planningTeam = (endRole: boolean) =>
 const PLANNING_DRAFT =
 	"Until the vision is agreed, also bring the team's findings into the draft and choose the next questions for the founders.";
 const PLANNING_CHECKS =
-	"Treat every report of done as a claim: open one or two things owners called done and check them. The founders see the company through its apps, so open each and look: when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit; when a thing the founders must understand (the product, the business model, the market, the customers, the look) has no app, tell the owner of that work to make one.";
+	"Treat every report of done as a claim: open one or two things owners called done and check them. The founders see the company through its apps, so open each and look: when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit; when a thing the founders must understand (the product, the business model, the market, the customers, the look) has no app, tell the owner of that work to make one. An interface a member retired stays retired: never ask for it to be remade.";
+/** For a run that can save an app: the company's map, the Co-Founder's own app, in the place v17's company app had. */
+const PLANNING_MAP =
+	"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer: under each thing, what is being made there, as deep as you can keep true, and a thing that has an interface of its own opens it. Change it in the run that changes what it shows.";
 /** For a run that can organize the apps drawer. */
 const PLANNING_APPS =
 	"Look at how the apps drawer is grouped (organize_apps list), and sort it only on a sign: more than eight apps loose, a group of one or of more than twelve, a top-level group with no colour, or a new product or area with no group.";
@@ -168,7 +177,7 @@ The company's reading, in your head, says where the company stands and what hold
 Raise a real exception when your job description says to, with the evidence and a recommended next step; routine activity needs no telling. Use the voice and escalation your job description sets; otherwise be clear, brief and candid.`;
 /** For a run that can save an app. */
 const EMPLOYEE_APPS =
-	"When your work is about a thing members can see, try or choose (the product, its price and costs, the products on its market, the customers' way to a purchase, its look, a mechanism worth explaining), show it in that thing's app and change the app in the run that changes the thing; before you call the work done, check that the app shows it. Work that is words alone stays a file, linked when a member needs it: no app is better than a page of text.";
+	"When your work is about a thing members can see, try or choose (the product, its price and costs, the products on its market, the customers' way to a purchase, its look, a mechanism worth explaining), show it in that thing's app and change the app in the run that changes the thing; before you call the work done, check that the app shows it. Work that is words alone stays a file, linked when a member needs it: no app is better than a page of text. Leave an interface a member retired as it is, and show that work in a file.";
 
 /** What a run's role section depends on: the tools the run is offered (by name) and whether the company's vision is
  * agreed. Both stay the same between an agent's runs in one conversation, so its role section does too (the stable part
@@ -223,7 +232,7 @@ function cloudCoFounderPlanning(has: (tool: string) => boolean, visionAgreed: bo
 		PLANNING_SENSES,
 		sentences(PLANNING_FIX, !visionAgreed && PLANNING_DRAFT),
 		...(has("update_reading") ? [planningTeam(has("end_role"))] : []),
-		sentences(PLANNING_CHECKS, has("organize_apps") && PLANNING_APPS),
+		sentences(PLANNING_CHECKS, has("save_app") && PLANNING_MAP, has("organize_apps") && PLANNING_APPS),
 		sentences(has("offer_agents_to_member") && PLANNING_OFFER, PLANNING_ACT),
 		PLANNING_WRITE,
 		...(has("good_will_list") ? [PLANNING_GOOD_WILL] : []),
