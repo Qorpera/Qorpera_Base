@@ -378,11 +378,14 @@ begin
 	perform pg_temp.o_same(pg_temp.c_refused('order-add', jsonb_build_object('at', pg_temp.c_iso(clock_timestamp()
 		+ interval '2 minutes'), 'amount', 1, 'currency', 'dkk')), '22023 :at is ahead of now: an order is added once it '
 		'was made', 'two minutes ahead');
+	v_ref := pg_temp.c_ref(jsonb_build_object('at', pg_temp.c_iso(clock_timestamp() - interval '398 days 23 hours'),
+		'amount', 1, 'currency', 'dkk'));
+	-- It outlives its 24 hours in the daily count, and can still be cancelled then.
+	perform public.qorpera_order_upkeep(clock_timestamp() + interval '24 hours');
+	perform pg_temp.o_same(pg_temp.c_mark(v_ref, 'cancelled'), '1 cancelled', 'almost 399 days ago, a day on');
 	perform pg_temp.o_same(pg_temp.c_refused('order-add', jsonb_build_object('at', pg_temp.c_iso(clock_timestamp()
-		- interval '399 days'), 'amount', 1, 'currency', 'dkk')), 'ok', '399 days ago');
-	perform pg_temp.o_same(pg_temp.c_refused('order-add', jsonb_build_object('at', pg_temp.c_iso(clock_timestamp()
-		- interval '400 days 1 minute'), 'amount', 1, 'currency', 'dkk')), '22023 :at is at most 400 days ago (order rows '
-		'go then)', 'over 400 days ago');
+		- interval '399 days 1 minute'), 'amount', 1, 'currency', 'dkk')), '22023 :at is at most 399 days ago (order rows '
+		'go at 400)', 'over 399 days ago');
 	perform pg_temp.o_same(pg_temp.c_refused('order-add', '{"at": "yesterday", "amount": 1, "currency": "dkk"}'),
 		'22023 :at is when it was ordered: a time with its zone, as 2026-11-15T14:30Z or 2026-11-15T15:30+01:00, or a day '
 		'as YYYY-MM-DD', 'a word');
@@ -655,6 +658,23 @@ begin
 		'a run''s answer');
 end $$;
 
+-- 10b. orders-now's `stripe` speaks of the hook: added orders never make a hook that verified nothing `live`.
+do $$
+begin
+	perform pg_temp.o_clean();
+	-- The hook as it was before any delivery verified (earlier blocks' deliveries recorded the secret's version).
+	update public.qorpera_event_hook_capture_keys set verified_secret_version = null
+	where hook_id = current_setting('qorpera_test.e3h_stripe')::uuid;
+	perform pg_temp.o_same(pg_temp.o_now() ->> 'stripe', 'waiting', 'a hook that verified nothing');
+	perform pg_temp.c_add(jsonb_build_object('at', pg_temp.c_iso(pg_temp.o_at()), 'amount', 10, 'currency', 'dkk'));
+	perform pg_temp.o_same((pg_temp.o_now() ->> 'stripe') || ' ' || (pg_temp.o_now() -> 'orders_today')::text,
+		'waiting 1', 'an added order, a hook that verified nothing');
+	perform pg_temp.c_paid('pi_HookLive', 1000, pg_temp.o_at());
+	perform pg_temp.o_same(pg_temp.o_now() ->> 'stripe', 'live', 'a verified Stripe delivery');
+	perform pg_temp.o_same(pg_temp.o_member('12740000-0000-4000-8000-000000000006', 'orders-now', '{}',
+		'12740000-0000-4000-8000-000000000020') -> 'rows' -> 0 ->> 0, 'none', 'no hook at all');
+end $$;
+
 -- 11. Rights: any member of the company (owner, admin, contributor, viewer: who may read may change) and a run of it;
 --     never an outsider, another company's member or a run of another company; the read rule says no for both doors;
 --     a change that is not there has the same words. The doors' own checks.
@@ -721,6 +741,16 @@ begin
 		'P0002 No change qorpera/order-add that you may run', 'nor adds');
 	execute v_rule;
 	perform pg_temp.o_same(pg_temp.c_mark('pi_W1', 'cancelled'), '1 cancelled', 'the rule back');
+	-- A run of an in-house worker with read access writes nothing (the folder core's rule); one with write access does.
+	perform pg_temp.o_same(pg_temp.o_state($s$select public.qorpera_company_numbers_change(
+		'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', pg_temp.o_actor()
+		|| '{"kind": "staff_agent", "sessionKind": "in_house", "workerAccess": "read"}', 'order-add',
+		pg_temp.c_days('{"at": "@day", "amount": 1, "currency": "dkk"}'))$s$),
+		'42501 A worker with read access changes no orders', 'a read-only worker');
+	perform pg_temp.o_same(pg_temp.o_state($s$select public.qorpera_company_numbers_change(
+		'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', pg_temp.o_actor()
+		|| '{"kind": "staff_agent", "sessionKind": "in_house", "workerAccess": "write"}', 'order-add',
+		pg_temp.c_days('{"at": "@day", "amount": 1, "currency": "dkk"}'))$s$), 'ok', 'a worker that writes');
 	-- An actor of another kind never reaches a change.
 	perform pg_temp.o_same(pg_temp.o_state($s$select public.qorpera_company_numbers_change(
 		'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', '{"kind": "platform"}',

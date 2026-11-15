@@ -18,19 +18,24 @@
 --        be skipped), or to cancelled from any of them; a cancelled order takes no other state; the same state again
 --        changes nothing (changed 0). Only a paid order takes a state: one still unpaid, one whose payment failed and
 --        a refund or a dispute whose session never came are no orders (O1). Stripe's facts (amount, refunded, dispute)
---        are never touched, but cancelling an added order counts it refunded in full in the numbers: no Stripe refund
---        will say so, and a mistaken add is undone this way. `test` true names a test-mode order, false a live one;
+--        are never touched, but cancelling an added order counts it refunded in full in the numbers, since no Stripe
+--        refund will say so: it still counts as an order with its sales (in orders_today, the days, orders-sources),
+--        and nothing deletes one. `test` true names a test-mode order, false a live one;
 --        without it the order is found in either mode (Stripe's ids are unique across modes). Gives back `state`.
 --      order-add {at, amount, currency, state?}: an order outside Stripe, kept as O1 keeps Stripe's (`source` added,
 --        live, no hook), and a random ref (add_ and 32 hex) given back once, to name it in a later order-state: only
 --        its hash is kept, so the caller keeps the ref. `at` is when it was ordered, a time with its zone or a day of
---        the company's (its first minute), within the last 400 days and not ahead of now (a minute's leeway); `amount`
+--        the company's (its first minute), within the last 399 days (the upkeep deletes order rows at 400, and an added
+--        one must outlive the 24 hours its add is counted in and stay there to be cancelled) and not ahead of now (a
+--        minute's leeway); `amount`
 --        what was paid in the currency's major unit (a JSON number or its text, 0 or more, no more decimals than the
 --        currency has in the answers, at most 9 999 999 999 minor units); `currency` an ISO 4217 code (three letters,
 --        any case; funds and metals codes are not money a shop takes). `state` is paid (the default), packed,
 --        on_the_way or delivered: a sale already handled is added as it stands. A company adds at most 500 orders in
 --        24 hours (54000 beyond: a limit, not a bad value). Gives back `order`, `state`.
---    The state's setter is kept as a kind, `agent` or `member`, never a name; `state_at` is the change's time.
+--    The state's setter is kept as a kind, `agent` or `member`, never a name; `state_at` is the change's time. A run
+--    of an in-house worker with read access changes nothing (42501), as the folder core refuses its writes
+--    (qorpera_folder_actor_resource_allowed, 20260928259230).
 -- 2. qorpera_member_company_numbers_change(p_environment_id, p_change, p_params): a member of a folder-v2 company with
 --    their own token through PostgREST (authenticated only), as qorpera_member_company_numbers asks. Anyone else: 42501.
 -- 3. qorpera_run_company_numbers_change(p_environment_id, p_actor, p_change, p_params): a run through
@@ -44,6 +49,8 @@
 --      (a sale entered weeks later, already delivered, is no sign that the company began marking Stripe's orders),
 --      and an added order that is paid and has no state of the company's is to pack whenever it was made (the company
 --      entered it itself). The 90-day rule stays: any state of the company's, Stripe's orders or added ones.
+--    * orders-now's `stripe` is `live` for a Stripe order row, a verified secret or a verified delivery: an added order
+--      no longer counts, so a hook that has verified nothing still says `waiting` in a shop that adds orders by hand.
 -- Refusals are plain words: 22023 a parameter of the wrong kind or out of its bounds, or a state the order cannot take;
 -- 42501 not a member or run of the company; P0002 a change that is not there or that the caller may not run (the same
 -- words), and an order the company does not have or that is not paid. Errors the gateway words the same are worded as
@@ -144,6 +151,9 @@ begin
 		raise exception 'No change qorpera/% that you may run', p_change using errcode = 'P0002'; end if;
 	v_by := case p_actor ->> 'kind' when 'member' then 'member' when 'staff_agent' then 'agent' end;
 	if v_by is null then raise exception 'Company numbers are unavailable' using errcode = '42501'; end if;
+	-- An in-house worker with read access writes nothing, as the folder core says (20260928259230).
+	if p_actor ->> 'sessionKind' = 'in_house' and p_actor ->> 'workerAccess' = 'read' then
+		raise exception 'A worker with read access changes no orders' using errcode = '42501'; end if;
 	for v_key in select k from jsonb_object_keys(v_params) k order by k loop
 		if not v_key = any (v_takes) then
 			raise exception 'The change takes no :%', left(v_key, 60) using errcode = '22023'; end if;
@@ -238,8 +248,10 @@ begin
 		end;
 		if v_at > v_now + interval '1 minute' then
 			raise exception ':at is ahead of now: an order is added once it was made' using errcode = '22023'; end if;
-		if v_at < v_now - interval '400 days' then
-			raise exception ':at is at most 400 days ago (order rows go then)' using errcode = '22023'; end if;
+		-- Order rows go 400 days after the order: an added one outlives its 24 hours in the daily count and can be
+		-- cancelled for at least a day.
+		if v_at < v_now - interval '399 days' then
+			raise exception ':at is at most 399 days ago (order rows go at 400)' using errcode = '22023'; end if;
 		v_state := coalesce(v_params ->> 'state', 'paid');
 		if (v_params ? 'state' and jsonb_typeof(v_params -> 'state') not in ('string', 'null'))
 			or v_state not in ('paid', 'packed', 'on_the_way', 'delivered') then
@@ -371,6 +383,12 @@ select pg_temp.order_changes_patch('public.qorpera_company_numbers_orders(uuid,u
 		select min(o.ordered_at) into v_marked_since from public.qorpera_orders as o
 		where o.profile_id = p_profile_id and o.environment_id = p_environment_id and o.live = v_live
 			and o.state in ('packed', 'on_the_way', 'delivered', 'cancelled') and o.source = 'stripe';$new$,
+
+	$old$			when exists (select 1 from public.qorpera_orders as o
+					where o.profile_id = p_profile_id and o.environment_id = p_environment_id)$old$,
+	$new$			-- 20260930777000: a Stripe order row; an added order says nothing of the hook.
+			when exists (select 1 from public.qorpera_orders as o
+					where o.profile_id = p_profile_id and o.environment_id = p_environment_id and o.source = 'stripe')$new$,
 
 	$old$then count(*) filter (where o.state = 'paid' and o.ordered_at >= v_marked_since$old$,
 	$new$then count(*) filter (where o.state = 'paid' and (o.source = 'added' or o.ordered_at >= v_marked_since)$new$,
