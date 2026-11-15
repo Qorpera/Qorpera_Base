@@ -43,7 +43,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
-import { cloudControlRetryable } from "./cloud-control-errors.ts";
+import { CloudControlRpcEnded, cloudControlRetryable, cloudControlTransientCode } from "./cloud-control-errors.ts";
 import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
@@ -387,16 +387,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// today: no environment, no channel, the same tools and the same provider request. An ask that cannot work (a
 			// call this host's lists or the entry point do not know, a refusal, an answer of another shape) fails the run in
 			// the home's own stage: every run would meet it alike, and taken for "no home" it would switch the home off for
-			// every company unseen. Only a lost answer (a timeout, a dropped connection) leaves this attempt without a home,
-			// said in the host's journal: the switch is off for most companies, so failing their runs for it buys nothing,
-			// and the next attempt asks again.
+			// every company unseen. Only a lost answer leaves this attempt without a home, said in the host's journal: no
+			// answer or a late one, a 5xx that is not PostgREST's, or PostgREST's word that the statement ended on a
+			// transient SQLSTATE (a lock or statement timeout, a serialization failure, a lost connection, its pool wait).
+			// Any other SQLSTATE PostgREST answers (an internal error, a missing function or relation, a violated key) fails
+			// the run like a refusal: asking again changes nothing. The switch is off for most companies, so failing their
+			// runs for a lost answer buys nothing, and the next attempt asks again.
 			const homeRequest = this.#homeChannel
 				? cloudToolRequest(
 						(requestSignal) =>
 							this.#paths.call("qorpera_company_home_available", { p_binding: binding }, requestSignal),
 						signal,
 					).then(parseCloudCompanyHome, (error: unknown) => {
-						if (signal.aborted || !cloudControlRetryable(error)) throw error;
+						const lost =
+							error instanceof CloudControlRpcEnded
+								? error.sqlstate !== undefined && cloudControlTransientCode(error.sqlstate)
+								: cloudControlRetryable(error);
+						if (signal.aborted || !lost) throw error;
 						console.error(`The agent's home was not asked (${cloudRuntimeErrorCategory(error, signal)})`);
 						return undefined;
 					})
