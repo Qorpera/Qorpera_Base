@@ -130,10 +130,7 @@ export interface FolderServiceOptions {
 	 * them small). */
 	readonly searchRunning?: number;
 	readonly searchPaths?: number;
-	/** The data gateway's run door (company databases, slice 8a): with it, a test machine's `data` command reaches the
-	 * company's databases through this service (`data`). Without it, every `data` hello is told so. */
 	readonly dataDoor?: DataDoor;
-	/** How long a data call may take, and one that applies steps (DATA_CALL_MS, DATA_APPLY_MS; tests make them short). */
 	readonly dataCallMs?: number;
 	readonly dataApplyMs?: number;
 }
@@ -177,19 +174,12 @@ const NO_RECEIPT = {
 } as const;
 /** The log a coding view's reads are recorded in as they are served (F3 5c): no machine's log, whose ids are uuids. */
 const SERVED = "served";
-/** A machine's data calls (company databases, slice 8a; RUNTIME-COMPANY-DATABASES.md §9a, "Limits"): 4 at once, half
- * an interface app's 8 (a database folder's read login holds 3 connections and its write login 2, so more would only
- * wait for them), and an app's 120 a minute. Past either a call is refused at once and may be made again. */
 const DATA_RUNNING = 4;
 const DATA_A_MINUTE = 120;
-/** How long one data call may take, its pass included: an agent's read takes 15 s at most. One that applies steps
- * takes longer: the gateway starts no step once 45 s have passed, and a step takes 60 s at most. */
 const DATA_CALL_MS = 30_000;
 const DATA_APPLY_MS = 120_000;
-/** A database's name, as the core and the gateway take it (20260930775000; gateway.mjs DATABASE_NAME). */
 const DATABASE = /^(?!qorpera$|pg_|qorpera_)[a-z][a-z0-9_]{0,39}$/;
 const DATA_UNREACHABLE = "The company's databases cannot be reached now: try again";
-/** What a call says that ended without an answer after it may have written: never that it failed. */
 const DATA_UNKNOWN = {
 	apply: "No answer came from the company's data store, so the steps may still be applying. Run `data describe` to see which steps landed, then apply again for any still waiting.",
 	change:
@@ -699,13 +689,10 @@ export interface NoticesHandle {
 	page(request: NoticesRequest): NoticesAnswer;
 }
 
-/** A `data` connection (company databases, slice 8a): calls to the company's databases, as the view its hello names.
- * A call ends with `signal` (its connection's end). */
 export interface DataHandle {
 	call(request: DataCall, signal: AbortSignal): Promise<DataAnswer>;
 }
 
-/** The service's own refusal of a data call, in the form of the gateway's. */
 function dataRefusal(status: number, error: string): DataAnswer {
 	return { status, value: { error } };
 }
@@ -788,7 +775,6 @@ export class FolderService {
 	readonly #dataDoor: DataDoor | undefined;
 	readonly #dataCallMs: number;
 	readonly #dataApplyMs: number;
-	/** Each test machine's data calls (slice 8a): how many run now, and when those of the last minute began. */
 	readonly #dataCalls = new Map<string, { running: number; began: number[] }>();
 
 	constructor(options: FolderServiceOptions) {
@@ -1172,11 +1158,6 @@ export class FolderService {
 		};
 	}
 
-	/** Checks a `data` hello (company databases, slice 8a; RUNTIME-COMPANY-DATABASES.md §9a): a company machine's `data`
-	 * command calls the company's databases as the view this service serves that machine. It never opens, holds or
-	 * keeps a view. The hello, and each call after it, is taken only for a test machine's view this service holds open,
-	 * its pass checked by the core, from the machine the view is served to, with the view's pass: anything else gets
-	 * the one refusal a hello has. A view is held only while a machine it admits holds it, or shortly after. */
 	data(hello: Hello, bridge: BridgeInfo): DataHandle {
 		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
 		const grant = this.#grants.admit(hello, bridge);
@@ -1206,14 +1187,11 @@ export class FolderService {
 		};
 	}
 
-	/** One data call of a test machine, within its machine's limits (DATA_RUNNING, DATA_A_MINUTE). */
 	async #dataCall(view: View, door: DataDoor, request: DataCall, signal: AbortSignal): Promise<DataAnswer> {
-		// Past its lease the view is served nothing, as on the mount.
 		this.#tree(view);
 		const machine = view.access?.machine;
 		if (machine === undefined) throw new ProtocolError(ErrorCode.viewRefused, "The view is no machine's", true);
 		const now = this.#now();
-		// A machine that has gone leaves nothing here once its last minute has passed.
 		for (const [other, calls] of this.#dataCalls) {
 			calls.began = calls.began.filter((at) => now - at < 60_000);
 			if (calls.running === 0 && calls.began.length === 0) this.#dataCalls.delete(other);
@@ -1239,9 +1217,6 @@ export class FolderService {
 		}
 	}
 
-	/** A data pass as the view, the call at the run door with it, and the reads its answer shows, recorded before the
-	 * answer is given. The machine's body goes as it is, but for the pass: the gateway takes nothing from it that the
-	 * pass does not prove (a file's text counts only by its hash). */
 	async #dataAsk(view: View, door: DataDoor, request: DataCall, signal: AbortSignal): Promise<DataAnswer> {
 		const { verb, body } = request;
 		const named = body.database ?? null;
@@ -1283,7 +1258,6 @@ export class FolderService {
 		}
 		const sent = Buffer.from(JSON.stringify({ ...body, pass: pass.pass }));
 		if (sent.byteLength > DATA_MAX_PAYLOAD) return dataRefusal(413, "The call is larger than 1 MiB");
-		// A call that only looks (a held step's check, a change's preview) writes nothing: it has no unknown outcome.
 		const unknown =
 			verb === "apply" && body.check === undefined
 				? DATA_UNKNOWN.apply
@@ -1299,7 +1273,6 @@ export class FolderService {
 			this.#log(`folder-service: ${view.key}: the data door gave no answer: ${(error as Error).message}`);
 			return unanswered();
 		}
-		// A clean stop has begun: no read is recorded after its last release, so nothing more is shown.
 		if (this.#stopping) return unanswered();
 		this.#dataReads(view, request, pass.entries);
 		if (answer === "too_large") return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
@@ -1310,31 +1283,22 @@ export class FolderService {
 			this.#log(`folder-service: ${view.key}: the data door's answer (${answer.status}) is not JSON`);
 			return unanswered();
 		}
-		// No answer of the gateway's: a status no HTTP answer has.
 		if (!Number.isInteger(answer.status) || answer.status < 200 || answer.status > 599) return unanswered();
-		// The door took neither the node's token nor the pass (a view that ended since, a company stopped since).
 		if (answer.status === 401) {
 			this.#log(`folder-service: ${view.key}: the data door refused the node's token or the pass`);
 			return dataRefusal(503, DATA_UNREACHABLE);
 		}
 		if (unknown !== undefined && answer.status >= 500 && answer.status !== 507) return dataRefusal(504, unknown);
 		const given: DataAnswer = { status: answer.status, value };
-		// The answer is one frame's JSON, a little longer than the gateway's own.
 		if (Buffer.byteLength(JSON.stringify(given)) > DATA_MAX_PAYLOAD)
 			return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
 		return given;
 	}
 
-	/** Records, as reads served under the view, the files whose rows or words a data call's answer can show (§9a, "What
-	 * a machine read is recorded"), as the core read them for the call's pass: each database's `database.toml`, and
-	 * the question's, the change's or the steps' files the call used; for a describe, the questions' and the changes'
-	 * files, whose words it lists. They are released as every read served to the machine is (#served): before the
-	 * view's next boundary and every boundary of its machine. */
 	#dataReads(view: View, request: DataCall, entries: MachineDataPass["entries"]): void {
 		if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 		const { verb, body } = request;
 		for (const entry of entries) {
-			// data/<database>/database.toml, or data/<database>/(tables|queries|actions)/<file>.
 			const [, , part, file] = entry.path.split("/");
 			const shown =
 				part === "database.toml" ||
@@ -3858,8 +3822,6 @@ export class FolderService {
 		this.#recorded(view, this.#releasedRead(view, { seq: 0, ...entry }));
 	}
 
-	/** A read in the view's served log, as the core files it: one served through the mount (#served), or one the core
-	 * made for a data pass (#dataReads), whose version is the core's own and is placed nowhere. */
 	#recorded(view: View, read: ReleasedRead): void {
 		let log = view.logs.get(SERVED);
 		if (!log) {

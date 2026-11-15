@@ -13,8 +13,7 @@ import { FolderService } from "./service.ts";
 import { FolderStaging, GatewayUploads } from "./staging.ts";
 
 /** The node's folder service. Under systemd it takes its configuration and the service credential from
- * `LoadCredential=` (qorpera-folder-config, qorpera-supabase-service-key, for writes qorpera-folder-gateway-token, and
- * for the machines' `data` command qorpera-folder-company-data-token and qorpera-folder-company-data-ca),
+ * `LoadCredential=` (qorpera-folder-config, qorpera-supabase-service-key, and for writes qorpera-folder-gateway-token),
  * its socket from `qorpera-folder-service.socket`, and on a node with coding or test machines its control socket from
  * `qorpera-folder-control.socket` (named `control`), and its own folder from `RuntimeDirectory=`, where a clean stop
  * leaves its note (clean-stop.ts); see deploy/folder-service/. */
@@ -45,10 +44,6 @@ interface Config {
 	/** Writes through the mount (F3 step 3): the object gateway that stores the views' bytes. Without it, every view is
 	 * read-only. Its token is the credential qorpera-folder-gateway-token. */
 	readonly gatewayUrl?: string;
-	/** The data gateway's run door (company databases, slice 8a): the origin this node reaches it at. With it, a test
-	 * machine's `data` command reaches the company's databases. Its token is the credential
-	 * qorpera-folder-company-data-token and the store's CA, which alone its certificate is checked against, the
-	 * credential qorpera-folder-company-data-ca. */
 	readonly companyDataUrl?: string;
 }
 
@@ -128,7 +123,6 @@ const service = new FolderService({
 	),
 	vouched,
 	log,
-	// A bad URL, token or CA stops the service at its start, as a bad mount does.
 	...(settings.companyDataUrl
 		? {
 				dataDoor: httpsDataDoor({
