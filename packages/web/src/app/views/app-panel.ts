@@ -172,6 +172,8 @@ export class AppPanel {
 	#unlisten: (() => void) | undefined;
 	/** The page shows the app as retired. */
 	#shownRetired = false;
+	/** Whether the app was retired when it was last read: a change of that is shown afresh (`retiredChanged`). */
+	#seenRetired = false;
 	/** The retired app's cover, as shown. */
 	#coverUrl: string | undefined;
 
@@ -278,7 +280,7 @@ export class AppPanel {
 	 * state. */
 	retiredChanged(): void {
 		if (this.target.kind !== "app") return;
-		if (Boolean(this.#host.retired?.(this.target.name)) !== this.#shownRetired) void this.reload(false);
+		if (Boolean(this.#host.retired?.(this.target.name)) !== this.#seenRetired) void this.reload(false);
 	}
 
 	/** Reads the app or page and shows it: afresh when `fresh` (the member asked: Reload, or opening it again) or when
@@ -333,7 +335,9 @@ export class AppPanel {
 		this.#serve(null);
 		this.#page = undefined;
 		this.#withdraw();
-		this.#body.classList.remove("is-dark");
+		this.#body.classList.remove("is-dark", "is-retired");
+		this.#shownRetired = false;
+		this.#forgetCover();
 		const line = h("p", { class: "side-panel-status" }, text);
 		const back = this.#back;
 		if (!back) {
@@ -370,22 +374,24 @@ export class AppPanel {
 
 	/** A retired app's page (the founder, 15 November 2026): its cover or emblem in grey, the one line that it is retired,
 	 * and Bring back for a member who may. Pure visual: no header, box or section. */
-	#retiredView(name: string, path: string, manifest: AppManifest): void {
+	#retiredView(name: string, path: string, manifest: AppManifest | null): void {
 		this.#frame?.dispose();
 		this.#frame = undefined;
 		this.#serve(null);
 		this.#page = undefined;
 		this.#withdraw();
 		this.#body.classList.remove("is-dark");
+		// The theme's own page behind it, not the white a frame stands on.
+		this.#body.classList.add("is-retired");
 		this.#shownRetired = true;
 		const mark = h(
 			"span",
 			{ class: "side-panel-retired-mark", "aria-hidden": "true" },
-			interfaceEmblem(manifest.emblem, 64),
+			interfaceEmblem(manifest?.emblem ?? "page", 64),
 		);
 		const signal = this.#lifetime.signal;
 		const picture = this.#host.picture;
-		if (manifest.cover && picture)
+		if (manifest?.cover && picture)
 			void picture(`${path}/${manifest.cover}`, signal)
 				.then(async (blob) => {
 					const url = blob ? await pictureUrl(blob) : null;
@@ -561,12 +567,23 @@ export class AppPanel {
 			const apps = afresh ? await this.#host.readApps(signal) : this.#host.apps();
 			const app = apps.find((entry) => entry.name === target.name);
 			if (signal.aborted) return;
+			this.#seenRetired = Boolean(this.#host.retired?.(target.name));
 			if (!app) {
 				this.#path = undefined;
 				return this.#status(t("This app isn't in the company anymore."), true);
 			}
 			this.#path = app.path;
 			const manifest = app.manifest;
+			// Retired by a member: nothing of the app runs, whatever its manifest says.
+			if (this.#seenRetired) {
+				this.#heading(manifest?.name ?? app.name, manifest, null);
+				return this.#retiredView(target.name, app.path, manifest);
+			}
+			if (this.#shownRetired) {
+				this.#shownRetired = false;
+				this.#body.classList.remove("is-retired");
+				this.#forgetCover();
+			}
 			if (!manifest) {
 				this.#heading(app.name, null, null);
 				return this.#status(
@@ -578,12 +595,6 @@ export class AppPanel {
 			name = manifest.name;
 			this.#emblemName = manifest.emblem;
 			this.#heading(manifest.name, manifest, this.#host.agentName(manifest.owner));
-			// Retired by a member: nothing of the app runs.
-			if (this.#host.retired?.(target.name)) return this.#retiredView(target.name, app.path, manifest);
-			if (this.#shownRetired) {
-				this.#shownRetired = false;
-				this.#forgetCover();
-			}
 			served = { ...app, manifest };
 			// The page that stands follows the manifest from the moment it is read, before its files are read again:
 			// putting the page together may fail and leave the earlier page standing, and that page must not keep what

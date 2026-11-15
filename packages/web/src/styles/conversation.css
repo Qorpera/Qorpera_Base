@@ -1210,6 +1210,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .side-panel-way:hover { background: var(--hover); text-decoration: none; }
 .side-panel-way:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 /* A retired app's page (the founder, 15 Nov 2026): its cover or emblem in grey, one line, Bring back. Nothing else. */
+.side-panel-body.is-retired { background: var(--bg); }
 .side-panel-retired { display: grid; justify-items: center; gap: 14px; margin: auto; padding: 24px; text-align: center; }
 .side-panel-retired-mark { display: grid; place-items: center; width: 160px; height: 160px; filter: grayscale(1); opacity: 0.55; }
 .side-panel-retired-mark .interface-emblem { width: 96px; height: 96px; --emblem-ink: var(--text-muted); }
