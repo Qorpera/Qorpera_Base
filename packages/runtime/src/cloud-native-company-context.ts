@@ -159,9 +159,9 @@ To a coworker, write what you need, what you hand over or what changed for them,
 const GOING_LIVE = `
 # Going live
 A change goes live when people outside the team meet it: an update to a published site, a new version of the product, a new price, a mail or post to many. Until then it is ready, and it goes live on a member's yes, because customers cannot unsee it.
-- A website from a repository kept in Qorpera goes live only in What's new, where each change that passes its checks appears within a minute and a member puts it live: tell them in one line that it waits there; never publish it yourself or ask about it on a card.
+- A website from a repository kept in Qorpera goes live only when an owner or admin puts it live: each change that passes its checks shows within a minute under your thread and in What's new, where they can look at it first. Tell them in one line what changes for customers; never publish it yourself or ask about it on a card.
 - Anything else: one question card that shows what changes, with Put it live and Not yet. On yes, put it live in that run; on not yet, ask what to change.
-- A fix for something broken for customers right now goes live at once, and you tell the members that day. For a repository's website, ask a member at once to put the fix live, or to press Go back in What's new.`;
+- A fix for something broken for customers right now goes live at once, and you tell the members that day. For a repository's website, ask an owner or admin at once to put the fix live, or to press Go back in What's new.`;
 
 /** Using skills: every run that can load one (read_skill), a worker's and a private conversation's too; saving one is
  * the notebook's section (update_skill). */
@@ -321,12 +321,9 @@ const NOTEBOOK =
 const SKILLS =
 	"When you work out a way of doing something that will recur (a report, a check, a hand-off), save it as a skill with update_skill, with a description of when to use it: in your own library, or in the company's when others would use it. Look there before writing one, and fix a skill that turned out wrong. Your context's skills lists them.";
 
-/** Accounts on websites: a run offered company_account (off by default). No tool types the company's passwords on a
- * company machine: the fill box goes into a Company Computer only (cloud-company-account-fill-box.ts), and no company
- * has one since 3 October 2026. */
-const ACCOUNTS = `
+const accountsSection = (has: CloudOfferedTool) => `
 # Accounts on websites
-The company can hold its own accounts on websites. Open one only when an open todo of yours needs it, and look for one the company already has first. A site that checks for automated browsers is a person's task in their own browser: prepare the steps and ask a member. Never ask anyone for a password and never type one yourself: a step that needs the account's password is a person's task for now. When a page shows a CAPTCHA, a bot check, an unusual-activity warning or a block, stop at once without retrying: mark the account needs_person and tell a member what a person must do.`;
+The company can hold its own accounts on websites. Open one only when an open todo of yours needs it, and look for one the company already has first. A site that checks for automated browsers is a person's task in their own browser: prepare the steps and ask a member. Never ask anyone for a password and never type one yourself: ${has("fill_company_account") ? "on a machine the vault types it with fill_company_account (open the page with desktop open and click into the field first), and you never say or screenshot one" : "a step that needs the account's password is a person's task for now"}. When a page shows a CAPTCHA, a bot check, an unusual-activity warning or a block, stop at once without retrying: mark the account needs_person and tell a member what a person must do.`;
 
 /** The sections a run gets by its tools, after its role and before its head: the same for every run of one agent
  * (they read only the tools its runs share). A worker gets the apps and databases it can use. */
@@ -346,7 +343,7 @@ function situationSections(has: CloudOfferedTool, worker: boolean): string[] {
 					`\n# Your notebook and skills\n${[...(has("update_memory") ? [NOTEBOOK] : []), ...(has("update_skill") ? [SKILLS] : [])].join("\n")}`,
 				]
 			: []),
-		...(has("company_account") ? [ACCOUNTS] : []),
+		...(has("company_account") ? [accountsSection(has)] : []),
 	];
 }
 

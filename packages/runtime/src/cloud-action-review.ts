@@ -320,6 +320,8 @@ export function cloudActionEffect(
 		// can use what (20260930705000), as computer_browser vault_capture of a coding value does.
 		case "save_coding_value":
 			return "external";
+		case "fill_company_account":
+			return "external";
 		// machine_screen (20260930708000): a look shows the agent its machine's screen and changes nothing; moving the
 		// pointer or scrolling changes only what shows. A click, a drag, typed text, keys or an opened page acts on what
 		// runs there, which can reach the internet, as a command on the machine can (machine_run).
@@ -945,6 +947,11 @@ export function describeCloudAction(
 		add("variable", typeof args.variable === "string" ? args.variable.toUpperCase() : undefined);
 		add("repository", args.repository);
 		add("purpose", args.purpose);
+	} else if (tool.name === "fill_company_account") {
+		title = "Type a company account's sign-in into a web page on a company machine";
+		target = text(args.machine) || null;
+		add("account", args.account);
+		add("field", args.field);
 	} else if (tool.name === "send_mail") {
 		title = "Send an email";
 		const addresses = (value: JsonValue | undefined) =>

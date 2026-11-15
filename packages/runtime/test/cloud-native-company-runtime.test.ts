@@ -841,6 +841,9 @@ async function fixture(
 						cancel: async () => {
 							throw new Error("No machine command in this suite");
 						},
+						accountFill: async () => {
+							throw new Error("No machine command in this suite");
+						},
 					}),
 				}
 			: {}),
@@ -2794,6 +2797,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// It waits inside the call instead.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds");
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).toHaveProperty("waitSeconds");
+	expect(offeredNames(evidence)).not.toContain("fill_company_account");
 	// Still no mouth, coworkers or delegation, in its catalog or in more_tools.
 	expect(offeredNames(evidence)).not.toContain("send_message");
 	expect(offeredNames(evidence)).not.toContain("manage_worker");
@@ -2818,6 +2822,9 @@ it("gives a company conversation's run the machine tools with notify, and a star
 		maximum: 60,
 	});
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
+	const names = offeredNames(evidence);
+	expect(names).toContain("fill_company_account");
+	expect(names.indexOf("fill_company_account")).toBeGreaterThan(names.indexOf("machine_list"));
 });
 
 it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manage_routine the state files' writers", async () => {

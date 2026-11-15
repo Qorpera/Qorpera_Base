@@ -1300,6 +1300,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										gateway: machineGateway,
 										worker: work.isWorker,
 										...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
+										...(this.#companyAccounts ? { accountFills: true } : {}),
 									})
 								: []),
 							// The notebook is the agent's own: a worker of the same agent recalls it,

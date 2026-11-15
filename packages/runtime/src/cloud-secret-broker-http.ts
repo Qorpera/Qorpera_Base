@@ -27,6 +27,7 @@ import {
 	parseCompanyAccountAnswer,
 	parseCompanyAccountFillAnswer,
 	parseCompanyAccountFillRequest,
+	parseCompanyAccountMachineFillRequest,
 	parseCompanyAccountRequest,
 } from "./cloud-company-account-vault.ts";
 import {
@@ -1272,6 +1273,18 @@ export class HttpCloudSecretBrokerService {
 					environment: { ...environment.environment },
 					mask: [...environment.mask],
 				});
+				return;
+			}
+			if (
+				path === "/v1/machine-account-fills" &&
+				this.#codingExecutorToken !== undefined &&
+				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
+			) {
+				const answer = await scope.broker.companyAccountMachineFill(
+					parseCompanyAccountMachineFillRequest(await readRequest(request)),
+					AbortSignal.timeout(12_000),
+				);
+				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });

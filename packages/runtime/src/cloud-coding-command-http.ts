@@ -32,6 +32,7 @@ import {
 import {
 	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
+	CloudMachineAccountFillRefusal,
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
@@ -46,6 +47,8 @@ import {
 	cloudMemberMachineStartAnswer,
 	cloudMemberMachineStreamFrame,
 	cloudMemberMachineStreamFrameHead,
+	parseCloudMachineAccountFillAnswer,
+	parseCloudMachineAccountFillHttpRequest,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
@@ -596,6 +599,8 @@ export class HttpCloudCodingCommandService {
 			// save_coding_value (20260930705000): the machine's clipboard helper, for one executing receipt.
 			const codingValueRoute =
 				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
+			const accountFillRoute =
+				this.#options.machines?.accountFill && request.url === "/v1/machine-commands/account-fill";
 			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
 			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
 			// A member's look (20260930712000): on the peer listener only (no run's lease to prove), from another executor.
@@ -630,6 +635,7 @@ export class HttpCloudCodingCommandService {
 					!machineRoute &&
 					!wakeRoute &&
 					!codingValueRoute &&
+					!accountFillRoute &&
 					!screenRoute &&
 					!memberScreenRoute &&
 					!memberActRoute &&
@@ -672,6 +678,27 @@ export class HttpCloudCodingCommandService {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
 					if (!(error instanceof CloudMachineCodingValueRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (accountFillRoute && this.#options.machines?.accountFill) {
+				const admitted = parseCloudMachineAccountFillHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineAccountFillAnswer(
+							admitted,
+							await this.#options.machines.accountFill(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code (and the vault's own words).
+					if (!(error instanceof CloudMachineAccountFillRefusal)) throw error;
+					replyJson(reply, 409, {
+						code: error.code,
+						...(error.vault !== undefined ? { vault: error.vault } : {}),
+					});
 				}
 				return;
 			}
