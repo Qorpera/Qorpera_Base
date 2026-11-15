@@ -1954,12 +1954,13 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Own code storage, D1b (15 November 2026, on T3-6): Going live says a repository's website shows under the agent's
 // thread and in What's new, where an owner or admin may look at it first, and the one line is what changes for
 // customers; the staff instructions measured once more (the worker's and the three prompts do not move).
+// Review r1 of #1851: a repository's website's urgent fix is asked of an owner or admin; the staff pair measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "c7c73a8cca2165000db17316cfeeac2cf3d9d17a0d4133214bcf890a41e8e475",
+			instructions: "373df7a88ab2c97d4dd2be15f97beafcfde0e9563991f45afac8ad821f1c1bbb",
 			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
 		},
 	],
@@ -1975,7 +1976,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "c7c73a8cca2165000db17316cfeeac2cf3d9d17a0d4133214bcf890a41e8e475",
+			instructions: "373df7a88ab2c97d4dd2be15f97beafcfde0e9563991f45afac8ad821f1c1bbb",
 			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
 		},
 	],
@@ -2291,6 +2292,8 @@ it("holds changes until a member says yes, and puts a repository's website live 
 		"Tell them in one line what changes for customers; never publish it yourself or ask about it on a card.",
 		"Anything else: one question card that shows what changes, with Put it live and Not yet. On yes, put it live in that run; on not yet, ask what to change.",
 		"A fix for something broken for customers right now goes live at once, and you tell the members that day.",
+		// Only an owner or admin puts a version live or goes back (the kernel answers anyone else 42501; review r1 of #1851).
+		"For a repository's website, ask an owner or admin at once to put the fix live, or to press Go back in What's new.",
 	]) {
 		expect(instructions).toContain(rule);
 		expect(worker).not.toContain(rule);
@@ -2298,6 +2301,7 @@ it("holds changes until a member says yes, and puts a repository's website live 
 	// The app agents kept for it, and its rundown and buttons, are gone; so is the line that said only where it waits.
 	for (const gone of [
 		"tell them in one line that it waits there",
+		"ask a member at once to put the fix live",
 		"whats-new",
 		"(publish_site on a live site)",
 		"show them together as one rundown",

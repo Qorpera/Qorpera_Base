@@ -160,7 +160,7 @@ const GOING_LIVE = `
 A change goes live when people outside the team meet it: an update to a published site, a new version of the product, a new price, a mail or post to many. Until then it is ready, and it goes live on a member's yes, because customers cannot unsee it.
 - A website from a repository kept in Qorpera goes live only when an owner or admin puts it live: each change that passes its checks shows within a minute under your thread and in What's new, where they can look at it first. Tell them in one line what changes for customers; never publish it yourself or ask about it on a card.
 - Anything else: one question card that shows what changes, with Put it live and Not yet. On yes, put it live in that run; on not yet, ask what to change.
-- A fix for something broken for customers right now goes live at once, and you tell the members that day. For a repository's website, ask a member at once to put the fix live, or to press Go back in What's new.`;
+- A fix for something broken for customers right now goes live at once, and you tell the members that day. For a repository's website, ask an owner or admin at once to put the fix live, or to press Go back in What's new.`;
 
 /** Using skills: every run that can load one (read_skill), a worker's and a private conversation's too; saving one is
  * the notebook's section (update_skill). */
