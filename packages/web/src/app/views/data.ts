@@ -59,7 +59,7 @@ interface OpenRow {
 	notice: { readonly text: string; readonly tone: "note" | "danger" } | undefined;
 	readonly notes: Map<string, string>;
 	readonly saved: Set<string>;
-	readonly saving: Set<string>;
+	readonly saving: Map<string, number>;
 	readonly pending: Map<string, { value: unknown; writes: number }>;
 	gone: boolean;
 	queue: Promise<void>;
@@ -896,7 +896,7 @@ class DataListView {
 			notice: undefined,
 			notes: new Map(),
 			saved: new Set(),
-			saving: new Set(),
+			saving: new Map(),
 			pending: new Map(),
 			gone: false,
 			queue: Promise.resolve(),
@@ -920,7 +920,7 @@ class DataListView {
 			notice: undefined,
 			notes: new Map(),
 			saved: new Set(),
-			saving: new Set(),
+			saving: new Map(),
 			pending: new Map(),
 			gone: false,
 			queue: Promise.resolve(),
@@ -1112,12 +1112,12 @@ class DataListView {
 			return Promise.resolve();
 		}
 		if (kind === "boolean") open.pending.set(name, { value, writes: (open.pending.get(name)?.writes ?? 0) + 1 });
-		open.saving.add(name);
+		saving(open, name, 1);
 		this.#syncRow();
 		return this.#queue(open, () => this.#change(open, { [name]: value })).finally(() => {
 			const pending = open.pending.get(name);
 			if (pending && --pending.writes === 0) open.pending.delete(name);
-			open.saving.delete(name);
+			saving(open, name, -1);
 			if (this.#open === open) this.#syncRow();
 		});
 	}
@@ -1177,12 +1177,12 @@ class DataListView {
 			this.#flashSaved(open);
 			const filled = Object.keys(rest);
 			if (filled.length === 0) return;
-			for (const name of filled) open.saving.add(name);
+			for (const name of filled) saving(open, name, 1);
 			this.#syncRow();
 			try {
 				await this.#change(open, rest);
 			} finally {
-				for (const name of filled) open.saving.delete(name);
+				for (const name of filled) saving(open, name, -1);
 				if (this.#open === open) this.#syncRow();
 			}
 		} catch (error) {
@@ -1240,7 +1240,7 @@ class DataListView {
 			this.#replaceRow(open, row, now);
 			open.row = now;
 			open.notice = undefined;
-			for (const one of names) open.saved.add(one);
+			for (const one of names) if ((open.saving.get(one) ?? 0) <= 1) open.saved.add(one);
 			if (this.#open === open) {
 				this.#syncRow();
 				this.#flashSaved(open);
@@ -1460,6 +1460,12 @@ class DataListView {
 			this.#refused(open, row, error, null);
 		}
 	}
+}
+
+function saving(open: OpenRow, name: string, by: number): void {
+	const now = (open.saving.get(name) ?? 0) + by;
+	if (now > 0) open.saving.set(name, now);
+	else open.saving.delete(name);
 }
 
 function hasValues(row: CloudMemberDataRow): row is CloudMemberDataRow & { values: readonly unknown[] } {

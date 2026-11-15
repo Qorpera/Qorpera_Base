@@ -590,9 +590,12 @@ describe("a new row and a toggle, while the store answers", () => {
 		expect(ready.textContent).toBe("No");
 		for (let landed = 0; landed < 3; landed++) {
 			await settle();
+			expect(lands).toHaveLength(landed + 1);
 			lands[landed]?.();
 			await settle();
 			expect(ready.textContent).toBe("No");
+			expect(ready.closest(".data-field")?.classList.contains("is-saving")).toBe(landed < 2);
+			expect(ready.closest(".data-field")?.classList.contains("is-saved")).toBe(landed === 2);
 		}
 	});
 
