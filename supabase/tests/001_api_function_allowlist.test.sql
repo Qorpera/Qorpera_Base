@@ -377,6 +377,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_set_session_service_tier(uuid,text,bigint)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_sign_out_account_model_login(uuid)', false, true, 'member: auth.uid() must own the account model login'),
 	('public.qorpera_sign_out_claude_login(uuid)', false, true, 'member: auth.uid() must own the Claude login'),
+	('public.qorpera_site_member_pass(uuid)', false, true, 'member: auth.uid() + membership of the files site''s company (viewers too); a one-use pass of 60 seconds into the site''s own host, kept as its SHA-256, at most 30 open a member (20260930774000)'),
 	('public.qorpera_start_agent_first_run(uuid,uuid,uuid,bigint)', false, true, 'internal: auth.uid() + membership/ownership'),
 	('public.qorpera_start_company_founding(uuid,bigint,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_submit_product_feedback(uuid,text,text,boolean,jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
