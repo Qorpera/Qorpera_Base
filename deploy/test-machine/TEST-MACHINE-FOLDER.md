@@ -70,7 +70,9 @@ The wrapper:
   machine guest with it (`scripts/package-machine-guest.mjs`);
 - builds the stand-in image (below) in that project, from `ubuntu:26.04`, with
   `/usr/local/bin/data` written and checked as `build-machine-image.sh` does
-  (exit 2 with no verb, exit 3 with no view), and publishes it there;
+  (exit 2 with no verb, exit 3 with no view, and the agent account
+  `qorpera-agent`, with its sudo rule from the guest package, reaching it as
+  root through `sudo -n`), and publishes it there;
 - runs `scripts/test-test-machine-folder.mjs --execute` against the project.
 
 Its trap deletes only what it created: every VM and image in its own project,
@@ -373,8 +375,10 @@ they end. At most two VMs run at once.
   so the stand-in is `ubuntu:26.04` with no NIC, the test machine's Node binary
   as `/usr/bin/node`, 6c's guest package (the helper, the slice, the watchdog
   units, the folder program and its unit) pushed in at the image's paths,
-  `/company` made, `/usr/local/bin/data` written, and the watchdog timer
-  enabled. Docker, fuse3, the toolbox
+  `/company` made, the agent account `qorpera-agent` with its sudo rule,
+  `/usr/local/bin/data` written, and the watchdog timer enabled. Step 8b's
+  commands run as root (`machine_run`); the agent account's road to `data`
+  through `sudo -n` is proven only by the image's check, run on the stand-in. Docker, fuse3, the toolbox
   and apt's masks are not in it. The image's bootstrap sha is that of the
   wrapper and the guest package's manifest.
 - **The NIC and the plug.** A machine's only card is on the agents' bridge

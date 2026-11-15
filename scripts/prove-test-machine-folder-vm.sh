@@ -138,6 +138,8 @@ lxc --force-local --project "$project" file push "$package/cloud-machine-guest.m
 	"$builder/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444 </dev/null
 lxc --force-local --project "$project" file push "$package/qorpera-folder" "$builder/opt/qorpera-folder/qorpera-folder" \
 	--uid 0 --gid 0 --mode 0555 </dev/null
+lxc --force-local --project "$project" file push "$package/qorpera-agent.sudoers" "$builder/etc/sudoers.d/qorpera-agent" \
+	--uid 0 --gid 0 --mode 0440 </dev/null
 for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service; do
 	lxc --force-local --project "$project" file push "$package/$unit" "$builder/etc/systemd/system/$unit" \
 		--uid 0 --gid 0 --mode 0644 </dev/null
@@ -149,11 +151,19 @@ lx exec "$builder" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$folder_sha" bash -euo
 	[[ $(sha256sum </opt/qorpera-folder/qorpera-folder | cut -d" " -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]]
 	/opt/qorpera-folder/qorpera-folder --version
 	# The command for the company databases, as deploy/machine/build-machine-image.sh writes and checks it.
-	printf "%s\n" "#!/bin/sh" "exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
+	groupadd --gid 2000 qorpera-agent
+	useradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent --create-home --shell /bin/bash qorpera-agent
+	visudo -cf /etc/sudoers.d/qorpera-agent
+	printf "%s\n" "#!/bin/sh" "[ \"\$(id -u)\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \"\$@\"" \
+		"exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
 	chmod 0555 /usr/local/bin/data
 	[[ $(stat -c "%U:%G %a" /usr/local/bin/data) == "root:root 555" ]]
 	data >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]
 	data describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]
+	[[ $(stat -c %a /root) == 700 && ! -e /root/no-view.json ]]
+	[[ $(runuser -u qorpera-agent -- data --view-file /root/no-view.json describe 2>&1 >/dev/null; echo "exit $?") == \
+		*"has no company folder"*"exit 3" ]] ||
+		{ echo "the agent account does not reach data as root" >&2; exit 1; }
 	/usr/bin/flock --version >/dev/null
 	[[ $(systemctl is-enabled qorpera-machine-folder.service || true) == static ]]
 	[[ -d /company && -z $(ls -A /company) ]]
