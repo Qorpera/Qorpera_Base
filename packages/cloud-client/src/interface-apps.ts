@@ -34,10 +34,7 @@ export const OWED_APPS = Object.freeze(["products", "money", "ads"] as const);
 export type OwedApp = (typeof OWED_APPS)[number];
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app;
  * `data`: the company's databases, asked by their questions; `reading`: the company's reading of itself
- * (QorperaOS/vision/reading.md), its agents and whether it can run, as plain names (the `map` kit's first layer);
- * `money` and `site`: the platform's own numbers of the company, asked as questions of the reserved database `qorpera`
- * (APP_NUMBERS_DATABASE): `money` the bank's sums (`qorpera/money-*`), `site` the visits of the company's sites
- * (`qorpera/sites`, `qorpera/site-*`). Neither needs `data`, and `data` reads neither. */
+ * (QorperaOS/vision/reading.md), its agents and whether it can run, as plain names (the `map` kit's first layer). */
 export const APP_READS = Object.freeze([
 	"files",
 	"tables",
