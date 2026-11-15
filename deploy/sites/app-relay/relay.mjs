@@ -20,6 +20,13 @@
  *  - /.qorpera/client.mjs the link program itself, no password.
  *  - /.qorpera/unlock    the password form (POST password, next).
  *  - /.qorpera/health    (on any host, none needed) the container's healthcheck.
+ *  - a change from another site: any method but GET, HEAD and OPTIONS whose Sec-Fetch-Site is same-site or
+ *                        cross-site, or whose Origin is there and is not https://<this app host> (Origin "null" passes
+ *                        only with Sec-Fetch-Site same-origin: a page under Referrer-Policy no-referrer sends it to its
+ *                        own origin), is refused with 403 (no-store) before the gate, the database or the app see it,
+ *                        the unlock form's POST too. Every other company's site and app is a same-site neighbour that
+ *                        makes the visitor's browser send the Lax gate cookie (deploy/sites/SITE-HOSTS.md). A request
+ *                        with neither header passes, as before.
  *  - anything else       the gate (cookie __Host-qorpera_app, checked with the database: an open answer kept 30 s, a
  *                        locked one 5 s), then the app through its link program, when the program serves the very site
  *                        the session is for (a kept answer that disagrees is asked again, and the program is dropped
@@ -278,6 +285,24 @@ export function responseHeaders(pairs) {
 	}
 	headers.push(...(noStore ? NO_STORE_CACHE_HEADERS : FORWARDED_CACHE_HEADERS).map((pair) => [...pair]));
 	return headers;
+}
+
+/** Methods that change nothing by HTTP's rules: forwarded whoever sent them. */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/** Whether a request is a change sent from another site, which the relay refuses before anyone sees it: a method other
+ * than GET, HEAD and OPTIONS whose Sec-Fetch-Site (set by the browser, never by a page) is same-site or cross-site, or
+ * whose Origin is there and is not exactly https://<host>. An Origin of "null" is the browser hiding the origin under
+ * the page's referrer policy (no-referrer, as helmet's default sets it), on a request to its own origin too: it passes
+ * only when Sec-Fetch-Site says same-origin. A request with neither header passes (old browsers, other programs, which
+ * carry no visitor's cookie by themselves). `host` is the app host, lower case. */
+export function changeFromAnotherSite(method, headers, host) {
+	if (SAFE_METHODS.has(method)) return false;
+	const site = headers["sec-fetch-site"];
+	if (site === "same-site" || site === "cross-site") return true;
+	const origin = headers.origin;
+	if (origin === undefined || origin === `https://${host}`) return false;
+	return !(origin === "null" && site === "same-origin");
 }
 
 /** The path the password form sends a visitor back to: a path on this host (never another host, never the platform's
@@ -684,6 +709,8 @@ const TEXT = {
 		unavailable: "Not available",
 		unavailableLead: "The site can't be shown right now. Try again in a moment.",
 		refused: "This form can only be sent from the site's own password page.",
+		otherSite: "Sent from another site",
+		otherSiteLead: "This app takes changes only from its own pages. Open the app and try again there.",
 		notRunning: "This app is not running right now",
 		notAnswering: "The app is not answering",
 		notAnsweringLead: "It may be starting, or it has stopped. Try again in a moment.",
@@ -708,6 +735,8 @@ const TEXT = {
 		unavailable: "Ikke tilgængelig",
 		unavailableLead: "Sitet kan ikke vises lige nu. Prøv igen om lidt.",
 		refused: "Formularen kan kun sendes fra sitets egen adgangskodeside.",
+		otherSite: "Sendt fra et andet site",
+		otherSiteLead: "Appen tager kun imod ændringer fra sine egne sider. Åbn appen, og prøv igen der.",
 		notRunning: "Appen kører ikke lige nu",
 		notAnswering: "Appen svarer ikke",
 		notAnsweringLead: "Den starter måske, eller den er stoppet. Prøv igen om lidt.",
@@ -1060,6 +1089,12 @@ export function createRelay({
 		const text = TEXT[lang];
 		const site = appHost(req.headers["x-forwarded-host"], hostSuffix);
 		if (!site || !url.startsWith("/")) return answer(req, res, 404, messagePage(lang, text.notFound, text.nothing));
+		// Before the gate: a change another site's page made the visitor's browser send never reaches the database or
+		// the app, with a session or without (so a probe needs none).
+		if (changeFromAnotherSite(req.method, req.headers, site.host)) {
+			req.resume();
+			return answer(req, res, 403, messagePage(lang, text.otherSite, text.otherSiteLead), { connection: "close" });
+		}
 		if (isPlatformPath(path)) return platform(req, res, lang, site, path);
 
 		// The gate.

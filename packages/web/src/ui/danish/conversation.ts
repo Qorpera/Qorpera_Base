@@ -469,8 +469,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Waiting for you": "Venter på dig",
 	Answered: "Besvaret",
 	Answering: "Svarer på",
-	"Answer again": "Svar igen",
-	"{n} answered": "{n} besvaret",
 	"Stop answering": "Stop med at svare",
 	"Your answer…": "Dit svar…",
 	Declined: "Afvist",
@@ -498,7 +496,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Something else…": "Noget andet…",
 	"Your own answer": "Dit eget svar",
 	Skip: "Spring over",
-	"Take over": "Overtag",
+	// The take-over card's way to the agent's computer (review r1 F1 of #1812).
+	"Open computer": "Åbn computer",
 	"I'm done": "Jeg er færdig",
 	"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.":
 		"Computeren kunne ikke gives tilbage endnu. Tryk på Jeg er færdig for at prøve igen. Den går tilbage af sig selv inden for 5 minutter.",
@@ -653,12 +652,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Undone in part. {reason}": "Delvist fortrudt. {reason}",
 	"Not undone. {reason}": "Ikke fortrudt. {reason}",
 	"Could not undo. Try again.": "Kunne ikke fortryde. Prøv igen.",
-	// An agent's wall above its composer (ui/agent-wall-poster.ts)
-	"{name}'s wall": "{name}s opslagstavle",
-	"{n} waits on you": "{n} venter på dig",
-	"{n} wait on you": "{n} venter på dig",
-	"Waits on you": "Venter på dig",
-	// The agent's card brings the wall back (app/views/agent-details.ts).
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",
 	"Show less": "Vis mindre",

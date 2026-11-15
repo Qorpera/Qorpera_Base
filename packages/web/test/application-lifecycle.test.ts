@@ -2199,4 +2199,96 @@ describe("the rail's line under an idle agent's name in the app", () => {
 			{ timeout: 3000 },
 		);
 	});
+
+	it("shows no wall in the agent's thread and reads none, though its folder holds a wall.md", async () => {
+		// Jonas, 14 Nov 2026: "rather drop the wall - it's the wrong medium for activity"; of the line under the name
+		// that came from it: "Let it go too". A wall.md left in the agent's folder is never asked for.
+		const wall = "QorperaOS/agents/nora/wall.md";
+		const routine = {
+			routine_id: id(63),
+			client_routine_id: id(163),
+			version: 1,
+			status: "active",
+			staff_agent_id: staff.id,
+			title: "Morning brief",
+			prompt: "Brief me.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: id(87),
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: userA.created_at,
+			updated_at: userA.created_at,
+			next_run_at: new Date(Date.now() + 30 * 3_600_000).toISOString(),
+		};
+		const asked: { method: string; args: unknown }[] = [];
+		const answer = async (method: string, args: unknown): Promise<unknown> => {
+			asked.push({ method, args });
+			if (method === "qorpera_member_company_state_folders")
+				return {
+					schema: "qorpera.member-company-state-folders/v1",
+					agents: [{ staffAgentId: staff.id, file: "QorperaOS/agents/nora/agent.md" }],
+					groups: [],
+					routines: [],
+				};
+			if (method === "qorpera_member_folder_read") {
+				const path = (args as { p_path?: unknown } | undefined)?.p_path;
+				if (path !== wall) return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false };
+				return {
+					schema: "qorpera.folder-read/v1",
+					asOfSeq: 1,
+					found: true,
+					entry: {
+						path: wall,
+						kind: "file",
+						version: id(92),
+						seq: 1,
+						updatedAt: userA.created_at,
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: 64,
+						mediaType: "text/markdown",
+						executable: false,
+					},
+				};
+			}
+			if (method === "qorpera_list_cloud_routines") return [routine];
+			if (method === "qorpera_list_member_notifications") return [];
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = new URL(String(input));
+				const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
+				return Response.json(await answer(url.pathname.split("/").at(-1)!, body));
+			}),
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.cloud.rpc).mockImplementation((method: string, args?: Record<string, unknown>) =>
+			answer(method, args),
+		);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		await vi.waitFor(
+			() =>
+				expect(f.root.querySelector(`.rail [data-agent-id="${staff.id}"] small`)?.textContent).toMatch(
+					/^Next: Morning brief · /,
+				),
+			{ timeout: 3000 },
+		);
+		await vi.waitFor(() => expect(f.root.querySelector(".thread footer.composer")).not.toBeNull(), {
+			timeout: 3000,
+		});
+		// The tab coming back and the agent's run ending read the wall until 14 Nov 2026; neither does now.
+		window.dispatchEvent(new Event("focus"));
+		await draw();
+		expect(f.root.querySelector(".agent-wall")).toBeNull();
+		expect(f.root.querySelector(".thread-foot")?.textContent ?? "").not.toMatch(/waits? on you/i);
+		expect(asked.filter(({ args }) => JSON.stringify(args ?? null).includes("wall.md"))).toEqual([]);
+	});
 });
