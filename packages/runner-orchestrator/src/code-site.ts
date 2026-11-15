@@ -102,39 +102,42 @@ export type CodeSiteCollected =
 // The recipe's rules, as the kernel checks a made site (qorpera_code_site_valid, 20260930729000) -------------------------
 
 const NAME = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
-const RESERVED = new Set([
-	"api",
-	"app",
-	"www",
-	"admin",
-	"assets",
-	"static",
-	"qorpera",
-	"login",
-	"signin",
-	"signup",
-	"robots",
-	"favicon",
-	"sites",
-	"site",
-	"well-known",
-	"help",
-	"support",
-	"status",
-	"mail",
-	"functions",
-	"auth",
-	"rest",
-	"storage",
-	"realtime",
-]);
+/** The names a site never takes, the platform's own under qorpera.com (own code storage, step 5, rule D20): the text of
+ * `qorpera_site_reserved_names()` (migration 20260930756000) byte for byte, names split by one space. A new platform
+ * name is added there by a migration, then here; code-site.test.ts fails while the two differ. */
+export const CODE_SITE_RESERVED_NAMES =
+	"api app www admin assets static qorpera login signin signup robots favicon sites site well-known help support status mail functions auth rest storage realtime objects inbox send screens edge coding noreply staging dev test preview next docs blog news account accounts billing pay payments checkout secure security sso id oauth my dashboard console portal cdn media files download downloads smtp imap pop mx autoconfig autodiscover abuse postmaster hostmaster webmaster ns1 ns2 vpn git code data db ws live screen desktop computer health metrics tunnel gateway relay hooks webhooks events invite invites join team teams company companies members cofounder agent agents chat email webmail calendar ftp m mobile wiki shop store home root system internal private public demo beta";
+const RESERVED = new Set(CODE_SITE_RESERVED_NAMES.split(" "));
 const MAX_FOLDER_BYTES = 300;
 const MAX_TITLE_CHARACTERS = 120;
 
-/** A site's name, its link's last part (`qorpera_site_slug_valid`): 3 to 48 of a-z, 0-9 and `-`, from and to a letter
- * or a digit, and none of the names a site never gets. */
+/** A site's name (`qorpera_site_slug_valid`, as migration 20260930756000 leaves it, rule D20): 3 to 48 of a-z, 0-9 and
+ * `-`, from and to a letter or a digit, never two hyphens in a row (a site's own host is `<name>.qorpera.com` and its
+ * next host `<name>--next.qorpera.com`), never ending `-preview` (an app link's host), never holding `qorpera`, and none
+ * of the names a site never gets (`CODE_SITE_RESERVED_NAMES`). */
 export function codeSiteNameValid(name: string): boolean {
-	return NAME.test(name) && !RESERVED.has(name);
+	return codeSiteNameRefusal(name) === null;
+}
+
+/** The name rule in one sentence, as every refusal of a site's name says it: the kernel's SITE_NAME_INVALID of
+ * publish_site, share_app and unpublish_site (`qorpera_site_name_words()`, migration 20260930756000), the runtime's for a
+ * slug of the wrong shape, and this executor's for a checks file's `site.name`, byte for byte (code-site.test.ts reads
+ * the migration's text). */
+export const CODE_SITE_NAME_RULE =
+	"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).";
+
+/** What is wrong with a site's name, as the checks file's refusal says it to the session (at most 300 bytes, which the
+ * refusal's words show whole): the rule (`CODE_SITE_NAME_RULE`), which part of it the name breaks, and what to do; null
+ * for a name that is one. Never the name itself: the session knows what it wrote. */
+export function codeSiteNameRefusal(name: string): string | null {
+	let broken: string;
+	if (!NAME.test(name)) broken = "";
+	else if (name.includes("--")) broken = " This one has two hyphens in a row.";
+	else if (name.endsWith("-preview")) broken = " This one ends in -preview.";
+	else if (name.includes("qorpera")) broken = " This one contains qorpera.";
+	else if (RESERVED.has(name)) broken = " This one is a reserved name.";
+	else return null;
+	return `${CODE_SITE_NAME_RULE}${broken} Pick another, or leave name out.`;
 }
 
 /** Whether a character is one the kernel's `[[:cntrl:]]` takes as a control under a UTF-8 locale: C0, DEL, C1 and the
@@ -233,7 +236,8 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
 /** The collect's program (python3 -I: no variable, path or file of the session's changes how Python runs, and the
  * copy's own files are never imported). Its environment: the run's QORPERA_CHECKS_ROOT and QORPERA_CHECKS_NAME (the
  * run's folder `$d`, whose `src` is the copy), QORPERA_CHECKS_REPOSITORY (the repository's storage), QORPERA_SITE_FOLDER
- * (the recipe's folder) and QORPERA_SITE_SECRET_NAMES (the session's secret variables, space separated). In order:
+ * (the recipe's folder), QORPERA_SITE_SECRET_NAMES (the session's secret variables, space separated) and
+ * QORPERA_SITE_ROOT_LINKS (`allowed` while sites have hosts of their own, else `refused`: step 4a). In order:
  * 1. `$d/site.wrote` is made empty, before anything is written.
  * 2. The folder below `$d/src`, each part a folder and none a link, else `SITE_FOLDER_MISSING`.
  * 3. Its files, links never followed or listed: every regular file with no part starting with a dot whose extension a
@@ -265,6 +269,9 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    knows whole, however careful the parser), so the reading only decides yes or no, and counts. Scripts and SVG files
  *    are not read. A file whose path holds a secret value is never named (step 4's rule): `SITE_HOLDS_SECRET <NAME>`
  *    alone. Each page and style sheet is read once more as text, at most 25 MiB in all, in time linear in its size.
+ *    Only while QORPERA_SITE_ROOT_LINKS is exactly `allowed` is none of it read (own code storage, step 5, D15): a site
+ *    is then served at the top of its own host, `https://<name>.qorpera.com/`, where a link from the root is its own.
+ *    Any other value, or none, reads as before.
  * 5. Git, with an environment of its own (no variable, configuration or attribute of the session's or of the copy's,
  *    which the repository's own code writes): a new scratch repository `$d/site.git`; the files' exact bytes
  *    (`hash-object --no-filters`, which reads them again), and one tree, all of mode 100644, of the ids of the bytes
@@ -642,7 +649,7 @@ class Page(html.parser.HTMLParser):
 		if self.sheet is not None:
 			self.links+=css("".join(self.sheet))
 			self.sheet=None
-for p,content in files:
+for p,content in files if E.get(b"QORPERA_SITE_ROOT_LINKS")!=b"allowed" else ():
 	kind=p.rsplit(b".",1)[-1].lower()
 	links=0
 	if kind in (b"html",b"htm"):
@@ -884,10 +891,11 @@ export function codeSiteReported(collected: CodeSiteCollected | null): Record<st
  * into main (STEP4-RELEASES-PLAN.md 10.3, with STEP4-BUILD.md's eighth code and the links from the root, the ninth,
  * added once the first live site showed them). Within 3,500 bytes, as every word of a failed turn. A path is shown on
  * one line and whole, never cut (review of #1691, F1: a cut one can carry the start of a secret value that no mask
- * knows whole): when the words would pass 3,500 bytes, the path is left out. Pure. */
-export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string): string {
-	const words = refusedWords(problem, folder);
-	return bytes(words) <= MAX_SUMMARY_BYTES ? words : refusedWords({ ...problem, path: null }, folder);
+ * knows whole): when the words would pass 3,500 bytes, the path is left out. `opening` (an operator's drill's words and
+ * a space, `CODE_DRILL_WORDS`) comes first and counts within them. Pure. */
+export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string, opening = ""): string {
+	const words = `${opening}${refusedWords(problem, folder)}`;
+	return bytes(words) <= MAX_SUMMARY_BYTES ? words : `${opening}${refusedWords({ ...problem, path: null }, folder)}`;
 }
 
 /** The most bytes the executor's words of a failed turn take (code-checks.ts keeps the same bound). */
@@ -942,3 +950,24 @@ function refusedWords(problem: CodeSiteProblem, folder: string): string {
 	const key = problem.code === "SITE_HOLDS_SECRET" ? " A key must never be built into the site." : "";
 	return `Nothing went into main: every check passed, but the site in "${shown(folder, 300)}" ${what}.${key} Fix it in the code or in the checks file's "site", and finish again. [code=CODING_CHECKS_SITE_REFUSED]`;
 }
+
+// An operator's drill (own code storage, step 5, D17) ------------------------------------------------------------------
+
+/** What a session reads first when an operator's drill (`qorpera_code_set_drill`, migration 20260930756000), which the
+ * checks switch hands over once, failed its landing's checks or refused its site: so that the platform's own refusal
+ * paths are proven live on work that is not meant to fail, and the session does not take them for its own fault. */
+export const CODE_DRILL_WORDS =
+	"This was a drill by Qorpera's operator: nothing is wrong with your work, and the next try goes through. Finish again.";
+
+/** A `check` drill's check, run after the repository's own, as one more check of the run: it says it is a drill and
+ * fails. A repository may name a check of its own the same: the drill's is the last of the run. */
+export const CODE_CHECKS_DRILL = {
+	name: "qorpera-drill",
+	run: `echo "A drill by Qorpera's operator: this check fails on purpose, once."; exit 1`,
+	timeoutSeconds: 10,
+	cwd: ".",
+} as const;
+
+/** The folder a `site` drill's refusal names (`SITE_FOLDER_MISSING`). The host refuses the site itself, whatever the
+ * repository holds (a repository may have a folder of this name: the review of #1774, F3); no collect looks for it. */
+export const CODE_SITE_DRILL_FOLDER = "qorpera-drill-missing";

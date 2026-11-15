@@ -1,10 +1,13 @@
 import { CloudRpcError } from "../../cloud/client.ts";
+import { CloudShapeError } from "../../cloud/parse.ts";
 import type {
+	CodeReleaseAnswer,
 	CodeReleaseCalls,
 	CodeReleaseChange,
 	CodeReleaseLive,
 	CodeReleaseSite,
 	CodeReleases,
+	SitePreviewAnswer,
 } from "../../cloud/releases.ts";
 import { button, confirmDialog, fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
@@ -24,6 +27,15 @@ import { siteEmblem } from "./settings-sites.ts";
  * Not yet records nothing: it opens the member's conversation with the agent of the newest ready change (the
  * Co-Founder when there is none, or it left) with "Not yet: " waiting in its composer, and quiets the drawer's badge in
  * this browser until something new is ready.
+ *
+ * Look first (own code storage step 5.1): an owner or admin opens the ready version on the site's next host in a new
+ * tab before anyone puts it live. It shows only while the read says `preview` (sites have addresses of their own), so a
+ * kernel before step 5.1, or with hosts off, draws the page as before. The tab opens blank within the press with its way
+ * back to this window cut; the one-time link the kernel answers is used once, there, and kept nowhere. Any other
+ * answer closes the tab and says why in its own words.
+ *
+ * A site Qorpera took down (step 5.1) answers a "gone" page on every address, so its live row offers no link to it and
+ * says so instead (the names of such sites, read beside the page with `takenDown`; without it, as before).
  */
 
 export interface WhatsNewOptions {
@@ -31,6 +43,9 @@ export interface WhatsNewOptions {
 	image?: (path: string, signal: AbortSignal) => Promise<Blob | null>;
 	/** Told after each read and after Not yet: the apps drawer's entry and its badge follow. */
 	listed?: (releases: CodeReleases) => void;
+	/** The names (slugs) of the company's sites Qorpera took down (step 5.1), read beside each read of the page. A kernel
+	 * without the read fails it: the page then keeps what the last read that answered said (none before one did). */
+	takenDown?: (signal: AbortSignal) => Promise<ReadonlySet<string>>;
 }
 
 /** The changes a member quieted with Not yet, by the token of what the page showed, per member and company. */
@@ -110,31 +125,80 @@ function refusal(error: unknown): string | undefined {
 	return undefined;
 }
 
+/** An action's outcome on the page: in its project, where (under what is live, above what is ready, under the buttons),
+ * how it reads, and the last read it stays through (WhatsNewView's `#outcome`). */
+interface Outcome {
+	site: string;
+	at: "live" | "ready" | "actions";
+	tone: "ok" | "error" | "plain";
+	text: string;
+	through?: number;
+}
+
+/** Why the kernel refused a write it answered (`refused`): nothing changed. */
+function refusedWhy(code: string): string {
+	return code === "SITE_TAKEN_DOWN" ? t("Qorpera took this site down") : t("something went wrong on Qorpera's side");
+}
+
+/** What Look first says when the tab did not go to the version: where on the page, and in its own words for each
+ * answer; undefined for `off` (sites have no addresses of their own now: the button goes with the next read). */
+function lookWords(
+	answer: SitePreviewAnswer | undefined,
+	failure: unknown,
+	opened: boolean,
+): Pick<Outcome, "at" | "tone" | "text"> | undefined {
+	if (answer?.state === "off") return undefined;
+	if (answer?.state === "moved")
+		return { at: "ready", tone: "ok", text: t("Something changed while you looked. Here is what is ready now.") };
+	if (answer?.state === "gone")
+		return {
+			at: "actions",
+			tone: "error",
+			text: t("Qorpera took this site down, so it can't be opened. See why in Sites."),
+		};
+	if (failure instanceof CloudRpcError && failure.code === "42501")
+		return {
+			at: "actions",
+			tone: "error",
+			text: t("Only founders and admins can look at a version before it goes live."),
+		};
+	// Answered, but not with a link (the browser stopped the tab, a refusal with its code, an answer not as expected):
+	// another press may open it. No answer at all (no network, the deadline, a gateway's page): Qorpera was not reached.
+	const answered = !opened || failure instanceof CloudShapeError || (failure instanceof CloudRpcError && failure.code);
+	return {
+		at: "actions",
+		tone: "error",
+		text: answered
+			? t("The next version could not be opened. Try again.")
+			: t("The next version could not be opened: Qorpera could not be reached. Try again."),
+	};
+}
+
 export class WhatsNewView {
 	readonly el = h("div", { class: "whats-new" });
 	readonly #company: CompanyController;
-	readonly #client: Pick<CodeReleaseCalls, "list" | "putLive" | "goBack">;
+	/** `openPreview` (step 5.1) may be missing: no Look first then. */
+	readonly #client: Pick<CodeReleaseCalls, "list" | "putLive" | "goBack"> &
+		Partial<Pick<CodeReleaseCalls, "openPreview">>;
 	readonly #lifetime = new AbortController();
 	readonly #image: WhatsNewOptions["image"];
 	readonly #listed: (releases: CodeReleases) => void;
+	readonly #readTakenDown: WhatsNewOptions["takenDown"];
+	/** The sites Qorpera took down, by name, as the last read that answered said: no link to one. */
+	#takenDown: ReadonlySet<string> = new Set();
 	#releases: CodeReleases | undefined;
 	#loading = true;
 	#error: string | undefined;
 	/** The project acting, and how, while it does: every button is off meanwhile. */
-	#working: { site: string; action: "live" | "back" | "talk" } | undefined;
+	#working: { site: string; action: "live" | "back" | "talk" | "look" } | undefined;
+	/** Look first answered `off` (sites have no addresses of their own now): its button is gone until a read says
+	 * otherwise. */
+	#lookOff = false;
 	/** The last action's outcome, in its project where it happened: a version that went live under what is live, a page
 	 * that moved above what is ready now, a press that did not go through under its button. It stays through the reads
 	 * that had started when it was settled (`through`; unset while its write's own read is still to come) and goes with
 	 * the first later read that succeeds: the page never keeps an old outcome over what a read shows. */
-	#outcome:
-		| {
-				site: string;
-				at: "live" | "ready" | "actions";
-				tone: "ok" | "error" | "plain";
-				text: string;
-				through?: number;
-		  }
-		| undefined;
+	#outcome: Outcome | undefined;
 	/** A write whose answer never came (no network, the deadline): it may or may not have gone through, so the page claims
 	 * neither until a read that started after it (`after`) shows which. */
 	#unsettled:
@@ -151,7 +215,7 @@ export class WhatsNewView {
 
 	constructor(
 		company: CompanyController,
-		client: Pick<CodeReleaseCalls, "list" | "putLive" | "goBack">,
+		client: Pick<CodeReleaseCalls, "list" | "putLive" | "goBack"> & Partial<Pick<CodeReleaseCalls, "openPreview">>,
 		signal: AbortSignal,
 		options: WhatsNewOptions = {},
 	) {
@@ -159,6 +223,7 @@ export class WhatsNewView {
 		this.#client = client;
 		this.#image = options.image;
 		this.#listed = options.listed ?? (() => {});
+		this.#readTakenDown = options.takenDown;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -203,9 +268,14 @@ export class WhatsNewView {
 	async #read(): Promise<void> {
 		const read = ++this.#started;
 		try {
+			// Which sites Qorpera took down, read beside the page and drawn with it (no live row shows a dead link first).
+			const down = this.#readTakenDown?.(this.#lifetime.signal).catch(() => undefined);
 			const releases = await this.#client.list(this.#lifetime.signal);
+			const takenDown = await down;
 			if (this.#lifetime.signal.aborted) return;
+			if (takenDown) this.#takenDown = takenDown;
 			this.#releases = releases;
+			this.#lookOff = false;
 			this.#error = undefined;
 			this.#settle(releases, read);
 			this.#listed(releases);
@@ -269,7 +339,7 @@ export class WhatsNewView {
 	async #write(
 		site: CodeReleaseSite,
 		action: "live" | "back",
-		work: (signal: AbortSignal) => Promise<{ state: "live"; version: number } | { state: "moved" }>,
+		work: (signal: AbortSignal) => Promise<CodeReleaseAnswer>,
 	): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		const key = keyOf(site);
@@ -290,20 +360,31 @@ export class WhatsNewView {
 							tone: "ok",
 							text: t("Version {version} is live.", { version: String(answer.version) }),
 						}
-					: // Moved: what was shown is no longer so, and nothing changed; the read shows what is now.
-						action === "live"
-						? {
+					: answer.state === "refused"
+						? // Refused (Qorpera took the site down): nothing changed, and the answer says why.
+							{
 								site: key,
-								at: "ready",
-								tone: "ok",
-								text: t("Something changed while you looked. Here is what is ready now."),
+								at: action === "live" ? "actions" : "live",
+								tone: "error",
+								text:
+									action === "live"
+										? t("It did not go live: {why}. Nothing changed.", { why: refusedWhy(answer.code) })
+										: t("It did not go back: {why}. Nothing changed.", { why: refusedWhy(answer.code) }),
 							}
-						: {
-								site: key,
-								at: "live",
-								tone: "ok",
-								text: t("Something changed while you looked. Here is what is live now."),
-							};
+						: // Moved: what was shown is no longer so, and nothing changed; the read shows what is now.
+							action === "live"
+							? {
+									site: key,
+									at: "ready",
+									tone: "ok",
+									text: t("Something changed while you looked. Here is what is ready now."),
+								}
+							: {
+									site: key,
+									at: "live",
+									tone: "ok",
+									text: t("Something changed while you looked. Here is what is live now."),
+								};
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			const why = refusal(error);
@@ -438,6 +519,65 @@ export class WhatsNewView {
 		}
 	}
 
+	/** Look first: the ready version on the site's next host, in a new tab. The tab is opened blank within the press (one
+	 * opened after the call would be stopped by the browser) and its way back to this window is cut at once, before
+	 * anything loads in it; only then is the one-time link asked for, and the tab sent there. The link is used that once
+	 * and goes nowhere else: not on the page, not in storage, not in a line. Any other answer closes the tab and says why
+	 * under the buttons (or, for a page that moved, above what is ready now, read again). */
+	async #lookFirst(site: CodeReleaseSite): Promise<void> {
+		const client = this.#client;
+		const ready = site.ready;
+		const slug = site.site?.slug;
+		if (!ready || !slug || !client.openPreview || this.#working || this.#lifetime.signal.aborted) return;
+		const key = keyOf(site);
+		const focus = `look:${key}`;
+		const tab = window.open("about:blank", "_blank");
+		if (tab) tab.opener = null;
+		this.#working = { site: key, action: "look" };
+		this.#outcome = undefined;
+		this.#draw(focus);
+		let answer: SitePreviewAnswer | undefined;
+		let failure: unknown;
+		if (tab)
+			try {
+				answer = await client.openPreview(
+					site.owner,
+					site.name,
+					{ change: ready.change, slug },
+					this.#lifetime.signal,
+				);
+			} catch (error) {
+				failure = error;
+			}
+		this.#working = undefined;
+		if (answer?.state === "open" && tab && !this.#lifetime.signal.aborted) {
+			try {
+				if (!tab.closed) tab.location.replace(answer.url);
+			} catch {
+				// The member sent the tab elsewhere meanwhile: the link is not used, and it ends by itself in two minutes.
+			}
+			this.#draw(focus);
+			return;
+		}
+		tab?.close();
+		if (this.#lifetime.signal.aborted) return;
+		const words = lookWords(answer, failure, Boolean(tab));
+		const again =
+			answer?.state === "moved" ||
+			answer?.state === "off" ||
+			(failure instanceof CloudRpcError && (failure.code === "42501" || failure.code === "P0002"));
+		if (answer?.state === "off") this.#lookOff = true;
+		const said: Outcome | undefined = words && { site: key, ...words };
+		this.#outcome = said;
+		this.#draw(focus);
+		// The page moved, sites have no addresses of their own now, or the member or the project is gone: read it again.
+		if (again) await this.#refresh();
+		// The line goes with the second read that succeeds after it (or after the press): coming back from the closed tab
+		// reads the page once (the window's focus), and that read leaves it.
+		if (said && this.#outcome === said) said.through = this.#started + (tab ? 1 : 0);
+		if (!this.#lifetime.signal.aborted) this.#draw();
+	}
+
 	/** Who said go, by the name the team knows them by; nobody when they left. */
 	#liveLine(live: CodeReleaseLive): string {
 		const version = String(live.version);
@@ -452,13 +592,14 @@ export class WhatsNewView {
 	}
 
 	/** What is live, as a row of the Sites page (styles/sites.css): the Sites globe, the version and who said go, where
-	 * the password is, and the site's link and Go back as pill buttons. */
-	#live(site: CodeReleaseSite, can: boolean, busy: boolean): HTMLElement {
+	 * the password is, and the site's link and Go back as pill buttons. A site Qorpera took down (`down`) shows neither:
+	 * every address of it shows a "gone" page, and the kernel refuses going back until Qorpera restores it. */
+	#live(site: CodeReleaseSite, can: boolean, busy: boolean, down: boolean): HTMLElement {
 		const live = site.live;
-		const shown = live && site.site ? site.site : undefined;
+		const shown = live && site.site && !down ? site.site : undefined;
 		const key = keyOf(site);
 		let back: HTMLButtonElement | null = null;
-		if (live && site.back && can) {
+		if (live && site.back && can && !down) {
 			back = h(
 				"button",
 				{ type: "button", class: "site-button", disabled: busy, onclick: () => void this.#goBack(site) },
@@ -480,6 +621,13 @@ export class WhatsNewView {
 					{ class: "site-head" },
 					h("strong", { class: "site-name" }, live ? t("Live now") : t("Not live yet")),
 					live ? h("span", { class: "site-meta" }, this.#liveLine(live)) : null,
+					down
+						? h(
+								"span",
+								{ class: "site-meta" },
+								t("Qorpera took this site down, so it can't be opened. See why in Sites."),
+							)
+						: null,
 					// The password is read where it is kept: only owners and admins can see it there.
 					shown && can
 						? h(
@@ -564,8 +712,17 @@ export class WhatsNewView {
 		return card;
 	}
 
-	/** What is ready, and the two buttons; or that nothing is. */
-	#ready(site: CodeReleaseSite, can: boolean, busy: boolean, cards: Map<string, HTMLElement>): HTMLElement[] {
+	/** What is ready, and the buttons (Look first, while `look`, then Put it live and Not yet); or that nothing is. A site
+	 * Qorpera took down (`down`) keeps only Not yet: the kernel refuses Look first and Put it live until it is restored,
+	 * and the live row says why (the review of #1774, round 3). */
+	#ready(
+		site: CodeReleaseSite,
+		can: boolean,
+		look: boolean,
+		busy: boolean,
+		cards: Map<string, HTMLElement>,
+		down: boolean,
+	): HTMLElement[] {
 		const ready = site.ready;
 		if (!ready) return [h("p", { class: "whats-new-empty" }, t("Nothing new is ready."))];
 		const key = keyOf(site);
@@ -590,17 +747,32 @@ export class WhatsNewView {
 		let actions: HTMLElement;
 		if (can) {
 			const working = this.#working?.site === key ? this.#working.action : undefined;
-			const put = button(
-				working === "live" ? t("Putting it live…") : site.live ? t("Put it live") : t("Put the first version live"),
-				() => void this.#putLive(site),
-				{ primary: true, disabled: busy },
-			);
-			put.dataset.focusKey = `live:${key}`;
+			let put: HTMLButtonElement | null = null;
+			if (!down) {
+				put = button(
+					working === "live"
+						? t("Putting it live…")
+						: site.live
+							? t("Put it live")
+							: t("Put the first version live"),
+					() => void this.#putLive(site),
+					{ primary: true, disabled: busy },
+				);
+				put.dataset.focusKey = `live:${key}`;
+			}
 			const notYet = button(working === "talk" ? t("Working…") : t("Not yet"), () => void this.#notYet(site), {
 				disabled: busy,
 			});
 			notYet.dataset.focusKey = `talk:${key}`;
-			actions = h("div", { class: "whats-new-actions" }, put, notYet);
+			// Look first, before Put it live: a project with a site, while the read offers it.
+			let first: HTMLButtonElement | null = null;
+			if (look && site.site && !down) {
+				first = button(working === "look" ? t("Opening…") : t("Look first"), () => void this.#lookFirst(site), {
+					disabled: busy,
+				});
+				first.dataset.focusKey = `look:${key}`;
+			}
+			actions = h("div", { class: "whats-new-actions" }, first, put, notYet);
 		} else actions = h("p", { class: "whats-new-managers" }, t("Founders and admins put changes live."));
 		return [
 			h("h3", null, total === 1 ? t("1 change is ready") : t("{count} changes are ready", { count: String(total) })),
@@ -610,7 +782,7 @@ export class WhatsNewView {
 		].filter((item): item is HTMLElement => item !== null);
 	}
 
-	#site(site: CodeReleaseSite, can: boolean, cards: Map<string, HTMLElement>): HTMLElement {
+	#site(site: CodeReleaseSite, can: boolean, look: boolean, cards: Map<string, HTMLElement>): HTMLElement {
 		const key = keyOf(site);
 		const busy = Boolean(this.#working);
 		const outcome = this.#outcome?.site === key ? this.#outcome : undefined;
@@ -629,11 +801,15 @@ export class WhatsNewView {
 					)
 				: null;
 		const waiting = String(site.waiting);
+		// A site Qorpera took down: every address of it shows a "gone" page, so no link to it and no password to share, and
+		// nothing the kernel would refuse (Look first, Put it live, Go back); the live row says why, for a site that was
+		// never live too (the review of #1774, F4 and round 3).
+		const down = Boolean(site.site && this.#takenDown.has(site.site.slug));
 		return h(
 			"section",
 			{ class: "whats-new-site", dataset: { site: key }, "aria-label": titleOf(site) },
 			h("h2", null, titleOf(site)),
-			this.#live(site, can, busy),
+			this.#live(site, can, busy, down),
 			said("live"),
 			site.problem || site.givenUp
 				? notice(
@@ -647,7 +823,7 @@ export class WhatsNewView {
 					)
 				: null,
 			said("ready"),
-			...this.#ready(site, can, busy, cards),
+			...this.#ready(site, can, look, busy, cards, down),
 			said("actions"),
 			site.waiting > 0
 				? h(
@@ -666,6 +842,8 @@ export class WhatsNewView {
 		const active = document.activeElement as HTMLElement | null;
 		const key = focusKey ?? (this.el.contains(active) ? active?.dataset.focusKey : undefined);
 		const releases = this.#releases;
+		// Look first: only where the read offers it (owners and admins, while sites have addresses of their own).
+		const look = Boolean(releases?.preview && !this.#lookOff && this.#client.openPreview);
 		const cards = new Map<string, HTMLElement>();
 		let error: HTMLElement | null = null;
 		if (this.#error) {
@@ -687,7 +865,7 @@ export class WhatsNewView {
 			error,
 			this.#loading && !releases ? h("p", { class: "whats-new-empty", role: "status" }, t("Checking…")) : null,
 			releases && !releases.sites.length ? h("p", { class: "whats-new-empty" }, t("Nothing new is ready.")) : null,
-			...(releases?.sites.map((site) => this.#site(site, releases.canRelease, cards)) ?? []),
+			...(releases?.sites.map((site) => this.#site(site, releases.canRelease, look, cards)) ?? []),
 		);
 		this.#cards = cards;
 		if (key) {
