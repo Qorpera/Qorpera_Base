@@ -1889,6 +1889,70 @@ with the member folder client. Storage → the repository's folder → "Download
   in). The list says how it goes (`bringing`, `lastImport`, `importedFrom`).
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
 
+### The company's numbers: door `money` (20260930767000_company_numbers_money)
+
+The platform's own numbers of a company, asked by the reserved database name `qorpera` (no company database may carry
+it): an interface app's `qorpera.query("qorpera/money-now")` and `qorpera.watch(...)`, a kit's live number, an agent's
+`data_query {database: "qorpera"}`. Read only, from the vault's bank summary; sums only, never a name, a transfer's
+text, an account number, a single payment or the summary's items. Design: the company-views lane's DESIGN-3.md §E.
+
+- `qorpera_member_company_numbers(environment, question, params)` (authenticated): a member of a folder-v2 company
+  (42501 "Company numbers are unavailable" for anyone else). `question` is the name after `qorpera/`, `params` an
+  object of named values (`{}` or null for none). Answers the data gateway's answer shape `{columns, rows, more,
+  asOf, etag}`: `columns` the names, `rows` arrays in their order, `more` false, `asOf` the time of the answer (ISO,
+  UTC), `etag` 32 hex that stay the same while the answer does (a client polls and compares it).
+- The `money-*` questions answer only a member who may read `bank/summary.json` by the folder's path authority; for
+  anyone else, and for a question that is not there, P0002 "No question qorpera/<question> that you may read" (the
+  same words). Kroner are JSON numbers rounded to øre (Danish kroner only); days are `YYYY-MM-DD`. "Today" and "this
+  month" (the default range, `money-kinds`' month) are the company's own, in its time zone (`time_zone` of
+  `qorpera_profile_team_info`, 20260930739000), or Europe/Copenhagen's while it has none or one the database does not
+  know. The answer does not name the zone (the shape has no place for it); a client that shows days reads the
+  company's zone from the team read. Until the vault counts in the company's zone (slice M2, migration
+  `20260930769000`), the summary's own days and month are the vault's UTC ones, taken at its fetch, and can lead or
+  lag the company's by hours: `money-balance`'s default range ends on the summary's newest day when that is the
+  company's tomorrow, and `money-kinds`' "this month" is the summary's own month when that is the month of the
+  company's today or tomorrow (a month that leads, in a zone behind UTC; either month may be named as `month`, and the
+  company's own then has no rows). A summary of an earlier month is never this month's: the company's month has no
+  rows until the vault fetches again.
+  - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
+    `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
+    `paused_since`; the numbers are null without a summary.
+  - `money-balance` (`from`, `to`; default the 90 days to today, at most 366 days): `day`, `balance` (end of day).
+  - `money-expected`: `day`, `balance`, the summary's forecast (an estimate).
+  - `money-months`: `month` (`YYYY-MM`), `money_in`, `money_out`, the summary's months (twelve at most).
+  - `money-kinds` (`month`, this month only, the default): `direction` (`in`, `out`), `kind`, `amount`, `count`. Out
+    kinds `salaries`, `taxes`, `rent`, `utilities`, `subscriptions`, `fees`, `other`; money in is one kind, `all`.
+    `count` is null for now (the summary keeps no count of payments).
+- The `site-*` questions and `sites` (20260930768000_company_numbers_site) answer any member of the company (viewers
+  too) and any run of it, for the company's files sites (never an app link). `site` is a site's name (its slug),
+  optional: without it every files site of the company, in name order (22023 `:site is not one of the company's sites`
+  for any other name). Hours are UTC hours; days are the company's, by the same zone rule as money. Views are counted
+  by site-serve: a page (a `text/html` file) of the live version opened by a visitor's password session; a visit is a
+  view whose session had no view of that site in the 30 minutes before; at most 60 views a session an hour count. An
+  answer has at most 2000 rows (`more` true when it was cut). The upkeep (pg_cron, every 10 minutes) adds finished
+  hours to days, keeps hours 35 days and deletes a session's last view time about an hour after it (70 minutes at most).
+  - Hours are UTC hours: in a zone offset by half an hour, an hour falls on the local day it starts in, so that day's
+    edges are off by up to 30 minutes.
+  - Days already added keep the zone the company had then; a later change of zone moves only days added after it.
+  - A count that waits more than 100 ms for a lock is dropped (never waited for), so a very busy page can lose a few
+    views.
+  - `sites`: `site`, `title`, `url` (its own host while hosts are on), `live` (visitors can open it now).
+  - `site-now` (`site`): `site`, `here_now` (sessions with a view in the last 5 minutes), `views_today`,
+    `visits_today`; one row a site.
+  - `site-hours` (`site`, `from`, `to`; default the 48 hours to this one, at most 7 days): `site`, `hour` (ISO, UTC),
+    `hour_local` (`YYYY-MM-DDTHH:MI`, the company's), `views`, `visits`; every hour, zeros included. `from` and `to`
+    are a time with its zone (`2026-11-14T08:00Z`, `2026-11-14T09:00+01:00`) or a day of the company's (its first or
+    its last hour).
+  - `site-days` (`site`, `from`, `to`; default the 30 days to today, at most 400): `site`, `day`, `views`, `visits`;
+    every day, zeros included.
+  - `site-pages` (`site`, `from`, `to` as `site-days`, `limit` 1 to 50, default 10): `site`, `path` (the file's path in
+    the site, `index.html`, `about/index.html`), `views`, `visits` (the visits that began there); the most viewed paths
+    a site.
+- A name of another shape, a parameter the question does not take or a value out of its bounds: 22023 in plain words
+  (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
+- A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
+  host's call (scope folder), with its own path authority.
+
 ### The company's reading and standing (20260930765000_company_reading)
 
 The company keeps one short reading of itself, `QorperaOS/vision/reading.md` (Jonas, 14 Nov 2026: "It should feel
@@ -2124,6 +2188,13 @@ machine.
   `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
   `no-transform`. Service worker scripts are refused (404) on every site host. Every answer of site-serve, the old
   host's too, carries an explicit `Cache-Control` with `no-transform` (D23).
+  Since 20260930768000 it counts a page view after answering it (`qorpera_site_count_view`, service role only): a GET
+  answered 200 or 304 with a `text/html` file of the live version for a visitor's session, with no `Range`,
+  `Sec-Fetch-Dest` `document` or absent and no `Sec-Purpose`/`Purpose` (prefetch), on the own host or the old host's
+  session path; never on a next host, for an asset, a HEAD, the password page or a refusal. It sends the host, the
+  file's path and the session token only; no address, user agent, referrer, query or other header is stored, and no
+  cookie is added. The count never changes the answer and delays it by at most 200 ms (none where the edge runtime
+  has `EdgeRuntime.waitUntil`).
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),
