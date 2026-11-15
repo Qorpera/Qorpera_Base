@@ -1666,22 +1666,24 @@ export function mountApplication(
 			const readSites = () => {
 				void sites.list(controller.signal).then(
 					(list) => {
-						if (!controller.signal.aborted) controller.store.set(sitesListed(list));
+						if (controller.signal.aborted) return;
+						controller.store.set(sitesListed(list));
+						// The sites Qorpera took down (step 5.1), which the list still shows live: no owed view of one. Asked
+						// only while there is a live website to leave out; a read that did not answer leaves what the last said.
+						if (list.some((site) => site.kind === "files" && site.state === "live"))
+							void sites.access(controller.signal).then(
+								(access) => {
+									if (!controller.signal.aborted)
+										controller.store.set({ sitesTakenDown: new Set(access.takenDown.keys()) });
+								},
+								() => {},
+							);
 					},
 					// Unread, the drawer has no Sites entry; a site's own page then says it can't be shown, not waits.
 					() => {
 						if (!controller.signal.aborted && controller.store.get().siteList === undefined)
 							controller.store.set({ siteList: [] });
 					},
-				);
-				// The sites Qorpera took down (step 5.1), which the list still shows live: no owed view of one. A read that
-				// did not answer leaves what the last one said.
-				void sites.access(controller.signal).then(
-					(access) => {
-						if (!controller.signal.aborted)
-							controller.store.set({ sitesTakenDown: new Set(access.takenDown.keys()) });
-					},
-					() => {},
 				);
 			};
 			readSites();
