@@ -2093,6 +2093,11 @@ describe("the ring kit's engine", () => {
 			stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: dot.x, clientY: dot.y, bubbles: true }));
 			expect(what()).toBe(`Due ${at}`);
 		}
+		// the crowd stays round its day, as many drawn before it as after
+		const angle = (dot: { x: number; y: number }) => Math.atan2(dot.x - c, c - dot.y);
+		const day = angle(dots[0]);
+		expect(dots.filter((dot) => angle(dot) < day - 1e-6).length).toBeGreaterThan(0);
+		expect(dots.filter((dot) => angle(dot) > day + 1e-6).length).toBeGreaterThan(0);
 	});
 
 	it("draws 12 marks and 8 wedges at most, and only what falls in its span", async () => {

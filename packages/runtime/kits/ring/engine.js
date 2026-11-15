@@ -424,7 +424,8 @@ body{margin:0}
 		// Marks that would touch never lie on each other: a later one takes an orbit of its own, a step further in from
 		// the track for each one it would touch, with room for a picked mark (drawn half as large again) beside it. The
 		// orbits stay clear of the middle (as many as fit between the track and it); where they are all taken, the mark
-		// moves along the ring, a step at a time, until one is free.
+		// moves along the ring a step at a time, later and earlier in turn, so a crowd stays round its real date, and
+		// never past the ring's first or last day.
 		const turn = Math.PI * 2;
 		const apart = (x, y) => Math.min(Math.abs(x - y), turn - Math.abs(x - y));
 		const step = Math.max(base * 2 + 2, Math.min(base * 2.9 + 4, (R - rin * 0.78) / 2));
@@ -433,17 +434,19 @@ body{margin:0}
 		const taken = [];
 		m.items.forEach((i, idx) => {
 			if (i.kind !== "mark") return;
-			let a = ang(i.from + 0.5);
+			const at = ang(i.from + 0.5);
 			for (let tries = 0; tries < 400; tries++) {
+				const k = Math.ceil(tries / 2) * (tries % 2 ? 1 : -1);
+				const a = at + (k * step) / R;
+				if (a < 0 || a >= turn) continue;
 				const free = [...Array(deepest + 1).keys()].find((o) => !taken.some((p) => p.o === o && apart(p.a, a) * (R - o * step) < step));
 				if (free !== undefined) {
 					taken.push({ a, o: free });
 					placed.set(idx, { a, r: R - free * step });
 					return;
 				}
-				a = (a + step / R) % turn;
 			}
-			placed.set(idx, { a, r: R });
+			placed.set(idx, { a: at, r: R });
 		});
 		const spots = [];
 		m.items.forEach((i, idx) => {
