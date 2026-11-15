@@ -62,7 +62,8 @@ data is held, and its yes is asked from an agent's data_apply, never from a mach
 is printed as one line of JSON. When the store asks for a file's text, the command reads it under <root> and sends it
 by its hash; a file written a moment ago is used once it is saved to the folder (the command asks again for 10 s).
 Exit codes: 0 an answer, 1 a refusal (its words on standard error), 2 usage, 3 the databases cannot be reached from
-this machine now, or no answer came (an apply or a change may then have run: look before running it again).";
+this machine now, no answer came, or the answer could not be printed (an apply or a change may then have run: look
+before running it again).";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
 const EXIT_VIEW_CLOSED: u8 = 3;

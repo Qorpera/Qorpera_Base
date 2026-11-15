@@ -19,11 +19,14 @@ use std::time::{Duration, Instant};
 pub const EXIT_ANSWER: u8 = 0;
 /// The call was refused: its words are on standard error.
 pub const EXIT_REFUSED: u8 = 1;
-/// The databases cannot be reached from this machine now, or no answer came.
+/// The databases cannot be reached from this machine now, no answer came, or the answer could not be printed.
 pub const EXIT_UNREACHABLE: u8 = 3;
 
 /// A call's frame at the service (protocol.ts `DATA_MAX_PAYLOAD`).
 const MAX_CALL: usize = 1024 * 1024;
+/// The node sends the call's body on with its own pass in it, and that must fit the same 1 MiB: the texts of one
+/// round leave it this much room.
+const PASS_ROOM: usize = 128;
 /// A file whose text the gateway asks for: a step's is 64 KiB at most, a question's or a change's 16 KiB.
 const MAX_TEXT: u64 = 64 * 1024;
 /// Rounds of texts one call sends at most, each up to a frame.
@@ -361,7 +364,7 @@ pub fn ask(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits) -> 
 			}
 			let Some(text) = saved_text(root, path, hash) else { continue };
 			let adds = serde_json::to_string(&text).expect("text serializes").len() + hash.len() + 4;
-			if !texts.is_empty() && size + adds > MAX_CALL {
+			if !texts.is_empty() && size + adds > MAX_CALL - PASS_ROOM {
 				break;
 			}
 			size += adds;
@@ -372,7 +375,8 @@ pub fn ask(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits) -> 
 			let since = *waiting.get_or_insert_with(Instant::now);
 			if since.elapsed() >= waits.save {
 				return Outcome::Refused(format!(
-					"{first} on this machine is not the file saved in the company folder: save it, wait a moment and run the command again"
+					"{} on this machine is not the file saved in the company folder: save it, wait a moment and run the command again",
+					plain(first)
 				));
 			}
 			std::thread::sleep(waits.pause);
@@ -391,8 +395,16 @@ pub fn run(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits, out
 	match ask(addr, view, root, call, waits) {
 		Outcome::Answer(value) => {
 			let line = serde_json::to_string(&value).expect("an answer serializes");
-			if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
-				return EXIT_REFUSED;
+			if let Err(e) = writeln!(out, "{line}").and_then(|()| out.flush()) {
+				// The answer came and could not be printed (a reader that left, a full disk): never a refusal, which
+				// says nothing ran.
+				let ran = if matches!(call.verb, Verb::Apply | Verb::Change) {
+					": the call was answered, so what it does may be done: look before you run it again"
+				} else {
+					""
+				};
+				let _ = writeln!(err, "data: the answer could not be printed ({e}){ran}");
+				return EXIT_UNREACHABLE;
 			}
 			EXIT_ANSWER
 		}
@@ -411,6 +423,7 @@ pub fn run(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits, out
 mod tests {
 	use super::*;
 	use serde_json::json;
+	use std::collections::HashSet;
 	use std::os::unix::net::UnixListener;
 	use std::path::PathBuf;
 	use std::sync::atomic::{AtomicUsize, Ordering};
@@ -629,9 +642,14 @@ mod tests {
 		let (code, out, err) = printed(&addr, &temp, &["describe"]);
 		assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""));
 		assert!(err.contains("cannot be reached from this machine now: The view, its pass or this machine did not match"), "{err}");
-		// A node before the data role answers another protocol or none.
-		let (addr, _) = service(&temp, vec![Reply::Frame(kind::HELLO_OK, json!({"protocol": 4, "viewId": view().view_id}))]);
-		assert_eq!(printed(&addr, &temp, &["describe"]).0, EXIT_UNREACHABLE);
+		// A node that answers the hello at another protocol (a mount's), or for another view, is sent no call.
+		for ok in [json!({"protocol": 4, "viewId": view().view_id}), json!({"protocol": 5, "viewId": "another"})] {
+			let (addr, heard) = service_with(&temp, move |_, _| Reply::Frame(kind::HELLO_OK, ok.clone()));
+			let (code, out, err) = printed(&addr, &temp, &["describe"]);
+			assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""));
+			assert!(err.contains("the node answered for another view or protocol"), "{err}");
+			assert_eq!(heard.recv().unwrap().len(), 1);
+		}
 		let missing = format!("unix:{}", temp.0.join("nothing.sock").display());
 		assert_eq!(printed(&missing, &temp, &["describe"]).0, EXIT_UNREACHABLE);
 		// A read that got no answer could not be asked; a change that got none may have run.
@@ -699,6 +717,75 @@ mod tests {
 		let (code, out, err) = printed(&addr, &temp, &["query", "shop", "count"]);
 		assert_eq!((code, out.as_str()), (EXIT_REFUSED, ""));
 		assert!(err.contains("data/shop/queries/count.sql on this machine is not the file saved in the company folder"), "{err}");
+		// A file's name reaches the terminal without its control characters.
+		let odd = || answer(200, json!({"need": [{"path": "data/shop/queries/\u{1b}[2J.sql", "sha256": sha256_hex("select 1")}]}));
+		let (addr, _) = service_with(&temp, move |frame, _| if frame == 0 { hello_ok() } else { odd() });
+		let (code, _, err) = printed(&addr, &temp, &["describe", "shop"]);
+		assert_eq!(code, EXIT_REFUSED);
+		assert!(err.contains("data/shop/queries/ [2J.sql on this machine") && !err.contains('\u{1b}'), "{err:?}");
+	}
+
+	#[test]
+	fn a_round_of_texts_leaves_room_for_the_pass_the_node_adds() {
+		let temp = Temp::new();
+		// Seventeen texts that together make a call some 40 bytes short of 1 MiB: with the node's pass, past it.
+		let mut wanted = Vec::new();
+		for i in 0..17 {
+			let length = if i < 16 { 62_000 } else { 55_281 };
+			let head = format!("-- {i:02}\n");
+			let text = format!("{head}{}", "x".repeat(length - head.len()));
+			std::fs::write(temp.root().join(format!("data/shop/queries/q{i:02}.sql")), &text).unwrap();
+			wanted.push((format!("data/shop/queries/q{i:02}.sql"), sha256_hex(&text)));
+		}
+		let mut sent: HashSet<String> = HashSet::new();
+		let (addr, heard) = service_with(&temp, move |frame, call| {
+			if frame == 0 {
+				return hello_ok();
+			}
+			if let Some(texts) = call["body"].get("texts").and_then(Value::as_object) {
+				sent.extend(texts.keys().cloned());
+			}
+			let need: Vec<Value> = wanted.iter().filter(|(_, hash)| !sent.contains(hash)).map(|(path, hash)| json!({"path": path, "sha256": hash})).collect();
+			if need.is_empty() {
+				answer(200, json!({"databases": []}))
+			} else {
+				answer(200, json!({ "need": need }))
+			}
+		});
+		let (code, out, err) = printed(&addr, &temp, &["describe"]);
+		assert_eq!((code, out.as_str(), err.as_str()), (EXIT_ANSWER, "{\"databases\":[]}\n", ""));
+		let seen = heard.recv().unwrap();
+		// The call, then a round of sixteen texts, then the last one, whose call is answered.
+		let rounds: Vec<usize> = seen[1..].iter().map(|(_, call)| call["body"].get("texts").and_then(Value::as_object).map_or(0, |texts| texts.len())).collect();
+		assert_eq!(rounds, vec![0, 16, 1]);
+		for (_, call) in &seen[1..] {
+			assert!(serde_json::to_vec(call).unwrap().len() <= MAX_CALL - PASS_ROOM);
+		}
+	}
+
+	/// A reader that left: every write fails.
+	struct Gone;
+	impl Write for Gone {
+		fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+			Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+		}
+		fn flush(&mut self) -> std::io::Result<()> {
+			Ok(())
+		}
+	}
+
+	#[test]
+	fn an_answer_that_cannot_be_printed_is_never_a_refusal() {
+		let temp = Temp::new();
+		for (line, wrote) in [(&["change", "shop", "add"][..], true), (&["apply", "shop"][..], true), (&["query", "shop", "count"][..], false)] {
+			let (addr, _) = service(&temp, vec![hello_ok(), answer(200, json!({"changed": 1}))]);
+			let mut err = Vec::new();
+			let code = run(&addr, &view(), &temp.root(), &call(&args(line)).unwrap(), &quick(), &mut Gone, &mut err);
+			let words = String::from_utf8(err).unwrap();
+			assert_eq!(code, EXIT_UNREACHABLE, "{line:?}");
+			assert!(words.starts_with("data: the answer could not be printed"), "{words}");
+			assert_eq!(words.contains("look before you run it again"), wrote, "{words}");
+		}
 	}
 
 	#[test]

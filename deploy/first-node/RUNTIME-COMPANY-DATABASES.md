@@ -443,7 +443,8 @@ data change <database> <change> [name=value ...]
 
 It does what the agents' tools do (§6, §8), with an agent's limits, and prints the gateway's answer as JSON. A value
 is text; `name:=<JSON>` gives a number, `true`, `false` or `null`. It ends 0 with an answer, 1 with a refusal (its
-words on standard error), 2 for a call it cannot read, and 3 when the databases cannot be reached from this machine.
+words on standard error: nothing ran), 2 for a call it cannot read, and 3 when the databases cannot be reached from
+this machine, no answer came or the answer could not be printed (an apply or a change may then have run).
 A script, a build or a server on the machine calls it as it calls any program. No database login and no key is in
 the machine. A step that is held is held here too: its yes is asked through `data_apply` (§3), never from a machine.
 `data change` is slice 7's named change (§8): this slice comes after slice 7 is on the store, and until then the

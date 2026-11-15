@@ -42,7 +42,9 @@ The company folder inside a Qorpera machine, and the node side of its link.
   nothing it sends is trusted for more; a file written a moment ago is used once it is saved to the folder, and the
   command asks again for 10 s. Exit 0 is an answer, 1 a refusal (its words on standard error), 2 a command line it
   cannot read, 3 the databases cannot be reached from this machine now (no `/company`, no answer from the node, or
-  the store): an apply or a change that got no answer may have run, and its words say so. It holds no lock, mounts
+  the store) or the answer could not be printed (a reader that left, a full disk): an apply or a change may then have
+  run, and its words say so. Exit 1 always means nothing ran. A round of texts leaves room for the pass the node adds
+  to the call. It holds no lock, mounts
   nothing and writes nothing on the machine. `--view-file`, `--root` and `--connect` before the verb name another
   view file, folder and node address (tests).
 
