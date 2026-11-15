@@ -7,45 +7,50 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024999_runtime_bundle_activation_v249.sql";
-const activationVersion = 249;
-const previousActivationVersion = 248;
-const previousActivationSha256 = "cc7b46c6bab430a45b4f9830b4f0963163348ddb5bb2ab05270e1055fd81aacf";
-// This release's own migrations, which its activation requires before it registers the bundle (v248): one entry per
-// migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v249 replaces these entries with the migrations v249 brings (or an empty list).
-// v249's activation already requires v248 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v248's release (a member opens an app or a file on an agent's computer, a member-woken machine's
-// sleep, and master's company databases, reading, numbers and bank days) runs its migrations, in number order, BEFORE the
-// executors and this switch. 758000 and 759000 sort before 760000-762000, which v247 recorded: the roll's migrate reads
-// production's record and runs each one only when it is not recorded. An entry sorting before the activation file is
-// checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
-// order reaches it only after the activation (as with the guards in the activation's text below).
+const activation = "supabase/migrations/20260929025099_runtime_bundle_activation_v250.sql";
+const activationVersion = 250;
+const previousActivationVersion = 249;
+const previousActivationSha256 = "049019cdd704d376c49d9c09a1c38d219d74c936f9d412a0b8d847fc44c4eb0b";
 const activationRequires = Object.freeze([
 	[
-		"20260930752000_home_exec_sessions",
-		"the agent's home (#1761): every company run of this bundle asks qorpera_company_home_available through the native host's entry point, which answers only a listed call; without this migration every such run fails",
-		"to_regprocedure('public.qorpera_company_home_available(jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_company_home_available')",
+		"20260930766000_company_reading_tools",
+		"the company's reading (#1819, on master): update_reading and end_role; end_role asks qorpera_folder_run_receipt_exists through the native host's entry point, which answers only a listed call",
+		"to_regprocedure('public.qorpera_folder_run_receipt_exists(uuid,jsonb,text)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_folder_run_receipt_exists')",
 	],
 	[
-		"20260930754000_folder_home_sessions",
-		"the home's read rights (#1760): the offer is narrowed to runs that share the machine and read the folder's root, and the executor this release moves asks the session's folder window before every channel",
-		"to_regprocedure('public.qorpera_folder_home_session_window(uuid)') is not null",
+		"20260930770000_claude_code_worker_dispatch",
+		"Claude Code workers (#1832): a plain worker's brief may name harness claude-code, checked at the dispatch; without this migration this bundle's manage_worker and wake fail",
+		"to_regclass('public.qorpera_claude_worker_leases') is not null",
 	],
 	[
-		"20260930776000_company_numbers_orders",
-		"the door orders (#1855, on master): counts-only orders from verified Stripe deliveries and the orders questions; no code in this bundle calls them yet",
-		"to_regclass('public.qorpera_orders') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930776000') > 0)",
+		"20260930771000_claude_login_for_a_run",
+		"a Claude login for one run (#1833): the vault opens a member's sealed Claude sign-in for a worker run and seals it back",
+		"exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_seal_claude_login_back')",
 	],
 	[
-		"20260930777000_company_numbers_order_changes",
-		"the company's word on its orders (#1857, on master): order-state and order-add through the change dispatcher; no code in this bundle calls them yet",
-		"to_regprocedure('public.qorpera_run_company_numbers_change(uuid,jsonb,text,jsonb)') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930777000') > 0)",
+		"20260930772000_claude_code_worker_on_home",
+		"Claude Code workers on the home (#1835): the worker asks qorpera_claude_worker_run_facts through the native host's entry point, which answers only a listed call",
+		"to_regprocedure('public.qorpera_claude_worker_run_facts(jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_claude_worker_run_facts')",
 	],
 	[
-		"20260930778000_home_session_keeps_member_machine_awake",
-		"a member-woken machine is not put to sleep under a run's open home session (#1761): the member-only rule counts the home's sessions from this migration on",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_machine_member_only(public.qorpera_company_machines)') and strpos(prosrc, 'qorpera_company_home_sessions') > 0 and strpos(prosrc, '20260930759000') > 0)",
+		"20260930773000_owed_views_senses",
+		"the views a company is owed (#1836, on master): the Co-Founder's senses list them",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_describe_company_senses(jsonb)') and strpos(prosrc, '20260930773000') > 0)",
+	],
+	[
+		"20260930775000_machine_data_pass",
+		"a company machine's data pass (#1841, on master); no code in this bundle calls it yet",
+		"to_regprocedure('public.qorpera_machine_data_pass(uuid,jsonb,text)') is not null",
+	],
+	[
+		"20260930780000_record_reflection_tool",
+		"the reflection hook (#1860, on master): record_reflection is a tool operation a run's observations may name",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') and strpos(prosrc, '20260930780000') > 0)",
+	],
+	[
+		"20260930781000_machine_account_fill",
+		"machine sign-ins (#1644, on master): an agent fills a company account into its machine's browser; switched off until its lead's step after the machine image",
+		"to_regprocedure('public.qorpera_authorize_machine_account_fill(jsonb,jsonb,uuid,text)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires
