@@ -1152,6 +1152,8 @@ it.each([
 				"table_write",
 				"save_app",
 				"post_app",
+				// How a part of an app is made, read before it is made (20260930762000).
+				"app_guide",
 				// A picture the agent makes, on a Codex login's run (20260930746000).
 				"make_picture",
 				"company_account",
@@ -3352,9 +3354,13 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// measured on the tree with the kits, the company databases and the answer-first change.
 	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
 	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
-	// On 14 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
-	// 20260930763000), so they moved again. The same day data_apply took allow, a held step's, and says how a member
-	// is asked for a step that destroys data (20260930764000), so they moved again.
+	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
+	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
+	// again.
+	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
+	// 20260930763000), measured on release v247's tree, so they moved again.
+	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
+	// (20260930764000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3367,6 +3373,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"table_write",
 		"save_app",
 		"post_app",
+		"app_guide",
 		"make_picture",
 		"update_wall",
 		"data_describe",
@@ -3406,10 +3413,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"ad4ce36474cd6fd6a42b7a1b3a9f006ac42990d4873079cf17e84ce6de576bd8",
+		"071e16b822546eda00e4ab17ce7035dde4eff1d7583f053d69284fe490c5eb0e",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"4f612b1322e4e2b407aa0c84b429891b0e0a6a20a47d817d229fe5ec8da37be3",
+		"e4fb7ef37af53c77b16ab6351377a9a51f801900394d45a387e6097a93d48da2",
 	);
 });
 

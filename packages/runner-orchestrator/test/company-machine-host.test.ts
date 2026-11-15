@@ -2513,7 +2513,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 	const startHeld =
 		"a start shows no output: machine_read shows it once the company folder has released what the machine read";
 	const earlier =
-		"this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again";
+		"this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)";
 
 	it("after its own restart, keeps /company for a guest whose earlier helper takes the folder", async () => {
 		for (const pins of takers) {
@@ -3457,7 +3457,7 @@ describe("company machine host's report of the company folder on each receipt (F
 		old.running();
 		expect(told(await start(old))).toEqual({
 			company: "none",
-			why: "this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+			why: "this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
 		});
 		// Views the node closed each time: fenced, and without /company.
 		const closed = await fixture({ folder: true });

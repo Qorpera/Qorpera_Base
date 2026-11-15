@@ -148,6 +148,12 @@ to start with any other role), `QORPERA_APP_HOST_SUFFIX` (`-preview.qorpera.com`
   `qorpera_site_app_session` (an open answer kept 30 s in memory, a locked one 5 s). No valid cookie: the password page
   (401, English or Danish as site-serve's, same look); `unlock` → `qorpera_site_app_unlock(slug, password,
   CF-Connecting-IP)` → cookie → 303 to `next` (a same-host path only). 429 when limited.
+- A change from another site (step 5, release 5.1; SITE-HOSTS.md): before the gate, any method but GET, HEAD and
+  OPTIONS whose `Sec-Fetch-Site` is `same-site` or `cross-site`, or whose `Origin` is there and is not exactly
+  `https://<the app host>` (`null` passes only with `Sec-Fetch-Site: same-origin`), answers 403 (`no-store`): every
+  company website is a same-site neighbour of every app link and could otherwise make a visitor's browser post into an
+  app on the Lax gate cookie. The unlock form's own POST is same-origin and passes; a request with neither header
+  passes as before.
 - Forwarding, through the slug's one connected program (a newer connection replaces an older one), and only when that
   program connected for the very site the session opens (`siteId`). On a mismatch the session is asked again, past the
   kept answer: locked → the password page; the program's site after all → forwarded; another site still → the program
@@ -192,7 +198,8 @@ pairs so repeated `Set-Cookie` survive. Close codes from the relay: 4001 refused
 - `envoy-front-sites.yaml`: a virtual host `apps` with `domains: ["*-preview.qorpera.com"]`, every path to cluster
   `app_relay` (`app-relay:8090`, `envoy-front-app-relay-cluster.yaml`, in the kit file's `clusters:`), WebSocket
   upgrades on, `x-forwarded-host` = the request's own name; the api host gets `"api.qorpera.com"` first in its domains,
-  and a virtual host `others` with `["*.qorpera.com"]` answers 404, so a wildcard name never reaches the API. The
+  and every other name under qorpera.com goes to a virtual host of its own, so a wildcard name never reaches the API
+  (until 5.1 `others`, answering 404; since 5.1 `site-hosts`, a company site's own host, SITE-HOSTS.md). The
   `front` listener's connection manager gets `strip_any_host_port` and `strip_trailing_host_dot`, so a name with a port
   or a trailing dot is matched (and forwarded) by its bare name.
 - `sites-route.mjs`: also the tunnel rule `*.qorpera.com → http://api-front:8080` (after the exact rules, before the
@@ -212,5 +219,5 @@ locked, no share), or stop `app-relay`.
 ## Not in v1
 
 A visitor's WebSocket (live reload), a custom domain, public (no password) links, a separate registrable domain for
-previews (Jonas's open decision on a sites domain: until then previews are host-only-cookie subdomains of
-qorpera.com, which never use cookies for sign-in).
+previews (Jonas, 13 November 2026: sites and app links stay on qorpera.com; previews are host-only-cookie subdomains
+of qorpera.com, which never uses a cookie for sign-in: SITE-HOSTS.md, "The invariant").
