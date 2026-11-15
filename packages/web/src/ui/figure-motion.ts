@@ -20,7 +20,6 @@ import {
 	momentCues,
 	nextIdle,
 	openEyes,
-	type Prop,
 	REST,
 	working,
 	workingCues,
@@ -30,6 +29,7 @@ import {
 } from "./figure-acts.ts";
 import { alignRegion, boxCanvas, bucketOf, level, type Region } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
+import { AIR_MARGIN, applyBody, paintLayers, type Shape, shapeOf, type WorkFrame, workFrame } from "./figure-work.ts";
 
 export type { Ask, Moment };
 /** The studio's activities, and "AtComputer": the agent uses its desktop computer (20260930742000). */
@@ -146,11 +146,8 @@ interface LiveMotion {
 	cued: number;
 	/** The transform on the canvas, so an unchanged pose writes nothing. */
 	posed: string;
-	/** The stars a working figure juggles (made with the first frame that has them), the transforms on them, and
-	 * the figure's side they were sized for. */
-	props?: HTMLElement[];
-	propsPosed: string[];
-	propsSide: number;
+	work?: WorkFrame;
+	air?: { behind: HTMLCanvasElement; front: HTMLCanvasElement; drawn: boolean };
 	/** Where the effects go (made with the first one). */
 	effects?: HTMLElement;
 }
@@ -352,14 +349,12 @@ const signature = (poses: EyePose[]) =>
 const round = (value: number, places = 2) => Number(value.toFixed(places));
 /** The longest stretch of an activity's clock whose effects a figure still shows: past it, it missed them. */
 const EFFECTS_GAP = 0.5;
-/** How fast the acts of a figure that needs the member and of one that works are played: a little under the pace
- * they were written at (Jonas, 13 Nov 2026: "slightly too fast"). The acts keep their own time (figure-acts.ts);
- * the figure's clock is turned into it here. The cheer, the writing dots and an idle figure's moves play as written. */
 const PACE = 0.85;
 
 /** What the figure does this frame, and the effects that go off on the way. `elapsed` is the activity's clock. */
 function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	const { clock, activity } = entry;
+	entry.work = undefined;
 	if (reduced) {
 		// Using its computer still: what waits on the member shows as its symbol, as for a working figure.
 		if (activity === "AtComputer")
@@ -380,8 +375,12 @@ function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 		act = asking(elapsed * PACE, entry.ask ?? "bang", clock.seed);
 		for (const cue of askingCues(since * PACE, elapsed * PACE, clock.seed)) effects.push(cue.effect);
 	} else if (activity === "Working") {
-		act = working(elapsed * PACE, clock.seed, entry.ask);
-		for (const cue of workingCues(since * PACE, elapsed * PACE, clock.seed, entry.ask)) effects.push(cue.effect);
+		act = working(elapsed, entry.ask);
+		if (act.work !== undefined) {
+			entry.work = workFrame(act.work, entry.id, shapeFor(entry), entry.shown, clock.seed);
+			act = { body: entry.work.body, eyes: entry.work.eyes };
+		}
+		for (const cue of workingCues(since, elapsed, entry.ask)) effects.push(cue.effect);
 	} else if (activity === "Thinking" && entry.ask) {
 		// The dots write on; every few seconds they become what waits on the member, at the pace of one that asks.
 		act = writingAsk(elapsed * PACE, entry.ask);
@@ -459,7 +458,7 @@ function place(entry: LiveMotion, act: Act): void {
 		entry.canvas.style.transform = posed;
 		entry.posed = posed;
 	}
-	juggle(entry, act.props);
+	air(entry, act.body);
 }
 
 /** The effects' layer over the figure, made when first needed. */
@@ -474,46 +473,69 @@ function effectsLayer(entry: LiveMotion): HTMLElement {
 	return layer;
 }
 
-/** Puts the stars a working figure juggles where the act has them: three small stars over the figure, each a
- * transform on its own element, written only when it changes. A figure too small to show them has none. */
-function juggle(entry: LiveMotion, props: Prop[] | undefined): void {
-	const side = entry.side / 1.12;
-	if (side < 30 || (!props && !entry.props)) return;
-	if (!entry.props) {
-		const layer = effectsLayer(entry);
-		// Three of the stars' colours, an agent's own three, and never the figure's own colour: a star stands out
-		// against the body it passes.
-		const colours = ACCENTS.filter((colour) => colour !== entry.color.toLowerCase());
-		entry.props = (props ?? []).map((_, index) => {
-			const star = document.createElement("span");
-			star.className = "figure-bit figure-sparkle figure-prop";
-			star.style.setProperty("--bit", colours[(entry.clock.seed + index * 2) % colours.length]!);
-			layer.append(star);
-			return star;
-		});
+const shapes = new Map<string, Shape>();
+function shapeFor(entry: LiveMotion): Shape {
+	let shape = shapes.get(entry.id);
+	if (!shape) {
+		const surface = surfaces.get(entry.id + entry.shown);
+		shape = shapeOf(surface?.body ?? entry.fallback, entry.artwork.faces[entry.id] ?? []);
+		if (surface) shapes.set(entry.id, shape);
 	}
-	if (entry.propsSide !== side) {
-		entry.propsSide = side;
-		const size = `${round(Math.max(7, side * 0.24), 1)}px`;
-		for (const star of entry.props) star.style.width = star.style.height = size;
-	}
-	entry.props.forEach((star, index) => {
-		const prop = props?.[index];
-		// The frame is the canvas, which stands 6% proud of the figure's box on every side.
-		const at = (value: number) => round(((value / 100) * 1.12 - 0.06) * side, 1);
-		const shown = prop && prop.scale > 0.001;
-		const transform = shown
-			? `translate(${at(prop.x)}px, ${at(prop.y)}px) translate(-50%, -50%) rotate(${round(prop.turn, 0)}deg) scale(${round(prop.scale, 3)})`
-			: "scale(0)";
-		// A star on the far side of the figure goes under the figure's canvas (styles/app.css).
-		const behind = Boolean(shown && prop.behind);
-		const posed = `${transform}${behind ? " behind" : ""}`;
-		if (posed !== entry.propsPosed[index]) {
-			star.style.transform = transform;
-			star.classList.toggle("is-behind", behind);
-			entry.propsPosed[index] = posed;
+	return shape;
+}
+
+const AIR_SPAN = 100 + 2 * AIR_MARGIN;
+let overCanvas: HTMLCanvasElement | undefined;
+function air(entry: LiveMotion, body: Act["body"]): void {
+	const work = entry.work;
+	if (!work) {
+		if (entry.air?.drawn) {
+			for (const canvas of [entry.air.behind, entry.air.front])
+				canvas.getContext("2d")!.clearRect(0, 0, canvas.width, canvas.height);
+			entry.air.drawn = false;
 		}
-	});
+		return;
+	}
+	const made = (className: string) => {
+		const canvas = document.createElement("canvas");
+		canvas.className = className;
+		entry.host.append(canvas);
+		return canvas;
+	};
+	entry.air ??= { behind: made("figure-air is-behind"), front: made("figure-air"), drawn: false };
+	const side = Math.max(1, Math.round(((entry.side * AIR_SPAN) / 100) * Math.min(window.devicePixelRatio || 1, 3)));
+	const k = side / AIR_SPAN,
+		margin = AIR_MARGIN * k;
+	const surface = surfaces.get(entry.id + entry.shown);
+	const layered = (canvas: HTMLCanvasElement) => {
+		if (canvas.width !== side) canvas.width = canvas.height = side;
+		const ctx = canvas.getContext("2d")!;
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.clearRect(0, 0, side, side);
+		ctx.setTransform(k, 0, 0, k, margin, margin);
+		return ctx;
+	};
+	paintLayers(layered(entry.air.behind), work.behind, k);
+	const front = layered(entry.air.front);
+	if (work.over.length && surface) {
+		overCanvas ??= document.createElement("canvas");
+		if (overCanvas.width !== side) overCanvas.width = overCanvas.height = side;
+		const oc = overCanvas.getContext("2d")!;
+		oc.setTransform(1, 0, 0, 1, 0, 0);
+		oc.globalCompositeOperation = "source-over";
+		oc.clearRect(0, 0, side, side);
+		oc.setTransform(k, 0, 0, k, margin, margin);
+		paintLayers(oc, work.over, k);
+		oc.globalCompositeOperation = "destination-in";
+		applyBody(oc, body);
+		oc.drawImage(surface.body, 0, 0, 100, 100);
+		oc.globalCompositeOperation = "source-over";
+		front.setTransform(1, 0, 0, 1, 0, 0);
+		front.drawImage(overCanvas, 0, 0);
+		front.setTransform(k, 0, 0, k, margin, margin);
+	}
+	paintLayers(front, work.front, k);
+	entry.air.drawn = true;
 }
 
 /** The symbol a figure has become, in the figure's colour, on the 100-unit frame: a "?" or a "!" standing on
@@ -1066,8 +1088,6 @@ export function mountFigureMotion(
 		alive: Boolean(options.alive),
 		cued: clock.elapsed,
 		posed: "",
-		propsPosed: [],
-		propsSide: 0,
 	};
 	live.add(entry);
 	if (!lifetime) {
