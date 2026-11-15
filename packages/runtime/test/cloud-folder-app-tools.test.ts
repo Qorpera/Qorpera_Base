@@ -77,18 +77,19 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 	// is part of this one, so a longer list can push it over. The emblems are listed on the schema alone since there are
 	// 24 (12 November 2026), which put it at 4177.
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
-	expect(tool.description).toContain("emblem: one of the 24 pictures its schema lists, colour:");
+	// The emblems and colours are the schema's enums, which Codex sends; the description names the fields.
+	expect(tool.description).toContain("optionally about, emblem, colour, kit, entry");
 	for (const rule of [
 		// Jonas, 13 November 2026: pages that kept every rule of 10 November (a first screen that says how the area
 		// stands, about 300 words, a diagram) were still documents in boxes. A page written by hand now follows the kits.
-		"The thing itself fills the first screen, to look at and handle, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
-		"a title of two or three words, at most one short line under it, then the thing",
-		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
-		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
-		"Give the page something to do: a control that changes what it shows, or a choice a member makes (writes).",
-		"Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
-		"Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: app_guide style says which",
-		"Draw what the company already holds from its live data instead of typing it in: app_guide reads says how.",
+		"The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
+		"a title of two or three words, at most one short line, then the thing",
+		"labels and numbers, not sentences, boxes of text, a date or a list of what you did",
+		"what is not known yet drawn as open, such as a dashed outline or a question mark, not written about.",
+		"Give it something to do: a control that changes what it shows, or a choice a member makes (writes).",
+		"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
+		"Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
+		"Qorpera shows the member what will be saved, and only their yes saves it. app_guide reads and writes say how.",
 		"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.",
 	])
 		expect(tool.description).toContain(rule);
@@ -132,7 +133,9 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 it("tells in the guide writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
-	expect(tool.description).toContain("writes: what it may ask a member to change");
+	expect(tool.description).toContain(
+		"asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them)",
+	);
 	const writes = appGuide("writes");
 	for (const rule of [
 		// The gate: the page asks, the member allows on a bar the page cannot draw, and the save is the member's own.
@@ -189,8 +192,9 @@ it("keeps save_app's schema small enough that the model receives its fields' des
 		expect(properties.kit?.description).toContain(said);
 	expect(properties.reads?.description).toContain("app_guide reads says how");
 	expect(properties.writes?.description).toContain("app_guide writes says how");
+	// T3-5's contract says it on the kits' line.
 	expect(f.tool("save_app").description).toContain(
-		"app_guide says what its file holds: read the kit's guide before you write the file, since a kit's file is saved only in a run that has read it.",
+		"What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved.",
 	);
 });
 
@@ -276,8 +280,9 @@ it("holds every app to one look, with screens at the bar and three not to make",
 	// Short: a guide read before every first app.
 	expect(Buffer.byteLength(look)).toBeLessThan(2500);
 	// An agent meets it where it chooses: app_guide's description, and save_app's kit.
+	// T3-5's contract says it on app_guide's look line.
 	expect(f.tool("app_guide").description).toContain(
-		"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app.",
+		"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
 	);
 	const kit = (
 		f.tool("save_app").inputSchema as {
