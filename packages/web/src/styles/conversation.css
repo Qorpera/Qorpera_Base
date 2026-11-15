@@ -838,24 +838,26 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel:not(.is-entered) .machine-screen.is-controlling .screen-viewer-enter { top: 8px; transform: translateX(-50%); min-width: 0; min-height: 24px; padding: 2px 12px; font-size: 12px; }
 .computer-loading p.computer-loading-detail { margin-top: -6px; color: #8e9097; }
 .computer-loading p.computer-loading-detail[hidden] { display: none; }
-/* The machine switcher: on the preview top left, shown with the other hover controls; entered, beside the title. It opens the app's menu. */
-.computer-panel .computer-switcher { display: inline-flex; align-items: center; gap: 2px; max-width: calc(100% - 48px); height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
-.computer-panel .computer-switcher[hidden] { display: none; }
-.computer-panel .computer-switcher:hover, .computer-panel .computer-switcher.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
-.computer-panel .computer-switcher-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.computer-panel .computer-switcher .icon { flex: none; width: 14px; height: 14px; }
-.computer-panel > .computer-switcher { position: absolute; top: 6px; left: 6px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
-.computer-panel:hover > .computer-switcher, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-switcher, .computer-panel > .computer-switcher.menu-open { opacity: 1; pointer-events: auto; }
-.computer-panel.is-entered > .computer-switcher, .computer-panel:not(.is-entered) .machine-screen-switcher-slot { display: none; }
-.computer-panel.is-entered .machine-screen-switcher-slot { display: flex; flex: 0 1 auto; min-width: 0; margin-right: auto; }
-.computer-panel.is-entered .machine-screen .computer-switcher { max-width: 100%; }
-.computer-panel.is-entered .machine-screen .computer-switcher { color: rgb(255 255 255 / 82%); filter: none; }
-.computer-panel.is-entered .machine-screen .computer-switcher:hover, .computer-panel.is-entered .machine-screen .computer-switcher.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
+/* Open (20260930758000): on the preview top right before the close, shown with the other hover controls; entered,
+   beside the title. It opens a menu of the company's apps. */
+.computer-panel .computer-opener { display: inline-flex; align-items: center; gap: 2px; height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.computer-panel .computer-opener[hidden] { display: none; }
+.computer-panel .computer-opener:hover, .computer-panel .computer-opener.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
+.computer-panel .computer-opener .icon { flex: none; width: 14px; height: 14px; }
+.computer-panel > .computer-opener { position: absolute; top: 6px; right: 34px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel:hover > .computer-opener, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-opener, .computer-panel > .computer-opener.menu-open { opacity: 1; pointer-events: auto; }
+.computer-panel.is-entered > .computer-opener { display: none; }
+.computer-panel:not(.is-entered) .machine-screen-opener-slot { display: none; }
+.computer-panel.is-entered .machine-screen-opener-slot { display: flex; flex: 0 1 auto; min-width: 0; margin-right: auto; }
+.computer-panel.is-entered .machine-screen .computer-opener { color: rgb(255 255 255 / 82%); filter: none; }
+.computer-panel.is-entered .machine-screen .computer-opener:hover, .computer-panel.is-entered .machine-screen .computer-opener.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
 @media (hover: none) {
-	.computer-panel:not(.is-entered) > .computer-switcher { opacity: 1; pointer-events: auto; }
+	.computer-panel:not(.is-entered) > .computer-opener { opacity: 1; pointer-events: auto; }
+	/* The close is 36px wide for a finger (above): Open keeps clear of it (review r5 of #1781). */
+	.computer-panel > .computer-opener { right: 46px; }
 }
 @media (prefers-reduced-motion: reduce) {
-	.computer-panel > .computer-switcher { transition: none; }
+	.computer-panel > .computer-opener { transition: none; }
 }
 
 /* New conversation: a "To:" field with one short list hanging from it. */
@@ -1336,6 +1338,29 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-card:hover .app-card-go { opacity: 1; transform: translateX(2px); }
 /* The app's name among the words: the words' own colour, a little heavier, as its card stands right under them. */
 .message-prose .folder-link.app-link { color: inherit; font-weight: 600; }
+/* A site of the company among the words: a link still, in the words' own colour and as heavy as an app's name, as the
+ * site's card stands right under them (app/views/thread-sites.ts). */
+.message-prose a.site-link-word { color: inherit; font-weight: 600; text-decoration: none; }
+.message-prose a.site-link-word:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* The site's card: an app's card (above), one row: the Sites globe in the Sites app's blue (styles/sites.css), its title
+ * and state, its address on the line under it, then an owner's key and the arrow. The whole row is the way to the site
+ * (a link stretched over the card); the key stands above it. A site Qorpera took down is grey, its line the reason. */
+.site-card { position: relative; --site-ink: #2047bd; --app-colour: var(--site-ink); }
+:root[data-theme="dark"] .site-card { --site-ink: #7193f2; }
+.site-card.is-down { --app-colour: var(--text-soft); }
+.site-card-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; color: inherit; text-decoration: none; }
+.site-card-open:hover { color: inherit; text-decoration: none; }
+.site-card-open::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.site-card-open:focus-visible { outline: none; }
+.site-card:has(> .site-card-open:focus-visible) { outline: 2px solid var(--text); outline-offset: 2px; }
+.site-card .app-card-emblem .site-emblem { margin: 0; }
+.site-card-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.site-card-head > .app-card-title { flex: 0 1 auto; min-width: 0; }
+.site-card-head > .site-state { flex: none; font-size: 12px; }
+.site-card .app-card-note.is-said { color: var(--text); }
+.site-card .app-card-note.is-error { color: var(--danger); }
+.site-card-key { position: relative; z-index: 1; margin: -4px -6px -4px 0; }
+.site-card-key svg { width: 15px; height: 15px; }
 @media (prefers-reduced-motion: reduce) {
 	.app-card, .app-card-emblem .interface-emblem, .app-card-go { transition: none; }
 	.app-card:hover .app-card-emblem .interface-emblem, .app-card:hover .app-card-go { transform: none; }
@@ -1524,6 +1549,51 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .is-exchange > .interaction-result .interaction-beside:empty { display: none; }
 @media (max-width: 900px) {
 	.is-exchange > .interaction-ask, .is-exchange > .interaction-result.is-said:not(.mine) { max-width: 82%; }
+}
+/* A change of the agent's that is ready to go live, below the thread (app/views/thread-ready.ts): the widget that
+ * waits for the member, a question's width and never wider than a bubble, with What's new's picture large, its one
+ * line and What's new's buttons. Once put live it is the exchange it was, as an answered question, its last line the
+ * version live and the site's address. A site Qorpera took down is one quiet line instead. */
+.thread-ready { display: flex; flex-direction: column; align-self: stretch; gap: 10px; }
+.thread-ready-card.is-asking { max-width: min(72%, 720px); }
+.thread-ready-project { overflow: hidden; color: var(--text-muted); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.interaction-call > .thread-ready-project { flex: 0 1 auto; min-width: 0; }
+.interaction-call > .thread-ready-project::before { content: "· "; }
+.interaction-ask > .thread-ready-project { display: block; font-size: 12.5px; line-height: 1.4; }
+.thread-ready-card .whats-new-change.is-thread { gap: 8px; margin-top: 12px; padding: 0; border: 0; border-radius: 0; background: none; }
+.whats-new-change.is-thread > .choice-picture { aspect-ratio: 16 / 10; border-radius: 12px; }
+.whats-new-change.is-thread > .choice-picture img { object-fit: cover; object-position: top; }
+.whats-new-change.is-thread > .whats-new-line { padding: 0; font-size: 15px; line-height: 1.35; }
+.whats-new-change.is-thread.is-plain > .whats-new-line { display: block; aspect-ratio: auto; padding: 0; border-radius: 0; background: none; text-align: left; }
+.thread-ready-card > .whats-new-line { margin: 12px 0 0; padding: 0; font-size: 15px; }
+.thread-ready-more { display: inline-block; margin-top: 4px; color: var(--text-muted); font-size: 13.5px; text-decoration: none; }
+.thread-ready-more:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.thread-ready-card > .whats-new-managers { margin: 8px 0 0; font-size: 13.5px; }
+.thread-ready-card > .whats-new-actions { margin-top: 14px; }
+.thread-ready-card .whats-new-actions .btn { min-height: 36px; padding-inline: 16px; }
+.thread-ready-card > .service-outcome { margin: 10px 0 0; font-size: 13px; }
+.thread-ready-live { flex-wrap: wrap; row-gap: 4px; }
+.thread-ready-address { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: inherit; text-decoration: none; }
+.thread-ready-address:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.thread-ready-address svg { flex: none; width: 13px; height: 13px; }
+.thread-ready-down a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+/* What the card says to do is never cut: the project's name gives way first, and only when the row is full. The card
+ * has no way out in its corner (a question's Skip), so its head keeps no room for one. */
+.thread-ready-card.is-asking .interaction-call { padding-right: 0; }
+.thread-ready-card .interaction-call > strong { flex: none; }
+@media (max-width: 900px) { .thread-ready-card.is-asking { max-width: 82%; } }
+/* The three buttons keep one row down to the narrowest card a 360 px phone draws: their row is the measure, not the
+ * window (beside the rail a thread, and so the card, is as narrow in a window of 1000 px as on a phone: "Not yet" fell
+ * to a row of its own there). The card's buttons always say the same short words (views/release-desk.ts, `here`), so
+ * the measure holds for a first version and while a press is on its way. */
+.thread-ready-card > .whats-new-actions { container-type: inline-size; }
+@container (max-width: 19em) {
+	.thread-ready-card .whats-new-actions .btn { min-height: 34px; padding-inline: 11px; font-size: 13.5px; }
+}
+/* On a phone the card and the gaps between its buttons are tighter too. */
+@media (max-width: 520px) {
+	.thread-ready-card.is-asking { padding-inline: 14px; }
+	.thread-ready-card .whats-new-actions { gap: 6px; }
 }
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
 .interaction-secret { flex: 1 1 200px; }

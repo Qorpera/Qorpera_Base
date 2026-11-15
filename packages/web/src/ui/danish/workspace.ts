@@ -543,7 +543,19 @@ export const WORKSPACE: Record<string, string> = {
 	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
 	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
 	"Keep watching": "Bliv ved",
-	"Choose a computer": "Vælg en computer",
+	// A member opens one of the company's apps on the computer (20260930758000).
+	"Open on this computer": "Åbn på denne computer",
+	"That is not in the company folder any more.": "Det ligger ikke længere i virksomhedens mappe.",
+	"This computer cannot see the company folder yet. It can after it has slept and woken.":
+		"Denne computer kan ikke se virksomhedens mappe endnu. Det kan den, når den har sovet og er vågnet igen.",
+	"The computer could not open it. Try again.": "Computeren kunne ikke åbne det. Prøv igen.",
+	// Open's "A file…": the company folder's browser picks a file or a folder (company-folder-choose.ts).
+	"A file…": "En fil…",
+	"Choose a file or a folder": "Vælg en fil eller en mappe",
+	"It opens on this computer.": "Den åbner på denne computer.",
+	"Pick a file, or go into a folder to open it.": "Vælg en fil, eller gå ind i en mappe for at åbne den.",
+	"Opens {name}.": "Åbner {name}.",
+	"Opens the folder {name}.": "Åbner mappen {name}.",
 	// A member shares the desktop with the agent (20260930734000); typing privately is the take-over (20260930713000).
 	"You and {name} share this computer: you can both click and type.":
 		"Du og {name} deler denne computer: I kan begge klikke og skrive.",

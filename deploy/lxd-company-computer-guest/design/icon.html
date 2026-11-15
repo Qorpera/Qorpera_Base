@@ -5,5 +5,5 @@
 <script src="dock-icons.js"></script>
 <script>
 const query = new URLSearchParams(location.search);
-document.body.innerHTML = dockIcon(query.get("name"), query.get("state") ?? "idle");
+document.body.innerHTML = dockIcon(query.get("name"), query.get("state") ?? "idle", "", query.get("tone") ?? "dark");
 </script>
