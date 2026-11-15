@@ -17,7 +17,11 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  * with the file tools; its rows live in the company data store, which only the data gateway reaches.
  *
  * - data_describe: the databases the run may read (or the one it names), as the folder and the store hold them.
- * - data_apply: applies a database's waiting steps and says how each went.
+ * - data_apply: applies a database's waiting steps and says how each went. A step that would destroy data is held, and
+ *   its answer carries an `allow`. Called again with that `allow`, data_apply asks a member on a card (always: never
+ *   the reviewer and never a rule, cloud-action-review.ts) and, on their yes, applies exactly that step (slice 7,
+ *   migration 20260930764000): the platform keeps the `allow` in the run's data pass only for a member's Allow that
+ *   this run used, and the gateway applies the step only while its text and what it destroys are what was shown.
  * - data_query: a question by name, or one read of the run's own.
  * - data_change (slice 7, §8; migration 20260930763000): a named change, data/<name>/actions/<change>.sql, which
  *   writes rows as the database folder's write login.
@@ -50,6 +54,8 @@ export interface CloudCompanyDataDoor {
 
 const DATABASE = /^[a-z][a-z0-9_]{0,39}$/;
 const QUESTION = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** A held step's allow: the step, the hash of its text, the hash of what it would destroy. */
+const ALLOW = /^([0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*)\.[0-9a-f]{64}\.[0-9a-f]{64}$/;
 const PARAMETER = /^[a-z_][a-z0-9_]{0,39}$/;
 /** A read of the agent's own, at most a question file's size. */
 const SQL_BYTES = 16 * 1024;
@@ -82,7 +88,7 @@ const PLAIN = /[^ -~À-ÿ]/g;
 export const DATA_DESCRIBE_DESCRIPTION =
 	"Show the company's databases: for each, its tables and columns, its steps (applied, waiting, changed after they were applied, or missing) and its questions with their words, and how much room the company's data takes. Name database to see one; without it you see every database you may read.";
 export const DATA_APPLY_DESCRIPTION =
-	"Apply a database's waiting steps now, in number order, and see how each went: applied, failed with PostgreSQL's words, or held. A held step would destroy data (drop a table or column, delete or empty rows): it waits for a member to say yes, and nothing changes until then. Write the files first with the file tools: data/<database>/database.toml and tables/NNN-<name>.sql.";
+	"Apply a database's waiting steps now, in number order, and see how each went: applied, failed with PostgreSQL's words, or held. A held step would destroy data (drop a table or column, delete or empty rows): it waits for a member to say yes, and nothing changes until then. Its answer carries allow: call data_apply again with that allow to ask a member on a card, and on their yes the step is applied. Write the files first with the file tools: data/<database>/database.toml and tables/NNN-<name>.sql.";
 export const DATA_CHANGE_DESCRIPTION =
 	"Write rows through a database's named change: data/<database>/actions/<change>.sql, one insert, update, delete or merge with :name for each value and -- lines at the top that say what it does, written with the file tools. Give its values in params; params.viewer is the member a change that names :viewer acts for, else the member who asked you. You get changed, the rows it wrote, and what it returns (returning), at most 200 rows and 24 KiB. A change that fails changes nothing.";
 export const DATA_QUERY_DESCRIPTION =
@@ -91,8 +97,18 @@ export const DATA_QUERY_DESCRIPTION =
 interface DescribeRequest {
 	database?: string;
 }
+interface Destroyed {
+	what: string;
+	object: string;
+	rows?: number;
+}
 interface ApplyRequest {
 	database: string;
+	/** A held step's allow, as its answer gave it: the call asks a member and, on their yes, applies that step. */
+	allow?: string;
+	/** What the data gateway said that step is and would destroy now (`prepare`): what the member's card shows. */
+	step?: string;
+	destroys?: Destroyed[];
 }
 type Params = Record<string, string | number | boolean | null>;
 interface QueryRequest {
@@ -129,7 +145,14 @@ function parseDescribe(value: JsonValue): DescribeRequest {
 }
 
 function parseApply(value: JsonValue): ApplyRequest {
-	return { database: database(object(value, ["database"]).database) };
+	const input = object(value, ["database", "allow"]);
+	const request: ApplyRequest = { database: database(input.database) };
+	if (input.allow !== undefined && input.allow !== null) {
+		if (typeof input.allow !== "string" || !ALLOW.test(input.allow))
+			throw new CloudToolArgumentRefusal("allow is a held step's allow, as data_apply's answer gave it");
+		request.allow = input.allow;
+	}
+	return request;
 }
 
 /** A call's named values, as a question's or a change's file takes them, or none. */
@@ -232,37 +255,41 @@ export function cloudDataTools(options: {
 }): readonly CloudNativeTool[] {
 	const { folder, door } = options;
 
-	/** One call: a pass for the database (or for every database), the door, and the texts it asks for. */
+	/** One call: a pass for the database (or for every database), the door, and the texts it asks for. `reviewId`: the
+	 * approval of this call, for a pass that carries a member's yes to a held step. */
 	const ask = async (
 		verb: CloudCompanyDataVerb,
 		name: string | null,
 		body: Record<string, JsonValue>,
 		signal: AbortSignal,
+		reviewId?: string,
 	): Promise<unknown> => {
 		let texts: Record<string, string> | null = null;
+		// An apply that only checks a held step applies nothing: when it ends without an answer, nothing may have run.
+		const unknown = body.check === undefined ? UNKNOWN[verb] : undefined;
 		for (let round = 0; round < ROUNDS; round++) {
-			const passed: CloudCompanyDataPass = await folder.dataPass(name, signal);
+			const passed: CloudCompanyDataPass = await folder.dataPass(name, signal, reviewId);
 			if (passed.state !== "pass")
 				throw new CloudToolRefusal(
-					passed.state === "no_database"
-						? `No database ${name} that you may read: it needs data/${name}/database.toml (format = "qorpera.database/v1")`
-						: passed.state === "too_many_folders"
-							? "data/ holds more than 5,000 folders to look through: name one database"
-							: name === null
-								? "The company's databases hold more than 1,000 files together: name one database"
-								: `data/${name}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
+					passed.state === "not_approved"
+						? "No member has said yes to this step on a card, so nothing changed. Call data_apply with the step's allow again: it asks them."
+						: passed.state === "no_database"
+							? `No database ${name} that you may read: it needs data/${name}/database.toml (format = "qorpera.database/v1")`
+							: passed.state === "too_many_folders"
+								? "data/ holds more than 5,000 folders to look through: name one database"
+								: name === null
+									? "The company's databases hold more than 1,000 files together: name one database"
+									: `data/${name}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
 				);
 			let answer: Awaited<ReturnType<CloudCompanyDataDoor["call"]>>;
 			try {
 				answer = await door.call(verb, { ...body, pass: passed.pass, ...(texts ? { texts } : {}) }, signal);
 			} catch (error) {
 				// An apply or a change whose call ended without an answer has an outcome no one knows: never "failed".
-				const unknown = UNKNOWN[verb];
 				if (unknown && error instanceof CloudRuntimeDiagnosticError && !signal.aborted)
 					throw new CloudToolRefusal(unknown);
 				throw error;
 			}
-			const unknown = UNKNOWN[verb];
 			if (unknown && answer.status >= 500 && answer.status !== 507) throw new CloudToolRefusal(unknown);
 			if (answer.status !== 200) refusal(answer.status, answer.value);
 			const need = answerOf(answer.value).need;
@@ -353,15 +380,69 @@ export function cloudDataTools(options: {
 			type: "object",
 			additionalProperties: false,
 			required: ["database"],
-			properties: { database: { type: "string", pattern: DATABASE.source } },
+			properties: {
+				database: { type: "string", pattern: DATABASE.source },
+				// No length is given: an allow is as long as its step's name and two hashes, and a step's name has no
+				// bound of its own here (parseApply checks its shape).
+				allow: { type: "string" },
+			},
 		},
 		parseArguments: (value) => parseApply(value) as unknown as JsonValue,
+		// A call with a held step's allow asks a member (cloudActionEffect: destructive; dataDestroyCheck: always a
+		// card). What the card shows is read here from the data gateway, which runs the step and keeps nothing: never
+		// from the agent's own words. A step that is no longer held as the allow says is refused before any card.
+		async prepare(value, context) {
+			const request = value as unknown as ApplyRequest;
+			if (request.allow === undefined) return value;
+			const answer = answerOf(
+				await ask("apply", request.database, { database: request.database, check: request.allow }, context.signal),
+			);
+			const destroys = Array.isArray(answer.destroys) ? (answer.destroys as Record<string, unknown>[]) : null;
+			if (
+				typeof answer.step !== "string" ||
+				answer.step !== ALLOW.exec(request.allow)?.[1] ||
+				!destroys ||
+				destroys.length === 0 ||
+				destroys.length > 200 ||
+				!destroys.every(
+					(one) =>
+						typeof one.what === "string" &&
+						typeof one.object === "string" &&
+						(one.rows === undefined || Number.isSafeInteger(one.rows)),
+				)
+			)
+				refusal(502, answer);
+			return {
+				database: request.database,
+				allow: request.allow,
+				step: answer.step,
+				destroys: destroys.map((one) => ({
+					what: one.what as string,
+					object: one.object as string,
+					...(one.rows === undefined ? {} : { rows: one.rows as number }),
+				})),
+			};
+		},
 		async execute(value, context) {
 			const request = value as unknown as ApplyRequest;
-			const answer = answerOf(await ask("apply", request.database, { database: request.database }, context.signal));
+			// A step is applied on a member's yes only: the review's approval of this very call, which the platform
+			// checks when it makes the pass.
+			if (request.allow !== undefined && context.actionReviewId === undefined)
+				throw new CloudToolRefusal(
+					"A step that destroys data is applied only after a member says yes on a card, and no card can be raised here. Nothing changed.",
+				);
+			const answer = answerOf(
+				await ask(
+					"apply",
+					request.database,
+					{ database: request.database },
+					context.signal,
+					request.allow === undefined ? undefined : context.actionReviewId,
+				),
+			);
 			const results = Array.isArray(answer.results) ? (answer.results as Record<string, unknown>[]) : null;
 			if (!results || typeof answer.applied !== "boolean") refusal(502, answer);
-			// A held step says what it would destroy and that a member must say yes.
+			// A held step says what it would destroy and how a member is asked: with its allow.
 			const told = results
 				.filter((result) => result.state !== "already")
 				.map((result) =>
@@ -369,7 +450,9 @@ export function cloudDataTools(options: {
 						? {
 								...result,
 								detail:
-									"It would destroy data, so it waits for a member to say yes; nothing changed. Tell the member what it would destroy.",
+									typeof result.detail === "string" && result.detail.includes("not what a member said yes to")
+										? "What it would destroy is no longer what the member said yes to, so nothing changed. To ask them again, call data_apply with this step's new allow."
+										: "It would destroy data, so it waits for a member to say yes; nothing changed. To ask them, call data_apply again with this step's allow.",
 							}
 						: result,
 				);

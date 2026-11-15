@@ -157,7 +157,7 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		"that say what it does in words a member can read, such as -- Mark order :id as shipped.",
 		"Then call data_apply to apply the waiting steps, data_describe to see what a database holds, and data_query",
 		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
-		"is held until a member says yes: tell them what it would destroy.",
+		"is held until a member says yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card.",
 		"Never put a password, key or other secret in a step, a question, a change or a row.",
 	])
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
@@ -1653,12 +1653,13 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // With a database's changes (actions/, data_change; company databases, slice 7, 20260930763000) in the staff's
 // "Company databases" paragraph, on release v247's tree (15 November 2026), the conversation's and a private
 // conversation's instructions moved; a worker's do not name databases.
+// With how a member is asked for a held step (data_apply's allow, 20260930764000) there, they moved again.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "ab1e3c7d0be83efe41431445b0e18272a2a781a46a8d3d7535c46686ac5a5359",
+			instructions: "90dd1a638122f51a301ca230bcfc904d26ded77cd22a2799ef6b9e370845418f",
 			prompt: "ad87be65077918962607e71cd52038dd4b90f9a6f937548f173d7572fab1c2aa",
 		},
 	],
@@ -1674,7 +1675,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "ab1e3c7d0be83efe41431445b0e18272a2a781a46a8d3d7535c46686ac5a5359",
+			instructions: "90dd1a638122f51a301ca230bcfc904d26ded77cd22a2799ef6b9e370845418f",
 			prompt: "efd805f8b56772fe954cdbcec75ff30d4e84d6106ba5e5bde0f47a393b9d6fec",
 		},
 	],

@@ -3360,6 +3360,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// views plan step 1), and save_app's kit says to read it first, so they moved again.
 	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
 	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
+	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
+	// (20260930764000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3412,10 +3414,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"24bd53f6cf40199733c60ef36240a1d0f51751d9c9d88de773810dffc49a4f49",
+		"b96dc3bbf117ba1a732b6b4623ce8a37a51c885f86da3c061faa892fd9a12278",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"486db34bbf9c4747e8769a4a35331d4aad69f8dceae387fffda13730729e7ac4",
+		"bef0c0661978cb6d4831df2eaa3c23e2badef8e55932c7fcc82dce379c21269f",
 	);
 });
 
