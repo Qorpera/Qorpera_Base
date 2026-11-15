@@ -1,10 +1,12 @@
 //! The company folder inside a Qorpera machine (`mount`), the node's vsock bridge to the folder service
-//! (`bridge`), the execution host's relay to it (`relay`), and the office folder helper's command starter (`command`).
+//! (`bridge`), the execution host's relay to it (`relay`), the office folder helper's command starter (`command`), and
+//! a company machine's command for the company's databases (`data`).
 //! The binary is `src/main.rs`; the node side of the protocol is `packages/object-gateway/src/folder-service/`.
 
 pub mod bridge;
 pub mod cache;
 pub mod command;
+pub mod data;
 pub mod frame;
 pub mod git;
 pub mod ignore;

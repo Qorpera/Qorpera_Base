@@ -46,6 +46,11 @@ pub mod kind {
 	/// A hard link: a new file with the source's bytes, or a new link with its target, answered with `k` and the
 	/// version made.
 	pub const LINK: u8 = b'J';
+	// Company databases (protocol 5, the `data` role only).
+	/// One call to the company's databases: `{verb, body}`.
+	pub const DATA_CALL: u8 = b'T';
+	/// Its answer: `{status, value}`.
+	pub const DATA_ANSWER: u8 = b't';
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {

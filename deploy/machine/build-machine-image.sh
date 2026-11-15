@@ -79,7 +79,7 @@ BLENDER_VERSION=4.3.2
 BLENDER_SHA256=4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
-EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8b27f7f574c1eb056"
+EXPECTED_FOLDER_PROGRAM_SHA256="f454bcf4e55e4ee06c0439c0ccaa05e6b6e3d225d509c8ffd89af796fd5b2966"
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 # Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
 exec 3>&1 1>&2
@@ -437,6 +437,14 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	# The folder program is the pinned one, runs, and is only started by the helper (its unit has no [Install]).
 	[[ $(sha256sum </opt/qorpera-folder/qorpera-folder | cut -d" " -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]]
 	/opt/qorpera-folder/qorpera-folder --version
+	# The command for the company databases (RUNTIME-COMPANY-DATABASES.md 9a): data runs the folder program with its
+	# data verb, as the folder view of the boot. With nothing to do it says how it is used (exit 2), and on a machine
+	# with no folder view, as this builder is, it says the machine reaches no databases (exit 3).
+	printf "%s\n" "#!/bin/sh" "exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
+	chmod 0555 /usr/local/bin/data
+	[[ $(stat -c "%U:%G %a" /usr/local/bin/data) == "root:root 555" ]]
+	data >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]
+	data describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]
 	# The guest helper runs one folder-mount at a time under util-linux flock.
 	/usr/bin/flock --version >/dev/null
 	[[ $(systemctl is-enabled qorpera-machine-folder.service || true) == static ]]

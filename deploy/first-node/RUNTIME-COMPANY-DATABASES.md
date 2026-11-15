@@ -547,7 +547,7 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 | --- | --- | --- |
 | 1 | The machine's pass and its redeem (one migration); the gateway takes a `machine` pass | an SQL test, with a paused company's pass refused; the gateway's tests against a real PostgreSQL |
 | 2 | The folder service's `data` role: the hello's check, the limits, the reads it records, the run door's client, the two credentials | the folder service's tests, with a stand-in door |
-| 3 | The folder program's `data` subcommand and its build record; the machine image with `/usr/local/bin/data`; one sentence in the agents' instructions | the program's tests; the image script's own checks |
+| 3 | The folder program's `data` subcommand and its build record; the machine image with `/usr/local/bin/data`. The one sentence in the agents' instructions comes in a change of its own, once every machine that can start has that image: an agent is told of no command its machine may lack | the program's tests, with the built program against the folder service; the image script's own checks |
 | 4 | A proof on a test machine: a machine in a nested VM asks, changes and applies; a second machine with another view is refused; a `machine_run` whose output holds rows takes the database's read into its run | `scripts/` proof, on a test machine |
 
 The parts build on slice 7: `change`, and the proof's change, need slice 7's gateway on the store. A release rolls the

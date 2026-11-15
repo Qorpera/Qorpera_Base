@@ -29,6 +29,22 @@ The company folder inside a Qorpera machine, and the node side of its link.
   Unix socket, naming each machine's CID.
 - `qorpera-folder relay`: on the execution host, carries a native host's connection (a Node program, without vsock)
   from its slot's socket to the node's bridge, byte for byte (the node's folder search).
+- `qorpera-folder data`: on a company machine, the command `data` (`/usr/local/bin/data` runs it): the company's
+  databases as the machine's folder view (company databases slice 8a,
+  `deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §9a; `src/data.rs`).
+  `data describe [<database>]`, `data apply <database>`, `data query <database> <question> [name=value ...]`,
+  `data query <database> --sql '<one select>' [name=value ...]` and `data change <database> <change> [name=value ...]`
+  do what the agents' data tools do, with an agent's limits. A value is text; `name:=<JSON>` gives a number, `true`,
+  `false` or `null`. It reads the boot's view from `/run/qorpera-folder/view.json` (root's: the machine gets no new
+  secret), says hello to the node's folder service in the `data` role (protocol 5; a mount keeps saying protocol 4,
+  so a node from before the role still serves every mount), sends the call and prints the store's answer as one line
+  of JSON. When the store asks for a file's text, the command reads it under `/company` and sends it by its hash, so
+  nothing it sends is trusted for more; a file written a moment ago is used once it is saved to the folder, and the
+  command asks again for 10 s. Exit 0 is an answer, 1 a refusal (its words on standard error), 2 a command line it
+  cannot read, 3 the databases cannot be reached from this machine now (no `/company`, no answer from the node, or
+  the store): an apply or a change that got no answer may have run, and its words say so. It holds no lock, mounts
+  nothing and writes nothing on the machine. `--view-file`, `--root` and `--connect` before the verb name another
+  view file, folder and node address (tests).
 
 Design, protocol and rollout: `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`. The node side of the protocol is
 `packages/object-gateway/src/folder-service/`.

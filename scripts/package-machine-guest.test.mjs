@@ -522,6 +522,13 @@ test("the image carries machine_screen's screen helper as its own file, and chec
 		'\t[[ -z $(ls -A /company) ]] || { echo "the screen helper wrote into /company" >&2; exit 1; }\n',
 	])
 		assert.ok(imageScript.includes(line), line);
+	// The image has the command for the company's databases, the folder program's `data` (company databases 8a).
+	for (const line of [
+		'\tprintf "%s\\n" "#!/bin/sh" "exec /opt/qorpera-folder/qorpera-folder data \\"\\$@\\"" >/usr/local/bin/data\n',
+		"\tdata >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]\n",
+		"\tdata describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]\n",
+	])
+		assert.ok(imageScript.includes(line), line);
 	// Every check of the build sits in its one single-quoted script: no single quote may appear in it, comments too.
 	const opening = "bash -euo pipefail -c '\n";
 	const start = imageScript.indexOf(opening, imageScript.indexOf('lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256='));
