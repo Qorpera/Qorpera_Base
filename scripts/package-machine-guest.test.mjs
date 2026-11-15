@@ -524,9 +524,12 @@ test("the image carries machine_screen's screen helper as its own file, and chec
 	])
 		assert.ok(imageScript.includes(line), line);
 	for (const line of [
-		'\tprintf "%s\\n" "#!/bin/sh" "exec /opt/qorpera-folder/qorpera-folder data \\"\\$@\\"" >/usr/local/bin/data\n',
+		'\tprintf "%s\\n" "#!/bin/sh" "[ \\"\\$(id -u)\\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \\"\\$@\\"" \\\n',
+		'\t\t"exec /opt/qorpera-folder/qorpera-folder data \\"\\$@\\"" >/usr/local/bin/data\n',
 		"\tdata >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]\n",
 		"\tdata describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]\n",
+		'\t[[ $(runuser -u qorpera-agent -- data --view-file /root/no-view.json describe 2>&1 >/dev/null; echo "exit $?") == \\\n',
+		'\t\t*"has no company folder"*"exit 3" ]] ||\n',
 	])
 		assert.ok(imageScript.includes(line), line);
 	// Every check of the build sits in its one single-quoted script: no single quote may appear in it, comments too.

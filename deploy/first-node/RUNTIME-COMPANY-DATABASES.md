@@ -566,8 +566,10 @@ It does what the agents' tools do (§6, §8), with an agent's limits, and prints
 is text; `name:=<JSON>` gives a number, `true`, `false` or `null`. It ends 0 with an answer, 1 with a refusal (its
 words on standard error: nothing ran), 2 for a call it cannot read, and 3 when the databases cannot be reached from
 this machine, no answer came or the answer could not be printed (an apply or a change may then have run).
-A script, a build or a server on the machine calls it as it calls any program. No database login and no key is in
-the machine. A step that is held is held here too: its yes is asked through `data_apply` (§3), never from a machine.
+A script, a build or a server on the machine calls it as it calls any program, as root or as the agent's account
+(`qorpera-agent`, whose shell Codex's tools use): run by another account than root, `/usr/local/bin/data` runs
+itself through `sudo -n`, the agent account's own way to root, since the view's file is root's. The desktop's
+account has no sudo and no `data`. No database login and no key is in the machine. A step that is held is held here too: its yes is asked through `data_apply` (§3), never from a machine.
 `data change` is slice 7's named change (§8): this slice comes after slice 7 is on the store, and until then the
 command has the other three verbs.
 
