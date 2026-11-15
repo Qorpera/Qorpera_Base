@@ -134,48 +134,52 @@ const TOML_KEY = `(?:[A-Za-z0-9_-]+|"[^"\\\\\\n]*"|'[^'\\n]*')`;
 const TOML_KEYS = `${TOML_KEY}(?:\\s*\\.\\s*${TOML_KEY})*`;
 const TOML_STRING = /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/g;
 const TOML_HEADER = new RegExp(`^\\s*\\[\\s*(${TOML_KEYS})\\s*\\]\\s*(?:#.*)?$`);
-const TOML_PAIR = new RegExp(`^\\s*(${TOML_KEYS})\\s*=\\s*(.*)$`);
+const TOML_PAIR = new RegExp(`^\\s*(${TOML_KEYS})\\s*=(.*)$`);
+const TOML_HEAD = /^(?:[^"'#]|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')*/;
 const TOML_SCALAR = /^(?:"(?:[^"\\]|\\.)*"|'[^']*'|[-+0-9A-Za-z_.:]+)$/;
 const LIST_VALUE = /^(?:"(readers|writers)"|'(readers|writers)')$/;
 const LIST_INLINE = /^\{\s*(?:members|"members"|'members')\s*=\s*("[^"\\]*"|'[^']*')\s*\}$/;
 
-function tomlPath(text) {
-	return [...text.matchAll(new RegExp(TOML_KEY, "g"))].map((part) => part[0].replace(/^["']|["']$/g, "")).join(".");
+function tomlParts(text) {
+	return [...text.matchAll(new RegExp(TOML_KEY, "g"))].map((part) => (/^["']/.test(part[0]) ? part[0].slice(1, -1) : part[0]));
 }
 
 function tomlValue(text) {
 	if (/"""|'''/.test(text)) return null;
-	const bare = text.replace(TOML_STRING, '""');
-	const comment = bare.indexOf("#");
-	const value = (comment < 0 ? text : text.slice(0, text.length - (bare.length - comment))).trim();
+	const head = TOML_HEAD.exec(text)[0];
+	const rest = text.slice(head.length);
+	if (rest !== "" && !rest.startsWith("#")) return null;
+	const value = head.trim();
 	if (TOML_SCALAR.test(value)) return value;
 	const plain = value.replace(TOML_STRING, '""');
-	const depth = (open, close) => (plain.split(open).length - plain.split(close).length);
-	return /^[[{].*[\]}]$/.test(plain) && depth("[", "]") === 0 && depth("{", "}") === 0 ? value : null;
-}
-
-function listSaid(value) {
-	const said = LIST_VALUE.exec(value) ?? (LIST_INLINE.exec(value) ? LIST_VALUE.exec(LIST_INLINE.exec(value)[1]) : null);
-	return said && (said[1] ?? said[2]) === "readers" ? "readers" : "writers";
+	const balanced = (open, close) => plain.split(open).length === plain.split(close).length;
+	return /^[[{].*[\]}]$/.test(plain) && balanced("[", "]") && balanced("{", "}") ? value : null;
 }
 
 function listLine(toml) {
-	let table = "";
+	let table = [];
 	let found = null;
 	for (const line of toml.split(/\r?\n/)) {
 		if (/^\s*(?:#.*)?$/.test(line)) continue;
 		const header = TOML_HEADER.exec(line);
 		if (header) {
-			table = tomlPath(header[1]);
-			if (table !== "list" && table.split(".")[0] === "list") return "writers";
+			table = tomlParts(header[1]);
+			if (table[0] === "list" && table.length > 1) return "writers";
 			continue;
 		}
 		const pair = TOML_PAIR.exec(line);
 		const value = pair ? tomlValue(pair[2]) : null;
 		if (value === null) return "writers";
-		const key = [table, tomlPath(pair[1])].filter((part) => part !== "").join(".");
-		if (key === "list.members" || key === "list") found = found ?? listSaid(value);
-		else if (key.split(".")[0] === "list") return "writers";
+		const key = [...table, ...tomlParts(pair[1])];
+		if (key[0] !== "list") continue;
+		const said =
+			key.length === 2 && key[1] === "members"
+				? LIST_VALUE.exec(value)
+				: key.length === 1 && LIST_INLINE.test(value)
+					? LIST_VALUE.exec(LIST_INLINE.exec(value)[1])
+					: null;
+		if (found !== null || !said) return "writers";
+		found = (said[1] ?? said[2]) === "readers" ? "readers" : "writers";
 	}
 	return found;
 }
