@@ -66,7 +66,7 @@ write, with the tools they already have, and need no migration.
 | `entry` | relative path to an `.html` file | `index.html` | the page that opens |
 | `owner` | agent handle | the creating agent | who made it; the app's header names it |
 | `posted` | true or false | false | shown in every member's apps drawer |
-| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions` | `[]` | the live sources the app may read (§5) |
+| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions`, `data`, `reading` | `[]` | the live sources the app may read (§5) |
 | `writes` | list of `answers` and `table:<name>`, at most 16 | `[]` | what the app may ask a member to change (§5 "Changes"); `<name>` is a company table's folder name, never `areas` |
 | `concept` | true or false | false | a concept of the company's product: it opens in the Concepts viewer (`#/c/<id>/concepts/<name>`, full screen, a side panel to pick a concept), and the drawer shows one Concepts entry for all of them, posted or not |
 | `cover` | relative path to a `.png`, `.jpg` or `.webp` in the app's folder | none | the picture of a concept in the viewer's side panel; without one, its emblem |
@@ -763,13 +763,15 @@ Rules:
   and answers plain names, never a path, a handle, a user id or an agent id (`app/company-reading.ts`):
   `{reading: null | {sentence, line, attention, things: [{key, name, shape, full, state, agents: [{name, figure,
   working}], waits: [{name, me}]}], changes: [{agent: {name, figure} | null, what, line}], notes}, team: [{name,
-  figure, working, cofounder}], standing: null | {stopped, since, why, member, resetsAt}}`. An agent is found by its
+  figure, working, cofounder}], standing: null | {stopped, since, why, you, member, resetsAt}}`. An agent is found by its
   folder name and drawn by `figure`, one of the twelve a kit's page carries (`figureFor`, as the rail draws it: the
   agent's own, else its template's, else one by its id); one the reading names that the company does not have, or
-  whose role ended, stands at no thing, while a change line keeps an ended agent's name and figure. `waits` names the
+  whose role ended, stands at no thing, while a change line keeps an ended agent's name and figure: found by its own
+  `agent.md` (renamed or numbered alike), else by the platform's folder name for its name (`companyStateName`, `-2`). `waits` names the
   members a thing waits for (`founders` is every owner), `me` the member looking. `standing` is
-  `qorpera_read_company_standing` (null from a backend without it, asked no more), `member` the name of the member
-  whose login holds the company, null when it is the member looking. The team is the agents at work, the Co-Founder
+  `qorpera_read_company_standing` (null from a backend without it, asked no more): `you` is true when the login that
+  holds the company is the member looking's, `member` names another member whose login it is, and both say nothing
+  (false, null) when nobody can be named, which the `map` kit then says in neutral words. The team is the agents at work, the Co-Founder
   first. The standing is read every 30 s while a page that reads `reading` is shown and the tab is, and when the tab
   comes back; a change of it reaches the page as a change notice (`onChange`), as a change of the folder does.
 - **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads; `todos` counts as
