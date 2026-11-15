@@ -207,7 +207,11 @@ describe("folder protocol", () => {
 		expect(parseHello(json({ protocol: 4, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
 			4,
 		);
-		for (const protocol of [0, 5, "4", 3.5])
+		// Protocol 5 adds the `data` role (folder-data-role.test.ts); a mount's roles take it as they take 4.
+		expect(parseHello(json({ protocol: 5, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
+			5,
+		);
+		for (const protocol of [0, 6, "4", 3.5])
 			expect(() => parseHello(json({ protocol, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
 		expect(() =>
 			parseHello(json({ protocol: 1, environmentId: ENV, viewId: "v", pass: "p", role: "io", x: 1 })),
