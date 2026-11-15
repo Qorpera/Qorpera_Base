@@ -79,7 +79,7 @@ BLENDER_VERSION=4.3.2
 BLENDER_SHA256=4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
-EXPECTED_FOLDER_PROGRAM_SHA256="f454bcf4e55e4ee06c0439c0ccaa05e6b6e3d225d509c8ffd89af796fd5b2966"
+EXPECTED_FOLDER_PROGRAM_SHA256="43cdaff6367d5dd8edc65eaed4607faf9889478e248102ccbe3cc637c0b82fdd"
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 # Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
 exec 3>&1 1>&2
