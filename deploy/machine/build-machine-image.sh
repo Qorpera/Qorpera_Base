@@ -206,6 +206,54 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	echo "${BLENDER_SHA256}  /tmp/blender.tar.xz" | sha256sum -c -
 	tar -xJf /tmp/blender.tar.xz -C /opt --no-same-owner
 	rm -f /tmp/blender.tar.xz
+	# WHY: no machine has a graphics card, and these load only for one (the blender program links to none of them).
+	removed=0
+	for part in \
+		4.3/scripts/addons_core/cycles/lib/kernel_compute_75.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1010.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1011.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1012.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1030.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1031.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1032.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1034.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1035.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1036.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1100.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1101.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1102.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1103.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1150.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1151.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_osl.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_osl_services.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_shader_raytrace.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_rt_gfx.hipfb.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_30.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_35.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_37.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_50.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_52.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_60.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_61.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_70.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_75.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_86.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_89.cubin.zst \
+		lib/hiprt02003_6.1_amd.hipfb \
+		lib/oro_compiled_kernels.hipfb \
+		lib/libhiprt64.so \
+		lib/libpi_level_zero.so \
+		lib/libOpenImageDenoise_device_cuda.so.2.3.0 \
+		lib/libOpenImageDenoise_device_hip.so.2.3.0 \
+		lib/libOpenImageDenoise_device_sycl.so.2.3.0; do
+		path="/opt/blender-${BLENDER_VERSION}-linux-x64/$part"
+		[[ -f $path && ! -L $path ]] || { echo "Blender ${BLENDER_VERSION} has no $part: the graphics card parts to remove are listed for another version" >&2; exit 1; }
+		removed=$((removed + $(stat -c %s "$path")))
+		rm -f -- "$path"
+	done
+	echo "removed $((removed / 1048576)) MiB of graphics card parts from Blender" >&2
 	chmod -R u=rwX,go=rX "/opt/blender-${BLENDER_VERSION}-linux-x64"
 	ln -sfn "/opt/blender-${BLENDER_VERSION}-linux-x64" /opt/blender
 	ln -sf /opt/blender/blender /usr/local/bin/blender
