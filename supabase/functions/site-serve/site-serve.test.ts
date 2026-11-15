@@ -5,7 +5,10 @@ import { describe, it } from "node:test";
 import {
 	byteRange,
 	CONTENT_SECURITY_POLICY,
+	COUNT_TIMEOUT_MS,
+	COUNT_WAIT_MS,
 	clientAddress,
+	countsAsView,
 	escapeHtml,
 	fetchAllowed,
 	HOST_CONTENT_SECURITY_POLICY,
@@ -49,6 +52,7 @@ interface Calls {
 	serveHost: [string, string, string | null, string | null, number, number][];
 	unlockHost: [string, string, string][];
 	enter: [string, string][];
+	countView: [string, string, string][];
 }
 
 /** What the database's site host calls answer in a test: a value (an Error is thrown), or a function of the call's host,
@@ -57,6 +61,8 @@ interface HostAnswers {
 	serveHost?: unknown;
 	unlockHost?: unknown;
 	enter?: unknown;
+	/** qorpera_site_count_view's answer: a value, an Error thrown, or a promise (one that never settles, say). */
+	countView?: unknown;
 }
 
 /** qorpera_site_serve_host while hosts are off (20260930756000 applied, hosts_enabled false, nothing taken down): the
@@ -108,7 +114,7 @@ function store(
 	unlock: unknown = { state: "open", token: NEW_TOKEN, maxAge: 604800 },
 	host: HostAnswers = {},
 ) {
-	const calls: Calls = { serve: [], unlock: [], serveHost: [], unlockHost: [], enter: [] };
+	const calls: Calls = { serve: [], unlock: [], serveHost: [], unlockHost: [], enter: [], countView: [] };
 	const answer = async (value: unknown) => {
 		if (value instanceof Error) throw value;
 		return value;
@@ -139,6 +145,11 @@ function store(
 		enter(name, ticket) {
 			calls.enter.push([name, ticket]);
 			return answer(host.enter ?? { state: "refused" });
+		},
+		countView(name, path, token) {
+			calls.countView.push([name, path, token]);
+			const given = host.countView ?? { state: "counted", visit: true };
+			return given instanceof Promise ? given : answer(given);
 		},
 	};
 	return { calls, store: siteStore };
@@ -2434,5 +2445,303 @@ describe("site-serve: migration 20260930756000's calls and answers, read from it
 			body("qorpera_site_enter"),
 			/jsonb_build_object\('state', 'open', 'token', v_token, 'maxAge', 43200\)/,
 		);
+	});
+});
+
+// --- A page view's count (the company's numbers, door site; 20260930768000) -------------------------------------------
+
+/** Migration 20260930768000's text: the count call site-serve makes must be there, as written. */
+const COUNT_MIGRATION = readFileSync(
+	new URL("../../migrations/20260930768000_company_numbers_site.sql", import.meta.url),
+	"utf8",
+);
+
+async function serveWith(req: Request, siteStore: SiteStore, waitUntil?: (work: Promise<unknown>) => void) {
+	return handleSiteServe(req, { origin: ORIGIN, store: siteStore, ...(waitUntil ? { waitUntil } : {}) });
+}
+
+describe("site-serve: a page view's count", () => {
+	it("counts a page of the live version on the own host: the host, the file's path and the session's token", async () => {
+		const pages: Record<string, Json> = {
+			"": hostFile(HTML),
+			"about.html": hostFile(HTML, { path: "about.html" }),
+			"shop/": hostFile(HTML, { path: "shop/index.html" }),
+		};
+		const { calls, store: siteStore } = store(undefined, undefined, {
+			serveHost: (_host: string, path: string) => pages[path] ?? { state: "missing", scope: "site", public: false },
+		});
+		for (const path of ["/", "/about.html", "/shop/"])
+			assert.equal((await serve(hostRequest("Look-Shop.Qorpera.com", path, { headers: WITH_SESSION }), siteStore)).status, 200);
+		// A visitor who holds the page (304), and a navigation from another site.
+		const held = await serve(
+			hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "if-none-match": `"${sha(HTML)}"` } }),
+			siteStore,
+		);
+		assert.equal(held.status, 304);
+		const navigated = await serve(
+			hostRequest(OWN, "/", {
+				headers: {
+					...WITH_SESSION,
+					"sec-fetch-site": "cross-site",
+					"sec-fetch-mode": "navigate",
+					"sec-fetch-dest": "document",
+				},
+			}),
+			siteStore,
+		);
+		assert.equal(navigated.status, 200);
+		assert.deepEqual(calls.countView, [
+			[OWN, "index.html", TOKEN],
+			[OWN, "about.html", TOKEN],
+			[OWN, "shop/index.html", TOKEN],
+			[OWN, "index.html", TOKEN],
+			[OWN, "index.html", TOKEN],
+		]);
+	});
+
+	it("counts with the session cookie the page was read with", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, {
+			serveHost: (_host: string, _path: string, token: string | null) => (token === NEW_TOKEN ? hostFile(HTML) : LOCKED),
+		});
+		const response = await serve(
+			hostRequest(OWN, "/", { headers: { cookie: `${HOST_COOKIE}=${TOKEN}; ${HOST_COOKIE}=${NEW_TOKEN}` } }),
+			siteStore,
+		);
+		assert.equal(response.status, 200);
+		assert.deepEqual(calls.countView, [[OWN, "index.html", NEW_TOKEN]]);
+	});
+
+	it("counts nothing on a site host but a page view of the live version", async () => {
+		const css = hostFile("body{}", { path: "a.css", contentType: "text/css; charset=utf-8" });
+		const image = hostFile("png", { path: "logo.png", contentType: "image/png" });
+		const lost = hostFile(NOT_FOUND_HTML, { path: "404.html", status: 404 });
+		const sameOrigin = { "sec-fetch-site": "same-origin", "sec-fetch-mode": "no-cors" };
+		const cases: [string, Request, unknown][] = [
+			["HEAD", hostRequest(OWN, "/", { method: "HEAD", headers: WITH_SESSION }), hostFile(HTML)],
+			["a range", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, range: "bytes=0-3" } }), hostFile(HTML)],
+			["a suffix range", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, range: "bytes=-4" } }), hostFile(HTML)],
+			["a style sheet", hostRequest(OWN, "/a.css", { headers: WITH_SESSION }), css],
+			["an image", hostRequest(OWN, "/logo.png", { headers: WITH_SESSION }), image],
+			["the version's 404.html", hostRequest(OWN, "/gone.html", { headers: WITH_SESSION }), lost],
+			["a missing page", hostRequest(OWN, "/gone.html", { headers: WITH_SESSION }), { state: "missing", scope: "site", public: false }],
+			["a folder", hostRequest(OWN, "/shop", { headers: WITH_SESSION }), { state: "directory", path: "shop/", scope: "site", public: false }],
+			["the password page", hostRequest(OWN, "/"), LOCKED],
+			["an ended session", hostRequest(OWN, "/", { headers: WITH_SESSION }), LOCKED],
+			["no site", hostRequest(OWN, "/", { headers: WITH_SESSION }), { state: "none" }],
+			["taken down", hostRequest(OWN, "/", { headers: WITH_SESSION }), { state: "gone" }],
+			["the next host", hostRequest(NEXT, "/", { headers: WITH_SESSION }), hostFile(HTML, { scope: "next" })],
+			["an image's load", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...sameOrigin, "sec-fetch-dest": "image" } }), hostFile(HTML)],
+			["a frame", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...sameOrigin, "sec-fetch-dest": "iframe" } }), hostFile(HTML)],
+			["a fetch", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...sameOrigin, "sec-fetch-dest": "empty" } }), hostFile(HTML)],
+			["a prefetch", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "sec-purpose": "prefetch" } }), hostFile(HTML)],
+			["a prerender", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "sec-purpose": "prefetch;prerender" } }), hostFile(HTML)],
+			["an older prefetch", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, purpose: "prefetch" } }), hostFile(HTML)],
+			[
+				"a sibling's load",
+				hostRequest(OWN, "/", {
+					headers: { ...WITH_SESSION, "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" },
+				}),
+				hostFile(HTML),
+			],
+			["robots.txt", hostRequest(OWN, "/robots.txt", { headers: WITH_SESSION }), hostFile(HTML)],
+			["a POST", hostRequest(OWN, "/", { method: "POST", body: "x", headers: WITH_SESSION }), hostFile(HTML)],
+			["the password form", unlockOn(OWN, "password=pw"), hostFile(HTML)],
+			["Look first's ticket", hostRequest(NEXT, `/.qorpera/enter?t=${TICKET}`), hostFile(HTML)],
+		];
+		for (const [what, made, answer] of cases) {
+			const { calls, store: siteStore } = store(undefined, undefined, {
+				serveHost: answer,
+				unlockHost: { state: "open", token: NEW_TOKEN, maxAge: 604800 },
+				enter: { state: "open", token: NEW_TOKEN, maxAge: 43200 },
+			});
+			await serve(made, siteStore);
+			assert.deepEqual(calls.countView, [], what);
+		}
+	});
+
+	it("counts the old host's session pages, the site's name first, and nothing else there", async () => {
+		const pages: Record<string, Json> = {
+			"": file(HTML),
+			"products/item.html": file(HTML, { path: "products/item.html" }),
+			"a.css": file("body{}", { path: "a.css", contentType: "text/css; charset=utf-8" }),
+		};
+		const { calls, store: siteStore } = store((path: string) => pages[path] ?? { state: "missing" });
+		for (const path of [`/shop/~${TOKEN}/`, `/shop/~${TOKEN}/products/item.html?id=7`])
+			assert.equal((await serve(request(path), siteStore)).status, 200);
+		const held = await serve(request(`/shop/~${TOKEN}/`, { headers: { "if-none-match": `"${sha(HTML)}"` } }), siteStore);
+		assert.equal(held.status, 304);
+		assert.deepEqual(calls.countView, [
+			["sites.qorpera.com", "shop/index.html", TOKEN],
+			["sites.qorpera.com", "shop/products/item.html", TOKEN],
+			["sites.qorpera.com", "shop/index.html", TOKEN],
+		]);
+		calls.countView.length = 0;
+		for (const made of [
+			request(`/shop/~${TOKEN}/`, { method: "HEAD" }),
+			request(`/shop/~${TOKEN}/`, { headers: { range: "bytes=0-3" } }),
+			request(`/shop/~${TOKEN}/a.css`),
+			request(`/shop/~${TOKEN}/gone.html`),
+			request(`/shop/~${TOKEN}/products`, {}),
+			request(`/shop/~${TOKEN}/`, { headers: { "sec-fetch-dest": "iframe" } }),
+			request(`/shop/~${TOKEN}/`, { headers: { "sec-purpose": "prefetch" } }),
+			request("/shop/", { headers: { cookie: `qorpera_site=${TOKEN}` } }),
+			request("/shop/"),
+			post("shop", "password=pw"),
+			request(`/shop/~${TOKEN}/data.json`, { method: "OPTIONS" }),
+		])
+			await serve(made, siteStore);
+		assert.deepEqual(calls.countView, []);
+		// An ended session's path goes back to the password: nothing counts.
+		const ended = store({ state: "locked" });
+		assert.equal((await serve(request(`/shop/~${TOKEN}/`), ended.store)).status, 303);
+		assert.deepEqual(ended.calls.countView, []);
+		// While hosts are on, the old host's links move: nothing is served there, nothing counts.
+		const moved = store(file(HTML), undefined, { serveHost: { state: "moved", url: "https://shop.qorpera.com/" } });
+		assert.equal((await serve(request(`/shop/~${TOKEN}/`), moved.store)).status, 308);
+		assert.deepEqual(moved.calls.countView, []);
+	});
+
+	it("never changes an answer: counted, refused, failed, missing or never answering, the same bytes", async () => {
+		const never = new Promise<unknown>(() => undefined);
+		const made: [string, () => Request, HostAnswers, unknown?][] = [
+			["own page", () => hostRequest(OWN, "/", { headers: WITH_SESSION }), { serveHost: hostFile(HTML) }],
+			[
+				"own held",
+				() => hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "if-none-match": `"${sha(HTML)}"` } }),
+				{ serveHost: hostFile(HTML) },
+			],
+			["old page", () => request(`/shop/~${TOKEN}/`), {}, file(HTML)],
+			["old held", () => request(`/shop/~${TOKEN}/`, { headers: { "if-none-match": `"${sha(HTML)}"` } }), {}, file(HTML)],
+		];
+		await silenced(async () => {
+			for (const [what, make, host, serveAnswer] of made) {
+				const counted = await snapshot(await serveWith(make(), store(serveAnswer, undefined, host).store));
+				for (const countView of [
+					{ state: "skipped" },
+					{ state: "busy" },
+					new Error("down"),
+					new MissingFunction("qorpera_site_count_view"),
+					"not an answer",
+				]) {
+					const other = await snapshot(await serveWith(make(), store(serveAnswer, undefined, { ...host, countView }).store));
+					assert.deepEqual(other, counted, `${what}: ${String(countView)}`);
+				}
+				const kept: Promise<unknown>[] = [];
+				const later = await serveWith(make(), store(serveAnswer, undefined, { ...host, countView: never }).store, (work) =>
+					kept.push(work),
+				);
+				assert.deepEqual(await snapshot(later), counted, `${what}: never answering`);
+				assert.equal(kept.length, 1, what);
+			}
+		});
+	});
+
+	it("hands the count to waitUntil, the edge runtime's when it has one, and the answer never waits for it", async () => {
+		const never = new Promise<unknown>(() => undefined);
+		const kept: Promise<unknown>[] = [];
+		const { calls, store: siteStore } = store(undefined, undefined, { serveHost: hostFile(HTML), countView: never });
+		let started = Date.now();
+		const response = await serveWith(hostRequest(OWN, "/", { headers: WITH_SESSION }), siteStore, (work) => kept.push(work));
+		assert.equal(response.status, 200);
+		assert.ok(Date.now() - started < COUNT_WAIT_MS / 2, "the answer waited for the count");
+		assert.equal(kept.length, 1);
+		assert.equal(calls.countView.length, 1);
+		// Supabase's edge runtime: EdgeRuntime.waitUntil, called on its object.
+		const edge = { kept: [] as Promise<unknown>[], waitUntil(work: Promise<unknown>) { this.kept.push(work); } };
+		const global = globalThis as { EdgeRuntime?: unknown };
+		global.EdgeRuntime = edge;
+		try {
+			started = Date.now();
+			const viaEdge = await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), siteStore);
+			assert.equal(viaEdge.status, 200);
+			assert.ok(Date.now() - started < COUNT_WAIT_MS / 2, "the answer waited for the count");
+			assert.equal(edge.kept.length, 1);
+		} finally {
+			Reflect.deleteProperty(global, "EdgeRuntime");
+		}
+	});
+
+	it("without waitUntil, waits for the count at most 200 ms", async () => {
+		const never = new Promise<unknown>(() => undefined);
+		const { store: siteStore } = store(undefined, undefined, { serveHost: hostFile(HTML), countView: never });
+		const started = Date.now();
+		const response = await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), siteStore);
+		const waited = Date.now() - started;
+		assert.equal(response.status, 200);
+		assert.equal(await response.text(), HTML);
+		assert.ok(waited >= COUNT_WAIT_MS - 20 && waited < COUNT_WAIT_MS + 500, `waited ${waited} ms`);
+		assert.equal(COUNT_WAIT_MS, 200);
+		// A count that answers at once is not waited for longer.
+		const quick = store(undefined, undefined, { serveHost: hostFile(HTML) });
+		const begun = Date.now();
+		await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), quick.store);
+		assert.ok(Date.now() - begun < COUNT_WAIT_MS / 2);
+	});
+
+	it("logs a failed count by its kind only, never a token, a path or a host", async () => {
+		await silenced(async (logged) => {
+			const failing = store(undefined, undefined, {
+				serveHost: hostFile(HTML),
+				countView: new TypeError(`could not count ${OWN}/index.html for ${TOKEN}`),
+			});
+			assert.equal((await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), failing.store)).status, 200);
+			const old = store(file(HTML), undefined, { countView: new Error(`sites.qorpera.com shop ${TOKEN}`) });
+			assert.equal((await serve(request(`/shop/~${TOKEN}/`), old.store)).status, 200);
+			assert.deepEqual(logged, [
+				"site-serve: a view was not counted (TypeError)",
+				"site-serve: a view was not counted (Error)",
+			]);
+		});
+	});
+
+	it("reads the request's side of a view", () => {
+		const made = (headers: Record<string, string> = {}, method = "GET") => new Request(BASE, { method, headers });
+		assert.equal(countsAsView(made(), 200), true);
+		assert.equal(countsAsView(made(), 304), true);
+		assert.equal(countsAsView(made({ "sec-fetch-dest": "document" }), 200), true);
+		for (const status of [206, 301, 401, 404, 410, 416, 503]) assert.equal(countsAsView(made(), status), false, String(status));
+		assert.equal(countsAsView(made({}, "HEAD"), 200), false);
+		assert.equal(countsAsView(made({ range: "bytes=0-" }), 200), false);
+		for (const dest of ["iframe", "image", "script", "style", "empty", "frame", "embed", "object"])
+			assert.equal(countsAsView(made({ "sec-fetch-dest": dest }), 200), false, dest);
+		assert.equal(countsAsView(made({ "sec-purpose": "prefetch" }), 200), false);
+		assert.equal(countsAsView(made({ purpose: "prefetch" }), 200), false);
+	});
+
+	it("calls qorpera_site_count_view with the service key, its three arguments and a short deadline", async () => {
+		const made: { url: string; body: Json; signal: AbortSignal | null | undefined; headers: Headers }[] = [];
+		const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+			made.push({
+				url: String(url),
+				body: JSON.parse(String(init?.body)) as Json,
+				signal: init?.signal,
+				headers: new Headers(init?.headers),
+			});
+			return new Response(JSON.stringify({ state: "counted", visit: true }), { status: 200 });
+		}) as typeof fetch;
+		const db = new PostgrestSiteStore("https://project.example.test/", "sb_secret_fixture", fetcher);
+		assert.deepEqual(await db.countView(OWN, "index.html", TOKEN), { state: "counted", visit: true });
+		assert.equal(made[0]?.url, "https://project.example.test/rest/v1/rpc/qorpera_site_count_view");
+		assert.deepEqual(made[0]?.body, { p_host: OWN, p_path: "index.html", p_token: TOKEN });
+		assert.equal(made[0]?.headers.get("apikey"), "sb_secret_fixture");
+		assert.ok(made[0]?.signal instanceof AbortSignal);
+		assert.equal(COUNT_TIMEOUT_MS, 2000);
+		// The migration defines it with exactly those arguments, for the service role only.
+		const start = COUNT_MIGRATION.indexOf("create function public.qorpera_site_count_view(");
+		assert.ok(start > 0);
+		const head = COUNT_MIGRATION.slice(start, COUNT_MIGRATION.indexOf(")", start));
+		assert.deepEqual(
+			head
+				.slice(head.indexOf("(") + 1)
+				.split(",")
+				.map((part) => part.trim().split(/\s+/)[0]),
+			Object.keys(made[0]?.body ?? {}),
+		);
+		assert.match(COUNT_MIGRATION, /grant execute on function public\.qorpera_site_count_view\(text, text, text\) to service_role;/);
+		assert.doesNotMatch(COUNT_MIGRATION, /grant execute on function public\.qorpera_site_count_view[^;]*(anon|authenticated)/);
+		// A database without the call (installed before its migration): MissingFunction, as for the other calls.
+		const missing = new PostgrestSiteStore("https://project.example.test", "sb_secret_fixture", (async () =>
+			new Response(JSON.stringify(PGRST202), { status: 404 })) as typeof fetch);
+		await assert.rejects(missing.countView(OWN, "index.html", TOKEN), MissingFunction);
 	});
 });
