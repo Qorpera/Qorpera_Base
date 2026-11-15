@@ -1609,7 +1609,7 @@ describe("account and route ownership", () => {
 		const open = rowMenu(f.root, "shop-b");
 		expect(open.menu.classList.contains("context-menu")).toBe(true);
 		expect(open.row.classList.contains("menu-open")).toBe(true);
-		expect(open.labels).toEqual(["Reload", "Show in Storage"]);
+		expect(open.labels).toEqual(["Reload", "Show in Storage", "Retire interface"]);
 		// Reload reads the concept again, in a new frame (which also lets it ask again after three Not nows).
 		const before = conceptFrame(f.root);
 		open.choose("Reload");
@@ -1618,13 +1618,13 @@ describe("account and route ownership", () => {
 		expect(conceptFrame(f.root)).not.toBe(before);
 		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
 		// Another concept's row: Show in Storage; a press opens it, read fresh.
-		expect(rowMenu(f.root, "shop-a").labels).toEqual(["Show in Storage"]);
+		expect(rowMenu(f.root, "shop-a").labels).toEqual(["Show in Storage", "Retire interface"]);
 		document
 			.querySelector<HTMLElement>(".context-menu")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		// From the keyboard (Shift+F10 or the menu key on the focused row): the browser's contextmenu has no point.
 		const keyed = rowMenu(f.root, "shop-b", { clientX: 0, clientY: 0 });
-		expect(keyed.labels).toEqual(["Reload", "Show in Storage"]);
+		expect(keyed.labels).toEqual(["Reload", "Show in Storage", "Retire interface"]);
 		// Show in Storage opens Storage at the concept's folder.
 		keyed.choose("Show in Storage");
 		await draw();
@@ -1779,6 +1779,194 @@ describe("account and route ownership", () => {
 		expect(opened[0]).toBe(opened[1]);
 		expect(new HubController(f.api, userB.id).store.get().creationRetry).toBeUndefined();
 		hub.dispose();
+	});
+
+	/* Retire interface (the founder, 15 Nov 2026: users "should also get a "retire interface" config when rightclicking
+	 * an interface to stop maintaining it, and hide it"). The state is apps/retired.md, which the member writes. */
+	const RETIRED = "apps/retired.md";
+	const OTHER_MEMBER = "6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8";
+	const tileOf = (root: HTMLElement, name: string) =>
+		root.querySelector<HTMLElement>(`.rail .rail-app[data-app-key="app:${name}"]`);
+	const rightClick = (target: Element) =>
+		target.dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 30, clientY: 30 }),
+		);
+	const menuLabels = () =>
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => item.textContent);
+	const chooseMenu = (label: string) =>
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")]
+			.find((item) => item.textContent === label)!
+			.click();
+	const retiredRows = (root: HTMLElement) => {
+		const toggle = root.querySelector<HTMLButtonElement>(".rail-hidden-toggle");
+		if (toggle?.getAttribute("aria-expanded") === "false") toggle.click();
+		return [...root.querySelectorAll<HTMLElement>(".rail-hidden-list [data-retired-app]")].map((row) => [
+			row.dataset.retiredApp,
+			row.querySelector("strong")?.textContent,
+			row.querySelector("small")?.textContent,
+			row.getAttribute("data-href") ?? row.getAttribute("href"),
+		]);
+	};
+
+	it("retires an agent's app from its tile at once, writes apps/retired.md, and brings it back from Hidden", async () => {
+		const fake = withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}`);
+		await draw();
+		await draw();
+		expect(tileOf(f.root, "sales-board")).not.toBeNull();
+		// The platform's pages and Concepts are no app an agent keeps: no such item on them.
+		rightClick(f.root.querySelector('.rail .rail-app[data-app-key="concepts"]')!);
+		expect(menuLabels()).not.toContain("Retire interface");
+		document
+			.querySelector<HTMLElement>(".context-menu")
+			?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		rightClick(tileOf(f.root, "sales-board")!);
+		expect(menuLabels()).toContain("Retire interface");
+		// The write is held, to see the tile leave before it is answered.
+		const commit = vi.mocked(fake.folder.commit);
+		const original = commit.getMockImplementation() as unknown as (
+			...args: Parameters<typeof fake.folder.commit>
+		) => ReturnType<typeof fake.folder.commit>;
+		const held = deferred<void>();
+		commit.mockImplementationOnce(async (...args) => {
+			await held.promise;
+			return original(...args);
+		});
+		chooseMenu("Retire interface");
+		// No question first: the tile leaves at once.
+		await draw();
+		expect(document.querySelector(".confirm-dialog, dialog[open]")).toBeNull();
+		expect(tileOf(f.root, "sales-board")).toBeNull();
+		expect(fake.text(RETIRED)).toBeUndefined();
+		held.resolve();
+		await draw();
+		await draw();
+		expect(fake.text(RETIRED)).toMatch(
+			new RegExp(
+				`^# Retired interfaces\\n- sales-board \\| ${userA.id} \\| \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\n$`,
+			),
+		);
+		const written = fake.commits.filter((commit) =>
+			commit.units.some((unit) => "path" in unit && unit.path === RETIRED),
+		);
+		expect(written).toHaveLength(1);
+		expect(written[0]?.units).toEqual([{ op: "write", path: RETIRED, text: fake.text(RETIRED) }]);
+		expect(tileOf(f.root, "sales-board")).toBeNull();
+		// Hidden lists it for the member, with its name, and leads to its page.
+		expect(retiredRows(f.root)).toEqual([
+			["sales-board", "Sales board", "Retired", `#/c/${profileA.profileId}/a/sales-board`],
+		]);
+		// A right-click there brings it back: the line goes, and the tile comes back.
+		rightClick(f.root.querySelector(".rail-hidden-list [data-retired-app='sales-board']")!);
+		expect(menuLabels()).toEqual(["Bring back"]);
+		const version = fake.version(RETIRED);
+		chooseMenu("Bring back");
+		await draw();
+		expect(tileOf(f.root, "sales-board")).not.toBeNull();
+		await draw();
+		expect(fake.text(RETIRED)).toBe("# Retired interfaces\n");
+		expect(fake.commits.at(-1)?.units).toEqual([
+			{ op: "write", path: RETIRED, text: "# Retired interfaces\n", expectedVersion: version },
+		]);
+		expect(retiredRows(f.root)).toEqual([]);
+		expect(tileOf(f.root, "sales-board")).not.toBeNull();
+	});
+
+	it("tries the write once more when another member wrote the file between, and puts the tile back when it fails", async () => {
+		const fake = withConcepts();
+		const other = `# Retired interfaces\n- shop-a | ${OTHER_MEMBER} | 2026-11-15T08:00:00Z\n`;
+		fake.put(RETIRED, "# Retired interfaces\n");
+		const f = mounted(`#/c/${profileA.profileId}`);
+		await draw();
+		await draw();
+		// Another member's retire lands between this member's read and write: the write meets a newer version.
+		const commit = vi.mocked(fake.folder.commit);
+		const original = commit.getMockImplementation() as unknown as (
+			...args: Parameters<typeof fake.folder.commit>
+		) => ReturnType<typeof fake.folder.commit>;
+		commit.mockImplementationOnce(async (...args) => {
+			fake.put(RETIRED, other);
+			return original(...args);
+		});
+		rightClick(tileOf(f.root, "sales-board")!);
+		chooseMenu("Retire interface");
+		await draw();
+		await draw();
+		const writes = fake.commits.filter((entry) =>
+			entry.units.some((unit) => "path" in unit && unit.path === RETIRED),
+		);
+		expect(writes).toHaveLength(2);
+		expect(fake.text(RETIRED)).toMatch(new RegExp(`^${other.replaceAll("|", "\\|")}- sales-board \\| `));
+		expect(tileOf(f.root, "sales-board")).toBeNull();
+		// A write that is refused: the tile comes back and the rail says so.
+		await fake.changed();
+		rightClick(f.root.querySelector(".rail-hidden-list [data-retired-app='sales-board']")!);
+		fake.answer("refused", "invalid");
+		chooseMenu("Bring back");
+		await draw();
+		await draw();
+		expect(tileOf(f.root, "sales-board")).toBeNull();
+		expect(f.root.querySelector(".rail")?.textContent).toContain("Sales board could not be brought back. Try again.");
+		expect(fake.text(RETIRED)).toContain("- sales-board | ");
+	});
+
+	it("hides an app another member retired at the next read, mutes its card and shows its page retired", async () => {
+		const fake = withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("[Sales board](app:sales-board) has new numbers.");
+		f.root.querySelector(".thread")!.append(prose);
+		await draw();
+		const card = prose.querySelector<HTMLElement>(".app-cards > button.app-card")!;
+		expect(card.classList.contains("is-retired")).toBe(false);
+		expect(tileOf(f.root, "sales-board")).not.toBeNull();
+		// Another member retires it: the file changes, and this member's company reads it with the apps.
+		fake.put(RETIRED, `# Retired interfaces\n- sales-board | ${OTHER_MEMBER} | 2026-11-15T09:30:00Z\n`);
+		await fake.changed();
+		expect(tileOf(f.root, "sales-board")).toBeNull();
+		expect(retiredRows(f.root).map((row) => row[0])).toEqual(["sales-board"]);
+		expect(card.classList.contains("is-retired")).toBe(true);
+		expect(card.querySelector(".app-card-note")?.textContent).toBe("Retired");
+		// Its page runs nothing: the emblem, one line, Bring back.
+		card.click();
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page.querySelector("iframe")).toBeNull();
+		const retired = page.querySelector<HTMLElement>(".side-panel-retired")!;
+		expect(retired.querySelector(".side-panel-retired-mark .interface-emblem")).not.toBeNull();
+		expect(retired.querySelector("p")?.textContent).toBe("This interface is retired.");
+		const back = retired.querySelector<HTMLButtonElement>("button")!;
+		expect(back.textContent).toBe("Bring back");
+		back.click();
+		await draw();
+		await draw();
+		expect(fake.text(RETIRED)).toBe("# Retired interfaces\n");
+		await vi.waitFor(() => expect(appPage(f.root)?.querySelector("iframe.side-panel-frame")).not.toBeNull());
+		expect(appPage(f.root)?.querySelector(".side-panel-retired")).toBeNull();
+		expect(tileOf(f.root, "sales-board")).not.toBeNull();
+	});
+
+	it("leaves a retired concept out of the Concepts viewer and retires one from its row", async () => {
+		const fake = withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts`);
+		await draw();
+		await draw();
+		expect(conceptItems(f.root).map((item) => item[0])).toEqual(["Shop B", "Shop A"]);
+		const row = rowMenu(f.root, "shop-a");
+		expect(row.labels).toEqual(["Show in Storage", "Retire interface"]);
+		row.choose("Retire interface");
+		await draw();
+		expect(conceptItems(f.root).map((item) => item[0])).toEqual(["Shop B"]);
+		await draw();
+		expect(fake.text(RETIRED)).toContain("- shop-a | ");
+		expect(conceptItems(f.root).map((item) => item[0])).toEqual(["Shop B"]);
+		// Its own route opens its page, which says it is retired.
+		location.hash = `#/c/${profileA.profileId}/concepts/shop-a`;
+		await draw();
+		await draw();
+		expect(appPage(f.root)?.querySelector(".side-panel-retired p")?.textContent).toBe("This interface is retired.");
 	});
 });
 
