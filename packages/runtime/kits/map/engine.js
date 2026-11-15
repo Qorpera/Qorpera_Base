@@ -84,13 +84,19 @@
 	const CSS = `
 body{margin:0}
 .mp{position:relative;box-sizing:border-box;min-height:100vh;display:flex;flex-direction:column;background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);-webkit-tap-highlight-color:transparent;overflow-x:hidden;
- --mp-solid:var(--q-accent);--mp-pale:color-mix(in srgb,var(--mp-solid) 17%,var(--q-bg));--mp-dash:var(--q-muted);--mp-ground:color-mix(in srgb,var(--mp-solid) 7%,var(--q-bg));
+ --mp-solid:var(--q-accent);--mp-pale:color-mix(in srgb,var(--mp-solid) 17%,var(--q-bg));--mp-dash:var(--q-muted);
  --mp-spring:cubic-bezier(.3,1.25,.5,1);--mp-t:520ms;--mp-out:cubic-bezier(.2,.7,.2,1);--u:1px}
 @supports (transition-timing-function:linear(0,1)){.mp{--mp-spring:linear(0,.009,.035 2.1%,.141 4.4%,.723 15.4%,.938 22.4%,1.017 28.1%,1.044 33.6%,1.045 38.7%,1.025 48.3%,1.004 61.3%,.998 77.6%,1)}}
 .mp *,.mp *::before,.mp *::after{box-sizing:border-box}
 .mp.is-still{--mp-solid:color-mix(in srgb,var(--q-muted) 70%,var(--q-bg));--mp-pale:color-mix(in srgb,var(--q-muted) 16%,var(--q-bg))}
 .mp-head{flex:none;display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:640px;padding:38px 43px 0}
 .mp-title{margin:0;font-size:23px;font-weight:700;line-height:29px;letter-spacing:-.01em;text-wrap:pretty}
+.mp-titles{display:flex;align-items:flex-start;gap:12px}
+.mp-here{position:relative;flex:none;width:var(--hs);height:var(--hs);margin-top:-2px;--hs:34px}
+.mp-here .mp-fill .mp-solid{height:var(--hs)}
+.mp-here[hidden]{display:none}
+.mp-here svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
+.mp-here path{fill-rule:evenodd;stroke-width:5;stroke-linejoin:round}
 .mp-line{margin:0;color:var(--q-muted);font-size:14px;line-height:20px}
 .mp-src{font-size:13px;color:var(--q-muted);text-decoration:none}
 .mp-src:hover{color:var(--q-accent)}
@@ -104,8 +110,6 @@ body{margin:0}
 .mp-sep{color:color-mix(in srgb,var(--q-muted) 60%,var(--q-bg))}
 .mp-stage{flex:1 1 auto;min-height:0;display:flex;padding:12px 0}
 .mp-canvas{position:relative;flex:none;margin:auto;overflow:visible}
-.mp-ground{position:absolute;z-index:0;pointer-events:none;transform-origin:0 0}
-.mp-ground path{fill:var(--mp-ground);stroke:var(--mp-ground);stroke-width:5;stroke-linejoin:round;fill-rule:nonzero}
 .mp-thing{position:absolute;z-index:1;display:flex;flex-direction:column;align-items:center;transition:left var(--mp-t) var(--mp-spring),top var(--mp-t) var(--mp-spring),width var(--mp-t) var(--mp-spring)}
 .mp .mp-hit{display:flex;flex-direction:column;align-items:center;max-width:100%;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:center;text-decoration:none;border-radius:16px}
 .mp button.mp-hit,.mp a.mp-hit{cursor:pointer}
@@ -127,9 +131,7 @@ body{margin:0}
 .mp-thing.is-stale .mp-shape{opacity:.5}
 .mp-thing.is-stale .mp-solid path{fill:var(--mp-pale);stroke:var(--mp-pale)}
 .mp-thing.is-stale .mp-pale path{fill:color-mix(in srgb,var(--mp-pale) 55%,var(--q-bg));stroke:color-mix(in srgb,var(--mp-pale) 55%,var(--q-bg))}
-.mp-q{position:absolute;inset:0;display:grid;place-items:center;color:var(--q-muted);font-weight:600;font-size:calc(var(--s) * .22)}
-.mp-q::before{content:"";grid-area:1/1;width:calc(var(--s) * .3);height:calc(var(--s) * .3);border-radius:50%;background:var(--q-bg)}
-.mp-q span{grid-area:1/1;position:relative}
+.mp-q{position:absolute;transform:translate(-50%,-50%);color:var(--q-muted);font-weight:600;font-size:calc(var(--s) * .2);line-height:1}
 .mp-q[hidden]{display:none}
 .mp-mark{position:absolute;right:-2%;top:-2%;display:grid;place-items:center;width:calc(26 * var(--u));height:calc(26 * var(--u));border-radius:50%;background:var(--q-bg);color:var(--q-muted);box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 12%,transparent);transition:transform .3s var(--mp-out),color .2s}
 .mp-mark svg{position:static;width:58%;height:58%}
@@ -140,7 +142,7 @@ body{margin:0}
 .mp-fig img{display:block;width:100%;height:100%;object-fit:contain}
 .mp-fig.ini,.mp-face{display:grid;place-items:center;background:color-mix(in srgb,var(--q-accent) 14%,var(--q-bg));color:var(--q-accent);font-weight:650;font-size:calc(var(--f) * .36)}
 .mp-face{background:color-mix(in srgb,var(--q-text) 52%,var(--q-bg));color:var(--q-bg);box-shadow:0 0 0 calc(3 * var(--u)) var(--q-bg),0 1px 4px rgb(0 0 0 / 18%)}
-.mp-face.me{background:var(--q-accent);color:var(--q-on-accent,#fff)}
+.mp-face.me,.mp-face.founder{background:var(--q-accent);color:var(--q-on-accent,#fff)}
 .mp-face svg{width:62%;height:62%}
 .mp-face svg path{fill:currentColor}
 .mp-dot{position:absolute;right:-2%;bottom:-4%;width:26%;height:26%;border-radius:50%;background:var(--q-good);box-shadow:0 0 0 2px var(--q-bg)}
@@ -169,7 +171,7 @@ body{margin:0}
 .mp .mp-pill.told{border-color:transparent;color:var(--q-muted);cursor:default}
 .mp-why{flex-basis:100%;margin:0;text-align:center;color:var(--q-muted);font-size:12px}
 .mp-quiet{margin:auto;color:var(--q-muted);font-size:15px}
-@media (max-width:600px){.mp-head{padding:22px 20px 0}.mp-title{font-size:20px;line-height:26px}.mp-trail{padding:14px 20px 0}}
+@media (max-width:600px){.mp-head{padding:22px 20px 0}.mp-title{font-size:20px;line-height:26px}.mp-here{--hs:29px}.mp-trail{padding:14px 20px 0}}
 @media (prefers-reduced-motion:reduce){.mp *,.mp *::before,.mp *::after{transition:none!important;animation:none!important}}
 `;
 
@@ -201,34 +203,42 @@ body{margin:0}
 		}
 		return `M${pts.join("L")}Z`;
 	}
+	// Each shape: its solid parts, its cuts, and where a "?" stands inside its outline. A thing not known, or only
+	// assumed, is drawn by the outline alone: the solid parts, dashed, with no cut.
 	const SHAPES = {
-		board: rr(8, 12, 84, 76, 14) + rr(19, 25, 17, 30, 4) + rr(41.5, 25, 17, 44, 4) + rr(64, 25, 17, 20, 4),
-		box: rr(10, 18, 80, 70, 10) + rr(18, 32, 64, 12, 6) + rr(40, 56, 20, 14, 7),
-		screen: rr(6, 12, 88, 60, 10) + rr(16, 22, 68, 40, 4) + "M41,72h18l4,10h-26Z" + rr(26, 82, 48, 8, 4),
-		phone: rr(26, 4, 48, 92, 12) + rr(34, 14, 32, 62, 4) + ci(50, 85, 6),
-		gear: gear(8, 44, 33) + ci(50, 50, 14),
-		code: rr(6, 12, 88, 76, 14) + "M38,28L16,50L38,72L48,62L36,50L48,38Z" + "M62,28L84,50L62,72L52,62L64,50L52,38Z",
-		person: ci(50, 30, 17) + "M16,92C16,70 31,58 50,58C69,58 84,70 84,92Z",
-		people: ci(36, 32, 15) + "M8,86C8,66 20,56 36,56C52,56 64,66 64,86Z" + ci(80, 46, 10) + "M66,86V80C66,68 72,62 80,62C88,62 94,68 94,80V86Z",
-		heart: "M50,88C50,88 10,62 10,36C10,22 21,12 33,12C41,12 47,17 50,23C53,17 59,12 67,12C79,12 90,22 90,36C90,62 50,88 50,88Z",
-		pin: "M50,7C30,7 15,22 15,41C15,65 50,93 50,93C50,93 85,65 85,41C85,22 70,7 50,7Z" + ci(50, 40, 13),
-		globe: ci(50, 50, 42) + ci(50, 50, 18, 42) + ci(50, 50, 9, 42) + rr(10, 44, 22, 12, 6) + rr(68, 44, 22, 12, 6),
-		chart: rr(6, 8, 88, 84, 12) + rr(18, 50, 14, 28, 4) + rr(43, 34, 14, 44, 4) + rr(68, 20, 14, 58, 4),
-		coin: ci(50, 50, 42) + rr(42, 29, 16, 42, 8),
-		bank: "M50,8L90,30V36H10V30Z" + rr(16, 42, 14, 34, 3) + rr(43, 42, 14, 34, 3) + rr(70, 42, 14, 34, 3) + rr(8, 80, 84, 10, 3),
-		drop: "M50,7C50,7 19,45 19,62a31,31 0 0 0 62,0C81,45 50,7 50,7Z" + ci(41, 64, 10),
-		megaphone: "M14,38H30L74,14V86L30,62H14a6,6 0 0 1 -6,-6V44a6,6 0 0 1 6,-6Z" + "M30,72h12l5,16h-12Z" + rr(82, 38, 10, 24, 5),
-		cart: "M4,12H22L25,24H94L84,62H32L22,22H4Z" + rr(38, 34, 36, 12, 6) + ci(38, 80, 8) + ci(76, 80, 8),
-		handshake: "M4,36L28,28L50,46L38,62L22,58L4,62Z" + "M96,36L72,28L54,40L66,54L78,58L96,62Z" + rr(30, 64, 40, 14, 7),
-		truck: rr(4, 22, 58, 48, 6) + "M64,34H80L94,50V70H64Z" + "M69,40H79L88,52H69Z" + ci(24, 80, 9) + ci(78, 80, 9),
-		factory: "M50,10L90,42V86a5,5 0 0 1 -5,5H15a5,5 0 0 1 -5,-5V42Z" + rr(40, 56, 20, 29, 5),
-		scale: rr(46, 16, 8, 62, 4) + rr(8, 20, 34, 8, 4) + rr(58, 20, 34, 8, 4) + "M6,46h36a18,18 0 0 1 -36,0Z" + "M58,46h36a18,18 0 0 1 -36,0Z" + rr(26, 80, 48, 10, 5),
-		document: "M20,6H62L86,30V88a6,6 0 0 1 -6,6H20a6,6 0 0 1 -6,-6V12a6,6 0 0 1 6,-6Z" + "M58,10V34H82Z" + rr(24, 48, 50, 12, 6) + rr(24, 68, 36, 12, 6),
-		chat: "M16,12H84a10,10 0 0 1 10,10V62a10,10 0 0 1 -10,10H40L20,90V72H16a10,10 0 0 1 -10,-10V22a10,10 0 0 1 10,-10Z" + ci(30, 42, 7) + ci(50, 42, 7) + ci(70, 42, 7),
-		wrench: wrench(),
-		blob: "M50,8C72,8 92,22 90,46C88,70 74,92 50,90C26,88 8,74 10,50C12,26 28,8 50,8Z",
+		board: [rr(8, 12, 84, 76, 14), rr(19, 25, 17, 30, 4) + rr(41.5, 25, 17, 44, 4) + rr(64, 25, 17, 20, 4)],
+		box: [rr(10, 18, 80, 70, 10), rr(18, 32, 64, 12, 6) + rr(40, 56, 20, 14, 7), 50, 56],
+		screen: [rr(6, 12, 88, 60, 10) + "M41,72h18l4,10h-26Z" + rr(26, 82, 48, 8, 4), rr(16, 22, 68, 40, 4), 50, 42],
+		phone: [rr(26, 4, 48, 92, 12), rr(34, 14, 32, 62, 4) + ci(50, 85, 6), 50, 45],
+		gear: [gear(8, 44, 33), ci(50, 50, 14)],
+		code: [rr(6, 12, 88, 76, 14), "M38,28L16,50L38,72L48,62L36,50L48,38Z" + "M62,28L84,50L62,72L52,62L64,50L52,38Z"],
+		person: [ci(50, 30, 17) + "M16,92C16,70 31,58 50,58C69,58 84,70 84,92Z", "", 50, 78],
+		people: [ci(36, 32, 15) + "M8,86C8,66 20,56 36,56C52,56 64,66 64,86Z" + ci(80, 46, 10) + "M66,86V80C66,68 72,62 80,62C88,62 94,68 94,80V86Z", "", 36, 74],
+		heart: ["M50,88C50,88 10,62 10,36C10,22 21,12 33,12C41,12 47,17 50,23C53,17 59,12 67,12C79,12 90,22 90,36C90,62 50,88 50,88Z", "", 50, 44],
+		pin: ["M50,7C30,7 15,22 15,41C15,65 50,93 50,93C50,93 85,65 85,41C85,22 70,7 50,7Z", ci(50, 40, 13), 50, 42],
+		globe: [ci(50, 50, 42), ci(50, 50, 18, 42) + ci(50, 50, 9, 42) + rr(10, 44, 22, 12, 6) + rr(68, 44, 22, 12, 6)],
+		chart: [rr(6, 8, 88, 84, 12), rr(18, 50, 14, 28, 4) + rr(43, 34, 14, 44, 4) + rr(68, 20, 14, 58, 4)],
+		coin: [ci(50, 50, 42), rr(42, 29, 16, 42, 8)],
+		bank: ["M50,8L90,30V36H10V30Z" + rr(16, 42, 14, 34, 3) + rr(43, 42, 14, 34, 3) + rr(70, 42, 14, 34, 3) + rr(8, 80, 84, 10, 3), "", 50, 59],
+		drop: ["M50,7C50,7 19,45 19,62a31,31 0 0 0 62,0C81,45 50,7 50,7Z", ci(41, 64, 10), 50, 62],
+		megaphone: ["M14,38H30L74,14V86L30,62H14a6,6 0 0 1 -6,-6V44a6,6 0 0 1 6,-6Z" + "M30,72h12l5,16h-12Z" + rr(82, 38, 10, 24, 5), "", 48, 50],
+		cart: ["M4,12H22L25,24H94L84,62H32L22,22H4Z" + ci(38, 80, 8) + ci(76, 80, 8), rr(38, 34, 36, 12, 6), 58, 42],
+		handshake: ["M4,36L28,28L50,46L38,62L22,58L4,62Z" + "M96,36L72,28L54,40L66,54L78,58L96,62Z" + rr(30, 64, 40, 14, 7), "", 50, 30],
+		truck: [rr(4, 22, 58, 48, 6) + "M64,34H80L94,50V70H64Z" + ci(24, 80, 9) + ci(78, 80, 9), "M69,40H79L88,52H69Z", 33, 46],
+		factory: ["M50,10L90,42V86a5,5 0 0 1 -5,5H15a5,5 0 0 1 -5,-5V42Z", rr(40, 56, 20, 29, 5), 50, 60],
+		scale: [rr(46, 16, 8, 62, 4) + rr(8, 20, 34, 8, 4) + rr(58, 20, 34, 8, 4) + "M6,46h36a18,18 0 0 1 -36,0Z" + "M58,46h36a18,18 0 0 1 -36,0Z" + rr(26, 80, 48, 10, 5), "", 24, 70],
+		document: ["M20,6H62L86,30V88a6,6 0 0 1 -6,6H20a6,6 0 0 1 -6,-6V12a6,6 0 0 1 6,-6Z", "M58,10V34H82Z" + rr(24, 48, 50, 12, 6) + rr(24, 68, 36, 12, 6), 50, 58],
+		chat: ["M16,12H84a10,10 0 0 1 10,10V62a10,10 0 0 1 -10,10H40L20,90V72H16a10,10 0 0 1 -10,-10V22a10,10 0 0 1 10,-10Z", ci(30, 42, 7) + ci(50, 42, 7) + ci(70, 42, 7), 50, 42],
+		wrench: [wrench(), "", 62, 38],
+		blob: ["M50,8C72,8 92,22 90,46C88,70 74,92 50,90C26,88 8,74 10,50C12,26 28,8 50,8Z", ""],
 	};
-	const shapeOf = (name) => (Object.prototype.hasOwnProperty.call(SHAPES, name) ? SHAPES[name] : SHAPES.blob);
+	const shapeEntry = (name) => (Object.prototype.hasOwnProperty.call(SHAPES, name) ? SHAPES[name] : SHAPES.blob);
+	/** The whole shape: its solid parts with their cuts. */
+	const shapeOf = (name) => shapeEntry(name)[0] + shapeEntry(name)[1];
+	/** The outline alone: the solid parts with no cut. */
+	const outlineOf = (name) => shapeEntry(name)[0];
+	/** Where a "?" stands inside the outline, in the 100 x 100 box. */
+	const askAt = (name) => [shapeEntry(name)[2] ?? 50, shapeEntry(name)[3] ?? 50];
 
 	// ---------------------------------------------------------------- where things stand
 	// The canvas is 1052 x 620 units, one unit one pixel at most; it shrinks whole, so it never overlaps itself. Each
@@ -449,7 +459,7 @@ body{margin:0}
 	}
 
 	// ---------------------------------------------------------------- what the page draws now
-	const ui = { model: null, live: { reading: undefined, agents: null }, path: [], root: null, parts: null, things: new Map(), figs: new Map(), drawn: "", width: 0, height: 0, pushed: 0, expect: 0, told: null, toldFor: "", u: 1, arriving: false, zooming: false, zoomKeep: "" };
+	const ui = { model: null, live: { reading: undefined, agents: null }, path: [], root: null, parts: null, things: new Map(), figs: new Map(), drawn: "", width: 0, height: 0, told: null, toldFor: "", u: 1, arriving: false, zooming: false, zoomKeep: "" };
 
 	/** The team as the company has it (reading's team), by lower-case name; null where it is not known. */
 	function teamByName() {
@@ -549,16 +559,20 @@ body{margin:0}
 	}
 	function skeleton() {
 		const title = h("h1", "mp-title");
+		const herePale = svgPath("mp-pale", "");
+		const hereSolid = svgPath("mp-solid", "");
+		const hereFill = h("div", "mp-fill", null, hereSolid);
+		const here = h("span", "mp-here", { "aria-hidden": "true", hidden: "" }, herePale, hereFill);
 		const line = h("p", "mp-line");
 		const src = h("a", "mp-src", { hidden: "" });
-		const head = h("header", "mp-head", null, title, line, src);
+		const head = h("header", "mp-head", null, h("div", "mp-titles", null, here, title), line, src);
 		const trail = h("nav", "mp-trail", { hidden: "" });
 		const canvas = h("div", "mp-canvas");
 		const stage = h("div", "mp-stage", null, canvas);
 		const changes = h("div", "mp-changes", { role: "group", hidden: "" });
 		const root = h("main", `mp${BARE ? " mp--bare" : ""}`, null, trail, head, stage, changes);
 		ui.root = root;
-		ui.parts = { title, line, src, head, trail, canvas, stage, changes };
+		ui.parts = { title, here, herePaths: [herePale.firstChild, hereSolid.firstChild], hereFill, line, src, head, trail, canvas, stage, changes };
 		ui.things.clear();
 		ui.figs.clear();
 		show(root);
@@ -590,7 +604,14 @@ body{margin:0}
 		p.title.textContent = title;
 		p.line.textContent = line;
 		p.line.hidden = !line;
-		const source = view.layer && view.layer.thing ? view.layer.thing.source : "";
+		// where you are: the opened thing's own shape, small, filled as far as it is, left of its name
+		const thing = view.layer && view.layer.thing;
+		p.here.hidden = !thing;
+		if (thing) {
+			for (const path of p.herePaths) path.setAttribute("d", thing.state === "known" ? shapeOf(thing.shape) : outlineOf(thing.shape));
+			p.hereFill.style.height = `${thing.full}%`;
+		}
+		const source = thing ? thing.source : "";
 		if (source) {
 			p.src.setAttribute("href", source);
 			p.src.textContent = `${w.source} ↗`;
@@ -619,7 +640,7 @@ body{margin:0}
 		const pale = svgPath("mp-pale", "");
 		const solid = svgPath("mp-solid", "");
 		const fillEl = h("div", "mp-fill", null, solid);
-		const q = h("span", "mp-q", { "aria-hidden": "true" }, h("span", null, null, "?"));
+		const q = h("span", "mp-q", { "aria-hidden": "true" }, "?");
 		const shape = h("div", "mp-shape", null, dash, pale, fillEl, q);
 		const name = h("div", "mp-name");
 		const label = h("div", "mp-label");
@@ -645,8 +666,16 @@ body{margin:0}
 		parts.shape.style.height = `${s.size}px`;
 		parts.shape.style.setProperty("--s", `${s.size}px`);
 		parts.solid.style.height = `${s.size}px`;
-		const d = shapeOf(t.shape);
-		for (const path of parts.paths) if (path.getAttribute("d") !== d) path.setAttribute("d", d);
+		// a thing not known, or only assumed, is its outline alone: dashed, pale inside when assumed, no cut
+		const whole = shapeOf(t.shape);
+		const outline = outlineOf(t.shape);
+		const open = t.state !== "known";
+		[outline, open ? outline : whole, whole].forEach((d, k) => {
+			if (parts.paths[k].getAttribute("d") !== d) parts.paths[k].setAttribute("d", d);
+		});
+		const [qx, qy] = askAt(t.shape);
+		parts.q.style.left = `${qx}%`;
+		parts.q.style.top = `${qy}%`;
 		parts.fill.style.height = `${t.full}%`;
 		el.classList.toggle("is-empty", t.state === "known" && t.full === 0);
 		el.classList.toggle("is-unknown", t.state === "unknown");
@@ -696,10 +725,10 @@ body{margin:0}
 		const look = JSON.stringify(stand);
 		if (!el || el.__look !== look) {
 			const next = stand.face
-				? h("span", `mp-face mp-fig${stand.me ? " me" : ""}`, { role: "img" })
+				? h("span", `mp-face mp-fig${stand.me ? " me" : ""}${stand.founder ? " founder" : ""}`, { role: "img" })
 				: h("span", `mp-fig${figureSrc(stand.figure) ? "" : " ini"}`, { role: "img" });
 			if (stand.face) {
-				if (stand.founder) next.append(svgPath(null, SHAPES.person));
+				if (stand.founder) next.append(svgPath(null, shapeOf("person")));
 				else next.append(initials(stand.name));
 			} else {
 				const src = figureSrc(stand.figure);
@@ -734,27 +763,6 @@ body{margin:0}
 			el.classList.add("is-arriving");
 			setTimeout(() => el.classList.remove("is-arriving"), 1300);
 		}
-	}
-
-	/** The ground of an opened layer: the thing's own shape, very pale, behind its things. */
-	function groundEl(view, L) {
-		const old = ui.parts.canvas.querySelector(".mp-ground");
-		if (!view.layer || !view.layer.thing || L.column) {
-			if (old) old.remove();
-			return null;
-		}
-		const size = Math.min(L.width, L.height) * 1.12;
-		const g = old && old.__shape === view.layer.thing.shape ? old : svgPath("mp-ground", shapeOf(view.layer.thing.shape), "-5 -5 110 110");
-		g.__shape = view.layer.thing.shape;
-		g.style.width = `${size}px`;
-		g.style.height = `${size}px`;
-		g.style.left = `${(L.width - size) / 2}px`;
-		g.style.top = `${(L.height - size) / 2}px`;
-		if (g !== old) {
-			if (old) old.remove();
-			ui.parts.canvas.prepend(g);
-		}
-		return g;
 	}
 
 	function measure() {
@@ -801,8 +809,6 @@ body{margin:0}
 			canvas.classList.remove("is-column");
 			canvas.style.removeProperty("width");
 			canvas.style.removeProperty("height");
-			const ground = canvas.querySelector(".mp-ground");
-			if (ground) ground.remove();
 			const team = live && Array.isArray(live.team) ? live.team.filter(isObj) : [];
 			const row = [...team].sort((a, b) => Number(b.cofounder === true) - Number(a.cofounder === true));
 			const seen = new Map();
@@ -823,7 +829,6 @@ body{margin:0}
 			canvas.style.width = `${L.width}px`;
 			canvas.style.height = `${L.height}px`;
 			canvas.style.setProperty("--u", `${L.u}px`);
-			const ground = groundEl(view, L);
 			const seen = new Map();
 			const keyOf = (k) => {
 				const c = (seen.get(k) || 0) + 1;
@@ -843,27 +848,26 @@ body{margin:0}
 					placeFigure(stands[k].key, stands[k].stand, at.left, at.top, at.size, still, false);
 				});
 			});
-			// the zoom: into a thing, its shape grows from where it stood into the ground; out of one, the thing shrinks
-			// from the ground back to its place
+			// the zoom: into a thing, the new layer grows out of where the thing stood; out of one, it shrinks back into
+			// the thing's place. The canvas moves as one, from its top left corner.
 			if (before && !calm() && !still) {
-				const target = how.zoom === "in" ? ground : (ui.things.get(how.id) || {}).shape;
-				if (target) {
-					const after = target.getBoundingClientRect();
-					if (after.width > 0 && before.width > 0) {
-						const k = before.width / after.width;
-						target.style.transition = "none";
-						target.style.transformOrigin = "0 0";
-						target.style.transform = `translate(${before.left - after.left}px,${before.top - after.top}px) scale(${k})`;
-						target.getBoundingClientRect();
-						requestAnimationFrame(() => {
-							target.style.transition = `transform calc(var(--mp-t) * 1.25) var(--mp-spring)`;
-							target.style.transform = "";
-							setTimeout(() => {
-								target.style.removeProperty("transition");
-								target.style.removeProperty("transform-origin");
-							}, 900);
-						});
-					}
+				const came = how.zoom === "out" ? ui.things.get(how.id) : null;
+				const C = canvas.getBoundingClientRect();
+				const A = came ? came.shape.getBoundingClientRect() : C;
+				if (A.width > 0 && before.width > 0 && C.width > 0) {
+					const k = before.width / A.width;
+					canvas.style.transition = "none";
+					canvas.style.transformOrigin = "0 0";
+					canvas.style.transform = `translate(${before.left - C.left - k * (A.left - C.left)}px,${before.top - C.top - k * (A.top - C.top)}px) scale(${k})`;
+					canvas.getBoundingClientRect();
+					requestAnimationFrame(() => {
+						canvas.style.transition = "transform calc(var(--mp-t) * 1.25) var(--mp-spring)";
+						canvas.style.transform = "";
+						setTimeout(() => {
+							canvas.style.removeProperty("transition");
+							canvas.style.removeProperty("transform-origin");
+						}, 900);
+					});
 				}
 			}
 		}
@@ -948,55 +952,20 @@ body{margin:0}
 		const parts = ui.things.get(id);
 		const from = rectOf(parts && parts.shape);
 		ui.path = [...ui.path, id];
-		try {
-			history.pushState({ qorperaMap: ui.path.slice() }, "");
-			ui.pushed = ui.path.length;
-		} catch {
-			ui.pushed = 0;
-		}
 		render({ zoom: "in", from });
 		const first = ui.parts.canvas.querySelector(".mp-hit:is(button,a)");
-		(first || ui.parts.title).focus({ preventScroll: true });
+		(first || ui.parts.trail.querySelector(".mp-crumb") || ui.parts.title).focus({ preventScroll: true });
 	}
-	/** Up to the layer at `depth` (0: the first), at once. Our own entries in the browser's history go with it, so its
-	 * back never lands on a layer that is gone; the moves they make are where the page already is. */
+	/** Up to the layer at `depth` (0: the first), the focus on the thing that was opened from it. */
 	function go(depth) {
 		if (depth >= ui.path.length) return;
-		const steps = ui.path.length - depth;
-		const ours = Math.min(ui.pushed - depth, steps);
-		up(depth);
-		ui.pushed = depth;
-		if (ours > 0)
-			try {
-				// the move it makes comes back as a popstate of our own, which changes nothing
-				ui.expect++;
-				history.go(-ours);
-			} catch {
-				ui.expect--;
-			}
-	}
-	function up(depth) {
 		const came = ui.path[depth];
-		const ground = ui.parts && ui.parts.canvas.querySelector(".mp-ground");
-		const from = rectOf(ground);
+		const from = rectOf(ui.parts && ui.parts.canvas);
 		ui.path = ui.path.slice(0, depth);
 		render({ zoom: "out", from, id: came });
 		const back = ui.things.get(came);
 		if (back && back.hit) back.hit.focus({ preventScroll: true });
 	}
-	window.addEventListener("popstate", (e) => {
-		if (!ui.model || !ui.root) return;
-		const want = e.state && Array.isArray(e.state.qorperaMap) ? e.state.qorperaMap.filter((x) => typeof x === "string") : [];
-		ui.pushed = want.length;
-		if (ui.expect > 0) {
-			ui.expect--;
-			return;
-		}
-		if (want.join("/") === ui.path.join("/")) return;
-		if (want.length < ui.path.length && want.every((x, i) => ui.path[i] === x)) return up(want.length);
-		ui.path = want;
-		render({ zoom: "in", from: null });
-	});
 	D.addEventListener("keydown", (e) => {
 		if (e.key !== "Escape" || e.isComposing || !ui.path.length || e.defaultPrevented) return;
 		e.preventDefault();

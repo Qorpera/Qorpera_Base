@@ -1759,13 +1759,24 @@ describe("the map kit's engine", () => {
 			"We know what a workshop needs and have…›The repair tracker",
 		);
 		expect(document.querySelectorAll(".mp-thing")).toHaveLength(5);
-		expect(document.querySelector(".mp-ground")).not.toBeNull();
+		// where you are: the opened thing's own shape, small, filled as far as it is, beside the title; no ground
+		const here = document.querySelector<HTMLElement>(".mp-here");
+		expect(here?.hidden).toBe(false);
+		expect(here?.getAttribute("aria-hidden")).toBe("true");
+		expect((here?.querySelector(".mp-fill") as HTMLElement).style.height).toBe("34%");
+		expect(document.querySelector(".mp-ground")).toBeNull();
 		// an agent named in the data is drawn as the team's figure; a stale thing by its age; open and assumed things
 		expect(document.querySelector('.mp-canvas .mp-fig[aria-label="Product, working"]')).not.toBeNull();
 		expect(thing("login")?.classList.contains("is-stale")).toBe(true);
 		expect(thing("login")?.querySelector(".mp-label")?.textContent).toBe("3 w");
 		expect(thing("pay")?.classList.contains("is-unknown")).toBe(true);
 		expect((thing("pay")?.querySelector(".mp-q") as HTMLElement).hidden).toBe(false);
+		// a thing not known, or only assumed, is its outline alone: the coin's dashed path has no cut, its whole one has
+		const subpaths = (id: string, which: string) =>
+			thing(id)?.querySelector(`.${which} path`)?.getAttribute("d")?.match(/M/g)?.length;
+		expect(subpaths("pay", "mp-dash")).toBe(1);
+		expect(subpaths("pay", "mp-solid")).toBe(2);
+		expect(subpaths("sms", "mp-pale")).toBe(1);
 		expect(thing("sms")?.classList.contains("is-assumed")).toBe(true);
 		expect(thing("costs")?.querySelector("a.mp-hit")?.getAttribute("href")).toBe("app:business-model");
 		// one layer further, then back up one at a time
@@ -1782,6 +1793,7 @@ describe("the map kit's engine", () => {
 			"We know what a workshop needs and have a repair tracker on paper.",
 		);
 		expect(document.activeElement).toBe(thing("tracker")?.querySelector("button.mp-hit"));
+		expect((document.querySelector(".mp-here") as HTMLElement).hidden).toBe(true);
 		// at the first layer Escape is the frame's again
 		const last = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
 		document.dispatchEvent(last);
@@ -1820,6 +1832,8 @@ describe("the map kit's engine", () => {
 		expect(document.querySelector("h1")?.textContent).toBe("Sales");
 		const names = [...document.querySelectorAll(".mp-canvas .mp-fig")].map((fig) => fig.getAttribute("aria-label"));
 		expect(names).toEqual(["Strategy", "waits for a founder"]);
+		// the founder it waits for is the member's accent mark, as on the company's map
+		expect(document.querySelector(".mp-face.founder")).not.toBeNull();
 		// an owner's map has no change line
 		expect((document.querySelector(".mp-changes") as HTMLElement).hidden).toBe(true);
 	});
@@ -1831,5 +1845,39 @@ describe("the map kit's engine", () => {
 		const tops = ["tracker", "needs", "money"].map((id) => Number.parseFloat(thing(id)?.style.top ?? "0"));
 		expect(tops[0]).toBeLessThan(tops[1] ?? 0);
 		expect(tops[1]).toBeLessThan(tops[2] ?? 0);
+	});
+});
+
+describe("the map kit's way back", () => {
+	it("goes up by the path at the top, each step a button, and leaves the browser's history alone", async () => {
+		const pushes = vi.spyOn(history, "pushState");
+		const goes = vi.spyOn(history, "go");
+		page.QORPERA_KIT = { app: "own", kit: "map", data: "map.json" };
+		page.qorpera = standIn(
+			JSON.stringify({
+				lang: "en",
+				top: {
+					title: "Sales",
+					attention: "leads",
+					things: [
+						{ id: "leads", name: "Leads", shape: "people", full: 30 },
+						{ id: "deals", name: "Deals", shape: "handshake", full: 10 },
+						{ id: "ads", name: "Ads", shape: "megaphone", full: 5 },
+					],
+				},
+				layers: { leads: { things: [{ id: "list", name: "The list", shape: "document", full: 40 }] } },
+			}),
+		).qorpera;
+		new Function(kitFile("map", "engine.js"))();
+		await settle();
+		document.querySelector<HTMLButtonElement>('.mp-thing[data-id="leads"] button.mp-hit')?.click();
+		expect(document.querySelector("h1")?.textContent).toBe("Leads");
+		const crumb = document.querySelector<HTMLButtonElement>(".mp-trail button.mp-crumb");
+		expect(crumb?.textContent).toBe("Sales");
+		crumb?.click();
+		expect(document.querySelector("h1")?.textContent).toBe("Sales");
+		expect(document.activeElement).toBe(document.querySelector('.mp-thing[data-id="leads"] button.mp-hit'));
+		expect(pushes).not.toHaveBeenCalled();
+		expect(goes).not.toHaveBeenCalled();
 	});
 });
