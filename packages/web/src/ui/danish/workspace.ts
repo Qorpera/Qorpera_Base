@@ -551,9 +551,6 @@ export const WORKSPACE: Record<string, string> = {
 	"{members} are using it too.": "{members} bruger den også.",
 	"You can watch. Someone with edit access can use the computer.":
 		"Du kan se med. En med redigeringsadgang kan bruge computeren.",
-	"Type privately": "Skriv privat",
-	"For passwords: {name} gets no pictures of the screen until you're done.":
-		"Til adgangskoder: {name} får ingen billeder af skærmen, før du er færdig.",
 	"Typing privately. {name} gets no pictures of the screen until you're done.":
 		"Du skriver privat. {name} får ingen billeder af skærmen, før du er færdig.",
 	"Typing privately. Choose Enter to click and type.": "Du skriver privat. Vælg Gå ind for at klikke og skrive.",

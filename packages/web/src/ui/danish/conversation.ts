@@ -496,7 +496,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Something else…": "Noget andet…",
 	"Your own answer": "Dit eget svar",
 	Skip: "Spring over",
-	"Take over": "Overtag",
+	// The take-over card's way to the agent's computer (review r1 F1 of #1812).
+	"Open computer": "Åbn computer",
 	"I'm done": "Jeg er færdig",
 	"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.":
 		"Computeren kunne ikke gives tilbage endnu. Tryk på Jeg er færdig for at prøve igen. Den går tilbage af sig selv inden for 5 minutter.",

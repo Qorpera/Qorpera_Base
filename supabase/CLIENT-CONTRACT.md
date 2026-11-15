@@ -1380,7 +1380,7 @@ request of another shape.
     no answer: moving the epoch is the only thing that voids that take-over whenever it arrives. It also ends another
     tab's hold of the member's under that epoch: a tab that closes while a take-over of its own is unanswered, while
     another tab of the same member holds the desktop under the same epoch, ends that tab's hold (it hears so at its
-    next heartbeat or action, and its window offers Take over again). This race is the one place a closing tab ends
+    next heartbeat or action, and its window shows the hold no more; the web begins no take-over since 14 Nov 2026). This race is the one place a closing tab ends
     another's; it keeps a take-over that outlives its window from seating anyone.
   A lease of the caller's that ran out is closed as it ended when the epoch moves. Which form each release sends:
   a close, a switch away, pagehide and leaving the page send VOID when uncertain, else EXACT by the seat the page's
@@ -1402,10 +1402,11 @@ request of another shape.
   A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
   the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
   member does a moment later.
-- A page uses a hold (input, heartbeats) only after a Take over pressed on that page (review r14 of #1661): a hold of
+- A page uses a hold (input, heartbeats) only after a take-over of that page's own (review r14 of #1661): a hold of
   the member's that the list shows from another window, or from before the page was loaded again, is shown, never
-  taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch takes
-  their own lease over, in a new seat), and without that the old lease ends by itself.
+  taken up, and ends with the window's Done or by itself. Since 14 Nov 2026 the web begins no take-over at all (Jonas:
+  private typing removed; no Take over, no Type privately): the take-over call stays in the database, unused by the
+  web, until it is retired.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat)`: one action, begun as the member.
   Clients do not call it: the action route (§4) does, with the member's own token, the action as SQL keeps it (a text
   by its length), `epoch` and `seat`, the hold the page captured the input under (release review r1 of #1667, F24 and
