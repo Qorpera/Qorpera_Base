@@ -130,21 +130,31 @@ const RELATION =
 	"left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary " +
 	"where c.relname = $2 and c.relkind in ('r', 'p', 'v', 'm') order by a.attnum";
 
+const LIST_KEY = (name) => `(?:${name}|"${name}"|'${name}')`;
+const LIST_VALUE = /^\s*(?:"(readers|writers)"|'(readers|writers)')\s*(?:#.*)?$/;
+const LIST_HEADER = new RegExp(`^\\s*\\[\\s*${LIST_KEY("list")}\\s*\\]\\s*(?:#.*)?$`);
+const LIST_MEMBERS = new RegExp(`^\\s*${LIST_KEY("members")}\\s*=(.*)$`);
+const LIST_DOTTED = new RegExp(`^\\s*${LIST_KEY("list")}\\s*\\.\\s*${LIST_KEY("members")}\\s*=(.*)$`);
+const LIST_INLINE = new RegExp(`^\\s*${LIST_KEY("list")}\\s*=\\s*\\{\\s*${LIST_KEY("members")}\\s*=\\s*(?:"(readers|writers)"|'(readers|writers)')\\s*\\}\\s*(?:#.*)?$`);
+const LIST_NAMED = new RegExp(`^\\s*(?:\\[+\\s*)?${LIST_KEY("list")}\\s*[.=\\]]`);
+
 function listLine(toml) {
 	let table = "";
 	for (const line of toml.split("\n")) {
-		const header = /^\s*\[\s*([A-Za-z0-9_.-]+)\s*\]\s*(#.*)?$/.exec(line);
-		if (header) {
-			table = header[1];
+		if (/^\s*\[/.test(line)) {
+			table = LIST_HEADER.test(line) ? "list" : LIST_NAMED.test(line) ? "unread" : "other";
+			if (table === "unread") return "writers";
 			continue;
 		}
-		const said =
-			table === "list"
-				? /^\s*members\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(#.*)?$/.exec(line)
-				: table === ""
-					? /^\s*(?:list\s*\.\s*members\s*=|list\s*=\s*\{[^}]*\bmembers\s*=)\s*(?:"([^"]*)"|'([^']*)')/.exec(line)
-					: null;
-		if (said) return (said[1] ?? said[2]) === "readers" ? "readers" : "writers";
+		const value = table === "list" ? LIST_MEMBERS.exec(line)?.[1] : table === "" ? LIST_DOTTED.exec(line)?.[1] : undefined;
+		if (value !== undefined) {
+			const said = LIST_VALUE.exec(value);
+			return said && (said[1] ?? said[2]) === "readers" ? "readers" : "writers";
+		}
+		if (table === "" && LIST_NAMED.test(line)) {
+			const inline = LIST_INLINE.exec(line);
+			return inline && (inline[1] ?? inline[2]) === "readers" ? "readers" : "writers";
+		}
 	}
 	return null;
 }
@@ -155,8 +165,9 @@ function namesViewer(text) {
 	return statement.ok ? statement.parameters.includes(VIEWER) : new RegExp(`(?<![:A-Za-z0-9_]):${VIEWER}(?![A-Za-z0-9_])`).test(text);
 }
 
-function listMembers(toml, questions) {
+export function listMembers(toml, questions, cut = false) {
 	if (toml === null) return "writers";
+	if (cut && listLine(toml) === null) return "writers";
 	return listLine(toml) ?? (questions.some(namesViewer) ? "writers" : "readers");
 }
 
@@ -843,7 +854,9 @@ export class Gateway {
 					`${order.length > 0 ? `order by ${order.join(", ")}` : ""} limit ${ready.limit + 1}), ` +
 					`${sized} as (select ${asked}.*, row_number() over () as ${at}, ` +
 					`sum(${asked}.${size}) over (rows between unbounded preceding and current row) as ${bytesSoFar} from ${asked}) ` +
-					`select ${sized}.*, ${madeAs}.${rowsMade} from (select count(*) as ${rowsMade} from ${asked}) ${madeAs} ` +
+					`select ${sized}.*, ${madeAs}.* from (select count(*) as ${rowsMade}${placed
+						.map((column, index) => `, (select ${asked}.${quoted(column.name)} from ${asked} limit 1) as qorpera_first_${index}_${tag}`)
+						.join("")} from ${asked}) ${madeAs} ` +
 					`left join ${sized} on ${sized}.${bytesSoFar} <= ${maxBytes} order by ${sized}.${at}`,
 				values,
 				rowMode: "array",
@@ -870,12 +883,20 @@ export class Gateway {
 				rows.push(shapedRow);
 				last = one;
 			}
+			const tooLarge = rows.length === 0 && made > 0;
+			const next =
+				!more || key.length === 0
+					? null
+					: last !== null
+						? placed.map((column) => last[column.index])
+						: placed.map((_, index) => result.rows[0][width + 5 + index]);
 			const answer = {
 				columns: columns.map((column) => column.name),
 				key: key.map((column) => column.name),
 				rows,
 				more,
-				...(more && key.length > 0 && last !== null ? { next: placed.map((column) => last[column.index]) } : {}),
+				...(next === null ? {} : { next }),
+				...(tooLarge ? { tooLarge: true } : {}),
 			};
 			return { ...answer, etag: sha256(JSON.stringify(answer)).slice(0, 32) };
 		});
@@ -893,7 +914,7 @@ export class Gateway {
 	async #folderFiles(caller, environmentId, name, texts, database, toml, { changes = true } = {}) {
 		const root = `data/${name}`;
 		const [questions, actions] = await Promise.all([
-			this.#listed(caller, environmentId, `${root}/queries`, 1000),
+			this.#listed(caller, environmentId, `${root}/queries`, 1001),
 			changes ? this.#listed(caller, environmentId, `${root}/actions`, 1000) : [],
 		]);
 		const need = [];
@@ -909,7 +930,12 @@ export class Gateway {
 					.filter((file) => file.name.endsWith(".sql"))
 					.map(async (file) => ({ name: file.name.slice(0, -4), text: await read(`${root}/${folder}/${file.name}`, file) })),
 			);
-		const found = { toml: await read(`${root}/database.toml`, toml), questions: await each("queries", questions), changes: await each("actions", actions) };
+		const found = {
+			toml: await read(`${root}/database.toml`, toml),
+			questions: await each("queries", questions.slice(0, 1000)),
+			changes: await each("actions", actions),
+			cut: questions.length > 1000,
+		};
 		return need.length > 0 ? { need } : found;
 	}
 
@@ -922,7 +948,11 @@ export class Gateway {
 		if (!toml) refuse(404, `No database ${name} that you may read`);
 		const found = await this.#folderFiles(caller, environmentId, name, texts, companyDatabase(environmentId), toml, { changes: false });
 		if (found.need) return found;
-		const members = listMembers(found.toml, found.questions.map((question) => question.text));
+		const members = listMembers(
+			found.toml,
+			found.questions.map((question) => question.text),
+			found.cut,
+		);
 		const value = { list: members === "readers" || (await this.#mayWrite(caller, environmentId, name)) };
 		this.#proofs.set(key, { at: Date.now(), value });
 		return value;
@@ -1585,7 +1615,7 @@ export class Gateway {
 		const databases = [];
 		for (const [name, files] of found) {
 			const write = await this.#mayWrite(caller, environmentId, name);
-			const list = write || listMembers(files.toml, files.questions.map((question) => question.text)) === "readers";
+			const list = write || listMembers(files.toml, files.questions.map((question) => question.text), files.cut) === "readers";
 			const n = list && exists ? await this.#folder(database, name) : null;
 			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
 			databases.push({

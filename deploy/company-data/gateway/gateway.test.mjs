@@ -14,7 +14,7 @@ import http from "node:http";
 import { after, before, describe, it } from "node:test";
 import pg from "pg";
 import { checkLocale, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
-import { companyDatabase, folderPassword, Gateway, LIMITS, Platform, serve, serveRuns } from "./gateway.mjs";
+import { companyDatabase, folderPassword, Gateway, LIMITS, listMembers, Platform, serve, serveRuns } from "./gateway.mjs";
 
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -343,6 +343,36 @@ put(ENV_B, {
 	"data/shop/database.toml": 'format = "qorpera.database/v1"\nname = "Shop"\n',
 	"data/shop/tables/001-orders.sql": ORDERS,
 	"data/shop/queries/count.sql": COUNT,
+});
+
+it("reads who gets the list from database.toml's [list], and counts any spelling it cannot read as writers", () => {
+	const viewer = "select 1 from t where owner = :viewer::uuid;\n";
+	for (const [toml, questions, cut, members] of [
+		['format = "x"\n', [], false, "readers"],
+		['format = "x"\n', ["select 1;\n", viewer], false, "writers"],
+		['format = "x"\n', ["select 1; select :viewer;\n"], false, "writers"],
+		['format = "x"\n', [null], false, "writers"],
+		['format = "x"\n', [], true, "writers"],
+		[null, [], false, "writers"],
+		['[list]\nmembers = "readers"\n', [viewer], true, "readers"],
+		['[list]\nmembers = "writers" # w\n', [], false, "writers"],
+		["[list]\nmembers = 'readers'\n", [], false, "readers"],
+		['[list]\nmembers = "everyone"\n', [], false, "writers"],
+		['[list]\n"members" = "readers"\n', [], false, "readers"],
+		['["list"]\nmembers = "readers"\n', [], false, "readers"],
+		['[ list ]\nmembers = "readers"\n', [], false, "readers"],
+		['[list]\nmembers = """readers"""\n', [], false, "writers"],
+		['list.members = "readers"\n', [viewer], false, "readers"],
+		["'list'.\"members\" = \"writers\"\n", [], false, "writers"],
+		['list = { members = "readers" }\n', [viewer], false, "readers"],
+		['list = { "members" = "writers" }\n', [], false, "writers"],
+		['list = { members = "readers", x = 1 }\n', [], false, "writers"],
+		['[[list]]\nmembers = "readers"\n', [], false, "writers"],
+		['[list.more]\nmembers = "readers"\n', [], false, "writers"],
+		['[other]\nmembers = "readers"\n', [viewer], false, "writers"],
+		['about = "A list of members"\n', [], false, "readers"],
+	])
+		assert.equal(listMembers(toml, questions, cut), members, `${JSON.stringify(toml)} ${JSON.stringify(questions)} ${cut}`);
 });
 
 describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? false : "needs Linux with Docker" }, () => {
@@ -2359,6 +2389,30 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		});
 	});
 
+	it("steps past a row larger than a page, saying so", async () => {
+		await inE("insert into crm.wide values (41, repeat('g', 6000)), (42, 'small')");
+		try {
+			const pages = [];
+			let after = null;
+			for (let round = 0; round < 30; round++) {
+				const one = await listed(viewer, { table: "wide", limit: 40, ...(after === null ? {} : { after }) });
+				assert.equal(one.status, 200, JSON.stringify(one.value).slice(0, 300));
+				pages.push(one.value);
+				if (!one.value.more) break;
+				after = one.value.next;
+			}
+			const large = pages.filter((one) => one.tooLarge);
+			assert.equal(large.length, 1);
+			assert.deepEqual([large[0].rows, large[0].next], [[], ["41"]]);
+			assert.deepEqual(
+				pages.flatMap((one) => one.rows.map((row) => row.values[0])),
+				(await ids("select id from crm.wide order by id")).filter((id) => id !== 41),
+			);
+		} finally {
+			await inE("delete from crm.wide where id in (41, 42)");
+		}
+	});
+
 	it("gives a relation with no key its first page alone, and reads only the folder's own relations, in a question's time", async () => {
 		const loose = await listed(viewer, { table: "loose", limit: 10 });
 		assert.deepEqual([loose.status, loose.value.key, loose.value.rows.length, loose.value.more, loose.value.next], [200, [], 10, true, undefined]);
@@ -2464,9 +2518,29 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 			}
 		}
 		const kept = await inE(
-			"select grantee, privilege_type from information_schema.role_table_grants where table_schema = 'qorpera_data' and table_name in ('row_changes', 'change_log', 'record_bytes', 'record_limit') and grantee <> 'postgres' order by 1, 2",
+			"select grantee || ' ' || table_name || ' ' || string_agg(privilege_type, ',' order by privilege_type) as grant from information_schema.role_table_grants where table_schema = 'qorpera_data' and table_name in ('row_changes', 'change_log', 'record_bytes', 'record_limit') and grantee <> 'postgres' group by grantee, table_name order by 1",
 		);
-		assert.deepEqual(kept.map((row) => `${row.grantee} ${row.privilege_type}`), ["qorpera_data_keeper DELETE", "qorpera_data_keeper INSERT", "qorpera_data_keeper SELECT", "qorpera_data_keeper SELECT"]);
+		assert.deepEqual(kept.map((row) => row.grant), [
+			"qorpera_data_keeper change_log DELETE,INSERT,SELECT",
+			"qorpera_data_keeper row_changes SELECT",
+			"qorpera_data_recorder record_bytes DELETE,INSERT,SELECT,UPDATE",
+			"qorpera_data_recorder record_limit SELECT",
+			"qorpera_data_recorder row_changes DELETE,INSERT,SELECT,UPDATE",
+		]);
+		const [recorder] = await inE(`select r.rolsuper, r.rolcanlogin, (select count(*)::int from pg_proc p where p.proowner = r.oid) as functions,
+			(select string_agg(p.proname, ',' order by p.proname) from pg_proc p where p.proowner = r.oid) as names,
+			has_table_privilege(r.oid, 'qorpera_data.texts', 'select') as texts, has_table_privilege(r.oid, 'crm.people', 'select') as rows
+			from pg_roles r where r.rolname = 'qorpera_data_recorder'`);
+		assert.deepEqual(recorder, { rolsuper: false, rolcanlogin: false, functions: 2, names: "keep_record,recorded", texts: false, rows: false }, "the record's functions run with the record's rights alone");
+		put(ENV_E, {
+			"data/crm/tables/002-try.sql":
+				"create type mood as enum ('ok');\ncreate function leak(mood) returns json language sql as $f$ select json_build_object('user', current_user) $f$;\ncreate cast (mood as json) with function leak(mood);\n",
+		});
+		const cast = await ask(contributor, "apply", { database: "crm" }, ENV_E);
+		assert.equal(states(cast).at(-1), "002-try failed", JSON.stringify(cast.value));
+		assert.match(cast.value.results.at(-1).detail, /Qorpera refuses a cast to json or jsonb/);
+		remove(ENV_E, "data/crm/tables/002-try.sql");
+		assert.deepEqual(await inE("select count(*)::int as n from pg_cast where casttarget in ('json'::regtype, 'jsonb'::regtype) and oid >= 16384"), [{ n: 0 }]);
 	});
 
 	it("keeps the record within its cap by the bytes of its lines, oldest first, and keeps the newest", async () => {

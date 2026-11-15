@@ -30,6 +30,19 @@ end $$;
 -- step's record is read only inside the step's own transaction).
 delete from qorpera_data.step_effects where txid < txid_snapshot_xmin(txid_current_snapshot());
 
+do $$
+begin
+	if exists (
+		select 1 from pg_catalog.pg_cast c
+		where c.casttarget in ('pg_catalog.json'::pg_catalog.regtype, 'pg_catalog.jsonb'::pg_catalog.regtype) and c.oid >= 16384
+	) then
+		raise exception 'A cast to json or jsonb stands in %: drop it before the record of row changes is added', current_database();
+	end if;
+	if not exists (select 1 from pg_catalog.pg_roles where rolname = 'qorpera_data_recorder') then
+		create role qorpera_data_recorder nologin;
+	end if;
+end $$;
+
 create table if not exists qorpera_data.row_changes (
 	txid bigint not null default txid_current(),
 	seq bigint generated always as identity primary key,
@@ -67,6 +80,8 @@ create table if not exists qorpera_data.record_bytes (
 revoke all on qorpera_data.row_changes, qorpera_data.change_log, qorpera_data.record_limit, qorpera_data.record_bytes from public;
 grant select on qorpera_data.row_changes to qorpera_data_keeper;
 grant select, insert, delete on qorpera_data.change_log to qorpera_data_keeper;
+grant select, insert, update, delete on qorpera_data.row_changes, qorpera_data.record_bytes to qorpera_data_recorder;
+grant select on qorpera_data.record_limit to qorpera_data_recorder;
 
 create or replace function qorpera_data.keep_record(p_bytes bigint) returns void
 language plpgsql security definer set search_path = '' as $$
@@ -82,7 +97,7 @@ begin
 		return;
 	end if;
 	select coalesce(sum(b.bytes), 0), count(*) into v_total, v_holders from qorpera_data.record_bytes b;
-	if v_total > v_cap then
+	if v_total > v_cap and pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('qorpera_data.record_trim')) then
 		select max(c.seq) into v_newest from qorpera_data.row_changes c;
 		for v_line in
 			select c.seq, c.bytes from qorpera_data.row_changes c where c.seq < v_newest order by c.seq for update skip locked
@@ -105,6 +120,7 @@ begin
 	end if;
 end $$;
 revoke all on function qorpera_data.keep_record(bigint) from public;
+alter function qorpera_data.keep_record(bigint) owner to qorpera_data_recorder;
 
 create or replace function qorpera_data.recorded() returns trigger language plpgsql security definer set search_path = '' as $$
 declare
@@ -176,6 +192,24 @@ begin
 	return null;
 end $$;
 revoke all on function qorpera_data.recorded() from public;
+alter function qorpera_data.recorded() owner to qorpera_data_recorder;
+
+create or replace function qorpera_data.no_json_cast() returns event_trigger language plpgsql security definer set search_path = '' as $$
+begin
+	if exists (
+		select 1 from pg_catalog.pg_cast c
+		where c.casttarget in ('pg_catalog.json'::pg_catalog.regtype, 'pg_catalog.jsonb'::pg_catalog.regtype) and c.oid >= 16384
+	) then
+		raise exception 'Qorpera refuses a cast to json or jsonb: the record of row changes turns rows into JSON';
+	end if;
+end $$;
+do $$
+begin
+	if not exists (select 1 from pg_catalog.pg_event_trigger where evtname = 'qorpera_no_json_cast') then
+		create event trigger qorpera_no_json_cast on ddl_command_end when tag in ('CREATE CAST')
+			execute function qorpera_data.no_json_cast();
+	end if;
+end $$;
 
 create or replace trigger qorpera_record_add after insert on qorpera_data.model referencing new table as added
 	for each statement execute function qorpera_data.recorded();

@@ -473,13 +473,19 @@ member or the agent from the lists it already holds.
   `qorpera_data.record_bytes` (no two sessions wait on one row). When a backend has written another 1/1024 of the
   limit, the statement sums the rows, and past the limit it removes the oldest lines until the sum fits, never the
   newest line. The limit is `qorpera_data.record_limit`, which no folder login reads or writes.
+- **Whose rights the record runs with.** Not the store's: `qorpera_data.recorded()` and `keep_record()` belong to
+  `qorpera_data_recorder`, which logs in nowhere and reads and writes only the record's lines and counters, since
+  building a row's JSON can call code a company wrote (a cast to json). And every new cast to `json` or `jsonb` is
+  refused (`qorpera_no_json_cast`); `update.sql` stops on a store that holds one, and runs as one transaction.
 - **A change pairs rows by place.** An update's old and new rows are paired in the order PostgreSQL captured them; a
   change that changes no column leaves no line.
 - **`describe` with a database** answers the same shape as without one, narrowed to it. `rows` also takes `desc`, and
   its answer names the `key`. `seen` is the sha256 of the row's text (`row::text`, UTC, ISO dates), so part c can
-  compare it in the statement that writes.
+  compare it in the statement that writes. A row larger than a page gives an empty page with `tooLarge` and the
+  `next` past it.
 - **Who gets the list, at its edges.** A `[list] members` value other than `"readers"` counts as `"writers"`, and so
-  does a `database.toml` or a question file too large to read. The gateway sees only the question files the member
+  does a `[list]` written in a way the gateway does not read, a `database.toml` or a question file too large to read,
+  and a `queries/` listing past 1,000 files. The gateway sees only the question files the member
   may list: a question hidden from a member by a path resource does not make the database writers-only for them.
   Until part a is live, the platform has no write check (404) and a writers' list is shown to nobody.
 - **The 80 % warning.** The watcher's look answers `near` (companies past 80 % of their own data) beside `full`;

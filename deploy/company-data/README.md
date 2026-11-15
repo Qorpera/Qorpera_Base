@@ -54,10 +54,13 @@ after, rows, bytes)`: a line a row, `op` `add`, `change` or `remove`; `key` the 
 made without one); `after` the added row, `before` the removed one, and for a change only the columns that differ on
 each side (a table without a key keeps both rows whole; a change that changes nothing leaves no line). A statement
 that touches more than 1,000 rows of a relation leaves one line with the count in `rows` and no row. `bytes` is what a
-line holds (its names, key and rows as text). They run with the store's rights, whoever writes, with or without an
-actor's line in `qorpera_data.change_log(txid, at, by_kind, by_id, via)`. Both tables are granted to no one but the
+line holds (its names, key and rows as text). They run as `qorpera_data_recorder` (made by `store/cluster.sql`, or by
+`update.sql` on a store made before it), a role that logs in nowhere and may only read and write the record's lines
+and its counters, whoever writes, with or without an actor's line in `qorpera_data.change_log(txid, at, by_kind, by_id, via)`. Both tables are granted to no one but the
 keeper (`select` on the lines; `select`, `insert`, `delete` on the actors), not to `public` and not to any folder
-login: no step, question or change reads or writes them. The record keeps 100 MiB (`qorpera_data.record_limit`) by
+login: no step, question or change reads or writes them. Since the record turns rows into JSON, which would call a
+cast to json a company defined, the template refuses every new cast to `json` or `jsonb` (`qorpera_no_json_cast`), and
+`update.sql` stops on a store that holds one. The record keeps 100 MiB (`qorpera_data.record_limit`) by
 the sum of its lines' `bytes`: each writing backend adds its lines' bytes to its own row of `qorpera_data.record_bytes`
 (no two sessions wait on one row); when a backend has written another 1/1024 of the limit, its statement sums the
 rows, and past the limit it removes the oldest lines until the sum fits, but never the newest line, so the record
@@ -85,7 +88,7 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 | `watch` | `{ watches: [{ database, question, params?, etag }` or `{ database, table, order?, desc?, limit?, etag }], wait? }` | `{ changed: [{ index, answer }] }` when an answer differs, else `{ same: true }` after the wait. A table is its first page, as `rows` gives it, on the same rule |
 | `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys?, allow?, destroyed? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A `held` step would destroy data: `destroys` says what, and `allow` is what a member's yes is for (below). A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
 | `describe` | `{ database? }` | `{ databases: [{ database, name, about, write, list, applied?, tables?, questions: [{ name, words, parameters }], changes }], companyBytes, limitBytes }`, every database the member may read (from their own listing of `data/`) or the one named. A table is `{ name, kind, key, rows?, rowsAbout?, columns: [{ name, type, settable }] }`: `kind` `table` or `view`, `key` the primary key's columns, `settable` whether a member's edit may set the column (a table's column, not generated, not an identity kept by the store). `write` is whether the member may write `data/<database>/`; `list` whether they get whole tables (below). A member without the list gets no `applied` and no `tables`. `companyBytes` is the company's own data, without the record |
-| `rows` | `{ database, table, order?, desc?, limit?, after? }` | `{ columns, key, rows: [{ values, seen }], more, next?, etag, asOf }`: one page of a relation in the database's own schema, as its read login, within a question's time and bytes; 100 rows unless `limit` says (1 to 200). Ordered by `order` (nulls last, `desc` for the other way) and then by the key, or by the key alone; `next` is where the following page starts, passed back as `after` with the same order. `seen` is the sha256 of the row's text as it was read (`row::text`, UTC, ISO dates). A relation with no key gives its first page alone, with `more` and no `next`. 403 for a member who does not get the list |
+| `rows` | `{ database, table, order?, desc?, limit?, after? }` | `{ columns, key, rows: [{ values, seen }], more, next?, etag, asOf }`: one page of a relation in the database's own schema, as its read login, within a question's time and bytes; 100 rows unless `limit` says (1 to 200). Ordered by `order` (nulls last, `desc` for the other way) and then by the key, or by the key alone; `next` is where the following page starts, passed back as `after` with the same order. `seen` is the sha256 of the row's text as it was read (`row::text`, UTC, ISO dates). A row larger than a page's bytes gives a page with no rows, `tooLarge: true` and the `next` past it. A relation with no key gives its first page alone, with `more` and no `next`. 403 for a member who does not get the list |
 | `change` | `{ database, change, params?, sha256? }` | `{ changed?, columns?, rows?, more?, asOf }`: `changed` is how many rows the statement wrote (a select says none); `columns`, `rows` and `more` are there when the statement gives rows back |
 | `change` | `{ database, change, params?, preview: true }` | `{ words, values, sha256 }`, and nothing runs |
 
@@ -171,9 +174,9 @@ runs an agent's read on it, known by its pid.
 
 **Who gets the list.** `rows`, a table's `watch` and the tables in `describe` are a member's when `database.toml`'s
 `[list] members` is `"readers"` and the member may read `data/<database>/database.toml`, or when it is `"writers"`
-(any other value counts as it) and the platform's `qorpera_member_folder_may_write` says the member may write
+(any other value, and a `[list]` it cannot read, counts as it) and the platform's `qorpera_member_folder_may_write` says the member may write
 `data/<database>/` (kept 10 s). Without the line it is readers, unless a question file of the database
-(`queries/*.sql`, as the member lists them) names `:viewer`, or cannot be read: then writers. A platform without
+(`queries/*.sql`, as the member lists them) names `:viewer`, or cannot be read, or the listing passes 1,000 files: then writers. A platform without
 `qorpera_member_folder_may_write` (it answers 404) lets nobody write, so a list for writers is shown to nobody.
 
 A refusal is `{ error }` with its status: 400 (the call or the SQL), 401 (sign in), 403 (a table of a database whose
