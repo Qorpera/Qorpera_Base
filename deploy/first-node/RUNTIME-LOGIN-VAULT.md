@@ -831,17 +831,26 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   5. The edge function `native-provider-login` (the `claude-code` path).
   6. The web build.
   7. `insert into public.qorpera_claude_sign_in_members(user_id) values ('<founder user id>');`
-- **Moving a host from 2.1.231 to the box's pin (the release that carries the Claude Code worker, #1833):** hosts that
-  already sign members in with 2.1.231 take steps 2 and 3 again, on each vault host in turn, when no member is signing
-  in: fetch the tarball the artifact names, check its integrity, then the binary's size and sha256 against the
-  artifact; install it root-owned 0555 at `/opt/qorpera-model-login-helper/claude.new` and `mv` it over `claude`; set
-  `claudeSha256` to the artifact's sha256; restart the helper (it refuses a binary whose sha256 is not its config's)
-  and look for the line of step 3. Kept Claude logins are files Claude Code reads, so they stay. What the sign-in reads
-  from Claude Code is the same on 2.1.325: `claude auth login --claudeai` prints Anthropic's link on claude.com (the
-  code redirect on platform.claude.com) and asks for the code on its input, and `claude auth status` answers JSON with
-  `email`. Its JSON now holds more keys, among them `configDirectory` and `loginExpiresAt`, so the login's
-  `provider_account_reference` (the sha256 of that output) differs between two sign-ins of one account; nothing reads it
-  for a Claude login.
+- **Moving a host from 2.1.231 to the box's pin (the release that carries the Claude Code worker, #1833):** one vault
+  host at a time, when no member is signing in. The running helper checks before every launch, a Codex renewal the
+  broker starts included, that its binaries are the ones it started with, and exits if one changed; so the helper is
+  stopped for the swap:
+  1. Fetch the tarball the artifact names, check its integrity, then the binary's size and sha256 against the artifact.
+  2. Keep the way back: copy the running `/opt/qorpera-model-login-helper/claude` to `claude.2.1.231` (root, 0555) and
+     write down its sha256 and the config's current `claudeSha256`.
+  3. Stop the helper. Install the new binary root-owned 0555 as `claude.new` and `mv` it over `claude`; set
+     `claudeSha256` to the artifact's sha256; start the helper (it refuses a binary whose sha256 is not its config's)
+     and look for the line of step 3. Codex renewals on that host wait while it is stopped.
+  4. On the FIRST host moved, one real Claude sign-in by the founder before the second host is moved: the 2.1.325
+     probe ran without a network, so the code exchange through the sign-in's egress list is proven only by that.
+  5. Way back on a host: stop the helper, `mv` `claude.2.1.231` back over `claude`, set `claudeSha256` back to the
+     value written down in 2, start the helper.
+
+  Kept Claude logins are files Claude Code reads, so they stay. What the sign-in reads from Claude Code is the same on
+  2.1.325: `claude auth login --claudeai` prints Anthropic's link on claude.com (the code redirect on
+  platform.claude.com) and asks for the code on its input, and `claude auth status` answers JSON with `email`. Its JSON
+  now holds more keys, among them `configDirectory` and `loginExpiresAt`, so the login's `provider_account_reference`
+  (the sha256 of that output) differs between two sign-ins of one account; nothing reads it for a Claude login.
 - **Rollback:** delete the member's row from `qorpera_claude_sign_in_members`. That stops new Claude sign-ins and
   those in flight: the vault's read refuses them, so their code is never taken and nothing is saved. Kept Claude
   logins stay until their member signs out (or delete their rows). Removing `claudePath`/`claudeSha256` from the
