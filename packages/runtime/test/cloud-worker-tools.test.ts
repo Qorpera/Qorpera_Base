@@ -647,7 +647,7 @@ describe("agent todo and worker tools", () => {
 				}
 			).tools.find((candidate) => candidate.name === "manage_worker");
 			expect(tool?.inputSchema.properties.harness.description).toContain(
-				"claude-code hands the work to Claude Code instead of a run of you",
+				"claude-code: Claude Code does the work instead of a run of you",
 			);
 			expect(Buffer.byteLength(JSON.stringify(tool?.inputSchema))).toBeLessThan(4600);
 		} finally {
