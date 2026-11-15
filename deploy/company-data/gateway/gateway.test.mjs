@@ -102,7 +102,6 @@ const passFor = (env, userId, database = null, { ms = 60_000, allow = undefined,
 	PASSES.set(pass, {
 		kept: {
 			schema: "qorpera.data-pass-redeemed/v1",
-			// A run's pass, or a company machine's (qorpera_machine_data_pass, 20260930775000): its view and its machine.
 			...(machine ? { kind: "machine", viewId: randomUUID(), machineId: randomUUID() } : { kind: "run", runId: randomUUID() }),
 			environmentId: env,
 			staffAgentId: randomUUID(),
@@ -2743,7 +2742,6 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 
 	it("takes a company machine's pass at the run door as a run's, with an agent's limits and never a yes", async () => {
 		const pass = (options = {}) => passFor(ENV_D, OWNER, "stock", { machine: true, ...options });
-		// Its files are the pass's, its texts are asked for by hash, its rows and bytes an agent's.
 		const count = await runSend("query", { database: "stock", question: "count", pass: pass() });
 		assert.equal(count.status, 200, JSON.stringify(count.value));
 		const items = count.value.rows[0][0];
@@ -2758,12 +2756,10 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 			JSON.stringify(shouted.value).slice(0, 300),
 		);
 		assert.deepEqual(states(await runSend("apply", { database: "stock", pass: pass() })), ["001-items already", "002-clear already"]);
-		// Once, as any pass; another database's files are not its own.
 		const once = pass();
 		assert.equal((await runSend("describe", { database: "stock", pass: once })).status, 200);
 		assert.deepEqual(await runSend("describe", { database: "stock", pass: once }), { status: 401, value: { error: "Not allowed" } });
 		assert.equal((await runSend("query", { database: "yard", sql: "select 1", pass: pass() })).status, 404);
-		// A machine's pass that claims a member's yes, names no view or no machine, or names a run instead, is no pass.
 		assert.equal((await runSend("apply", { database: "stock", pass: pass({ allow: `003-x.${"0".repeat(64)}.${"0".repeat(64)}` }) })).status, 503);
 		for (const broken of [{ viewId: undefined }, { machineId: "not-a-machine" }, { kind: "desktop" }]) {
 			const made = pass();
