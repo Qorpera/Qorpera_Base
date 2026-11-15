@@ -31,7 +31,7 @@ import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
+import { cloudCoFounderPlanningRun, cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
@@ -917,6 +917,11 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(planning(without("end_role"))).not.toContain("end_role");
 	expect(planning(without("update_reading"))).not.toContain("decide the team for where the company stands now");
 	expect(planning(without("update_reading"))).toContain("Start with your context's senses");
+	// The company's map is the Co-Founder's own app, in its planning run when it can save one (overlay v18).
+	expect(planning(all)).toContain("Keep the company's map as your own posted app, named company");
+	expect(planning(without("save_app"))).not.toContain("Keep the company's map");
+	expect(planning(without("save_app"))).toContain("An interface a member retired stays retired");
+	expect(full).toContain("and the founders see it as the first layer of the company's map");
 	// Until the vision is agreed the founding section is there; after, only what still applies.
 	expect(full).toContain("\n# Founding the company\n");
 	expect(full).toContain("Your first job is to build it with the founders until every founder agrees");
@@ -1957,12 +1962,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // names overlay v18. All three were measured once more.
 // The stack's new head (no-wall 9ecf100fe, master and v247's release) merged in (15 November 2026): all three
 // measured once more on node 1's test machine.
+// The company's map (the founder, 15 November 2026: "Use a map kit"): the reading is its first layer, the planning run
+// keeps it with save_app's map kit, and a retired interface stays retired; the staff instructions measured once more.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "6e2376fb0d40949e679f5ec05c245c5ce41a3066ece54878d7c50696e1618ed7",
+			instructions: "2e7c7543035b33d79e88678c0b6731ff1ff8a65a407a7e2a0e5bf3ed7e930ae1",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -1978,7 +1985,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "6e2376fb0d40949e679f5ec05c245c5ce41a3066ece54878d7c50696e1618ed7",
+			instructions: "2e7c7543035b33d79e88678c0b6731ff1ff8a65a407a7e2a0e5bf3ed7e930ae1",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
@@ -2269,8 +2276,24 @@ it("has an interface app show a thing to see and handle, never a document or a s
 	expect(cofounder).toContain(
 		"when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit",
 	);
-	// The company's page shows the reading instead of the Co-Founder's own company app (overlay v18).
+	// The Co-Founder's own company app is the company's map, made with the map kit, the reading its first layer, and
+	// an interface a member retired stays retired (overlay v18; the founder, 15 November 2026: "Use a map kit").
 	expect(cofounder).not.toContain("Keep one posted app of your own, named company");
+	expect(cofounder).toContain(
+		"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer",
+	);
+	expect(cofounder).toContain(
+		"tell the owner of that work to make one. An interface a member retired stays retired: never ask for it to be remade.",
+	);
+	expect(employee).toContain(
+		"no app is better than a page of text. Leave an interface a member retired as it is, and show that work in a file.",
+	);
+	// Without save_app, neither the map nor the owner's apps are there; the retired interface stays in the planning run.
+	const noApps = { has: (tool: string) => tool !== "save_app", visionAgreed: true };
+	expect(cloudRuntimeHireBehavior("employee", noApps)).not.toContain("retired");
+	expect(cloudCoFounderPlanningRun(noApps)).not.toContain("Keep the company's map");
+	expect(cloudCoFounderPlanningRun(noApps)).toContain("An interface a member retired stays retired");
+	expect(cloudCoFounderPlanningRun({ ...noApps, has: () => true })).toContain("Keep the company's map");
 });
 
 it("holds changes until a member says yes, and puts a repository's website live only from What's new", () => {

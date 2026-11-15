@@ -3433,6 +3433,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// pins are round 0's.
 	// The stack's new head (no-wall 9ecf100fe, with app_guide) merged in (15 November 2026): measured once more on node 1's
 	// test machine.
+	// The company's map (the founder, 15 November 2026: "Use a map kit"): update_reading's description says the founders see
+	// the reading as the first layer of the company's map, so both moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3485,10 +3487,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"8957071bdd2d51af6c602d006452876cd33bd45203342a66fa721241c767a0a9",
+		"b4967c6dfccaabfcadcd30621246c595745160fc5a381c4f9b24538f429c13f1",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"46ee09fecc5763a934bab6a871ea1a5e3abf798aa2ed56dce1be291ecc6ce3fd",
+		"7a24fd4841702d70866fe8c21a3445e404cc298059698cf3b1946dfda557512b",
 	);
 });
 

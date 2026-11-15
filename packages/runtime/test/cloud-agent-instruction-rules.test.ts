@@ -1125,7 +1125,20 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	["7", "done is a claim", "Treat every report of done as a claim", PLANNING],
 	["7", "apps remade with a kit", "tell its owner to remake it and name the kit", PLANNING],
-	// The Co-Founder's own company app gave way to the company's page, which shows the reading (overlay v18).
+	// The Co-Founder's own company app is the company's map, made with the map kit, the reading its first layer (overlay
+	// v18; the founder, 15 November 2026: "Use a map kit"); an interface a member retired stays retired.
+	[
+		"7",
+		"the company's map",
+		"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer: under each thing, what is being made there, as deep as you can keep true, and a thing that has an interface of its own opens it. Change it in the run that changes what it shows.",
+		PLANNING,
+	],
+	[
+		"7",
+		"a retired interface stays retired",
+		"An interface a member retired stays retired: never ask for it to be remade.",
+		PLANNING,
+	],
 	[
 		"7",
 		"the apps drawer's signs",
@@ -1173,6 +1186,7 @@ const RULES: [string, string, string, Run[]][] = [
 		"Keep the company's reading of itself, QorperaOS/vision/reading.md: where the company stands now, in its own words, as we.",
 		COFOUNDER,
 	],
+	["7", "the map's first layer", "and the founders see it as the first layer of the company's map", COFOUNDER],
 	[
 		"7",
 		"when the reading is saved",
@@ -1298,6 +1312,12 @@ const RULES: [string, string, string, Run[]][] = [
 		"8",
 		"words alone stay a file",
 		"Work that is words alone stays a file, linked when a member needs it: no app is better than a page of text.",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"a retired interface",
+		"Leave an interface a member retired as it is, and show that work in a file.",
 		EMPLOYEE,
 	],
 	// 9. The head.
@@ -1754,6 +1774,18 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 			"At each wake, ask what your responsibilities call for",
 			[...COFOUNDER, ...WORKERS],
 		],
+		// The company's map is the Co-Founder's, kept in its planning runs; an owner leaves a retired interface as it is.
+		[
+			"the company's map",
+			"Keep the company's map",
+			["cofounder-member", ...EMPLOYEE, ...WORKERS, "private-conversation"],
+		],
+		[
+			"a retired interface stays retired",
+			"never ask for it to be remade",
+			["cofounder-member", ...EMPLOYEE, ...WORKERS],
+		],
+		["leaving a retired interface", "Leave an interface a member retired as it is", [...COFOUNDER, ...WORKERS]],
 		["an owner's role", "# Your role: owner of an area", [...COFOUNDER, ...WORKERS]],
 	] as const)("leaves out %s where it does not apply", (_what, words, runs) => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);
