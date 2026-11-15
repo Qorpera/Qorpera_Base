@@ -305,10 +305,12 @@ function sqlSpans(text, from = 0, to = text.length, spans = []) {
 	return spans;
 }
 
-const HEREDOC = /(?<!<)<<-?\s*(['"\\]?)([A-Za-z_][A-Za-z0-9_]*)/;
+const HEREDOC = /<<-?\s*(['"]?)\\?([A-Za-z_][A-Za-z0-9_]*)\1/y;
 
-function shellQuoteAfter(line, quote) {
+function scanShellLine(line, quote) {
 	let open = quote;
+	let terminator = null;
+	let arithmetic = 0;
 	for (let index = 0; index < line.length; index++) {
 		const character = line[index];
 		if (open === "'") {
@@ -317,9 +319,23 @@ function shellQuoteAfter(line, quote) {
 		else if (open === '"') {
 			if (character === '"') open = null;
 		} else if (character === "'" || character === '"') open = character;
-		else if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) return null;
+		else if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) break;
+		else if (line.startsWith("((", index)) {
+			arithmetic++;
+			index++;
+		} else if (arithmetic > 0 && line.startsWith("))", index)) {
+			arithmetic--;
+			index++;
+		} else if (arithmetic === 0 && terminator === null && line.startsWith("<<", index) && line[index + 2] !== "<" && line[index - 1] !== "<") {
+			HEREDOC.lastIndex = index;
+			const heredoc = HEREDOC.exec(line);
+			if (heredoc !== null) {
+				terminator = heredoc[2];
+				index += heredoc[0].length - 1;
+			}
+		}
 	}
-	return open;
+	return { quote: open, terminator };
 }
 
 function shellSpans(text) {
@@ -333,10 +349,7 @@ function shellSpans(text) {
 			if (line.trim() === terminator) terminator = null;
 		} else if (quote === null && line[indent] === "#") {
 			if (offset > 0 || !line.startsWith("#!")) spans.push([offset + indent, offset + line.length]);
-		} else {
-			if (quote === null) terminator = HEREDOC.exec(line)?.[2] ?? null;
-			quote = shellQuoteAfter(line, quote);
-		}
+		} else ({ quote, terminator } = scanShellLine(line, quote));
 		offset += line.length + 1;
 	}
 	return spans;

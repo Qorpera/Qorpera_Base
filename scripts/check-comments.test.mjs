@@ -148,9 +148,24 @@ test("shell: whole-line comments, without the interpreter line or text handed to
 		"# a line of the message",
 		'last line"',
 		"# back in the script",
+		"printf 'std::cout << \"c++\" << std::endl;' > main.cc",
+		"# after two angle marks inside quotes",
+		"mask=$((1 << shift)); grep -q x <<< \"$mask\"",
+		"# after a shift and a here-string",
+		'cat <<-"END" | tr a b',
+		"\t# a line of the piped text",
+		"\tEND",
+		"# after the piped text",
 	].join("\n");
-	assert.deepEqual(texts("run.sh", shell), ["shellcheck disable=SC2086", "after the text", "back in the script"]);
-	assert.deepEqual(problems("run.sh", shell), [null, "plain", "plain"]);
+	assert.deepEqual(texts("run.sh", shell), [
+		"shellcheck disable=SC2086",
+		"after the text",
+		"back in the script",
+		"after two angle marks inside quotes",
+		"after a shift and a here-string",
+		"after the piped text",
+	]);
+	assert.deepEqual(problems("run.sh", shell), [null, "plain", "plain", "plain", "plain", "plain"]);
 });
 
 test("Python: whole-line comments, without the interpreter line or lines inside long strings", () => {
