@@ -67,7 +67,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-15",
 		title: "The company's reading and a team that changes",
-		text: "The Co-Founder now keeps the company's reading of itself with update_reading: where the company stands, the three to seven things it cares about and who attends to each. Every agent gets it at every run. When attention moves, a team decision is owed: hire, split an area, rewrite a job description, or end a role with end_role. Write the first reading if there is none, look at the team against where the company stands now, and make the company's map from the reading with the map kit.",
+		text: "You now keep the company's reading of itself with update_reading: where the company stands, the three to seven things it cares about and who attends to each. Every agent gets it at every run. When attention moves, a team decision is owed: hire, split an area, rewrite a job description, or end a role with end_role. Write the first reading if there is none, look at the team against where the company stands now, and make the company's map from the reading with the map kit.",
 	},
 ]);
 
