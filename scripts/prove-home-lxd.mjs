@@ -10,9 +10,14 @@
 // and Codex in the slot (this script speaks the exec-server's JSON-RPC itself, as Codex's harness sends it).
 //
 // Bundled once (esbuild) and run on the node that holds the machine:
-//   node prove-home-lxd.bundle.mjs driver --project qorpera-build --placement <uuid> [--socket <lxd socket>]
+//   node prove-home-lxd.bundle.mjs driver --project qorpera-build --placement <uuid> [--socket <lxd socket>] [--image-home]
 //   node prove-home-lxd.bundle.mjs driver --local --codex <path>      (protocol dry run, no LXD, no checks judged)
 // The driver starts the executor part as a child process of its own (`executor`), so the executor can be killed.
+// --image-home: the machine is made from an image whose recipe brings the home (deploy/machine/build-machine-image.sh:
+// the account, its sudo rule, the pinned Codex, ~/.codex), and nobody set any of it up by hand. The proof then first
+// checks the image's own parts (check "image") and makes nothing itself: ~/.codex is the image's from the first channel
+// on (check 7 asks for apply_patch on PATH there too). Without it, as for a machine of an image without the home, the
+// caller sets the parts up by hand and check 7 makes ~/.codex itself.
 
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -367,6 +372,7 @@ const median = (values) => {
 
 async function driver() {
 	const local = args.includes("--local");
+	const imageHome = !local && args.includes("--image-home");
 	if (local) ROOT = mkdtempSync(join(tmpdir(), "home-lxd-"));
 	const project = option("project", "qorpera-build");
 	const placementId = option("placement", "a9e00000-0000-4000-8000-0000000000d1");
@@ -419,6 +425,21 @@ async function driver() {
 	say(`MACHINE ${machine} in ${project}; boot ${boot}; ${local ? "LOCAL DRY RUN" : `LXD socket ${socket}`}`);
 	if (!local) {
 		say(`MACHINE ${(await inMachine("echo kernel $(uname -r); id qorpera-agent; ls -l /opt/qorpera-machine/codex; sha256sum /opt/qorpera-machine/codex | cut -c1-16; stat -c '%U:%G %a' /etc/sudoers.d/qorpera-agent; findmnt -no FSTYPE,OPTIONS /company; ls -l /company")).replaceAll("\n", " | ")}`);
+	}
+	if (imageHome) {
+		// The image's own home, read as root before any channel opens (the exec-server writes into ~/.codex at its start,
+		// so the folder is empty here only if the image ships it empty: no sign-in, no config of the build's).
+		const H = CLOUD_MACHINE_HOME;
+		const read = await inMachine(
+			`id -u ${H.account}; id -g ${H.account}; getent passwd ${H.account} | cut -d: -f6,7; ` +
+				`stat -c '%U:%G %a' /etc/sudoers.d/${H.account}; visudo -cf /etc/sudoers.d/${H.account} >/dev/null && echo visudo-ok; ` +
+				`stat -c '%U:%G %a' ${H.codex}; sha256sum ${H.codex} | cut -d' ' -f1; ` +
+				`stat -c '%U:%G %a' ${H.home}/.codex; ls -A ${H.home}/.codex | wc -l; runuser -u ${H.account} -- sudo -n id -u`,
+		);
+		const want = [String(H.uid), String(H.gid), `${H.home}:/bin/bash`, "root:root 440", "visudo-ok", "root:root 555",
+			H.codexSha256, `${H.account}:${H.account} 700`, "0", "0"];
+		check("image", read === `${want.join("\n")}\n`,
+			`the image brings the home, nothing set up by hand: ${JSON.stringify(read)} (want ${JSON.stringify(`${want.join("\n")}\n`)})`);
 	}
 	const token = randomBytes(32).toString("base64url");
 	const sessions = {};
@@ -537,7 +558,7 @@ async function driver() {
 			`fs/createDirectory ${JSON.stringify(mkdir).slice(0, 80)}, fs/writeFile ${JSON.stringify(write).slice(0, 80)}; on the machine's disk: ${JSON.stringify(onDisk)}`);
 
 		const aliasBefore = await shell(a.rpc, "command -v apply_patch || echo no-apply_patch-on-PATH; echo PATH=$PATH; ls -ld ~/.codex 2>&1");
-		say(`NOTE 7 without ~/.codex (as the image makes the account): ${JSON.stringify(aliasBefore.output)}`);
+		say(`NOTE 7 ${imageHome ? "with the image's own ~/.codex, at the first channel" : "without ~/.codex (the account as set up by hand)"}: ${JSON.stringify(aliasBefore.output)}`);
 
 		// 2. Root through sudo; a plain write to a root file is refused (by the shell and by Codex's own file write).
 		const sudo = await shell(a.rpc, "sudo -n id -u; sudo -n install -o root -g root -m 0644 /dev/null /etc/qorpera-home-proof && stat -c '%U %a' /etc/qorpera-home-proof && sudo -n rm -f /etc/qorpera-home-proof && echo removed");
@@ -671,14 +692,17 @@ async function driver() {
 		await sleep(1500);
 		await sweep("after s4x and s4y closed");
 
-		// 7. ~/.codex made as the account's own folder (what the image does not make): Codex's PATH aliases.
-		if (!local) await inMachine("install -d -o 2000 -g 2000 -m 0700 /var/lib/qorpera-agent/.codex");
+		// 7. ~/.codex as the account's own folder: Codex's PATH aliases. An image with the home brings it (nothing is made
+		// here, and apply_patch must already have been on PATH at the first channel); for a machine set up by hand it is
+		// made here.
+		if (!local && !imageHome) await inMachine("install -d -o 2000 -g 2000 -m 0700 /var/lib/qorpera-agent/.codex");
 		const h = await open(main.port, named.s7, "s7");
 		const aliasAfter = await shell(h.rpc, "command -v apply_patch || echo no-apply_patch-on-PATH; echo PATH=$PATH");
 		const viaShell = await shell(h.rpc, "printf '%s\\n' '*** Begin Patch' '*** Add File: shell-patch.md' '+made by apply_patch in the shell' '*** End Patch' | apply_patch; echo rc=$?; cat shell-patch.md 2>&1");
 		// The alias is on PATH and a patch typed in the shell applies: without the folder neither holds (review r1, F1).
-		const patched = /rc=0\nmade by apply_patch in the shell/.test(viaShell.output) && !/no-apply_patch-on-PATH/.test(aliasAfter.output);
-		check("7", patched, `with ~/.codex the account's own:${JSON.stringify(aliasAfter.output)}; apply_patch typed in the shell: ${JSON.stringify(viaShell.output)} (without it: ${JSON.stringify(aliasBefore.output)})`);
+		const patched = /rc=0\nmade by apply_patch in the shell/.test(viaShell.output) && !/no-apply_patch-on-PATH/.test(aliasAfter.output) &&
+			(!imageHome || !/no-apply_patch-on-PATH/.test(aliasBefore.output));
+		check("7", patched, `with ~/.codex the account's own${imageHome ? " (the image's)" : ""}:${JSON.stringify(aliasAfter.output)}; apply_patch typed in the shell: ${JSON.stringify(viaShell.output)} (${imageHome ? "at the first channel" : "without it"}: ${JSON.stringify(aliasBefore.output)})`);
 		await h.stream.close();
 		await h.rpc.done;
 		await sleep(1000);
