@@ -52,10 +52,11 @@ import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../pack
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import { authorizeHomeSession } from "./home-session-authority.ts";
+import { BrokerMachineAccountFill } from "./machine-account-fill-broker.ts";
 import {
-	localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake, localMemberMachineAct,
-	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, localMemberMachineStream, MachineCommandRouter,
-	machineCommandRoutes,
+	localMachineAccountFill, localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake,
+	localMemberMachineAct, localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, localMemberMachineStream,
+	MachineCommandRouter, machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
@@ -528,6 +529,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				(config.desktopStreams as { socket: string }).socket, spec, ended, { version: programVersion }),
 		} : {}),
 	}) : undefined;
+	const accountFills = config.broker && machineHost ? new BrokerMachineAccountFill({ origin: config.broker.origin,
+		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	// Members' looks are begun as the member, never with the executor's own key (20260930712000).
 	const memberControl = config.memberScreens
 		? new MemberMachineScreenControl({ supabaseUrl: config.supabaseUrl, publishableKey: config.memberScreens.publishableKey })
@@ -564,6 +567,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			execServerLocal: (authority, signal) => machineHost.execServer(authority, signal),
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),
+			...(accountFills ? { accountFillLocal: localMachineAccountFill(machineHost, accountFills) } : {}),
 			codingValueClearLocal: localMachineCodingValueClear(machineHost),
 			screenLocal: localMachineScreen(machineHost),
 			memberScreenLocal: localMemberMachineScreen(machineHost),

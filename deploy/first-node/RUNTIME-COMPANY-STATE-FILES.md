@@ -1127,11 +1127,17 @@ characters, handle and time, at most 10 each, since the reading was saved or els
 `questions {count, truncated, oldest}`
 (question cards nobody has answered, by `qorpera_list_member_open_questions`' rule for any member, the
 oldest ten with `agent`, `member` and `askedAt`); `members` (at most 20: `userId`, `role`, `login` as
-`qorpera_works_for_login_state` gives it), `membersTruncated`; `reading {savedAt, attention}` or null.
+`qorpera_works_for_login_state` gives it), `membersTruncated`; `reading {savedAt, attention}` or null;
+`views` (20260930773000): the views the company is owed now, each `{name, app, made}`, in this order:
+`products` (`apps/products`) while `QorperaOS/vision/vision.md` is there, `money` (`apps/money`) while a
+bank is connected with a live consent (the company's bank sync follows an active bank secret of this
+environment, its status `waiting`, `current` or `failed`, and its `consent_until` unknown or ahead);
+`made` is whether the folder entry `apps/<name>/app.toml` (by its lowercase key) is a file. `ads`
+joins with the ads door (step 6). The website's view is the platform's and never listed.
 The answer is at most 8,192 bytes. While it would pass that, it leaves out the last entry of
 `questions.oldest`, then of `team.ended`, then of `team.hired` (each setting its `truncated`), and only then
 agents from the end (`agentsTruncated`), never the Co-Founder's row, which comes first. What no cut reaches
-(that row, at most 20 members and the fixed keys) stays near 5 KiB at most.
+(that row, at most 20 members, the views and the fixed keys) stays near 5 KiB at most.
 
 **Built (F2-1b, migration 20260928269440):**
 - Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a

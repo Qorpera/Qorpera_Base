@@ -316,9 +316,6 @@ export class Platform {
 		});
 		return { files, more: !Array.isArray(after?.entries) || after.entries.length > 0 };
 	}
-	/** What a run's data pass kept (`qorpera_data_pass_redeem`, with the publishable key alone), once: `{ environmentId,
-	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }>, allow }`, or null for a pass that answers
-	 * nothing. */
 	async redeemPass(pass) {
 		const headers = { apikey: this.#key, "content-type": "application/json" };
 		// A legacy anon key is a JWT and goes as the bearer too; a publishable key goes alone.
@@ -338,11 +335,14 @@ export class Platform {
 		const answer = await response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
 		if (answer === null) return null;
 		const files = Array.isArray(answer?.files) ? answer.files : null;
+		const machine = answer?.kind === "machine";
 		if (
 			answer?.schema !== "qorpera.data-pass-redeemed/v1" ||
-			answer.kind !== "run" ||
+			(answer.kind !== "run" && !machine) ||
 			!ENVIRONMENT.test(answer.environmentId ?? "") ||
-			!ENVIRONMENT.test(answer.runId ?? "") ||
+			(machine
+				? !ENVIRONMENT.test(answer.viewId ?? "") || !ENVIRONMENT.test(answer.machineId ?? "") || (answer.allow ?? null) !== null
+				: !ENVIRONMENT.test(answer.runId ?? "")) ||
 			!ENVIRONMENT.test(answer.requesterUserId ?? "") ||
 			(answer.database !== null && !DATABASE_NAME.test(answer.database ?? "")) ||
 			!files ||
@@ -355,7 +355,8 @@ export class Platform {
 			refuse(503, "The platform's answer is not a pass");
 		return {
 			environmentId: answer.environmentId,
-			runId: answer.runId,
+			runId: machine ? null : answer.runId,
+			machineId: machine ? answer.machineId : null,
 			requesterUserId: answer.requesterUserId,
 			database: answer.database,
 			files: new Map(files.map((file) => [file.path, { sha256: file.sha256, bytes: file.bytes }])),

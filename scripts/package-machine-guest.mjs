@@ -162,6 +162,26 @@ artifacts.push({
 	sha256: createHash("sha256").update(screen).digest("hex"),
 	bytes: screen.length,
 });
+await build({
+	entryPoints: ["packages/runtime/src/cloud-machine-account-fill-main.ts"],
+	outfile: resolve(output, "cloud-machine-account-fill.mjs"),
+	bundle: true,
+	platform: "node",
+	format: "esm",
+	target: "node22.19",
+	legalComments: "none",
+	logLevel: "silent",
+});
+const accountFills = await readFile(resolve(output, "cloud-machine-account-fill.mjs"));
+artifacts.push({
+	file: "cloud-machine-account-fill.mjs",
+	source: "packages/runtime/src/cloud-machine-account-fill-main.ts",
+	installedPath: "/opt/qorpera-machine/cloud-machine-account-fill.mjs",
+	owner: "root:root",
+	mode: "0444",
+	sha256: createHash("sha256").update(accountFills).digest("hex"),
+	bytes: accountFills.length,
+});
 for (const unit of units) {
 	const bytes = await readFile(`deploy/machine/${unit}`);
 	await writeFile(resolve(output, unit), bytes, { mode: 0o644 });

@@ -91,7 +91,7 @@ const PASSES = new Map();
 /** A run's data pass, as qorpera_run_data_pass makes it: database.toml and the files directly in tables/, queries/ and
  * actions/ of the database named (or of every database) that the run's requester may read. `allow`: a held step a
  * member said yes to, which only the platform puts in a pass. */
-const passFor = (env, userId, database = null, { ms = 60_000, allow = undefined } = {}) => {
+const passFor = (env, userId, database = null, { ms = 60_000, allow = undefined, machine = false } = {}) => {
 	const files = [...FOLDERS[env]]
 		.filter(([path]) => {
 			const at = /^data\/([a-z][a-z0-9_]{0,39})\/(database\.toml|(tables|queries|actions)\/[^/]+)$/.exec(path);
@@ -102,9 +102,8 @@ const passFor = (env, userId, database = null, { ms = 60_000, allow = undefined 
 	PASSES.set(pass, {
 		kept: {
 			schema: "qorpera.data-pass-redeemed/v1",
-			kind: "run",
+			...(machine ? { kind: "machine", viewId: randomUUID(), machineId: randomUUID() } : { kind: "run", runId: randomUUID() }),
 			environmentId: env,
-			runId: randomUUID(),
 			staffAgentId: randomUUID(),
 			requesterUserId: userId,
 			database,
@@ -2739,5 +2738,36 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		}
 		console.log(`the record's trigger cost, microseconds a statement: ${JSON.stringify(costs)}`);
 		assert.ok(Object.values(costs).every((each) => Object.values(each).every((us) => Number.isFinite(us) && us > 0)));
+	});
+
+	it("takes a company machine's pass at the run door as a run's, with an agent's limits and never a yes", async () => {
+		const pass = (options = {}) => passFor(ENV_D, OWNER, "stock", { machine: true, ...options });
+		const count = await runSend("query", { database: "stock", question: "count", pass: pass() });
+		assert.equal(count.status, 200, JSON.stringify(count.value));
+		const items = count.value.rows[0][0];
+		const many = await runSend("query", { database: "stock", sql: "select id from items order by id", pass: pass() });
+		assert.deepEqual([many.status, many.value.rows.length, many.value.more], [200, LIMITS_HERE.agentRows, true]);
+		const described = await runSend("describe", { database: "stock", pass: pass() });
+		assert.deepEqual([described.status, described.value.databases?.[0]?.database], [200, "stock"], JSON.stringify(described.value).slice(0, 200));
+		const shouted = await runSend("change", { database: "stock", change: "shout", pass: pass() });
+		assert.deepEqual(
+			[shouted.status, shouted.value.changed, shouted.value.rows?.length, shouted.value.more],
+			[200, items, LIMITS_HERE.agentRows, true],
+			JSON.stringify(shouted.value).slice(0, 300),
+		);
+		assert.deepEqual(states(await runSend("apply", { database: "stock", pass: pass() })), ["001-items already", "002-clear already"]);
+		const once = pass();
+		assert.equal((await runSend("describe", { database: "stock", pass: once })).status, 200);
+		assert.deepEqual(await runSend("describe", { database: "stock", pass: once }), { status: 401, value: { error: "Not allowed" } });
+		assert.equal((await runSend("query", { database: "yard", sql: "select 1", pass: pass() })).status, 404);
+		assert.equal((await runSend("apply", { database: "stock", pass: pass({ allow: `003-x.${"0".repeat(64)}.${"0".repeat(64)}` }) })).status, 503);
+		for (const broken of [{ viewId: undefined }, { machineId: "not-a-machine" }, { kind: "desktop" }]) {
+			const made = pass();
+			Object.assign(PASSES.get(made).kept, broken);
+			assert.equal((await runSend("describe", { database: "stock", pass: made })).status, 503, JSON.stringify(broken));
+		}
+		const asRun = passFor(ENV_D, OWNER, "stock");
+		delete PASSES.get(asRun).kept.runId;
+		assert.equal((await runSend("describe", { database: "stock", pass: asRun })).status, 503, "a run's pass without its run");
 	});
 });

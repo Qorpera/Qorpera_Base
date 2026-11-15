@@ -746,7 +746,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"a repository's website only through What's new",
-		"goes live only in What's new, where each change that passes its checks appears within a minute and a member puts it live",
+		"goes live only when an owner or admin puts it live: each change that passes its checks shows within a minute under your thread and in What's new",
 		STAFF,
 	],
 	["5", "anything else on one card", "one question card that shows what changes, with Put it live and Not yet", STAFF],

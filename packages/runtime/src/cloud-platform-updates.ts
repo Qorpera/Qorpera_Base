@@ -39,7 +39,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-15",
 		title: "Websites at an address of their own",
-		text: "Every company website now has an address of its own, https://<name>.qorpera.com/, served at the top so links that start with / work. A static site published with publish_site gets its link there, behind its password. A repository kept in Qorpera that builds a website names its built site in its checks: each change that passes waits in What's new, where owners and admins can look at the next version first, and a member puts it live at the site's address. A product or a shop with a website can have a real home for it now.",
+		text: "Every company website now has an address of its own, https://<name>.qorpera.com/, served at the top so links that start with / work. A static site published with publish_site gets its link there, behind its password. A repository kept in Qorpera that builds a website names its built site in its checks: each change that passes waits in What's new, where owners and admins can look at the next version first, and an owner or admin puts it live at the site's address. A product or a shop with a website can have a real home for it now.",
 	},
 	{
 		id: "company-databases",
