@@ -21,7 +21,8 @@ export type CloudRuntimeAgentKind = "cofounder" | "employee";
  * let's the user dive into what's being made", and on how the agent makes it: "Use a map kit". So no page of the
  * platform draws the company: the Co-Founder keeps the company's map as its own posted app, named company, made with
  * save_app's map kit, the reading its first layer (in the planning run's checks, where v17 kept its company app); an
- * interface a member retired stays retired, and an owner of an area leaves it as it is.
+ * interface a member retired stays retired (organize_apps list marks it, and save_app refuses it with the reason), and
+ * an owner of an area whose interface save_app refuses because a member retired it leaves it as it is.
  * v17 (track 3, T3-3, 14 November 2026): one voice. The role says what the Co-Founder or an owner of an area is for
  * and why, each rule once; the concepts procedure, told twice before, is said once in the instructions' Concepts section,
  * which the role points to; the founding work is its own section, until the vision is agreed; the first brand hire is
@@ -152,7 +153,7 @@ const planningTeam = (endRole: boolean) =>
 const PLANNING_DRAFT =
 	"Until the vision is agreed, also bring the team's findings into the draft and choose the next questions for the founders.";
 const PLANNING_CHECKS =
-	"Treat every report of done as a claim: open one or two things owners called done and check them. The founders see the company through its apps, so open each and look: when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit; when a thing the founders must understand (the product, the business model, the market, the customers, the look) has no app, tell the owner of that work to make one. An interface a member retired stays retired: never ask for it to be remade.";
+	"Treat every report of done as a claim: open one or two things owners called done and check them. The founders see the company through its apps, so open each and look: when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit; when a thing the founders must understand (the product, the business model, the market, the customers, the look) has no app, tell the owner of that work to make one. An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.";
 /** For a run that can save an app: the company's map, the Co-Founder's own app, in the place v17's company app had. */
 const PLANNING_MAP =
 	"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer: under each thing, what is being made there, as deep as you can keep true, and a thing that has an interface of its own opens it. Change it in the run that changes what it shows.";
@@ -177,7 +178,7 @@ The company's reading, in your head, says where the company stands and what hold
 Raise a real exception when your job description says to, with the evidence and a recommended next step; routine activity needs no telling. Use the voice and escalation your job description sets; otherwise be clear, brief and candid.`;
 /** For a run that can save an app. */
 const EMPLOYEE_APPS =
-	"When your work is about a thing members can see, try or choose (the product, its price and costs, the products on its market, the customers' way to a purchase, its look, a mechanism worth explaining), show it in that thing's app and change the app in the run that changes the thing; before you call the work done, check that the app shows it. Work that is words alone stays a file, linked when a member needs it: no app is better than a page of text. Leave an interface a member retired as it is, and show that work in a file.";
+	"When your work is about a thing members can see, try or choose (the product, its price and costs, the products on its market, the customers' way to a purchase, its look, a mechanism worth explaining), show it in that thing's app and change the app in the run that changes the thing; before you call the work done, check that the app shows it. Work that is words alone stays a file, linked when a member needs it: no app is better than a page of text. When save_app refuses an interface because a member retired it, leave it as it is and show that work in a file.";
 
 /** What a run's role section depends on: the tools the run is offered (by name) and whether the company's vision is
  * agreed. Both stay the same between an agent's runs in one conversation, so its role section does too (the stable part

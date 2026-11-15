@@ -1136,7 +1136,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"a retired interface stays retired",
-		"An interface a member retired stays retired: never ask for it to be remade.",
+		"An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.",
 		PLANNING,
 	],
 	[
@@ -1317,7 +1317,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"8",
 		"a retired interface",
-		"Leave an interface a member retired as it is, and show that work in a file.",
+		"When save_app refuses an interface because a member retired it, leave it as it is and show that work in a file.",
 		EMPLOYEE,
 	],
 	// 9. The head.
@@ -1774,7 +1774,8 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 			"At each wake, ask what your responsibilities call for",
 			[...COFOUNDER, ...WORKERS],
 		],
-		// The company's map is the Co-Founder's, kept in its planning runs; an owner leaves a retired interface as it is.
+		// The company's map is the Co-Founder's, kept in its planning runs; an owner leaves an interface save_app refuses as
+		// retired as it is.
 		[
 			"the company's map",
 			"Keep the company's map",
@@ -1782,10 +1783,14 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		],
 		[
 			"a retired interface stays retired",
-			"never ask for it to be remade",
+			"organize_apps list marks it, and save_app refuses it with the reason",
 			["cofounder-member", ...EMPLOYEE, ...WORKERS],
 		],
-		["leaving a retired interface", "Leave an interface a member retired as it is", [...COFOUNDER, ...WORKERS]],
+		[
+			"leaving a retired interface",
+			"When save_app refuses an interface because a member retired it",
+			[...COFOUNDER, ...WORKERS],
+		],
 		["an owner's role", "# Your role: owner of an area", [...COFOUNDER, ...WORKERS]],
 	] as const)("leaves out %s where it does not apply", (_what, words, runs) => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);

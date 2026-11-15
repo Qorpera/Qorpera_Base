@@ -920,7 +920,9 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	// The company's map is the Co-Founder's own app, in its planning run when it can save one (overlay v18).
 	expect(planning(all)).toContain("Keep the company's map as your own posted app, named company");
 	expect(planning(without("save_app"))).not.toContain("Keep the company's map");
-	expect(planning(without("save_app"))).toContain("An interface a member retired stays retired");
+	expect(planning(without("save_app"))).toContain(
+		"An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason.",
+	);
 	expect(full).toContain("and the founders see it as the first layer of the company's map");
 	// Until the vision is agreed the founding section is there; after, only what still applies.
 	expect(full).toContain("\n# Founding the company\n");
@@ -2283,16 +2285,18 @@ it("has an interface app show a thing to see and handle, never a document or a s
 		"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer",
 	);
 	expect(cofounder).toContain(
-		"tell the owner of that work to make one. An interface a member retired stays retired: never ask for it to be remade.",
+		"tell the owner of that work to make one. An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.",
 	);
 	expect(employee).toContain(
-		"no app is better than a page of text. Leave an interface a member retired as it is, and show that work in a file.",
+		"no app is better than a page of text. When save_app refuses an interface because a member retired it, leave it as it is and show that work in a file.",
 	);
 	// Without save_app, neither the map nor the owner's apps are there; the retired interface stays in the planning run.
 	const noApps = { has: (tool: string) => tool !== "save_app", visionAgreed: true };
 	expect(cloudRuntimeHireBehavior("employee", noApps)).not.toContain("retired");
 	expect(cloudCoFounderPlanningRun(noApps)).not.toContain("Keep the company's map");
-	expect(cloudCoFounderPlanningRun(noApps)).toContain("An interface a member retired stays retired");
+	expect(cloudCoFounderPlanningRun(noApps)).toContain(
+		"organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.",
+	);
 	expect(cloudCoFounderPlanningRun({ ...noApps, has: () => true })).toContain("Keep the company's map");
 });
 
