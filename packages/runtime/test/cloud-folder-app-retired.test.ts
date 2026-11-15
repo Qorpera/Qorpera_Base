@@ -264,7 +264,50 @@ it("keeps the members' list closed to every agent write, edit, new folder, move 
 		none.call("company_mkdir", { path: PATH, operationKey: "m-1", expectedVersion: null }),
 		APP_RETIRED_MEMBERS_ONLY,
 	);
+	// Nor brought in with a folder (review r1 of #1843, F1): a folder that holds a retired.md, moved onto the apps
+	// folder's own path, where the apps folder stands or after it was moved away.
+	none.seed("staging/retired.md", RETIRED);
+	const moveFolder = (from: string, to: string, key: string) =>
+		none.call("company_move", {
+			from,
+			to,
+			operationKey: key,
+			expectedVersion: "00000000-0000-4000-8000-000000000000",
+			asOfSeq: 1,
+		});
+	await refuses(moveFolder("staging", "apps", "mv-3"), APP_RETIRED_MEMBERS_ONLY);
+	await refuses(moveFolder("staging", "Apps", "mv-4"), APP_RETIRED_MEMBERS_ONLY);
+	// Anything at retired.md takes the list's place: a folder there too.
+	none.folders.add("staging-2");
+	none.folders.add("staging-2/retired.md");
+	await refuses(moveFolder("staging-2", "apps", "mv-5"), APP_RETIRED_MEMBERS_ONLY);
 	expect(none.commits).toEqual([]);
+	// What stays allowed passes these rules and reaches the folder core, whatever it answers then (each in a run of its
+	// own): the apps folder moved away while it holds no list, a folder with no retired.md moved onto the apps folder's
+	// path, and a folder holding one moved anywhere else.
+	for (const [from, to] of [
+		["apps", "old-apps"],
+		["plain", "apps"],
+		["staging", "archive"],
+	] as const) {
+		const run = await fixture(null);
+		run.seed("staging/retired.md", RETIRED);
+		run.seed("plain/notes.md", "hi");
+		const reached = await run
+			.call("company_move", {
+				from,
+				to,
+				operationKey: "mv-allowed",
+				expectedVersion: "00000000-0000-4000-8000-000000000000",
+				asOfSeq: 1,
+			})
+			.then(
+				() => "answered",
+				(error: unknown) => (error instanceof CloudToolRefusal ? error.message : "reached the commit"),
+			);
+		expect(reached, `${from} -> ${to}`).not.toContain("APP_RETIRED");
+		expect(run.commits.length, `${from} -> ${to}`).toBeGreaterThan(0);
+	}
 });
 
 it("marks a retired app in organize_apps list, counts it in no group, and still moves it", async () => {

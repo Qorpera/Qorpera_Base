@@ -24,7 +24,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyFolderRpcError } from "./cloud-company-path-refusal.ts";
-import { refuseRetiredPath } from "./cloud-folder-app-retired.ts";
+import { refuseRetiredMove, refuseRetiredPath } from "./cloud-folder-app-retired.ts";
 import {
 	FolderImageRefusal,
 	folderImageFormat,
@@ -1549,8 +1549,7 @@ export function cloudFolderFileTools(options: {
 						"A move needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 					);
 				// A retired interface, and the members' list of them, are the members' alone, from either end of a move.
-				await refuseRetiredPath(folder, input.from, context.signal, "moved", true);
-				await refuseRetiredPath(folder, input.to, context.signal, "moved");
+				await refuseRetiredMove(folder, input.from, input.to, context.signal);
 				// An app comes into apps/ only through save_app, so its manifest is checked (who owns it, whether it is
 				// posted): a folder or a manifest moved in from elsewhere is refused. Files moved into an app are its files.
 				const into = appPath(input.to);

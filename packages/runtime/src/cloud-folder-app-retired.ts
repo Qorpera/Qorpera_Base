@@ -89,25 +89,55 @@ export async function refuseRetiredApp(
 	return read;
 }
 
+/** Whether anything stands at `retired.md` in the folder `parent` (any kind: a file that is no text, or a folder there,
+ * still takes the members' list's place). */
+async function holdsRetiredList(
+	folder: CloudCompanyFolderClient,
+	parent: string,
+	signal: AbortSignal,
+	what: string,
+): Promise<boolean> {
+	try {
+		return (await folder.read(`${parent}/retired.md`, signal)).entry !== null;
+	} catch (error) {
+		return unavailable(error, what);
+	}
+}
+
 /**
- * The file tools' check of a change at `path` (a write, an edit, a new folder, a move's either end, a deletion): the
- * file itself is the members' alone; a path in a retired app's folder, the folder itself included, is refused as the
- * app is. With `moved`, the path is the source of a move: moving the apps folder would take the file with it, so that
- * is the members' alone too while the file is there.
+ * The file tools' check of a change at `path` (a write, an edit, a new folder, a deletion): the file itself is the
+ * members' alone; a path in a retired app's folder, the folder itself included, is refused as the app is.
  */
 export async function refuseRetiredPath(
 	folder: CloudCompanyFolderClient,
 	path: string,
 	signal: AbortSignal,
 	what: string,
-	moved = false,
 ): Promise<void> {
 	if (isAppRetiredPath(path)) throw new CloudToolRefusal(APP_RETIRED_MEMBERS_ONLY);
-	if (moved && companyPathKey(path) === companyPathKey(APPS_FOLDER)) {
-		if ((await readRetiredApps(folder, signal, what)).entry !== null)
-			throw new CloudToolRefusal(APP_RETIRED_MEMBERS_ONLY);
-		return;
-	}
 	const app = appPath(path);
 	if (app) await refuseRetiredApp(folder, app.name, signal, what);
+}
+
+/**
+ * `company_move`'s check, of both ends: each end as `refuseRetiredPath` checks a path, and the members' list may
+ * neither leave nor arrive with a folder. Moving the apps folder away while anything stands at its `retired.md` would
+ * take the list with it; moving a folder onto the apps folder's own path (where none stands, or after it was moved
+ * away) while that folder holds a `retired.md` would make one an agent wrote the members' list. Moving the apps folder
+ * away with no list in it stays allowed: the way back in is the second rule. A folder moved to `apps/<name>` is an
+ * app's folder, never the list (its own `retired.md` is a file of that app).
+ */
+export async function refuseRetiredMove(
+	folder: CloudCompanyFolderClient,
+	from: string,
+	to: string,
+	signal: AbortSignal,
+): Promise<void> {
+	const apps = companyPathKey(APPS_FOLDER);
+	if (companyPathKey(from) === apps) {
+		if (await holdsRetiredList(folder, from, signal, "moved")) throw new CloudToolRefusal(APP_RETIRED_MEMBERS_ONLY);
+	} else await refuseRetiredPath(folder, from, signal, "moved");
+	if (companyPathKey(to) === apps) {
+		if (await holdsRetiredList(folder, from, signal, "moved")) throw new CloudToolRefusal(APP_RETIRED_MEMBERS_ONLY);
+	} else await refuseRetiredPath(folder, to, signal, "moved");
 }
