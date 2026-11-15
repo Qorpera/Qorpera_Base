@@ -112,6 +112,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"make_picture",
 	// How one part of an interface app is made, read before it is made (20260930762000).
 	"app_guide",
+	"record_reflection",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

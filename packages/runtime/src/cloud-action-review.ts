@@ -278,6 +278,7 @@ export function cloudActionEffect(
 		case "ask_member":
 		case "report_work":
 		case "manage_todo":
+		case "record_reflection":
 		case "send_coworker_message":
 		case "computer_start":
 		case "computer_screen":

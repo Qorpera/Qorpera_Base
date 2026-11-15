@@ -17,6 +17,7 @@ import { cloudCompanyContextTool, parseCloudNativeCompanyContext } from "@qorper
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import type { CloudNativeTool } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudPictureChannel } from "@qorpera/runtime/cloud-picture-channel";
+import { cloudRecordReflectionTool } from "@qorpera/runtime/cloud-platform-updates";
 import { cloudReviewRuleTools } from "@qorpera/runtime/cloud-review-rule-tools";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import { cloudSidebarTools } from "@qorpera/runtime/cloud-sidebar-tools";
@@ -103,6 +104,7 @@ export async function catalogs() {
 		...cloudReviewRuleTools(binding, identity, standIn()),
 		...cloudGoodWillTools(binding, identity, standIn()),
 		...cloudMemberOfferTools(binding, identity, standIn()),
+		cloudRecordReflectionTool({ folder, operations, identity }),
 		...cloudEventTools(binding, identity, standIn(), folder),
 		...cloudSiteTools({
 			binding,
@@ -149,6 +151,8 @@ export async function catalogs() {
 			folderWorkers: standIn(),
 		}),
 	];
-	const employee = staff.filter((tool) => !["crew_and_members", "offer_agents_to_member"].includes(tool.name));
+	const employee = staff.filter(
+		(tool) => !["crew_and_members", "offer_agents_to_member", "record_reflection"].includes(tool.name),
+	);
 	return { staff, employee, worker, all: [...staff, ...worker] };
 }

@@ -156,6 +156,7 @@ describe("which calls are reviewed", () => {
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
 		// How a part of an interface app is made: the runtime's own text (20260930762000).
 		["app_guide", { about: "model" }, "read"],
+		["record_reflection", { operationKey: "k", update: "map-kit", decision: "use", line: "l" }, "internal"],
 		// Summary trees (M1b-3): zoom reads a conversation.
 		["zoom", { conversation: "thread:ada", line: "0+8" }, "read"],
 		// The node's folder search (F3): a read with the run's own view.
