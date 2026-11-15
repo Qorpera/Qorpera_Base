@@ -3290,23 +3290,25 @@ export class ComputerPanel {
 		if (entry) entry.out--;
 	}
 
-	/** THE one way a choice ends (the invariant above): answered (its answer handled by #openAnswered), replaced (a newer
-	 * choice, the member's own move, or its computer no longer the agent's with a screen), or said (the window says why
-	 * it did not open: `words`, with Try again where `retry`). Ending none is nothing. */
-	#endChoice(how: "answered" | "replaced" | "said", words?: string, retry = false, shown = true): void {
+	/** THE one way a choice ends (the invariant above): opened or answered (its answer handled by #openAnswered; both
+	 * are logged as answered), replaced (a newer choice, the member's own move, or its computer no longer the agent's
+	 * with a screen), or said (the window says why it did not open: `words`, with Try again where `retry`). Only one
+	 * that opened still asks for the large view at the first picture. Ending none is nothing. */
+	#endChoice(how: "opened" | "answered" | "replaced" | "said", words?: string, retry = false, shown = true): void {
 		const choice = this.#choice;
 		if (!choice) return;
 		this.#choice = undefined;
+		const answered = how === "opened" || how === "answered";
 		const entry = this.#choiceLog.find((one) => one.gen === choice.gen);
 		if (entry && !entry.ended) {
-			entry.ended = how;
+			entry.ended = answered ? "answered" : how;
 			if (words !== undefined) entry.said = words;
 		}
+		if (how !== "opened") this.#enterOnOpen = false;
 		// It opened: the window stays on that computer until the member sees it there.
-		this.#openedOn =
-			how === "answered"
-				? { machineId: choice.machineId, until: Math.max(choice.until, Date.now() + OPEN_SHOWS_MS) }
-				: undefined;
+		this.#openedOn = answered
+			? { machineId: choice.machineId, until: Math.max(choice.until, Date.now() + OPEN_SHOWS_MS) }
+			: undefined;
 		if (words !== undefined && shown) this.#sayOpen(choice, words, retry);
 	}
 
@@ -3416,7 +3418,7 @@ export class ComputerPanel {
 		const machineId = choice.machineId;
 		const code = answer?.kind === "refused" ? answer.code : undefined;
 		if (answer?.kind === "opened") {
-			this.#endChoice("answered");
+			this.#endChoice("opened");
 			this.#startAnswered = { machineId, at: Date.now() };
 			this.#lookNow();
 			return;
