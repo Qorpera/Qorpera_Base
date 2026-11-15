@@ -51,12 +51,12 @@
 /* The live log (what a screen reader hears as new) and, above it, the older items "Show earlier"
    read: each lays its rows out as the thread did before it had two parts. The log fills the
    rest of the thread, so the empty line stays centred. */
-/* The thread's foot (notices, the wall, the coding pill, the composer) stands over the messages' last stretch with no
+/* The thread's foot (notices, the coding pill, the composer) stands over the messages' last stretch with no
  * background of its own: the messages scroll on behind it, and only its controls are drawn, as frosted glass (Jonas,
  * 9 Nov 2026: "it should be transparant, with the widgets possibly being more glassy a-la apple style"). The view sets
  * --thread-foot to the foot's height, which the messages keep free under their last line. Only what the foot's bands
  * hold takes the pointer, so a wheel or a click between the controls reaches the messages: the bands themselves and the
- * few full-width rows with nothing drawn (the wall's bar, the drafts' rows) pass it through. */
+ * few full-width rows with nothing drawn (the drafts' rows) pass it through. */
 .thread-foot {
 	--glass-bg: color-mix(in srgb, var(--bg) 72%, transparent);
 	--glass-edge: color-mix(in srgb, var(--text) 10%, transparent);
@@ -66,12 +66,11 @@
 }
 .thread-foot > * { pointer-events: none; }
 .thread-foot > * > * { pointer-events: auto; }
-.thread-foot :is(.agent-wall-bar, .composer-drafts, .draft-notches) { pointer-events: none; }
-.thread-foot :is(.agent-wall-toggle, .draft-notches > *, .composer-drafts > :not(.draft-notches)),
-.thread-foot .agent-wall:not(.is-folded) { pointer-events: auto; }
+.thread-foot :is(.composer-drafts, .draft-notches) { pointer-events: none; }
+.thread-foot :is(.draft-notches > *, .composer-drafts > :not(.draft-notches)) { pointer-events: auto; }
 /* The composer stands above the coding pill's dock, so its menus (models, skills, names) open over the pill. The shell's
  * glass is a layer behind its contents, not a filter on the shell: a filter would make the shell a stacking context and
- * hold its menus under whatever stands beside it in the composer (a draft's button on the wall's line). */
+ * hold its menus under whatever stands beside it in the composer (a draft's button). */
 .thread-foot .composer { position: relative; z-index: 7; }
 .thread-foot .composer-shell { border-color: var(--glass-edge); background: transparent; box-shadow: var(--glass-shadow); }
 .thread-foot .composer-more { border: 1px solid var(--glass-edge); background: var(--glass-bg); box-shadow: var(--glass-shadow); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
@@ -81,16 +80,12 @@
 	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
 }
 .thread-foot :is(.notice, .company-notice, .run-failure-card, .draft-notch, .draft-panel),
-.thread-foot .agent-wall.is-folded .agent-wall-toggle,
 .thread-foot .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) {
 	border-color: var(--glass-edge); background: var(--glass-bg); box-shadow: var(--glass-shadow);
 	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
 }
 .thread-foot .coding-pill { -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .thread-foot .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { box-shadow: var(--glass-shadow), 0 0 0 1px var(--glass-edge); }
-.thread-foot .agent-wall.is-folded .agent-wall-toggle:hover { background: color-mix(in srgb, var(--text) 6%, var(--glass-bg)); }
-/* Open, the wall is a frosted sheet over the messages, its rows on the glass. */
-.thread-foot .agent-wall:not(.is-folded) { border-radius: 20px 20px 0 0; background: var(--glass-bg); box-shadow: 0 -1px 0 var(--glass-edge), 0 -8px 28px rgb(18 18 17 / 8%); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 /* A line of words alone (a note under the field, the drafts' helpers) gets a glass chip of its own to be read on, and the
  * run's execution line (its login picker, a send to start again) a glass card. The Answering strip is inside the
  * composer's own glass. */
@@ -257,7 +252,7 @@
 /* A quote of outside content (an email's words) lies in the same copy: one piece in its «» marks, tinted as quoted.
  * Only colours change, never the font or spacing, so the copy keeps the field's wrapping. */
 .composer-quote { color: var(--text-muted); background: var(--hover); border-radius: 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-/* The wall's question being answered, at the top of the composer. */
+/* What the draft answers, at the top of the composer. */
 .composer-answer { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
 .composer-answer[hidden] { display: none; }
 .composer-answer-words { flex: 1; min-width: 0; display: grid; gap: 1px; padding: 1px 0 1px 9px; border-left: 3px solid var(--composer-accent); }
@@ -652,7 +647,6 @@
 .agent-card-link > .icon { flex: none; width: 16px; height: 16px; }
 .agent-card-link > .icon:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--text-soft); }
 .agent-card-link[hidden] { display: none; }
-/* How many of the agent's latest notes are new while the member has its wall hidden. */
 /* Copy, Hide and Delete: plain icons at the card's right edge, named by their tooltips. */
 .agent-card-squares { display: flex; justify-content: flex-end; gap: 2px; margin: 8px -6px 0 0; }
 .agent-card-square { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
@@ -1091,17 +1085,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .coding-pill-action { display: inline-flex; flex: none; align-items: center; gap: 1px; margin-left: auto; color: var(--text-muted); font-size: 12px; }
 .coding-pill-row[data-tone="attention"] .coding-pill-action, .coding-pill-note[data-tone="attention"] ~ .coding-pill-action { color: var(--blue); font-weight: 600; }
 .coding-pill-action .icon { width: 11px; height: 11px; }
-/* Under an agent's wall, the pill takes the wall's line instead of one of its own: it sits at the line's left, level
- * with the wall's centred button (Jonas, 9 Nov 2026). The wall's bar is the wall's last 32px, so a dock of no height
- * right under it puts the pill's foot on the bar's. Each keeps to its own half: the folded pill ends 160px short of
- * the middle and the button is at most 300px wide; unfolded, the pill takes its usual width over the button. A single
- * draft then keeps its own place above the composer (agent-wall.css). On a narrow thread the two stack, the pill on its
- * own line. */
-@container thread-conversation (min-width: 48.6em) {
-	.agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }
-	.agent-wall:not([hidden]) + .coding-dock .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { width: min(300px, calc(50% - 160px)); }
-	.agent-wall:has(+ .coding-dock:not([hidden])) .agent-wall-toggle { max-width: 300px; }
-}
 @media (forced-colors: active) { .coding-pill { border: 1px solid CanvasText; } }
 @media (prefers-reduced-motion: reduce) { .coding-pill, .coding-pill-row, .coding-pill-summary > .icon { transition: none; } }
 /* The session as its own thread: over the conversation with its own header, as a message to a coworker opens. */
