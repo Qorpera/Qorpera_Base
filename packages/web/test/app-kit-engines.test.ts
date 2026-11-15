@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
  * `window.qorpera` (reads that fail and then work, questions that come later, the rows a Save asks for), with the ten
  * seconds of the bridge's pace on a fake clock, and a page that changes size. What they draw is looked at in a browser. */
 
-const KITS = ["model", "board", "path", "object", "curve", "stack", "shelf", "map"] as const;
+const KITS = ["model", "board", "path", "object", "curve", "stack", "shelf", "map", "ring", "flow"] as const;
 type Kit = (typeof KITS)[number];
 /** The kits where a member opens a thing, with a note to the app's owner at its foot. */
 const THING_KITS = ["model", "board", "path", "object", "shelf"] as const;
@@ -1162,6 +1162,8 @@ describe("a kit's page as a concept", () => {
 		stack: { root: "st--bare", header: ".st-head", kept: ".st-card" },
 		shelf: { root: "sh--bare", header: ".sh-head", kept: ".sh-thing" },
 		map: { root: "mp--bare", header: ".mp-head", kept: ".mp-thing" },
+		ring: { root: "rk--bare", header: ".rk-head", kept: ".rk-stage" },
+		flow: { root: "fk--bare", header: ".fk-head", kept: ".fk-stage" },
 	};
 	/** What the page shows of an element: jsdom reads the engine's own stylesheet for a class selector. */
 	const shows = (selector: string) => {
@@ -1901,5 +1903,437 @@ describe("the map kit's way back", () => {
 		expect(document.activeElement).toBe(document.querySelector('.mp-thing[data-id="leads"] button.mp-hit'));
 		expect(pushes).not.toHaveBeenCalled();
 		expect(goes).not.toHaveBeenCalled();
+	});
+});
+
+describe("the ring kit's engine", () => {
+	const year = {
+		lang: "en",
+		title: "Our year",
+		span: "year",
+		start: "2026-01-01",
+		now: "2026-11-15",
+		unit: "kr",
+		marks: [
+			{ name: "VAT return", at: "2026-03-01", tone: "warm" },
+			{ name: "Lamp launch", at: "2026-10-08", tone: "good" },
+			{ name: "Black Friday", at: "2026-11-27" },
+			{ name: "VAT return", at: "2026-12-01", tone: "warm", value: 41800 },
+			// outside the year: not drawn
+			{ name: "VAT return", at: "2027-03-01" },
+		],
+		wedges: [
+			{ name: "Summer break", from: "2026-07-06", to: "2026-07-31", tone: "teal" },
+			{ name: "Christmas season", from: "2026-11-15", to: "2026-12-24", tone: "warm" },
+		],
+	};
+	const big = () => document.querySelector(".rk-n")?.textContent;
+	const unit = () => document.querySelector(".rk-u")?.textContent ?? "";
+	const what = () => document.querySelector(".rk-what")?.textContent;
+	const when = () => document.querySelector(".rk-when")?.textContent;
+	const stage = () => document.querySelector<HTMLElement>(".rk-stage");
+	const key = (name: string) => stage()?.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+
+	it("draws the year's months, the part gone by, its marks and wedges, the hand, and the next thing in the middle", async () => {
+		await open("ring", JSON.stringify(year));
+		expect(document.querySelectorAll(".rk-seg")).toHaveLength(12);
+		// January to October are gone by on the 15th of November
+		expect(document.querySelectorAll(".rk-seg.gone")).toHaveLength(10);
+		expect(document.querySelector(".rk-tick.now")?.textContent).toBe("Nov");
+		expect(document.querySelectorAll(".rk-mark")).toHaveLength(4);
+		expect(document.querySelectorAll(".rk-mark.gone")).toHaveLength(2);
+		expect(document.querySelectorAll(".rk-wedge")).toHaveLength(2);
+		expect(document.querySelector(".rk-hand")).not.toBeNull();
+		// the next thing: a mark today or later, or a wedge not yet begun; a wedge that begins today is going on
+		expect([big(), unit(), what(), when()]).toEqual(["12", "days", "to Black Friday", "Nov 27"]);
+		expect(document.querySelector(".rk-mark.next")).not.toBeNull();
+		expect(stage()?.getAttribute("aria-valuetext")).toBe("12 days, to Black Friday, Nov 27");
+	});
+
+	it("lets the middle follow the arrow keys round the ring, and Escape bring back the next thing", async () => {
+		await open("ring", JSON.stringify(year));
+		expect(stage()?.getAttribute("role")).toBe("slider");
+		key("ArrowRight");
+		// a mark with an amount shows it
+		expect([big(), unit(), what(), when()]).toEqual(["41,800", "kr", "VAT return", "Dec 1"]);
+		expect(document.querySelector(".rk.picking")).not.toBeNull();
+		key("ArrowLeft");
+		key("ArrowLeft");
+		// a wedge going on now: the days left of it
+		expect([big(), unit(), what(), when()]).toEqual(["40", "days", "left of Christmas season", "Nov 15 – Dec 24"]);
+		key("Home");
+		// a mark gone by: its day, and how long ago
+		expect([big(), what(), when()]).toEqual(["Mar 1", "VAT return", "259 days ago"]);
+		key("Escape");
+		expect([big(), what()]).toEqual(["12", "to Black Friday"]);
+		expect(document.querySelector(".rk.picking")).toBeNull();
+	});
+
+	it("turns with the pointer: the middle shows the mark near it, else the wedge it is in", async () => {
+		await open("ring", JSON.stringify(year));
+		// jsdom lays nothing out: the ring is as wide as the window lets it be, its middle half of that
+		const size = Number.parseFloat(stage()?.style.width ?? "0");
+		const c = size / 2;
+		const at = (day: number, r: number) => {
+			const a = (day / 365) * Math.PI * 2;
+			return { clientX: c + r * Math.sin(a), clientY: c - r * Math.cos(a), bubbles: true };
+		};
+		const r = c - 50;
+		// 8 October is the 281st day of the year
+		stage()?.dispatchEvent(new MouseEvent("pointermove", at(280.5, r)));
+		expect(what()).toBe("Lamp launch");
+		// mid July, inside the summer break, far from any mark
+		stage()?.dispatchEvent(new MouseEvent("pointermove", at(200, r)));
+		expect(what()).toBe("Summer break");
+		// in the middle: nothing is picked, and the next thing comes back
+		stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: c, clientY: c, bubbles: true }));
+		expect(what()).toBe("to Black Friday");
+	});
+
+	it("draws a week's wedges as far out as their amounts, one not known open with a question mark", async () => {
+		const week = {
+			lang: "en",
+			title: "Sales this week",
+			span: "week",
+			start: "2026-11-16",
+			now: "2026-11-18",
+			centre: { value: 15000, unit: "kr", label: "this week" },
+			wedges: [
+				{ name: "Monday", from: "2026-11-16", value: 3000 },
+				{ name: "Tuesday", from: "2026-11-17", value: 6000 },
+				{ name: "Wednesday", from: "2026-11-18", state: "unknown" },
+			],
+		};
+		await open("ring", JSON.stringify(week));
+		expect(document.querySelectorAll(".rk-seg")).toHaveLength(7);
+		expect([...document.querySelectorAll(".rk-tick")].map((tick) => tick.textContent)).toEqual([
+			"Mon",
+			"Tue",
+			"Wed",
+			"Thu",
+			"Fri",
+			"Sat",
+			"Sun",
+		]);
+		expect(document.querySelectorAll(".rk-wedge.unk")).toHaveLength(1);
+		expect(document.querySelector(".rk-q")?.textContent).toBe("?");
+		// Tuesday's amount is twice Monday's, and reaches twice as far out from the inner edge
+		const outer = (index: number) => {
+			const d = document.querySelectorAll(".rk-wedge")[index]?.getAttribute("d") ?? "";
+			const [, x, y] = /^M([\d.-]+) ([\d.-]+)/.exec(d) ?? [];
+			return Math.hypot(
+				Number(x) - Number.parseFloat(stage()?.style.width ?? "0") / 2,
+				Number(y) - Number.parseFloat(stage()?.style.width ?? "0") / 2,
+			);
+		};
+		const inner = (index: number) => {
+			const d = document.querySelectorAll(".rk-wedge")[index]?.getAttribute("d") ?? "";
+			const [, rin] = /L[\d.-]+ [\d.-]+A([\d.-]+)/.exec(d) ?? [];
+			return Number(rin);
+		};
+		expect((outer(1) - inner(1)) / (outer(0) - inner(0))).toBeCloseTo(2, 1);
+		// the middle holds the given number while nobody points
+		expect([big(), unit(), what()]).toEqual(["15,000", "kr", "this week"]);
+		key("End");
+		expect([big(), what()]).toEqual(["?", "Wednesday"]);
+		expect(document.querySelector(".rk-tag")?.textContent).toBe("not known");
+	});
+
+	it("never draws one mark on another: a mark a day after another takes an orbit of its own", async () => {
+		const close = {
+			...year,
+			marks: [
+				{ name: "Annual report", at: "2026-05-31" },
+				{ name: "VAT return", at: "2026-06-01" },
+				{ name: "Payday", at: "2026-06-02" },
+			],
+		};
+		await open("ring", JSON.stringify(close));
+		const dots = [...document.querySelectorAll(".rk-mark")].map((dot) => ({
+			x: Number(dot.getAttribute("cx")),
+			y: Number(dot.getAttribute("cy")),
+			r: Number(dot.getAttribute("r")),
+		}));
+		expect(dots).toHaveLength(3);
+		// apart by more than two marks' width, room for a picked one drawn half as large again
+		for (const [at, dot] of dots.entries())
+			for (const other of dots.slice(at + 1))
+				expect(Math.hypot(dot.x - other.x, dot.y - other.y)).toBeGreaterThan(dot.r * 2.9);
+		// the pointer finds each where it lies
+		for (const [at, dot] of dots.entries()) {
+			stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: dot.x, clientY: dot.y, bubbles: true }));
+			expect(what()).toBe(["Annual report", "VAT return", "Payday"][at]);
+		}
+	});
+
+	it("keeps 12 marks of one day apart and clear of the middle on a phone, each found by the pointer", async () => {
+		resize(390, 844);
+		const crowd = {
+			...year,
+			marks: Array.from({ length: 12 }, (_, at) => ({ name: `Due ${at}`, at: "2026-06-01" })),
+		};
+		await open("ring", JSON.stringify(crowd));
+		const c = Number.parseFloat(stage()?.style.width ?? "0") / 2;
+		const dots = [...document.querySelectorAll(".rk-mark")].map((dot) => ({
+			x: Number(dot.getAttribute("cx")),
+			y: Number(dot.getAttribute("cy")),
+			r: Number(dot.getAttribute("r")),
+		}));
+		expect(dots).toHaveLength(12);
+		for (const [at, dot] of dots.entries()) {
+			// never under the middle's words, never across the ring
+			expect(Math.hypot(dot.x - c, dot.y - c)).toBeGreaterThan(c * 0.4);
+			for (const other of dots.slice(at + 1))
+				expect(Math.hypot(dot.x - other.x, dot.y - other.y)).toBeGreaterThan(dot.r * 2);
+			stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: dot.x, clientY: dot.y, bubbles: true }));
+			expect(what()).toBe(`Due ${at}`);
+		}
+		// the crowd stays round its day, as many drawn before it as after
+		const angle = (dot: { x: number; y: number }) => Math.atan2(dot.x - c, c - dot.y);
+		const day = angle(dots[0] ?? { x: c, y: 0 });
+		expect(dots.filter((dot) => angle(dot) < day - 1e-6).length).toBeGreaterThan(0);
+		expect(dots.filter((dot) => angle(dot) > day + 1e-6).length).toBeGreaterThan(0);
+	});
+
+	it("draws 12 marks and 8 wedges at most, and only what falls in its span", async () => {
+		const many = {
+			...year,
+			marks: Array.from({ length: 14 }, (_, at) => ({
+				name: `Pay ${at}`,
+				at: `2026-${String((at % 12) + 1).padStart(2, "0")}-25`,
+			})),
+			wedges: Array.from({ length: 10 }, (_, at) => ({
+				name: `Stretch ${at}`,
+				from: `2026-${String(at + 1).padStart(2, "0")}-02`,
+				to: `2026-${String(at + 1).padStart(2, "0")}-09`,
+			})),
+		};
+		await open("ring", JSON.stringify(many));
+		expect(document.querySelectorAll(".rk-mark")).toHaveLength(12);
+		expect(document.querySelectorAll(".rk-wedge")).toHaveLength(8);
+	});
+
+	it("draws the middle's live number as known, and again at once when it moves", async () => {
+		const live = {
+			...year,
+			centre: { value: { query: "shop/sales", column: "kr" }, unit: "kr", label: "sold this year" },
+		};
+		const db = databases({ "shop/sales": { kr: 182400 } });
+		const { qorpera } = await openLive("ring", live, db);
+		expect([big(), unit(), what()]).toEqual(["182,400", "kr", "sold this year"]);
+		db.set("shop/sales", { kr: 190000 });
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(big()).toBe("190,000");
+	});
+
+	it("draws the middle's live number with no answer yet as not known", async () => {
+		const live = {
+			...year,
+			centre: { value: { query: "shop/sales", column: "kr" }, unit: "kr", label: "sold this year" },
+		};
+		await openLive("ring", live, databases({}));
+		await settle(3000);
+		expect([big(), what()]).toEqual(["?", "sold this year"]);
+		expect(document.querySelector(".rk-tag")?.textContent).toBe("not known");
+	});
+});
+
+describe("the flow kit's engine", () => {
+	const money = {
+		lang: "en",
+		title: "Money in November",
+		unit: "kr",
+		middle: "Bank",
+		from: [
+			{ id: "shop", name: "Web shop", value: 180000 },
+			{ id: "retail", name: "Retailers", value: 60000 },
+		],
+		to: [
+			{ id: "parts", name: "Parts", value: 70000 },
+			{ id: "kept", name: "Kept", value: 30000, kept: true },
+			{ id: "salaries", name: "Salaries", value: 90000 },
+			{ id: "ads", name: "Ads", value: 50000 },
+		],
+	};
+	const big = () => document.querySelector(".fk-n")?.textContent;
+	const sub = () => document.querySelector(".fk-sub")?.textContent;
+	const names = () => [...document.querySelectorAll(".fk-name")].map((name) => name.textContent);
+	const stage = () => document.querySelector<HTMLElement>(".fk-stage");
+	const key = (name: string) => stage()?.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+	/** A band's width where it leaves its end: the path's two edges at its start. */
+	const width = (index: number) => {
+		const d = document.querySelectorAll(".fk-band")[index]?.getAttribute("d") ?? "";
+		const numbers = (d.match(/-?[\d.]+/g) ?? []).map(Number);
+		// M x y0 C … x1 y1 L x1 y2 C … x y3 Z: the end's edges are y0 and the last y
+		return Math.abs((numbers[numbers.length - 1] ?? 0) - (numbers[1] ?? 0));
+	};
+
+	it("draws a band for each end through the middle, each as wide as its amount, and all that came in big", async () => {
+		await open("flow", JSON.stringify(money));
+		expect(document.querySelectorAll(".fk-band")).toHaveLength(6);
+		expect(document.querySelector(".fk-mid")).not.toBeNull();
+		expect(document.querySelector(".fk-mid-t")?.textContent).toBe("Bank");
+		// what is kept stands last, under the rest
+		expect(names()).toEqual(["Web shop", "Retailers", "Parts", "Salaries", "Ads", "Kept"]);
+		expect(width(0) / width(1)).toBeCloseTo(3, 1);
+		expect(width(3) / width(4)).toBeCloseTo(90 / 50, 1);
+		// both sides add up: nothing is left over
+		expect(document.querySelector(".fk-band.rest")).toBeNull();
+		expect(big()).toBe("240,000");
+		expect(sub()).toBe("in all");
+	});
+
+	it("makes the big number a band's amount and share as the arrow keys step through the bands", async () => {
+		await open("flow", JSON.stringify(money));
+		expect(stage()?.getAttribute("role")).toBe("slider");
+		key("ArrowRight");
+		expect([big(), sub()]).toEqual(["180,000", "Web shop75%"]);
+		expect(document.querySelectorAll(".fk-band.on")).toHaveLength(1);
+		expect(document.querySelector(".fk.picking")).not.toBeNull();
+		key("End");
+		expect([big(), sub()]).toEqual(["30,000", "Kept13%"]);
+		expect(stage()?.getAttribute("aria-valuetext")).toBe("Kept: 30,000 kr");
+		key("Escape");
+		expect(big()).toBe("240,000");
+		expect(document.querySelector(".fk.picking")).toBeNull();
+	});
+
+	it("joins the smallest ends past six into one band, Other, and keeps what is kept", async () => {
+		const many = {
+			...money,
+			from: [{ id: "shop", name: "Web shop", value: 36500 }],
+			to: [
+				...["Parts", "Salaries", "Ads", "Tax", "Rent", "Freight", "Software", "Bank fees"].map((name, at) => ({
+					id: `t${at}`,
+					name,
+					value: (8 - at) * 1000,
+				})),
+				{ id: "kept", name: "Kept", value: 500, kept: true },
+			],
+		};
+		await open("flow", JSON.stringify(many));
+		expect(document.querySelectorAll(".fk-band")).toHaveLength(1 + 6);
+		expect(names().slice(1)).toEqual(["Parts", "Salaries", "Ads", "Tax", "Other", "Kept"]);
+		// Other is the four smallest together: 4,000 + 3,000 + 2,000 + 1,000
+		key("End");
+		key("ArrowLeft");
+		expect([big(), sub()]).toEqual(["10,000", "Other27%"]);
+	});
+
+	it("keeps the band a finger picked when it lifts, and lets a pointer that leaves take it away", async () => {
+		await open("flow", JSON.stringify(money));
+		const leave = (pointerType: string) => {
+			const event = new MouseEvent("pointerleave");
+			Object.defineProperty(event, "pointerType", { value: pointerType });
+			stage()?.dispatchEvent(event);
+		};
+		// a name with its bar is a finger's room to pick by, as wide as the name and as tall as a finger
+		document
+			.querySelector(".fk-lab[data-n=salaries] .fk-hit")
+			?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+		expect([big(), sub()]).toEqual(["90,000", "Salaries38%"]);
+		leave("touch");
+		expect(big()).toBe("90,000");
+		leave("mouse");
+		expect(big()).toBe("240,000");
+	});
+
+	it("draws what one side lacks of the other as a quiet band of its own, in the data's word", async () => {
+		// 240,000 came in and 215,000 went out: the 25,000 between is drawn going out, before what is kept
+		await open(
+			"flow",
+			JSON.stringify({ ...money, to: money.to.map((end) => (end.id === "ads" ? { ...end, value: 25000 } : end)) }),
+		);
+		expect(names()).toEqual(["Web shop", "Retailers", "Parts", "Salaries", "Ads", "Not accounted for", "Kept"]);
+		expect(document.querySelectorAll(".fk-band.rest")).toHaveLength(1);
+		expect(document.querySelector(".fk-lab.rest .fk-amt")?.textContent).toBe("25,000 kr");
+		// it is no end of the company's own: the big number is still what came in
+		expect(big()).toBe("240,000");
+		key("End");
+		key("ArrowLeft");
+		// a share of all the side's bands, so the side's shares add up: 25,000 of the 240,000 drawn
+		expect([big(), sub()]).toEqual(["25,000", "Not accounted for10%"]);
+		document.body.replaceChildren();
+		// more out than in: the difference comes in, on the left, in the data's own word
+		await open(
+			"flow",
+			JSON.stringify({
+				...money,
+				words: { rest: "Unexplained" },
+				from: [{ id: "shop", name: "Web shop", value: 200000 }],
+			}),
+		);
+		expect(names().slice(0, 2)).toEqual(["Web shop", "Unexplained"]);
+		expect(document.querySelector(".fk-lab.rest .fk-amt")?.textContent).toBe("40,000 kr");
+		document.body.replaceChildren();
+		// a rounding (1 % at most) is no band
+		await open("flow", JSON.stringify({ ...money, from: [{ id: "shop", name: "Web shop", value: 241000 }] }));
+		expect(document.querySelector(".fk-band.rest")).toBeNull();
+	});
+
+	it("runs bands straight from each source to each end with links, with no middle", async () => {
+		const people = {
+			lang: "en",
+			title: "Visits",
+			unit: "visits",
+			from: [
+				{ id: "google", name: "Google" },
+				{ id: "mail", name: "Newsletter" },
+			],
+			to: [
+				{ id: "bought", name: "Bought", tone: "good" },
+				{ id: "left", name: "Left" },
+			],
+			links: [
+				{ from: "google", to: "bought", value: 200 },
+				{ from: "google", to: "left", value: 3800 },
+				{ from: "mail", to: "bought", value: 150 },
+				{ from: "mail", to: "left", value: 850 },
+			],
+		};
+		await open("flow", JSON.stringify(people));
+		expect(document.querySelectorAll(".fk-band")).toHaveLength(4);
+		expect(document.querySelector(".fk-mid")).toBeNull();
+		// an end's amount is what its bands carry
+		expect([...document.querySelectorAll(".fk-amt")].map((amount) => amount.textContent)).toEqual([
+			"4,000 visits",
+			"1,000 visits",
+			"350 visits",
+			"4,650 visits",
+		]);
+		expect(big()).toBe("5,000");
+		key("ArrowRight");
+		expect([big(), sub()]).toEqual(["200", "Google → Bought4%"]);
+		expect(document.querySelectorAll(".fk-lab.on")).toHaveLength(2);
+	});
+
+	it("draws a live amount as known, and again at once when it moves", async () => {
+		const live = {
+			...money,
+			from: [{ id: "shop", name: "Web shop", value: { query: "bank/money_in", column: "amount" } }, money.from[1]],
+		};
+		const db = databases({ "bank/money_in": { amount: 180000 } });
+		const { qorpera } = await openLive("flow", live, db);
+		expect(big()).toBe("240,000");
+		db.set("bank/money_in", { amount: 200000 });
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(big()).toBe("260,000");
+	});
+
+	it("draws a live amount with no answer yet as an open band, and no total", async () => {
+		const live = {
+			...money,
+			from: [{ id: "shop", name: "Web shop", value: { query: "bank/money_in", column: "amount" } }, money.from[1]],
+		};
+		await openLive("flow", live, databases({}));
+		await settle(3000);
+		expect(big()).toBe("?");
+		expect(sub()).toBe("in allnot known");
+		expect(document.querySelectorAll(".fk-band.unk")).toHaveLength(1);
+		expect(document.querySelector(".fk-q")?.textContent).toBe("?");
 	});
 });

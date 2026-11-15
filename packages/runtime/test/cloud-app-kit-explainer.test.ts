@@ -259,7 +259,20 @@ it("tells an agent in the explainer's guide only what the engine can draw", asyn
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", "curve", "stack", "shelf", "map", null]);
+	expect(kit.enum).toEqual([
+		"explainer",
+		"model",
+		"board",
+		"path",
+		"object",
+		"curve",
+		"stack",
+		"shelf",
+		"map",
+		"ring",
+		"flow",
+		null,
+	]);
 	expect(kit.description).toContain("explainer: a mechanism or a decision that a short narrated video explains.");
 	const said = appGuide("explainer");
 	// Every call the guidance names is one the engine's scene has, and every icon and colour is one it draws.
