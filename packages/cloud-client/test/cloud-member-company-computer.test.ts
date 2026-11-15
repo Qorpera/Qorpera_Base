@@ -200,7 +200,7 @@ describe("member Company Computer transport", () => {
 			},
 		]);
 		const { addedLater: _ignored, ...listed } = machine;
-		const known = { ...listed, control: null, epoch: 0, others: [], generation: null };
+		const known = { ...listed, control: null, epoch: 0, others: [], generation: null, memberSleepSeconds: null };
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: false,
 			canTakeOver: true,
@@ -261,6 +261,12 @@ describe("member Company Computer transport", () => {
 			[[{ ...machine, generation: 1.5 }], {}],
 			[[{ ...machine, generation: "3" }], {}],
 			[[{ ...machine, generation: 2 ** 53 }], {}],
+			// Awake only for a member (20260930759000): whole seconds, a minute to a week.
+			[[{ ...machine, memberSleepSeconds: 59 }], {}],
+			[[{ ...machine, memberSleepSeconds: 604_801 }], {}],
+			[[{ ...machine, memberSleepSeconds: 600.5 }], {}],
+			[[{ ...machine, memberSleepSeconds: "600" }], {}],
+			[[{ ...machine, memberSleepSeconds: true }], {}],
 		] as const) {
 			reply([...machines], extra);
 			await expect(f.client.agentMachines(id(5), signal), JSON.stringify(extra)).rejects.toThrow();
@@ -315,8 +321,17 @@ describe("member Company Computer transport", () => {
 					epoch: 0,
 					others: [],
 					generation: null,
+					memberSleepSeconds: null,
 				},
-				{ ...machine, machineId: id(21), control: own, epoch: 4, others: [], generation: null },
+				{
+					...machine,
+					machineId: id(21),
+					control: own,
+					epoch: 4,
+					others: [],
+					generation: null,
+					memberSleepSeconds: null,
+				},
 			],
 		});
 		f.fetch.mockResolvedValueOnce(
@@ -331,7 +346,7 @@ describe("member Company Computer transport", () => {
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: true,
 			canTakeOver: false,
-			machines: [{ ...machine, control: null, epoch: 0, others: [], generation: null }],
+			machines: [{ ...machine, control: null, epoch: 0, others: [], generation: null, memberSleepSeconds: null }],
 		});
 		// Who else uses the shared desktop (20260930734000), by name.
 		f.fetch.mockResolvedValueOnce(
@@ -374,6 +389,25 @@ describe("member Company Computer transport", () => {
 				}),
 			);
 			expect((await f.client.agentMachines(id(5), signal)).machines[0]?.generation).toBe(generation);
+		}
+		// Awake only for a member (20260930759000): the seconds, at both ends; null (every other machine) is none.
+		for (const [memberSleepSeconds, read] of [
+			[600, 600],
+			[60, 60],
+			[604_800, 604_800],
+			[null, null],
+		] as const) {
+			f.fetch.mockResolvedValueOnce(
+				Response.json({
+					schema: "qorpera.agent-machines/v1",
+					profileId: id(1),
+					staffAgentId: id(5),
+					canWake: true,
+					canTakeOver: true,
+					machines: [{ ...machine, memberSleepSeconds }],
+				}),
+			);
+			expect((await f.client.agentMachines(id(5), signal)).machines[0]?.memberSleepSeconds).toBe(read);
 		}
 	});
 	it("takes a desktop over, keeps it and hands it back as the member (20260930713000)", async () => {

@@ -56,13 +56,13 @@ async function bundle(scratch) {
 				'export {cloudNativeContextIdentity} from "./packages/runtime/src/cloud-native-context-composition.ts";',
 				'export {CLOUD_AFTER_ANSWER_TOOLS, CLOUD_NATIVE_TOOL_CATALOG_BYTES, MAX_CLOUD_TOOL_RESULT_BYTES, cloudToolJsonText, redactCloudWebhookSecrets} from "./packages/runtime/src/cloud-native-tool-boundary.ts";',
 				'export {CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput, parseCloudAgentSendReceipt} from "./packages/runtime/src/cloud-agent-mouth.ts";',
-				'export {cloudWallTools} from "./packages/runtime/src/cloud-folder-wall.ts";',
 				'export {cloudWorkerTools} from "./packages/runtime/src/cloud-worker-tools.ts";',
 				'export {CloudFolderTodos} from "./packages/runtime/src/cloud-folder-todos.ts";',
 				'export {CloudFolderWorkers} from "./packages/runtime/src/cloud-folder-workers.ts";',
 				'export {COMPANY_STATE_PARSER_VERSION, companyStatePath, parseCompanyStateFile} from "./packages/cloud-client/src/company-state-files.ts";',
 				'export {MEMORY_RUN_STEP_FIELD_BYTES, MEMORY_RUN_STEP_READS_BYTES, MEMORY_RUN_STEP_RESULT_BYTES, parseMemoryRunFile} from "./packages/cloud-client/src/memory-run-files.ts";',
 				'export {nativeCodexFixtureCommand} from "./packages/runtime/test/fixtures/native-codex-fixture-command.ts";',
+				'export {cloudToolsOnDemand} from "./packages/runtime/src/cloud-native-tools-on-demand.ts";',
 			].join("\n"),
 		},
 		platform: "node",
@@ -77,7 +77,7 @@ async function bundle(scratch) {
 
 /** The database through psql, as the service role. A function's arguments are typed as it declares them, as PostgREST
  * types a JSON body's fields; an error names its SQLSTATE, as PostgREST's `code` does. */
-class Database {
+export class Database {
 	#run;
 	#signatures = new Map();
 	calls = [];
@@ -187,7 +187,7 @@ function postgrestStatus(code) {
 }
 
 /** PostgREST in front of the database, for the runtime's HttpCloudCompanyPathControl. */
-function postgrestFetch(db) {
+export function postgrestFetch(db) {
 	return async (input, init = {}) => {
 		const url = new URL(String(input));
 		const rpc = /^\/rest\/v1\/rpc\/(qorpera_[a-z0-9_]+)$/.exec(url.pathname);
@@ -205,7 +205,7 @@ function postgrestFetch(db) {
  * on any one object); with both busy, or its object already in flight, it answers 503, as the gateway does for an
  * object with no Storage copy yet (one just written). `lane` counts the gets, the most in flight at once, and those
  * answered busy. */
-function gatewayFetch(db, objects, lane) {
+export function gatewayFetch(db, objects, lane) {
 	return async (input, init = {}) => {
 		const url = new URL(String(input));
 		const route = /^\/v1\/folder-objects\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(url.pathname);
@@ -256,7 +256,7 @@ function gatewayFetch(db, objects, lane) {
 }
 
 /** The run's control plane as the native provider service makes its calls (cloud-native-provider-service.ts). */
-function controlPlane(db) {
+export function controlPlane(db) {
 	return {
 		describeToolAuthority: async (binding) => db.direct("qorpera_describe_native_tool_authority", { p_binding: binding }),
 		beginToolOperation: async (binding, input) =>
@@ -379,7 +379,23 @@ function provider(state, calls, roundMs = 0) {
 
 /** The run's one attempt, as the company runtime composes it: its folder, log and tools on the real session. */
 async function attempt(code, context) {
-	const { db, binding, objects, binary, port, root, nativeBinarySha256, prompt, interfaceTools, moreTools, tools } = context;
+	const {
+		db,
+		binding,
+		objects,
+		binary,
+		port,
+		root,
+		nativeBinarySha256,
+		prompt,
+		runtimeInstructions,
+		resultRulesInside,
+		interfaceTools,
+		moreTools,
+		tools,
+		onDemand,
+		review,
+	} = context;
 	const paths = new code.HttpCloudCompanyPathControl({
 		supabaseUrl: "https://postgrest.stand-in.invalid/",
 		serviceRoleKey: "stand-in",
@@ -392,6 +408,8 @@ async function attempt(code, context) {
 	let folder;
 	let admitted;
 	const command = await code.nativeCodexFixtureCommand(root, [binary], port);
+	const composeContext = async (request, signal) =>
+		runWork ? await runWork(request, signal) : code.cloudNativeContextIdentity(request);
 	const result = await code.runCloudNativeRunToolSession({
 		binding,
 		controlPlane: controlPlane(db),
@@ -451,13 +469,18 @@ async function attempt(code, context) {
 			});
 			assert(opened?.log, "the run keeps a log (Shared context: its recorded memory mode is tree)");
 			runWork = opened.composeContext;
+			const made = [
+				...code.cloudFolderFileTools({ folder, operations, identity }),
+				...(interfaceTools ? code.cloudInterfaceTools({ folder, identity, timeZone: "UTC" }) : []),
+				...(moreTools ? moreTools(code, { db, binding, identity, operations, paths }) : []),
+				...(tools ? tools(code, { db, binding, folder, operations, identity }) : []),
+			];
+			// The run's kind, when given: its catalog describes in full what the kind uses most, and more_tools opens the
+			// rest, as the company runtime offers them (T3-6).
+			const offered = onDemand ? code.cloudToolsOnDemand(made, onDemand) : { tools: made };
 			return {
-				tools: [
-					...code.cloudFolderFileTools({ folder, operations, identity }),
-					...(interfaceTools ? code.cloudInterfaceTools({ folder, identity, timeZone: "UTC" }) : []),
-					...(moreTools ? moreTools(code, { db, binding, identity, operations, paths }) : []),
-					...(tools ? tools(code, { db, binding, folder, operations, identity }) : []),
-				],
+				tools: offered.tools,
+				...(offered.deferred ? { deferred: offered.deferred } : {}),
 				assertContext: (signal, timeoutMs) => gateway.assertReadableContext(signal, timeoutMs),
 				checkRun: (signal, timeoutMs) => gateway.checkRun(signal, timeoutMs),
 				recordContextView: (frame, outputs, signal) => gateway.recordContextView(frame, outputs, signal),
@@ -465,12 +488,14 @@ async function attempt(code, context) {
 				runLog: { log: opened.log, lines: opened.lines },
 			};
 		},
-		composeContext: async (request, signal) =>
-			runWork ? await runWork(request, signal) : code.cloudNativeContextIdentity(request),
+		...(resultRulesInside
+			? // As the company runtime gives them (track 3, T3-3): an opening whose instructions carry the tool-result rules.
+				{ opening: async () => ({ prompt, runtimeInstructions, composeContext, resultRulesInside: true }) }
+			: { composeContext, prompt, ...(runtimeInstructions === undefined ? {} : { runtimeInstructions }) }),
 		compactor,
 		command: command.command,
 		binarySha256: command.binarySha256,
-		prompt,
+		...(review ? { actionReview: () => review } : {}),
 		signal: AbortSignal.timeout(240_000),
 		timeoutMs: 200_000,
 	});
@@ -514,10 +539,17 @@ export function answerOf(output) {
  * stored. `beforeRpc(method, args, db)`, if given, is called before each function call of the run's (a change the proof
  * makes while the run goes on, with `platformChange`). The model's rounds take `roundMs` each. A run whose turn ends
  * before its last call (an interrupt) names the provider requests it expects in `requests(count)`; by default every
- * call and then the closing answer. Without the binary it prints NOT RUN. */
+ * call and then the closing answer. `runtimeInstructions`, when given, are the run's developer instructions after the
+ * tool-result rules, as the company runtime compiles them (by default none); with `resultRulesInside` they carry the
+ * rules themselves, as a company run's do since track 3, T3-3, and the session adds none. `onDemand`, a kind of run
+ * (cofounder, employee or worker), offers the tools as the company runtime offers that kind's (T3-6): those it uses most
+ * in its catalog, the rest through more_tools. `review`, an action review (`check`), is asked before every call as the
+ * company runtime's auto-review is (by default none). Without the binary it prints NOT RUN. */
 export async function proveCompanyRun({
 	name,
 	prompt,
+	runtimeInstructions,
+	resultRulesInside = false,
 	setup,
 	objects,
 	calls,
@@ -526,6 +558,8 @@ export async function proveCompanyRun({
 	moreTools,
 	beforeRpc,
 	tools,
+	onDemand,
+	review,
 	roundMs = 0,
 	requests = (count) => count === calls.length + 1,
 }) {
@@ -583,10 +617,14 @@ export async function proveCompanyRun({
 			root: scratch,
 			nativeBinarySha256: made.nativeBinarySha256,
 			prompt,
+			runtimeInstructions,
+			resultRulesInside,
 			lane: state.lane,
 			interfaceTools,
 			moreTools,
 			tools,
+			onDemand,
+			review,
 		});
 		Object.assign(run, { startedAt, endedAt: Date.now() });
 		db.before = undefined;
@@ -624,7 +662,7 @@ export async function proveCompanyRun({
 
 /** The run's log as stored: every step's index row, and every block read back through the folder's own read (the shared
  * parser on its bytes, memory-run-files.ts), its lines parsed. */
-async function runLog(code, db, run, runId) {
+export async function runLog(code, db, run, runId) {
 	const index = db.json(`select coalesce(jsonb_agg(jsonb_build_object('j', s.j, 'tool', s.tool, 'call', s.call_id,
 			'finished', s.finished, 'narrow', s.narrow, 'releases', s.releases) order by s.j), '[]')::text
 		from public.qorpera_memory_run_steps s where s.run_id = '${runId}'`);
