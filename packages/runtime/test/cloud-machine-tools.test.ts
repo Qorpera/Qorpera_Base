@@ -256,15 +256,16 @@ describe("machine tools", () => {
 			for (const tools of [agent.tools, helper.tools]) {
 				const start = tools.find((tool) => tool.name === "machine_start")!;
 				const run = tools.find((tool) => tool.name === "machine_run")!;
-				expect(start.description).toContain(
-					"only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins",
+				// The lifetimes are said on the field, which Codex sends (track 3, T3-5).
+				const lifetime = JSON.stringify((start.inputSchema.properties as Record<string, unknown>).lifetime);
+				expect(lifetime).toContain(
+					"sleeps after an hour with no use and no busy program (over about 5% of one core, or moving data)",
 				);
+				expect(lifetime).toContain("to keep a server up");
+				expect(lifetime).toContain("its starter is asked once a week whether the work still needs it");
+				expect(start.description).toContain("a task machine's program busy for hours brings check-ins");
 				expect(start.description).toContain(
-					"a server that only waits stops when it sleeps, and your next run is told",
-				);
-				expect(start.description).toContain("use it to keep a server up");
-				expect(start.description).toContain(
-					"the agent that started it is asked once a week whether the work still needs it",
+					"a server on it that only waits stops when it sleeps (your next run is told)",
 				);
 				expect(run.description).toContain("keep a server up on an always-on machine");
 				// F3 6e-1: a session's work is in the company folder; no repository is attached.
@@ -308,7 +309,7 @@ describe("machine tools", () => {
 			expect(start.description).toContain(
 				"The call waits up to 60 s while it starts, with no model turn spent (waitSeconds: less, 0 for none); if it is not running yet, finish this run normally: you are woken when it runs.",
 			);
-			expect(start.description).toContain("To wake a stopped machine, pass only machine with its name. ");
+			expect(JSON.stringify(start.inputSchema)).toContain("To wake a stopped machine: its name, and nothing else.");
 			expect(start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 60 })).toEqual({
 				operationKey: "k",
 				machine: "build-a",
@@ -1438,23 +1439,28 @@ describe("machine tools", () => {
 					false,
 				);
 			// The agent is told how to ask, and that a smaller machine refuses its desktop.
-			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain(
-				"desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB",
+			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop true gives it a screen");
+			expect(JSON.stringify(f.boundary.specification)).toContain(
+				"A screen: at least 2 cpus and 4 GiB (a smaller machine refuses its desktop).",
 			);
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
 			// Programs start on the desktop with desktop run; the screen itself is machine_screen's.
-			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop run <program> starts a program on it");
+			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop run <program> starts a program");
 			// The size is chosen for the job (Jonas, 13 Nov 2026: custom machines are "built, just not used well
 			// enough"): what uses every cpu, what a larger machine costs, and that it is stopped after. Workers read it too.
 			for (const description of [CLOUD_MACHINE_START_DESCRIPTION, CLOUD_MACHINE_START_WORKER_DESCRIPTION]) {
 				expect(description).toContain(
-					"Pick its size for the job: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. Rendering, encoding and big builds use every cpu: a frame that takes 22 minutes on 2 cpus takes 5 on 8. Hours count size times time awake, so that costs the same: for such work start a machine of 8 cpus and 8 GiB, tell the program to use them all, and stop it with machine_stop when done. ",
+					"Size: cpus, memoryGiB and diskGiB, limited only by what one server holds. Rendering, encoding and big builds use every cpu: a frame that takes 22 minutes on 2 cpus takes 5 on 8, and hours count size times time awake, so it costs the same: start 8 cpus and 8 GiB, tell the program to use them all, and stop the machine with machine_stop when done.",
 				);
+				// The defaults are on the fields, which Codex sends (track 3, T3-5).
+				const sized = JSON.stringify(f.boundary.specification);
+				for (const said of ['"2 by default."', '"4 by default."', '"40 by default."'])
+					expect(sized).toContain(said);
 				expect(Buffer.byteLength(description)).toBeLessThanOrEqual(4096);
 				// What the image brings for renders (deploy/machine/README.md, "Renders"): Blender, and where its starter set
 				// and the guide to it are.
 				expect(description).toContain(
-					"a chromium command, ffmpeg and Blender (with real light, materials and furniture for renders: read /opt/qorpera-assets/README.md) are installed too",
+					"a chromium command, ffmpeg and Blender (with real light, materials and furniture for renders: read /opt/qorpera-assets/README.md) are installed",
 				);
 			}
 		} finally {
@@ -2040,8 +2046,8 @@ describe("machine tools", () => {
 					"press the site's own Copy button",
 					"You never pass the key",
 					"clears the clipboard",
-					"Never type, paste, print, echo or write a key anywhere",
-					"take no desktop shot while a key is on the screen: shots are kept in the company folder",
+					"A key is never typed, pasted, printed, echoed or written anywhere",
+					"no desktop shot is taken while one is on the screen: shots are kept in the company folder",
 					"ask_member with surface secret and connectorId environment",
 					"owner or an admin",
 				])
@@ -2233,15 +2239,14 @@ describe("machine tools", () => {
 				expect(screen.description).toBe(CLOUD_MACHINE_SCREEN_DESCRIPTION);
 				expect(Buffer.byteLength(screen.description)).toBeLessThanOrEqual(4096);
 				for (const words of [
-					"untrusted data from the machine",
-					"look before you act again, and never repeat it blindly",
+					"look before you act again",
 					"An action on a stopped desktop is refused: look first",
 					"x and y are pixels of the screen",
 					"Nothing is saved in the company folder",
 				])
 					expect(screen.description).toContain(words);
 				// machine_start points at it, and keeps desktop start for putting files on the desktop.
-				expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("See and drive the screen with machine_screen");
+				expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("machine_screen sees and drives the screen");
 				expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
 				expect(CLOUD_MACHINE_START_DESCRIPTION).not.toContain("--shot");
 				expect(screen.inputSchema).toMatchObject({ additionalProperties: false, required: ["machine"] });

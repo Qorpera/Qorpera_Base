@@ -63,3 +63,14 @@ test("packages the model login helper apart from the broker and every execution 
 		await rm(temporary, { recursive: true, force: true });
 	}
 });
+
+test("the vault's Claude sign-in installs the Claude Code the box runs", async () => {
+	const pin = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-claude/linux-x64-artifact.json"), "utf8"));
+	const vault = await readFile(join(repositoryRoot, "deploy/first-node/RUNTIME-LOGIN-VAULT.md"), "utf8");
+	const step = vault.slice(vault.indexOf("## Claude sign-in in the vault"));
+	assert.ok(step.includes(`@anthropic-ai/claude-code-linux-x64@${pin.source.version}`));
+	assert.ok(step.includes(pin.source.integrity));
+	assert.ok(step.includes(`"claudeSha256": "${pin.artifact.sha256}"`));
+	assert.ok(step.includes(pin.artifact.bytes.toLocaleString("en-US")));
+	assert.ok(!step.includes("2.1.231 ("), "no step installs the old pin");
+});

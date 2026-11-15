@@ -1,4 +1,4 @@
-import { DEFAULT_SITES_ORIGIN, handleSiteServe, PostgrestSiteStore } from "./site-serve.ts";
+import { DEFAULT_SITES_ORIGIN, handleSiteServe, PostgrestSiteStore, webOrigins } from "./site-serve.ts";
 
 function required(name: string): string {
 	const value = Deno.env.get(name)?.trim();
@@ -6,7 +6,7 @@ function required(name: string): string {
 	return value;
 }
 
-/** The project's first secret key, else the legacy service role key: the two RPCs are the service role's only. */
+/** The project's first secret key, else the legacy service role key: its RPCs are the service role's only. */
 function serviceKey(): string {
 	try {
 		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
@@ -33,5 +33,7 @@ function sitesOrigin(): string {
 
 const origin = sitesOrigin();
 const store = new PostgrestSiteStore(required("SUPABASE_URL"), serviceKey());
+// The web's exact origins (the stack's QORPERA_WEB_ORIGINS, as other functions read it): the production app when unset.
+const web = webOrigins(Deno.env.get("QORPERA_WEB_ORIGINS"));
 
-Deno.serve((request) => handleSiteServe(request, { origin, store }));
+Deno.serve((request) => handleSiteServe(request, { origin, store, webOrigins: web }));

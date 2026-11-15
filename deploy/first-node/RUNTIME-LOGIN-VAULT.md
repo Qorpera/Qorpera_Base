@@ -811,12 +811,15 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
 - **Deploy (in this order):**
   1. Apply migration `20260930564000` (with the release). Until step 7 nobody can begin a Claude sign-in: the
      allow-list is empty and the web offers no Claude button.
-  2. On both vault hosts, the pinned Claude Code binary: `@anthropic-ai/claude-code-linux-x64@2.1.231` (npm integrity
-     `sha512-ou1X+6JWOgbY5pUerfdOmeyPwKwEN515sx9it2sxsYEqKRTvOOHkiN94enRxge9/Z1J2Iqhd4VdkQIl6UoUvYw==`, the guest
-     image's pin), its `package/claude` installed root-owned 0555 as `/opt/qorpera-model-login-helper/claude`.
+  2. On both vault hosts, the pinned Claude Code binary, the same build the Claude Code box runs
+     (`deploy/first-node/native-claude/linux-x64-artifact.json`): `@anthropic-ai/claude-code-linux-x64@2.1.325` (npm
+     integrity `sha512-BqZzMvP/zgLLL34S+7OzbG+cyoFp7gwWHU5koVwsyMlTAz+0zZAmbY+UkzvtN2RXxp6AcMenbYIjQJxoXfUY3w==`),
+     its `package/claude` (365,842,960 bytes, sha256
+     `0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf`) installed root-owned 0555 as
+     `/opt/qorpera-model-login-helper/claude`.
   3. On both vault hosts, the release's vault and helper build (`npm run pack:model-login-helper`, and the shared
      vault's broker build); the helper's `config.json` gains `"claudePath": "/opt/qorpera-model-login-helper/claude"`
-     and `"claudeSha256": "<its sha256>"` (both or neither). Restart the helper, then the broker, and look for
+     and `"claudeSha256": "0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf"` (both or neither). Restart the helper, then the broker, and look for
      `Model login helper: Claude sign-ins on (pinned Claude Code).` A helper restart ends every sign-in in flight,
      Codex ones too: do it when no member is signing in, or tell them to sign in again.
   4. Node 1's mux (and node 2's standby copy): the path map `$qorpera_model_login_broker` keeps every route it has
@@ -828,6 +831,17 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   5. The edge function `native-provider-login` (the `claude-code` path).
   6. The web build.
   7. `insert into public.qorpera_claude_sign_in_members(user_id) values ('<founder user id>');`
+- **Moving a host from 2.1.231 to the box's pin (the release that carries the Claude Code worker, #1833):** hosts that
+  already sign members in with 2.1.231 take steps 2 and 3 again, on each vault host in turn, when no member is signing
+  in: fetch the tarball the artifact names, check its integrity, then the binary's size and sha256 against the
+  artifact; install it root-owned 0555 at `/opt/qorpera-model-login-helper/claude.new` and `mv` it over `claude`; set
+  `claudeSha256` to the artifact's sha256; restart the helper (it refuses a binary whose sha256 is not its config's)
+  and look for the line of step 3. Kept Claude logins are files Claude Code reads, so they stay. What the sign-in reads
+  from Claude Code is the same on 2.1.325: `claude auth login --claudeai` prints Anthropic's link on claude.com (the
+  code redirect on platform.claude.com) and asks for the code on its input, and `claude auth status` answers JSON with
+  `email`. Its JSON now holds more keys, among them `configDirectory` and `loginExpiresAt`, so the login's
+  `provider_account_reference` (the sha256 of that output) differs between two sign-ins of one account; nothing reads it
+  for a Claude login.
 - **Rollback:** delete the member's row from `qorpera_claude_sign_in_members`. That stops new Claude sign-ins and
   those in flight: the vault's read refuses them, so their code is never taken and nothing is saved. Kept Claude
   logins stay until their member signs out (or delete their rows). Removing `claudePath`/`claudeSha256` from the

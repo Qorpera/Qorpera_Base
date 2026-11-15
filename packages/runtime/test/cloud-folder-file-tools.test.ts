@@ -273,7 +273,7 @@ it("refuses an image it does not show by name, before releasing anything", async
 		f.seed("photos/refused", bytes, mediaType);
 		await refuses(f.call("company_read", { path: "photos/refused", offset: 0, limit: 4096 }), CloudToolRefusal, text);
 	};
-	const opening = "; open it on the company's computer";
+	const opening = "; open it on a machine";
 	// Another format, named by its own start or by its type.
 	await refused(
 		Buffer.from("II*\0 a TIFF file", "latin1"),
@@ -473,7 +473,7 @@ it("answers each path on its own, without failing the others: absent, a folder, 
 			path: "bin/data",
 			kind: "file",
 			version: version("bin/data"),
-			refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on the company's computer",
+			refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on a machine",
 		},
 		{
 			path: "photos/pair.png",
@@ -489,7 +489,7 @@ it("answers each path on its own, without failing the others: absent, a folder, 
 			kind: "file",
 			version: version("photos/scan.tiff"),
 			refused:
-				"COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here, and this one is TIFF; open it on the company's computer",
+				"COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here, and this one is TIFF; open it on a machine",
 		},
 		{
 			path: "docs/plan.md",
