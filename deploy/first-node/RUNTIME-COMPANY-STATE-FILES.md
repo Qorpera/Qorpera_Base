@@ -279,6 +279,34 @@ wake has waited more than 30 minutes and no routine wake was given a run in the 
 own turns do not count (at Brooks, routine wakes waited from 9 November while members' turns ran on 10,
 11 and 14 November).
 
+### `QorperaOS/vision/reflections.md`
+
+What the company took up from the platform (the founder, 15 November 2026: the Co-Founder reflects "when a newer better
+model is released, or an update to behavior or platform capability drops"; QORPERA-RUNTIME-CONTRACT.md, the 2026-11-15
+amendment). A plain markdown file, not a structured kind: no settings, no index, no SQL rule beyond any file's. The
+Co-Founder writes it with `record_reflection`, one line per reflection, newest last; members and agents may edit it as
+any file.
+
+```
+# What we took up from the platform
+- map-kit | 2026-11-17 | use | Strategy keeps the company's map; first layer from our reading.
+- shape-kits | 2026-11-17 | later | We have no numbers that change over time yet.
+```
+
+| Field | Values |
+| --- | --- |
+| update | an id of `PLATFORM_UPDATES` (the runtime bundle's list) |
+| day | the day it was recorded, `YYYY-MM-DD`, UTC |
+| decision | `use` (taken up: who and how), `later` (not yet: why), `not` (not for us: why), `reviewed` (a model or behaviour update gone over: what changed) |
+| line | one line, at most 160 bytes |
+
+The reader (`parseReflections`) is tolerant: it reads every line, skips any that do not read as a reflection, and the
+newest line for an id wins. The tool appends one line in the form above and keeps every other line as written; a new
+file starts with the heading. The tool writes at most 64 KiB and the planning run reads up to 256 KiB (a file a founder
+grew by hand). Past either, the advice is to keep only the newest line for each update, which keeps every decision;
+moving lines out of the file would bring their updates back. A planning run that cannot read the file gets `updates`
+with a `problem` saying so, and no list.
+
 ### `QorperaOS/agents/<handle>/agent.md`
 
 | Key | Required | Values |
@@ -1076,6 +1104,7 @@ of the body, for readers that should not reach the storage server.
 | company name | `qorpera_profiles.name` | the vision index |
 | vision | not composed | `QorperaOS/vision/vision.md` in full, every run, version recorded |
 | the company's reading | none | `QorperaOS/vision/reading.md` in full, every run, when there is one (the runtime's step of 20260930765000) |
+| the platform's updates | none | the Co-Founder's planning runs only: the updates in the runtime bundle's `PLATFORM_UPDATES` the company has not reflected on, from `QorperaOS/vision/reflections.md` and the day the `QorperaOS/vision` folder was made (an update dated up to 30 days before it counts), as the context key `updates` (2026-11-15 amendment) |
 | the company's senses | none | the Co-Founder's company runs only: `qorpera_describe_company_senses(binding)`, a host call (20260930765000; below) |
 | agent identity and instructions | staff row, charter | the agent index (settings, instructions copy) pinned to the path version, plus its folder path |
 | first task | kickoff session input | the first todo file (pending decision 2) |
@@ -1319,6 +1348,41 @@ C1d (bytes):
   second environment's root and its revocation); the restricted hire asks the owners and admins with no Always allow,
   also on a retry, its own allow and an earlier member's answer are refused by the recorder, and an owner's answer
   saves it with that owner as approver). 652's pin of the layering's snapshot-v1 text strips the `folder-v2` lines.
+
+**Built (the company's reading of itself, 20260930766000): `end_role`** (`packages/runtime/src/cloud-folder-hiring.ts`),
+the other end of a hire, offered to every company run that is offered `hire_agent` (the founder, 14 November 2026: "It
+should feel like the company is conscious almost"; no tool could archive an agent before: `company_edit` answered
+`review_required`).
+- `{agent, reason, operationKey}`: `agent` is the handle (folder name), `reason` one sentence a founder reads (at most
+  280 characters).
+- Before the automatic review (`prepare`), the agent's `agent.md` is read: the Co-Founder, the calling agent and a
+  handle that is no agent's folder are refused (`REFUSED: …`), and the card ("End an agent's role") names the agent as
+  its file has it, with the reason. Review class `delegation`, as SQL's for a status change.
+- An agent already archived is told apart by the call's receipt (reviews r1 and r2 of #1819), read with
+  `qorpera_folder_run_receipt_exists(environment, actor, key)` (20260930766000; the run's own receipts, the runtime's
+  role only) under the operations layer's key `end_role:end-role:<operationKey>`, before the review and again before
+  the receipt. With a receipt, the call is a repeat of one that archived the agent: it goes on to its receipt, which
+  replays its stored answer, in this run or a resumed one (the card says "Its role has already ended: nothing
+  changes"). With none, it is a new call on a role that has already ended: `REFUSED: <name>'s role has already ended`
+  before the review, with no receipt, no commit and nothing kept.
+- Under the receipt: one `write` unit, `setCompanyStateSettings(text, {status: "archived"})` over the version read,
+  staged, its review recorded (`recordReview`, tool `end_role`; the recorder takes `end_role` since 20260930766000) and
+  committed with it. The follow-up queue then pauses its routines, revokes its access and closes its threads; nothing
+  else is deleted, and a member who sets it active again brings it back. The result's `next` says so and that the
+  caller tells the founders who and why.
+
+**Built (the company's reading of itself, 20260930766000): `update_reading`** (`packages/runtime/src/cloud-folder-reading.ts`),
+the Co-Founder's only, in its company runs.
+- One `write` unit of `QorperaOS/vision/reading.md` (`writeReadingFile`) under the call's receipt, over the version
+  read (a new file without one). Plain, never reviewed: the reading is the company's bookkeeping.
+- Checked with the arguments: the file's own problems (the shared parser's), `team`'s shape.
+- Checked before the receipt: each agent of a thing is an active agent's folder; each agent of a change is an agent's
+  folder (an ended one is archived); each member id waited for is a member (`qorpera_cofounder_crew`).
+- **The owed decision**: when a saved reading parses and the new `attention` names another key, `team` is required:
+  the changes (`{agent, what, line}`, 1 to 6) or `{"none": "<why>"}`, else `REFUSED`. Given changes are saved as the
+  file's `changes`; with none, or with no `team` and no move, the saved changes stay while the saved file is under
+  seven days old (its folder entry's `updatedAt`) and are emptied after. A saved file that does not parse owes nothing
+  and is replaced.
 
 **Built (W4b): `create_group_chat`** (`packages/runtime/src/cloud-folder-group-chats.ts`), as W4a.
 - One `new_folder` unit `QorperaOS/agents/groups/<handle>` with `group.md` (`writeGroupFile`): the name, no subtitle (the app

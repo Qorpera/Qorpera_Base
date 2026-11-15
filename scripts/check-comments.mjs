@@ -19,6 +19,7 @@ const DIRECTIVES = {
 	script:
 		/^(?:biome-ignore\b|@ts-(?:expect-error|ignore|nocheck|check)\b|eslint-(?:disable|enable)\b|prettier-ignore\b|(?:v8|c8|istanbul) ignore\b|@(?:vitest|jest)-environment\b|[@#]__(?:PURE|NO_SIDE_EFFECTS)__|@vite-ignore\b|webpack[A-Z]\w*:|[#@] ?sourceMappingURL=|@(?:license|preserve)\b|<(?:reference|amd-module|amd-dependency)\b)/,
 	shell: /^shellcheck /,
+	sql: /^@fixture [0-9a-z_.-]+\.test\.sql until "[^"\n]+"$/,
 	python: /^(?:type:|noqa\b|pragma:|pylint:|mypy:|ruff:|fmt:|-\*- )/,
 };
 const MARKERS = { rust: [MARKER, "SAFETY:"] };

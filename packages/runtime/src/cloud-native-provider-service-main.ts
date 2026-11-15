@@ -18,6 +18,7 @@ import { HttpCloudCompanyFolderBytes } from "./cloud-company-folder-bytes.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
 import { CloudNativeCompanyPresence } from "./cloud-company-path-presence.ts";
 import { httpsCompanyDataDoor } from "./cloud-data-tools.ts";
+import { createCloudHomeChannel } from "./cloud-home-channel-client.ts";
 import { recoveryBase64, recoveryDigest, recoveryRecord } from "./cloud-identity-recovery-crypto.ts";
 import {
 	backupNativeIdentityKey,
@@ -541,6 +542,19 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								binding,
 								holder,
 								pages: commandPages,
+							}),
+					}
+				: {}),
+			// The agent's home (lanes/agent-box-20261113, slice 1) rides the same ingress and the same credential as a
+			// machine command, on its own route. A run gets one only where its company's switch is on.
+			...(codingConfiguration && codingToken
+				? {
+						homeChannel: (binding: CloudNativeToolBinding) =>
+							createCloudHomeChannel({
+								url: codingConfiguration.url,
+								token: codingToken,
+								binding,
+								holder,
 							}),
 					}
 				: {}),

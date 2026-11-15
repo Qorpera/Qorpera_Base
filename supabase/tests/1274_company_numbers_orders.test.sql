@@ -291,9 +291,11 @@ begin
 			and strpos(prosrc, '20260930768000') > 0 and strpos(prosrc, '20260930776000') > 0)::text
 		from pg_proc where oid = 'public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)'::regprocedure),
 		'true', 'the dispatcher''s markers');
-	-- Who may read is decided in one function, and the dispatcher asks it.
-	perform pg_temp.o_same((select count(*)::text from pg_proc where pronamespace = 'public'::regnamespace
-		and prosrc like '%qorpera_company_numbers_orders_readable(%'), '1', 'one caller of the read rule');
+	-- Who may read is decided in one function, and the dispatcher asks it (and slice O2's change dispatcher,
+	-- 20260930777000: who may read may change).
+	perform pg_temp.o_same((select string_agg(proname, ',' order by proname) from pg_proc
+		where pronamespace = 'public'::regnamespace and prosrc like '%qorpera_company_numbers_orders_readable(%'),
+		'qorpera_company_numbers_answer,qorpera_company_numbers_change', 'the read rule''s callers');
 end $$;
 
 -- 2. A Stripe hook that has verified nothing is waiting; a paid Checkout Session makes one order, and nothing a buyer

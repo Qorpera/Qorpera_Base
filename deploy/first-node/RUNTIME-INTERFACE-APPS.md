@@ -355,6 +355,8 @@ in every app of the kit.
 | `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
 | `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
 | `map` | what are we making, and who is at it? | the company, or one owner's area, as one picture: three to seven things, each its shape (one of the reading's 25), pale and filled from the bottom as far as it is built or known, the attended one biggest in the middle and the others bigger the more agents stand at them, the agents' figures at a thing's lower corners with a mark on those at work, a member's mark where a thing waits; a thing opens into a layer of what is made inside it (1 to 12 things, four layers deep, 80 in all), zoomed into with a spring, its own shape small beside the layer's title as the mark of where you are, the path at the top (each step a button) and Escape going up one, the focus back on the thing that was opened (no entry in the browser's history); a thing that has an interface of its own links to it (`opens`); a thing not looked at for 14 days is pale with its age, `unknown` dashed with "?", `assumed` dashed and pale. Its first layer may be the company's reading of itself, live (`top: "reading"`, `qorpera.reading()`, §5): the company's sentence as the title, a quiet line of what changed with "Not right?" (a `tell`), the team in a row before the first reading, grey and still with since when and why while the company cannot run (Jonas, 15 November 2026: "it should not be the platform that draws it, rather an agent should maintain it"; asked how: "Use a map kit") |
+| `ring` | when is it? | a year, a month or a week as one ring, its months or days round it and the part gone by a shade darker, a hand at now, marks for points in time (a deadline, a launch, a payday) and wedges for stretches (a campaign, a holiday, a season) that reach out as far as their amount where they have one; the middle holds the next thing and how many days off it is, or a number, and follows a finger, the pointer or the arrow keys round the ring; at most 12 marks and 8 wedges, and what falls outside the span is not drawn (15 November 2026) |
+| `flow` | where does it come from, and where does it go? | money or people as wide soft bands from where they come, through the company's bar in the middle (or straight from each source to each end, with `links`), to where they go, each band as wide as its amount and what is kept last in green; past six ends on a side the smallest join one band, Other; one big number, all that came in, which becomes a band's amount and share as a member points at it or steps with the arrow keys; an amount nobody knows is an open band with "?" (15 November 2026) |
 
 An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
 call the web does not already answer.
@@ -368,7 +370,10 @@ call the web does not already answer.
 
 - **`save_app` writes the two that are Qorpera's.** With `manifest.kit` a data kit, a new app needs its data file
   among its files (`APP_DATA_MISSING` without it), and the data must read as the kit's (`APP_DATA_INVALID`, with why:
-  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without). A call that names
+  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without; a ring's dates that are
+  no `YYYY-MM-DD`, a ring of more than 12 marks or 8 wedges, a flow's end with no name or an id twice, a flow of more
+  than 24 ends a side or 24 links, and a link to an end it lacks). Its answer's `look` also names a ring's marks and
+  wedges outside its span and a flow's side whose smallest ends join Other. A call that names
   `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
   (`APP_KIT_ENTRY`). On a later save the two are written again only where the folder holds none or other text (by
   hash): new data, a new title, a picture that has arrived, or the engine of a newer runtime. An existing app takes
@@ -599,6 +604,57 @@ image, an image answer of `app_guide`) is a mechanism of its own, so the guide t
 
 For any tool: what a model must choose by goes in the description (4096 bytes) or in field descriptions of a schema
 that stays under the bound; a bound on a number or a length is said in words; anything longer is an answer.
+
+## 3e. Retired interfaces (15 November 2026)
+
+The founder, 15 November 2026: "users should also get a "retire interface" config when rightclicking an interface to
+stop maintaining it, and hide it". What follows is the lane's design (lanes/company-reading-20261114), not his words.
+
+**The state** is one company file, `apps/retired.md` (`cloud-client/app-retired.ts`, `APP_RETIRED_PATH`), one line an
+interface:
+
+```
+# Retired interfaces
+- old-plan | 6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8 | 2026-11-15T09:30:00Z
+```
+
+the app's folder name, the member who retired it (their user id) and when (ISO, UTC). An app is retired while its name
+has a line that reads; the first line of a name says who and when; any other line is kept as written and means
+nothing; at most the first 200 lines are read, of a file of at most 1 MiB (a larger one, or one that is not text,
+retires nothing). It is not a key of `app.toml`: an unknown key fails the manifest's parse in every older reader and
+hides the app, `save_app` rebuilds the manifest from its fields, and a Restore of an old `app.toml` would undo it.
+`retired.md` is no app's folder (`appPath` reads none in it), so the drawer, `organize_apps` and `save_app`, which list
+the folders of `apps/`, never take it for an app. `parseRetiredApps` reads it, `retireApp` adds a line at the end and
+`bringBackApp` takes a name's lines out, every other byte as written.
+
+**Who writes it: members only.** A member retires an interface, or brings it back, from their own sidebar (§4); the
+web writes the file through the member's folder client, as its other member writes. No SQL rule guards it: the member
+commit route is open for `apps/`, and the runtime's tools are where an agent is held.
+
+**The agents** (the runtime, `cloud-folder-app-retired.ts`) read the file as the run's own read of the folder, as
+`organize_apps` reads `apps/groups.md`, and a tool that answers releases it with its other reads:
+
+- `save_app` on a retired name, an existing app or a new one under that name, `post_app` on a retired app either way,
+  and `make_picture` into a retired app's folder are refused before their review, and again before they write.
+- `company_write`, `company_edit`, `company_mkdir`, `company_delete` and either end of `company_move` are refused for a
+  path in a retired app's folder, the folder itself included.
+
+  The refusal, as the agent receives it (the tool boundary puts `REFUSED: ` in front): "APP_RETIRED: a member retired
+  the interface <name> on <day month year>. Leave it: do not change it, post it or remake it under another name, and
+  conclude any routine you keep only for it. A member brings it back from their own sidebar; tell whoever asked for
+  the change."
+- The file itself is closed to every agent write, edit, new folder, move and deletion, and so is a move of the `apps`
+  folder while anything stands at its `retired.md`, and a move of a folder holding a `retired.md` onto the `apps`
+  folder's own path (moving the `apps` folder away with no list in it stays allowed; that second rule closes the way
+  back in): `APP_RETIRED_MEMBERS_ONLY: nothing was changed; apps/retired.md lists the interfaces
+  members retired, and only a member retires an interface or brings one back, from their own sidebar. Leave the file
+  as it is.` (A deletion of `apps` itself is refused already: only an empty folder is deleted.)
+- `organize_apps list` ends a retired app's line with ` (retired by a member)` and counts it in no group's and no loose
+  number of apps, since no member's drawer shows it; moving it in the layout stays allowed.
+
+No tool's description, no role text and no context prose says any of this yet: an agent learns it from the refusal and
+the list. Not held: a company machine's own writes into an app's folder (the machine's file channel is not a tool of
+the run), and a member's own changes.
 
 ## 4. Web
 
@@ -1153,6 +1209,9 @@ thread's "Quoted from an email" title).
     `save_app`'s fields a line each and its rule that a kit's file needs its guide read, and a model of no input
     refused. One migration (20260930762000: the tool's name in the observations' list); no node change and no change
     to the web.
+12. Retired interfaces (§3e, 15 November 2026): the file's format (`cloud-client/app-retired.ts`) and the runtime's
+    refusals and list label (`cloud-folder-app-retired.ts`). No migration, no tool name, no node change. The web's part
+    (the menu item, hiding, the retired page and the way back) is a change of its own, released after the runtime.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

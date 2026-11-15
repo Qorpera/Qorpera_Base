@@ -198,6 +198,9 @@ Table `qorpera_event_deliveries`:
   locked for more than 100 ms puts the delivery in `qorpera_order_retries` for the upkeep
   (`qorpera_order_upkeep`, pg_cron job `qorpera-orders`, every 10 minutes), which retries it while its
   body is kept. Deleting a hook keeps its orders (their hook id is cleared).
+  What only the company knows (packed, on its way, delivered, cancelled) and orders outside Stripe it says
+  with the changes `qorpera/order-state` and `qorpera/order-add` (20260930777000), which never touch
+  Stripe's facts.
 
 **Answers.**
 
