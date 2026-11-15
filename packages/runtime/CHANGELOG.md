@@ -3,11 +3,11 @@
 ## [Unreleased]
 - Release v248 (the desktop-computers lead's plain runtime release: a member opens an app or a file on an agent's computer
   #1781 and #1808, a member-woken machine sleeps 10 minutes after the member is gone #1782 and #1783, and master since v247):
-  runtime bundle 248 `0485fc99d0ef16592ac17a6441d1b531471e6545c2c87c7c5a4552a5a5e277a1` (activation `20260929024899`,
+  runtime bundle 248 `cc7b46c6bab430a45b4f9830b4f0963163348ddb5bb2ab05270e1055fd81aacf` (activation `20260929024899`,
   previous 247 `e92d0a54a98a`). Its activation requires the release's nine migrations, which the roll's `migrate` runs
   before the coding executors and the switch: `20260930758000`, `20260930759000`, `20260930763000`, `20260930764000`,
   `20260930765000`, `20260930767000`, `20260930768000`, `20260930769000` and `20260930774000`. The guest moves in three
-  files: the native provider host (`383e569a`), the LXD runner bootstrap (`6e0a1533`) and the LXD native login bootstrap
+  files: the native provider host (`885987a1`), the LXD runner bootstrap (`6e0a1533`) and the LXD native login bootstrap
   (`92e77152`); the native Codex stays `9c299f88`.
 - A member opens one of the company's apps on an agent's desktop computer (migration `20260930758000`, MEMBER-OPEN-BRIEF; Jonas, 14 Nov 2026: "Build it now"). The member listener's start route takes `{"open": "<path>"}` beside `{}` (`cloudMemberMachineOpenPathValid`: 1 to 500 bytes, no empty piece, `.` or `..`, no control character, lone surrogate or backslash; anything else is still `member_start_invalid`) and answers `opened`; the start's refusals add `DESKTOP_OPEN_PATH_INVALID`, `DESKTOP_OPEN_NOT_FOUND`, `DESKTOP_MEMBER_IN_CONTROL`, `DESKTOP_OPEN_NO_FOLDER` and `DESKTOP_DID_NOT_OPEN` (the last two logged by their codes). The peer route carries only the start's id, as before; its answer may say `opened`.
 - Agents learn the views the company is owed (company views step 4, slice O2a: lanes/company-views-20261114/DESIGN-4.md; deploy/first-node/RUNTIME-INTERFACE-APPS.md §3d; no migration, no web change): the `look` guide says that `apps/products`, `apps/money` and `apps/ads` are views members find first, to make one when asked at exactly that folder, and that the platform draws the website itself; a `save_app` of one of those three (not a concept, not icons alone) adds "This is the company's <name> view: members find it first in the apps drawer." to its answer's `look`, a line that asks for no fix. No tool description or schema changes, so the tool catalog's pins stand.
