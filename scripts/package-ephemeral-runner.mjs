@@ -42,6 +42,7 @@ const files = [
 	"qorpera-sandbox-probe.mjs",
 	"qorpera-lxd-runner-bootstrap.mjs",
 	"qorpera-lxd-native-login-bootstrap.mjs",
+	"qorpera-claude-home-shell.mjs",
 	"run-job",
 ];
 const artifacts = [];
