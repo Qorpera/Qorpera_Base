@@ -3,7 +3,7 @@
 // runtime as text: packages/runtime/kits/explainer/engine.js, which `save_app` writes into an app's folder, becomes
 // packages/runtime/src/cloud-app-kit-explainer-engine.generated.ts, the voice-*.cjs scripts beside it, which the
 // runtime runs on a company machine, become cloud-app-kit-explainer-voice.generated.ts, and the engines of the data
-// kits (packages/runtime/kits/{model,board,path,object,curve,stack,shelf}/engine.js) and each one's guide for agents
+// kits (packages/runtime/kits/{model,board,path,object,curve,stack,shelf,map}/engine.js) and each one's guide for agents
 // (KIT.md beside it, which app_guide answers with) become cloud-app-kit-engines.generated.ts, and the agents' figures a
 // kit page shows (packages/runtime/kits/figures/<id>.webp, small copies of the web's artwork) become
 // cloud-app-kit-figures.generated.ts. Run it after changing one:
@@ -32,6 +32,7 @@ export const KIT_ENGINE_SOURCES = {
 	CURVE_ENGINE_JS: "packages/runtime/kits/curve/engine.js",
 	STACK_ENGINE_JS: "packages/runtime/kits/stack/engine.js",
 	SHELF_ENGINE_JS: "packages/runtime/kits/shelf/engine.js",
+	MAP_ENGINE_JS: "packages/runtime/kits/map/engine.js",
 };
 /** What an agent is told of each data kit: what it draws and what its data file holds. */
 export const KIT_GUIDE_SOURCES = {
@@ -42,6 +43,7 @@ export const KIT_GUIDE_SOURCES = {
 	CURVE_KIT_GUIDE: "packages/runtime/kits/curve/KIT.md",
 	STACK_KIT_GUIDE: "packages/runtime/kits/stack/KIT.md",
 	SHELF_KIT_GUIDE: "packages/runtime/kits/shelf/KIT.md",
+	MAP_KIT_GUIDE: "packages/runtime/kits/map/KIT.md",
 };
 export const KIT_ENGINES_GENERATED = "packages/runtime/src/cloud-app-kit-engines.generated.ts";
 /** The agents' figures, by id (the web's STAFF_CHARACTER_IDS), each a small WebP a kit page carries as a data: URL. */

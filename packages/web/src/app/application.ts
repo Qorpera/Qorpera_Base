@@ -41,6 +41,7 @@ import { AuthController, displayName } from "./auth.ts";
 import { agentWorks, CompanyController } from "./company.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
+import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
 import {
@@ -71,6 +72,7 @@ import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
+import { chooseInCompanyFolder } from "./views/company-folder-choose.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -528,6 +530,8 @@ export function mountApplication(
 		CompanyController,
 		{ readonly notes: Map<string, HeldNote>; readonly back: Map<string, () => void> }
 	>();
+	/** Each company's reading of itself for its app pages that read `reading` (the map kit), while the company is open. */
+	const appReading = new WeakMap<CompanyController, CompanyReading>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -849,6 +853,36 @@ export function mountApplication(
 				hints: (listener) => controller.onInvalidate(listener),
 				// The machine's clock and backdrop follow the company's time zone (20260930739000).
 				timeZone: () => controller.store.get().team?.timeZone,
+				// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
+				// folder when the page is its index.html (the helper serves the folder), else the page itself.
+				apps: () =>
+					controller.store
+						.get()
+						.apps?.filter((app) => app.manifest !== null)
+						.map((app) => ({
+							name: app.manifest?.name ?? app.name,
+							path:
+								app.manifest === null || app.manifest.entry === "index.html"
+									? app.path
+									: `${app.path}/${app.manifest.entry}`,
+						})),
+				// Open's "A file…": the company folder's own browser in choose mode, read as the member.
+				chooseFile: (signal) => {
+					const role = controller.store.get().team?.role;
+					if (!role) return Promise.resolve(null);
+					return chooseInCompanyFolder(
+						new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+						}),
+						signal,
+					);
+				},
 			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
@@ -1259,6 +1293,32 @@ export function mountApplication(
 				},
 			};
 		};
+		// The company's reading of itself, its agents and its standing, for a page that reads `reading`
+		// (app/company-reading.ts): read as the member, handed over as plain names.
+		const readingHost = (): CompanyReading => {
+			let reading = appReading.get(controller);
+			if (!reading) {
+				reading = new CompanyReading(
+					{
+						folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+						people: () => {
+							const state = controller.store.get();
+							return {
+								staff: state.staff,
+								working: (agentId) => agentWorks(controller.agentState(agentId)),
+								cofounderId: controller.cofounderId(),
+								members: state.team?.members ?? [],
+								viewer: controller.userId,
+							};
+						},
+						standing: () => readCompanyStanding(cloud, controller.profile.profileId),
+					},
+					controller.signal,
+				);
+				appReading.set(controller, reading);
+			}
+			return reading;
+		};
 		const panelHost = (beside: boolean): AppPanelHost => ({
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 			agents: () =>
@@ -1273,6 +1333,7 @@ export function mountApplication(
 							working: agentWorks(now),
 						};
 					}),
+			reading: readingHost(),
 			readApps: () => companyApps?.read() ?? Promise.resolve([]),
 			apps: () => companyApps?.apps ?? [],
 			agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),

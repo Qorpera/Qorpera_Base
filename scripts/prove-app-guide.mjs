@@ -6,7 +6,7 @@ import { answerOf, finish, pass, platformCommit, proveCompanyRun, textObjects } 
 // schema, and no model received one: Codex sends no field description of a schema of 5,000 bytes or more. Nobody had
 // read a request as the model gets it. This reads one:
 // 1. the first request carries save_app with its fields' descriptions (which kit draws what, where the guides are), and
-//    app_guide with its thirteen guides;
+//    app_guide with its fourteen guides;
 // 2. a kit's file from a run that has not read the kit's guide is not saved, and the answer names the guide;
 // 3. app_guide's answer reaches the model whole: the guide's text, byte for byte;
 // 4. the same save then applies, with the data the guide's own example gives (taken from the answer the model got).
@@ -69,13 +69,14 @@ finish(
 				"curve",
 				"stack",
 				"shelf",
+				"map",
 				"explainer",
 				"style",
 				"reads",
 				"writes",
 				"icons",
 			]);
-			pass("the model is offered app_guide with its thirteen guides");
+			pass("the model is offered app_guide with its fourteen guides");
 
 			const [blind, guide, saved] = outputs;
 			assert.equal(blind.envelope.status, "denied");

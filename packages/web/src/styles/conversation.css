@@ -838,6 +838,27 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel:not(.is-entered) .machine-screen.is-controlling .screen-viewer-enter { top: 8px; transform: translateX(-50%); min-width: 0; min-height: 24px; padding: 2px 12px; font-size: 12px; }
 .computer-loading p.computer-loading-detail { margin-top: -6px; color: #8e9097; }
 .computer-loading p.computer-loading-detail[hidden] { display: none; }
+/* Open (20260930758000): on the preview top right before the close, shown with the other hover controls; entered,
+   beside the title. It opens a menu of the company's apps. */
+.computer-panel .computer-opener { display: inline-flex; align-items: center; gap: 2px; height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.computer-panel .computer-opener[hidden] { display: none; }
+.computer-panel .computer-opener:hover, .computer-panel .computer-opener.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
+.computer-panel .computer-opener .icon { flex: none; width: 14px; height: 14px; }
+.computer-panel > .computer-opener { position: absolute; top: 6px; right: 34px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel:hover > .computer-opener, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-opener, .computer-panel > .computer-opener.menu-open { opacity: 1; pointer-events: auto; }
+.computer-panel.is-entered > .computer-opener { display: none; }
+.computer-panel:not(.is-entered) .machine-screen-opener-slot { display: none; }
+.computer-panel.is-entered .machine-screen-opener-slot { display: flex; flex: 0 1 auto; min-width: 0; margin-right: auto; }
+.computer-panel.is-entered .machine-screen .computer-opener { color: rgb(255 255 255 / 82%); filter: none; }
+.computer-panel.is-entered .machine-screen .computer-opener:hover, .computer-panel.is-entered .machine-screen .computer-opener.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
+@media (hover: none) {
+	.computer-panel:not(.is-entered) > .computer-opener { opacity: 1; pointer-events: auto; }
+	/* The close is 36px wide for a finger (above): Open keeps clear of it (review r5 of #1781). */
+	.computer-panel > .computer-opener { right: 46px; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.computer-panel > .computer-opener { transition: none; }
+}
 
 /* New conversation: a "To:" field with one short list hanging from it. */
 .new-conversation { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -1561,11 +1582,18 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .thread-ready-card.is-asking .interaction-call { padding-right: 0; }
 .thread-ready-card .interaction-call > strong { flex: none; }
 @media (max-width: 900px) { .thread-ready-card.is-asking { max-width: 82%; } }
-/* On a phone the three buttons fit one row inside a bubble's width. */
+/* The three buttons keep one row down to the narrowest card a 360 px phone draws: their row is the measure, not the
+ * window (beside the rail a thread, and so the card, is as narrow in a window of 1000 px as on a phone: "Not yet" fell
+ * to a row of its own there). The card's buttons always say the same short words (views/release-desk.ts, `here`), so
+ * the measure holds for a first version and while a press is on its way. */
+.thread-ready-card > .whats-new-actions { container-type: inline-size; }
+@container (max-width: 19em) {
+	.thread-ready-card .whats-new-actions .btn { min-height: 34px; padding-inline: 11px; font-size: 13.5px; }
+}
+/* On a phone the card and the gaps between its buttons are tighter too. */
 @media (max-width: 520px) {
 	.thread-ready-card.is-asking { padding-inline: 14px; }
 	.thread-ready-card .whats-new-actions { gap: 6px; }
-	.thread-ready-card .whats-new-actions .btn { min-height: 34px; padding-inline: 11px; font-size: 13.5px; }
 }
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
 .interaction-secret { flex: 1 1 200px; }

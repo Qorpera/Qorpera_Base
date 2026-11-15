@@ -66,7 +66,7 @@ write, with the tools they already have, and need no migration.
 | `entry` | relative path to an `.html` file | `index.html` | the page that opens |
 | `owner` | agent handle | the creating agent | who made it; the app's header names it |
 | `posted` | true or false | false | shown in every member's apps drawer |
-| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions`, `data`, `money`, `site` | `[]` | the live sources the app may read (§5) |
+| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions`, `data`, `reading`, `money`, `site` | `[]` | the live sources the app may read (§5) |
 | `writes` | list of `answers` and `table:<name>`, at most 16 | `[]` | what the app may ask a member to change (§5 "Changes"); `<name>` is a company table's folder name, never `areas` |
 | `concept` | true or false | false | a concept of the company's product: it opens in the Concepts viewer (`#/c/<id>/concepts/<name>`, full screen, a side panel to pick a concept), and the drawer shows one Concepts entry for all of them, posted or not |
 | `cover` | relative path to a `.png`, `.jpg` or `.webp` in the app's folder | none | the picture of a concept in the viewer's side panel; without one, its emblem |
@@ -354,6 +354,7 @@ in every app of the kit.
 | `curve` | where is it going? | one value over time, big: the past as a filled area, what is expected as a dotted line inside a band as wide as it is unsure, a "now" line, a dashed safe level, up to three marked points, and the value that matters large at the top, which follows a finger, the pointer or the arrow keys along the curve; a future nobody has said anything about is fog (14 November 2026) |
 | `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
 | `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
+| `map` | what are we making, and who is at it? | the company, or one owner's area, as one picture: three to seven things, each its shape (one of the reading's 25), pale and filled from the bottom as far as it is built or known, the attended one biggest in the middle and the others bigger the more agents stand at them, the agents' figures at a thing's lower corners with a mark on those at work, a member's mark where a thing waits; a thing opens into a layer of what is made inside it (1 to 12 things, four layers deep, 80 in all), zoomed into with a spring, its own shape small beside the layer's title as the mark of where you are, the path at the top (each step a button) and Escape going up one, the focus back on the thing that was opened (no entry in the browser's history); a thing that has an interface of its own links to it (`opens`); a thing not looked at for 14 days is pale with its age, `unknown` dashed with "?", `assumed` dashed and pale. Its first layer may be the company's reading of itself, live (`top: "reading"`, `qorpera.reading()`, §5): the company's sentence as the title, a quiet line of what changed with "Not right?" (a `tell`), the team in a row before the first reading, grey and still with since when and why while the company cannot run (Jonas, 15 November 2026: "it should not be the platform that draws it, rather an agent should maintain it"; asked how: "Use a map kit") |
 
 An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
 call the web does not already answer.
@@ -409,7 +410,10 @@ call the web does not already answer.
   `data-kit-src="figure:<id>"`, since a page has no network and the figures are not the app's files. The pictures are
   `packages/runtime/kits/figures/<id>.webp`, and `npm run generate:app-kits` writes them into
   `cloud-app-kit-figures.generated.ts`. `stack` and `shelf` draw the asking agent or the maker by it; with none, the
-  name's first letter in a soft circle.
+  name's first letter in a soft circle. A `map`'s page carries all twelve, since its data names agents by their names
+  and who stands where is found when the page opens: `save_app` adds `reading` to a map's reads (never takes it away)
+  when its first layer is the company's reading or a thing names an agent, and the engine takes each agent's figure,
+  and whether it works now, from `qorpera.reading()`'s team; an agent the company does not have stands nowhere.
 - **A note to the app's owner** (`tell`, §5; Jonas, 13 November 2026: "you can't act very much inside of the
   interfaces"). The detail a tap opens has one quiet button at its foot, never on the stage: `board`'s item sheet
   (and in `choose` a direction's world, in `wall` the picture's lightbox), `path`'s step sheet, `object`'s part note,
@@ -727,6 +731,7 @@ await qorpera.list("reports")                 // a folder's entries: name, path,
 await qorpera.table("tasks")                  // a table's name, columns and rows
 await qorpera.todos()                         // each agent's todos: agent, title, status, updatedAt
 await qorpera.agents()                        // agents: name, role, working
+await qorpera.reading()                       // the company's reading of itself, its team and its standing (`reading`)
 await qorpera.questions()                     // the agents' open questions that point at this app
 await qorpera.query("shop/sales", params)     // a company database's question (`data`, RUNTIME-COMPANY-DATABASES.md §5)
 await qorpera.query("qorpera/money-now")      // the platform's own numbers of the company (`money`, `site`): below
@@ -779,6 +784,23 @@ Rules:
 - **Never into the bridge:** the member's token, email, id or session, this app's own state, other members' settings,
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.
+- **The company's reading** (`reading` in `reads`; the `map` kit; Jonas, 15 November 2026: "Use a map kit"): a page
+  reads no file of `QorperaOS/`, so the web reads `QorperaOS/vision/reading.md` as the member (`parseCompanyStateFile`,
+  kind `reading`; its bytes only when its version changed; a file that does not read keeps the last reading that did)
+  and answers plain names, never a path, a handle, a user id or an agent id (`app/company-reading.ts`):
+  `{reading: null | {sentence, line, attention, things: [{key, name, shape, full, state, agents: [{name, figure,
+  working}], waits: [{name, me}]}], changes: [{agent: {name, figure} | null, what, line}], notes}, team: [{name,
+  figure, working, cofounder}], standing: null | {stopped, since, why, you, member, resetsAt}}`. An agent is found by its
+  folder name and drawn by `figure`, one of the twelve a kit's page carries (`figureFor`, as the rail draws it: the
+  agent's own, else its template's, else one by its id); one the reading names that the company does not have, or
+  whose role ended, stands at no thing, while a change line keeps an ended agent's name and figure: found by its own
+  `agent.md` (renamed or numbered alike), else by the platform's folder name for its name (`companyStateName`, `-2`). `waits` names the
+  members a thing waits for (`founders` is every owner), `me` the member looking. `standing` is
+  `qorpera_read_company_standing` (null from a backend without it, asked no more): `you` is true when the login that
+  holds the company is the member looking's, `member` names another member whose login it is, and both say nothing
+  (false, null) when nobody can be named, which the `map` kit then says in neutral words. The team is the agents at work, the Co-Founder
+  first. The standing is read every 30 s while a page that reads `reading` is shown and the tab is, and when the tab
+  comes back; a change of it reaches the page as a change notice (`onChange`), as a change of the folder does.
 - **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads; `todos` counts as
   ten, since it reads every agent's todos, and a request for a change, a note or a web page to open as five), a call's params at most
   4 KiB (a row's cells 16 KiB), an answer at most 1 MiB. `questions` reads the cloud at most once in four seconds. A

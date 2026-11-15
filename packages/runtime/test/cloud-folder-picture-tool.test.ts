@@ -72,13 +72,12 @@ it("is a runtime tool that shows the model a picture, told in under 4096 bytes",
 	expect(f.tool.description).toBe(CLOUD_MAKE_PICTURE_DESCRIPTION);
 	expect(Buffer.byteLength(f.tool.description)).toBeLessThanOrEqual(4096);
 	for (const rule of [
-		"something that does not exist yet, such as the company's own product idea, a scene, a look or an illustration for an app",
-		"One picture per call.",
-		"A real thing is shown by its real picture, never a generated one: for a real product, person or place, or a competitor's product, save a screenshot of the maker's own picture instead.",
-		"Never pass a generated picture off as a photo of something real: where an app shows one, it says drawn or illustration.",
-		"says the subject, the view, the light and the background; for a thing that will stand on a page, ask for a plain or transparent-looking background",
+		"something that does not exist yet (the company's own product idea, a scene, a look, an illustration for an app)",
+		"one picture per call.",
+		"A real thing is shown by its real picture: for a real product, person or place, or a competitor's product, save a screenshot of the maker's own picture instead.",
+		"A generated picture is never passed off as a photo of something real: where an app shows one, it says drawn or illustration.",
 		"The answer shows you the picture: look at it, and when it is not good enough, call again with a better prompt",
-		"Pictures for an app go into the app's folder, such as apps/<name>/pictures/, before the save_app that shows them.",
+		"pictures for an app go into its folder, such as apps/<name>/pictures/, before the save_app that shows them.",
 	])
 		expect(f.tool.description).toContain(rule);
 });

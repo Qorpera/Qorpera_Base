@@ -842,6 +842,11 @@ message, not the last act. After it a run may still keep its own bookkeeping
 (its wall, to-do list, apps layout and sidebar) and nothing else, so the member
 gets the answer without waiting for it. See the
 [2026-11-13 amendment](#2026-11-13-amendment-the-answer-first-then-the-bookkeeping).
+2026-11-14: the founder dropped the wall for agents ("rather drop the wall - it's
+the wrong medium for activity"), so no run keeps a wall: after the closing
+message the runtime runs only `manage_todo`, `organize_apps` and
+`organize_sidebar`. The kernel's list (`20260930748000`) still names
+`update_wall`, which no run is offered or can call.
 
 ### 7.2 Other wakes
 
@@ -5349,6 +5354,9 @@ amendment governs. In-place edits are marked "(changed in place)".
    awake: a company machine after 5 minutes, a coding machine after 10
    minutes, an agent's task machine after an hour. These stay per-node or
    per-environment settings.
+   - A task machine that is awake only because a member woke it sleeps 10
+     minutes after that member's last sign (the 2026-11-14 amendment "a
+     machine a member woke sleeps when that member is gone").
    - Sleep stops what is still running. Files and disks stay as before.
    - The next run of the agent that started a stopped program is told what
      stopped and why, once.
@@ -6730,7 +6738,10 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    After it the run may still change only its own bookkeeping: its wall (`update_wall`), its to-do list
    (`manage_todo`), the apps drawer's layout (`organize_apps`) and the sidebar (`organize_sidebar`). Why: a chat turn
    spent 5.7 s on average on these before its answer (8.5 s in the 30 of 45 measured turns that did any), and the
-   member waited through it.
+   member waited through it. **2026-11-14:** the founder dropped the wall for agents ("rather drop the wall - it's the
+   wrong medium for activity"): `update_wall` is offered to no run, so the runtime runs only `manage_todo`,
+   `organize_apps` and `organize_sidebar` after the final. The kernel's list in `20260930748000` still admits
+   `update_wall` receipts; nothing calls it, and taking the name out would need a migration.
 2. **Nothing else.** After the final the runtime runs no other call: one ends the turn without running, as the final
    used to (the answer's own call again only replays it). The kernel admits only those four tools' folder receipts
    after the final (each keyed with the tool's own name) and still refuses a second send, so nothing after the answer
@@ -6752,7 +6763,8 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    about 98 % of them cached (+15.8 % input tokens, +2.1 % uncached, per turn).
 7. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
    final send", the closing reminder, "Writing to people") and the descriptions of `send_message`, `ask_member` and
-   `update_wall`. Nothing else; no tool's schema changes.
+   `update_wall` (`update_wall`'s until 2026-11-14, when it left every run's tools with the wall). Nothing else; no
+   tool's schema changes.
 
 ### 2026-11-14 amendment: light asks
 
@@ -6794,6 +6806,36 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    execution host.
 9. **What the provider sees.** The kind's instructions and the input between tags, on a thread with no tools. No
    company instructions, no history, no file.
+
+### 2026-11-14 amendment: a machine a member woke sleeps when that member is gone
+
+Founder decision of 14 November 2026: "if a person has an idle tab in qorpera open, we should be able to close the
+machines when the user clearly isn't actually online"; "im referring to machines that start due to a users laptop being
+open on the platform - as we keep a machine warm for any requests they may send. not the always on machines"; and, to
+"Sleep a member-woken machine 5 minutes after the member leaves, not an hour?": "let's go with 10 minutes". It amends
+item 3 of the 2026-10-03 amendment "one idle rule for every machine" ("an agent's task machine after an hour"), for one
+kind of task machine. Nothing else of that amendment changes: no caps, busy work an agent started runs on, sleep stops
+what runs and the agent is told, always-on machines are never stopped by the kernel. It goes live with migration
+`20260930759000`, in a release the founder names.
+
+1. **Awake only for a member.** An agent's task machine is awake only for a member when the start that stands was a
+   member's (the computer window's wake, or a computer a member started for an agent) and no agent has used it since:
+   no command of an agent's that still runs or that started since (a worker's and a coding conversation's are
+   commands), no agent at its screen since, and no run that still goes that started the machine or asked for it by
+   `machine_start`. Once an agent uses it, it is an agent's machine again, and the hour decides, until it has slept and
+   a member wakes it.
+2. **It sleeps 10 minutes after that member's last sign**, counted from its boot when that is later. The time is a
+   per-node setting beside the quiet window (`member_sleep_after_seconds`, 600).
+3. **A member's signs** are what a member does at the machine: waking it, watching its screen, typing on its desktop
+   (privately or on the desktop shared with the agent), moving the pointer over it, turning its screen on. Watching
+   counts for as long as the member's word that they watch is at most that time old: a window in a tab nobody touches
+   stops counting, and the window itself stops looking then and asks whether the member still watches. A private
+   hold's heartbeat is no sign.
+4. **A busy machine is no sign.** For this kind of machine only, busy work does not keep it awake: what runs on it was
+   started from a member's desktop, or starts by itself at boot, and no agent's turn is waiting on it. A program a
+   member left running on the desktop stops with the machine.
+5. **Coming back.** The machine is asleep as after any idle sleep; the member's own ask wakes it (opening the computer,
+   or saying they still watch). Nothing new is shown to members.
 
 ## 20. Enforcement matrix
 

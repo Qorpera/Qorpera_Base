@@ -33,10 +33,11 @@ export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
 export const OWED_APPS = Object.freeze(["products", "money", "ads"] as const);
 export type OwedApp = (typeof OWED_APPS)[number];
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app;
- * `data`: the company's databases, asked by their questions; `money` and `site`: the platform's own numbers of the
- * company, asked as questions of the reserved database `qorpera` (APP_NUMBERS_DATABASE): `money` the bank's sums
- * (`qorpera/money-*`), `site` the visits of the company's sites (`qorpera/sites`, `qorpera/site-*`). Neither needs
- * `data`, and `data` reads neither. */
+ * `data`: the company's databases, asked by their questions; `reading`: the company's reading of itself
+ * (QorperaOS/vision/reading.md), its agents and whether it can run, as plain names (the `map` kit's first layer);
+ * `money` and `site`: the platform's own numbers of the company, asked as questions of the reserved database `qorpera`
+ * (APP_NUMBERS_DATABASE): `money` the bank's sums (`qorpera/money-*`), `site` the visits of the company's sites
+ * (`qorpera/sites`, `qorpera/site-*`). Neither needs `data`, and `data` reads neither. */
 export const APP_READS = Object.freeze([
 	"files",
 	"tables",
@@ -44,6 +45,7 @@ export const APP_READS = Object.freeze([
 	"agents",
 	"questions",
 	"data",
+	"reading",
 	"money",
 	"site",
 ] as const);
@@ -111,7 +113,8 @@ export function parseAppWrites(
  * videos that are visual-first to let you see the company"): the kit writes `engine.js` and `index.html`, the agent
  * `<kit>.json` and the pictures it names. `curve`, `stack` and `shelf` are data kits of the same kind, each one big
  * shape (Jonas, 14 November 2026): a value over time, things that want a member's yes, the company's things side by
- * side. */
+ * side. `map` draws the company, or an owner's area, as its things with layers to dive into (Jonas, 15 November 2026:
+ * "Use a map kit"). */
 export const APP_KITS = Object.freeze([
 	"explainer",
 	"model",
@@ -121,6 +124,7 @@ export const APP_KITS = Object.freeze([
 	"curve",
 	"stack",
 	"shelf",
+	"map",
 ] as const);
 export type AppKit = (typeof APP_KITS)[number];
 

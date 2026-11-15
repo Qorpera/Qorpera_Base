@@ -1012,8 +1012,9 @@ request of the run**, so Codex's own history no longer carries the context (§11
 1. Codex base instructions. These are fixed per binary.
 2. Tools, identical for a given tool set. `read_context` stops naming per-run source ids in its schema; they move into
    its results and the prompt.
-3. Developer instructions, in this order: the stable part (tool-result rules, core protocol, binding, the behaviour of
-   the agent's kind), then the **head** (§5.6, W3) and VIEW_DOC with the **primary view**, both as labelled data, then
+3. Developer instructions, in this order: the stable part (tool-result rules, core protocol, the behaviour of
+   the agent's kind; the bootstrap binding stood here until 14 November 2026, when T3-1 took it out of the
+   instructions: the run's row, its admission and its bound context keep it), then the **head** (§5.6, W3) and VIEW_DOC with the **primary view**, both as labelled data, then
    the parts that vary by wake (wake-kind rules, continuation rules, final-send policy, closing reminder).
 4. Codex's environment context, after the developer message: the day, and a time zone if one is set. On our path it
    holds no working directory, since threads start with no environments (M0, from source; the check against a real

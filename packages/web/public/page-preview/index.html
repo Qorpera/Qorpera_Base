@@ -407,6 +407,8 @@
 			table: freeze((name) => call("table", { name: String(name) })),
 			todos: freeze(() => call("todos", {})),
 			agents: freeze(() => call("agents", {})),
+			// The company's reading of itself, its agents and whether it can run, as plain names (app/company-reading.ts).
+			reading: freeze(() => call("reading", {})),
 			questions: freeze(() => call("questions", {})),
 			answer: freeze((id, value) => call("answer", { id: String(id), value })),
 			setRow: freeze((table, key, cells) => call("setRow", { table: String(table), key, cells })),
