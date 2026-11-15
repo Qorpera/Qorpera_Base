@@ -155,9 +155,11 @@ async function platformFetch(url, init) {
 			const all = [
 				...[...files.keys()].filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/") && mayRead(env, userId, path)).map(entry),
 				...[...folders].map((path) => ({ path, kind: "folder" })),
-			].sort((a, b) => (a.path < b.path ? -1 : 1));
+			]
+				.sort((a, b) => (a.path < b.path ? -1 : 1))
+				.filter((one) => args.p_after === null || one.path > args.p_after);
 			const entries = all.slice(0, args.p_limit);
-			return reply(200, { entries, next: all.length > args.p_limit ? entries.at(-1).path : null });
+			return reply(200, { entries, next: entries.length === args.p_limit ? entries.at(-1).path : null });
 		}
 		case "/rest/v1/rpc/qorpera_member_folder_may_write":
 			if (writeCheckMissing) return reply(404, { code: "PGRST202", message: "Could not find the function" });
@@ -376,6 +378,12 @@ it("reads who gets the list from database.toml's [list], and counts any spelling
 		['["li\\u0073t"]\nmembers = "readers"\n', [], false, "writers"],
 		['[list]\n"mem\\u0062ers" = "readers"\n', [], false, "writers"],
 		['[list]\r\nmembers = "readers"\r\n', [viewer], false, "readers"],
+		['x = [\n  [1]\n]\nlist.members = "writers"\n', [], false, "writers"],
+		['[list]\nlevels = [\n  [1]\n]\nmembers = "writers"\n', [], false, "writers"],
+		['about = """\n[list]\nmembers = "readers"\n"""\nlist.members = "writers"\n', [], false, "writers"],
+		["about = '''\n[x]\n'''\n[list]\nmembers = 'readers'\n", [viewer], false, "readers"],
+		['[list]\nmembers = [\n"readers"]\n', [], false, "writers"],
+		['tags = ["a]", "b"]\nlist.members = "readers"\n', [viewer], false, "readers"],
 	])
 		assert.equal(listMembers(toml, questions, cut), members, `${JSON.stringify(toml)} ${JSON.stringify(questions)} ${cut}`);
 });

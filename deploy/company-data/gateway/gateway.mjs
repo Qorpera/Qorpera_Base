@@ -140,14 +140,35 @@ const LIST_NAMED = new RegExp(`^\\s*(?:\\[+\\s*)?${LIST_KEY("list")}\\s*[.=\\]]`
 
 const LIST_SIMPLE_HEADER = /^\s*\[\s*[A-Za-z0-9_.\-"' ]+\s*\]\s*(?:#.*)?$/;
 
+function openBrackets(text) {
+	const bare = text.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, "").replace(/#.*$/, "");
+	return (bare.match(/\[/g)?.length ?? 0) - (bare.match(/\]/g)?.length ?? 0);
+}
+
 function listLine(toml) {
 	let table = "";
+	let open = null;
 	for (const line of toml.split(/\r?\n/)) {
+		if (open?.quote) {
+			if (line.split(open.quote).length % 2 === 0) open = null;
+			continue;
+		}
+		if (open) {
+			open.depth += openBrackets(line);
+			if (open.depth <= 0) open = null;
+			continue;
+		}
 		if (/^\s*\[/.test(line)) {
 			if (line.includes("\\") || !LIST_SIMPLE_HEADER.test(line)) return "writers";
 			table = LIST_HEADER.test(line) ? "list" : LIST_NAMED.test(line) ? "unread" : "other";
 			if (table === "unread") return "writers";
 			continue;
+		}
+		const assigned = line.indexOf("=") < 0 ? null : line.slice(line.indexOf("=") + 1);
+		if (assigned !== null) {
+			const quote = /"""|'''/.exec(assigned)?.[0];
+			if (quote && assigned.split(quote).length % 2 === 0) open = { quote };
+			else if (openBrackets(assigned) > 0) open = { depth: openBrackets(assigned) };
 		}
 		if ((table === "" || table === "list") && line.split("=")[0].includes("\\")) return "writers";
 		const value = table === "list" ? LIST_MEMBERS.exec(line)?.[1] : table === "" ? LIST_DOTTED.exec(line)?.[1] : undefined;
@@ -286,7 +307,14 @@ export class Platform {
 		const files = (Array.isArray(answer?.entries) ? answer.entries : [])
 			.filter((entry) => entry.kind === "file" && SHA.test(entry.fileSha256 ?? ""))
 			.map((entry) => ({ name: entry.path.slice(entry.path.lastIndexOf("/") + 1), sha256: entry.fileSha256, bytes: entry.bytes }));
-		return { files, more: answer?.next !== null && answer?.next !== undefined };
+		if (typeof answer?.next !== "string") return { files, more: false };
+		const after = await this.#rpc(token, "qorpera_member_folder_list", {
+			p_environment_id: environmentId,
+			p_parent: parent,
+			p_after: answer.next,
+			p_limit: 1,
+		});
+		return { files, more: !Array.isArray(after?.entries) || after.entries.length > 0 };
 	}
 	/** What a run's data pass kept (`qorpera_data_pass_redeem`, with the publishable key alone), once: `{ environmentId,
 	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }>, allow }`, or null for a pass that answers
