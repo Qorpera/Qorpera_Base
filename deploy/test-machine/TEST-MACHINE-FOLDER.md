@@ -510,6 +510,16 @@ of them, and the record is written with them redacted if one slipped in.
   where the host takes his reads in, as it does Carol's. The notify
   continuation's take-in (6d-3c, `20260930500000`) is a SQL path, tested
   in SQL test 519, not here.
+- On the shared test machine (load 1 to 24 on 10 CPUs at the runs' starts, 15
+  November 2026) the older timing checks fail now and then, also without step
+  8b (baseline run
+  `20261115T131521-54867-69a80e44`, from the part 3 tree): `loop` when no
+  read's boundary lands after a tick's write, or when the read's boundary saves
+  the file between its truncate and its write (an empty version), or when the
+  TERM trap's `date` is killed with the command (`<n> last ` with no time);
+  `stopWhileRunning` by that same trap; `overlapCredited` when Carol's append
+  lands while an ended command's window is open (`command_ended`). None of
+  them runs any part of 8b.
 - Step 8b does not exercise: a held step's yes (that is `data_apply` and a
   member's card, never a machine's), the service's limits (4 calls at once,
   120 a minute), a paused company's refusal (SQL test 1273), an answer past
