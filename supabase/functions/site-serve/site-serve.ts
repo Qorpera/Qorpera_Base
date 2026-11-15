@@ -50,7 +50,15 @@
  * 404; every answer carries Cross-Origin-Resource-Policy same-origin, frame-ancestors 'self' with X-Frame-Options
  * SAMEORIGIN, no Access-Control-Allow-Origin, Strict-Transport-Security without includeSubDomains, an explicit
  * Cache-Control with no-transform (the zone's browser cache default is 4 hours and its features rewrite HTML) and
- * CDN-Cache-Control no-store; the password form and the ticket refuse an Origin that is not the host's own. */
+ * CDN-Cache-Control no-store; the password form and the ticket refuse an Origin that is not the host's own.
+ *
+ * Views (the company's numbers, door site; migration 20260930768000). After a page is answered, one call counts it
+ * (qorpera_site_count_view), only for a GET answered 200 or 304 with a text/html file of the live version by a visitor's
+ * session, with no Range, Sec-Fetch-Dest document or absent and no prefetch (Sec-Purpose, Purpose): on the own host and
+ * on the old host's session paths, never on a next host, for an asset, a HEAD, the password page or a refusal. The call
+ * sends the host, the file's path and the session's token, nothing of the request's headers, and never changes the
+ * answer: it is handed to the edge runtime's waitUntil, or, without one, waited for at most 200 ms. A failure is logged
+ * by its kind only. */
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -130,6 +138,9 @@ export interface SiteStore {
 	unlockHost(host: string, password: string, client: string): Promise<unknown>;
 	/** A next host's ticket for a member's session (qorpera_site_enter). */
 	enter(host: string, ticket: string): Promise<unknown>;
+	/** Counts a page view of a session (qorpera_site_count_view): the host, the answered file's path in the site (on the
+	 * old host after the site's name, `<slug>/<path>`) and the session's token. Its answer is not read. */
+	countView(host: string, path: string, token: string): Promise<unknown>;
 }
 
 /** The database has no such function yet (PostgREST's PGRST202): this function was installed before its migration. */
@@ -139,7 +150,15 @@ export interface SiteServeOptions {
 	/** The sites origin, e.g. https://sites.qorpera.com. */
 	origin: string;
 	store: SiteStore;
+	/** Keeps work going after the answer is sent: the edge runtime's EdgeRuntime.waitUntil when not given. Without
+	 * either, a view's count is waited for at most COUNT_WAIT_MS. */
+	waitUntil?: (work: Promise<unknown>) => void;
 }
+
+/** The longest an answer waits for its view's count when no waitUntil keeps the count going after it. */
+export const COUNT_WAIT_MS = 200;
+/** The deadline of the count's database call. */
+export const COUNT_TIMEOUT_MS = 2000;
 
 type ServeAnswer =
 	| { state: "locked" }
@@ -1028,11 +1047,14 @@ async function onSiteHost(
 	// The next host serves no ETag: its pages carry the bar, and its version is the session's.
 	const etag = site.scope === "site" ? requestedEtag(request.headers.get("if-none-match")) : null;
 	let read: Awaited<ReturnType<typeof readHostFile>>;
+	// The session cookie the answer was read with.
+	let token = tokens[0] ?? null;
 	try {
 		// Each session cookie the browser sent, until one is not locked (none and gone are the site's, not the session's).
-		read = await readHostFile(request, options.store, site, path, tokens[0] ?? null, etag);
-		for (const token of tokens.slice(1)) {
+		read = await readHostFile(request, options.store, site, path, token, etag);
+		for (const next of tokens.slice(1)) {
 			if (read.answer.state !== "locked") break;
+			token = next;
 			read = await readHostFile(request, options.store, site, path, token, etag);
 		}
 	} catch (error) {
@@ -1045,11 +1067,23 @@ async function onSiteHost(
 		return hostLocked(request, lang, site, path, 401, { clear: tokens.length > 0 });
 	if (answer.state === "directory") return hostRedirect(`/${answer.path}${new URL(request.url).search}`, 308);
 	if (answer.state === "missing") return hostNotFound(request, lang, text.notPart);
+	let response: Response;
 	try {
-		return hostFileAnswer(request, answer, site.scope, etag, read.range, lang);
+		response = hostFileAnswer(request, answer, site.scope, etag, read.range, lang);
 	} catch (error) {
 		return hostUnavailable(request, lang, error);
 	}
+	// A page of the live version on the own host (never a next host's look first, nor the version's 404.html): its
+	// view counts.
+	if (
+		site.scope === "site" &&
+		answer.status === 200 &&
+		token !== null &&
+		isHtml(answer.contentType) &&
+		countsAsView(request, response.status)
+	)
+		return withViewCounted(options, response, site.host, answer.path, token);
+	return response;
 }
 
 /** One file for a site host's request, as `readFile` asks for it, but whole for what is never served in parts: a
@@ -1210,6 +1244,72 @@ async function hostEnter(
 	return hostRedirect("/", 303, { "set-cookie": hostCookie(answer.token, answer.maxAge) });
 }
 
+// --- Views --------------------------------------------------------------------------------------------------------------
+
+/** Whether a request and the status it was answered with make a page view, for a text/html file of a session: a GET with
+ * no Range (a part is no view), answered 200 or 304, a document (Sec-Fetch-Dest document, or no Fetch Metadata) and no
+ * prefetch or prerender (Sec-Purpose, or the older Purpose). */
+export function countsAsView(request: Request, status: number): boolean {
+	const headers = request.headers;
+	const dest = headers.get("sec-fetch-dest");
+	return (
+		request.method === "GET" &&
+		(status === 200 || status === 304) &&
+		!headers.has("range") &&
+		(dest === null || dest === "document") &&
+		!headers.has("sec-purpose") &&
+		!headers.has("purpose")
+	);
+}
+
+/** The edge runtime's waitUntil (Supabase's EdgeRuntime), when it has one. */
+function edgeWaitUntil(): ((work: Promise<unknown>) => void) | undefined {
+	const runtime = (globalThis as { EdgeRuntime?: { waitUntil?: unknown } }).EdgeRuntime;
+	const waitUntil = runtime?.waitUntil;
+	if (typeof waitUntil !== "function") return undefined;
+	return (work) => {
+		waitUntil.call(runtime, work);
+	};
+}
+
+/** A database that has no count call yet is said once, not on every page. */
+let countMissingSaid = false;
+
+/** The answer, once the view's count is on its way: handed to waitUntil, or waited for at most COUNT_WAIT_MS. The count
+ * never changes the answer; a failure is logged by its kind only, never with a token, a path or a host. */
+async function withViewCounted(
+	options: SiteServeOptions,
+	response: Response,
+	host: string,
+	path: string,
+	token: string,
+): Promise<Response> {
+	const work = (async () => {
+		try {
+			await options.store.countView(host, path, token);
+		} catch (error) {
+			if (error instanceof MissingFunction) {
+				if (countMissingSaid) return;
+				countMissingSaid = true;
+			}
+			console.error(`site-serve: a view was not counted (${error instanceof Error ? error.name : typeof error})`);
+		}
+	})();
+	const waitUntil = options.waitUntil ?? edgeWaitUntil();
+	if (waitUntil) {
+		try {
+			waitUntil(work);
+			return response;
+		} catch {
+			// No way to keep it going: wait for it below.
+		}
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([work, new Promise<void>((resolve) => (timer = setTimeout(resolve, COUNT_WAIT_MS)))]);
+	clearTimeout(timer);
+	return response;
+}
+
 // --- The old host's path form: today's handler ------------------------------------------------------------------------
 
 /** Today's handler: the old host's path form, and 404 for every other host. */
@@ -1262,7 +1362,13 @@ async function legacySiteServe(request: Request, options: SiteServeOptions): Pro
 		const etag = requestedEtag(request.headers.get("if-none-match"));
 		try {
 			const { answer, range } = await readFile(request, options.store, slug, path, token, etag);
-			if (answer.state === "file") return fileAnswer(request, answer, etag, range);
+			if (answer.state === "file") {
+				const response = fileAnswer(request, answer, etag, range);
+				// A page of the session: its view counts (on the old host, the site's name first).
+				if (isHtml(answer.contentType) && countsAsView(request, response.status))
+					return await withViewCounted(options, response, origin.host, `${slug}/${answer.path}`, token);
+				return response;
+			}
 			if (answer.state === "directory") return redirect(`/${slug}/~${token}/${answer.path}${search}`, 308);
 			if (answer.state === "missing") return notFound(request, lang, TEXT[lang].notPart);
 			// The session ended: the plain URL asks for the password again.
@@ -1439,13 +1545,21 @@ export class PostgrestSiteStore implements SiteStore {
 		return this.#call("qorpera_site_enter", { p_host: host, p_ticket: ticket });
 	}
 
-	async #call(name: string, args: Record<string, unknown>): Promise<unknown> {
+	countView(host: string, path: string, token: string): Promise<unknown> {
+		return this.#call(
+			"qorpera_site_count_view",
+			{ p_host: host, p_path: path, p_token: token },
+			Math.min(this.#timeoutMs, COUNT_TIMEOUT_MS),
+		);
+	}
+
+	async #call(name: string, args: Record<string, unknown>, timeoutMs = this.#timeoutMs): Promise<unknown> {
 		const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
 			method: "POST",
 			redirect: "error",
 			headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
 			body: JSON.stringify(args),
-			signal: AbortSignal.timeout(this.#timeoutMs),
+			signal: AbortSignal.timeout(timeoutMs),
 		});
 		if (!response.ok) {
 			// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.
