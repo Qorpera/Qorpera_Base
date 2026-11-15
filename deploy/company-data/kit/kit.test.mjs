@@ -33,7 +33,7 @@ test("an archive of the kit holds what a machine runs and never the drill", asyn
 			.split("\n")
 			.filter((path) => !path.endsWith("/"));
 		for (const path of archived) assert.doesNotMatch(path, /\/drill(\.mjs|\/)|kit\.test\.mjs$/, path);
-		for (const file of ["env.sh", "docker-compose.yml", "replication.yml", "run-door.yml", "gateway-main.mjs", "lib.sh", "tls.sh", "compose.sh", "run-door.sh", "init.sh", "base-backup.sh", "restore.sh", "standby.sh", "README.md",
+		for (const file of ["env.sh", "docker-compose.yml", "replication.yml", "run-door.yml", "gateway-main.mjs", "lib.sh", "tls.sh", "compose.sh", "run-door.sh", "init.sh", "update-store.sh", "base-backup.sh", "restore.sh", "standby.sh", "README.md",
 			"postgres/postgresql.conf", "postgres/pg_hba.conf", "postgres/pg_ident.conf", "postgres/archive-wal.sh", "postgres/restore-wal.sh"])
 			assert.ok(archived.includes(`${KIT}/${file}`), `${file} is in the archive`);
 		const machine = tracked.filter((path) => !/\/drill(\.mjs|\/)|kit\.test\.mjs$/.test(path));

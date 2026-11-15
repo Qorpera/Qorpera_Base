@@ -5,7 +5,10 @@ set -euo pipefail
 # templates here. Each template draws the traced avatar figure tone-on-tone over
 # a ground whose lightness follows the local day (night 6 %, day 95 %, dawn ramp
 # 05–08, dusk ramp 18–21; accent about five points off the ground, hue 225,
-# low saturation). Output: qorpera-screen-<character>-<HH>.png for every hour
+# low saturation), and since 14 Nov 2026 the figure's two eyes in white, where
+# the product draws them (eyes.mjs writes them into the templates from
+# motion-model.js; run it first when the product's eyes move). Output:
+# qorpera-screen-<character>-<HH>.png for every hour
 # plus qorpera-screen-<character>.png (the noon frame) as the static fallback.
 # Rendering uses a local headless Chromium/Chrome; nothing here runs on the node.
 # The first seven file names are the ones every installed image carries and are

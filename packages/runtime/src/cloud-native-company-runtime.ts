@@ -239,8 +239,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
 		 * company_search over it. */
 		folderSearch?: { readonly socketPath: string };
-		/** The data gateway's run door (company databases, slice 5): with it a run is offered data_describe, data_query
-		 * and, unless it is a worker, data_apply; without it none of them. */
+		/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
+		 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
 		companyData?: CloudCompanyDataDoor;
 	}) {
 		this.#control = options.controlPlane;

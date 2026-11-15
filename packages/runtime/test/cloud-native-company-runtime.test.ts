@@ -3376,6 +3376,18 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// again.
 	// Both together (master merged into T3-1, 15 November 2026): measured once more on node 2's test machine.
 	// Master and v247's release (app_guide) merged up through T3-3 under no-wall (15 November 2026): measured once more.
+	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
+	// views plan step 1), and save_app's kit says to read it first, so they moved again.
+	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
+	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
+	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
+	// (20260930764000), so they moved again.
+	// The same day ask_member's takeover says that the member signs in on the screen the agent and they both use, not
+	// that the agent's calls are refused meanwhile (the web begins no private hold any more: #1812), in its description
+	// and in the takeover surface's schema, so both moved again, measured on master with data_change and data_apply's
+	// allow.
+	// Master 01c90ff7a merged into T3-1 for landing (15 November 2026): measured once more.
+	// Master 01c90ff7a merged up through T3-3 for landing (15 November 2026) under no-wall: measured once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3393,6 +3405,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"data_describe",
 		"data_apply",
 		"data_query",
+		"data_change",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -3426,10 +3439,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"f307c0ad3b9628ad570c21f511a0e0fff841331a6bebcc3ea2231aadb8c6964c",
+		"ff97c629d291b48edd6b2b117f5a2a579466748240ddc846e7d815ab15918dd0",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"86cc48b428ba75f7090071473267d65cf54bff87f57988aff3ebd7164c5094d7",
+		"4ed47e0aa3cc06660ccc7c453e1c8f60ae53faa9e20e86d5aef05ef8b4fb2e3d",
 	);
 });
 
