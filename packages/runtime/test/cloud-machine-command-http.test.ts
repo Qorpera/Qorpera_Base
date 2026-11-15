@@ -2782,6 +2782,50 @@ describe("a member's start of a desktop (20260930714000)", () => {
 		await expect(f.router.memberStart(f.start, f.signal)).rejects.toThrow("MEMBER_MACHINE_START_FAILED");
 	});
 
+	it("opens what SQL kept on the start: the begin takes the path, the host gets SQL's own (20260930758000)", async () => {
+		const f = fixture();
+		const open = "Møder/æble og grød ø.md";
+		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), open });
+		f.host.memberStart.mockResolvedValueOnce({ outcome: "opened" });
+		expect(await f.router.memberStart({ ...f.start, open }, f.signal)).toEqual({ outcome: "opened" });
+		expect(f.memberStartBegin).toHaveBeenLastCalledWith(
+			"eyJh.eyJz.c2ln",
+			{ companyId: f.companyId, machineId: f.machineId, open },
+			f.signal,
+		);
+		expect(f.host.memberStart).toHaveBeenLastCalledWith(
+			{ placementId: f.placementId, bootId: f.bootId, startId: f.startId, open },
+			f.signal,
+		);
+		// The open's refusals are the member's; SQL's read refuses a path no longer theirs, or another's private typing.
+		for (const refused of ["DESKTOP_OPEN_NOT_FOUND", "DESKTOP_OPEN_NO_FOLDER", "DESKTOP_DID_NOT_OPEN"]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), open });
+			f.host.memberStart.mockResolvedValueOnce({ refused });
+			await expect(f.router.memberStart({ ...f.start, open }, f.signal)).rejects.toMatchObject({ code: refused });
+		}
+		for (const reason of ["DESKTOP_OPEN_NOT_FOUND", "DESKTOP_MEMBER_IN_CONTROL"]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.member-machine-desktop-start-authority/v1",
+				state: "refused",
+				reason,
+			});
+			await expect(f.router.memberStart({ ...f.start, open }, f.signal)).rejects.toMatchObject({ code: reason });
+		}
+		// A path SQL could never have kept is no authority.
+		for (const bad of ["", "/etc/passwd", "a/../b", "a\nb", 5]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), open: bad });
+			await expect(f.router.memberStart({ ...f.start, open }, f.signal)).rejects.toThrow(
+				"MEMBER_START_AUTHORITY_INVALID",
+			);
+		}
+		// A plain start's read carries no path, and the host gets none.
+		await f.router.memberStart(f.start, f.signal);
+		expect(f.host.memberStart).toHaveBeenLastCalledWith(
+			{ placementId: f.placementId, bootId: f.bootId, startId: f.startId },
+			f.signal,
+		);
+	});
+
 	it("runs the start whoever holds the desktop: SQL's read knows no hold (review r1 F1 of #1681)", async () => {
 		const f = fixture();
 		// A read that still names a hold is of another shape: no authority.
@@ -2897,6 +2941,14 @@ describe("a member's start of a desktop (20260930714000)", () => {
 				outcome: "running",
 			}),
 		).toEqual({ outcome: "running" });
+		// A start that opened what SQL kept on it (20260930758000): the path itself never crosses this route.
+		expect(
+			parseCloudMemberMachineStartAnswer(request, {
+				schema: "qorpera.member-machine-start-answer/v1",
+				startId,
+				outcome: "opened",
+			}),
+		).toEqual({ outcome: "opened" });
 		for (const bad of [
 			{ schema: "qorpera.member-machine-start-answer/v1", startId: randomUUID(), outcome: "started" },
 			{ schema: "qorpera.member-machine-start-answer/v1", startId, outcome: "maybe" },
