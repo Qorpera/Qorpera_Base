@@ -7,38 +7,45 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024799_runtime_bundle_activation_v247.sql";
-const activationVersion = 247;
-const previousActivationVersion = 246;
-const previousActivationSha256 = "4addaeac561c3bed448a80a9be7772a3c47c949fb731ea9618c15c9d869b22b6";
-// This release's own migrations, which its activation requires before it registers the bundle (v247): one entry per
+const activation = "supabase/migrations/20260929024999_runtime_bundle_activation_v249.sql";
+const activationVersion = 249;
+const previousActivationVersion = 248;
+const previousActivationSha256 = "cc7b46c6bab430a45b4f9830b4f0963163348ddb5bb2ab05270e1055fd81aacf";
+// This release's own migrations, which its activation requires before it registers the bundle (v248): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v248 replaces these entries with the migrations v248 brings (or an empty list).
-// v248's activation already requires v247 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v247's release (site hosts, #1774, with the agent-box riders, light asks and app_guide) runs its
-// four migrations, in number order, BEFORE the executors and this switch. An entry sorting before the activation file is
+// version lines, when it sets them: v249 replaces these entries with the migrations v249 brings (or an empty list).
+// v249's activation already requires v248 active with its exact digest, which on a database past 20260930534000 only
+// this activation sets. v248's release (a member opens an app or a file on an agent's computer, a member-woken machine's
+// sleep, and master's company databases, reading, numbers and bank days) runs its migrations, in number order, BEFORE the
+// executors and this switch. 758000 and 759000 sort before 760000-762000, which v247 recorded: the roll's migrate reads
+// production's record and runs each one only when it is not recorded. An entry sorting before the activation file is
 // checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
 // order reaches it only after the activation (as with the guards in the activation's text below).
 const activationRequires = Object.freeze([
 	[
-		"20260930756000_site_hosts",
-		"every website gets an address of its own (#1774): this bundle's instructions speak of a website's own address, and the executor this release moves reads the site hosts' SQL; it rides in this release's migrate, before this switch",
-		"to_regprocedure('public.qorpera_site_reserved_names()') is not null and to_regprocedure('public.qorpera_site_hosts_on()') is not null",
+		"20260930752000_home_exec_sessions",
+		"the agent's home (#1761): every company run of this bundle asks qorpera_company_home_available through the native host's entry point, which answers only a listed call; without this migration every such run fails",
+		"to_regprocedure('public.qorpera_company_home_available(jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_company_home_available')",
 	],
 	[
-		"20260930760000_machine_disk_kept_across_image",
-		"a sleeping machine keeps its disk when the machine image changes (#1788): this bundle's machine tool words say so, which the admission keeps from this migration on",
-		"to_regprocedure('public.qorpera_company_machine_helper_refused(uuid,text,text)') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_admit_company_machine(uuid,text)') and strpos(prosrc, '20260930760000') > 0)",
+		"20260930754000_folder_home_sessions",
+		"the home's read rights (#1760): the offer is narrowed to runs that share the machine and read the folder's root, and the executor this release moves asks the session's folder window before every channel",
+		"to_regprocedure('public.qorpera_folder_home_session_window(uuid)') is not null",
 	],
 	[
-		"20260930761000_light_asks",
-		"light asks (#1796): this bundle answers a light ask's run through qorpera_native_light_ask_answer, which this migration adds",
-		"to_regclass('public.qorpera_light_asks') is not null and to_regprocedure('public.qorpera_native_light_ask_answer(jsonb,text)') is not null",
+		"20260930776000_company_numbers_orders",
+		"the door orders (#1855, on master): counts-only orders from verified Stripe deliveries and the orders questions; no code in this bundle calls them yet",
+		"to_regclass('public.qorpera_orders') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930776000') > 0)",
 	],
 	[
-		"20260930762000_app_guide_tool",
-		"app_guide (#1804): a run's observation naming the tool is refused until the closed list of tool operations carries it",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') and strpos(prosrc, '20260930762000') > 0)",
+		"20260930777000_company_numbers_order_changes",
+		"the company's word on its orders (#1857, on master): order-state and order-add through the change dispatcher; no code in this bundle calls them yet",
+		"to_regprocedure('public.qorpera_run_company_numbers_change(uuid,jsonb,text,jsonb)') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930777000') > 0)",
+	],
+	[
+		"20260930778000_home_session_keeps_member_machine_awake",
+		"a member-woken machine is not put to sleep under a run's open home session (#1761): the member-only rule counts the home's sessions from this migration on",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_machine_member_only(public.qorpera_company_machines)') and strpos(prosrc, 'qorpera_company_home_sessions') > 0 and strpos(prosrc, '20260930759000') > 0)",
 	],
 ]);
 const activationRequiresSql = activationRequires

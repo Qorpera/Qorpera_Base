@@ -31,6 +31,7 @@ import {
 	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import { readRetiredApps } from "./cloud-folder-app-retired.ts";
 import { releaseId, unavailable } from "./cloud-folder-file-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -120,6 +121,8 @@ interface Company {
 	readonly have: readonly string[];
 	readonly titles: ReadonlyMap<string, string>;
 	readonly unposted: ReadonlySet<string>;
+	/** The keys of the apps a member retired (apps/retired.md): hidden from every member, still in the layout. */
+	readonly retired: ReadonlySet<string>;
 	/** The names of the app folders, concepts and apps with broken manifests included. */
 	readonly folders: ReadonlySet<string>;
 	readonly concepts: ReadonlySet<string>;
@@ -129,12 +132,16 @@ interface Company {
 	readonly reads: readonly CloudCompanyFolderEntry[];
 }
 
-export const ORGANIZE_APPS_DESCRIPTION =
-	"Sort the company's apps into groups in the apps drawer, the grid where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, in the file apps/groups.md: no member approval is needed and every member sees a change at once. " +
-	"action list shows the layout: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) with its title, in its group, groups by id and name with how many apps they hold and their colour, and the loose entries last, as the drawer shows them, one line each in the file's own form; a long layout comes in pages: call list again with the cursor it answers. An app marked not posted shows in the drawer only once it is posted. create_group makes a group called name and answers its id; parent puts it inside another group, items moves those keys (or group:<id>) into it, in order, and colour gives it a colour. A group of that name already there is that group. rename_group renames group; its id stays. " +
-	`colour_group sets group's colour to colour, one of ${AGENT_COLOURS.join(", ")}; null takes it away. ` +
-	"ungroup takes group away: what was in it stands where it stood. move puts item (a key, or group:<id> for a whole group) into group, or loose when group is null, before the entry named by before there, else last. save_app takes group to put a new app in a group as it is made. A change answers what it did, and list shows the layout after it. A change already made saves nothing and says so; a save can come back refused when the file changed since it was read: call again. It refuses a third group level, a key the company does not have and a colour not in the palette. " +
-	"How to sort, plainly: 1. Group by what the founder thinks in: a product, a customer, a piece of work. Never by agent, by kind of page (such as Reports) or by date. 2. Name a group in one to three words, in the company's own words. 3. The company's basics (Mailbox, Bank, its finances, Members) stay loose at the front. 4. Two group levels at most. Three to twelve apps in a group; a group with one app goes away (ungroup it). 5. Give every group a colour that sets it apart from the others and fits its product or area, by the palette's names; a group inside a group usually takes its parent's colour, so leave its own unset. Members can pick their own colours, which win in their drawer. 6. You sort the company's layout; what a member changed in their own drawer is theirs, and you leave it. 7. After a change, say it in one line to the member who asked, or on your wall.";
+export const ORGANIZE_APPS_DESCRIPTION = [
+	"Sort the company's apps into groups in the apps drawer, where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, the file apps/groups.md: no member approval is needed, and every member sees a change at once.",
+	"Actions:",
+	"- list: the layout as the drawer shows it, one line each in the file's own form: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) with its title, in its group; the groups by id and name, with how many apps they hold and their colour; the loose entries last. A long layout comes in pages: call again with the cursor it answers. An app that is not posted shows only once it is posted.",
+	"- create_group: a group called name, answering its id (a group of that name already there is that group); parent puts it inside another group, items moves those keys (or group:<id>) into it, in order, and colour gives it a colour.",
+	"- rename_group: group gets name; its id stays. colour_group: group gets colour, or none with null. ungroup: group goes, and what was in it stands where it stood.",
+	"- move: item (a key, or group:<id>) goes into group, or loose with group null, before the entry named by before, else last.",
+	"A change answers what it did, and list shows the layout after it; a change already made saves nothing and says so; when one is refused because the file changed since it was read, call again. A third group level, a key the company does not have and a colour off the palette are refused. save_app takes group, to put a new app in a group as it is made.",
+	"How to sort: group by what the founder thinks in (a product, a customer, a piece of work), not by agent, by kind of page (such as Reports) or by date. Name a group in one to three of the company's own words. The basics (Mailbox, Bank, the finances, Members) stay loose at the front. Two group levels at most, three to twelve apps in a group; a group of one app is ungrouped. Give every group a colour that sets it apart and fits its product or area; a group inside a group takes its parent's, so leave its own unset. Members' own colours and changes in their own drawer are theirs and win there; you sort the company's layout. After a change, say it in one line to the member who asked.",
+].join("\n");
 
 const groupRef = (value: unknown, label: string): string => {
 	const id =
@@ -403,6 +410,7 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 		have: pages,
 		titles,
 		unposted: new Set(),
+		retired: new Set(),
 		folders: new Set(),
 		concepts: new Set(),
 		appsUsable,
@@ -448,7 +456,11 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 				manifests.set(name, stored ? parseAppManifest(stored.text) : null);
 			}),
 		);
+	// The members' retired interfaces, read as the manifests are and released with them.
+	const retiredRead = await readRetiredApps(folder, signal, "saved");
+	if (retiredRead.entry) reads.push(retiredRead.entry);
 	const unposted = new Set<string>();
+	const retired = new Set<string>();
 	const concepts = new Set<string>();
 	const have: string[] = [...pages];
 	for (const name of names) {
@@ -463,9 +475,20 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 		have.push(key);
 		titles.set(key, manifest?.name ?? name);
 		if (!manifest?.posted) unposted.add(key);
+		if (retiredRead.apps.has(name)) retired.add(key);
 	}
 	if (concepts.size > 0) have.push("concepts");
-	return { have, titles, unposted, folders: new Set(names), concepts, appsUsable: true, appsExists: true, reads };
+	return {
+		have,
+		titles,
+		unposted,
+		retired,
+		folders: new Set(names),
+		concepts,
+		appsUsable: true,
+		appsExists: true,
+		reads,
+	};
 }
 
 /** Whether the company has a drawer key. Sites is the company's while it has a published site, and What's new (own
@@ -704,7 +727,7 @@ function layout(
 	let looseApps = 0;
 	let groups = 0;
 	const entry = (key: string, level: number) =>
-		`${"  ".repeat(level)}${key} ${oneLine(company.titles.get(key) ?? key)}${company.unposted.has(key) ? " (not posted)" : ""}`;
+		`${"  ".repeat(level)}${key} ${oneLine(company.titles.get(key) ?? key)}${company.unposted.has(key) ? " (not posted)" : ""}${company.retired.has(key) ? " (retired by a member)" : ""}`;
 	/** Writes the nodes' lines; answers how many posted apps they hold. */
 	const walk = (nodes: readonly Node[], level: number): number => {
 		let apps = 0;
@@ -779,9 +802,10 @@ function listPage(items: readonly Node[], company: Company, cursor: number): str
 /** A title as one line of a list. */
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
-/** A loose entry the Co-Founder's tidy pass counts: a posted app (pages, Concepts, Sites and What's new are the
- * drawer's own). */
-const looseCounts = (key: string, company: Company) => key.startsWith("app:") && !company.unposted.has(key);
+/** A loose entry the Co-Founder's tidy pass counts: a posted app no member retired (pages, Concepts, Sites and What's
+ * new are the drawer's own; a retired app is in no member's drawer). */
+const looseCounts = (key: string, company: Company) =>
+	key.startsWith("app:") && !company.unposted.has(key) && !company.retired.has(key);
 
 /** At most this many keys a result names of a kind (tidied, not in the company); it says how many more. */
 const NAMED_MAX = 20;

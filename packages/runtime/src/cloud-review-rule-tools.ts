@@ -15,11 +15,10 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 const OPERATION_KEY = /^[A-Za-z0-9_:.-]{1,128}$/;
 
-export const CLOUD_REVIEW_RULE_TOOL_DESCRIPTION =
-	'Add an Ask first rule for the member you work for. From then on, before any agent does that kind of action for them, the member is asked to approve it on a card first. Use it when the member asks you to check with them before something, for example "always ask me before you email a customer"; never add a rule the member did not ask for. ' +
-	'when finishes the sentence "When an agent wants to ..." as the member would, in their language, for example "email a customer" (1 to 280 characters). ' +
-	"You can only add Ask first rules. To let something run without asking, the member changes their rules at the bottom of Settings → General. The rule is the member's own: they see it there and can remove it. Tell the member the rule you added. " +
-	"Keep operationKey stable when you retry: the same key is the same rule. A sentence the member already has is that rule (added is false). When the result has refused, nothing was added and it says why.";
+export const CLOUD_REVIEW_RULE_TOOL_DESCRIPTION = [
+	'Add an Ask first rule for the member you work for: from then on, before any agent does that kind of action for them, the member approves it on a card first. Only when the member asks you to check with them before something, such as "always ask me before you email a customer"; never a rule they did not ask for. You can only add Ask first rules: to let something run without asking, the member changes their rules at the bottom of Settings → General.',
+	"The rule is the member's own: they see it there and can remove it. Tell them the rule you added. The same operationKey is the same rule, and a sentence the member already has is that rule (added is false). refused added nothing and says why.",
+].join("\n");
 
 /** One rule sentence as the kernel keeps it: trimmed, 1-280 characters, no control characters. */
 function ruleText(value: unknown): string {
@@ -68,7 +67,13 @@ export function cloudReviewRuleTools(
 			required: ["operationKey", "when"],
 			properties: {
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				when: { type: "string", minLength: 1, maxLength: 280 },
+				when: {
+					type: "string",
+					minLength: 1,
+					maxLength: 280,
+					description:
+						'The end of the sentence "When an agent wants to ..." as the member would say it, in their language, such as "email a customer": 1 to 280 characters.',
+				},
 			},
 		},
 		parseArguments(value) {
