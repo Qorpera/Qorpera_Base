@@ -17,8 +17,10 @@
 --    root) and refuses while the company's execution is paused (55000), as a run is. It answers the pass and
 --    `entries`, each kept file's {path, version, authority}: what the folder service records as the view's reads
 --    before an answer that shows rows leaves it (RUNTIME-FOLDER-TEST-MACHINES.md, "Reads").
--- 4. qorpera_data_pass_redeem answers a machine's pass once, within its 60 s, while its view is open and valid, with
---    kind `machine`, the view and the machine. A run's pass is answered byte for byte as before (SQL tests 1244, 1262).
+-- 4. qorpera_data_pass_redeem answers a machine's pass once, within its 60 s, while its view is open and valid and
+--    the company's execution is not paused (a machine that keeps running through a pause reads and writes no rows,
+--    also with a pass made just before it), with kind `machine`, the view and the machine. A run's pass is answered
+--    byte for byte as before (SQL tests 1244, 1262).
 --
 -- Locks: the table's constraints change under a short lock; the functions read as a folder read does and write only
 -- their own new row.
@@ -197,7 +199,7 @@ declare v_row public.qorpera_data_passes%rowtype;
 begin
 	-- Company databases, slice 5 (20260930750000): once, within its 60 s, while its run's job is leased. Slice 7
 	-- (20260930764000): with the held step a member said yes to, when the pass was made for one. Slice 8a
-	-- (20260930775000): a machine's pass, while its view is open and valid.
+	-- (20260930775000): a machine's pass, while its view is open and valid and the company's execution is not paused.
 	if p_pass is null or p_pass !~ '^[A-Za-z0-9_-]{43}$' then return null; end if;
 	update public.qorpera_data_passes set redeemed_at = clock_timestamp()
 	where pass_sha256 = extensions.digest(p_pass, 'sha256') and redeemed_at is null and expires_at > clock_timestamp()
@@ -205,7 +207,9 @@ begin
 	if not found then return null; end if;
 	if v_row.kind = 'machine' then
 		if not exists (select 1 from public.qorpera_folder_views as view where view.id = v_row.view_id
-				and view.state = 'open' and view.machine_id = v_row.machine_id and public.qorpera_folder_view_valid(view)) then
+				and view.state = 'open' and view.machine_id = v_row.machine_id and public.qorpera_folder_view_valid(view)
+				and not exists (select 1 from public.qorpera_company_execution_pauses as pause
+					where pause.profile_id = view.profile_id)) then
 			return null; end if;
 		return jsonb_build_object('schema', 'qorpera.data-pass-redeemed/v1', 'kind', 'machine',
 			'environmentId', v_row.environment_id, 'viewId', v_row.view_id, 'machineId', v_row.machine_id,
