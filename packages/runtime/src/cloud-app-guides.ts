@@ -26,6 +26,9 @@ export const APP_GUIDES = [
 	"curve",
 	"stack",
 	"shelf",
+	"map",
+	"ring",
+	"flow",
 	"explainer",
 	"style",
 	"reads",
@@ -41,7 +44,7 @@ export const isAppGuide = (value: unknown): value is AppGuide =>
  * of the kits an agent needs before it chooses, so it stays on the field; what the chosen kit's file holds is its guide.
  */
 export const APP_KIT_CHOICE =
-	"The form Qorpera draws for you, or null for a page you write by hand (the product's own prototype, or a working tool no kit draws). Before your first app, read app_guide look. Choose by what the thing is. model: how something works in numbers, such as a business model, a price, costs or capacity. board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references. path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route. object: a physical thing a member turns in the hand. curve: one value over time, such as money in the bank or orders a day, the past and what is expected. stack: things that want a member's yes, one card each, such as bills to pay or ads to run. shelf: the company's own things side by side, each with one level, such as products and their stock. explainer: a mechanism or a decision that a short narrated video explains.";
+	"The form Qorpera draws for you, or null for a page you write by hand (the product's own prototype, or a working tool no kit draws). Before your first app, read app_guide look. Choose by what the thing is. model: how something works in numbers, such as a business model, a price, costs or capacity. board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references. path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route. object: a physical thing a member turns in the hand. curve: one value over time, such as money in the bank or orders a day, the past and what is expected. stack: things that want a member's yes, one card each, such as bills to pay or ads to run. shelf: the company's own things side by side, each with one level, such as products and their stock. map: the company or your own area as its things, which fill as they are built, with the agents at them and layers to open, such as the company's map or a product's parts. ring: a year, month or week with its dates, such as deadlines and seasons. flow: money or people from where they come to where they go, such as a month's money. explainer: a mechanism or a decision that a short narrated video explains.";
 
 /**
  * The look every app is held to (Jonas, 14 November 2026, after 44 sketched screens of a company: he liked a few and
@@ -58,6 +61,7 @@ const LOOK = `Read this before your first app. It is the bar every app is held t
 - Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.
 - Copy the quality, not the layout. The screens below show the bar; they are not screens to make. Build what this company needs, in the shape that shows it best.
 - A kit draws its own form, sliders, chips and arrows included: for a kit, this decides what you put in it (real things, few words, the numbers that matter). For a page you write by hand, it decides the page too.
+- Some apps are views the company is owed, which members find first: apps/products (what it sells), apps/money (its money), apps/ads (its ads). Make one when asked, at exactly that folder; the platform draws the website itself.
 
 Screens at the bar:
 - While you slept: three big numbers of the night (orders, money in, new customers), what each agent did in a word or two, and one button for the two things that want a yes.
@@ -123,7 +127,7 @@ const EXPLAINER =
  * engine).
  */
 const DATA_KITS_SHARE =
-	"For a data kit (model, board, path, object, curve, stack, shelf) you write one file among files, the kit's data (<kit>.json, such as model.json), and save_app writes engine.js and index.html: never write or edit those two. A picture or video the data names shows only when it is in the app's folder as you save: write it there first (on a machine, under /company/apps/<name>/), or save the data again after. Change the data with save_app, not with company_write, so the page is written again with it. The page speaks your data's language: give lang, and the kit's words in that language. Every kit's words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you (\"Ask Luna\"), and told, what it says once the note went; a thing a member opens (a board's item, a path lane's step, an object's part, a model's input, a shelf's thing) may hold ask, a draft for that note (≤40 characters). Such a note reaches you as the member's message, under a first line that names the app and the thing. Every text in the data is a label or a note of one line, and the page cuts what is longer. Every fact comes from the company's files; what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it. Look at the app on a machine before you show it, as for any app: its index.html opens there with the data you saved. The answer's look names the pictures the folder lacks and the texts the page cuts.";
+	"For a data kit (model, board, path, object, curve, stack, shelf, map, ring, flow) you write one file among files, the kit's data (<kit>.json, such as model.json), and save_app writes engine.js and index.html: never write or edit those two. A picture or video the data names shows only when it is in the app's folder as you save: write it there first (on a machine, under /company/apps/<name>/), or save the data again after. Change the data with save_app, not with company_write, so the page is written again with it. The page speaks your data's language: give lang, and the kit's words in that language. Every kit's words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you (\"Ask Luna\"), and told, what it says once the note went; a thing a member opens (a board's item, a path lane's step, an object's part, a model's input, a shelf's thing) may hold ask, a draft for that note (≤40 characters). Such a note reaches you as the member's message, under a first line that names the app and the thing. Every text in the data is a label or a note of one line, and the page cuts what is longer. Every fact comes from the company's files; what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it. Look at the app on a machine before you show it, as for any app: its index.html opens there with the data you saved. The answer's look names the pictures the folder lacks and the texts the page cuts.";
 
 /** One guide's text, as app_guide answers it: the whole of what an agent knows of that part. */
 export function appGuide(about: AppGuide): string {

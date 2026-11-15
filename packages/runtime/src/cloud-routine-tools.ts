@@ -291,75 +291,31 @@ function spreadTrigger(trigger: Record<string, unknown>, offsetMinutes: number, 
 	return spread;
 }
 
-export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
-	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
-	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
-	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now or an existing dynamic routine's next run if still ahead; the member's IANA timeZone), when_done (path of a todo or human task file, latestAt, IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). Use the member's time zone from the wake time context. " +
-	"Prefer dynamic when the time of the next look depends on what you find: a new responsibility, a situation to watch; when_done to follow up a todo or human task, not a guessed time. dynamic runs once at firstRunAt, when_done once path is done or at latestAt (wake.payload.state says which); each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. " +
-	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new: while you can move it without a member, the next run is minutes to a few hours away, not the next morning. Times on the hour or half hour move a few minutes later per agent. " +
-	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
-	"effort is each run's thinking depth: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check. " +
-	"Give a finite watch an expiresAt, or for every or weekly a maxOccurrences, so it ends by itself. quietHours holds non-urgent runs until the window ends. " +
-	"conclude ends a routine with a one-sentence summary of why, and keeps it in the list as concluded; saving it again restarts it. remove deletes it from the list for good. " +
-	"For a routine paused with pauseReason needs_model_account or authorization_failed, list says what it waits for and what to tell the member. " +
-	"Keep operationKey stable for one intended change; an unconfirmed result needs the same key again, never a new one. A routine is not a reminder to a person and cannot act beyond your own authority.";
+export const CLOUD_ROUTINE_TOOL_DESCRIPTION = [
+	"Your own standing work: a routine wakes you, this agent, with its stored intent, also while no member is online. Use one whenever a responsibility or a request needs repeated attention, and tell the member what you set up. Each change passes a quick automatic review against your job; your own routines need no member's approval unless a member's own rule asks for it. A routine is not a reminder to a person and acts only within your own authority.",
+	"Actions:",
+	"- list: your routines a page at a time (cursor), or one whole by routineKey. For one paused with pauseReason needs_model_account or authorization_failed it says what it waits for and what to tell the member.",
+	"- upsert: make or change the routine of routineKey. One routineKey for one standing work makes a change a new version, not a duplicate; list first when unsure.",
+	"- pause and resume: resume switches it back on, also after a member or a failing model account stopped it.",
+	"- conclude: end it with a one-sentence summary of why; it stays listed as concluded, and saving it again restarts it.",
+	"- remove: delete its file and free its name.",
+	"trigger.kind:",
+	"- dynamic: each run chooses the next (decide_routine). The first run is at firstRunAt, by default now or, for an existing dynamic routine, its next run while still ahead. For a new responsibility or a situation to watch, where the next look depends on what you find.",
+	"- when_done: one run when the todo or human task file at path is done, or at latestAt (wake.payload.state says which): to follow it up instead of guessing a time.",
+	"- every (minutes) and weekly (localTime HH:MM, weekdays): work tied to the clock, such as a Monday report. A new one runs once at once as a kickoff, then on its schedule; give firstRunAt only when the first run must wait.",
+	"- file_change: each saved change under path, a company path you can read (match exact or subtree), wakes you once with what changed, never your own.",
+	"- event: what other services send to a hook or mailbox (hookId from list_hooks; only, its event types): each run gets up to 20 new events.",
+	"file_change and event listen from their last save, which drops what was not delivered yet. timeZone is the member's IANA time zone, from the wake's time; times are ISO 8601 with an offset, and a time on the hour or half hour moves a few minutes later per agent. report: optional (speak only when useful), required (always; it needs your public thread, or the run is skipped) or silent (never).",
+	"Start dense while a responsibility is new: while you can move it without a member, the next run is minutes to a few hours away, not the next morning. Give a finite watch an expiresAt, or for every and weekly a maxOccurrences, so it ends by itself. When you pick a threshold or a cadence nobody gave you, tell the member it is your starting assumption.",
+	"The routine is the file routines/<routineKey>.md in your folder. A conflict means it changed since it was read: call again with a new operationKey.",
+].join("\n");
 
-/** A folder-v2 agent's routines are files in its own folder, named by their keys, and each change is reviewed (thin
- * writers W4c). A file change wakes a routine from the folder journal (P29), and an event at one of the company's hooks
- * or mailboxes through W2's listener (E2). */
-const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.replace(
-	"No member approval is needed; use it whenever",
-	"Each change passes a quick automatic review against your job; your own routines need no member's approval unless a member's own rule asks for it. Use it whenever",
-)
-	.replace(
-		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. ",
-		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you: it is the file routines/<routineKey>.md in your folder (routineKey: lowercase letters, digits and single hyphens). ",
-	)
-	.replace(
-		"list first when unsure. ",
-		"list first when unsure. list pages your routines (cursor: the nextCursor of an earlier page), or shows one whole by routineKey. ",
-	)
-	.replace(
-		"Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. ",
-		"Use every or weekly for clock work, such as a Monday report; file_change to react to a file (each saved change under the path wakes you once with what changed, never your own); event to react to other services, such as a form, a payment or an email to a mailbox (each run gets up to 20 new events). Both listen from their last save, which drops what was not delivered yet; report required needs your public thread or the run is skipped. ",
-	)
-	.replace(
-		"or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone)",
-		"or event (hookId, a hook or mailbox from list_hooks; optional only, the event types to take; IANA timeZone)",
-	)
-	.replace(
-		"remove deletes it from the list for good. ",
-		"remove deletes its file and frees its name. resume switches a routine back on, also after a member or a failing model account stopped it. ",
-	)
-	.replace(
-		"an unconfirmed result needs the same key again, never a new one.",
-		"an unconfirmed result needs the same key again, never a new one. A conflict means the file changed since it was read: call again with a new operationKey.",
-	);
-
-export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
-	"Decide what happens after this run of your dynamic routine. Call it exactly once per run, before your final message, or as the last thing you do when you send none. " +
-	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: minutes to a few hours ahead while you can move the work without a member or a reply is due; the next day only when it all waits for someone or is quiet. A time on the hour or half hour moves a few minutes later per agent. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run then comes as soon as it is done, with at as the latest time (within 30 days). " +
-	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. " +
-	"conclude: summary is one sentence on why the routine is done (the goal was reached, the question answered, the watch no longer needed); the member sees it. " +
-	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
-	"state settled means the routine already moved on, changed in another conversation or past its end date, so nothing is owed. state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. " +
-	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.";
-
-/** A folder-v2 routine is a file: a new title or instructions go through the automatic review (thin writers W4c-2),
- * and a refused decision is redone under a new key (W3). */
-const CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER = CLOUD_ROUTINE_DECISION_DESCRIPTION.replace(
-	"title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. ",
-	"title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. In this company the routine is a file, and a new intent or title goes through the automatic review; if it is not approved, decide again without them. ",
-)
-	.replace(
-		"state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. ",
-		"state refused carries the reason: choose again or conclude. ",
-	)
-	.replace(
-		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.",
-		"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again, while a refused one is decided again under a new operationKey.",
-	);
+export const CLOUD_ROUTINE_DECISION_DESCRIPTION = [
+	"Decide what comes after this run of your dynamic routine: once a run, before your final message, or as your last act when you send none. When you hand work to workers, decide first: this run must decide, and the continuation cannot.",
+	"- next: at is when the next run starts (a time already past means right away). Choose it by what you found: minutes to a few hours ahead while you can move the work without a member or a reply is due; the next day only when all waits for someone or is quiet. When the next look waits for a coworker's todo or a person's human task, give its file as whenDone: the next run comes as soon as it is done, with at as the latest time (within 30 days). intent, title, effort and report change only when given; a new intent or title goes through the automatic review, and if it is not approved, decide again without them.",
+	"- conclude: summary is one sentence on why the routine is done (the goal reached, the question answered, the watch no longer needed); the member sees it.",
+	"state settled: the routine already moved on, changed in another conversation or passed its end date, so nothing is owed. state refused carries the reason: decide again under a new operationKey, or conclude. A time on the hour or half hour moves a few minutes later per agent.",
+].join("\n");
 
 /** The cloud derives the agent, requester and model account from the run. The
  * model chooses only what to do, when, and how long. Returns the check of each
@@ -421,7 +377,7 @@ export function cloudRoutineTools(
 	const tool: CloudNativeTool = {
 		name: "manage_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER,
+		description: CLOUD_ROUTINE_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -434,10 +390,17 @@ export function cloudRoutineTools(
 					type: "string",
 					pattern: CLOUD_FOLDER_ROUTINE_NAME.source,
 					maxLength: CLOUD_FOLDER_ROUTINE_NAME_BYTES,
+					description: "The routine's file name: lowercase letters, digits and single hyphens.",
 				},
 				title: { type: "string", minLength: 1, maxLength: 160 },
-				intent: { type: "string", minLength: 1, maxLength: 32768 },
-				summary: { type: "string", minLength: 1, maxLength: 2000 },
+				intent: {
+					type: "string",
+					minLength: 1,
+					maxLength: 32768,
+					description:
+						"A complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent.",
+				},
+				summary: { type: "string", minLength: 1, maxLength: 2000, description: "conclude: one sentence on why." },
 				trigger: {
 					oneOf: [
 						{
@@ -469,7 +432,7 @@ export function cloudRoutineTools(
 							required: ["kind", "minutes"],
 							properties: {
 								kind: { const: "every" },
-								minutes: { type: "integer", minimum: 5, maximum: 10080 },
+								minutes: { type: "integer", minimum: 5, maximum: 10080, description: "5 to 10080." },
 								firstRunAt: { type: "string", format: "date-time" },
 								report: reportSchema,
 							},
@@ -486,6 +449,7 @@ export function cloudRoutineTools(
 									maxItems: 7,
 									uniqueItems: true,
 									items: { type: "string", enum: [...WEEKDAYS] },
+									description: "Monday to Friday by default.",
 								},
 								localTime: timeSchema,
 								timeZone: zoneSchema,
@@ -526,12 +490,23 @@ export function cloudRoutineTools(
 					],
 				},
 				expiresAt: { type: "string", format: "date-time" },
-				maxOccurrences: { type: "integer", minimum: 1, maximum: 100000 },
-				effort: { type: "string", enum: [...CLOUD_RUNTIME_REASONING_EFFORTS] },
+				maxOccurrences: {
+					type: "integer",
+					minimum: 1,
+					maximum: 100000,
+					description: "every and weekly: 1 to 100000 runs.",
+				},
+				effort: {
+					type: "string",
+					enum: [...CLOUD_RUNTIME_REASONING_EFFORTS],
+					description:
+						"Each run's thinking depth: high for judgement-heavy analysis, low for a quick check. A new routine starts at medium; a save without it keeps what it has.",
+				},
 				quietHours: {
 					type: "object",
 					additionalProperties: false,
 					required: ["start", "end", "timeZone"],
+					description: "Non-urgent runs wait until this window ends.",
 					properties: { start: timeSchema, end: timeSchema, timeZone: zoneSchema },
 				},
 				cursor: { type: "string", pattern: CURSOR.source },
@@ -720,7 +695,7 @@ export function cloudRoutineDecisionTool(
 	return {
 		name: "decide_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER,
+		description: CLOUD_ROUTINE_DECISION_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -728,8 +703,14 @@ export function cloudRoutineDecisionTool(
 			properties: {
 				action: { type: "string", enum: [...DECISIONS] },
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				at: { type: "string", format: "date-time" },
-				intent: { type: "string", minLength: 1, maxLength: 32768 },
+				at: { type: "string", format: "date-time", description: "ISO 8601 with an offset." },
+				intent: {
+					type: "string",
+					minLength: 1,
+					maxLength: 32768,
+					description:
+						"When the work changed: the complete new instruction for your future self (what to check, what you learned, when to speak). Without it the next run keeps this run's.",
+				},
 				title: { type: "string", minLength: 1, maxLength: 160 },
 				effort: { type: "string", enum: [...CLOUD_RUNTIME_REASONING_EFFORTS] },
 				report: { type: "string", enum: [...REPLY] },

@@ -228,6 +228,8 @@ export class MachineScreenView {
 	readonly #streamCanvas = h("canvas", { class: "machine-screen-canvas", role: "img", hidden: true });
 	/** "Live" while the pictures come, "Updating…" while the last one is held. */
 	readonly #mark = h("span", { class: "machine-screen-mark", hidden: true });
+	/** Where Open stands in the large view: beside the title (the panel keeps its own on the preview). */
+	readonly #openerSlot = h("span", { class: "machine-screen-opener-slot" });
 	/** The controls under the picture (the panel's: the words of sharing, or what a private hold means and Done). */
 	readonly #controlSlot = h("div", { class: "machine-screen-control-slot" });
 	/** Where the take-over controls stand in the large view: a slim row of the frame under its titlebar, never on the
@@ -293,7 +295,7 @@ export class MachineScreenView {
 		this.#options = options;
 		const headingWrap = h("span", { class: "screen-viewer-heading" }, this.#heading, this.#hint);
 		const controls = h("div", { class: "screen-viewer-controls" }, this.#back);
-		const titlebar = h("div", { class: "screen-viewer-titlebar" }, headingWrap, controls);
+		const titlebar = h("div", { class: "screen-viewer-titlebar" }, headingWrap, this.#openerSlot, controls);
 		const stage = h(
 			"div",
 			{ class: "screen-viewer-stage" },
@@ -358,6 +360,11 @@ export class MachineScreenView {
 		shown.hidden = false;
 		hidden.hidden = true;
 		if (held) shown.focus({ preventScroll: true });
+	}
+
+	/** Open (20260930758000), in the titlebar beside the title while entered. */
+	setOpener(opener: HTMLElement | null): void {
+		this.#openerSlot.replaceChildren(...(opener ? [opener] : []));
 	}
 
 	/** The take-over controls: on the picture's foot in the preview, in the frame's row above the picture entered (full

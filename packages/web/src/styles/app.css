@@ -658,24 +658,15 @@ label > input, label > select { font-weight: 400; }
 /* A figure whose artwork was still loading fades into its empty place, in its own colour (ui/figure-motion.ts). */
 .figure-canvas[data-arrive] { animation: figure-arrive var(--motion-base) var(--ease-out) both; }
 @keyframes figure-arrive { from { opacity: 0; } }
-/* The figure acts (ui/figure-acts.ts): its body's jumps, spins and leans are a transform on the canvas, about the
- * feet, and the small effects around it (dust where it lands, small stars in its own colour as it becomes a symbol,
- * the stars it juggles while it works, the stars of a cheer) fly and fade here, over the figure. */
 .figure-canvas { transform-origin: 50% 90%; }
-/* The figure stacks by itself: the effects stand over its canvas, and a juggled star that goes round the figure is
- * under the canvas while it is on the far side. */
 .figure { isolation: isolate; }
 .figure-fx { position: absolute; inset: 0; pointer-events: none; }
 .figure-bit { position: absolute; z-index: 3; display: block; pointer-events: none; }
 .figure-dust { border-radius: 50%; background: rgb(70 60 50 / 26%); }
-/* A star: four full points in one flat vivid colour. The shape is on a layer inside, so the soft glow of its own
- * colour around a burst's stars (a filter on the star itself) is not cut off with it. The juggled stars have no
- * glow: they move every frame. */
 .figure-sparkle::before { content: ""; position: absolute; inset: 0; background: var(--bit); clip-path: polygon(50% 0, 65% 35%, 100% 50%, 65% 65%, 50% 100%, 35% 65%, 0 50%, 35% 35%); }
-.figure-sparkle:not(.figure-prop) { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bit) 55%, transparent)); }
-/* The stars a working figure juggles: placed from the figure's corner by the transform ui/figure-motion.ts writes. */
-.figure-prop { left: 0; top: 0; transform: scale(0); }
-.figure-prop.is-behind { z-index: -1; }
+.figure-sparkle { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bit) 55%, transparent)); }
+.figure-air { position: absolute; inset: -34%; z-index: 2; display: block; width: 168%; height: 168%; pointer-events: none; }
+.figure-air.is-behind { z-index: -1; }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */

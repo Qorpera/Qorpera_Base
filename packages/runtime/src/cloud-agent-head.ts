@@ -43,6 +43,14 @@ export const CLOUD_AGENT_HEAD_TRUST = {
 /** The vision as composition read it: its text, or only its size when a trusted read cannot hold it as text. */
 export type CloudAgentHeadVision = { path: string; version: string; text: string } | { path: string; bytes: number };
 
+/** The vision is agreed once its last line starts "Agreed by" (the Co-Founder's role says so and writes it). A vision
+ * too large to read as text counts as not agreed, so its run keeps the founding text. */
+export function cloudVisionAgreed(vision: CloudAgentHeadVision | null): boolean {
+	if (!vision || !("text" in vision)) return false;
+	const lines = vision.text.split("\n").filter((line) => line.trim() !== "");
+	return lines.at(-1)?.trim().startsWith("Agreed by") === true;
+}
+
 export interface CloudAgentHead {
 	/** The serialized head, one line, as the developer instructions carry it. */
 	readonly text: string;
