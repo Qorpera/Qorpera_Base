@@ -1676,7 +1676,9 @@ export function mountApplication(
 				);
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
-		}
+		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)
+			// A member the company's sites are never read for: a site's own page says it can't be shown, not waits.
+			controller.store.set({ siteList: [] });
 		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {

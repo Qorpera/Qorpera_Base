@@ -4,10 +4,11 @@ import type { HostedSession } from "../cloud/types.ts";
  * friend IS online, I would like a visual to show what they are doing more inside of a multiplayer company").
  *
  * A tab tracks one string. It used to be the conversation it shows; it is now that conversation's id, then "@" and the
- * place in the rail: "agent:<staff agent id>", "room:<room id>", "page:<interface name>", "app:<app name>", "concepts"
- * or "sites". The conversation id stays first, so "who has this conversation open" works as before (and an older tab's
- * bare conversation id still reads); the place is what another member's rail can find, since each member has a
- * conversation of their own with an agent. The presence channel takes any string up to 256 characters. */
+ * place in the rail: "agent:<staff agent id>", "room:<room id>", "page:<interface name>", "app:<app name>", "concepts",
+ * "sites" or "site:<website name>" (a website's own view, company views step 4). The conversation id stays first, so
+ * "who has this conversation open" works as before (and an older tab's bare conversation id still reads); the place is
+ * what another member's rail can find, since each member has a conversation of their own with an agent. The presence
+ * channel takes any string up to 256 characters. */
 
 export interface PresencePlace {
 	/** The conversation the tab shows, if any. */

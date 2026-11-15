@@ -553,19 +553,12 @@ describe("an HTML page's frame", () => {
 		expect(frameDocument).toContain("event.source !== app");
 		expect(frameDocument).toContain(`data.type !== "${PAGE_CONTENT}"`);
 		expect(frameDocument).toContain(`app.postMessage({ type: "${PAGE_READY}" }, "*")`);
-		// Every other page of the site keeps refusing to be framed.
+		// Every other page of the site keeps refusing to be framed, and the app frames nothing but this site.
 		const site = rule("/*");
 		expect(site).toContain("X-Frame-Options: DENY");
 		expect(site).toContain("Permissions-Policy: camera=(), microphone=(self), geolocation=(), payment=(), usb=()");
 		expect(policy(site)).toContain("frame-ancestors 'none'");
 		expect(policy(site)).toMatch(/^default-src 'self';/);
-		// It frames this site and the company websites' own hosts (company views step 4, views/site-view.ts), and still posts
-		// only to itself (the site door posts a member's pass: test/site-view.test.ts).
-		const siteDirectives = policy(site)
-			.split(";")
-			.map((part) => part.trim());
-		expect(siteDirectives).toContain("frame-src 'self' https://*.qorpera.com");
-		expect(siteDirectives).toContain("form-action 'self'");
-		expect(policy(site)).not.toMatch(/child-src/);
+		expect(policy(site)).not.toMatch(/frame-src|child-src/);
 	});
 });

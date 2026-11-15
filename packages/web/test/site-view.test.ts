@@ -13,6 +13,7 @@ import {
 	readPages,
 	SITE_DOOR_PASS,
 	SITE_DOOR_READY,
+	SITE_DOOR_SHOWN,
 	SITE_DOOR_URL,
 	SiteView,
 	type SiteViewHost,
@@ -88,6 +89,12 @@ beforeEach(() => {
 	visibility = "visible";
 	Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
 });
+/** The door in the frame says the site's page loaded, as public/site-door/door.js does. */
+function shown(source: Window | null = frame().contentWindow, origin = location.origin): void {
+	const event = new MessageEvent("message", { data: { type: SITE_DOOR_SHOWN }, origin });
+	Object.defineProperty(event, "source", { value: source });
+	window.dispatchEvent(event);
+}
 /** The door in the frame says it is ready (from `source`, at `origin`), as public/site-door/door.js does. */
 function door(source: Window | null = frame().contentWindow, origin = location.origin): void {
 	// The frame's window as it is now (setting its address may make a new one): what the view hands it is kept.
@@ -210,7 +217,7 @@ describe("the site's view", () => {
 		door(window);
 		door(frame().contentWindow, "https://wristband-shop.qorpera.com");
 		expect(posted).toEqual([]);
-		// The door is ready: it is handed the pass, once, for this app's origin only.
+		// The door is ready: it is handed the pass and the site's name, once, for this app's origin only.
 		door();
 		expect(posted).toEqual([
 			{
@@ -218,6 +225,7 @@ describe("the site's view", () => {
 					type: SITE_DOOR_PASS,
 					action: "https://wristband-shop.qorpera.com/__qorpera/member",
 					pass: pass(0).pass,
+					title: "Wristband shop",
 				},
 				origin: location.origin,
 			},
@@ -241,12 +249,13 @@ describe("the site's view", () => {
 		// The window breathes until the site's answer loads, then shows it.
 		const glass = document.querySelector(".site-glass")!;
 		expect(glass.classList.contains("is-opening")).toBe(true);
-		// The door's page loading (this app's origin) is not the site.
+		// The frame loading is only the door; another window's or origin's word is no door's.
 		frame().dispatchEvent(new Event("load"));
+		shown(window);
+		shown(frame().contentWindow, "https://wristband-shop.qorpera.com");
 		expect(glass.classList.contains("is-shown")).toBe(false);
-		// The site's answer: another origin, whose document the app can't see.
-		Object.defineProperty(frame(), "contentDocument", { configurable: true, get: () => null });
-		frame().dispatchEvent(new Event("load"));
+		// The door says the site's page loaded.
+		shown();
 		expect(glass.classList.contains("is-shown")).toBe(true);
 		expect(glass.classList.contains("is-opening")).toBe(false);
 	});
@@ -304,8 +313,7 @@ describe("the site's view", () => {
 		open({}, { pass: vi.fn(async () => answers.shift()!) });
 		await settle();
 		door();
-		Object.defineProperty(frame(), "contentDocument", { configurable: true, get: () => null });
-		frame().dispatchEvent(new Event("load"));
+		shown();
 		const reload = document.querySelector<HTMLButtonElement>("button.site-tool")!;
 		reload.click();
 		await settle();
@@ -399,6 +407,7 @@ describe("the site's view", () => {
 			type: SITE_DOOR_PASS,
 			action: pass(1).action,
 			pass: pass(1).pass,
+			title: "Wristband shop",
 			path: "/shop/",
 		});
 	});
@@ -447,6 +456,26 @@ describe("the site's view", () => {
 		view.dispose();
 		await vi.advanceTimersByTimeAsync(10 * 60_000);
 		expect(asked).toHaveLength(4);
+	});
+
+	it("asks again on the minute a number whose first ask failed, today's pages too", async () => {
+		vi.useFakeTimers();
+		const { answers, asked } = open({
+			"site-now": new Error("Failed to fetch"),
+			"site-pages": new Error("Failed to fetch"),
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(text(".site-now-number")).toBe("–");
+		answers["site-now"] = now(4, 9);
+		answers["site-pages"] = pages([["index.html", 5]]);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(text(".site-now-number")).toBe("4");
+		expect(text(".site-today")).toBe("9 visits today");
+		expect([...document.querySelectorAll(".site-top-name")].map((name) => name.textContent)).toEqual(["Front page"]);
+		// Watched now, they are asked on their own clocks, not once more a minute by the view.
+		const before = asked.filter((question) => question.question === "site-pages").length;
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(asked.filter((question) => question.question === "site-pages").length - before).toBeLessThanOrEqual(1);
 	});
 
 	it("follows a new answer of who is here", async () => {
@@ -561,15 +590,18 @@ describe("the site door", () => {
 		expect(directives).toEqual([
 			"default-src 'none'",
 			"script-src 'self'",
+			"frame-src https://*.qorpera.com",
 			"base-uri 'none'",
 			"form-action https://*.qorpera.com/__qorpera/member",
 			"frame-ancestors 'self'",
 		]);
-		// The app itself keeps sending no referrer and posting only to itself, and frames the sites' hosts.
+		// The app itself keeps sending no referrer, posting only to itself and framing only itself (default-src 'self'): no
+		// other frame of it may go to a site's host.
 		const app = rule("/*").find((line) => line.startsWith("Content-Security-Policy:"))!;
 		expect(rule("/*")).toContain("Referrer-Policy: no-referrer");
 		expect(app).toContain("form-action 'self';");
-		expect(app).toContain("frame-src 'self' https://*.qorpera.com;");
+		expect(app).toContain("default-src 'self';");
+		expect(app).not.toMatch(/frame-src|child-src|qorpera\.com/);
 		// The page: its own script only, and nothing that would take its origin away.
 		expect(doorPage).toContain('<script src="./door.js"></script>');
 		expect(doorPage).not.toMatch(/<script>|name="referrer"|http-equiv/);
@@ -585,22 +617,32 @@ describe("the site door", () => {
 				listen = handler;
 			},
 		};
-		const submitted: { action: string; fields: Record<string, string> }[] = [];
+		const submitted: { action: string; target: string; fields: Record<string, string> }[] = [];
 		vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(function (this: HTMLFormElement) {
 			submitted.push({
 				action: this.action,
+				target: this.target,
 				fields: Object.fromEntries([...new FormData(this)].map(([name, value]) => [name, String(value)])),
 			});
 		});
 		new Function("window", "location", "document", doorScript)(self, { origin }, document);
 		const say = (data: unknown, from: unknown = parent, at = origin) => listen?.({ data, source: from, origin: at });
-		return { parent, say, submitted };
+		const site = document.querySelector<HTMLIFrameElement>('iframe[name="qorpera-site"]')!;
+		return { parent, say, submitted, site };
 	}
 
-	it("says it is ready, then posts one pass its parent hands it to the site's own host", () => {
-		const { parent, say, submitted } = runDoor();
+	it("holds the site's frame, says it is ready, then posts one pass its parent hands it into that frame", () => {
+		const { parent, say, submitted, site } = runDoor();
+		// The frame the site shows in: the door's own, sandboxed as the door is (a frame keeps its parent's sandbox).
+		expect(site.parentElement).toBe(document.body);
 		expect(parent.postMessage).toHaveBeenCalledWith({ type: SITE_DOOR_READY }, "https://app.qorpera.com");
-		const handed = { type: SITE_DOOR_PASS, action: pass().action, pass: pass().pass, path: "/shop/" };
+		const handed = {
+			type: SITE_DOOR_PASS,
+			action: pass().action,
+			pass: pass().pass,
+			path: "/shop/",
+			title: "Wristband shop",
+		};
 		// Not from its parent, not from this origin, or not a pass: nothing.
 		say(handed, {});
 		say(handed, parent, "https://wristband-shop.qorpera.com");
@@ -616,16 +658,27 @@ describe("the site door", () => {
 		])
 			say({ ...handed, ...bad });
 		expect(submitted).toEqual([]);
+		// Its own empty page loading before a pass is no site.
+		Object.defineProperty(site, "contentDocument", { configurable: true, get: () => null });
+		site.dispatchEvent(new Event("load"));
+		expect(parent.postMessage).toHaveBeenCalledTimes(1);
 		say(handed);
-		expect(submitted).toEqual([{ action: pass().action, fields: { pass: pass().pass, path: "/shop/" } }]);
+		expect(submitted).toEqual([
+			{ action: pass().action, target: "qorpera-site", fields: { pass: pass().pass, path: "/shop/" } },
+		]);
+		expect(site.title).toBe("Wristband shop");
+		expect(document.querySelector("form")).toBeNull();
 		// Once only.
 		say(handed);
 		expect(submitted).toHaveLength(1);
+		// The site's page loaded (another origin: no document the door can see): the parent hears it, at its origin only.
+		site.dispatchEvent(new Event("load"));
+		expect(parent.postMessage).toHaveBeenLastCalledWith({ type: SITE_DOOR_SHOWN }, "https://app.qorpera.com");
 	});
 
 	it("posts a pass without a path to the site's top", () => {
 		const { say, submitted } = runDoor();
 		say({ type: SITE_DOOR_PASS, action: pass().action, pass: pass().pass });
-		expect(submitted).toEqual([{ action: pass().action, fields: { pass: pass().pass } }]);
+		expect(submitted).toEqual([{ action: pass().action, target: "qorpera-site", fields: { pass: pass().pass } }]);
 	});
 });

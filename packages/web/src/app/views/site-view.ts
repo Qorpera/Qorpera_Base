@@ -18,8 +18,9 @@ import type { CompanyLiveSource } from "../interface-apps.ts";
  *   own session in the frame and answers with the page. The door is a page of its own because the site's host takes a
  *   pass only with this app's exact Origin, and this app sends no referrer, under which a form of its own would say
  *   `Origin: null`; the door alone sends its origin. A fresh pass is asked on open, on Reload and for each page picked.
- * - The frame is the site's own origin, sandboxed so it can't move this app's page; the app's policy lets it frame the
- *   sites' hosts (public/_headers).
+ * - The door holds the frame the site shows in: the app frames only its own pages, and only the door's policy frames
+ *   the sites' hosts (public/_headers), so no other frame of the app (a Company File page, an interface app) can go to
+ *   one. The door says when the site's page has loaded. The frames are sandboxed so neither can move this app's page.
  * - The numbers are the company's own (`qorpera/site-now`, `site-hours`, `site-pages`), watched through CompanyNumbers
  *   only while the view is open; each is asked again on its own clock. A number that can't be read is a quiet dash.
  * - Members never see how: no pass, host or step is named. */
@@ -40,6 +41,7 @@ export interface SiteViewHost {
 export const SITE_DOOR_URL = "./site-door/";
 export const SITE_DOOR_READY = "qorpera-site-door-ready";
 export const SITE_DOOR_PASS = "qorpera-site-door";
+export const SITE_DOOR_SHOWN = "qorpera-site-door-shown";
 
 /** The numbers' zone while the company has none, the rule the cloud holds (20260930767000). */
 const DEFAULT_ZONE = "Europe/Copenhagen";
@@ -167,17 +169,17 @@ export class SiteView {
 	readonly #numbers: Numbers = {};
 	/** The open in flight: a newer one ends it. */
 	#opening: AbortController | undefined;
-	/** The host the last pass named: a page picked opens there directly when no fresh pass can be had. */
-	#knownHost: string | undefined;
 	/** A page has shown in the frame since the view opened. */
 	#shown = false;
 	/** The door is opening in the frame to post this pass, at this path of the site. */
 	#pending: { action: string; pass: string; path: string | undefined } | undefined;
-	/** The door was handed a pass: the site's answer is the next load of another origin. */
+	/** The door was handed a pass: its word that the site's page loaded shows the site. */
 	#awaiting = false;
-	/** The day today's pages are watched for, and their watch. */
+	/** The day today's pages are watched for, and their watch (undefined while it is not running). */
 	#pagesDay: string | undefined;
 	#pagesWatch: number | undefined;
+	/** The questions watched or being asked now, by name: one that failed is asked again on the minute. */
+	readonly #following = new Set<string>();
 	#drawnSite: string | undefined;
 	/** The site was no live website of the company at the last update. */
 	#gone = false;
@@ -194,23 +196,22 @@ export class SiteView {
 			referrerpolicy: "no-referrer",
 			title: slug,
 		});
-		this.#frame.addEventListener("load", () => {
-			// The frame's own empty page loading as it is put on the page is not the site: that page is this app's origin,
-			// the site's never is.
-			if (!this.#awaiting || this.#frame.contentDocument) return;
-			this.#awaiting = false;
-			this.#shown = true;
-			this.#glass.classList.add("is-shown");
-			this.#glass.classList.remove("is-opening");
-		});
-		// The door in the frame says it is ready: it is handed the pass it opened for, once, and only to this app's origin.
+		// The door in the frame says it is ready, and that the site's page loaded. Ready, it is handed the pass it opened
+		// for, once, and only to this app's origin.
 		window.addEventListener(
 			"message",
 			(event) => {
 				const door = this.#frame.contentWindow;
 				const data = event.data as { type?: unknown } | null;
-				if (!door || event.source !== door || event.origin !== location.origin || data?.type !== SITE_DOOR_READY)
+				if (!door || event.source !== door || event.origin !== location.origin) return;
+				if (data?.type === SITE_DOOR_SHOWN) {
+					if (!this.#awaiting) return;
+					this.#shown = true;
+					this.#glass.classList.add("is-shown");
+					this.#glass.classList.remove("is-opening");
 					return;
+				}
+				if (data?.type !== SITE_DOOR_READY) return;
 				const pending = this.#pending;
 				this.#pending = undefined;
 				if (!pending) return;
@@ -220,6 +221,7 @@ export class SiteView {
 						type: SITE_DOOR_PASS,
 						action: pending.action,
 						pass: pending.pass,
+						title: this.#frame.title,
 						...(pending.path ? { path: pending.path } : {}),
 					},
 					location.origin,
@@ -354,11 +356,8 @@ export class SiteView {
 				);
 				return;
 			}
-			// Shown once already: the site's own session in the frame still opens a page picked, and keeps the page.
-			if (this.#shown) {
-				if (this.#knownHost && to) this.#frame.src = `https://${this.#knownHost}${to}`;
-				return;
-			}
+			// Shown once already: the page stays as it is.
+			if (this.#shown) return;
 			this.#showCover(
 				state === "limited" ? t("Try again in a moment.") : t("This website can't be shown here right now."),
 				site.url,
@@ -371,7 +370,6 @@ export class SiteView {
 					without(pass.state);
 					return;
 				}
-				this.#knownHost = pass.host;
 				this.#enter(pass.action, pass.pass, to);
 			},
 			() => {
@@ -411,25 +409,42 @@ export class SiteView {
 		const numbers = this.#host.numbers;
 		if (!numbers) return;
 		const page = this.#lifetime.signal;
-		const follow = (question: string, read: (answer: CloudMemberDataAnswer) => void) =>
-			numbers
-				.watch(page, this.#asked(question), (_watch, answer) => read(answer))
-				.then(
-					(started) => read(started.answer),
-					() => undefined,
-				);
-		void follow("site-now", (answer) => {
+		this.#follow("site-now", (answer) => {
 			this.#numbers.now = readNow(answer, this.#slug);
 			this.#drawNumbers();
 		});
-		void follow("site-hours", (answer) => {
+		this.#follow("site-hours", (answer) => {
 			this.#numbers.hours = readHours(answer, this.#slug);
 			this.#drawNumbers();
 		});
 		this.#watchPages();
-		// A new day of the company's moves today's pages to it: looked at each minute while the view is open.
-		const day = setInterval(() => this.#watchPages(), 60_000);
-		page.addEventListener("abort", () => clearInterval(day), { once: true });
+		// Each minute while the view is open: a question whose first ask failed is asked again, and a new day of the
+		// company's moves today's pages to it.
+		const minute = setInterval(() => {
+			this.#follow("site-now");
+			this.#follow("site-hours");
+			this.#watchPages();
+		}, 60_000);
+		page.addEventListener("abort", () => clearInterval(minute), { once: true });
+	}
+
+	/** What each followed question does with an answer. */
+	readonly #readers = new Map<string, (answer: CloudMemberDataAnswer) => void>();
+
+	/** Watches one of the site's questions, unless it is watched or being asked already. A first ask that fails leaves
+	 * it to the minute. */
+	#follow(question: string, read?: (answer: CloudMemberDataAnswer) => void): void {
+		const numbers = this.#host.numbers;
+		if (read) this.#readers.set(question, read);
+		const reader = this.#readers.get(question);
+		if (!numbers || !reader || this.#following.has(question) || this.#lifetime.signal.aborted) return;
+		this.#following.add(question);
+		numbers
+			.watch(this.#lifetime.signal, this.#asked(question), (_watch, answer) => reader(answer))
+			.then(
+				(started) => reader(started.answer),
+				() => this.#following.delete(question),
+			);
 	}
 
 	/** Today's pages, watched for the company's day today; asked anew when the day turns. */
@@ -437,6 +452,7 @@ export class SiteView {
 		const numbers = this.#host.numbers;
 		if (!numbers || this.#lifetime.signal.aborted) return;
 		const today = companyToday(this.#host.timeZone());
+		// Watched for today, or being asked for it: nothing to do. A first ask that failed left no day.
 		if (today === this.#pagesDay) return;
 		this.#pagesDay = today;
 		if (this.#pagesWatch !== undefined) numbers.unwatch(this.#lifetime.signal, this.#pagesWatch);
@@ -461,7 +477,9 @@ export class SiteView {
 					this.#pagesWatch = started.watch;
 					read(started.answer);
 				},
-				() => undefined,
+				() => {
+					if (this.#pagesDay === today) this.#pagesDay = undefined;
+				},
 			);
 	}
 
