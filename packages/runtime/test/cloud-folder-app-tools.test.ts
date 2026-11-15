@@ -181,6 +181,7 @@ it("keeps save_app's schema small enough that the model receives its fields' des
 		"curve: one value over time",
 		"stack: things that want a member's yes",
 		"shelf: the company's own things side by side",
+		"map: the company or your own area as its things",
 		"explainer: a mechanism or a decision that a short narrated video explains.",
 	])
 		expect(properties.kit?.description).toContain(said);
@@ -203,6 +204,7 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"curve",
 		"stack",
 		"shelf",
+		"map",
 		"explainer",
 		"style",
 		"reads",
@@ -213,7 +215,7 @@ it("answers a guide's text, and nothing of the company", async () => {
 	refusesArguments(
 		tool,
 		{ about: "kits" },
-		"about must be one of look, model, board, path, object, curve, stack, shelf, explainer",
+		"about must be one of look, model, board, path, object, curve, stack, shelf, map, explainer",
 	);
 	refusesArguments(tool, {}, "app_guide takes exactly about");
 	refusesArguments(tool, { about: "model", more: 1 }, "app_guide takes exactly about");
@@ -224,9 +226,9 @@ it("answers a guide's text, and nothing of the company", async () => {
 		expect(Buffer.byteLength(JSON.stringify(appGuide(about))), about).toBeLessThan(16 * 1024);
 	}
 	// A data kit's guide starts with what the data kits share, then its own: fields, bounds and an example.
-	for (const kit of ["model", "board", "path", "object", "curve", "stack", "shelf"] as const) {
+	for (const kit of ["model", "board", "path", "object", "curve", "stack", "shelf", "map"] as const) {
 		expect(appGuide(kit), kit).toMatch(
-			/^For a data kit \(model, board, path, object, curve, stack, shelf\) you write one file among files/,
+			/^For a data kit \(model, board, path, object, curve, stack, shelf, map\) you write one file among files/,
 		);
 		expect(appGuide(kit), kit).toContain(`\`${kit}.json\``);
 		expect(appGuide(kit), kit).toContain("```json");
@@ -455,9 +457,9 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 const LINKS_NOTE =
 	"a link opens another app (app:<name>), a file of the company's own work (folder:<path>, never under QorperaOS/), a web page (https://…) or a place in the page (#id). For anything else, such as a tab, use a button with a click handler.";
 const WORDS_NOTE =
-	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws), and keep the text in its file.";
+	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map or explainer: kit's schema says what each draws), and keep the text in its file.";
 const UNSHOWN_NOTE =
-	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws).";
+	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map or explainer: kit's schema says what each draws).";
 const words = (count: number) => Array.from({ length: count }, () => "word").join(" ");
 
 it("reads a page quickly and names what a member would trip on", () => {

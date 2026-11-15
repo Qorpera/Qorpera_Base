@@ -352,6 +352,7 @@ in every app of the kit.
 | `curve` | where is it going? | one value over time, big: the past as a filled area, what is expected as a dotted line inside a band as wide as it is unsure, a "now" line, a dashed safe level, up to three marked points, and the value that matters large at the top, which follows a finger, the pointer or the arrow keys along the curve; a future nobody has said anything about is fog (14 November 2026) |
 | `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
 | `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
+| `map` | what are we making, and who is at it? | the company, or one owner's area, as one picture: three to seven things, each its shape (one of the reading's 25), pale and filled from the bottom as far as it is built or known, the attended one biggest in the middle and the others bigger the more agents stand at them, the agents' figures at a thing's lower corners with a mark on those at work, a member's mark where a thing waits; a thing opens into a layer of what is made inside it (1 to 12 things, four layers deep, 80 in all), zoomed into with a spring, with a quiet way back, Escape and the browser's back going up one; a thing that has an interface of its own links to it (`opens`); a thing not looked at for 14 days is pale with its age, `unknown` dashed with "?", `assumed` dashed and pale. Its first layer may be the company's reading of itself, live (`top: "reading"`, `qorpera.reading()`, §5): the company's sentence as the title, a quiet line of what changed with "Not right?" (a `tell`), the team in a row before the first reading, grey and still with since when and why while the company cannot run (Jonas, 15 November 2026: "it should not be the platform that draws it, rather an agent should maintain it"; asked how: "Use a map kit") |
 
 An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
 call the web does not already answer.
@@ -407,7 +408,10 @@ call the web does not already answer.
   `data-kit-src="figure:<id>"`, since a page has no network and the figures are not the app's files. The pictures are
   `packages/runtime/kits/figures/<id>.webp`, and `npm run generate:app-kits` writes them into
   `cloud-app-kit-figures.generated.ts`. `stack` and `shelf` draw the asking agent or the maker by it; with none, the
-  name's first letter in a soft circle.
+  name's first letter in a soft circle. A `map`'s page carries all twelve, since its data names agents by their names
+  and who stands where is found when the page opens: `save_app` adds `reading` to a map's reads (never takes it away)
+  when its first layer is the company's reading or a thing names an agent, and the engine takes each agent's figure,
+  and whether it works now, from `qorpera.reading()`'s team; an agent the company does not have stands nowhere.
 - **A note to the app's owner** (`tell`, §5; Jonas, 13 November 2026: "you can't act very much inside of the
   interfaces"). The detail a tap opens has one quiet button at its foot, never on the stage: `board`'s item sheet
   (and in `choose` a direction's world, in `wall` the picture's lightbox), `path`'s step sheet, `object`'s part note,

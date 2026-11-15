@@ -9,7 +9,7 @@
  *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
  *   An app made from a kit (`manifest.kit`, §3a and §3b) gets the kit's own files from this call: for an explainer the
  *   engine and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts);
- *   for a data kit (model, board, path, object, curve, stack, shelf) the kit's engine and a page that names the
+ *   for a data kit (model, board, path, object, curve, stack, shelf, map) the kit's engine and a page that names the
  *   pictures its data refers to, beside the agent's `<kit>.json`, whose read is the `look` (cloud-app-kits.ts).
  *   An app's own icons (`icons/<id>.svg`, @qorpera/cloud-client/app-icons), which members pick for their drawer, are
  *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
@@ -151,7 +151,7 @@ const SAVE_APP_DESIGN =
 const APP_GUIDE_DESCRIPTION =
 	"Read how one part of an interface app is made, before you make it with save_app. " +
 	"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app. " +
-	"about a kit (model, board, path, object, curve, stack, shelf or explainer) answers what the one file you write holds, field by field with its bounds, an example, and how to check the page; save_app saves a kit's file only in a run that has read the kit's guide. " +
+	"about a kit (model, board, path, object, curve, stack, shelf, map or explainer) answers what the one file you write holds, field by field with its bounds, an example, and how to check the page; save_app saves a kit's file only in a run that has read the kit's guide. " +
 	"For a page written by hand: style is the base style every page starts from, the company's colours as CSS variables, and light and dark; reads is how the page's script reads the company's live data through the qorpera object, and how often; writes is how it lets a member answer a question or change a table's row. " +
 	"icons is how an app's own icons are drawn. " +
 	"The answer is the guide's text. It reads nothing of the company and changes nothing; read a guide again when you no longer have it.";
@@ -381,6 +381,7 @@ const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly strin
 	curve: [KIT_ENGINE, KIT_PAGE],
 	stack: [KIT_ENGINE, KIT_PAGE],
 	shelf: [KIT_ENGINE, KIT_PAGE],
+	map: [KIT_ENGINE, KIT_PAGE],
 };
 
 /** The one file of a kit's app that its maker writes: an explainer's scenes, a data kit's data. */
@@ -406,14 +407,18 @@ const STACK_QUESTIONS_ADDED =
 /** What the answer's look says when save_app gave a stack's page the answers only. */
 const STACK_ANSWERS_ADDED =
 	"answers was added to the app's writes: a stack's buttons answer the open questions that point at the app.";
+/** What the answer's look says when save_app gave a map's page the company's reading. */
+const MAP_READING_ADDED =
+	"reading was added to the app's reads: a map's page reads the company's reading of itself and its agents' figures live.";
 /** What the answer's look says when a stack's writes are full and hold no `answers`, which save_app cannot add. */
 const STACK_WRITES_FULL = `answers could not be added to the app's writes, which already hold ${APP_WRITES_MAX} entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.`;
 
 /**
  * A kit app's manifest with what its page needs and its maker may not think of, and the look's line for each: `data`
  * in reads where its data names a question of the company's databases, and for a stack `questions` in reads and
- * `answers` in writes, since its cards' buttons answer the open questions that point at the app. Never taken away: when `writes` is full without `answers`, a
- * look line tells the agent to make room.
+ * `answers` in writes, since its cards' buttons answer the open questions that point at the app; for a map `reading` in
+ * reads, when its first layer is the company's reading or a thing names an agent, whose figure the page finds there.
+ * Never taken away: when `writes` is full without `answers`, a look line tells the agent to make room.
  */
 function kitNeeds(
 	kit: DataKit,
@@ -442,7 +447,29 @@ function kitNeeds(
 		// writes are full without answers: the agent must make room, since save_app never takes an entry away
 		if (!hasAnswers && !addAnswers) notes.push(STACK_WRITES_FULL);
 	}
+	if (kit === "map" && !out.reads.includes("reading") && mapReadsReading(data)) {
+		out = { ...out, reads: [...out.reads, "reading"] };
+		notes.push(MAP_READING_ADDED);
+	}
 	return { manifest: out, notes };
+}
+
+/** A map whose first layer is the company's reading, or one of whose things names an agent. */
+function mapReadsReading(data: Readonly<Record<string, unknown>>): boolean {
+	if (data.top === "reading") return true;
+	const names = (layer: unknown) =>
+		typeof layer === "object" &&
+		layer !== null &&
+		Array.isArray((layer as { things?: unknown }).things) &&
+		(layer as { things: unknown[] }).things.some(
+			(thing) =>
+				typeof thing === "object" &&
+				thing !== null &&
+				Array.isArray((thing as { agents?: unknown }).agents) &&
+				(thing as { agents: unknown[] }).agents.length > 0,
+		);
+	const layers = typeof data.layers === "object" && data.layers !== null ? Object.values(data.layers) : [];
+	return names(data.top) || layers.some(names);
 }
 
 /** Refuses a call that writes a file of the app's kit: the kit's files are Qorpera's, the same in every such app. */
@@ -545,11 +572,11 @@ export function appLookNotes(html: string): string[] {
 		);
 	if (words > LOOK_WORDS)
 		notes.push(
-			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws), and keep the text in its file.`,
+			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map or explainer: kit's schema says what each draws), and keep the text in its file.`,
 		);
 	if (!shown && words > LOOK_WORDS_UNSHOWN)
 		notes.push(
-			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws).",
+			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map or explainer: kit's schema says what each draws).",
 		);
 	return notes;
 }
