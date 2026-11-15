@@ -1047,7 +1047,10 @@ Decisions:
   - the coding and office kinds of the reservation (3h, 3j);
   - a run's own machine reservation and model logins (§6.1's other sites: C3 at the latest);
   - `stop_company_work`'s machine stop, under deletion's gc fence (3g).
-  - `record_company_machine_error` updates one machine row and takes no company lock, on either core.
+  - `record_company_machine_error` updates one machine row and takes no company lock, on either core; but since
+    `20260930760000`, for `COMPANY_MACHINE_HELPER_DIFFERS` it first takes the company's machine fence briefly, then the
+    machine and the placement (custody's order), and may retire a placement of an earlier policy that is not running. A
+    busy or refusing fence (a company being deleted) skips that retire, and the record goes on.
 - **Legacy sweep F2c (20260930292000)** left each of these paths only its `folder-v2` branch: the executor's brief fence,
   placing, custody's suspend and release, a member's start, stop or delete, the sweep and giving up an executor lost
   their gc fence. A company without a folder fails in the machine fence (42501 "Company folder is unavailable", 824 A

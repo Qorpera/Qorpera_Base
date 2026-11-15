@@ -328,6 +328,28 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   icons (`apps/<name>/icons/<id>.svg`, `@qorpera/cloud-client/app-icons`), at most 300.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
   each colour and each icon as one.
+- Light asks (`20260930761000`, deploy/first-node/RUNTIME-LIGHT-ASK.md): one small
+  question a member's own action raises, answered by one call to the small model
+  with no tools, with nothing shown in a conversation.
+  `qorpera_request_light_ask(p_profile_id, p_client_ask_id, p_kind, p_input)` →
+  `qorpera.light-ask/v1` `{id, kind, state, answer, problem}`; owner, admin or
+  contributor of a folder-v2 company. `p_kind` is a closed list, today
+  `name-app-group`, whose `p_input` is `{apps: [{name, about?}], language}`: 2 to
+  12 apps, a name of 1 to 80 characters, `about` at most 200, `language` like `en`,
+  `da` or `en-GB`; never a prompt (22023 for anything else). `state` is `waiting`,
+  `answered` (with `answer`, one line of at most 200 characters) or `failed` (with
+  `problem`: `no_payer` when no Codex login of the member's own can pay,
+  `unavailable` for a company with no Co-Founder or one that is paused,
+  `too_many` at 8 waiting asks, `no_answer`, or `expired` after ten minutes).
+  A failed ask is never raised as an error, and `failed` is final: an answer that
+  comes after the ten minutes is not kept. In a company that is paused or being
+  deleted no ask is kept: the answer is `failed` (`unavailable`) under an id that
+  names no row, which reads as null. The same `p_client_ask_id` with the
+  same kind and input answers the ask already made (23505 with other content).
+  `qorpera_read_light_ask(p_profile_id, p_ask_id)` → the same shape, or null when
+  the caller has no ask of that id. The member's own login pays, a ChatGPT plan
+  too; no company account does. A cloud before `20260930761000` has neither
+  function, and the web then asks nothing.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
@@ -1358,7 +1380,7 @@ request of another shape.
     no answer: moving the epoch is the only thing that voids that take-over whenever it arrives. It also ends another
     tab's hold of the member's under that epoch: a tab that closes while a take-over of its own is unanswered, while
     another tab of the same member holds the desktop under the same epoch, ends that tab's hold (it hears so at its
-    next heartbeat or action, and its window offers Take over again). This race is the one place a closing tab ends
+    next heartbeat or action, and its window shows the hold no more; the web begins no take-over since 14 Nov 2026). This race is the one place a closing tab ends
     another's; it keeps a take-over that outlives its window from seating anyone.
   A lease of the caller's that ran out is closed as it ended when the epoch moves. Which form each release sends:
   a close, a switch away, pagehide and leaving the page send VOID when uncertain, else EXACT by the seat the page's
@@ -1380,10 +1402,11 @@ request of another shape.
   A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
   the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
   member does a moment later.
-- A page uses a hold (input, heartbeats) only after a Take over pressed on that page (review r14 of #1661): a hold of
+- A page uses a hold (input, heartbeats) only after a take-over of that page's own (review r14 of #1661): a hold of
   the member's that the list shows from another window, or from before the page was loaded again, is shown, never
-  taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch takes
-  their own lease over, in a new seat), and without that the old lease ends by itself.
+  taken up, and ends with the window's Done or by itself. Since 14 Nov 2026 the web begins no take-over at all (Jonas:
+  private typing removed; no Take over, no Type privately): the take-over call stays in the database, unused by the
+  web, until it is retired.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat)`: one action, begun as the member.
   Clients do not call it: the action route (§4) does, with the member's own token, the action as SQL keeps it (a text
   by its length), `epoch` and `seat`, the hold the page captured the input under (release review r1 of #1667, F24 and
@@ -1698,11 +1721,66 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
   new until a member puts it live.
 - The tables are closed to every API role; the agent's and the edge function's calls are service-only.
 
+#### An address of its own (20260930756000_site_hosts)
+
+Every files site gets a host of its own, `https://<slug>.qorpera.com/`, served at the top (links from `/` are the
+site's own), and a repository's site a next host, `https://<slug>--next.qorpera.com/`, where owners and admins look
+at a version before it is live (Look first, "What's new" below). Built switched off: the operator sets
+`qorpera_site_settings.hosts_domain` first and `hosts_enabled` last (the column takes `qorpera.com` and no other value,
+23514: site-serve, the web and the executor have that domain written in, so the one host rule is one domain everywhere),
+only once the web that parses the
+host form, the app relay's cross-origin refusal and the front's `site-hosts` route are live (STEP5-BUILD's order);
+`hosts_enabled = false` is the way back.
+
+- The link form. While hosts are on, `url` in `qorpera.company-site/v1` (and every other site link: the agent's
+  publish answers, What's new) is a files site's own host, `https://<slug>.qorpera.com/`, with the path `/`; while
+  they are off it is `https://sites.qorpera.com/<slug>/` as before. An app link's is `https://<slug>-preview.qorpera.com/`
+  either way. The row's keys do not change, only the form of `url`: a deliberate exception to "breaking changes ship a
+  `_v2`" (section 8), made safe by its order: a client must accept both forms (any https host with the path `/`, or
+  the path `/<slug>/`) before the operator turns hosts on.
+- A site's name (D20, `qorpera_site_slug_valid`, also the coding executor's): `a-z`, `0-9` and `-`, 3 to 48, a letter
+  or digit at both ends, never two hyphens in a row, not ending `-preview`, never holding `qorpera`, and none of the
+  reserved names (one text, `qorpera_site_reserved_names()`: every name the platform has or plans under qorpera.com).
+  A new platform name under qorpera.com is reserved by a migration first, after production is read for a site of that
+  name, and only then gets its DNS record, tunnel hostname or envoy host.
+- A host is a site host when, lower-cased, it ends `.qorpera.com` and the one label before it is a slug that passes
+  the rule (an own host), or such a slug followed by `--next` (its next host). As one regex:
+  `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`, the slug in group 1, its length (3 to 48) and the rule
+  checked apart.
+- `qorpera_company_site_access(profile)`: `{schema: "qorpera.company-site-access/v1", hosts, sites: [{siteId, slug,
+  title, kind, source, takenDown}]}` for any member (viewers too; 42501 "Only the company's members see its sites"
+  otherwise). `hosts` says whether sites have hosts of their own; `takenDown` is `{at, reason}` for a site Qorpera's
+  operators took down (Sites says why: "Qorpera took this site down: <reason>"), else null. Every site of the company,
+  by slug, also a project's site that never went live, which `qorpera_list_company_sites` leaves out: Sites draws the
+  row of such a site taken down from its `slug`, `title` (or null), `kind` and `source`. Read leniently: later steps add
+  keys (public sites, own addresses).
+- A site taken down answers 410 on every host of it (an app link answers as off), nothing goes live on it (What's
+  new's writes answer `refused`, `SITE_TAKEN_DOWN`), and Look first does not open. Nothing is deleted, and a takedown
+  sticks until the operator restores it: `qorpera_unpublish_company_site` refuses such a site (55000 "Qorpera took this
+  site down, so it stays as it is until Qorpera restores it. If you think this is wrong, tell us with Feedback in your
+  menu.", nothing written; Sites offers no menu for its row), `qorpera_delete_hosted_profile` refuses while any site
+  of the company is down (55000 "Qorpera took one of this company's sites down, so the company can't be deleted until
+  Qorpera restores the site. If you think this is wrong, tell us with Feedback in your menu."), a deletion asked before
+  waits, and its name is never free to another company. Only the operator takes a site down or restores it.
+- What an agent reads (the platform's calls, not a client's): every refusal of a site's name (`SITE_NAME_INVALID`,
+  22023, by `publish_site`, `share_app` and `unpublish_site`) says the rule in one sentence
+  (`qorpera_site_name_words()`, which the coding executor and the runtime say byte for byte). A site of the company
+  taken down takes nothing from an agent: `publish_site`'s, `share_app`'s and `unpublish_site`'s calls refuse it with `SITE_TAKEN_DOWN: This
+  site was taken down by Qorpera (<reason>) and cannot be published until Qorpera restores it. Tell a member of the
+  company.` (55000, no address, nothing written); a repository's site takes no upload while it is down, and its list
+  file's `index` then has `live` null, no `preparing` and `takenDown: {reason}`.
+- **The cookie invariant (D22).** Sites are sibling hosts of the app and the API under qorpera.com, so no Qorpera
+  program takes a cookie, HTTP auth, a client certificate or anything else a browser sends by itself as proof of who is
+  calling, on any qorpera.com host, except the sites' and the app links' own `__Host-` gate cookies
+  (`__Host-qorpera_site`, `__Host-qorpera_app`). Auth's redirect list stays exact, never a wildcard. A future platform
+  cookie is `__Host-` (no `Domain`), and a request that changes something also needs an Origin or Fetch Metadata check.
+  Reviews hold every change to this rule.
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
-website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, behind
-its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, or at
+`https://<slug>.qorpera.com/` once hosts are on, behind its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
 the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
@@ -1740,7 +1818,19 @@ the What's new page. Nothing goes live by itself.
   the next version. The site serves the new version from the visitor's next request.
 - `qorpera_code_release_back(profile, owner, name, shown)`: owners and admins. `shown` is exactly `{live:
   <live.version>, to: <back.version>}`. Answers as above; the changes of the version it took off are ready again.
-- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed).
+- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed). Since 20260930756000 both may
+  also answer `{schema, state: "refused", code: "SITE_TAKEN_DOWN"}`: Qorpera took the site down, and nothing changed.
+- Since 20260930756000 (site hosts): while hosts are on, `qorpera_list_code_releases` has a top-level `preview`, true
+  for owners and admins (absent while hosts are off: read it as false), and `site.url` and the writes' `url` name the
+  site's own host.
+- `qorpera_open_site_preview(profile, owner, name, change)` (Look first): owners and admins (42501 "Releases
+  unavailable" otherwise); `change` is the page's `ready.change` (22023 "Look first request is invalid" when it is no
+  positive number); P0002 "No such repository". Answers `{schema: "qorpera.site-preview/v1", state}`: `off` while hosts
+  are off (hide the button); `moved` when that change is no longer a ready point with a version (say "Something
+  changed while you looked" and read the page again); `gone` when Qorpera took the site down; or `open` with `url`,
+  `https://<slug>--next.qorpera.com/.qorpera/enter?t=<43 characters>`: a one-time ticket of 2 minutes. Open a blank tab
+  within the click, set its `opener` to null, then send it to `url` (close it on any other answer). The next host shows
+  exactly the version Put it live would put live, for 12 hours, under a "Not live yet" bar, to the member who opened it.
 - The tables are closed to every API role; the executor's calls are not a member's.
 
 ### Downloading the company's code (20260930720000_code_change_record)
@@ -1798,6 +1888,92 @@ with the member folder client. Storage → the repository's folder → "Download
   same place and project it answers `queued` with the request that has it (the open one, or the one that brought it
   in). The list says how it goes (`bringing`, `lastImport`, `importedFrom`).
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
+
+### The company's numbers: door `money` (20260930767000_company_numbers_money)
+
+The platform's own numbers of a company, asked by the reserved database name `qorpera` (no company database may carry
+it): an interface app's `qorpera.query("qorpera/money-now")` and `qorpera.watch(...)`, a kit's live number, an agent's
+`data_query {database: "qorpera"}`. Read only, from the vault's bank summary; sums only, never a name, a transfer's
+text, an account number, a single payment or the summary's items. Design: the company-views lane's DESIGN-3.md §E.
+
+- `qorpera_member_company_numbers(environment, question, params)` (authenticated): a member of a folder-v2 company
+  (42501 "Company numbers are unavailable" for anyone else). `question` is the name after `qorpera/`, `params` an
+  object of named values (`{}` or null for none). Answers the data gateway's answer shape `{columns, rows, more,
+  asOf, etag}`: `columns` the names, `rows` arrays in their order, `more` false, `asOf` the time of the answer (ISO,
+  UTC), `etag` 32 hex that stay the same while the answer does (a client polls and compares it).
+- The `money-*` questions answer only a member who may read `bank/summary.json` by the folder's path authority; for
+  anyone else, and for a question that is not there, P0002 "No question qorpera/<question> that you may read" (the
+  same words). Kroner are JSON numbers rounded to øre (Danish kroner only); days are `YYYY-MM-DD`. "Today" and "this
+  month" (the default range, `money-kinds`' month) are the company's own, in its time zone (`time_zone` of
+  `qorpera_profile_team_info`, 20260930739000), or Europe/Copenhagen's while it has none or one the database does not
+  know. The answer does not name the zone (the shape has no place for it); a client that shows days reads the
+  company's zone from the team read. Until the vault counts in the company's zone (slice M2, migration
+  `20260930769000`), the summary's own days and month are the vault's UTC ones, taken at its fetch, and can lead or
+  lag the company's by hours: `money-balance`'s default range ends on the summary's newest day when that is the
+  company's tomorrow, and `money-kinds`' "this month" is the summary's own month when that is the month of the
+  company's today or tomorrow (a month that leads, in a zone behind UTC; either month may be named as `month`, and the
+  company's own then has no rows). A summary of an earlier month is never this month's: the company's month has no
+  rows until the vault fetches again.
+  - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
+    `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
+    `paused_since`; the numbers are null without a summary.
+  - `money-balance` (`from`, `to`; default the 90 days to today, at most 366 days): `day`, `balance` (end of day).
+  - `money-expected`: `day`, `balance`, the summary's forecast (an estimate).
+  - `money-months`: `month` (`YYYY-MM`), `money_in`, `money_out`, the summary's months (twelve at most).
+  - `money-kinds` (`month`, this month only, the default): `direction` (`in`, `out`), `kind`, `amount`, `count`. Out
+    kinds `salaries`, `taxes`, `rent`, `utilities`, `subscriptions`, `fees`, `other`; money in is one kind, `all`.
+    `count` is null for now (the summary keeps no count of payments).
+- The `site-*` questions and `sites` (20260930768000_company_numbers_site) answer any member of the company (viewers
+  too) and any run of it, for the company's files sites (never an app link). `site` is a site's name (its slug),
+  optional: without it every files site of the company, in name order (22023 `:site is not one of the company's sites`
+  for any other name). Hours are UTC hours; days are the company's, by the same zone rule as money. Views are counted
+  by site-serve: a page (a `text/html` file) of the live version opened by a visitor's password session; a visit is a
+  view whose session had no view of that site in the 30 minutes before; at most 60 views a session an hour count. An
+  answer has at most 2000 rows (`more` true when it was cut). The upkeep (pg_cron, every 10 minutes) adds finished
+  hours to days, keeps hours 35 days and deletes a session's last view time about an hour after it (70 minutes at most).
+  - Hours are UTC hours: in a zone offset by half an hour, an hour falls on the local day it starts in, so that day's
+    edges are off by up to 30 minutes.
+  - Days already added keep the zone the company had then; a later change of zone moves only days added after it.
+  - A count that waits more than 100 ms for a lock is dropped (never waited for), so a very busy page can lose a few
+    views.
+  - `sites`: `site`, `title`, `url` (its own host while hosts are on), `live` (visitors can open it now).
+  - `site-now` (`site`): `site`, `here_now` (sessions with a view in the last 5 minutes), `views_today`,
+    `visits_today`; one row a site.
+  - `site-hours` (`site`, `from`, `to`; default the 48 hours to this one, at most 7 days): `site`, `hour` (ISO, UTC),
+    `hour_local` (`YYYY-MM-DDTHH:MI`, the company's), `views`, `visits`; every hour, zeros included. `from` and `to`
+    are a time with its zone (`2026-11-14T08:00Z`, `2026-11-14T09:00+01:00`) or a day of the company's (its first or
+    its last hour).
+  - `site-days` (`site`, `from`, `to`; default the 30 days to today, at most 400): `site`, `day`, `views`, `visits`;
+    every day, zeros included.
+  - `site-pages` (`site`, `from`, `to` as `site-days`, `limit` 1 to 50, default 10): `site`, `path` (the file's path in
+    the site, `index.html`, `about/index.html`), `views`, `visits` (the visits that began there); the most viewed paths
+    a site.
+- A name of another shape, a parameter the question does not take or a value out of its bounds: 22023 in plain words
+  (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
+- A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
+  host's call (scope folder), with its own path authority.
+
+### The company's reading and standing (20260930765000_company_reading)
+
+The company keeps one short reading of itself, `QorperaOS/vision/reading.md` (Jonas, 14 Nov 2026: "It should feel
+like the company is conscious almost"). It is a structured file like the vision: members read it with the company
+folder reads above and parse it with `parseCompanyStateFile` (kind `reading`, format in
+deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §2). There is none until the Co-Founder writes the first one; a
+member may delete it. A company whose routines stand still cannot write its own reading, so the platform says it:
+
+- `qorpera_read_company_standing(profile)`: `{schema: "qorpera.company-standing/v1", stopped, since, why, member,
+  resetsAt, waiting}`. `waiting` counts the company's routine wakes that are due and still queued; `since` is the
+  time the oldest of them has waited from (null when none waits). `stopped` is true when that one has waited more than
+  30 minutes and no routine wake of the company was given a run in the last 30 minutes: a member's own turn, a room
+  delivery or a worker's run does not count, so a company whose members chat while its routines wait for days reads
+  as stopped. `why` reads the login of the member each waiting wake would
+  be paid by (its routine's payer, the member who saved it; else the member its agent works for), in the order the
+  wakes wait, and names the first that is not ready: `login_full` (with `resetsAt`, when the login's window resets),
+  `sign_in` (a new sign-in is needed) or `no_login`; `member` is that member's user id. `why`, `member` and `resetsAt`
+  are null when every such login is ready. Any member reads it, a viewer too; anyone else is 42501 "Standing
+  unavailable". Read it when the company page opens and every 30 s while it is open.
+- The Co-Founder's facts for the reading are a host call of its run, never a member's:
+  `qorpera_describe_company_senses(binding)`.
 
 ## 3. Realtime
 
@@ -2002,6 +2178,23 @@ machine.
   password page, the unlock (`POST /<slug>/.qorpera/unlock`) and the site's
   static files under the visitor's session (`/<slug>/~<token>/<path>`), each
   file sandboxed (`Content-Security-Policy: sandbox`), never framed or indexed.
+  Since 20260930756000, while hosts are on (`qorpera_site_settings.hosts_enabled`), it also answers a site's own host
+  `https://<slug>.qorpera.com/` and its next host `https://<slug>--next.qorpera.com/` (the front's `site-hosts`
+  route), and the old host's links move to the own host (308, or 303 for its unlock). On those hosts nothing is
+  sandboxed and every path is the site's: the visitor's session is the host-only cookie `__Host-qorpera_site` (no
+  `Domain`, `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`), the password posts to `/.qorpera/unlock` (Origin
+  `https://<host>`), Look first's ticket is taken at `/.qorpera/enter?t=`, a missing path gets the site's own
+  `404.html` with 404, a site taken down answers 410, and private and next answers carry
+  `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
+  `no-transform`. Service worker scripts are refused (404) on every site host. Every answer of site-serve, the old
+  host's too, carries an explicit `Cache-Control` with `no-transform` (D23).
+  Since 20260930768000 it counts a page view after answering it (`qorpera_site_count_view`, service role only): a GET
+  answered 200 or 304 with a `text/html` file of the live version for a visitor's session, with no `Range`,
+  `Sec-Fetch-Dest` `document` or absent and no `Sec-Purpose`/`Purpose` (prefetch), on the own host or the old host's
+  session path; never on a next host, for an asset, a HEAD, the password page or a refusal. It sends the host, the
+  file's path and the session token only; no address, user agent, referrer, query or other header is stored, and no
+  cookie is added. The count never changes the answer and delays it by at most 200 ms (none where the edge runtime
+  has `EdgeRuntime.waitUntil`).
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),

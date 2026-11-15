@@ -115,6 +115,8 @@ const START_REFUSALS: ReadonlySet<string> = new Set<MachineStartRefusal>([
 	"MACHINE_IMAGE_WITHOUT_SCREEN",
 	"DESKTOP_DID_NOT_START",
 ]);
+/** Every refusal the start route answers, as the window acts on each (its tests go through them all). */
+export const MACHINE_START_REFUSALS: ReadonlySet<string> = START_REFUSALS;
 /** The desktop runs (started now, or running already; with something to open, it runs and that is open), or why not. */
 export type MachineStartAnswer =
 	| { readonly kind: "started" | "running" | "opened" }

@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 import { APP_KITS, parseAppManifest } from "@qorpera/cloud-client/interface-apps";
+import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { JsonValue } from "@qorpera/contracts";
+import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
+import { KIT_FIGURES } from "@qorpera/runtime/cloud-app-kit-figures.generated";
 import {
 	DATA_KITS,
 	KIT_DATA_MAX_BYTES,
@@ -11,6 +14,7 @@ import {
 	KIT_LIVE_QUESTIONS,
 	kitBindings,
 	kitDataFile,
+	kitFigures,
 	kitMedia,
 	kitNotes,
 	kitPage,
@@ -38,7 +42,9 @@ afterEach(() => {
 	for (const run of runs.splice(0)) run.close();
 });
 
-async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
+/** A run's app tools over a folder. The run has read every guide, as a run does before it writes a kit's file,
+ * unless `unread`. */
+async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}, unread = false) {
 	const f = await folderWriterFixture(seed);
 	runs.push(f.run);
 	const tools = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
@@ -48,6 +54,7 @@ async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
 		const prepared = (await tool(name).prepare?.(parsed, f.context)) ?? parsed;
 		return tool(name).execute(prepared, f.context);
 	};
+	if (!unread) for (const about of APP_GUIDES) await call("app_guide", { about });
 	return { ...f, tool, call };
 }
 const read = (content: CloudToolContent) => JSON.parse(String(content.value));
@@ -88,8 +95,16 @@ const BOARD = {
 
 it("names the data kits as the kits an app can be made from", () => {
 	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS]);
-	expect([...DATA_KITS]).toEqual(["model", "board", "path", "object"]);
-	expect(DATA_KITS.map(kitDataFile)).toEqual(["model.json", "board.json", "path.json", "object.json"]);
+	expect([...DATA_KITS]).toEqual(["model", "board", "path", "object", "curve", "stack", "shelf"]);
+	expect(DATA_KITS.map(kitDataFile)).toEqual([
+		"model.json",
+		"board.json",
+		"path.json",
+		"object.json",
+		"curve.json",
+		"stack.json",
+		"shelf.json",
+	]);
 });
 
 it("holds each kit's engine and guide exactly as its source files have them", () => {
@@ -108,15 +123,16 @@ it("holds each kit's engine and guide exactly as its source files have them", ()
 		expect(Buffer.byteLength(KIT_ENGINE_JS[kit]), kit).toBeLessThan(128 * 1024);
 		// A guide is written for an agent, and small enough that the four sit in one schema with room to spare.
 		expect(Buffer.byteLength(KIT_GUIDE[kit]), kit).toBeLessThan(4608);
-		// A kit's words name the button of a note to the app's owner, which save_app's kits paragraph explains once.
-		expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
+		// A kit's words name the button of a note to the app's owner, which save_app's kits paragraph explains once. A
+		// curve has no thing a member opens, so no note.
+		if (kit !== "curve") expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
 		// Each guide's example is data its own kit reads.
 		const example = /```json\n([\s\S]*?)\n```/.exec(KIT_GUIDE[kit])?.[1] ?? "";
 		expect(parseKitData(kit, example), kit).toHaveProperty("data");
 	}
 });
 
-it("tells an agent on kit what each kit draws and what its one file holds", async () => {
+it("tells an agent on kit what each kit draws, and in the kit's guide what its one file holds", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
@@ -125,7 +141,7 @@ it("tells an agent on kit what each kit draws and what its one file holds", asyn
 		"It is never a document or a report: text to read stays a file in the folder.",
 		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
 		"Nearly every app is made from a kit: you write the kit's one file among files (its data, <kit>.json; an explainer's scenes.js) and save_app writes the page and the engine",
-		"A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
+		"kit says what each kit draws; app_guide says what its file holds: read the kit's guide before you write the file",
 		// A page written by hand follows the kits.
 		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
 		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
@@ -136,24 +152,34 @@ it("tells an agent on kit what each kit draws and what its one file holds", asyn
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", null]);
+	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", "curve", "stack", "shelf", null]);
 	for (const said of [
 		"model: how something works in numbers, such as a business model, a price, costs or capacity.",
 		"board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references.",
 		"path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route.",
 		"object: a physical thing a member turns in the hand.",
-		"save_app writes engine.js and index.html: never write or edit those two",
-		"what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it",
-		// A note to the app's owner (qorpera.tell), said once for the four kits.
-		'Every kit\'s words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you ("Ask Luna"), and told, what it says once the note went;',
-		"a thing a member opens (a board's item, a path lane's step, an object's part, a model's input) may hold ask, a draft for that note (≤40 characters).",
-		"Such a note reaches you as the member's message, under a first line that names the app and the thing.",
+		"curve: one value over time, such as money in the bank or orders a day, the past and what is expected.",
+		"stack: things that want a member's yes, one card each, such as bills to pay or ads to run.",
+		"shelf: the company's own things side by side, each with one level, such as products and their stock.",
 	])
 		expect(kit.description).toContain(said);
+	// What the data kits share stands at the head of each one's guide, which app_guide answers with: on the
+	// schema, where it stood until 14 November 2026, no model received it.
+	for (const said of [
+		"save_app writes engine.js and index.html: never write or edit those two",
+		"A picture or video the data names shows only when it is in the app's folder as you save: write it there first",
+		"what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it",
+		// A note to the app's owner (qorpera.tell), said once for the data kits.
+		'Every kit\'s words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you ("Ask Luna"), and told, what it says once the note went;',
+		"a thing a member opens (a board's item, a path lane's step, an object's part, a model's input, a shelf's thing) may hold ask, a draft for that note (≤40 characters).",
+		"Such a note reaches you as the member's message, under a first line that names the app and the thing.",
+	])
+		for (const each of DATA_KITS) expect(appGuide(each), each).toContain(said);
 	// Each kit's own guide is there whole, as its file has it.
-	for (const each of DATA_KITS) expect(kit.description, each).toContain(KIT_GUIDE[each].trim());
-	// A tool's schema holds 64 KiB: the kits' guides leave most of it.
-	expect(Buffer.byteLength(JSON.stringify(tool.inputSchema))).toBeLessThan(48 * 1024);
+	for (const each of DATA_KITS) expect(appGuide(each), each).toContain(KIT_GUIDE[each].trim());
+	// The schema is small enough that its descriptions reach the model (under 5,000 bytes as the patched Codex
+	// sends it).
+	expect(Buffer.byteLength(JSON.stringify(tool.inputSchema))).toBeLessThan(4600);
 });
 
 it("finds the pictures and videos a kit's data names in the app's own folder", () => {
@@ -1023,6 +1049,37 @@ it("refuses a data kit's app with no data, or with data its engine cannot read",
 	expect(f.folders.has("apps/marked")).toBe(false);
 });
 
+it("refuses a model whose groups hold no input, and saves one where any group has one", async () => {
+	const f = await fixture();
+	const model = (key: string, data: JsonValue) =>
+		f.call(
+			"save_app",
+			save("economy", key, { title: "Economy", kit: "model" }, [{ path: "model.json", text: JSON.stringify(data) }]),
+		);
+	// What an agent saved on production on 13 November 2026, never having been given the kit's guide: its answer to
+	// "model.json has no groups". The engine draws one line for it, that there is nothing to show.
+	const empty: JsonValue[] = [
+		{ groups: [] },
+		{ groups: [{ label: "Costs", inputs: [] }] },
+		{ groups: [{ label: "Costs" }, "inputs"] },
+		{ groups: { inputs: [{ id: "price" }] } },
+	];
+	for (const [n, data] of empty.entries())
+		await refuses(
+			model(`empty-${n}`, data),
+			"APP_DATA_INVALID: model.json has no input in its groups: the model kit draws nothing without one",
+		);
+	expect(parseKitData("model", '{"groups":[]}')).toEqual({
+		problem: "model.json has no input in its groups: the model kit draws nothing without one",
+	});
+	expect(f.folders.has("apps/economy")).toBe(false);
+	// One group with an input is a model, whatever the others hold.
+	expect(read(await model("make-1", { groups: [{ label: "Later", inputs: [] }, ...MODEL.groups] }))).toMatchObject({
+		state: "applied",
+		created: true,
+	});
+});
+
 it("names in the page the pictures the folder holds, and says which it lacks", async () => {
 	// A machine wrote one of the two pictures into the app's folder before the app was saved.
 	const f = await fixture({
@@ -1229,4 +1286,149 @@ it("adds data to a kit app's reads when its data names a question, and only adds
 	);
 	expect(own.state).toBe("applied");
 	expect(manifestOf(f, "tool")?.reads).toEqual(["data"]);
+});
+
+/* The shape kits (Jonas, 14 November 2026, on lanes/company-views-20261114/PLAN.md: "Yes, start building"): a value over
+ * time (curve), things that want a member's yes (stack), the company's things side by side (shelf). Their engines run
+ * in a browser (packages/web/test/app-kit-engines.test.ts); here are their data, their page and save_app. */
+
+const STACK = {
+	lang: "en",
+	title: "Wants your yes",
+	cards: [
+		{ id: "parts", title: "Pay the parts bill?", value: 4200, unit: "kr", by: "Mads", figure: "rocket" },
+		{ id: "vat", title: "Send the VAT return?", value: 3120, unit: "kr", by: "Co-Founder", figure: "crown" },
+		{ id: "ad", title: "Run this ad?", picture: "pictures/ad.webp", by: "Ida", figure: "rocket" },
+	],
+};
+
+it("reads a shape kit's data, or says in words why it does not read", () => {
+	const problem = (kit: (typeof DATA_KITS)[number], value: unknown) => {
+		const parsed = parseKitData(kit, JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem("curve", {})).toBe("curve.json has no points: the curve kit draws nothing without");
+	expect(problem("curve", { points: [{ label: "Nov", value: 1 }] })).toBe(
+		"curve.json needs two points at least in points: the curve kit draws a line between them",
+	);
+	expect(problem("curve", { points: [{ label: "Oct" }, { label: "Nov", value: 1 }] })).toBeNull();
+	expect(problem("shelf", { things: [] })).toBe(
+		"shelf.json has no thing in things: the shelf kit has nothing to stand on its shelf",
+	);
+	expect(problem("shelf", { things: [{ name: "Lamp" }] })).toBeNull();
+	// A stack of no cards is one with nothing waiting: its page says so.
+	expect(problem("stack", { cards: [] })).toBeNull();
+	expect(problem("stack", { cards: {} })).toBe("stack.json's cards must be a list");
+	expect(problem("stack", { title: "Yes" })).toBe("stack.json has no cards: the stack kit draws nothing without");
+});
+
+it("carries in a kit's page the agents' figures its data names, each once, as pictures of their own", () => {
+	// Only a field named figure names one, and only a figure an agent can have.
+	expect(kitFigures(STACK)).toEqual(["rocket", "crown"]);
+	expect(kitFigures({ things: [{ figure: "dragon" }, { name: "crown" }, { note: { figure: "moon" } }] })).toEqual([
+		"moon",
+	]);
+	const page = kitPage("yes", "stack", "Wants your yes", STACK, () => true);
+	expect(page).toContain(`<img data-kit-src="figure:rocket" src="${KIT_FIGURES.rocket}" alt="">`);
+	expect(page).toContain(`<img data-kit-src="figure:crown" src="${KIT_FIGURES.crown}" alt="">`);
+	expect(page.match(/data-kit-src="figure:rocket"/g)).toHaveLength(1);
+	// They stand with the app's own pictures, which the page reaches the same way.
+	expect(page.indexOf('data-kit-src="pictures/ad.webp"')).toBeLessThan(page.indexOf('data-kit-src="figure:rocket"'));
+	expect(page.indexOf('data-kit-src="figure:crown"')).toBeLessThan(page.indexOf("</div>"));
+	// A page whose data names no figure is as it was.
+	expect(kitPage("marked", "board", "Marked", BOARD, () => true)).not.toContain("figure:");
+	// Each is the web's figure made small (packages/runtime/kits/figures/<id>.webp, as npm run generate:app-kits
+	// writes it in): one for every figure an agent can have, a few kilobytes each.
+	expect(Object.keys(KIT_FIGURES).sort()).toEqual([...STAFF_CHARACTER_IDS].sort());
+	for (const [id, url] of Object.entries(KIT_FIGURES)) {
+		const file = readFileSync(new URL(`../kits/figures/${id}.webp`, import.meta.url));
+		expect(url, id).toBe(`data:image/webp;base64,${file.toString("base64")}`);
+		expect(file.byteLength, id).toBeLessThan(8 * 1024);
+	}
+});
+
+it("gives a stack's app the open questions and their answers, which its buttons answer", async () => {
+	const LOOK =
+		"questions was added to the app's reads and answers to its writes: a stack's buttons answer the open questions that point at the app.";
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	const made = read(
+		await f.call(
+			"save_app",
+			save("yes", "make-1", { title: "Wants your yes", kit: "stack", reads: ["files"], writes: ["table:orders"] }, [
+				{ path: "stack.json", text: JSON.stringify(STACK) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(manifestOf(f, "yes")).toMatchObject({ reads: ["files", "questions"], writes: ["table:orders", "answers"] });
+	expect(made.look).toContain(LOOK);
+	expect(f.text("apps/yes/engine.js")).toBe(KIT_ENGINE_JS.stack);
+	expect(f.text("apps/yes/index.html")).toBe(kitPage("yes", "stack", "Wants your yes", STACK, () => false));
+	// Saved again, it has them: nothing more is added, and the manifest is not written.
+	const again = read(
+		await f.call(
+			"save_app",
+			save("yes", "change-1", null, [{ path: "stack.json", text: JSON.stringify({ ...STACK, line: "Now" }) }]),
+		),
+	);
+	expect(again.files.map((file: { path: string }) => file.path)).not.toContain("apps/yes/app.toml");
+	expect(again.look ?? []).not.toContain(LOOK);
+	// A manifest that takes them away gets them back.
+	const taken = read(
+		await f.call("save_app", save("yes", "change-2", { title: "Wants your yes", reads: [], writes: [] }, [])),
+	);
+	expect(manifestOf(f, "yes")).toMatchObject({ reads: ["questions"], writes: ["answers"] });
+	expect(taken.look).toContain(LOOK);
+	// Writes already full without answers: questions is still added, answers cannot be, and the look says why.
+	const FULL =
+		"answers could not be added to the app's writes, which already hold 16 entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.";
+	const tables = Array.from({ length: 16 }, (_, k) => `table:t${k + 1}`);
+	const full = read(
+		await f.call(
+			"save_app",
+			save("full", "make-3", { title: "Full", kit: "stack", reads: ["files"], writes: tables }, [
+				{ path: "stack.json", text: JSON.stringify(STACK) },
+			]),
+		),
+	);
+	expect(full.state).toBe("applied");
+	expect(manifestOf(f, "full")).toMatchObject({ reads: ["files", "questions"], writes: tables });
+	expect(full.look).toContain(FULL);
+	expect(full.look).not.toContain(LOOK);
+	// Saved again, the manifest is not written, and the look says it again until answers has room.
+	const fullAgain = read(
+		await f.call(
+			"save_app",
+			save("full", "change-3", null, [{ path: "stack.json", text: JSON.stringify({ ...STACK, line: "Now" }) }]),
+		),
+	);
+	expect(fullAgain.files.map((file: { path: string }) => file.path)).not.toContain("apps/full/app.toml");
+	expect(fullAgain.look).toContain(FULL);
+	// Given room, answers joins: the look names only what was added.
+	const roomy = read(
+		await f.call(
+			"save_app",
+			save("full", "change-4", { title: "Full", reads: ["questions"], writes: tables.slice(1) }, []),
+		),
+	);
+	expect(manifestOf(f, "full")).toMatchObject({ reads: ["questions"], writes: [...tables.slice(1), "answers"] });
+	expect(roomy.look).toContain(
+		"answers was added to the app's writes: a stack's buttons answer the open questions that point at the app.",
+	);
+	expect(roomy.look).not.toContain(FULL);
+	// The other shape kits ask for nothing of the kind.
+	const shelf = read(
+		await f.call(
+			"save_app",
+			save("stock", "make-2", { title: "Stock", kit: "shelf" }, [
+				{ path: "shelf.json", text: JSON.stringify({ things: [{ name: "Lamp", value: 3, max: 10 }] }) },
+			]),
+		),
+	);
+	expect(shelf.state).toBe("applied");
+	expect(manifestOf(f, "stock")).toMatchObject({ reads: [], writes: [] });
 });

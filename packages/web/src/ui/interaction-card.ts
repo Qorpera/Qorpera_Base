@@ -89,8 +89,9 @@ export interface InteractionCardContext {
 	figure?: () => HTMLElement;
 	/** Sends the outcome and answer; the card shows its busy state until it resolves. */
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
-	/** Opens the agent's computer for a takeover; absent when the thread has none. */
-	takeOver?: () => void;
+	/** A takeover card's Open computer: the agent's computer in the thread (woken when it sleeps), its large view once
+	 * a picture shows; absent when the thread has none. It begins no private hold (Jonas, 14 Nov 2026). */
+	openComputer?: () => void;
 	/** Saves a secret card's value into the company vault and marks the card provided;
 	 * absent when this context cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
@@ -583,8 +584,10 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		if (instruction) body.push(h("p", { class: "interaction-text" }, instruction));
 		if (open) {
 			actions.push(
-				context.takeOver ? pill(t("Take over"), context.takeOver, "primary", busy) : null,
-				pill(t("I'm done"), () => answer("handed_back"), context.takeOver ? "secondary" : "primary", busy),
+				// Open computer takes the member to the agent's computer, where they do what the card asks as it is shared:
+				// nothing begins private typing in the web any more (Jonas, 14 Nov 2026). I'm done says it is done.
+				context.openComputer ? pill(t("Open computer"), context.openComputer, "primary", busy) : null,
+				pill(t("I'm done"), () => answer("handed_back"), context.openComputer ? "secondary" : "primary", busy),
 				pill(t("Skip"), () => answer("dismissed"), "quiet", busy),
 			);
 		}

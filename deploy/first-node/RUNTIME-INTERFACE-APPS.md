@@ -35,8 +35,8 @@ that are visual-first to let you see the company." So an app is one of four form
 | a video | watches an explanation that moves and speaks | the `explainer` kit (§3a) |
 
 An app is made for a thing (the product, its business model, its market, its customers, its look), one app a thing,
-not for an area and not for an agent. The state of an agent's work is not an app: members read it on the line under
-the agent's name, on its wall and in its questions.
+not for an area and not for an agent. The state of an agent's work is not an app: members read it in the agent's
+thread and in its questions (until 14 November 2026 also on its wall, which the web no longer shows).
 
 ## 2. Format
 
@@ -153,6 +153,7 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
 | `save_app` | creates an app (its folder, `app.toml`, files) or changes its manifest and files, in one call | `internal`: applies at once |
 | `post_app` | sets `posted` (shows it in every member's drawer, or takes it away) | `internal` for its own app (Jonas, 7 November 2026); `delegation` for another agent's or a member's |
 | `make_picture` | makes one picture and saves it as a PNG, such as an app's picture before the save_app that shows it (§3c) | `internal`; `delegation` into another agent's or a member's app |
+| `app_guide` | answers how one part of an app is made: the look every app is held to, a kit's file, a hand-written page's base style, live data and changes, an app's icons (§3d) | `read` |
 
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
@@ -161,15 +162,15 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
   open nothing, §4, the first three named; three or more `<details>`; more than 500 words; more than 150 words with
   no picture, chart, map or diagram). It is advice, never a refusal: the agent fixes it unless it does not fit the
   page. The tool's description also says what makes a page worth opening: what the first screen answers, what to show
-  instead of write, which links open, the base style and phone width. How a page reads live data (§5) is said on the
-  manifest's `reads`, how it lets a member act (§5 "Changes") on the manifest's `writes`, and the base style's
-  variables and the company's colours (§2) on `files`, all in the tool's schema, because a tool's own description
-  holds 4096 bytes. `writes` is checked as `reads` is, by `save_app` and by `company_write` / `company_edit` of an
+  instead of write, which links open, the base style and phone width. How a page reads live data (§5), how it lets a
+  member act (§5 "Changes") and the base style's variables and the company's colours (§2) are guides of `app_guide`
+  (§3d: `reads`, `writes`, `style`), because a tool's own description holds 4096 bytes and its schema, as the model
+  receives it, under 5,000. `writes` is checked as `reads` is, by `save_app` and by `company_write` / `company_edit` of an
   `app.toml`; a manifest given without it keeps what the app has. `kit` makes the app from a kit (§3a).
   A file under `icons/` must be `icons/<id>.svg` and read as an icon (§2 "Icons"), or the call is refused naming the
   file and what to change; a save that adds icons past 12 is refused (`APP_ICONS_FULL`, naming the oldest: a new icon
   takes an old one's id, or `company_delete` removes one first). How to draw them, and that an ask for icons is one
-  call of files alone that never changes `manifest.emblem`, is said on `files`; a save of icons alone answers where the
+  call of files alone that never changes `manifest.emblem`, is the guide `icons` (§3d); a save of icons alone answers where the
   member picks one. The emblems are listed on `manifest.emblem` only: 24 names would put the description past 4096
   bytes.
 - `post_app {name, operationKey, posted}` rewrites `posted` in `app.toml`, every other byte as written.
@@ -298,7 +299,8 @@ web does not already answer. What the kit adds is that the agent writes one file
   its caption by the call's transcript (Jonas, 10 November 2026: "if it can just be ChatGPT's AI voice driven on
   your subscription it would be ideal probably"; a trial on his Mac that day read 28 captions, and one of them came
   back with sentences of the voice's own). Until then an explainer plays with captions alone.
-- **What an agent is told** stands on the manifest's `kit` in `save_app`'s schema: when a video is the right form
+- **What an agent is told** is the guide `explainer` (§3d; on `kit` in `save_app`'s schema until 14 November 2026,
+  where no model received it): when a video is the right form
   and when not, the calls of a scene, how to write captions for the ear, how to pace and lay out a stage, that every
   number comes from the company's files, and to look at more than the first frame before showing it. A test holds
   every call, icon and colour it names to the engine. After a save, `look` names what a read of `scenes.js` found:
@@ -347,18 +349,21 @@ in every app of the kit.
 | `board` | what is out there, and which one? | `scale`: real things as pictures standing on one true scale, each opening a sheet of facts; `choose`: two to four directions as worlds to step into, with a button that answers the agent's open question; `wall`: reference pictures with a note each |
 | `path` | how does it go, and where is the hole? | one to three lanes through the same steps, the evidence as marks under the step it supports, a step nobody has shown as fog with a question mark, and a flag for what will fill it; with numbers on the steps it is a funnel |
 | `object` | what is the thing? | a turntable of the thing a member turns by hand, its parts pointed out on it with a leader to each name, and its figures under it |
+| `curve` | where is it going? | one value over time, big: the past as a filled area, what is expected as a dotted line inside a band as wide as it is unsure, a "now" line, a dashed safe level, up to three marked points, and the value that matters large at the top, which follows a finger, the pointer or the arrow keys along the curve; a future nobody has said anything about is fog (14 November 2026) |
+| `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
+| `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
 
 An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
 call the web does not already answer.
 
 | File | Whose | What it is |
 | --- | --- | --- |
-| `<kit>.json` | the agent's | the data. Each kit's guide (`packages/runtime/kits/<kit>/KIT.md`) says what it holds; `save_app`'s schema carries the four guides on `kit` |
+| `<kit>.json` | the agent's | the data. Each kit's guide (`packages/runtime/kits/<kit>/KIT.md`) says what it holds; `app_guide` answers with it (§3d) |
 | pictures and videos | the agent's, written from a machine | named in the data by their path in the app's folder |
 | `engine.js` | Qorpera's | the kit's engine (`packages/runtime/kits/<kit>/engine.js`). The runtime holds each engine's and guide's text (`cloud-app-kit-engines.generated.ts`, written by `npm run generate:app-kits`, held to the sources by a test) |
 | `index.html` | Qorpera's | the page (`kitPage` in `cloud-app-kits.ts`) |
 
-- **`save_app` writes the two that are Qorpera's.** With `manifest.kit` one of the four, a new app needs its data file
+- **`save_app` writes the two that are Qorpera's.** With `manifest.kit` a data kit, a new app needs its data file
   among its files (`APP_DATA_MISSING` without it), and the data must read as the kit's (`APP_DATA_INVALID`, with why:
   not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without). A call that names
   `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
@@ -387,11 +392,27 @@ call the web does not already answer.
   page's few own words in English unless the data's `words` give them in its language.
 - **What a member does** goes through the bar (§5), from a button that says what it does: `board`'s `choose` answers
   the agent's open question that points at the app (`answers`), and `model`'s `save` keeps a member's numbers in a
-  company table (`table:<name>`). The manifest's `writes` and `reads` say so as for any app.
+  company table (`table:<name>`). The manifest's `writes` and `reads` say so as for any app. A `stack` is all
+  answers: each card's buttons are the options of the open question whose title is the card's (or whose id its
+  `question` names), a press is `qorpera.answer(id, value)`, an open question no card names is drawn as a plain card,
+  and a card whose question closed elsewhere counts as answered. So `save_app` adds `questions` to a stack's reads and
+  `answers` to its writes (never takes them away), as it adds `data` where the data names a database's question.
+  A card is matched by its whole title, also one longer than the card shows; a card already answered (its `answer`, or
+  pressed on the page) takes no open question, so the same title asked again is a card of its own, and a question
+  answered on the page stays gone even when a read that began before the answer still lists it. When `writes`
+  already holds 16 entries without `answers`, `save_app` adds only `questions`, and its look says one entry must give
+  way to `answers`.
+- **The agents' figures.** A field `figure` whose text is a figure's id (`crown`, `rocket`, …) puts that figure in the
+  page (`kitFigures`): a small WebP of the web's artwork as a data: URL, under `#kit-media` as
+  `data-kit-src="figure:<id>"`, since a page has no network and the figures are not the app's files. The pictures are
+  `packages/runtime/kits/figures/<id>.webp`, and `npm run generate:app-kits` writes them into
+  `cloud-app-kit-figures.generated.ts`. `stack` and `shelf` draw the asking agent or the maker by it; with none, the
+  name's first letter in a soft circle.
 - **A note to the app's owner** (`tell`, §5; Jonas, 13 November 2026: "you can't act very much inside of the
   interfaces"). The detail a tap opens has one quiet button at its foot, never on the stage: `board`'s item sheet
   (and in `choose` a direction's world, in `wall` the picture's lightbox), `path`'s step sheet, `object`'s part note,
-  and `model`'s note under an input's label (with `tell` every label opens one). A press asks
+  `model`'s note under an input's label (with `tell` every label opens one), `shelf`'s opened thing, and the card in
+  front of a `stack` (there only where `words.tell` names it). A press asks
   `tell({about, at, text})`: `about` is the thing's name (`path`: "step · lane", the lane left out on a path with no
   lanes; `object`: the part, and the variant shown when there are several; `model`: "label · the value as shown"),
   one line cut at a word to 60 characters; `at` its id (`path`: `lane:step`, or the step's id on a path with no lanes),
@@ -408,6 +429,9 @@ call the web does not already answer.
 Not built: the Co-Founder's `company` page has no kit of its own; a helper that renders an object's turntable and
 its parts' tracks in Blender on a machine (an agent writes that script itself today, from the guide); and a look at an
 app's screenshot by someone other than its maker. Pictures an agent generates are §3c.
+
+A model whose groups hold no input is refused as one without groups is (`APP_DATA_INVALID`): the engine would draw
+one line that says there is nothing to show.
 
 ## 3c. Pictures: make_picture (13 November 2026)
 
@@ -520,6 +544,50 @@ migration `20260930746000`, which only names the tool among a run's observations
   the key is bound to another input), with its SQL test, and a `CloudNativeToolOperations` method that asks it with
   the same envelope digest before the tool makes the picture.
 
+## 3d. Guides: app_guide (14 November 2026)
+
+What an agent must know to make a part of an app is long: a data kit's guide is about 5 KB, the explainer's 6 KB,
+a page's live data and changes 6 KB together. Until 14 November 2026 all of it, about 40 KB, stood on the fields of
+`save_app`'s schema (§3, §3a, §3b), on the reasoning that a description holds 4096 bytes and a schema 64 KiB.
+**No model ever received it.** The patched Codex sends no field description of a tool whose schema is 5,000 bytes
+or more as it sends it (probed that day with tools of rising size: 4,991 bytes kept every description, 5,000 lost
+them all; it also never sends `minimum`, `maximum`, `minLength`, `maxLength`, `maxItems`, `pattern` or `format`).
+`save_app`'s schema reached the model as 1,291 bytes of bare shape. The kits, live since v243, were filled from
+their names and one paragraph of the instructions: on production the one model app held `{"groups":[]}`, an
+agent's answer to the refusal "model.json has no groups".
+
+So a guide is a tool's answer, read when the part is made:
+
+- `app_guide {about}` answers one guide's text (`cloud-app-guides.ts`), with `about` one of `look` (below), `model`,
+  `board`, `path`, `object`, `explainer` (a kit: what its one file holds, field by field, with an example; a data kit's
+  guide starts with what the four share), `style` (the base style, §2), `reads` and `writes` (§5) and `icons` (§2). It
+  reads nothing of the company and changes nothing: review class `read`, no receipt, no operationKey. Its one
+  database change is its name in the closed list of a run's observations (20260930762000).
+- **`save_app` saves a kit's own file (`<kit>.json`, `scenes.js`) only in a run that has read the kit's guide**:
+  otherwise `APP_GUIDE_UNREAD`, before anything is written, naming the guide to read. Which guides were read is held
+  by the app tools of the run's attempt: a run that goes on in a new attempt reads the guide again. A description that
+  says "read the guide first" is a request; this is the rule, since the failure it answers was silent for as long as
+  nobody read a request as the model received it. A save that leaves the kit's file alone (pictures, the manifest, a
+  concept's cover) needs no guide. The guides of a hand-written page are not held to a read: its page still opens
+  without them.
+- `save_app`'s fields say a line each: which kit draws which thing stays on `kit`, where the agent chooses; the
+  rest point at their guide. A test holds the schema under 4,600 bytes, so its descriptions arrive.
+
+**The look (14 November 2026, company views plan §3 "Taste").** `look` is the bar every app is held to, from Jonas's
+reactions to 44 sketched screens of a company: Qorpera's own plain look (the base style's page, `--q-bg`, and the
+system font; no scenes, skies or themed backdrops), the company's real things (products, shop, money, dates, customers' words), one big shape
+a screen with colour as large soft fields and very few words, never grids of small controls, chip rows, scattered dots,
+text cards or labelled diagram lines, and **copy the quality, not the layout**. A kit keeps its own form (the model
+kit's sliders and chips, the explainer's arrows): for a kit, the look decides what goes in it; for a page written by
+hand, the page too. It tells seven screens he liked and
+three he did not in a line each. `app_guide`'s description and `save_app`'s `kit` say to read it before the first
+app; no save is held to it, since a page is still a page without it. The pictures of those screens are in no
+company's folder: every way to put them there (a seed at creation and a backfill, a platform writer, the machine
+image, an image answer of `app_guide`) is a mechanism of its own, so the guide tells them in words until one is chosen.
+
+For any tool: what a model must choose by goes in the description (4096 bytes) or in field descriptions of a schema
+that stays under the bound; a bound on a number or a length is said in words; anything longer is an answer.
+
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
@@ -545,7 +613,7 @@ migration `20260930746000`, which only names the tool among a run's observations
   emblem, the title, one line under it and a chevron: drawn plain it has a page's emblem and "App"; once the
   company's apps are read it shows the app as the drawer does (the member's own icon and colour for it, or its
   group's colour; an app that is not in the drawer as its manifest says) and the app's `about` in one line, whole
-  on a hover, or "App" where it has none. Wall posters and choice cards draw the same card, and so does a member's
+  on a hover, or "App" where it has none. Choice cards draw the same card, and so does a member's
   note sent from an app's page (§5 "A note to the app's owner"), above the member's words, with the app's own name
   and what the note is about as its line.
 - **Concepts viewer.** `#/c/<profileId>/concepts[/<name>]` shows the company's concepts (`concept = true`): the open
@@ -818,7 +886,7 @@ without `#<at>` when the page named no thing. The web sends a member's message o
 which named the agent, stands for that (`CompanyController.sendNote`), and every other check of a send holds. The
 Mailbox's notes, and Generate icon in the apps drawer (`requestAppIcons`), met the same check before and so never
 went from where the member pressed: they failed with "Company access is unavailable." They go now too. The line is
-plain text, as a wall answer's quoted question is
+plain text, as a wall answer's quoted question was
 (`cloud/wall-reply.ts`), so nothing in the cloud changes. The thread draws it as the app's card, standing above the
 member's words as an agent's message has its cards, with what the note is about as the card's line; once the
 company's apps are read the card has the app's own name, emblem and colour, and a press on it opens the app.
@@ -826,7 +894,7 @@ company's apps are read the card has the app's own name, emblem and colour, and 
 **When it waits.** A note goes from the bar only into a thread with nothing drafted in it (the member's draft in this
 browser, and the room's shared draft as it is now). When something is drafted there, or when the send does not go (no
 model account for the member, or the cloud refused it), the note waits in that thread's composer. Its first line is
-never in the composer: the draft answers it, as a draft answers a wall question (`answering`), and the composer shows
+never in the composer: the draft answers it (`answering`), and the composer shows
 it above the field as the app (its emblem in its colour, its name) and what the note is about, with a way to leave it
 out. Where the draft is saved and shared (the room's shared draft, `app/room-drafts.ts`), the line is the text's first
 line (`> app:…`, then an empty line), put there and taken out again by the company's room hooks (`app/company.ts`), so
@@ -839,7 +907,7 @@ there, so the earlier draft and the note are one message under one card, which t
 Open, which goes there, and stays until the member opens or closes it.
 
 One message answers one line: a thread whose draft answers something already (another app's note, here or in the
-room's text; a wall question), or whose message is on its way or waits to be tried again, takes no note. The note
+room's text; a line that names no app), or whose message is on its way or waits to be tried again, takes no note. The note
 then stays on the bar with its words, a line says "<agent>'s thread has a message started. Send or clear it there,
 then send this note." with Open, and Send tries again. It is kept for the app by the company, with the member's words
 as they change them (`HeldNote`), so following Open loses nothing: whenever the app's page is shown again, or its
@@ -854,11 +922,12 @@ first" otherwise, and the kept note is on the bar again where no bar shows it. A
 thread can't be opened) is still the app's note: its bar stays, says why, and keeps the member's words.
 
 The Mailbox's notes to agents go through the same code (`CompanyMail.tell` is lifted into `app/tell-agent.ts`); they
-have no line of their own, so they wait after a wall answer under way rather than be sent under its question.
+have no line of their own, so they wait after a line being answered rather than be sent under it.
 
-A wall question being answered is still this browser's alone (`answering`, not in the shared text): a reload or
-another tab finds the answer's words without the question. Fencing it the same way needs a way to tell a quoted
-question from words the member quoted themself, so it is left as it was.
+A line that names no app, being answered, is this browser's alone (`answering`, not in the shared text). Only the
+agents' wall set one (its questions' Answer), and the web shows no wall since 14 November 2026 (Jonas: "rather drop the
+wall - it's the wrong medium for activity"), so nothing sets one now; a message that opens with such a quoted line is
+still drawn with the line above the member's words.
 
 **The page's answer.** `{sent: true}` when the note went, `{sent: false, waiting: true}` when it waits in the
 agent's thread; while the note stays on the bar the page waits on. The promise rejects with a plain reason when the
@@ -988,7 +1057,7 @@ full where it will be sent from, and it goes only to the app's own agent.
 **The remaining risk, accepted.** The 60-character `about` goes in the member's message, on its first line, as the
 member's words: the agent reads it as theirs, and so does the action review, which leaves out quoted words but not
 this line (`cloud-action-review.ts`). So a page can put up to 60 characters of its own into a message the member
-sends. That is the standing a wall headline already has: an agent writes it, and a member's answer carries it as a
+sends. That is the standing a wall headline had: an agent wrote it, and a member's answer carried it as a
 quoted first line (`cloud/wall-reply.ts`). It is accepted because the member sees it on the bar before the press, it is
 one line that names nobody and quotes nothing, and it reaches only the agent that owns the app, which wrote the page,
 or the Co-Founder. The upgrade path, if it should be fenced: a quote source `app` (its ref the app's name and the
@@ -1026,11 +1095,15 @@ thread's "Quoted from an email" title).
    card in the thread (`views/conversation.ts`). No migration and no node change. Next, in a change of its own that rides a runtime cut: the prompt line that tells an agent what the first
    line means (sent from that app's page, about that thing), and the kits' buttons and guides that ask for a note.
 10. The data kits (§3b, 13 November 2026): four more names for the manifest's `kit`
-    (`cloud-client/interface-apps.ts`), the engines and their guides (`packages/runtime/kits/{model,board,path,object}/`),
+    (`cloud-client/interface-apps.ts`), the engines and their guides (`packages/runtime/kits/<kit>/`),
     the page, the pictures it names and the read of the data (`cloud-app-kits.ts`), `save_app` writing engine and page
-    with the guides on the schema field, and the agents' instructions: an app is an object, a model, an app or a
+    with the guides on the schema field (where no model received them: step 11), and the agents' instructions: an app is an object, a model, an app or a
     video, one app a thing, never a document or the state of someone's work (hire overlay v16). No migration, no node
     change and no change to the web's own code.
+11. Guides an agent receives (§3d, 14 November 2026): `app_guide`, the guides' text in `cloud-app-guides.ts`,
+    `save_app`'s fields a line each and its rule that a kit's file needs its guide read, and a model of no input
+    refused. One migration (20260930762000: the tool's name in the observations' list); no node change and no change
+    to the web.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

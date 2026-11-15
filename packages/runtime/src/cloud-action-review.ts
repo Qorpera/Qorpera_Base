@@ -246,6 +246,8 @@ export function cloudActionEffect(
 		// Company databases (slice 5): what they hold, and a question or a read, as the database folder's read login.
 		case "data_describe":
 		case "data_query":
+		// How one part of an interface app is made: the runtime's own text, the same for every company.
+		case "app_guide":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
@@ -265,9 +267,10 @@ export function cloudActionEffect(
 		case "good_will_mark":
 		// An offer of agents moves nothing until the member says yes on the Members page.
 		case "offer_agents_to_member":
-		// Company databases (slice 5): the store made to match steps someone the folder let write them put there; a step
-		// that would destroy data is held until a member says yes.
-		case "data_apply":
+		// A named change (slice 7): the company's own rows, written through a file someone the folder let write put
+		// there, as company_write writes a file. It may delete rows, which is that change's own defined act; the data
+		// gateway rolls back one that would drop or empty a table.
+		case "data_change":
 		case "send_message":
 		case "ask_member":
 		case "report_work":
@@ -291,6 +294,11 @@ export function cloudActionEffect(
 		// A move empties its source path: the folder core reviews it as a deletion (21 October 2026).
 		case "company_move":
 			return "destructive";
+		// Company databases (slice 5): the store made to match steps someone the folder let write them put there. A step
+		// that would destroy data is held; a call that names such a step's allow asks for it to be applied, which only
+		// a member's yes gives (slice 7, dataDestroyCheck).
+		case "data_apply":
+			return args.allow === undefined || args.allow === null ? "internal" : "destructive";
 		// A command on a company machine can reach the internet and, with the company folder mounted (F3 6d), the
 		// company's files, as a networked shell command can. Every one is reviewed, also on a boot without the folder:
 		// whether a boot has it is decided per boot, after the review (RUNTIME-FOLDER-TEST-MACHINES.md, Q2).
@@ -562,6 +570,42 @@ export function repositoryAccessCheck(
 		...verdict,
 		builtIn: "access_change",
 		proposedRule: verdict.proposedRule ?? "create public GitHub repositories for the company",
+	};
+}
+
+export const CLOUD_DATA_DESTROY_REASON =
+	"A database step that destroys data is applied only on a member's yes, never on the review's own word or a rule's.";
+
+/**
+ * A database step that would drop a table or a column, empty a table or delete rows is applied only on a member's yes
+ * (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §3 and §4; the founder's decision of 13 November 2026: only what
+ * destroys data waits for a member). So a data_apply call that names a held step's allow is always asked on a card,
+ * whatever the reviewer decided short of a denial: an allow becomes an ask, a company Allow rule the reviewer cited is
+ * dropped (an Ask first rule stays, and with it who answers), and no "Always allow" is offered. The platform keeps the
+ * step in the run's data pass only for a member's Allow on that card (qorpera_run_data_pass_approved,
+ * 20260930764000), so nothing here is what the data gateway trusts.
+ */
+export function dataDestroyCheck(
+	call: Pick<CloudActionCall, "tool" | "parsed">,
+	verdict: CloudActionVerdict,
+	/** The company's Ask first rules, by id in lower case. */
+	askFirst: ReadonlySet<string>,
+): CloudActionVerdict {
+	const allow = record(call.parsed).allow;
+	if (
+		call.tool.name !== "data_apply" ||
+		call.tool.source !== "runtime" ||
+		allow === undefined ||
+		allow === null ||
+		verdict.decision === "deny"
+	)
+		return verdict;
+	return {
+		...verdict,
+		decision: "ask",
+		ruleIds: verdict.ruleIds.filter((id) => askFirst.has(id.toLowerCase())),
+		proposedRule: null,
+		reason: bounded(`${CLOUD_DATA_DESTROY_REASON} The review said ${verdict.decision}: ${verdict.reason}`, 500),
 	};
 }
 
@@ -1108,6 +1152,29 @@ export function describeCloudAction(
 		quote("task", args.goal ?? args.text, CONTENT_BYTES);
 		// Where a worker saves its finished files, when the dispatch names a folder (21 October 2026).
 		add("saves in", args.saveTo);
+	} else if (tool.name === "data_apply") {
+		// A held step a member is asked to let through (slice 7): the database, the step, and what it destroys, as the
+		// data gateway read it for this call (the tool's prepare), never the agent's own words.
+		title = "Apply a database step that destroys data";
+		target = [text(args.database), text(args.step)].filter(Boolean).join(": ") || null;
+		const destroys = (Array.isArray(args.destroys) ? args.destroys : []).map((item) => {
+			const one = record(item);
+			const object = text(one.object, 200);
+			const rows = typeof one.rows === "number" ? one.rows : null;
+			return one.what === "deleted rows"
+				? `deletes ${rows ?? "the"} ${rows === 1 ? "row" : "rows"} of ${object}`
+				: one.what === "emptied table"
+					? `empties the table ${object}`
+					: one.what === "dropped table"
+						? `drops the table ${object} with all its rows`
+						: one.what === "dropped table column"
+							? `drops the column ${object} with its values`
+							: one.what === "dropped schema"
+								? `drops the whole database ${object}`
+								: `${text(one.what, 100)} ${object}`;
+		});
+		add("destroys", destroys.length > 0 ? `It ${list(destroys)}.` : undefined, CONTENT_BYTES);
+		add("undo", "Cannot be undone: what it removes is gone.");
 	} else if (tool.name === "manage_code") {
 		// 20260930720000: not reviewed today (cloudActionEffect). These are its card's words should a member's yes be
 		// asked for an undo later: the repository, the change by its number, and why.
@@ -1743,9 +1810,13 @@ export class CloudActionReviewGate {
 					: [],
 			),
 		);
-		verdict = repositoryAccessCheck(
+		verdict = dataDestroyCheck(
 			call,
-			siteAccessCheck(call, workerWorkCheck(call, machineWorkCheck(call, verdict, askFirst), askFirst)),
+			repositoryAccessCheck(
+				call,
+				siteAccessCheck(call, workerWorkCheck(call, machineWorkCheck(call, verdict, askFirst), askFirst)),
+			),
+			askFirst,
 		);
 		const recorded = object(
 			await this.#control.call(

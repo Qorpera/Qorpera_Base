@@ -5,6 +5,7 @@ import {
 	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 	CLOUD_ACTION_REVIEW_MODEL,
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CLOUD_DATA_DESTROY_REASON,
 	CLOUD_MACHINE_SCREEN_WORK_ASK_REASON,
 	CLOUD_MACHINE_SCREEN_WORK_REASON,
 	CLOUD_MACHINE_WORK_REASON,
@@ -18,6 +19,7 @@ import {
 	cloudActionReviewMandate,
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
+	dataDestroyCheck,
 	describeCloudAction,
 	machineWorkCheck,
 	parseCloudActionVerdict,
@@ -152,6 +154,8 @@ describe("which calls are reviewed", () => {
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
+		// How a part of an interface app is made: the runtime's own text (20260930762000).
+		["app_guide", { about: "model" }, "read"],
 		// Summary trees (M1b-3): zoom reads a conversation.
 		["zoom", { conversation: "thread:ada", line: "0+8" }, "read"],
 		// The node's folder search (F3): a read with the run's own view.
@@ -217,6 +221,10 @@ describe("which calls are reviewed", () => {
 		["data_describe", {}, "read"],
 		["data_query", { database: "shop", sql: "select 1" }, "read"],
 		["data_apply", { database: "shop" }, "internal"],
+		// With a held step's allow it asks for data to be destroyed (slice 7).
+		["data_apply", { database: "shop", allow: `003-clear.${"a".repeat(64)}.${"b".repeat(64)}` }, "destructive"],
+		// A named change writes the company's own rows, as company_write writes a file (slice 7).
+		["data_change", { database: "shop", change: "mark-shipped", params: { id: 7 } }, "internal"],
 		// A picture is written as company_write writes a file; one in another agent's app changes that app (20260930746000).
 		[
 			"make_picture",
@@ -3839,5 +3847,83 @@ describe("normal work on a company machine (4 November 2026)", () => {
 					guards,
 				}),
 			).not.toHaveProperty("guards");
+	});
+});
+
+describe("a database step that destroys data (company databases, slice 7)", () => {
+	const ALLOW = `003-clear.${"a".repeat(64)}.${"b".repeat(64)}`;
+	const ALLOW_RULE = "81000000-0000-4000-8000-000000000001";
+	const ASK_RULE = "81000000-0000-4000-8000-000000000002";
+	// The call as the tool's prepare made it: what the data gateway said the step would destroy.
+	const held: Record<string, JsonValue> = {
+		database: "shop",
+		allow: ALLOW,
+		step: "003-clear",
+		destroys: [
+			{ what: "deleted rows", object: "shop.orders", rows: 40 },
+			{ what: "dropped table column", object: "shop.orders.note" },
+		],
+	};
+	const call = (parsed: JsonValue = held, name = "data_apply", source: CloudNativeTool["source"] = "runtime") => ({
+		tool: { name, source },
+		parsed,
+	});
+	const verdict = (decision: "allow" | "ask" | "deny", builtIn = "none", ruleIds: string[] = []) =>
+		parseCloudActionVerdict({
+			decision,
+			ruleIds,
+			builtIn,
+			reason: "Requested.",
+			proposedRule: "apply database steps",
+		});
+
+	it("is always asked on a card: never allowed by the reviewer or a company rule, and never offered Always allow", () => {
+		expect(dataDestroyCheck(call(), verdict("allow", "none", [ALLOW_RULE, ASK_RULE]), new Set([ASK_RULE]))).toEqual({
+			decision: "ask",
+			// The Allow rule is dropped; the Ask first rule stays, and with it who answers.
+			ruleIds: [ASK_RULE],
+			builtIn: "none",
+			reason: `${CLOUD_DATA_DESTROY_REASON} The review said allow: Requested.`,
+			proposedRule: null,
+		});
+		expect(dataDestroyCheck(call(), verdict("ask", "money"), new Set())).toMatchObject({
+			decision: "ask",
+			builtIn: "money",
+			proposedRule: null,
+		});
+		// A denial stays one.
+		expect(dataDestroyCheck(call(), verdict("deny", "not_requested"), new Set())).toEqual(
+			verdict("deny", "not_requested"),
+		);
+		// A plain apply, a connector of the same name and another tool are as the reviewer says.
+		expect(dataDestroyCheck(call({ database: "shop" }), verdict("allow"), new Set())).toEqual(verdict("allow"));
+		expect(dataDestroyCheck(call(held, "data_apply", "connector"), verdict("allow"), new Set())).toEqual(
+			verdict("allow"),
+		);
+		expect(dataDestroyCheck(call(held, "data_change"), verdict("allow"), new Set())).toEqual(verdict("allow"));
+	});
+
+	it("names the database, the step and what it destroys in plain words", () => {
+		expect(describeCloudAction(tool("data_apply"), held)).toEqual({
+			title: "Apply a database step that destroys data",
+			target: "shop: 003-clear",
+			details: {
+				destroys: "It deletes 40 rows of shop.orders and drops the column shop.orders.note with its values.",
+				undo: "Cannot be undone: what it removes is gone.",
+			},
+		});
+		expect(
+			describeCloudAction(tool("data_apply"), {
+				...held,
+				destroys: [
+					{ what: "deleted rows", object: "shop.log", rows: 1 },
+					{ what: "emptied table", object: "shop.carts" },
+					{ what: "dropped table", object: "shop.old_orders" },
+					{ what: "dropped schema", object: "shop" },
+				],
+			}).details.destroys,
+		).toBe(
+			"It deletes 1 row of shop.log, empties the table shop.carts, drops the table shop.old_orders with all its rows and drops the whole database shop.",
+		);
 	});
 });

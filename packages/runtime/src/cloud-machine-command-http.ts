@@ -88,7 +88,7 @@ export interface CloudMachineCodingValueAnswer {
 	readonly box: Readonly<Record<string, string>>;
 }
 /** Why a machine sealed nothing, sent back as 409 with its code: the helper's own refusals, a machine that is not
- * running, and one whose image has no helper yet (it gets it once it sleeps and wakes from the current image). */
+ * running, and one whose image has no helper (it keeps its image across a wake; a new machine has the helper). */
 export const CLOUD_MACHINE_CODING_VALUE_REFUSALS = [
 	"MACHINE_NOT_RUNNING",
 	// A member holds the machine's desktop (20260930713000): nothing is read off its clipboard until they hand it back.

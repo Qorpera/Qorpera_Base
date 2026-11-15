@@ -5,7 +5,14 @@ import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { type AppBrand, type AppLook, readAppBrand } from "../interface-app-style.ts";
-import { AppBridge, type AppBridgeHost, type AppLink, assembleApp, type CompanyApp } from "../interface-apps.ts";
+import {
+	AppBridge,
+	type AppBridgeHost,
+	type AppDataPage,
+	type AppLink,
+	assembleApp,
+	type CompanyApp,
+} from "../interface-apps.ts";
 import { AppAskBar } from "./app-ask-bar.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
@@ -146,6 +153,9 @@ export class AppPanel {
 	 * manifest changed, so the page never reads or asks for more (or less) than the manifest says now (review r1 of
 	 * #1633, F1 and F2). Undefined for a page of the Company File, which reads nothing. */
 	#serving: Serving | undefined;
+	/** An app's frame only: where its watched values go (app/interface-apps.ts `CompanyData`). They end with the frame,
+	 * and when the manifest no longer reads `data`. */
+	#data: (AppDataPage & { readonly frame: AppFrame; readonly stop: AbortController }) | undefined;
 	/** Stops the serving bridge hearing that the app's held note is back (app/app-actions.ts `HeldNote`). */
 	#unlisten: (() => void) | undefined;
 
@@ -378,6 +388,11 @@ export class AppPanel {
 	 * shown. One the member already allowed is on its way and is not touched. */
 	#serve(app: (CompanyApp & { readonly manifest: AppManifest }) | null): void {
 		this.#ask?.cancel();
+		// What the page watched it may not watch any more: its watches end, and the page keeps what it shows.
+		if (!app || !(app.manifest.reads as readonly string[]).includes("data")) {
+			this.#data?.stop.abort();
+			this.#data = undefined;
+		}
 		this.#unlisten?.();
 		this.#unlisten = undefined;
 		if (!app) {
@@ -399,6 +414,7 @@ export class AppPanel {
 						live() ? bar.ask(ask, perform, keep) : Promise.resolve({ outcome: "gone" as const }),
 				},
 				(link) => this.#follow(link),
+				() => this.#dataPage(),
 			),
 		};
 		this.#serving = serving;
@@ -409,6 +425,23 @@ export class AppPanel {
 			if (this.#serving === serving && this.#frame) void serving.bridge.restore();
 		});
 		if (this.#frame) void serving.bridge.restore();
+	}
+
+	/** The frame on screen as the page its watched values go to: one for each frame, ending with it. */
+	#dataPage(): AppDataPage | undefined {
+		const frame = this.#frame;
+		if (!frame || frame.signal.aborted) return undefined;
+		if (this.#data?.frame !== frame) {
+			this.#data?.stop.abort();
+			const stop = new AbortController();
+			this.#data = {
+				frame,
+				stop,
+				signal: AbortSignal.any([frame.signal, stop.signal, this.#lifetime.signal]),
+				send: (watch, value) => frame.data(watch, value),
+			};
+		}
+		return this.#data;
 	}
 
 	#answer(call: AppCall): Promise<AppAnswer> {

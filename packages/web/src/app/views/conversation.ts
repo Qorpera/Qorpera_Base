@@ -19,9 +19,8 @@ import {
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
-import { appNoteHeader, replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
+import { appNoteHeader, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
-import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
 import {
 	type ActionReviewDraft,
@@ -268,8 +267,8 @@ interface ContinueLogin {
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
 
-/** A peer chip's time for a screen reader, as its description: the time on a hover (ui/sent-time-hover.ts) is only drawn,
- * and the chip's name says what it opens. */
+/** A peer chip's time for a screen reader, as its description; the chip's name says what it opens. A status line like
+ * this shows no time on a hover (Jonas, 14 Nov 2026): only messages do (ui/sent-time-hover.ts). */
 const peerTimeId = (linkId: string) => `peer-time-${linkId}`;
 const peerTime = (linkId: string, at: string) =>
 	h("span", { class: "visually-hidden", id: peerTimeId(linkId) }, fmtTime(at));
@@ -289,15 +288,6 @@ export class ConversationView {
 	/** The first sequence of the live log: the oldest item the thread showed first. */
 	#liveFrom: number | undefined;
 	readonly #status = h("div", { class: "thread-status" });
-	/** The agent's wall, right above the composer of its own thread (ui/agent-wall-poster.ts). */
-	readonly #wall: AgentWallPoster;
-	/** The agent whose wall is read, its text as last read, and the read on its way. */
-	#wallAgent: string | undefined;
-	#wallText: string | null = null;
-	#wallReading = false;
-	#wallAgain = false;
-	/** The agent was working at the last update: the end of its run reads the wall again. */
-	#wallWorking = false;
 	readonly #composer: HTMLTextAreaElement;
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
 	readonly #skills: SkillMentions;
@@ -318,8 +308,8 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
-	/** The wall's question being answered, in the composer; or the app a note from it is about (RUNTIME-INTERFACE-APPS.md
-	 * §5 "tell"), which the message opens with once it is sent. */
+	/** What the draft answers, in the composer: the app a note from it is about (RUNTIME-INTERFACE-APPS.md §5 "tell"),
+	 * which the message opens with once it is sent. */
 	readonly #answerStrip: HTMLElement;
 	readonly #answerEmblem = h("span", { class: "composer-answer-emblem", "aria-hidden": "true", hidden: true });
 	readonly #answerLabel = h("span", { class: "composer-answer-label" }, t("Answering"));
@@ -333,8 +323,6 @@ export class ConversationView {
 	#sendSoon:
 		| { text: string; answering?: string; files: readonly File[]; until: number; login?: ContinueLogin }
 		| undefined;
-	/** The wall's item that question is, once Answer was pressed in this view. */
-	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
 	readonly #sharedDrafts: SharedDrafts;
 	/** Names to mention, shown while "@" and the start of a name are typed. */
@@ -425,7 +413,7 @@ export class ConversationView {
 	 * grows (window, computer panel, composer), or messages that grow after they are
 	 * drawn, must keep showing the latest message. */
 	readonly #sizes: ResizeObserver | undefined;
-	/** What stands under the messages (notices, the wall, the coding pill, the composer), laid over the thread's foot
+	/** What stands under the messages (notices, the coding pill, the composer), laid over the thread's foot
 	 * with no background of its own, so the messages scroll on behind it (Jonas, 9 Nov 2026). */
 	readonly #foot = h("div", { class: "thread-foot" });
 	readonly #unsubscribe: (() => void)[] = [];
@@ -447,6 +435,24 @@ export class ConversationView {
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
 	#emptyRow: HTMLElement | undefined;
+	/** The agent's computer is a row of the thread (Jonas, 14 Nov 2026: "a bigger window next to the working agent inside
+	 * of the thread"): its window stands beside the agent's figure. While the agent uses its computer the row is the live
+	 * end, in the working figure's place; once it stops, the row stays where it stood and what comes next goes under it. */
+	readonly #computerSlot = h("div", { class: "thread-computer-window" });
+	readonly #computerFigure = h("div", { class: "thread-computer-figure" });
+	readonly #computerCaption = h("p", { class: "thread-computer-caption" });
+	readonly #computerRow = h(
+		"div",
+		{ class: "thread-computer" },
+		this.#computerFigure,
+		h("div", { class: "thread-computer-main" }, this.#computerSlot, this.#computerCaption),
+	);
+	/** What the figure beside the window was drawn for, kept while it reads the same (its motion runs on). */
+	#computerFigureKey: string | undefined;
+	/** The row stands after every item of the thread up to this time (ms): set while it is the live end, kept after. */
+	#computerAfter: number | undefined;
+	/** A redraw for the computer's row is on its way. */
+	#computerRedraw = false;
 	/** The thread has shown its first messages: what joins the log after this comes in moving. */
 	#filled = false;
 	/** "Show earlier" at the top of a thread that has not read all its history yet. */
@@ -476,31 +482,11 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
-		this.#wall = new AgentWallPoster({
-			member: company.userId,
-			...(actions.folderImage ? { image: actions.folderImage } : {}),
-			onAnswer: (question, item) => {
-				// A message on its way keeps the question it goes with.
-				if (this.#composer.disabled || this.#submitting) return;
-				this.#answeringItem = item;
-				// Enter was for the question before this one.
-				this.#sendSoon = undefined;
-				company.setAnswering(sessionId, replyQuestion(question));
-				this.#composer.focus();
-			},
-		});
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#ownPanels = !actions.computerPanels;
 		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
-		// A window that showed by itself and went by itself (computer-by-itself.ts) is no longer this thread's.
-		const letGo = this.#panels.byItself.onClose((agentId) => {
-			if (this.#panel?.agentId !== agentId) return;
-			this.#panel = undefined;
-			this.#autosize();
-		});
-		this.#lifetime.signal.addEventListener("abort", letGo, { once: true });
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -890,9 +876,6 @@ export class ConversationView {
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
-			// The wall before the coding sessions: with both showing, the sessions' pill sits on the wall's own line,
-			// level with its button (conversation.css).
-			this.#wall.el,
 			this.#coding.el,
 			this.#composerWrap,
 		);
@@ -928,11 +911,6 @@ export class ConversationView {
 			},
 			{ signal: this.#lifetime.signal },
 		);
-		// The wall is read again after each change hint of the company's folder and when the member comes back to the tab.
-		if (actions.agentWall) {
-			this.#unsubscribe.push(actions.agentWall.onFolderChange(() => void this.#readWall()));
-			window.addEventListener("focus", () => void this.#readWall(), { signal: this.#lifetime.signal });
-		}
 		company.setOpenSession(sessionId);
 		this.#unsubscribe.push(
 			company.conversation(sessionId).subscribe(() => this.update()),
@@ -945,7 +923,6 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
-		this.#wall.dispose();
 		window.clearInterval(this.#timestampTimer);
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
@@ -1176,6 +1153,7 @@ export class ConversationView {
 			// Already here: the click still asks for the computer (a sleeping one wakes).
 			if (shown && asked) this.#panels.open(agent, { asked });
 			(shown ?? this.#showPanel(agent, asked))?.focus();
+			this.#revealComputer();
 		}
 		return true;
 	}
@@ -1265,6 +1243,7 @@ export class ConversationView {
 			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
+			this.#redrawComputer();
 			if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
 			return;
 		}
@@ -1612,38 +1591,104 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
-	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
-	#takeOver(agent: HostedStaffAgent): void {
-		// The member's own click: a window already here is asked again (computer.ts OPEN_STARTS).
+	/** The take-over card's Open computer (review r1 F1 of #1812): what its Take over did, but the hold. The agent's
+	 * computer here, asked by the member's own click (a sleeping one wakes: computer.ts OPEN_STARTS), focused, and its
+	 * large view once a picture shows, where the member uses it as it is shared. */
+	#openComputer(agent: HostedStaffAgent): void {
 		if (this.#panel) this.#panels.open(agent, { asked: true });
 		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
-		panel?.takeOver();
+		this.#revealComputer();
+		panel?.enterWhenShown();
+	}
+
+	/** The computer opened on the member's click (the agent card's Computer, the take-over card's Open computer): the
+	 * thread goes to where its window stands, for a click whose answer is under the fold is no answer (found on the
+	 * live app, 15 Nov 2026: the window came in at the thread's end, under the composer). A window at the thread's end
+	 * keeps the thread at its end while it grows into its place (the start scene, then the picture: the size observer
+	 * pins it); one that stands further up, where the agent left it, comes into view between the thread's top and the
+	 * foot laid over its bottom. The window takes the keyboard without a scroll of the browser's own (ComputerPanel
+	 * focus): that scroll knew nothing of the foot and left the thread just short of its end, where it no longer
+	 * followed. A window that shows by itself (#computerByItself) never moves a thread the member has scrolled. */
+	#revealComputer(): void {
+		// After the redraw that puts the row in its place (#redrawComputer's microtask, queued before this one).
+		queueMicrotask(() => {
+			const row = this.#computerRow;
+			if (this.#disposed || !this.#panel || !row.isConnected) return;
+			// The large view covers the thread from the row: nothing to bring into view.
+			if (this.#panel.el.classList.contains("is-entered")) return;
+			const followed = this.#timestampRows.some(
+				({ node }) => (row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+			);
+			if (!followed) {
+				this.#stickToBottom = true;
+				this.#pinToBottom();
+				return;
+			}
+			const view = this.#messages.getBoundingClientRect();
+			const box = row.getBoundingClientRect();
+			const gap = 12 * uiScale();
+			const top = view.top + gap;
+			const bottom = view.bottom - this.#foot.offsetHeight - gap;
+			// Taller than the room, or above it: its top at the top. Below it: its bottom at the foot.
+			const by = box.top < top || box.height > bottom - top ? box.top - top : Math.max(0, box.bottom - bottom);
+			if (by !== 0) this.#messages.scrollTop += by;
+		});
 	}
 
 	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
-	 * computer-by-itself.ts): small, watch only, without focus, once per stretch of the agent's use. */
+	 * computer-by-itself.ts): watch only, without focus, once per stretch of the agent's use; it stays after. */
 	#computerByItself(agent: HostedStaffAgent | undefined): void {
 		if (!agent || this.#disposed) return;
 		const rules = this.#panels.byItself;
 		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
-		rules.seen(agent.id, since);
 		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
 		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
 		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
 		const panel = this.#showPanel(agent, false);
-		if (panel) rules.opened(agent.id, since, panel.el);
+		if (panel) rules.opened(agent.id, since);
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
 	#showPanel(agent: HostedStaffAgent, asked = false): ComputerPanel | undefined {
 		const panel = this.#panels.open(agent, { asked });
 		if (!panel) return undefined;
+		// A window that comes into the thread stands at its end; one already here stays where it is.
+		if (!this.#computerSlot.contains(panel.el)) this.#computerAfter = undefined;
 		this.#panel = panel;
-		panel.attach(this.#body, () => this.#toggleComputer());
+		// In the thread at once (at its end, where a new window stands), before the window comes into it: one that comes
+		// back entered covers the thread from there (review r1 F3 of #1787). The redraw puts the row in its place.
+		if (!this.#computerRow.isConnected) this.#log.append(this.#computerRow);
+		panel.attach(this.#computerSlot, () => this.#toggleComputer());
 		this.#autosize();
+		this.#redrawComputer();
 		return panel;
+	}
+
+	/** The computer came into the thread or left it outside a redraw: its row is placed again (a row with no window
+	 * leaves at once). */
+	#redrawComputer(): void {
+		if (!this.#panel) this.#computerRow.remove();
+		if (this.#computerRedraw) return;
+		this.#computerRedraw = true;
+		queueMicrotask(() => {
+			this.#computerRedraw = false;
+			this.update();
+		});
+	}
+
+	/** The figure beside the computer's window: working at it while the agent uses it, else still, as in its messages.
+	 * The line under the window says so in words. */
+	#drawComputerFigure(agent: HostedStaffAgent | undefined, agentName: string, working: boolean, locale: string): void {
+		const state = working ? this.#agentState : "idle";
+		const key = JSON.stringify([state, agentName, agent?.id, agent?.appearance, agent?.templateId, locale]);
+		if (key === this.#computerFigureKey) return;
+		this.#computerFigureKey = key;
+		const look = AGENT_LOOK[state];
+		replace(this.#computerFigure, agentFigure(agent, agentName, { size: 40, activity: look.figure }));
+		const caption = working ? activityCaption(look, agentName).label : "";
+		this.#computerCaption.textContent = caption;
+		this.#computerCaption.hidden = !caption;
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -1898,9 +1943,11 @@ export class ConversationView {
 		];
 	}
 
-	/** What the draft answers, above the field: the wall's question, or, for a note sent from an app's page and left
-	 * waiting here (app/tell-agent.ts), the app (its own name and emblem once the company's apps are read) and what the
-	 * note is about. Never the line as written: the send puts it first (cloud/wall-reply.ts `withReply`). */
+	/** What the draft answers, above the field: for a note sent from an app's page and left waiting here
+	 * (app/tell-agent.ts), the app (its own name and emblem once the company's apps are read) and what the note is about.
+	 * Never the line as written: the send puts it first (cloud/wall-reply.ts `withReply`). A line that names no app
+	 * shows as "Answering" and the line: the agent's wall used to set one, and nothing in the web does since it went
+	 * (Jonas, 14 Nov 2026). */
 	#showAnswering(answering: string | undefined): void {
 		const note = answering === undefined ? undefined : appNoteHeader(answering);
 		const app = this.#answerApp(answering);
@@ -1932,7 +1979,9 @@ export class ConversationView {
 		};
 	}
 
-	/** A member's message; one that answers a question from the wall shows the question above the member's words. A note
+	/** A member's message; one that opens with a quoted line (`> question`, an empty line, the member's words) shows the
+	 * line above the member's words. Members answered the questions on an agent's wall this way from 7 Nov 2026 until the
+	 * wall went (14 Nov 2026), and those messages stay in the threads. A note
 	 * sent from an app's page (RUNTIME-INTERFACE-APPS.md §5 "tell") opens with the app's card instead, with what the note
 	 * is about as its line: it stands on the thread above the member's words, as an agent's message has its cards, and a
 	 * press on it opens the app. */
@@ -2023,8 +2072,6 @@ export class ConversationView {
 		const state = this.#company.conversation(this.#sessionId).get();
 		const files = [...(state.attachments ?? [])];
 		const retry = state.retrySend;
-		// A note from an app answers no item of the wall.
-		const answered = state.answering && !appNoteHeader(state.answering) ? this.#answeringItem : undefined;
 		this.#dictation.cancel();
 		this.#submitting = true;
 		this.#syncSend();
@@ -2060,7 +2107,6 @@ export class ConversationView {
 				// Read at once by the send, before anything else may run: the message goes on this login.
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
-					if (answered) this.#wall.answerSent(answered);
 					if (!this.#isRoom) this.#run?.messageSent();
 					void this.#execution?.refresh();
 				}
@@ -2140,12 +2186,6 @@ export class ConversationView {
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
 		if (!room) this.#computerByItself(agent);
-		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
-		this.#syncWall(
-			room || session?.audience.kind !== "company" || company.accessLost || !company.team?.capabilities.read
-				? undefined
-				: agent,
-		);
 		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
@@ -2227,45 +2267,6 @@ export class ConversationView {
 		this.#renderMentionNote();
 		this.#renderQuoteNote();
 		this.#sharedDrafts.update();
-	}
-
-	/** The agent's wall in its own company thread: read when the thread knows its agent and again when its run ends. A
-	 * group chat and a member's private chat have none. */
-	#syncWall(agent: HostedStaffAgent | undefined): void {
-		const id = this.#actions.agentWall ? agent?.id : undefined;
-		if (id !== this.#wallAgent) {
-			this.#wallAgent = id;
-			this.#wallText = null;
-			if (id) void this.#readWall();
-		} else if (id && this.#wallWorking && !this.#working) void this.#readWall();
-		this.#wallWorking = this.#working;
-		this.#wall.show(id ? agent : undefined, this.#wallText);
-	}
-
-	async #readWall(): Promise<void> {
-		const source = this.#actions.agentWall;
-		if (!source || !this.#wallAgent || this.#disposed) return;
-		// One read at a time; a hint while one is on its way reads once more after it.
-		if (this.#wallReading) {
-			this.#wallAgain = true;
-			return;
-		}
-		this.#wallReading = true;
-		const id = this.#wallAgent;
-		try {
-			const text = await source.read(id, this.#lifetime.signal);
-			if (this.#disposed || id !== this.#wallAgent) return;
-			this.#wallText = text;
-			this.#wall.show(this.#company.staffById(id), text);
-		} catch {
-			/* What the poster shows stands; the next hint reads again. */
-		} finally {
-			this.#wallReading = false;
-			if (this.#wallAgain && !this.#disposed) {
-				this.#wallAgain = false;
-				void this.#readWall();
-			}
-		}
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
@@ -2824,7 +2825,7 @@ export class ConversationView {
 									{
 										type: "button",
 										class: "peer-chip",
-										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id, sentAt: item.createdAt },
+										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id },
 										"aria-label": t("{label}. Open the conversation", { label }),
 										"aria-describedby": peerTimeId(item.id),
 										onclick: (event: MouseEvent) =>
@@ -3021,9 +3022,9 @@ export class ConversationView {
 									: {}),
 								...(takeOver
 									? {
-											takeOver: () => {
+											openComputer: () => {
 												const current = currentAgent();
-												if (current) this.#takeOver(current);
+												if (current) this.#openComputer(current);
 											},
 										}
 									: {}),
@@ -3109,7 +3110,32 @@ export class ConversationView {
 			nodes.push(this.#emptyRow);
 		}
 		const priorActivity = this.#activityRow?.element;
-		if (this.#working && !conversation.loading) {
+		// The agent's computer, while this thread shows it: its own row (#computerRow). The live end while the agent uses
+		// it, in the working figure's place; else where it stood then, before the first item that came after.
+		const computer = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
+		const atComputer = computer && this.#agentState === "computer" && !conversation.loading;
+		const latest = this.#timestampRows.reduce(
+			(time, row) => Math.max(time, (row.last ?? row.date).getTime()),
+			Number.NEGATIVE_INFINITY,
+		);
+		if (computer) this.#drawComputerFigure(agent, agentName, atComputer, locale);
+		if (computer && !atComputer) {
+			// Its place is fixed once the thread has read what it holds; while it reads, or after a read that failed, the row
+			// waits at the end (review r1 F1, r2 F1 of #1787).
+			if (!conversation.loading && !conversation.error) this.#computerAfter ??= latest;
+			const after = this.#computerAfter;
+			const next =
+				after === undefined ? undefined : this.#timestampRows.find((row) => row.date.getTime() > after)?.node;
+			const at = next ? nodes.indexOf(next) : -1;
+			const index = at < 0 ? nodes.length : at;
+			nodes.splice(index, 0, this.#computerRow);
+			if (index < liveStart) liveStart += 1;
+		}
+		if (atComputer) {
+			this.#computerAfter = latest;
+			this.#activityRow = undefined;
+			nodes.push(this.#computerRow);
+		} else if (this.#working && !conversation.loading) {
 			// As on the desktop: the figure works or writes, and "Nova is writing"
 			// shows beside it on hover or focus, never as a bubble. The row is kept while it
 			// reads the same, so its figure's motion runs on through new messages.
@@ -3367,6 +3393,8 @@ export class ConversationView {
 		// message gone from the thread leaves it on the thread.
 		if (focusedMessage && (!document.activeElement?.isConnected || document.activeElement === document.body))
 			this.#focusMessage(focusedMessage);
+		// Rows drawn now beside the computer's way are covered while its large view is open.
+		this.#panel?.coverAgain();
 		this.#pinToBottom();
 	}
 
@@ -3603,7 +3631,7 @@ export class ConversationView {
 				{
 					type: "button",
 					class: compact ? "peer-chip figure-only" : "peer-chip",
-					dataset: { pairSessionId: link.pairSessionId, linkIds: ids, sentAt: link.createdAt },
+					dataset: { pairSessionId: link.pairSessionId, linkIds: ids },
 					"aria-label": t("{label}. Open the conversation", { label: name }),
 					"aria-describedby": peerTimeId(link.id),
 					onclick: (event: MouseEvent) =>
