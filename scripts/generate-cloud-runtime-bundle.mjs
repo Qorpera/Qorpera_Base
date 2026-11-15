@@ -7,10 +7,10 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024899_runtime_bundle_activation_v248.sql";
-const activationVersion = 248;
-const previousActivationVersion = 247;
-const previousActivationSha256 = "e92d0a54a98a4f08d78b386d63f0f91f3678141c5e940288c25b7673e0640762";
+const activation = "supabase/migrations/20260929024999_runtime_bundle_activation_v249.sql";
+const activationVersion = 249;
+const previousActivationVersion = 248;
+const previousActivationSha256 = "cc7b46c6bab430a45b4f9830b4f0963163348ddb5bb2ab05270e1055fd81aacf";
 // This release's own migrations, which its activation requires before it registers the bundle (v248): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
 // version lines, when it sets them: v249 replaces these entries with the migrations v249 brings (or an empty list).
@@ -23,49 +23,29 @@ const previousActivationSha256 = "e92d0a54a98a4f08d78b386d63f0f91f3678141c5e9402
 // order reaches it only after the activation (as with the guards in the activation's text below).
 const activationRequires = Object.freeze([
 	[
-		"20260930758000_machine_member_open",
-		"a member opens an app, a file or a folder on an agent's computer (#1781, #1808): the executor this release moves asks the open's start authority and open check, which this migration makes",
-		"to_regprocedure('public.qorpera_member_machine_desktop_start_begin(uuid,uuid,text)') is not null",
+		"20260930752000_home_exec_sessions",
+		"the agent's home (#1761): every company run of this bundle asks qorpera_company_home_available through the native host's entry point, which answers only a listed call; without this migration every such run fails",
+		"to_regprocedure('public.qorpera_company_home_available(jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_company_home_available')",
 	],
 	[
-		"20260930759000_machine_member_sleep",
-		"a machine awake only for a member sleeps 10 minutes after the member is gone (#1782): the executor's machine list says it is due from this migration on",
-		"to_regprocedure('public.qorpera_company_machine_member_only(public.qorpera_company_machines)') is not null",
+		"20260930754000_folder_home_sessions",
+		"the home's read rights (#1760): the offer is narrowed to runs that share the machine and read the folder's root, and the executor this release moves asks the session's folder window before every channel",
+		"to_regprocedure('public.qorpera_folder_home_session_window(uuid)') is not null",
 	],
 	[
-		"20260930763000_data_change_tool",
-		"data_change (#1806): a run's observation naming the tool is refused until the closed list of tool operations carries it",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') and strpos(prosrc, '20260930763000') > 0)",
+		"20260930776000_company_numbers_orders",
+		"the door orders (#1855, on master): counts-only orders from verified Stripe deliveries and the orders questions; no code in this bundle calls them yet",
+		"to_regclass('public.qorpera_orders') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930776000') > 0)",
 	],
 	[
-		"20260930764000_data_step_approval",
-		"a member's yes for a step that destroys data (#1809): this bundle's host dispatch lists qorpera_run_data_pass_approved, which this migration adds",
-		"to_regprocedure('public.qorpera_run_data_pass_approved(uuid,jsonb,text,uuid)') is not null",
+		"20260930777000_company_numbers_order_changes",
+		"the company's word on its orders (#1857, on master): order-state and order-add through the change dispatcher; no code in this bundle calls them yet",
+		"to_regprocedure('public.qorpera_run_company_numbers_change(uuid,jsonb,text,jsonb)') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930777000') > 0)",
 	],
 	[
-		"20260930765000_company_reading",
-		"the company's reading of itself (#1815): the kind reading, the Co-Founder's senses and the company's standing (no code in this bundle calls them yet: the runtime step is #1819, after v248)",
-		"to_regprocedure('public.qorpera_describe_company_senses(jsonb)') is not null",
-	],
-	[
-		"20260930767000_company_numbers_money",
-		"the company's money as questions under qorpera/ (#1828): the dispatcher 768000 patches",
-		"to_regprocedure('public.qorpera_run_company_numbers(uuid,jsonb,text,jsonb)') is not null",
-	],
-	[
-		"20260930768000_company_numbers_site",
-		"a site's views counted privately (#1834): the site questions answer from this migration on",
-		"to_regclass('public.qorpera_site_counts') is not null and to_regprocedure('public.qorpera_site_count_view(text,text,text)') is not null",
-	],
-	[
-		"20260930769000_bank_days",
-		"the bank sync counts money by day and kind (#1830): the vault records the days through qorpera_record_bank_days, which this migration adds",
-		"to_regprocedure('public.qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)') is not null",
-	],
-	[
-		"20260930774000_site_member_pass",
-		"members see the company's own site inside Qorpera (#1838): the member's one-use pass and its redeem, which site-serve calls (inert until a site-serve from #1838 is deployed)",
-		"to_regprocedure('public.qorpera_site_member_pass(uuid)') is not null",
+		"20260930778000_home_session_keeps_member_machine_awake",
+		"a member-woken machine is not put to sleep under a run's open home session (#1761): the member-only rule counts the home's sessions from this migration on",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_machine_member_only(public.qorpera_company_machines)') and strpos(prosrc, 'qorpera_company_home_sessions') > 0 and strpos(prosrc, '20260930759000') > 0)",
 	],
 ]);
 const activationRequiresSql = activationRequires

@@ -113,6 +113,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			// carries a member's yes to a step that destroys data (slice 7, 20260930764000).
 			"_company_data_pass.sql",
 			"_data_step_approval.sql",
+			// The agent's home: the run's offer and its session's close (agent-box slice 1, 20260930752000).
+			"_home_exec_sessions.sql",
 			// A light ask's run stores its answer (light asks, 20260930761000).
 			"_light_asks.sql",
 			// The Co-Founder's senses, the facts its reading of the company is written from (20260930765000); by its number

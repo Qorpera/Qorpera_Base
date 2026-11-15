@@ -62,6 +62,7 @@ const COFOUNDER_TOOLS = [
 	"read_event",
 	"read_skill",
 	"recall_memory",
+	"record_reflection",
 	"save_app",
 	"save_coding_value",
 	"search_skills",
@@ -78,7 +79,11 @@ const COFOUNDER_TOOLS = [
 ];
 /** The company's reading of itself (20260930766000): update_reading is the Co-Founder's, end_role any run's that hires. */
 const EMPLOYEE_TOOLS = COFOUNDER_TOOLS.filter(
-	(tool) => tool !== "crew_and_members" && tool !== "offer_agents_to_member" && tool !== "update_reading",
+	(tool) =>
+		tool !== "crew_and_members" &&
+		tool !== "offer_agents_to_member" &&
+		tool !== "record_reflection" &&
+		tool !== "update_reading",
 );
 const WORKER_TOOLS = [
 	"app_guide",
@@ -1126,6 +1131,24 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "the founding never restarts", "Once agreed, the founding never restarts.", HAND_OFF],
 	[
 		"7",
+		"reflecting on the platform's updates first",
+		"# Your planning run\nWhen your context has updates, the platform the company runs on has changed since you last looked: reflect on each before you plan, oldest first.",
+		PLANNING,
+	],
+	[
+		"7",
+		"a new model is a review",
+		"A new model: we think better than when the company's work was made, so this planning run is a review",
+		PLANNING,
+	],
+	[
+		"7",
+		"reflections recorded and told",
+		"Record each with record_reflection, and tell the founders in one message",
+		PLANNING,
+	],
+	[
+		"7",
 		"a planning run's reading and fixes",
 		"In a planning run, read the vision, the plan, every agent's agent.md, todos and routines, and QorperaOS/human-tasks/",
 		PLANNING,
@@ -1815,6 +1838,11 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 			[...COFOUNDER, ...WORKERS],
 		],
 		["an owner's role", "# Your role: owner of an area", [...COFOUNDER, ...WORKERS]],
+		[
+			"the reflection on the platform's updates",
+			"When your context has updates",
+			["cofounder-member", "cofounder-member-agreed", "cofounder-first-run", ...EMPLOYEE, ...WORKERS],
+		],
 	] as const)("leaves out %s where it does not apply", (_what, words, runs) => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);
 	});

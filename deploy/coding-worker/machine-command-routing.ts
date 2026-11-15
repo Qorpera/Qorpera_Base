@@ -52,6 +52,10 @@ import {
 	MACHINE_SCREEN_REQUEST_SCHEMA, type MachineScreenAction, parseMachineScreenHeader,
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
+import {
+	type CloudHomeChannelRequest, CloudHomeChannelRefused, type CloudHomeChannelSide, type CloudHomeSessionAuthorized,
+} from "../../packages/runtime/src/cloud-home-channel.ts";
+import { createCloudHomeChannel } from "../../packages/runtime/src/cloud-home-channel-client.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
 import {
 	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, authorizeMemberMachineAct,
@@ -68,6 +72,9 @@ interface MachineCommandRouterOptions {
 	credential(name: string): Promise<string>;
 	/** This node's machines; absent when the executor carries no machines. */
 	executeLocal?(request: CloudMachineCommandHttpRequest, authority: MachineCommandAuthority, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
+	/** One run's channel to its home on this node's machine (slice 1): `codex exec-server` inside it, as the agent's
+	 * account on the boot SQL named, for as long as the run's turn. Absent when the executor carries no machines. */
+	execServerLocal?(authority: { sessionId: string; placementId: string; bootId: string }, signal: AbortSignal): Promise<CloudHomeChannelSide>;
 	/** Asks this node's machines for a pass now; with a wait, true once a step took the machine somewhere. Absent when the executor carries no machines. */
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
@@ -205,6 +212,35 @@ export class MachineCommandRouter {
 		}).map((asked) => asked.catch(() => false));
 		const asked = local ? [local, ...peers] : peers;
 		return wait ? anyTold(asked) : Promise.all(asked).then(() => false);
+	}
+	/**
+	 * One run's channel to its home (slice 1). The ingress proved the run's holder and SQL authorized the session on
+	 * the machine's placement and boot. A machine of this node is opened here; a machine another node holds is reached
+	 * through that node's peer listener, exactly as a machine command is forwarded: the peer authorizes the same
+	 * session again in SQL and may only open it locally, so a channel is never forwarded twice. A run's slot talks to
+	 * its own node's ingress wherever its agent's machine is.
+	 */
+	async execServer(authority: CloudHomeSessionAuthorized, request: CloudHomeChannelRequest, signal: AbortSignal, localOnly = false): Promise<CloudHomeChannelSide> {
+		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (!this.#options.execServerLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			try {
+				return await this.#options.execServerLocal(authority, signal);
+			} catch (error) {
+				// The machine's Codex is not the pinned build (an earlier image's disk): the run is told so in words of its
+				// own, through this ingress or a forwarding one, rather than "could not be reached".
+				if (error instanceof Error && error.message === "HOME_CODEX_NOT_PINNED") throw new CloudHomeChannelRefused(error.message);
+				throw error;
+			}
+		}
+		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		const channel = createCloudHomeChannel({
+			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
+			// The peer listener takes no holder: this executor proved the run's at its own ingress.
+			holder: null,
+		});
+		return await channel.open({ sessionId: authority.sessionId, machineId: authority.machineId }, signal);
 	}
 	async execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCommandReceipt> {
 		const authority = await authorizeMachineCommand(this.#options.control, request, signal);

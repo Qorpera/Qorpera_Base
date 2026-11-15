@@ -112,6 +112,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"make_picture",
 	// How one part of an interface app is made, read before it is made (20260930762000).
 	"app_guide",
+	"record_reflection",
 	// The company's reading of itself (20260930766000): the Co-Founder's writer of it, and ending an agent's role.
 	"update_reading",
 	"end_role",

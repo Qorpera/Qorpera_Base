@@ -51,6 +51,7 @@ import {
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
+import { authorizeHomeSession } from "./home-session-authority.ts";
 import {
 	localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake, localMemberMachineAct,
 	localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, localMemberMachineStream, MachineCommandRouter,
@@ -558,6 +559,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
 				signal),
+			// The agent's home (slice 1): `codex exec-server` inside this node's machine, as the agent's account
+			// (qorpera-agent, which reaches root without a password, as a coding session's user does).
+			execServerLocal: (authority, signal) => machineHost.execServer(authority, signal),
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),
 			codingValueClearLocal: localMachineCodingValueClear(machineHost),
@@ -597,6 +601,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal),
 		machines: machineCommandRoutes(machineRouter, control, false),
+		// The agent's home (slice 1): one channel per run, opened on this node's machine or forwarded to the peer that
+		// holds it, as a machine command is.
+		home: {
+			authorize: (request, signal) => authorizeHomeSession(control, request, signal),
+			open: (authority, request, signal) => machineRouter.execServer(authority, request, signal),
+		},
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
 		token: peerToken, port: config.peerCommandPort,
@@ -605,6 +615,11 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal, true),
 		machines: machineCommandRoutes(machineRouter, control, true),
+		// A home channel a peer forwarded: SQL authorizes the same session again, and it opens only on this node.
+		home: {
+			authorize: (request, signal) => authorizeHomeSession(control, request, signal),
+			open: (authority, request, signal) => machineRouter.execServer(authority, request, signal, true),
+		},
 	});
 	// The member listener: loopback only; a failed look is logged by its fixed code, never with the member's token.
 	const memberScreens = config.memberScreens ? new HttpCloudMemberMachineScreenService({

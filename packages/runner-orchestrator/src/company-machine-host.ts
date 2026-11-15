@@ -9,6 +9,7 @@ import {
 	CLOUD_MACHINE_FOLDER_LIMITS,
 	CLOUD_MACHINE_FOLDER_LOST,
 	CLOUD_MACHINE_GUEST_PATHS,
+	CLOUD_MACHINE_HOME,
 	type CloudCodingCommandRead,
 	type CloudCodingNasPolicy,
 	type CloudMachineCommandFolder,
@@ -53,6 +54,8 @@ import type {
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
+import { LINE_PIPE_BYTES, LinePipe } from "./machine-exec-server.ts";
+import { type HomeFolderSession, HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -68,6 +71,11 @@ const FOLDER_WAIT_MS = 20000;
 const BOUNDARY_MS = 15000;
 /** The windows of one pass's ended commands, all of them. */
 const WINDOWS_MS = 30000;
+/** A home's output (slice 3, 20260930754000): the least time between two releases of what its channel sends back, how
+ * often a release that did not answer is tried before the channel ends, and what may wait for one. */
+const HOME_RELEASE_SPACING_MS = 200;
+const HOME_RELEASE_TRIES = 3;
+const HOME_OUTPUT_WAIT_BYTES = 16 * 1024 * 1024;
 /** A boot's final boundary: what an unanswered final held is not applied, and the stop goes on. */
 const FINAL_BOUNDARY_MS = 60000;
 /** folder-mount: the guest waits up to 60 s for a mount still settling, then up to 100 × 200 ms for readiness. */
@@ -85,6 +93,63 @@ const DELIVERY_MS = 30000;
 /** A start on a machine with a folder runs in its guest only on the boot it was let in on (`$0`): the guest's shell
  * compares the kernel's boot id at the exec, then runs the helper (`$@`). The helper's own start takes no boot. */
 const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"';
+/** The agent's home (lanes/agent-box-20261113): the machine's Codex, hashed as root on the boot SQL named (`$0`; else
+ * exit 97) where the image has it (`$1`; else exit 98). */
+const HOME_CODEX_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$1" ] || exit 98; exec /usr/bin/sha256sum -- "$1"';
+/** How long the hash of the machine's Codex (319 MB) may take, once per boot. */
+const HOME_CODEX_HASH_MS = 60000;
+
+/**
+ * The agent's home (lanes/agent-box-20261113): one channel's `codex exec-server --listen stdio`, started as root on the
+ * boot SQL named (ON_BOOT) as a transient unit of its own in the machines' slice, run as the agent's account. So what
+ * the agent starts in its own shell is the machine's work exactly as a machine_run command's unit is: the idle rule
+ * counts it (the LXD agent's unit is the machine's own control, and is not counted), the slice's memory bound and the
+ * memory guard apply to it (the LXD agent's OOMScoreAdjust=-900, deploy/machine/lxd-agent-memory.conf, is not
+ * inherited), the watchdog and the machine's stop end it with the slice, and when its channel ends the whole unit ends
+ * (KillMode=control-group), a process the agent detached included. `--pipe` hands the exec's stdin and stdout to the
+ * service itself; the environment is the service's, never expanded by systemd. Proven on a real machine of the live
+ * image (home-lxd, 14 Nov 2026).
+ */
+export function companyMachineHomeCommand(bootId: string, sessionId: string, channel: string): string[] {
+	if (!UUID.test(bootId) || !UUID.test(sessionId) || !/^[0-9a-f]{8,32}$/.test(channel))
+		throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+	const environment = {
+		HOME: CLOUD_MACHINE_HOME.home,
+		USER: CLOUD_MACHINE_HOME.account,
+		LOGNAME: CLOUD_MACHINE_HOME.account,
+		CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,
+		PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		LANG: "C.UTF-8",
+		TZ: "UTC",
+		NO_COLOR: "1",
+	};
+	return [
+		"/bin/sh",
+		"-c",
+		ON_BOOT,
+		bootId,
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--pipe",
+		"--wait",
+		"--collect",
+		"--service-type=exec",
+		"--expand-environment=no",
+		`--unit=${CLOUD_MACHINE_HOME.unitPrefix}${sessionId}-${channel}`,
+		`--slice=${PATHS.slice}`,
+		`--uid=${CLOUD_MACHINE_HOME.uid}`,
+		`--gid=${CLOUD_MACHINE_HOME.gid}`,
+		`--working-directory=${CLOUD_MACHINE_HOME.cwd}`,
+		"--property=KillMode=control-group",
+		"--property=TimeoutStopSec=10",
+		...Object.entries(environment).map(([key, value]) => `--setenv=${key}=${value}`),
+		CLOUD_MACHINE_HOME.codex,
+		"exec-server",
+		"--listen",
+		"stdio",
+	];
+}
 /** save_coding_value's clipboard helper (20260930705000), packaged beside the guest helper and installed by the image
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. */
 export const COMPANY_MACHINE_CODING_VALUE_HELPER = "/opt/qorpera-machine/cloud-machine-coding-value.mjs";
@@ -827,6 +892,8 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_machine_desktop_clipboard_cleared",
 	// A member's live picture, one release cycle (20260930745000).
 	"qorpera_member_machine_stream_release",
+	// The agent's home (slice 3, 20260930754000): whether a session may share its machine, and its window's ids.
+	"qorpera_folder_home_session_window",
 	// A member's open, right before it touches the desktop (20260930758000, review r1 F1 of #1781).
 	"qorpera_member_machine_desktop_open_check",
 ] as const;
@@ -1140,6 +1207,9 @@ interface BootFolder {
 	/** The windows this process opened for the boot's commands, until their command ends: the service keeps them in
 	 * memory, so each pass opens them again (#reopen). */
 	windows: Map<string, FolderCommandWindow>;
+	/** The windows this process opened for the boot's home sessions (slice 3, 20260930754000), until their channel
+	 * ends: opened again each pass as the commands' are (#reopen). */
+	homes: Map<string, FolderCommandWindow>;
 	/** The paths the boot's boundaries said the company folder let go unsaved, for its next receipt whose output leaves
 	 * (6e-2a, #noted), and how many more there were. */
 	notSaved: CloudMachineFolderNotSaved[];
@@ -1487,6 +1557,8 @@ export class LxdCompanyMachineHost {
 	readonly #looks = new Set<Set<string>>();
 	/** Per placement and command: a window close on its way, answered with the machine's boundary (or none). */
 	readonly #closing = new Map<string, Promise<MachineBoundary | undefined>>();
+	/** Per placement: the boot whose Codex was hashed, and its sha-256 (#homeCodex). */
+	readonly #homeCodexes = new Map<string, { bootId: string; sha: Promise<string> }>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
 		if (
@@ -1883,6 +1955,7 @@ export class LxdCompanyMachineHost {
 				asked: true,
 				held: false,
 				windows: new Map(),
+				homes: new Map(),
 				notSaved: [],
 				moreNotSaved: 0,
 				stillNotSaved: new Map(),
@@ -1914,6 +1987,7 @@ export class LxdCompanyMachineHost {
 					asked: false,
 					held: false,
 					windows: new Map(),
+					homes: new Map(),
 					notSaved: [],
 					moreNotSaved: 0,
 					stillNotSaved: new Map(),
@@ -2336,6 +2410,13 @@ export class LxdCompanyMachineHost {
 		for (const [commandId, window] of f.windows) {
 			if (!e.commands.includes(commandId) || this.#delivering.has(`${e.placementId}/${commandId}`)) continue;
 			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
+		}
+		// A home's window closes when its channel ends, at any time: one that closed while this open was out (the service
+		// may take the two in either order) is closed again, so no window outlives its session.
+		for (const [sessionId, window] of [...f.homes]) {
+			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
+			if (!f.homes.has(sessionId))
+				noted(f, await folder.closeWindow(e.placementId, sessionId, checked).catch(() => undefined));
 		}
 	}
 	/** A settled boot's folder, watched each pass (6d-2) at the boundary its ends' closes answered, or a plain one.
@@ -4023,6 +4104,207 @@ export class LxdCompanyMachineHost {
 		return Object.freeze({ png, etag: createHash("sha256").update(png).digest("hex") });
 	}
 
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1): `codex exec-server --listen stdio` inside the machine, as
+	 * the machine's agent account (`qorpera-agent`, which reaches root through sudo, as a coding session's user does),
+	 * with its lines carried both ways for as long as the run's channel lasts. The ingress has proven the run's holder
+	 * and SQL has authorized this session on this boot; the guest's own shell checks that boot again at the exec
+	 * (ON_BOOT), so a machine that restarted in between never runs it, as a machine command's start never does. Each
+	 * channel's exec-server is a unit of its own in the machines' slice (companyMachineHomeCommand), and runs only when
+	 * the machine's Codex is the pinned build (#homeCodex): a home whose Codex is another is refused
+	 * HOME_CODEX_NOT_PINNED.
+	 *
+	 * It writes no inbox file and leaves no command row. What the model does through it is reviewed by
+	 * the run's own host before a line gets here (slice 4) and kept as the run's steps (slice 2); the changes it makes
+	 * land in the company folder through the machine's `/company` mount, as every change on a machine does.
+	 * On a machine with a folder (slice 3, 20260930754000) the session first gets its own folder window, so those
+	 * changes are credited to its run, and what the machine sends back leaves only once the folder released the
+	 * machine's reads and the run took them in (#homeFolder).
+	 */
+	async execServer(
+		input: { readonly placementId: string; readonly sessionId: string; readonly bootId: string },
+		signal: AbortSignal,
+	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
+		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId) || !UUID.test(input.bootId))
+			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		// Slice 3 (20260930754000): SQL says whether the session may share its machine, on every executor; the folder's
+		// part (the window and the release of the output) only where the machines have a folder.
+		const answer = parseHomeFolderAnswer(
+			await this.#call("qorpera_folder_home_session_window", { p_session_id: input.sessionId }, signal),
+			input,
+		);
+		if (answer.state === "refused") throw new Error(answer.reason);
+		if (answer.session.bootId !== input.bootId) throw new Error("HOME_SESSION_ENDED");
+		if ((await this.#homeCodex(input.placementId, input.bootId, exec, signal)) !== CLOUD_MACHINE_HOME.codexSha256)
+			throw new Error("HOME_CODEX_NOT_PINNED");
+		const home = this.#options.folder ? await this.#homeFolder(answer.session, signal) : undefined;
+		const toMachine = new LinePipe();
+		const fromMachine = new LinePipe();
+		const run = new AbortController();
+		const stop = (): void => run.abort();
+		signal.addEventListener("abort", stop, { once: true });
+		const gate = home?.gate(
+			(chunk) => fromMachine.push(chunk),
+			() => {
+				run.abort();
+				fromMachine.end();
+			},
+		);
+		const pipe = exec(
+			this.#policy.project,
+			lxdCompanyMachineName(input.placementId),
+			{
+				// Root only to hand the exec-server to systemd; the unit runs it as the agent's account.
+				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex")),
+				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+				cwd: "/",
+				stdin: toMachine.read(),
+				stdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
+				// Streamed, so nothing is kept here and this bounds only each of LXD's messages: fromMachine ends the
+				// channel when more than its own bound (the same 16 MiB) waits unread, and the gate when more than its own
+				// waits for a release.
+				maxStdoutBytes: LINE_PIPE_BYTES,
+				stderrTailBytes: 4096,
+			},
+			run.signal,
+		)
+			.catch(() => undefined)
+			.then(async () => {
+				signal.removeEventListener("abort", stop);
+				// What the machine sent before it ended still leaves once released; then the session's window closes.
+				await gate?.drained();
+				fromMachine.end();
+				toMachine.end();
+				await home?.close();
+			});
+		return {
+			write: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
+			lines: fromMachine.lines(),
+			close: async () => {
+				toMachine.end();
+				gate?.close();
+				run.abort();
+				await pipe;
+			},
+		};
+	}
+	/** The sha-256 of the machine's Codex on this boot, read once per boot (the file is 319 MB; every later channel of the
+	 * boot takes the answer kept here), or "missing" where the image has none. A boot that is not the machine's is
+	 * HOME_SESSION_ENDED; a read that failed otherwise is not kept, so the next channel reads again. */
+	async #homeCodex(
+		placementId: string,
+		bootId: string,
+		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		signal: AbortSignal,
+	): Promise<string> {
+		const kept = this.#homeCodexes.get(placementId);
+		if (kept?.bootId === bootId) return await kept.sha;
+		const sha = (async () => {
+			const result = await exec(
+				this.#policy.project,
+				lxdCompanyMachineName(placementId),
+				{
+					command: ["/bin/sh", "-c", HOME_CODEX_ON_BOOT, bootId, CLOUD_MACHINE_HOME.codex],
+					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+					cwd: "/",
+					maxStdoutBytes: 1024,
+					stderrTailBytes: 512,
+				},
+				AbortSignal.any([signal, AbortSignal.timeout(HOME_CODEX_HASH_MS)]),
+			);
+			if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
+			if (result.exitCode === 98) return "missing";
+			const read = /^([0-9a-f]{64}) /.exec(result.stdout.toString("utf8"));
+			if (result.exitCode !== 0 || !read) throw new Error("HOME_CODEX_UNREADABLE");
+			return read[1] as string;
+		})();
+		this.#homeCodexes.set(placementId, { bootId, sha });
+		try {
+			return await sha;
+		} catch (error) {
+			if (this.#homeCodexes.get(placementId)?.sha === sha) this.#homeCodexes.delete(placementId);
+			throw error;
+		}
+	}
+	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts, once SQL
+	 * said the session stands and may share its machine (its agent's, for the same member and worker access, and only
+	 * while they read the whole folder) and named the ids its window carries (execServer). Once the boot's folder
+	 * settled: on a boot with /company the session's command window opens,
+	 * its id the session's, so what the machine changes until it closes is credited to the session's run (opened again
+	 * each pass, #reopen); and the run takes in every read the disk was served before anything of the channel's reaches
+	 * it, so what an earlier run left on this disk is in this run's read set. A take-in that holds starts no channel.
+	 * The gate holds each later batch of output for the same release; `close` closes the window, once, with the
+	 * boundary that publishes what the session changed last. */
+	async #homeFolder(
+		session: HomeFolderSession,
+		signal: AbortSignal,
+	): Promise<{
+		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void): HomeOutputGate;
+		close(): Promise<void>;
+	}> {
+		const folder = this.#options.folder as FolderControl;
+		const boot = await this.#settled(session, signal);
+		const at: FolderRelease = { placementId: session.placementId, bootId: session.bootId, runId: session.runId };
+		if (boot.state === "open") {
+			const window: FolderCommandWindow = {
+				commandId: session.sessionId,
+				runId: session.runId,
+				staffAgentId: session.staffAgentId,
+				requestedByUserId: session.requestedByUserId,
+			};
+			try {
+				await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+			} catch (error) {
+				// The service may have taken the open although it did not answer in time: no channel starts, so the
+				// window is closed again, at best, as a window whose channel ended (review r11 F1).
+				const answered = await folder
+					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+					.catch(() => undefined);
+				noted(boot, answered);
+				throw error;
+			}
+			boot.homes.set(session.sessionId, window);
+		}
+		let closing: Promise<void> | undefined;
+		const close = (): Promise<void> => {
+			closing ??= (async () => {
+				if (!boot.homes.delete(session.sessionId)) return;
+				const answered = await folder
+					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+					.catch(() => undefined);
+				noted(boot, answered);
+			})();
+			return closing;
+		};
+		// A release that did not answer (the service or SQL busy) is tried again a few times; any other hold is final.
+		const transient = new Set<string>([HELD.unanswered, HELD.unreleased, HELD.untaken, HELD.paused]);
+		const release = async (): Promise<string | undefined> => {
+			for (let tries = 1; ; tries++) {
+				const held = this.#heldAlready(at, boot) ?? (await this.#release(folder, at, boot, BOUNDARY_MS, signal));
+				if (held === undefined || !transient.has(held) || tries >= HOME_RELEASE_TRIES || signal.aborted)
+					return held;
+				await setTimeout(250 * tries, undefined, { signal }).catch(() => undefined);
+			}
+		};
+		const first = await release().catch(() => HELD.untaken);
+		if (first !== undefined) {
+			await close();
+			throw new Error("HOME_FOLDER_HELD");
+		}
+		return {
+			gate: (pass, fail) =>
+				new HomeOutputGate({
+					release,
+					pass,
+					fail,
+					spacingMs: HOME_RELEASE_SPACING_MS,
+					limitBytes: HOME_OUTPUT_WAIT_BYTES,
+				}),
+			close,
+		};
+	}
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
 	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends),
 	 * and a restart of its guest waits for it (#delivered). */
@@ -4350,7 +4632,10 @@ export class LxdCompanyMachineHost {
 	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s
 	 * (the gateway's request is bounded at 30 s): a boot still unsettled refuses the start, which so never runs
 	 * unfenced, and so does a boot whose folder ended (its guest restarts, or its placement was retired, 6d-2). */
-	async #settled(authority: CompanyMachineCommandAuthority, signal: AbortSignal): Promise<BootFolder> {
+	async #settled(
+		authority: Pick<CompanyMachineCommandAuthority, "placementId" | "bootId">,
+		signal: AbortSignal,
+	): Promise<BootFolder> {
 		const deadline = Date.now() + FOLDER_WAIT_MS;
 		for (;;) {
 			if (typeof authority.bootId === "string" && this.#ended(authority.placementId, authority.bootId))

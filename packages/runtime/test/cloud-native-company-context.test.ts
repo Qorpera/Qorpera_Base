@@ -722,6 +722,7 @@ const STAFF_TOOLS = [
 	"good_will_mark",
 	"crew_and_members",
 	"offer_agents_to_member",
+	"record_reflection",
 	"update_reading",
 	"list_hooks",
 	"read_event",
@@ -870,7 +871,7 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 	expect(stable).not.toContain("# Changes waiting for review");
 	// The planning run follows the head, in the routine runs only.
 	for (const instructions of compiled)
-		expect(instructions.includes("\n# Your planning run\nStart with your context's senses")).toBe(
+		expect(instructions.includes("\n# Your planning run\nWhen your context has updates")).toBe(
 			instructions.includes("# This run: your routine"),
 		);
 	// No sentence says a tool may not be there.

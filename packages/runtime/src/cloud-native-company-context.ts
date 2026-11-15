@@ -22,6 +22,7 @@ import {
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
+import type { CloudPlatformUpdatesContext } from "./cloud-platform-updates.ts";
 import { cloudRuntimeConstitution, cloudRuntimeWorkerConstitution } from "./cloud-runtime-constitution.ts";
 import {
 	CLOUD_RUNTIME_HIRE_OVERLAY_VERSION,
@@ -1272,6 +1273,7 @@ export function composeCloudNativeCompanyPrompt(
 	head?: CloudAgentHead,
 	tree?: CloudNativeConversationTree,
 	request: readonly CloudRoomRequest[] = [],
+	updates?: CloudPlatformUpdatesContext,
 	senses?: JsonValue | null,
 ): string {
 	// One serialized object; content cannot close a tag, inject a new role, or
@@ -1346,6 +1348,7 @@ export function composeCloudNativeCompanyPrompt(
 		continuation: context.continuation,
 		// How much open work the agent has; the list itself stays behind manage_todo and manage_worker.
 		...(openWork ? { openWork } : {}),
+		...(updates ? { updates } : {}),
 		// The platform's facts about the whole company (qorpera_describe_company_senses), in the Co-Founder's company runs
 		// only; null when the read failed.
 		...(senses !== undefined ? { senses } : {}),
@@ -1397,6 +1400,7 @@ export function composeCloudNativeCompanyPrompt(
 				head,
 				tree,
 				request,
+				updates,
 				senses,
 			);
 		throw new Error("Cloud company context exceeds its bound");

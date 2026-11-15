@@ -140,6 +140,13 @@ const FOUNDING_DRAFT = `When you understand enough, and at the latest when the t
  * the vision is agreed in the planning run, which finishes a step that failed (review r1 of #1799). */
 const FOUNDING_AGREEMENT = `When every founder has approved, in that run and without asking again: write ${VISION} with the name as its first line and the last line "Agreed by <the founders>, <date>."; give every continuing responsibility an owner (check ${osPath("agents")}/ first, so none is hired twice); close Start with the founders; and tell the founders in a few lines who works on what. If a step fails, say what is done and what is missing, and finish it in your next planning run. Once agreed, the founding never restarts.`;
 
+const PLANNING_REFLECT = sentences(
+	"When your context has updates, the platform the company runs on has changed since you last looked: reflect on each before you plan, oldest first.",
+	"A capability: decide whether this company takes it up now (say who owns it and how), later, or not, with the reason; take it up only where it serves the vision.",
+	"A new model: we think better than when the company's work was made, so this planning run is a review: read the vision, the reading and the plan again, look at the decisions, job descriptions, routines and interfaces made before, choose what is worth doing again, and hand that out as work to its owners; ask the founders before redoing anything large.",
+	"A change in behaviour: adjust the routines and job descriptions it touches.",
+	"Record each with record_reflection, and tell the founders in one message what you took up and why.",
+);
 /** The planning run itself: in the Co-Founder's routine runs only (cloudCoFounderPlanningRun). It starts from the
  * context's senses (qorpera_describe_company_senses). */
 const PLANNING_SENSES =
@@ -230,6 +237,7 @@ export function cloudRuntimeHireBehavior(kind: CloudRuntimeAgentKind, situation?
 
 function cloudCoFounderPlanning(has: (tool: string) => boolean, visionAgreed: boolean): string {
 	return [
+		...(has("record_reflection") ? [PLANNING_REFLECT] : []),
 		PLANNING_SENSES,
 		sentences(PLANNING_FIX, !visionAgreed && PLANNING_DRAFT),
 		...(has("update_reading") ? [planningTeam(has("end_role"))] : []),
