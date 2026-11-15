@@ -361,6 +361,10 @@ describe("publish_site", () => {
 		expect(f.calls("qorpera_site_publish_finish")).toHaveLength(1);
 		expect(result.answer).toMatchObject({ state: "live", url: URL_OF("wristband-shop"), mode: "new" });
 		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.md"]);
+		// One answer names one set of people: owners and admins (review r1 of #1851).
+		expect(result.answer.password).toBe(
+			"The site has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer.",
+		);
 		// Sites left Settings for the apps drawer (9 November 2026). Since site hosts (v247) a message that links the site
 		// shows its row, with the password's copy key for owners and admins (web #1848): the agent links the address.
 		expect(result.answer.next).toBe(
@@ -437,7 +441,7 @@ describe("publish_site", () => {
 		expect(f.folder.read).not.toHaveBeenCalled();
 	});
 
-	// Own code storage, step 4: a repository kept in Qorpera goes live only from What's new, on a member's yes. The
+	// Own code storage, step 4: a repository kept in Qorpera goes live only when an owner or admin puts it live. The
 	// source is refused in any letters, code/ itself too, before prepare: no folder read, no database check, no card.
 	it.each([
 		["a repository's main", "code/qorpera/shop/main/dist"],
@@ -450,7 +454,7 @@ describe("publish_site", () => {
 		const result = outcome(await f.boundary.invoke("code", "qorpera", "publish_site", { slug: "shop", source }));
 		expect(result.status).toBe("denied");
 		expect(result.text).toBe(
-			"INVALID_ARGUMENTS: source must not be under code/: a repository kept in Qorpera goes live only through What's new, on a member's yes",
+			"INVALID_ARGUMENTS: source must not be under code/: a repository kept in Qorpera goes live only when an owner or admin puts it live",
 		);
 		expect(prepare).not.toHaveBeenCalled();
 		expect(f.call).not.toHaveBeenCalled();
@@ -811,7 +815,8 @@ describe("share_app", () => {
 			newPassword: true,
 			linkProgram: { commandId, state: "running" },
 			next: expect.stringContaining("The platform started the link program on shop-server"),
-			password: expect.stringContaining("new password"),
+			password:
+				"The link has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer.",
 		});
 		expect(result.answer.next).toContain(
 			"Put url in your message to the member as a link: the link's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password.",

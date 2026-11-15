@@ -102,7 +102,7 @@ const INSTRUCTIONS =
 	// Own code storage, step 3 (11 Nov 2026): a landing has no draft state, so Qorpera runs the repository's checks
 	// file on a clean copy of what would go in and lands only what passes. The session writes the file when there is
 	// none, and runs the same checks the same way before it finishes, so a failure costs it no round. Step 4: the file's
-	// "site" names the folder the build leaves a website in; Qorpera keeps it for What's new, where a member puts it live.
+	// "site" names the folder the build leaves a website in; Qorpera keeps it for What's new, where an owner or admin puts it live.
 	// Step 6 (12 Nov 2026): the words name "title" too; without one, What's new shows the site's address.
 	// Step 5.1 (v247, 15 Nov 2026): a site is served at the top of its own address, https://<name>.qorpera.com/, so links
 	// from / work and the collect no longer refuses them (QORPERA_SITE_ROOT_LINKS allowed while hosts are on); "name"

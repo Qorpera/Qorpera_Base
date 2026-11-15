@@ -48,8 +48,9 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  *   already has are copied in the database), the missing bytes in batches of at most 10 MiB, and finish, which switches
  *   the site to the new version at once. The same call again (its call id) continues or answers its own version.
  * - A source under code/ is refused before anything (own code storage, step 4): a repository kept in Qorpera goes live
- *   only from the What's new page, where a member puts a version its checks made live.
- * - The agent never sees the password: the founder reads, copies and changes it on the Sites page in the apps drawer.
+ *   only when an owner or admin puts a version its checks made live (What's new, or the card under the agent's thread).
+ * - The agent never sees the password: owners and admins read, copy and change it on the Sites page in the apps drawer,
+ *   and copy it from the site's row under a message that links the site (web #1848).
  * - unpublish_site takes one of the company's sites offline: its copy, password and visitors' sessions go.
  * - share_app (private app links, v195; migration 20260930562000, deploy/sites/APP-PREVIEW.md) shares one port of one
  *   of the company's always-on machines at https://<slug>-preview.qorpera.com/, behind a site's password: an app site
@@ -488,11 +489,11 @@ export function cloudSiteTools(options: {
 				throw new CloudToolArgumentRefusal(
 					"source must be the company's own work, not a platform folder (QorperaOS, hooks, digital-post, bank, members)",
 				);
-			// Own code storage, step 4: a repository kept in Qorpera goes live only from the What's new page, on a member's
-			// yes, never through this tool; refused here, before the review and any card (SQL refuses it again in begin).
+			// Own code storage, step 4: a repository kept in Qorpera goes live only when an owner or admin puts it live,
+			// never through this tool; refused here, before the review and any card (SQL refuses it again in begin).
 			if (top === "code")
 				throw new CloudToolArgumentRefusal(
-					"source must not be under code/: a repository kept in Qorpera goes live only through What's new, on a member's yes",
+					"source must not be under code/: a repository kept in Qorpera goes live only when an owner or admin puts it live",
 				);
 			return { slug, source, title: parseTitle(input.title) };
 		},
@@ -688,7 +689,7 @@ export function cloudSiteTools(options: {
 					...(prepared.skipped.length ? { leftOut: prepared.skipped, leftOutMore: prepared.skippedOmitted } : {}),
 					password:
 						receipt.mode === "new"
-							? "The site has a new password. You never see it: the founder finds, copies and changes it on the Sites page in the apps drawer."
+							? "The site has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer."
 							: "The password is unchanged. You never see it: it is on the Sites page in the apps drawer.",
 					next: "Put url in your message to the member as a link: the site's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password. Visitors open the address and enter the password.",
 				}),
@@ -951,7 +952,7 @@ export function cloudSiteTools(options: {
 				started = undefined;
 			}
 			const password = shared.newPassword
-				? "The link has a new password. You never see it: the founder finds, copies and changes it on the Sites page in the apps drawer."
+				? "The link has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer."
 				: "The password is unchanged. You never see it: it is on the Sites page in the apps drawer.";
 			const link = {
 				url,
