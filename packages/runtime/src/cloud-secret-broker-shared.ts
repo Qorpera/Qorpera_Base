@@ -2,6 +2,7 @@ import { withAbortScope } from "./abort-scope.ts";
 import { CloudBankSyncs, logBankSyncPass } from "./cloud-bank-sync.ts";
 import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
+import { CloudClaudeLoginVault } from "./cloud-claude-login-vault.ts";
 import type { DigitalPostClient } from "./cloud-connector-digital-post.ts";
 import type { EnableBankingClient } from "./cloud-connector-enable-banking.ts";
 import {
@@ -64,6 +65,8 @@ export interface CloudSecretBrokerCompanyScope {
 	readonly modelLogins: CloudModelLoginVault;
 	readonly modelLoginSignIns: CloudModelLoginSignIns | undefined;
 	readonly modelLoginUsage: CloudModelLoginUsage;
+	/** A Claude Code worker's run's Claude login (20260930771000): the shared vault keeps members' Claude logins. */
+	readonly claudeLogins?: CloudClaudeLoginVault;
 }
 
 /** How a broker service finds the company a request is for. */
@@ -373,6 +376,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 							})
 						: undefined,
 				modelLoginUsage: usage,
+				claudeLogins: new CloudClaudeLoginVault({ authority, keyring: this.#keyring }),
 			},
 			// Its timer never runs: the shared upkeep loop runs each company's pass in turn. It also reads the usage of the
 			// company's logins at their usage limit that are due a reading (20260930575000).

@@ -75,8 +75,11 @@ export async function runNativeIsolationChild(args: string[]): Promise<void> {
 	const address = server.address();
 	if (!address || typeof address === "string") throw new Error("Native namespace proxy unavailable");
 	const proxy = `http://127.0.0.1:${address.port}`;
+	// Claude Code's sign-in, when the run has it as a token, is descriptor 3 (CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR,
+	// slice C2): passed on as it is, never read here. Every other run passes 0-2 only.
+	const tokenDescriptor = process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR === "3";
 	const child = spawn(command, commandArgs, {
-		stdio: "inherit",
+		stdio: tokenDescriptor ? ["inherit", "inherit", "inherit", 3] : "inherit",
 		env: {
 			...process.env,
 			HTTPS_PROXY: proxy,

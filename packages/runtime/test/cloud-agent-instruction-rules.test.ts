@@ -1375,6 +1375,12 @@ const RULES: [string, string, string, Run[]][] = [
 	// 10. The staff sections.
 	[
 		"10",
+		"a worker on Claude Code on a member's word",
+		"- Work a member asks Claude Code to do: a worker with harness claude-code",
+		STAFF,
+	],
+	[
+		"10",
 		"a coding session for a code project",
 		"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository",
 		STAFF,

@@ -7,6 +7,7 @@ import {
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { BankSyncAuthority } from "./cloud-bank-sync.ts";
+import type { ClaudeLoginRunAuthority } from "./cloud-claude-login-vault.ts";
 import {
 	type CodingValueAuthority,
 	type CodingValueCaptureAnswer,
@@ -1722,6 +1723,7 @@ export class PostgresCloudSecretBrokerAuthority
 		ModelLoginAuthority,
 		ModelLoginSignInAuthority,
 		ModelLoginUsageAuthority,
+		ClaudeLoginRunAuthority,
 		ConnectorTokenRevocationAuthority,
 		EventVerificationAuthority,
 		CompanyAccountAuthority,
@@ -2614,6 +2616,48 @@ export class PostgresCloudSecretBrokerAuthority
 				completion.envelopeSha256,
 				completion.providerAccountReference,
 				completion.providerAccountEmail,
+			],
+			signal,
+		);
+	}
+
+	/** A Claude Code worker's run (20260930771000): its member's sealed Claude login, when the database says this run
+	 * may have it now (the open route's: the worker at work). */
+	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_open_claude_login_for_run($1::uuid,$2::text,$3::jsonb) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
+			signal,
+		);
+	}
+
+	/** The same login re-opened for the vault's seal-back, which keeps the files the run did not send: every check of
+	 * the open but the worker at work (a worker that reported or was cancelled still seals back while its lease holds). */
+	openClaudeLoginForSealBack(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_open_claude_login_for_seal_back($1::uuid,$2::text,$3::jsonb) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
+			signal,
+		);
+	}
+
+	/** The files Claude Code changed in the run, sealed as the login's next version (a compare-and-swap). */
+	sealClaudeLoginBack(
+		seal: Parameters<ClaudeLoginRunAuthority["sealClaudeLoginBack"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_seal_claude_login_back($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(seal.binding),
+				seal.claudeLoginId,
+				seal.baseVersion,
+				seal.baseEnvelopeSha256,
+				seal.keyId,
+				Buffer.from(seal.encryptedEnvelope).toString("base64"),
+				seal.envelopeSha256,
 			],
 			signal,
 		);

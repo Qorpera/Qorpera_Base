@@ -920,6 +920,7 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	);
 	expect(compile(without("manage_worker"))).not.toContain("# Code projects");
 	expect(compile(without("manage_worker"))).not.toContain("- Bigger work or many files");
+	expect(compile(without("manage_worker"))).not.toContain("- Work a member asks Claude Code to do");
 	expect(compile(without("manage_code"))).not.toContain("manage_code");
 	expect(compile(without("hire_agent"))).not.toContain("hire one when no agent fits");
 	expect(compile(without("manage_hook"))).not.toContain("open the company's email");
@@ -2006,12 +2007,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // measured once more on node 1's test machine.
 // The company's map (the founder, 15 November 2026: "Use a map kit"): the reading is its first layer, the planning run
 // keeps it with save_app's map kit, and a retired interface stays retired; the staff instructions measured once more.
+// With a line on handing work a member asks Claude Code to do to a worker with harness claude-code (20260930770000,
+// 14 November 2026; staff runs only), the conversation's and the private conversation's instructions moved.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "df04c4e4ec9f04528ed39273af9b2a20771e5a038343ea4b77b28c8b01f85e6d",
+			instructions: "122b203975a874e32ca1abeb07e1b68f16a240ed4706aa4d1d2354ce07ff17ef",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2027,7 +2030,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "df04c4e4ec9f04528ed39273af9b2a20771e5a038343ea4b77b28c8b01f85e6d",
+			instructions: "122b203975a874e32ca1abeb07e1b68f16a240ed4706aa4d1d2354ce07ff17ef",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
@@ -2516,6 +2519,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"When asked, answer at once from what you and the files already know",
 		"- One file: write it yourself, where it belongs, and link it.",
 		"- Bigger work or many files: a worker, with saveTo set to the folder for the results.",
+		"- Work a member asks Claude Code to do: a worker with harness claude-code, which runs on that member's own Claude sign-in.",
 		"a machine, with the results saved in the company's files",
 		"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository; its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to

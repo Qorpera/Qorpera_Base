@@ -122,6 +122,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"765000_company_reading.sql",
 			// Whether the run has a receipt under a key: end_role tells a repeat from a new call (20260930766000).
 			"_company_reading_tools.sql",
+			// A Claude Code worker's run reads its member's name and what its home changed (20260930772000).
+			"_claude_code_worker_on_home.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -154,7 +156,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(139);
+	expect(rows).toHaveLength(140);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

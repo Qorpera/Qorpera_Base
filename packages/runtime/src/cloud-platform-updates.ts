@@ -69,6 +69,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "The company's reading and a team that changes",
 		text: "You now keep the company's reading of itself with update_reading: where the company stands, the three to seven things it cares about and who attends to each. Every agent gets it at every run. When attention moves, a team decision is owed: hire, split an area, rewrite a job description, or end a role with end_role. Write the first reading if there is none, look at the team against where the company stands now, and make the company's map from the reading with the map kit.",
 	},
+	{
+		id: "claude-code-workers",
+		kind: "capability",
+		date: "2026-11-15",
+		title: "Workers on Claude Code",
+		text: "When a member asks for Claude Code to do work, a worker can run on it: manage_worker with harness claude-code and access write hands the work to Claude Code, which works on your own machine and in the company's files with your rights there, on that member's own Claude sign-in, one at a time for that member, and reports back like any worker. A member without a Claude sign-in is refused at the dispatch, in words that say what to do; if their sign-in ends before the run, the worker comes back blocked.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

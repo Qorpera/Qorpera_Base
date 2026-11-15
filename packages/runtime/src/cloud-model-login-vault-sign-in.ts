@@ -282,8 +282,9 @@ export class ClaudeCodeRefused extends Error {
 	}
 }
 
-/** Claude Code's login files as the helper read them: their shape only, never their contents. */
-function checkClaudeLoginFiles(text: string): void {
+/** Claude Code's login files as the helper read them: their shape only, never their contents (also the shape a run's
+ * seal-back must have, 20260930771000). */
+export function checkClaudeLoginFiles(text: string): void {
 	const value: unknown = JSON.parse(text);
 	const input = record(value, ["schema", "files"], "Claude login files");
 	const files = input.files;
