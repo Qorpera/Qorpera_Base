@@ -268,6 +268,7 @@ it("tells an agent in the explainer's guide only what the engine can draw", asyn
 		"curve",
 		"stack",
 		"shelf",
+		"map",
 		"ring",
 		"flow",
 		null,

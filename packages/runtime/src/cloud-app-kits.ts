@@ -13,6 +13,8 @@
  *   2026, "Yes, start building" on lanes/company-views-20261114/PLAN.md's shape kits);
  * - `stack`: things that want a member's yes, one big card at a time, answered from the card;
  * - `shelf`: the company's real things side by side, each with one level behind it;
+ * - `map`: the company, or an owner's area, as its things that fill as they are built, the agents at them and layers to
+ *   dive into (Jonas, 15 November 2026: "Use a map kit"); its first layer may be the company's reading, live;
  * - `ring`: a year, a month or a week as a ring, with marks for points in time, wedges for stretches, a hand at now and
  *   the next thing in its middle (Jonas, 14 November 2026, PLAN.md step 5);
  * - `flow`: money or people as wide bands from where they come, through the company, to where they go.
@@ -35,6 +37,8 @@ import {
 	CURVE_KIT_GUIDE,
 	FLOW_ENGINE_JS,
 	FLOW_KIT_GUIDE,
+	MAP_ENGINE_JS,
+	MAP_KIT_GUIDE,
 	MODEL_ENGINE_JS,
 	MODEL_KIT_GUIDE,
 	OBJECT_ENGINE_JS,
@@ -59,6 +63,7 @@ export const DATA_KITS = Object.freeze([
 	"curve",
 	"stack",
 	"shelf",
+	"map",
 	"ring",
 	"flow",
 ] as const);
@@ -84,6 +89,7 @@ export const KIT_ENGINE_JS: Readonly<Record<DataKit, string>> = Object.freeze({
 	curve: CURVE_ENGINE_JS,
 	stack: STACK_ENGINE_JS,
 	shelf: SHELF_ENGINE_JS,
+	map: MAP_ENGINE_JS,
 	ring: RING_ENGINE_JS,
 	flow: FLOW_ENGINE_JS,
 });
@@ -98,6 +104,7 @@ export const KIT_GUIDE: Readonly<Record<DataKit, string>> = Object.freeze({
 	curve: CURVE_KIT_GUIDE,
 	stack: STACK_KIT_GUIDE,
 	shelf: SHELF_KIT_GUIDE,
+	map: MAP_KIT_GUIDE,
 	ring: RING_KIT_GUIDE,
 	flow: FLOW_KIT_GUIDE,
 });
@@ -111,6 +118,7 @@ const KIT_NEEDS: Readonly<Record<DataKit, readonly string[]>> = Object.freeze({
 	curve: ["points"],
 	stack: ["cards"],
 	shelf: ["things"],
+	map: ["top"],
 	ring: [],
 	flow: ["from", "to"],
 });
@@ -306,6 +314,10 @@ export function parseKitData(
 	if (kit === "shelf" && !(Array.isArray(data.things) && data.things.length > 0))
 		return { problem: `${file} has no thing in things: the shelf kit has nothing to stand on its shelf` };
 	if (kit === "stack" && !Array.isArray(data.cards)) return { problem: `${file}'s cards must be a list` };
+	if (kit === "map") {
+		const problem = mapProblem(data);
+		if (problem) return { problem: `${file} ${problem}` };
+	}
 	if (kit === "ring") {
 		const problem = ringProblem(data);
 		if (problem) return { problem: `${file} ${problem}` };
@@ -315,6 +327,85 @@ export function parseKitData(
 		if (problem) return { problem: `${file} ${problem}` };
 	}
 	return { data };
+}
+
+/** The map kit's bounds: things in a layer, layers deep and things in all (packages/runtime/kits/map/KIT.md). */
+export const MAP_BOUNDS = Object.freeze({ top: [3, 7], layer: [1, 12], depth: 4, things: 80 });
+
+/** A map thing's id and a layer's key, as the engine takes them. */
+const MAP_ID = /^[A-Za-z0-9-]{1,64}$/;
+
+/** What is wrong with a list of a map's things for its engine, which draws no thing it cannot name or tell apart (review
+ * r1 of #1847, F2): one that is no object, has no id of letters, digits and `-` (64 at most) or no name, or repeats an
+ * id of the same list. */
+function mapThingsProblem(list: readonly unknown[], where: string): string | null {
+	const seen = new Set<string>();
+	for (const [index, thing] of list.entries()) {
+		if (typeof thing !== "object" || thing === null || Array.isArray(thing))
+			return `has a thing in ${where} that is no object (number ${index + 1})`;
+		const { id, name } = thing as { id?: unknown; name?: unknown };
+		if (typeof id !== "string" || !MAP_ID.test(id))
+			return `has a thing in ${where} whose id is not letters, digits and - (number ${index + 1}): the page cannot draw it`;
+		if (typeof name !== "string" || name.trim() === "") return `has a thing ${id} in ${where} with no name`;
+		if (seen.has(id)) return `has the id ${id} twice in ${where}`;
+		seen.add(id);
+	}
+	return null;
+}
+
+/** What is wrong with a map's data for its engine, or null: a first layer that is the company's reading or 3 to 7
+ * things, layers of 1 to 12 things by a thing's id, at most four layers deep and 80 things in all; every thing
+ * drawable (`mapThingsProblem`), so what save_app takes is what the page draws. */
+function mapProblem(data: Readonly<Record<string, unknown>>): string | null {
+	const things = (value: unknown): unknown[] | null => (Array.isArray(value) ? value : null);
+	const top = data.top;
+	const first =
+		top === "reading"
+			? null
+			: typeof top === "object" && top !== null
+				? things((top as { things?: unknown }).things)
+				: undefined;
+	if (first === undefined) return 'needs top: "reading" for the company\'s reading, or an object with its things';
+	if (first !== null && (first.length < MAP_BOUNDS.top[0] || first.length > MAP_BOUNDS.top[1]))
+		return `needs ${MAP_BOUNDS.top[0]} to ${MAP_BOUNDS.top[1]} things in top: the map kit draws one picture of them`;
+	const firstProblem = first === null ? null : mapThingsProblem(first, "top");
+	if (firstProblem) return firstProblem;
+	const layers = data.layers ?? {};
+	if (typeof layers !== "object" || layers === null || Array.isArray(layers))
+		return "has layers that are no object: each key is a thing's id, its value what is inside it";
+	const inside = new Map<string, unknown[]>();
+	for (const [id, layer] of Object.entries(layers)) {
+		if (!MAP_ID.test(id)) return `has a layer ${id} whose key is not a thing's id (letters, digits and -)`;
+		const list = typeof layer === "object" && layer !== null ? things((layer as { things?: unknown }).things) : null;
+		if (!list || list.length < MAP_BOUNDS.layer[0] || list.length > MAP_BOUNDS.layer[1])
+			return `has a layer ${id} without ${MAP_BOUNDS.layer[0]} to ${MAP_BOUNDS.layer[1]} things`;
+		const listProblem = mapThingsProblem(list, `the layer ${id}`);
+		if (listProblem) return listProblem;
+		inside.set(id, list);
+	}
+	// From the first layer down, how deep the layers go; under the company's reading (whose things are live) each
+	// layer no other layer holds stands under the first layer.
+	const idOf = (thing: unknown) =>
+		typeof thing === "object" && thing !== null && typeof (thing as { id?: unknown }).id === "string"
+			? (thing as { id: string }).id
+			: null;
+	const deepest = (list: readonly unknown[], depth: number, seen: Set<string>): number => {
+		let most = depth;
+		for (const thing of list) {
+			const id = idOf(thing);
+			const below = id === null || seen.has(id) ? undefined : inside.get(id);
+			if (!below) continue;
+			most = Math.max(most, deepest(below, depth + 1, new Set([...seen, id as string])));
+		}
+		return most;
+	};
+	const held = new Set([...inside.values()].flatMap((list) => list.map(idOf)));
+	const roots = first ?? [...inside.keys()].filter((id) => !held.has(id)).map((id) => ({ id }));
+	const depth = deepest(roots, 1, new Set());
+	const count = (first?.length ?? 0) + [...inside.values()].reduce((sum, list) => sum + list.length, 0);
+	if (depth > MAP_BOUNDS.depth) return `goes ${depth} layers deep: the map kit opens ${MAP_BOUNDS.depth} at most`;
+	if (count > MAP_BOUNDS.things) return `holds ${count} things: the map kit draws ${MAP_BOUNDS.things} at most`;
+	return null;
 }
 
 /** The ring kit's bounds (packages/runtime/kits/ring/KIT.md): marks and wedges on one ring. */
@@ -486,7 +577,7 @@ export function kitFigures(data: unknown): string[] {
 /**
  * The page of a data kit's app: the fallback look, the pictures and videos the data names that the folder holds
  * (`holds` by path relative to the app's folder; one it lacks is left out, and the engine draws a quiet placeholder)
- * and the agents' figures it names (`figure:<id>`, as data: URLs),
+ * and the agents' figures it names (`figure:<id>`, as data: URLs; a map's page carries all twelve),
  * which app and data file the engine reads, and the engine. The page says it follows light and dark.
  *
  * In Qorpera the frame gives the page its `qorpera` object before any of the page's scripts run
@@ -528,7 +619,11 @@ export function kitPage(
 					? `<video data-kit-src="${escapeHtml(path)}" src="${escapeHtml(path)}" preload="metadata" muted playsinline></video>`
 					: `<img data-kit-src="${escapeHtml(path)}" src="${escapeHtml(path)}" alt="">`,
 			),
-		...kitFigures(data).map((id) => `<img data-kit-src="figure:${id}" src="${KIT_FIGURES[id]}" alt="">`),
+		// A map's agents are found when the page opens (its data names them, or the company's reading does), so its page
+		// carries every figure.
+		...(kit === "map" ? Object.keys(KIT_FIGURES) : kitFigures(data)).map(
+			(id) => `<img data-kit-src="figure:${id}" src="${KIT_FIGURES[id]}" alt="">`,
+		),
 		"</div>",
 		`<script type="application/json" id="kit-data">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>`,
 		`<script>window.QORPERA_KIT = ${kitJson};${KIT_OUTSIDE_QORPERA}${KIT_LIVE_VALUES}</script>`,
