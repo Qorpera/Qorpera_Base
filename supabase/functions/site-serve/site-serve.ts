@@ -50,12 +50,32 @@
  * 404; every answer carries Cross-Origin-Resource-Policy same-origin, frame-ancestors 'self' with X-Frame-Options
  * SAMEORIGIN, no Access-Control-Allow-Origin, Strict-Transport-Security without includeSubDomains, an explicit
  * Cache-Control with no-transform (the zone's browser cache default is 4 hours and its features rewrite HTML) and
- * CDN-Cache-Control no-store; the password form and the ticket refuse an Origin that is not the host's own. */
+ * CDN-Cache-Control no-store; the password form and the ticket refuse an Origin that is not the host's own.
+ *
+ * Views (the company's numbers, door site; migration 20260930768000). After a page is answered, one call counts it
+ * (qorpera_site_count_view), only for a GET answered 200 or 304 with a text/html file of the live version by a visitor's
+ * session, with no Range, Sec-Fetch-Dest document or absent and no prefetch (Sec-Purpose, Purpose): on the own host and
+ * on the old host's session paths, never on a next host, for an asset, a HEAD, the password page or a refusal. The call
+ * sends the host, the file's path and the session's token, nothing of the request's headers, and never changes the
+ * answer: it is handed to the edge runtime's waitUntil, or, without one, waited for at most 200 ms. A failure is logged
+ * by its kind only.
+ *
+ * Seen inside Qorpera (company views step 4, slice V1; migration 20260930774000). The web shows a site in a frame on its
+ * own host. A member's one-use pass (qorpera_site_member_pass, 60 seconds) is posted by a form of one of the web's
+ * origins (QORPERA_WEB_ORIGINS, compared exactly) to POST /__qorpera/member, redeemed through the database
+ * (qorpera_site_member_pass_redeem) for a member's session in the same cookie a right password sets, and answered 303 to
+ * the top or a same-host path the form names; a pass that fails answers as a wrong password. The folder __qorpera/ is the
+ * platform's on every site host: no site's file is served from it. Every own-host answer may be framed by the site's own
+ * pages and the web's origins (frame-ancestors, no X-Frame-Options, which cannot name another origin), so on an own host
+ * a frame's navigation (Sec-Fetch-Dest iframe) passes Fetch Metadata and frame-ancestors decides; a next host keeps
+ * 'self' and X-Frame-Options SAMEORIGIN. A member's session is never counted as a view (the database skips it). */
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
 export const DEFAULT_SITES_ORIGIN = "https://sites.qorpera.com";
+/** The web's origins when QORPERA_WEB_ORIGINS is not set: the production app. */
+export const DEFAULT_WEB_ORIGINS: readonly string[] = ["https://app.qorpera.com"];
 /** The password form's body: a password and a path, far below this. */
 export const MAX_UNLOCK_BODY_BYTES = 4096;
 /** The most bytes of a file one answer carries: a whole file at its largest. */
@@ -97,6 +117,52 @@ export const HOST_CONTENT_SECURITY_POLICY = "frame-ancestors 'self'";
 /** The platform's pages on a site host: as PAGE_SECURITY_POLICY, framed only by the site's own pages. */
 export const HOST_PAGE_SECURITY_POLICY =
 	"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'; base-uri 'none'";
+/** The platform's folder on a site host: no site's file is ever served from it. */
+const PLATFORM_FOLDER = "__qorpera";
+/** The member's door on an own host: a one-use pass from the web, posted in a form's body. */
+export const MEMBER_PATH = `/${PLATFORM_FOLDER}/member`;
+/** A member pass: 32 random bytes, base64url without padding, as Look first's ticket. */
+const PASS = TICKET;
+
+/** A site's file on an own host: framed by its own pages and the web's (V1). */
+export function ownContentSecurityPolicy(webOrigins: readonly string[]): string {
+	return `frame-ancestors 'self' ${webOrigins.join(" ")}`;
+}
+
+/** The platform's pages on an own host: as HOST_PAGE_SECURITY_POLICY, framed by the site's own pages and the web's. */
+export function ownPageSecurityPolicy(webOrigins: readonly string[]): string {
+	return `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self' ${webOrigins.join(" ")}; base-uri 'none'`;
+}
+
+/** An https origin's shape: a host name of letters, digits, hyphens and dots, and a port. */
+const WEB_ORIGIN = /^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*(?::[0-9]{1,5})?$/;
+
+/** The web's origins from QORPERA_WEB_ORIGINS (the stack's JSON array of exact origins, which other functions read too):
+ * its entries that are an https origin and nothing more (no path, query, credentials or trailing slash), since each is
+ * compared exactly with a request's Origin and written into frame-ancestors; at most eight. Any other entry is left out
+ * (an http address of a developer's machine, say), and a value that is not set, not such an array, or holds none:
+ * DEFAULT_WEB_ORIGINS. Never a throw: this public function must start whatever the stack's value is. */
+export function webOrigins(value: string | undefined): readonly string[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value ?? "");
+	} catch {
+		return DEFAULT_WEB_ORIGINS;
+	}
+	if (!Array.isArray(parsed)) return DEFAULT_WEB_ORIGINS;
+	const origins = parsed.filter((item): item is string => {
+		// Host names only: never a wildcard or anything else frame-ancestors would read as more than one origin.
+		if (typeof item !== "string" || !WEB_ORIGIN.test(item)) return false;
+		try {
+			// Its own canonical form: no default port, a port that is one.
+			return new URL(item).origin === item;
+		} catch {
+			return false;
+		}
+	});
+	return origins.length > 0 ? [...new Set(origins)].slice(0, 8) : DEFAULT_WEB_ORIGINS;
+}
+
 /** Never includeSubDomains: the hosts beside a site's are the platform's and other companies'. */
 export const STRICT_TRANSPORT_SECURITY = "max-age=31536000";
 /** Every answer that is not a private site file: never stored, never rewritten on the way. Every answer of this function
@@ -130,6 +196,11 @@ export interface SiteStore {
 	unlockHost(host: string, password: string, client: string): Promise<unknown>;
 	/** A next host's ticket for a member's session (qorpera_site_enter). */
 	enter(host: string, ticket: string): Promise<unknown>;
+	/** Counts a page view of a session (qorpera_site_count_view): the host, the answered file's path in the site (on the
+	 * old host after the site's name, `<slug>/<path>`) and the session's token. Its answer is not read. */
+	countView(host: string, path: string, token: string): Promise<unknown>;
+	/** An own host's member pass for a member's session (qorpera_site_member_pass_redeem): `enter`'s answers. */
+	memberPass(host: string, pass: string): Promise<unknown>;
 }
 
 /** The database has no such function yet (PostgREST's PGRST202): this function was installed before its migration. */
@@ -139,7 +210,18 @@ export interface SiteServeOptions {
 	/** The sites origin, e.g. https://sites.qorpera.com. */
 	origin: string;
 	store: SiteStore;
+	/** The web's origins (QORPERA_WEB_ORIGINS): the only origins a member pass is taken from, and the ones an own host's
+	 * answers may be framed by. DEFAULT_WEB_ORIGINS when not given. */
+	webOrigins?: readonly string[];
+	/** Keeps work going after the answer is sent: the edge runtime's EdgeRuntime.waitUntil when not given. Without
+	 * either, a view's count is waited for at most COUNT_WAIT_MS. */
+	waitUntil?: (work: Promise<unknown>) => void;
 }
+
+/** The longest an answer waits for its view's count when no waitUntil keeps the count going after it. */
+export const COUNT_WAIT_MS = 200;
+/** The deadline of the count's database call. */
+export const COUNT_TIMEOUT_MS = 2000;
 
 type ServeAnswer =
 	| { state: "locked" }
@@ -264,7 +346,8 @@ function openAnswer(value: unknown): { state: "open"; token: string; maxAge: num
 	return { state: "open", token: answer.token, maxAge: answer.maxAge as number };
 }
 
-/** A next host's ticket: a member's session, or refused (used, too old, another site's, or no longer theirs). */
+/** A next host's ticket or an own host's member pass: a member's session, or refused (used, too old, another site's or
+ * host's, or no longer theirs). */
 export function parseEnterAnswer(value: unknown): { state: "open"; token: string; maxAge: number } | { state: "refused" } {
 	const state = (value as { state?: unknown } | null)?.state;
 	if (state === "refused") {
@@ -382,6 +465,7 @@ const TEXT = {
 		ticketUsed: "This link has been used or is too old. Open it again from What's new.",
 		gone: "This site is not available.",
 		ownAddress: "This page can only be opened at its own address.",
+		fromQorpera: "This page can only be opened from Qorpera.",
 		// HTML, ASCII only: appended to a page whatever its encoding.
 		bar: "Not live yet &middot; only your team sees this",
 	},
@@ -408,6 +492,7 @@ const TEXT = {
 		ticketUsed: "Linket er brugt eller for gammelt. Åbn det igen fra Nyheder.",
 		gone: "Siden er ikke tilgængelig.",
 		ownAddress: "Siden kan kun åbnes på sin egen adresse.",
+		fromQorpera: "Siden kan kun åbnes fra Qorpera.",
 		bar: "Ikke live endnu &middot; kun jeres team ser dette",
 	},
 } as const;
@@ -797,7 +882,7 @@ export async function handleSiteServe(request: Request, options: SiteServeOption
 			: site
 				? await onSiteHost(request, options, lang, site, rest)
 				: undefined;
-		if (answer) return answer;
+		if (answer) return site?.scope === "site" ? framedByWeb(answer, options.webOrigins ?? DEFAULT_WEB_ORIGINS) : answer;
 	}
 	return legacySiteServe(request, options);
 }
@@ -866,17 +951,37 @@ export function siteHost(forwarded: string | null): SiteHost | null {
 
 /** Fetch Metadata (D22): a site host's answers go to the site's own pages (same-origin), to what a person typed or
  * opened from a bookmark (none), and to a top-level document navigation from anywhere (a link, the password form).
- * Never to a sibling's script, image, style or frame, nor a fetch from another origin: those carry the visitor's Lax
- * cookie, since every qorpera.com host is the same site. A request without the header passes (older browsers,
- * crawlers): CORP and frame-ancestors still hold for browsers. */
-export function fetchAllowed(headers: Headers): boolean {
+ * Never to a sibling's script, image, style or fetch: those carry the visitor's Lax cookie, since every qorpera.com host
+ * is the same site. A frame's navigation (Sec-Fetch-Dest iframe) passes only where `framed` (an own host, which the web
+ * frames, V1): there the browser's frame-ancestors decides who may show the answer (the site's own pages and the web's
+ * origins), as every browser that sends Fetch Metadata enforces it; a next host refuses it. A request without the header
+ * passes (older browsers, crawlers): CORP and frame-ancestors still hold for browsers. */
+export function fetchAllowed(headers: Headers, framed = false): boolean {
 	const site = headers.get("sec-fetch-site");
+	const dest = headers.get("sec-fetch-dest");
 	return (
 		site === null ||
 		site === "same-origin" ||
 		site === "none" ||
-		(headers.get("sec-fetch-mode") === "navigate" && headers.get("sec-fetch-dest") === "document")
+		(headers.get("sec-fetch-mode") === "navigate" && (dest === "document" || (framed && dest === "iframe")))
 	);
+}
+
+/** An own host's answer, framable by the web (V1): its frame-ancestors names the web's origins after 'self', and it
+ * carries no X-Frame-Options (which cannot name another origin). Every own-host answer passes here. An answer whose
+ * policy is not one of the site host's two is left as it is: framed by its own pages only. */
+function framedByWeb(response: Response, origins: readonly string[]): Response {
+	const policy = response.headers.get("content-security-policy");
+	const own =
+		policy === HOST_PAGE_SECURITY_POLICY
+			? ownPageSecurityPolicy(origins)
+			: policy === HOST_CONTENT_SECURITY_POLICY
+				? ownContentSecurityPolicy(origins)
+				: null;
+	if (own === null) return response;
+	response.headers.set("content-security-policy", own);
+	response.headers.delete("x-frame-options");
+	return response;
 }
 
 /** A service worker's script, which a site host never serves: a worker would keep pages a takedown or a newer version
@@ -1001,7 +1106,8 @@ async function onSiteHost(
 	const text = TEXT[lang];
 	const method = request.method;
 	if (serviceWorkerScript(request.headers)) return hostNotFound(request, lang);
-	if (!fetchAllowed(request.headers)) return hostMessage(request, lang, 403, text.unavailable, text.ownAddress);
+	if (!fetchAllowed(request.headers, site.scope === "site"))
+		return hostMessage(request, lang, 403, text.unavailable, text.ownAddress);
 	if (rest === "/robots.txt") {
 		if (method !== "GET" && method !== "HEAD") return hostNotAllowed("GET, HEAD");
 		const bytes = new TextEncoder().encode("User-agent: *\nDisallow: /\n");
@@ -1023,16 +1129,24 @@ async function onSiteHost(
 	}
 	const path = sitePath(segments);
 	if (path === null) return hostNotFound(request, lang);
+	// The platform's folder, whatever a site holds there: the member's door on an own host, nothing else.
+	if (path === PLATFORM_FOLDER || path.startsWith(`${PLATFORM_FOLDER}/`)) {
+		if (`/${path}` === MEMBER_PATH && site.scope === "site") return hostMember(request, options, lang, site);
+		return hostNotFound(request, lang);
+	}
 	if (method !== "GET" && method !== "HEAD") return hostNotAllowed("GET, HEAD");
 	const tokens = cookieTokens(request.headers.get("cookie"), HOST_COOKIE);
 	// The next host serves no ETag: its pages carry the bar, and its version is the session's.
 	const etag = site.scope === "site" ? requestedEtag(request.headers.get("if-none-match")) : null;
 	let read: Awaited<ReturnType<typeof readHostFile>>;
+	// The session cookie the answer was read with.
+	let token = tokens[0] ?? null;
 	try {
 		// Each session cookie the browser sent, until one is not locked (none and gone are the site's, not the session's).
-		read = await readHostFile(request, options.store, site, path, tokens[0] ?? null, etag);
-		for (const token of tokens.slice(1)) {
+		read = await readHostFile(request, options.store, site, path, token, etag);
+		for (const next of tokens.slice(1)) {
 			if (read.answer.state !== "locked") break;
+			token = next;
 			read = await readHostFile(request, options.store, site, path, token, etag);
 		}
 	} catch (error) {
@@ -1045,11 +1159,23 @@ async function onSiteHost(
 		return hostLocked(request, lang, site, path, 401, { clear: tokens.length > 0 });
 	if (answer.state === "directory") return hostRedirect(`/${answer.path}${new URL(request.url).search}`, 308);
 	if (answer.state === "missing") return hostNotFound(request, lang, text.notPart);
+	let response: Response;
 	try {
-		return hostFileAnswer(request, answer, site.scope, etag, read.range, lang);
+		response = hostFileAnswer(request, answer, site.scope, etag, read.range, lang);
 	} catch (error) {
 		return hostUnavailable(request, lang, error);
 	}
+	// A page of the live version on the own host (never a next host's look first, nor the version's 404.html): its
+	// view counts.
+	if (
+		site.scope === "site" &&
+		answer.status === 200 &&
+		token !== null &&
+		isHtml(answer.contentType) &&
+		countsAsView(request, response.status)
+	)
+		return withViewCounted(options, response, site.host, answer.path, token);
+	return response;
 }
 
 /** One file for a site host's request, as `readFile` asks for it, but whole for what is never served in parts: a
@@ -1210,6 +1336,116 @@ async function hostEnter(
 	return hostRedirect("/", 303, { "set-cookie": hostCookie(answer.token, answer.maxAge) });
 }
 
+/** The member's door on an own host (POST /__qorpera/member, V1): the web posts a member's pass (`pass`) and, if it
+ * wants, a path of the site (`path`, with or without its leading slash) into its frame, from one of its origins. The
+ * pass is redeemed once for a member's session in the cookie a right password sets, and the answer goes to that path on
+ * this host (the top for none, or one that is not a site path). A pass of the wrong shape never reaches the database; a
+ * pass the database refuses answers exactly as a wrong password does. */
+async function hostMember(
+	request: Request,
+	options: SiteServeOptions,
+	lang: Language,
+	site: SiteHost,
+): Promise<Response | undefined> {
+	const text = TEXT[lang];
+	if (request.method !== "POST") return hostNotAllowed("POST");
+	// Exactly one of the web's origins: a form of another origin, a sibling's, the site's own or none is refused.
+	const sent = request.headers.get("origin");
+	if (sent === null || !(options.webOrigins ?? DEFAULT_WEB_ORIGINS).includes(sent))
+		return hostMessage(request, lang, 403, text.private, text.fromQorpera);
+	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
+		return hostMessage(request, lang, 415, text.private, text.fromQorpera);
+	const body = await readBody(request, MAX_UNLOCK_BODY_BYTES);
+	if (!body) return hostMessage(request, lang, 413, text.private, text.fromQorpera);
+	let form: URLSearchParams;
+	try {
+		form = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
+	} catch {
+		return hostMessage(request, lang, 400, text.private, text.fromQorpera);
+	}
+	const sentPath = (form.get("path") ?? "").replace(/^\//, "");
+	const next = isSitePath(sentPath) ? sentPath : "";
+	const passes = form.getAll("pass");
+	const pass = passes.length === 1 ? (passes[0] ?? "") : "";
+	const wrong = () => hostLocked(request, lang, site, next, 401, { error: text.wrong });
+	if (!PASS.test(pass)) return wrong();
+	let answer: ReturnType<typeof parseEnterAnswer>;
+	try {
+		answer = parseEnterAnswer(await options.store.memberPass(site.host, pass));
+	} catch (error) {
+		if (error instanceof MissingFunction) return undefined;
+		return hostUnavailable(request, lang, error);
+	}
+	if (answer.state === "refused") return wrong();
+	return hostRedirect(`/${next}`, 303, { "set-cookie": hostCookie(answer.token, answer.maxAge) });
+}
+
+// --- Views --------------------------------------------------------------------------------------------------------------
+
+/** Whether a request and the status it was answered with make a page view, for a text/html file of a session: a GET with
+ * no Range (a part is no view), answered 200 or 304, a document (Sec-Fetch-Dest document, or no Fetch Metadata) and no
+ * prefetch or prerender (Sec-Purpose, or the older Purpose). */
+export function countsAsView(request: Request, status: number): boolean {
+	const headers = request.headers;
+	const dest = headers.get("sec-fetch-dest");
+	return (
+		request.method === "GET" &&
+		(status === 200 || status === 304) &&
+		!headers.has("range") &&
+		(dest === null || dest === "document") &&
+		!headers.has("sec-purpose") &&
+		!headers.has("purpose")
+	);
+}
+
+/** The edge runtime's waitUntil (Supabase's EdgeRuntime), when it has one. */
+function edgeWaitUntil(): ((work: Promise<unknown>) => void) | undefined {
+	const runtime = (globalThis as { EdgeRuntime?: { waitUntil?: unknown } }).EdgeRuntime;
+	const waitUntil = runtime?.waitUntil;
+	if (typeof waitUntil !== "function") return undefined;
+	return (work) => {
+		waitUntil.call(runtime, work);
+	};
+}
+
+/** A database that has no count call yet is said once, not on every page. */
+let countMissingSaid = false;
+
+/** The answer, once the view's count is on its way: handed to waitUntil, or waited for at most COUNT_WAIT_MS. The count
+ * never changes the answer; a failure is logged by its kind only, never with a token, a path or a host. */
+async function withViewCounted(
+	options: SiteServeOptions,
+	response: Response,
+	host: string,
+	path: string,
+	token: string,
+): Promise<Response> {
+	const work = (async () => {
+		try {
+			await options.store.countView(host, path, token);
+		} catch (error) {
+			if (error instanceof MissingFunction) {
+				if (countMissingSaid) return;
+				countMissingSaid = true;
+			}
+			console.error(`site-serve: a view was not counted (${error instanceof Error ? error.name : typeof error})`);
+		}
+	})();
+	const waitUntil = options.waitUntil ?? edgeWaitUntil();
+	if (waitUntil) {
+		try {
+			waitUntil(work);
+			return response;
+		} catch {
+			// No way to keep it going: wait for it below.
+		}
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([work, new Promise<void>((resolve) => (timer = setTimeout(resolve, COUNT_WAIT_MS)))]);
+	clearTimeout(timer);
+	return response;
+}
+
 // --- The old host's path form: today's handler ------------------------------------------------------------------------
 
 /** Today's handler: the old host's path form, and 404 for every other host. */
@@ -1262,7 +1498,13 @@ async function legacySiteServe(request: Request, options: SiteServeOptions): Pro
 		const etag = requestedEtag(request.headers.get("if-none-match"));
 		try {
 			const { answer, range } = await readFile(request, options.store, slug, path, token, etag);
-			if (answer.state === "file") return fileAnswer(request, answer, etag, range);
+			if (answer.state === "file") {
+				const response = fileAnswer(request, answer, etag, range);
+				// A page of the session: its view counts (on the old host, the site's name first).
+				if (isHtml(answer.contentType) && countsAsView(request, response.status))
+					return await withViewCounted(options, response, origin.host, `${slug}/${answer.path}`, token);
+				return response;
+			}
 			if (answer.state === "directory") return redirect(`/${slug}/~${token}/${answer.path}${search}`, 308);
 			if (answer.state === "missing") return notFound(request, lang, TEXT[lang].notPart);
 			// The session ended: the plain URL asks for the password again.
@@ -1439,13 +1681,25 @@ export class PostgrestSiteStore implements SiteStore {
 		return this.#call("qorpera_site_enter", { p_host: host, p_ticket: ticket });
 	}
 
-	async #call(name: string, args: Record<string, unknown>): Promise<unknown> {
+	countView(host: string, path: string, token: string): Promise<unknown> {
+		return this.#call(
+			"qorpera_site_count_view",
+			{ p_host: host, p_path: path, p_token: token },
+			Math.min(this.#timeoutMs, COUNT_TIMEOUT_MS),
+		);
+	}
+
+	memberPass(host: string, pass: string): Promise<unknown> {
+		return this.#call("qorpera_site_member_pass_redeem", { p_host: host, p_pass: pass });
+	}
+
+	async #call(name: string, args: Record<string, unknown>, timeoutMs = this.#timeoutMs): Promise<unknown> {
 		const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
 			method: "POST",
 			redirect: "error",
 			headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
 			body: JSON.stringify(args),
-			signal: AbortSignal.timeout(this.#timeoutMs),
+			signal: AbortSignal.timeout(timeoutMs),
 		});
 		if (!response.ok) {
 			// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.

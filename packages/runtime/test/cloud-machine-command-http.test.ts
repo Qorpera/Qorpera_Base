@@ -36,6 +36,11 @@ import type {
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import { CloudCommandPages } from "../src/cloud-command-pages.ts";
 import {
+	CloudHomeChannelRefused,
+	type CloudHomeChannelSide,
+	type CloudHomeSessionAuthorized,
+} from "../src/cloud-home-channel.ts";
+import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCodingValueHttpRequest,
 	CloudMachineCodingValueRefusal,
@@ -850,6 +855,89 @@ describe("machine command authority", () => {
 			credential: async () => "",
 		});
 		await expect(noMachines.execute(f.request, f.signal)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+	});
+});
+
+// The agent's home: the router opens a session's channel on its own node's machine. The one failure the run is told
+// in words of its own (the machine's Codex is not the pinned build) leaves as a refusal with its reason, so the
+// ingress passes it on and the model reads HOME_OUTDATED, not "could not be reached"; any other failure stays as it
+// is (review r1 of #1817, F2).
+describe("a home session's channel through the router", () => {
+	const authority = (): CloudHomeSessionAuthorized => ({
+		state: "authorized",
+		sessionId: randomUUID(),
+		machineId: randomUUID(),
+		machine: "machine",
+		placementId: randomUUID(),
+		bootId: randomUUID(),
+		executorOwner: "mx-a",
+		providerId: "machine-node",
+	});
+	const request = () => ({ binding: nativeToolAuthorityFixture().binding, holder: undefined });
+	const router = (
+		execServerLocal?: (
+			authority: { sessionId: string; placementId: string; bootId: string },
+			signal: AbortSignal,
+		) => Promise<CloudHomeChannelSide>,
+	) =>
+		new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: {
+				call: async () => {
+					throw new Error("no SQL in this test");
+				},
+			},
+			credential: async () => "",
+			...(execServerLocal ? { execServerLocal } : {}),
+		});
+
+	it("opens the channel on its own node's machine with what SQL authorized", async () => {
+		const side: CloudHomeChannelSide = {
+			write: () => undefined,
+			lines: (async function* () {})(),
+			close: async () => undefined,
+		};
+		const execServerLocal = vi.fn(async () => side);
+		const session = authority();
+		const signal = AbortSignal.timeout(5_000);
+		expect(await router(execServerLocal).execServer(session, request(), signal)).toBe(side);
+		expect(execServerLocal).toHaveBeenCalledTimes(1);
+		expect(execServerLocal).toHaveBeenCalledWith(session, signal);
+	});
+
+	it("passes on that the machine's Codex is not the pinned build, as a refusal with its reason", async () => {
+		const failed = await router(async () => {
+			throw new Error("HOME_CODEX_NOT_PINNED");
+		})
+			.execServer(authority(), request(), AbortSignal.timeout(5_000))
+			.catch((error: unknown) => error);
+		expect(failed).toBeInstanceOf(CloudHomeChannelRefused);
+		expect((failed as CloudHomeChannelRefused).reason).toBe("HOME_CODEX_NOT_PINNED");
+	});
+
+	it("leaves any other failure of the machine's side as it is, and refuses a machine it does not hold", async () => {
+		const failure = new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		await expect(
+			router(async () => {
+				throw failure;
+			}).execServer(authority(), request(), AbortSignal.timeout(5_000)),
+		).rejects.toBe(failure);
+		const refusal = new CloudHomeChannelRefused("HOME_SESSION_ENDED");
+		await expect(
+			router(async () => {
+				throw refusal;
+			}).execServer(authority(), request(), AbortSignal.timeout(5_000)),
+		).rejects.toBe(refusal);
+		await expect(router().execServer(authority(), request(), AbortSignal.timeout(5_000))).rejects.toThrow(
+			"MACHINE_COMMAND_WRONG_EXECUTOR",
+		);
+		await expect(
+			router(async () => {
+				throw failure;
+			}).execServer({ ...authority(), executorOwner: "mx-b" }, request(), AbortSignal.timeout(5_000)),
+		).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 	});
 });
 
@@ -2782,6 +2870,50 @@ describe("a member's start of a desktop (20260930714000)", () => {
 		await expect(f.router.memberStart(f.start, f.signal)).rejects.toThrow("MEMBER_MACHINE_START_FAILED");
 	});
 
+	it("opens what SQL kept on the start: the begin takes the path, the host gets SQL's own (20260930758000)", async () => {
+		const f = fixture();
+		const open = "Møder/æble og grød ø.md";
+		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), open });
+		f.host.memberStart.mockResolvedValueOnce({ outcome: "opened" });
+		expect(await f.router.memberStart({ ...f.start, open }, f.signal)).toEqual({ outcome: "opened" });
+		expect(f.memberStartBegin).toHaveBeenLastCalledWith(
+			"eyJh.eyJz.c2ln",
+			{ companyId: f.companyId, machineId: f.machineId, open },
+			f.signal,
+		);
+		expect(f.host.memberStart).toHaveBeenLastCalledWith(
+			{ placementId: f.placementId, bootId: f.bootId, startId: f.startId, open },
+			f.signal,
+		);
+		// The open's refusals are the member's; SQL's read refuses a path no longer theirs, or another's private typing.
+		for (const refused of ["DESKTOP_OPEN_NOT_FOUND", "DESKTOP_OPEN_NO_FOLDER", "DESKTOP_DID_NOT_OPEN"]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), open });
+			f.host.memberStart.mockResolvedValueOnce({ refused });
+			await expect(f.router.memberStart({ ...f.start, open }, f.signal)).rejects.toMatchObject({ code: refused });
+		}
+		for (const reason of ["DESKTOP_OPEN_NOT_FOUND", "DESKTOP_MEMBER_IN_CONTROL"]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.member-machine-desktop-start-authority/v1",
+				state: "refused",
+				reason,
+			});
+			await expect(f.router.memberStart({ ...f.start, open }, f.signal)).rejects.toMatchObject({ code: reason });
+		}
+		// A path SQL could never have kept is no authority.
+		for (const bad of ["", "/etc/passwd", "a/../b", "a\nb", 5]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), open: bad });
+			await expect(f.router.memberStart({ ...f.start, open }, f.signal)).rejects.toThrow(
+				"MEMBER_START_AUTHORITY_INVALID",
+			);
+		}
+		// A plain start's read carries no path, and the host gets none.
+		await f.router.memberStart(f.start, f.signal);
+		expect(f.host.memberStart).toHaveBeenLastCalledWith(
+			{ placementId: f.placementId, bootId: f.bootId, startId: f.startId },
+			f.signal,
+		);
+	});
+
 	it("runs the start whoever holds the desktop: SQL's read knows no hold (review r1 F1 of #1681)", async () => {
 		const f = fixture();
 		// A read that still names a hold is of another shape: no authority.
@@ -2897,6 +3029,14 @@ describe("a member's start of a desktop (20260930714000)", () => {
 				outcome: "running",
 			}),
 		).toEqual({ outcome: "running" });
+		// A start that opened what SQL kept on it (20260930758000): the path itself never crosses this route.
+		expect(
+			parseCloudMemberMachineStartAnswer(request, {
+				schema: "qorpera.member-machine-start-answer/v1",
+				startId,
+				outcome: "opened",
+			}),
+		).toEqual({ outcome: "opened" });
 		for (const bad of [
 			{ schema: "qorpera.member-machine-start-answer/v1", startId: randomUUID(), outcome: "started" },
 			{ schema: "qorpera.member-machine-start-answer/v1", startId, outcome: "maybe" },

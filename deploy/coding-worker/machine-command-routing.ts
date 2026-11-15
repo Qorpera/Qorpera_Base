@@ -52,6 +52,10 @@ import {
 	MACHINE_SCREEN_REQUEST_SCHEMA, type MachineScreenAction, parseMachineScreenHeader,
 } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
+import {
+	type CloudHomeChannelRequest, CloudHomeChannelRefused, type CloudHomeChannelSide, type CloudHomeSessionAuthorized,
+} from "../../packages/runtime/src/cloud-home-channel.ts";
+import { createCloudHomeChannel } from "../../packages/runtime/src/cloud-home-channel-client.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
 import {
 	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, authorizeMemberMachineAct,
@@ -68,6 +72,9 @@ interface MachineCommandRouterOptions {
 	credential(name: string): Promise<string>;
 	/** This node's machines; absent when the executor carries no machines. */
 	executeLocal?(request: CloudMachineCommandHttpRequest, authority: MachineCommandAuthority, signal: AbortSignal): Promise<CloudMachineCommandReceipt>;
+	/** One run's channel to its home on this node's machine (slice 1): `codex exec-server` inside it, as the agent's
+	 * account on the boot SQL named, for as long as the run's turn. Absent when the executor carries no machines. */
+	execServerLocal?(authority: { sessionId: string; placementId: string; bootId: string }, signal: AbortSignal): Promise<CloudHomeChannelSide>;
 	/** Asks this node's machines for a pass now; with a wait, true once a step took the machine somewhere. Absent when the executor carries no machines. */
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
@@ -96,7 +103,7 @@ interface MachineCommandRouterOptions {
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000): begins it as the member (member-control.ts); absent when this
 	 * executor takes no member's requests. */
-	memberStartBegin?(token: string, start: { companyId: string; machineId: string }, signal: AbortSignal): Promise<{ startId: string }>;
+	memberStartBegin?(token: string, start: { companyId: string; machineId: string; open?: string }, signal: AbortSignal): Promise<{ startId: string }>;
 	/** A member's start on this node's machine; absent when the executor carries no machines. */
 	memberStartLocal?(authority: MemberMachineStartAuthority, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 	/** A member's pointer pass (20260930744000): begun as the member (member-control.ts); absent when this executor takes
@@ -205,6 +212,35 @@ export class MachineCommandRouter {
 		}).map((asked) => asked.catch(() => false));
 		const asked = local ? [local, ...peers] : peers;
 		return wait ? anyTold(asked) : Promise.all(asked).then(() => false);
+	}
+	/**
+	 * One run's channel to its home (slice 1). The ingress proved the run's holder and SQL authorized the session on
+	 * the machine's placement and boot. A machine of this node is opened here; a machine another node holds is reached
+	 * through that node's peer listener, exactly as a machine command is forwarded: the peer authorizes the same
+	 * session again in SQL and may only open it locally, so a channel is never forwarded twice. A run's slot talks to
+	 * its own node's ingress wherever its agent's machine is.
+	 */
+	async execServer(authority: CloudHomeSessionAuthorized, request: CloudHomeChannelRequest, signal: AbortSignal, localOnly = false): Promise<CloudHomeChannelSide> {
+		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (!this.#options.execServerLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			try {
+				return await this.#options.execServerLocal(authority, signal);
+			} catch (error) {
+				// The machine's Codex is not the pinned build (an earlier image's disk): the run is told so in words of its
+				// own, through this ingress or a forwarding one, rather than "could not be reached".
+				if (error instanceof Error && error.message === "HOME_CODEX_NOT_PINNED") throw new CloudHomeChannelRefused(error.message);
+				throw error;
+			}
+		}
+		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		const channel = createCloudHomeChannel({
+			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
+			// The peer listener takes no holder: this executor proved the run's at its own ingress.
+			holder: null,
+		});
+		return await channel.open({ sessionId: authority.sessionId, machineId: authority.machineId }, signal);
 	}
 	async execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCommandReceipt> {
 		const authority = await authorizeMachineCommand(this.#options.control, request, signal);
@@ -380,11 +416,12 @@ export class MachineCommandRouter {
 	 * database checks their token and answers a single-use id), then read again as the executor, and run on this node or
 	 * sent once to the machine's node. It takes no hold and needs no run of the agent's; a member's hold of the desktop
 	 * does not stop it (review r1 F1 of #1681: a hold does not prove the desktop runs, and a start of one that runs does
-	 * nothing). */
+	 * nothing). With `open` (20260930758000) the start also opens that path of the company folder once the desktop runs:
+	 * SQL keeps it on the start, and the machine's executor takes it from its own read of SQL, never from a peer. */
 	async memberStart(request: CloudMemberMachineStartRequest, signal: AbortSignal): Promise<CloudMemberMachineStart> {
 		if (!this.#options.memberStartBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		const begun = await this.#options.memberStartBegin(request.token, { companyId: request.companyId,
-			machineId: request.machineId }, signal);
+			machineId: request.machineId, ...(request.open === undefined ? {} : { open: request.open }) }, signal);
 		return this.#memberStartServe(begun.startId, signal, false);
 	}
 	/** A member's start another executor sent here (the peer listener): read again, and run on this node only. */
@@ -748,13 +785,14 @@ export function localMemberMachineAct(host: {
 
 /** How a router turns a desktop on for a member on this node's machines (MachineCommandRouter's `memberStartLocal`,
  * 20260930714000): the host's outcome, a machine too small, restarted, without a desktop or a desktop that did not start
- * as the member's refusals, and any other code a failure. */
+ * as the member's refusals, and any other code a failure. A start that opens something (20260930758000) passes what SQL
+ * read to the host, and its refusals (not there, no company folder, could not open) are the member's too. */
 export function localMemberMachineStart(host: {
 	memberStart(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<CompanyMachineMemberStartOutcome>;
 }): (authority: MemberMachineStartAuthority, signal: AbortSignal) => Promise<CloudMemberMachineStart> {
 	return async (authority, signal) => {
 		const outcome = await host.memberStart({ placementId: authority.placementId, bootId: authority.bootId,
-			startId: authority.startId }, signal);
+			startId: authority.startId, ...(authority.open === undefined ? {} : { open: authority.open }) }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMemberMachineStartRefusal(outcome.refused)) throw new CloudMemberMachineStartRefusal(outcome.refused);
 			throw new Error("MEMBER_MACHINE_START_FAILED");

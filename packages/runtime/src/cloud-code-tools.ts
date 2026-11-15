@@ -78,13 +78,13 @@ const UNDO_WAIT_MS = 30_000;
 const SHOWN_PATHS = 10;
 const SHOWN_PATH_BYTES = 2000;
 
-export const CLOUD_CODE_TOOL_DESCRIPTION =
-	"Look after the company's code kept in Qorpera. Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md. " +
-	"Actions: undo, describe, bring_in. Each needs operationKey, owner and name; undo and describe also need change (the number). " +
-	"undo puts main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone. Give reason in one line, and notice when customers will see the undo. When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up. After an undo, check main before you tell anyone. " +
-	"describe sets the change's notice (one plain sentence on what a customer will notice) and picture (a .png, .jpg, .jpeg or .webp file of at most 4 MB that shows it, in a part of the company folder everyone can read). What you leave out stays as it is. " +
-	'bring_in brings existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all). look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings. It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in. Replace keys it found where you can, and ask a member once for the rest. ' +
-	"After a result you did not see, call again with the same operationKey. Change numbers are yours, never the members' words.";
+export const CLOUD_CODE_TOOL_DESCRIPTION = [
+	"Look after the company's code kept in Qorpera. Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md. Change numbers are yours, never the members' words.",
+	"Every action takes operationKey, owner and name; undo and describe also take change, the number.",
+	"- undo: put main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone. Give reason in one line, and notice when customers will see the undo. When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up. After an undo, check main before you tell anyone.",
+	"- describe: set the change's notice and picture; what you leave out stays as it is.",
+	'- bring_in: bring existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all). look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings. It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in. Replace keys it found where you can, and ask a member once for the rest.',
+].join("\n");
 
 interface CodeUndo {
 	readonly action: "undo";
@@ -781,12 +781,18 @@ export function cloudCodeTools(options: {
 				look: { type: "boolean" },
 				andLater: { type: "boolean" },
 				reason: { type: "string", minLength: 1, maxLength: 500 },
-				notice: { type: "string", minLength: 1, maxLength: 200 },
+				notice: {
+					type: "string",
+					minLength: 1,
+					maxLength: 200,
+					description: "One plain sentence on what a customer will notice, at most 200 characters.",
+				},
 				picture: {
 					type: "string",
 					minLength: 1,
 					maxLength: 1024,
-					description: "Its path in the company folder, such as product/screens/new-price.png.",
+					description:
+						"A .png, .jpg, .jpeg or .webp file of at most 4 MB that shows it, where everyone in the company can read it, such as product/screens/new-price.png.",
 				},
 			},
 		},

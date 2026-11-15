@@ -26,9 +26,16 @@ export const APP_NAME_MAX_CHARS = 60;
 export const APP_ABOUT_MAX_CHARS = 200;
 export const APP_DEFAULT_ENTRY = "index.html";
 export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
+/** The apps that are views the company is owed, at their fixed folders (company views step 4,
+ * lanes/company-views-20261114/DESIGN-4.md: `apps/products`, `apps/money`, `apps/ads`), in this order: members find
+ * them first in the apps drawer, and the runtime's `look` guide and `save_app` say so. The web's drawer keeps the same
+ * list under the same name (views/shell.ts, PR #1842) until it reads this one. The website is drawn by the platform. */
+export const OWED_APPS = Object.freeze(["products", "money", "ads"] as const);
+export type OwedApp = (typeof OWED_APPS)[number];
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app;
- * `data`: the company's databases, asked by their questions. */
-export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions", "data"] as const);
+ * `data`: the company's databases, asked by their questions; `reading`: the company's reading of itself
+ * (QorperaOS/vision/reading.md), its agents and whether it can run, as plain names (the `map` kit's first layer). */
+export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions", "data", "reading"] as const);
 export type AppRead = (typeof APP_READS)[number];
 /** The folders at the top of the Company File that the platform writes or keeps (the agents' prompt: "the platform
  * writes digital-post/, bank/, members/ and hooks/"), by their keys (`companyPathKey`): an app's page reads no file in
@@ -82,7 +89,9 @@ export function parseAppWrites(
  * videos that are visual-first to let you see the company"): the kit writes `engine.js` and `index.html`, the agent
  * `<kit>.json` and the pictures it names. `curve`, `stack` and `shelf` are data kits of the same kind, each one big
  * shape (Jonas, 14 November 2026): a value over time, things that want a member's yes, the company's things side by
- * side. */
+ * side. `map` draws the company, or an owner's area, as its things with layers to dive into (Jonas, 15 November 2026:
+ * "Use a map kit"). `ring` and `flow` are two more such shapes (company views plan step 5): a year, a month or a week
+ * as a ring, and money or people from where they come to where they go. */
 export const APP_KITS = Object.freeze([
 	"explainer",
 	"model",
@@ -92,6 +101,9 @@ export const APP_KITS = Object.freeze([
 	"curve",
 	"stack",
 	"shelf",
+	"map",
+	"ring",
+	"flow",
 ] as const);
 export type AppKit = (typeof APP_KITS)[number];
 
