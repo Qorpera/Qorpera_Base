@@ -1777,6 +1777,11 @@ it("tells the maker of a ring what falls outside its span, and of a flow which e
 	]);
 	expect(kitNotes("flow", sides(200000, 240000), () => true)[0]).toContain("as a quiet band, coming in");
 	expect(kitNotes("flow", sides(241000, 240000), () => true)).toEqual([]);
+	// an empty list of links is bands through the middle, as the page draws it
+	expect(kitNotes("flow", { ...sides(240000, 215000), links: [] }, () => true)).toHaveLength(1);
+	expect(kitNotes("flow", { ...FLOW, to: ends, links: [] }, () => true)).toEqual([
+		"to has 9 ends to draw: the page draws 5 of them (the largest, and a kept one always) and joins the other 4 into one band (words.other). Fewer bands read better.",
+	]);
 	expect(kitNotes("flow", FLOW, () => true)).toEqual([]);
 });
 

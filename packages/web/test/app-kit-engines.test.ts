@@ -2071,6 +2071,30 @@ describe("the ring kit's engine", () => {
 		}
 	});
 
+	it("keeps 12 marks of one day apart and clear of the middle on a phone, each found by the pointer", async () => {
+		resize(390, 844);
+		const crowd = {
+			...year,
+			marks: Array.from({ length: 12 }, (_, at) => ({ name: `Due ${at}`, at: "2026-06-01" })),
+		};
+		await open("ring", JSON.stringify(crowd));
+		const c = Number.parseFloat(stage()?.style.width ?? "0") / 2;
+		const dots = [...document.querySelectorAll(".rk-mark")].map((dot) => ({
+			x: Number(dot.getAttribute("cx")),
+			y: Number(dot.getAttribute("cy")),
+			r: Number(dot.getAttribute("r")),
+		}));
+		expect(dots).toHaveLength(12);
+		for (const [at, dot] of dots.entries()) {
+			// never under the middle's words, never across the ring
+			expect(Math.hypot(dot.x - c, dot.y - c)).toBeGreaterThan(c * 0.4);
+			for (const other of dots.slice(at + 1))
+				expect(Math.hypot(dot.x - other.x, dot.y - other.y)).toBeGreaterThan(dot.r * 2);
+			stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: dot.x, clientY: dot.y, bubbles: true }));
+			expect(what()).toBe(`Due ${at}`);
+		}
+	});
+
 	it("draws 12 marks and 8 wedges at most, and only what falls in its span", async () => {
 		const many = {
 			...year,
@@ -2229,7 +2253,8 @@ describe("the flow kit's engine", () => {
 		expect(big()).toBe("240,000");
 		key("End");
 		key("ArrowLeft");
-		expect([big(), sub()]).toEqual(["25,000", "Not accounted for12%"]);
+		// a share of all the side's bands, so the side's shares add up: 25,000 of the 240,000 drawn
+		expect([big(), sub()]).toEqual(["25,000", "Not accounted for10%"]);
 		document.body.replaceChildren();
 		// more out than in: the difference comes in, on the left, in the data's own word
 		await open(

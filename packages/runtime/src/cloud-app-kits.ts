@@ -701,9 +701,11 @@ export function kitNotes(
 	}
 	if (kit === "flow") {
 		// with links, only the ends a link joins are drawn (the engine leaves the others out before it joins any)
-		const linked = Array.isArray(data.links)
+		// links as the engine reads them: a list with one link at least, else bands through the middle
+		const links = Array.isArray(data.links) && data.links.length > 0 ? data.links : null;
+		const linked = links
 			? new Set(
-					data.links.flatMap((link) =>
+					links.flatMap((link) =>
 						typeof link === "object" && link !== null
 							? [(link as { from?: unknown }).from, (link as { to?: unknown }).to]
 							: [],
@@ -739,12 +741,7 @@ export function kitNotes(
 		};
 		const came = sum(data.from);
 		const went = sum(data.to);
-		if (
-			data.links === undefined &&
-			came !== null &&
-			went !== null &&
-			Math.abs(came - went) > Math.max(came, went) * 0.01
-		) {
+		if (links === null && came !== null && went !== null && Math.abs(came - went) > Math.max(came, went) * 0.01) {
 			const amount = (n: number) => new Intl.NumberFormat("en").format(n);
 			notes.push(
 				`from adds up to ${amount(came)} and to to ${amount(went)}: the page draws the ${amount(Math.abs(came - went))} between them as a quiet band, ${came > went ? "going out" : "coming in"} (words.rest, "Not accounted for"). Give the end it is, such as what was kept, so the two sides add up.`,

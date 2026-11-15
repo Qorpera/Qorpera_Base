@@ -477,8 +477,10 @@ body{margin:0}
 			state = b.state;
 			const ends = b.kind === "link" ? [m.from.find((n) => n.id === b.from).name, m.to.find((n) => n.id === b.to).name] : [b.name];
 			what.push(h("b", null, null, ends.join(" → ")));
-			const whole = b.kind === "to" ? sumOf(m.to) : sumOf(m.from);
-			if (value !== null && whole.value) what.push(h("span", null, null, f.share(value / whole.value)));
+			// a share of all the side's bands, the one for what is not accounted for too, so a side's shares add up
+			const side = b.kind === "to" ? m.to : m.from;
+			const whole = side.every((n) => n.value !== null) ? side.reduce((sum, n) => sum + n.value, 0) : 0;
+			if (value !== null && whole) what.push(h("span", null, null, f.share(value / whole)));
 		} else if (m.headline) {
 			value = m.headline.value;
 			state = m.headline.state;

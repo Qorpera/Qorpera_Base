@@ -423,21 +423,28 @@ body{margin:0}
 		const base = Math.max(6, Math.min(11, T * 0.34));
 		// Marks that would touch never lie on each other: a later one takes an orbit of its own, a step further in from
 		// the track for each one it would touch, with room for a picked mark (drawn half as large again) beside it. The
-		// steps shrink, never below two marks' width, where many share a few days.
+		// orbits stay clear of the middle (as many as fit between the track and it); where they are all taken, the mark
+		// moves along the ring, a step at a time, until one is free.
 		const turn = Math.PI * 2;
 		const apart = (x, y) => Math.min(Math.abs(x - y), turn - Math.abs(x - y));
-		const angles = new Map(m.items.map((i, idx) => [idx, ang(i.from + 0.5)]).filter(([idx]) => m.items[idx].kind === "mark"));
-		const orbits = new Map();
+		const step = Math.max(base * 2 + 2, Math.min(base * 2.9 + 4, (R - rin * 0.78) / 2));
+		const deepest = Math.max(0, Math.floor((R - rin * 0.78) / step));
+		const placed = new Map();
 		const taken = [];
-		let step = base * 2.9 + 4;
-		for (const [idx, a] of angles) {
-			let o = 0;
-			while (taken.some((p) => p.o === o && apart(p.a, a) * R < step)) o++;
-			taken.push({ a, o });
-			orbits.set(idx, o);
-		}
-		const deepest = Math.max(0, ...orbits.values());
-		if (deepest > 0) step = Math.max(base * 2 + 2, Math.min(step, (R - rin * 0.7) / deepest));
+		m.items.forEach((i, idx) => {
+			if (i.kind !== "mark") return;
+			let a = ang(i.from + 0.5);
+			for (let tries = 0; tries < 400; tries++) {
+				const free = [...Array(deepest + 1).keys()].find((o) => !taken.some((p) => p.o === o && apart(p.a, a) * (R - o * step) < step));
+				if (free !== undefined) {
+					taken.push({ a, o: free });
+					placed.set(idx, { a, r: R - free * step });
+					return;
+				}
+				a = (a + step / R) % turn;
+			}
+			placed.set(idx, { a, r: R });
+		});
 		const spots = [];
 		m.items.forEach((i, idx) => {
 			const g = s("g", { class: "rk-item" });
@@ -461,8 +468,7 @@ body{margin:0}
 				}
 				wedges.append(g);
 			} else {
-				const a = angles.get(idx);
-				const r = R - (orbits.get(idx) || 0) * step;
+				const { a, r } = placed.get(idx);
 				const cx = c + r * Math.sin(a);
 				const cy = c - r * Math.cos(a);
 				spots.push({ idx, x: cx - c, y: cy - c });
@@ -497,7 +503,7 @@ body{margin:0}
 		stage.replaceChildren(svg, ui.mid);
 		ui.svg = svg;
 		ui.els = els;
-		ui.geo = { c, R, rin, rout, outer, days, T, ang, spots };
+		ui.geo = { c, R, rin, rout, outer, days, T, ang, spots, step };
 		paint();
 	}
 
@@ -577,10 +583,19 @@ body{margin:0}
 		let a = Math.atan2(x, -y);
 		if (a < 0) a += Math.PI * 2;
 		const k = (a / (Math.PI * 2)) * g.days;
-		// of the marks near the pointer's angle, the one nearest to it, so a mark on an orbit of its own is found too
-		const near = Math.max(g.days / 40, 0.6);
+		// a mark under the pointer, wherever it was drawn; else of the marks near the pointer's angle, the nearest to it
 		let best = null;
-		let gap = Infinity;
+		let gap = g.step * 0.75;
+		for (const spot of g.spots) {
+			const off = Math.hypot(spot.x - x, spot.y - y);
+			if (off < gap) {
+				gap = off;
+				best = spot.idx;
+			}
+		}
+		if (best !== null) return best;
+		gap = Infinity;
+		const near = Math.max(g.days / 40, 0.6);
 		for (const spot of g.spots) {
 			let d = Math.abs(m.items[spot.idx].from + 0.5 - k);
 			d = Math.min(d, g.days - d);
