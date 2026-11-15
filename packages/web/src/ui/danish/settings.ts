@@ -663,4 +663,22 @@ export const SETTINGS: Record<string, string> = {
 	"Remove logo": "Fjern logo",
 	"The logo could not be removed.": "Logoet kunne ikke fjernes.",
 	"The logo could not be saved.": "Logoet kunne ikke gemmes.",
+
+	// A company's website, live, with its numbers (app/views/site-view.ts; company views step 4)
+	"Open it in a new tab": "Åbn den i en ny fane",
+	"Open in a new tab": "Åbn i en ny fane",
+	"people here now": "personer her nu",
+	"person here now": "person her nu",
+	"{count} visits today": "{count} besøg i dag",
+	"1 visit today": "1 besøg i dag",
+	"No visits yet today": "Ingen besøg endnu i dag",
+	"Last 24 hours": "Seneste døgn",
+	"Visits, last 24 hours: {count}": "Besøg det seneste døgn: {count}",
+	"Front page": "Forside",
+	"Show {page}": "Vis {page}",
+	"This website isn't live any more.": "Hjemmesiden er ikke live længere.",
+	"This website can't be shown here right now.": "Hjemmesiden kan ikke vises her lige nu.",
+	"This website was taken offline.": "Hjemmesiden er taget offline.",
+	"This website isn't live yet.": "Hjemmesiden er ikke live endnu.",
+	"Try again in a moment.": "Prøv igen om et øjeblik.",
 };

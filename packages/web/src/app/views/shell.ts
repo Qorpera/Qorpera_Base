@@ -37,6 +37,7 @@ import {
 	type SidebarOwnChanges,
 	type SidebarRequest,
 } from "../../cloud/sidebar.ts";
+import type { CompanySite } from "../../cloud/sites.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
@@ -63,7 +64,7 @@ import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
-import { appHash, conceptsHash, type Route } from "../router.ts";
+import { appHash, conceptsHash, type Route, siteHash } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
@@ -373,6 +374,11 @@ interface RailParts {
 	 * pressed again (Jonas, 5 Nov 2026; it replaced the Agents | Interfaces tabs). */
 	readonly apps: HTMLButtonElement;
 	readonly appsDrawer: HTMLElement;
+	/** The company's owed views, one row above everything else in the drawer (company views step 4): its websites, then
+	 * its products, money and ads apps where they exist. The member's arrangement does not reach them. */
+	readonly appsOwed: HTMLElement;
+	/** The owed row's tiles by key, each with the model it was drawn from. */
+	owedRows: Map<string, { shown: string; element: HTMLElement }>;
 	readonly appsGrid: HTMLElement;
 	appsOpen: boolean;
 	/** The route the drawer was last opened for: an interface's page opens it once. */
@@ -649,16 +655,19 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			h("span", { class: "rail-apps-dot", "aria-hidden": "true" }),
 		);
 		const appsGrid = h("div", { class: "rail-apps-grid" });
+		const appsOwed = h("div", { class: "rail-apps-owed", hidden: true });
 		const appsDrawer = h(
 			"div",
 			{ class: "rail-apps-drawer", id: "rail-apps-drawer", role: "group" },
-			h("div", null, appsGrid),
+			h("div", null, appsOwed, appsGrid),
 		);
 		const created: RailParts = {
 			company: companyButton,
 			companyName,
 			apps,
 			appsDrawer,
+			appsOwed,
+			owedRows: new Map(),
 			appsGrid,
 			appsOpen: storedAppsOpen(company.profile.profileId),
 			appsRoute: "",
@@ -1220,20 +1229,36 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages. The
 	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
 	// While What's new shows, an agent's own app of that name stays out: two pages of one name (own code storage step 4).
+	// The company's owed views stand first, in a row of their own (company views step 4): out of the rest.
+	const owed = owedViews(state.siteList ?? [], state.apps ?? []);
 	const postedApps = (state.apps ?? []).filter(
-		(app) => app.manifest?.posted === true && !app.manifest.concept && !(state.whatsNew && app.name === "whats-new"),
+		(app) =>
+			app.manifest?.posted === true &&
+			!app.manifest.concept &&
+			!(state.whatsNew && app.name === "whats-new") &&
+			!owed.apps.includes(app),
 	);
 	const concepts = companyConcepts(state.apps ?? []).length;
 	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
 	const sites = state.siteCount ?? 0;
 	const hasApps =
-		interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0 || sites > 0 || state.whatsNew !== undefined;
+		interfacesShown.length > 0 ||
+		postedApps.length > 0 ||
+		concepts > 0 ||
+		sites > 0 ||
+		state.whatsNew !== undefined ||
+		owed.websites.length > 0 ||
+		owed.apps.length > 0;
 	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
 		if (
-			(section === "interface" || section === "app" || section === "sites" || section === "whats-new") &&
+			(section === "interface" ||
+				section === "app" ||
+				section === "sites" ||
+				section === "whats-new" ||
+				section === "site") &&
 			!parts.appsOpen
 		)
 			setAppsOpen(parts, profileId, true);
@@ -1277,6 +1302,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	else parts.add.removeAttribute("aria-current");
 
 	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
+	drawOwed(parts, company, owed, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1793,9 +1819,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 
 /** The rail place an entry stands for (app/presence-place.ts): its agent, its group chat, or its page or app. */
 function placeOf(element: HTMLElement): string | undefined {
-	const { agentId, cofounderId, roomId, appKey } = element.dataset;
+	const { agentId, cofounderId, roomId, appKey, owedPlace } = element.dataset;
 	if (agentId || cofounderId) return `agent:${(agentId ?? cofounderId)!.toLowerCase()}`;
 	if (roomId) return `room:${roomId.toLowerCase()}`;
+	if (owedPlace) return owedPlace;
 	if (!appKey) return undefined;
 	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "sites" || appKey === "whats-new"
 		? appKey
@@ -1810,11 +1837,12 @@ function paintPresence(container: HTMLElement, parts: RailParts, company: Compan
 	const places = company.peopleByPlace();
 	const inApps = new Map<string, { userId: string; name: string }>();
 	for (const element of container.querySelectorAll<HTMLElement>(
-		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key]",
+		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key], [data-owed-place]",
 	)) {
 		const place = placeOf(element);
 		const people = (place && places.get(place)) || [];
-		if (element.dataset.appKey) for (const person of people) inApps.set(person.userId, person);
+		if (element.dataset.appKey || element.dataset.owedPlace)
+			for (const person of people) inApps.set(person.userId, person);
 		paintHere(element, people);
 	}
 	paintHere(parts.apps, parts.appsOpen ? [] : [...inApps.values()]);
@@ -1861,6 +1889,82 @@ function setAppsOpen(parts: RailParts, profileId: string, open: boolean): void {
 	} catch {
 		/* The choice lasts this view. */
 	}
+}
+
+/** The apps that are owed views, at their fixed folders (company views step 4, DESIGN-4.md: `apps/products`,
+ * `apps/money`, `apps/ads`), in this order. The folder name is never shown; the app's own name is. */
+export const OWED_APPS = ["products", "money", "ads"] as const;
+
+/** What the owed row shows: each live website, then each owed app that is made (its app.toml read), whether or not it
+ * is posted: a view that is not made yet shows nothing. A concept is never one. */
+export function owedViews(
+	sites: readonly CompanySite[],
+	apps: readonly CompanyApp[],
+): { websites: readonly CompanySite[]; apps: readonly CompanyApp[] } {
+	return {
+		websites: sites.filter((site) => site.kind === "files" && site.state === "live"),
+		apps: OWED_APPS.flatMap((name) => {
+			const app = apps.find((entry) => entry.name === name);
+			return app?.manifest && !app.manifest.concept ? [app] : [];
+		}),
+	};
+}
+
+/** The owed row: one tile a website (its globe, its title), leading to the site's view, then the owed apps, each as the
+ * drawer draws an agent's app. Not dragged, not grouped, no menu: the platform puts them there. A tile is rebuilt only
+ * when what it shows changes. */
+function drawOwed(
+	parts: RailParts,
+	company: CompanyController,
+	owed: { websites: readonly CompanySite[]; apps: readonly CompanyApp[] },
+	route: Route,
+): void {
+	const profileId = company.profile.profileId;
+	const rows = new Map<string, { shown: string; element: HTMLElement }>();
+	const lit = (element: HTMLElement, on: boolean) => {
+		element.classList.toggle("active", on);
+		if (on) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+	};
+	const elements: HTMLElement[] = [];
+	for (const site of owed.websites) {
+		const key = `site:${site.slug}`;
+		const name = site.title ?? site.slug;
+		const model = JSON.stringify([site.slug, name]);
+		const kept = parts.owedRows.get(key);
+		const element = kept?.shown === model ? kept.element : websiteIcon(name, siteHash(profileId, site.slug));
+		rows.set(key, { shown: model, element });
+		element.dataset.owedPlace = key;
+		element.style.setProperty("--app-colour", colourHex("blue")!);
+		lit(element, route.name === "company" && route.section === "site" && route.id === site.slug);
+		elements.push(element);
+	}
+	// An owed app in its own colour and emblem; what else shows the app (its card in a message) draws it the same way.
+	const looks = new Map(parts.appLooks);
+	for (const app of owed.apps) {
+		const manifest = app.manifest!;
+		const key = `app:${app.name}`;
+		const colour = colourHex(manifest.colour ?? undefined);
+		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem]);
+		const kept = parts.owedRows.get(key);
+		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
+		rows.set(key, { shown: model, element });
+		element.dataset.owedPlace = key;
+		if (colour) element.style.setProperty("--app-colour", colour);
+		else element.style.removeProperty("--app-colour");
+		lit(element, route.name === "company" && route.section === "app" && route.id === app.name);
+		looks.set(app.name, {
+			key: JSON.stringify([manifest.emblem, colour ?? ""]),
+			colour,
+			emblem: () => interfaceEmblem(manifest.emblem, 34),
+		});
+		elements.push(element);
+	}
+	parts.appLooks = looks;
+	parts.owedRows = rows;
+	for (const [index, element] of elements.entries()) element.style.setProperty("--i", String(index));
+	reconcile(parts.appsOwed, elements);
+	parts.appsOwed.hidden = elements.length === 0;
 }
 
 /** The drawer under the top row: the pages that are on (Mailbox, Members, Bank and the agents' pages) as icons,
@@ -2399,6 +2503,16 @@ function sitesIcon(href: string): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
 		h("span", { class: "rail-app-name" }, t("Sites")),
+	);
+}
+
+/** A website in the owed row: the Sites globe with the site's title under it, a link to the site's own view. */
+function websiteIcon(name: string, href: string): HTMLElement {
+	return h(
+		"a",
+		{ class: "rail-app rail-website", href, draggable: "false" },
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
+		h("span", { class: "rail-app-name" }, name),
 	);
 }
 

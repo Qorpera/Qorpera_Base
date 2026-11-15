@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
 import { parseAppIcon } from "@qorpera/cloud-client/app-icons";
+import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
 import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import type { CompanyAppIcon } from "../src/app/interface-apps.ts";
+import type { CompanyApp, CompanyAppIcon } from "../src/app/interface-apps.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
@@ -18,6 +19,7 @@ import {
 	parseMemberAppLayout,
 } from "../src/cloud/app-groups.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { CompanySite } from "../src/cloud/sites.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
@@ -417,6 +419,147 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		controller.store.set({ whatsNew: undefined });
 		draw();
 		expect(entry()).toBeNull();
+	});
+
+	describe("the company's owed views, first in the drawer (company views step 4)", () => {
+		const website = (
+			n: number,
+			slug: string,
+			title: string | null,
+			extra: Partial<CompanySite> = {},
+		): CompanySite => ({
+			id: id(n),
+			slug,
+			title,
+			kind: "files",
+			url: `https://${slug}.qorpera.com/`,
+			state: "live",
+			source: "site",
+			files: 3,
+			bytes: 100,
+			publishedAt: timestamp,
+			publishedBy: null,
+			createdAt: timestamp,
+			passwordChangedAt: timestamp,
+			machine: null,
+			port: null,
+			...extra,
+		});
+		const app = (name: string, title: string, extra: Partial<AppManifest> = {}): CompanyApp => ({
+			name,
+			path: `apps/${name}`,
+			manifest: {
+				name: title,
+				about: null,
+				emblem: "page",
+				colour: null,
+				entry: "index.html",
+				owner: ada.id,
+				posted: true,
+				reads: [],
+				writes: [],
+				concept: false,
+				cover: null,
+				kit: null,
+				...extra,
+			},
+			problems: [],
+			version: null,
+		});
+		const owedRow = (element: HTMLElement) => element.querySelector<HTMLElement>(".rail-apps-owed")!;
+		const owedIcons = (element: HTMLElement) =>
+			[...owedRow(element).querySelectorAll<HTMLAnchorElement>("a.rail-app")].map((icon) => [
+				icon.querySelector(".rail-app-name")?.textContent,
+				icon.getAttribute("data-href"),
+			]);
+		const gridIcons = (element: HTMLElement) =>
+			[...element.querySelectorAll<HTMLAnchorElement>(".rail-apps-grid a.rail-app")].map(
+				(icon) => icon.querySelector(".rail-app-name")?.textContent,
+			);
+
+		it("puts each live website first, in a row of its own, leading to the site's own view", () => {
+			const { element, draw, controller } = rail(home);
+			expect(owedRow(element).hidden).toBe(true);
+			controller.store.set({
+				siteCount: 4,
+				siteList: [
+					website(81, "wristband-shop", "Wristband shop"),
+					website(82, "launch-page", null),
+					// Not live yet, or an app link: no owed view.
+					website(83, "draft-page", "Draft", { state: "publishing", publishedAt: null }),
+					website(84, "saml-shop", "SAML shop", {
+						kind: "app",
+						url: "https://saml-shop-preview.qorpera.com/",
+						port: 3000,
+					}),
+				],
+			});
+			draw();
+			expect(owedRow(element).hidden).toBe(false);
+			expect(owedIcons(element)).toEqual([
+				["Wristband shop", `#/c/${profileA.profileId}/site/wristband-shop`],
+				["launch-page", `#/c/${profileA.profileId}/site/launch-page`],
+			]);
+			// The row stands above the member's own arrangement, which keeps the rest: Sites among them.
+			expect(owedRow(element).nextElementSibling?.classList.contains("rail-apps-grid")).toBe(true);
+			expect(gridIcons(element)).toEqual(["Members", "Sites"]);
+			// Its tiles are the platform's: no key the member drags or groups by, but the place other members are seen in.
+			const shopTile = owedRow(element).querySelector<HTMLElement>(".rail-website")!;
+			expect(shopTile.dataset.appKey).toBeUndefined();
+			expect(shopTile.dataset.owedPlace).toBe("site:wristband-shop");
+			expect(shopTile.style.getPropertyValue("--app-colour")).toBe(colourNameHex("blue"));
+			// Its view lights it, and opens the drawer.
+			draw({ name: "company", profileId: profileA.profileId, section: "site", id: "wristband-shop" });
+			expect(shopTile.getAttribute("aria-current")).toBe("page");
+			expect(drawer(element).classList.contains("is-open")).toBe(true);
+			// Read again unchanged, a tile stays the same element.
+			controller.store.set({ siteList: [...controller.store.get().siteList!] });
+			draw();
+			expect(owedRow(element).querySelector(".rail-website")).toBe(shopTile);
+		});
+
+		it("then the products, money and ads apps where they are made, in that order and out of the rest", () => {
+			const { element, draw, controller } = rail(home);
+			controller.store.set({
+				apps: [
+					app("ads", "Ads", { emblem: "chart", colour: "orange" }),
+					app("trips", "Trips"),
+					// Made but not posted: an owed view all the same.
+					app("money", "Our money", { posted: false, emblem: "coin" }),
+				],
+				siteList: [website(81, "wristband-shop", "Wristband shop")],
+			});
+			draw();
+			expect(owedIcons(element)).toEqual([
+				["Wristband shop", `#/c/${profileA.profileId}/site/wristband-shop`],
+				["Our money", `#/c/${profileA.profileId}/a/money`],
+				["Ads", `#/c/${profileA.profileId}/a/ads`],
+			]);
+			// Products is not made yet: nothing stands for it. The rest keeps the member's arrangement.
+			expect(gridIcons(element)).toEqual(["Members", "Trips"]);
+			const ads = owedRow(element).querySelector<HTMLElement>("[data-owed-place='app:ads']")!;
+			expect(ads.style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
+			draw({ name: "company", profileId: profileA.profileId, section: "app", id: "money" });
+			expect(owedRow(element).querySelector("[data-owed-place='app:money']")?.getAttribute("aria-current")).toBe(
+				"page",
+			);
+			// A concept at an owed folder is a concept, not a view.
+			controller.store.set({ apps: [app("products", "Shoes", { concept: true })], siteList: [] });
+			draw();
+			expect(owedRow(element).hidden).toBe(true);
+		});
+
+		it("shows the four windows for an owed view alone", () => {
+			const { element, draw, controller } = rail(home);
+			controller.store.set({ interfacePages: pages(false, false) });
+			draw();
+			expect(apps(element).hidden).toBe(true);
+			controller.store.set({ apps: [app("products", "Shoes", { posted: false })] });
+			draw();
+			expect(apps(element).hidden).toBe(false);
+			expect(owedIcons(element)).toEqual([["Shoes", `#/c/${profileA.profileId}/a/products`]]);
+			expect(gridIcons(element)).toEqual([]);
+		});
 	});
 
 	it("shows the four windows for What's new alone, and leaves out an agent's app of the same name while it shows", () => {

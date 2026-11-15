@@ -13,8 +13,8 @@
  *   either: the page's own are taken out before it is handed over (framePage). A hint the page's script adds while
  *   it runs still reaches the network: nothing in a page can stop the browser acting on it. What it can carry out is
  *   what the frame holds: the page itself and what the member types into it, nothing of the app;
- * - this app's own policy (default-src 'self', so frame-src 'self') keeps the frame on this site, and every page of
- *   this site but the frame document refuses to be framed (frame-ancestors 'none').
+ * - this app's own policy (frame-src 'self' and the company websites' hosts, which the frame never is) keeps the frame
+ *   on this site, and every page of this site but the frame document refuses to be framed (frame-ancestors 'none').
  * The app's policy also governs a srcdoc or blob: frame, whose inline styles and scripts it would block: that is why
  * the frame is a document of its own. Proven in Chromium with the site's headers by scripts/test-web-page-frame-browser.mjs. */
 

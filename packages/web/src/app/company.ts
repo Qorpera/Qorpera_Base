@@ -55,6 +55,7 @@ import {
 	SectionsChangeRefusal,
 	sectionsChange,
 } from "../cloud/sidebar-sections-file.ts";
+import type { CompanySite } from "../cloud/sites.ts";
 import { isErased, projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -292,6 +293,9 @@ export interface CompanyState {
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
+	/** The company's sites as last read, with `siteCount`: each live website is an owed view, first in the apps drawer,
+	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
+	siteList?: readonly CompanySite[];
 	/** What's new (app/views/whats-new.ts): set while one of the company's projects makes a website, with how many of its
 	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
 	 * is set. Unset until read, and on a cloud without it. */

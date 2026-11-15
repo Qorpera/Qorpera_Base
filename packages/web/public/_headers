@@ -3,7 +3,7 @@
 # configuration compiled into the client. Inline styles are
 # not used (element.style is CSSOM and is not governed by style-src).
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' __QORPERA_WEB_CONNECT_SRC__; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' __QORPERA_WEB_CONNECT_SRC__; frame-src 'self' https://*.qorpera.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY
@@ -11,6 +11,11 @@
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   Cache-Control: public, max-age=0, must-revalidate
 # The app itself may use the microphone, for the composer's speech to text (src/ui/dictation.ts).
+# A company's website shows in a frame on its own host, <slug>.qorpera.com (company views step 4,
+# src/app/views/site-view.ts): frame-src lets the app frame a qorpera.com host (a policy can name no narrower set of
+# names than one wildcard label; the frame's every navigation is checked against it), and each site says itself who may
+# frame it (frame-ancestors on its own host: this app's origins only). The app posts nothing there itself: the door
+# below does.
 # The frame an HTML page from the Company File runs in (src/ui/page-frame.ts): sandboxed with no origin, so the page
 # reaches none of this site's cookies, storage or sign-in; its own inline styles and scripts run, nothing loads from
 # the network, and only this site may frame it. Every other page here refuses to be framed.
@@ -21,6 +26,18 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
   Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN
+# The site door (src/app/views/site-view.ts): the frame a website opens in loads it first, and it posts a member's pass
+# to the site's own host. The site's host takes the pass only with this site's exact Origin, and the app sends no
+# referrer, under which a form's Origin is null: so this page alone sends its origin (strict-origin: never a path), may
+# post only to the one path of a site's host that takes a pass, runs only its own script, and only this site frames it.
+# Pages applies /* first: its policy, framing refusal and referrer policy are taken off before these.
+/site-door/*
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  ! Referrer-Policy
+  Content-Security-Policy: default-src 'none'; script-src 'self'; base-uri 'none'; form-action https://*.qorpera.com/__qorpera/member; frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=86400
