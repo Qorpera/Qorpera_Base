@@ -21,6 +21,7 @@ import {
 	MAX_CODE_CHECKS_FILE_BYTES,
 	readCodeChecks,
 } from "../src/code-checks.ts";
+import { CODE_CHECKS_DRILL, CODE_DRILL_WORDS } from "../src/code-site.ts";
 
 // Characters written by their code, so that none of them sits in this file as itself.
 const char = (code: number) => String.fromCodePoint(code);
@@ -323,7 +324,7 @@ describe("the site key (own code storage, step 4)", () => {
 		for (const site of [null, "dist", ["dist"], 1, true])
 			expect(problems(withSite(site))).toEqual(["WRONG_TYPE /site"]);
 		expect(problems(withSite({}))).toEqual(["MISSING_KEY /site"]);
-		expect(problems(withSite({ name: "shop" }))).toEqual(["MISSING_KEY /site"]);
+		expect(problems(withSite({ name: "look-shop" }))).toEqual(["MISSING_KEY /site"]);
 		expect(problems(withSite({ folder: "dist", path: "x" }))).toEqual(["UNKNOWN_KEY /site/path"]);
 		const refused = withSite({ folder: "dist", "a/b": 1 });
 		expect(refused.state === "refused" && refused.problems).toEqual([
@@ -382,8 +383,36 @@ describe("the site key (own code storage, step 4)", () => {
 			"realtime",
 			"site",
 			"sites",
+			// Step 5's name rule (D20): two hyphens in a row, a -preview ending, qorpera, the wider reserved list.
+			"a--b",
+			"gift--message",
+			"gift-preview",
+			"qorpera-gift",
+			"shop",
+			"docs",
+			"edge",
 		])
 			expect(problems(withSite({ folder: "dist", name }))).toEqual(["INVALID_VALUE /site/name"]);
+	});
+
+	it("says the name rule, and which part a name breaks, whole in the refusal the session reads (step 5)", () => {
+		const rule =
+			"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login)";
+		for (const [name, broken] of [
+			["Gift", ""],
+			["gift--message", " This one has two hyphens in a row."],
+			["gift-preview", " This one ends in -preview."],
+			["qorpera-gift", " This one contains qorpera."],
+			["shop", " This one is a reserved name."],
+		] as const) {
+			const refused = withSite({ folder: "dist", name });
+			const message = `${rule}.${broken} Pick another, or leave name out.`;
+			expect(refused.state === "refused" && refused.problems).toEqual([
+				{ at: "/site/name", code: "INVALID_VALUE", message },
+			]);
+			// The words of the refused turn show it whole, without its last full stop.
+			expect(codeChecksRefusedSummary(refused, false)).toBe(notRead(`/site/name: ${message.replace(/\.$/, "")}`));
+		}
 	});
 
 	it("takes a title of 1 to 120 characters on one line, and refuses one with a space at either end as SITE_TITLE", () => {
@@ -423,13 +452,13 @@ describe("the site key (own code storage, step 4)", () => {
 
 	it("gives the gate the candidate's recipe, never main's", () => {
 		const main = withChecks(CHECK, { site: { folder: "old" } });
-		const candidate = withChecks(CHECK, { site: { folder: "dist", name: "shop" } });
+		const candidate = withChecks(CHECK, { site: { folder: "dist", name: "look-shop" } });
 		const gate = codeChecksGate(main, candidate);
-		expect(gate.gate === "run" && gate.site).toEqual({ folder: "dist", name: "shop", title: null });
+		expect(gate.gate === "run" && gate.site).toEqual({ folder: "dist", name: "look-shop", title: null });
 		const gone = codeChecksGate(main, withChecks(CHECK));
 		expect(gone.gate === "run" && gone.site).toBeNull();
 		const first = codeChecksGate({ state: "missing" }, candidate);
-		expect(first.gate === "run" && first.site).toEqual({ folder: "dist", name: "shop", title: null });
+		expect(first.gate === "run" && first.site).toEqual({ folder: "dist", name: "look-shop", title: null });
 	});
 });
 
@@ -790,6 +819,63 @@ describe("the failed check's words", () => {
 		expect(block.length).toBeLessThan(30);
 		expect(block).toEqual(lines.slice(30 - block.length).map((line) => `    ${line}`));
 		expect(bytes(largest) + 4 + 49 + 1).toBeGreaterThan(3500);
+	});
+
+	it("starts with an operator's drill's words when given them, which take their room from the output's end (step 5)", () => {
+		const opening = `${CODE_DRILL_WORDS} `;
+		// The check drill's own failure, as the run reports it: the last check, the drill's words its output.
+		const drill = failedRun(
+			{
+				name: CODE_CHECKS_DRILL.name,
+				run: CODE_CHECKS_DRILL.run,
+				ms: 120,
+				tail: "A drill by Qorpera's operator: this check fails on purpose, once.\n",
+				log: "~/.qorpera-checks/0000000007-0001/out/3-qorpera-drill.log",
+			},
+			[
+				{ name: "install", ms: 38_012 },
+				{ name: "test", ms: 1_200 },
+			],
+		);
+		expect(codeChecksFailedSummary({ ...drill, notRun: [] }, "fast-forward", opening)).toBe(
+			[
+				`${CODE_DRILL_WORDS} Nothing went into main: the check "qorpera-drill" failed on this change. It ran \`echo "A drill by Qorpera's operator: this check fails on purpose, once."; exit 1\` and ended with exit code 1 after 0 s. The end of its output:`,
+				"",
+				"    A drill by Qorpera's operator: this check fails on purpose, once.",
+				"",
+				`Its whole output is in ~/.qorpera-checks/0000000007-0001/out/3-qorpera-drill.log on the session's machine. Checks that passed before it: install, test.${FIX}`,
+			].join("\n"),
+		);
+		// Without it, as before, byte for byte.
+		const run = failedRun({ tail: "1 failing" });
+		expect(codeChecksFailedSummary(run, "fast-forward", "")).toBe(codeChecksFailedSummary(run, "fast-forward"));
+		expect(codeChecksFailedSummary(run, "fast-forward", opening)).toBe(
+			`${opening}${codeChecksFailedSummary(run, "fast-forward")}`,
+		);
+		// With the largest of everything, still within 3,500 bytes: the output gives up more of its first lines.
+		const lines = Array.from({ length: 30 }, (_, index) => `${String(index).padStart(2, "0")} ${"x".repeat(46)}`);
+		const largest = failedRun(
+			{
+				name: "a".repeat(40),
+				run: "`".repeat(200),
+				ms: 1e15,
+				exitCode: 137,
+				tail: lines.join("\n"),
+				log: "/".repeat(10_000),
+			},
+			Array.from({ length: 19 }, (_, index) => ({
+				name: `p${String(index).padStart(2, "0")}${"q".repeat(37)}`,
+				ms: 1,
+			})),
+		);
+		const plain = codeChecksFailedSummary(largest, "merged");
+		const opened = codeChecksFailedSummary(largest, "merged", opening);
+		expect(bytes(opened)).toBeLessThanOrEqual(3500);
+		expect(opened.startsWith(`${opening}Nothing went into main: the check "`)).toBe(true);
+		expect(opened.endsWith(FIX)).toBe(true);
+		const blockOf = (words: string) => words.split("\n\n")[1]?.split("\n") ?? [];
+		expect(blockOf(opened).length).toBeLessThan(blockOf(plain).length);
+		expect(blockOf(opened)).toEqual(lines.slice(30 - blockOf(opened).length).map((line) => `    ${line}`));
 	});
 });
 
