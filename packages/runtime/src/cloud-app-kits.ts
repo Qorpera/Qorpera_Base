@@ -459,12 +459,17 @@ function ringProblem(data: Readonly<Record<string, unknown>>): string | null {
 }
 
 /** The first day of a ring's span and the day after its last, as day numbers: the span that holds `start`, or the one
- * that holds `today`, as the engine draws it (a week given no start begins on a Monday). */
-function ringSpan(data: Readonly<Record<string, unknown>>, today: Date): readonly [number, number] {
+ * that holds the data's `now`, else `today`, as the engine draws it (a week given no start begins on a Monday). */
+function ringSpan(data: Readonly<Record<string, unknown>>, clock: Date): readonly [number, number] {
 	const span = RING_SPANS.includes(data.span) ? data.span : "year";
 	const start = ringDay(data.start);
-	const y = today.getFullYear();
-	const m = today.getMonth();
+	const now = ringDay(data.now);
+	const today = now === null ? clock : new Date(now * DAY_MS + 12 * 3_600_000);
+	const local = now === null;
+	const y = local ? today.getFullYear() : today.getUTCFullYear();
+	const m = local ? today.getMonth() : today.getUTCMonth();
+	const date = local ? today.getDate() : today.getUTCDate();
+	const weekday = local ? today.getDay() : today.getUTCDay();
 	const first =
 		start !== null
 			? new Date(start * DAY_MS)
@@ -473,7 +478,7 @@ function ringSpan(data: Readonly<Record<string, unknown>>, today: Date): readonl
 						? Date.UTC(y, 0, 1)
 						: span === "month"
 							? Date.UTC(y, m, 1)
-							: Date.UTC(y, m, today.getDate() - ((today.getDay() + 6) % 7)),
+							: Date.UTC(y, m, date - ((weekday + 6) % 7)),
 				);
 	const end =
 		span === "year"
@@ -641,7 +646,8 @@ export function kitPage(
  * - More questions of the company's databases than a page keeps live: the rest show as not known.
  * - Texts longer than a kit shows: a page of a kit holds labels and short notes, and an engine cuts the rest.
  * - A ring's marks and wedges outside its span (the one that holds `start`, or `today`), which its page does not draw.
- * - A flow's side of more ends than its page draws: the smallest join one band.
+ * - A flow's side of more ends than its page draws: the smallest join one band; and through the middle, two sides that
+ *   differ by more than 1 %, whose difference the page draws as a band of its own.
  */
 export function kitNotes(
 	kit: DataKit,
@@ -693,14 +699,57 @@ export function kitNotes(
 				`${count === 1 ? "1 mark or wedge is" : `${count} marks or wedges are`} outside the ring's ${typeof data.span === "string" ? data.span : "year"}, ${date(first)} to ${date(after - 1)}: the page leaves ${count === 1 ? "it" : "them"} out. Give start, or take ${count === 1 ? "it" : "them"} away.`,
 			);
 	}
-	if (kit === "flow")
+	if (kit === "flow") {
+		// with links, only the ends a link joins are drawn (the engine leaves the others out before it joins any)
+		const linked = Array.isArray(data.links)
+			? new Set(
+					data.links.flatMap((link) =>
+						typeof link === "object" && link !== null
+							? [(link as { from?: unknown }).from, (link as { to?: unknown }).to]
+							: [],
+					),
+				)
+			: null;
 		for (const side of ["from", "to"] as const) {
 			const list = data[side];
-			const ends = Array.isArray(list) ? list.length : 0;
+			const ends = (Array.isArray(list) ? list : []).filter((end) => {
+				if (linked === null) return true;
+				const { id, name } = (typeof end === "object" && end !== null ? end : {}) as {
+					id?: unknown;
+					name?: unknown;
+				};
+				return linked.has(typeof id === "string" ? id : typeof name === "string" ? name.trim() : null);
+			}).length;
+			const shown = FLOW_BOUNDS.drawn - 1;
 			if (ends > FLOW_BOUNDS.drawn)
 				notes.push(
-					`${side} names ${ends} ends: the page draws the ${FLOW_BOUNDS.drawn - 1} largest and joins the other ${ends - FLOW_BOUNDS.drawn + 1} into one band (words.other). Fewer bands read better.`,
+					`${side} has ${ends} ends to draw: the page draws ${shown} of them (the largest, and a kept one always) and joins the other ${ends - shown} into one band (words.other). Fewer bands read better.`,
 				);
 		}
+		// through the middle both sides are the same money: what does not add up is drawn as a band of its own
+		const sum = (side: unknown): number | null => {
+			if (!Array.isArray(side)) return null;
+			let total = 0;
+			for (const end of side) {
+				const value = typeof end === "object" && end !== null ? (end as { value?: unknown }).value : undefined;
+				if (typeof value !== "number" || !Number.isFinite(value)) return null;
+				total += Math.max(0, value);
+			}
+			return total;
+		};
+		const came = sum(data.from);
+		const went = sum(data.to);
+		if (
+			data.links === undefined &&
+			came !== null &&
+			went !== null &&
+			Math.abs(came - went) > Math.max(came, went) * 0.01
+		) {
+			const amount = (n: number) => new Intl.NumberFormat("en").format(n);
+			notes.push(
+				`from adds up to ${amount(came)} and to to ${amount(went)}: the page draws the ${amount(Math.abs(came - went))} between them as a quiet band, ${came > went ? "going out" : "coming in"} (words.rest, "Not accounted for"). Give the end it is, such as what was kept, so the two sides add up.`,
+			);
+		}
+	}
 	return notes;
 }

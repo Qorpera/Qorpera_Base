@@ -604,19 +604,20 @@ band's, with its share. You write only \`flow.json\`.
 
 - \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
 - \`unit\` (8): the unit after every amount, such as \`"kr"\` or \`"people"\`.
-- \`from\`: where it comes from, 1 to 6, each \`{"id", "name" (20), "value"}\`: \`id\` letters, digits, \`-\`; \`value\` the
-  amount, 0 or more. Leave \`value\` out when nobody knows it: the band is drawn open with "?".
-- \`to\`: where it goes, 1 to 6, the same; \`"kept": true\` on what the company keeps (drawn last, in green).
+- \`from\`: where it comes from, 1 or more (24 at most), each \`{"id", "name" (20), "value"}\`: \`id\` letters, digits,
+  \`-\`; \`value\` the amount, 0 or more. Leave \`value\` out when nobody knows it: the band is drawn open with "?".
+- \`to\`: where it goes, the same; \`"kept": true\` on what the company keeps (drawn last, in green).
 - On an end: \`tone\`, one of \`"good"\`, \`"warm"\`, \`"accent"\`, \`"warn"\`, \`"bad"\`, \`"violet"\`, \`"teal"\` (default: green
   in, warm out); \`state\`: \`"assumed"\` (drawn dashed).
-- More than 6 on a side: the page keeps the largest and joins the rest into one band, \`words.other\`.
+- More than 6 on a side: 5 stay (the largest, and a kept one always) and the rest join one band, \`words.other\`.
 - \`middle\`: the name under the middle bar, such as the company's or \`"Bank"\`. Ends of \`from\` flow into it and out to
-  \`to\`; the two sides need not add up to the same.
+  \`to\`. Both sides are the same money: make them add up, with what was kept as an end of \`to\`. Where they differ by
+  more than 1 %, the page draws the difference on the short side as a quiet band, \`words.rest\`.
 - \`links\`: optional, up to 24 \`{"from": id, "to": id, "value"}\`: bands straight from an end of \`from\` to one of \`to\`,
   with no middle. The ends' amounts are then what their bands carry, and their own \`value\` is not read.
 - \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points, such as what was kept.
-- \`words\`: the page's own words in your language: \`total\` (the big number's label, "in all"), \`other\`, \`assumed\`,
-  \`unknown\`, \`empty\`.
+- \`words\`: the page's own words in your language: \`total\` (the big number's label, "in all"), \`other\`, \`rest\`
+  ("Not accounted for"), \`assumed\`, \`unknown\`, \`empty\`.
 - \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
 
 A \`value\` of an end, a link or the \`headline\` may be live from a company database: \`{"query": "<database>/<question>",
@@ -625,7 +626,8 @@ A \`value\` of an end, a link or the \`headline\` may be live from a company dat
 
 ## Rules
 
-- Every amount comes from the company's books, bank or databases, all of one span (a month, a year). Never invent one.
+- Every amount comes from the company's books, bank or databases, all of one span (a month, a year). Never invent one,
+  also not to make the sides add up: name the end the difference is.
 - Few bands: three or four on a side read best. Name each in a word or two.
 - Texts over their limit are cut with "…". No colours or sizes beyond \`tone\`: the page does that.
 - Look at it on a machine at 390 px wide too: every name should stand clear beside its band.
@@ -10701,7 +10703,7 @@ body{margin:0}
 .rk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .rk--bare{padding:clamp(12px,1vw,16px)}
 .rk--bare .rk-head{display:none}
-.rk-stage{position:relative;flex:none;outline:none;touch-action:pan-y;border-radius:50%;cursor:pointer}
+.rk-stage{position:relative;flex:none;margin:auto;outline:none;touch-action:pan-y;border-radius:50%;cursor:pointer}
 .rk-stage:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
 .rk-stage svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}
 .rk-seg{fill:color-mix(in srgb,var(--q-text) 5%,var(--q-bg))}
@@ -11004,7 +11006,9 @@ body{margin:0}
 		const W = Math.max(260, (stage.parentElement && stage.parentElement.clientWidth) || stage.clientWidth || 0);
 		const pad = ui.root ? (Number.parseFloat(getComputedStyle(ui.root).paddingLeft) || 0) * 2 : 0;
 		const inner = Math.max(260, W - pad);
-		const top = stage.getBoundingClientRect ? stage.getBoundingClientRect().top + (window.scrollY || 0) : 0;
+		// from under the title: the ring stands in the middle of the room left in the first screen
+		const head = BARE ? null : ui.root && ui.root.querySelector(".rk-head");
+		const top = head && head.getBoundingClientRect ? head.getBoundingClientRect().bottom + 22 + (window.scrollY || 0) : 0;
 		const bottom = ui.root ? Number.parseFloat(getComputedStyle(ui.root).paddingBottom) || 24 : 24;
 		const avail = (window.innerHeight || 800) - top - bottom;
 		const S = Math.round(Math.max(280, Math.min(inner, avail > 280 ? avail : inner, 820)));
@@ -11029,8 +11033,6 @@ body{margin:0}
 		const { S } = size();
 		stage.style.width = \`\${S}px\`;
 		stage.style.height = \`\${S}px\`;
-		stage.style.marginLeft = "auto";
-		stage.style.marginRight = "auto";
 		ui.width = S;
 		const f = fmt(m);
 		const c = S / 2;
@@ -11074,8 +11076,24 @@ body{margin:0}
 		const most = rose ? Math.max(...values.map(Math.abs), 1) : 1;
 		const els = [];
 		const base = Math.max(6, Math.min(11, T * 0.34));
-		let prevMark = null;
-		let shift = 1;
+		// Marks that would touch never lie on each other: a later one takes an orbit of its own, a step further in from
+		// the track for each one it would touch, with room for a picked mark (drawn half as large again) beside it. The
+		// steps shrink, never below two marks' width, where many share a few days.
+		const turn = Math.PI * 2;
+		const apart = (x, y) => Math.min(Math.abs(x - y), turn - Math.abs(x - y));
+		const angles = new Map(m.items.map((i, idx) => [idx, ang(i.from + 0.5)]).filter(([idx]) => m.items[idx].kind === "mark"));
+		const orbits = new Map();
+		const taken = [];
+		let step = base * 2.9 + 4;
+		for (const [idx, a] of angles) {
+			let o = 0;
+			while (taken.some((p) => p.o === o && apart(p.a, a) * R < step)) o++;
+			taken.push({ a, o });
+			orbits.set(idx, o);
+		}
+		const deepest = Math.max(0, ...orbits.values());
+		if (deepest > 0) step = Math.max(base * 2 + 2, Math.min(step, (R - rin * 0.7) / deepest));
+		const spots = [];
 		m.items.forEach((i, idx) => {
 			const g = s("g", { class: "rk-item" });
 			g.style.setProperty("--rk-tone", toneVar(i.tone));
@@ -11098,16 +11116,11 @@ body{margin:0}
 				}
 				wedges.append(g);
 			} else {
-				const a = ang(i.from + 0.5);
-				// marks so close they would cover each other step a little in and out of the track's middle
-				let r = R;
-				if (prevMark !== null && Math.abs(a - prevMark.a) * R < base * 2.4) {
-					r = prevMark.r === R ? R + shift * Math.min(T * 0.5, base * 1.3) : R;
-					shift = -shift;
-				}
-				prevMark = { a, r };
+				const a = angles.get(idx);
+				const r = R - (orbits.get(idx) || 0) * step;
 				const cx = c + r * Math.sin(a);
 				const cy = c - r * Math.cos(a);
+				spots.push({ idx, x: cx - c, y: cy - c });
 				const gone = i.from < m.today;
 				const toned = i.tone !== "accent";
 				g.append(s("circle", { class: \`rk-halo\`, cx: r1(cx), cy: r1(cy), r: r1(base * 2.1), opacity: 0 }));
@@ -11139,7 +11152,7 @@ body{margin:0}
 		stage.replaceChildren(svg, ui.mid);
 		ui.svg = svg;
 		ui.els = els;
-		ui.geo = { c, R, rin, rout, outer, days, T, ang };
+		ui.geo = { c, R, rin, rout, outer, days, T, ang, spots };
 		paint();
 	}
 
@@ -11219,18 +11232,19 @@ body{margin:0}
 		let a = Math.atan2(x, -y);
 		if (a < 0) a += Math.PI * 2;
 		const k = (a / (Math.PI * 2)) * g.days;
+		// of the marks near the pointer's angle, the one nearest to it, so a mark on an orbit of its own is found too
 		const near = Math.max(g.days / 40, 0.6);
 		let best = null;
 		let gap = Infinity;
-		m.items.forEach((i, idx) => {
-			if (i.kind !== "mark") return;
-			let d = Math.abs(i.from + 0.5 - k);
+		for (const spot of g.spots) {
+			let d = Math.abs(m.items[spot.idx].from + 0.5 - k);
 			d = Math.min(d, g.days - d);
-			if (d < near && d < gap) {
-				gap = d;
-				best = idx;
+			const off = Math.hypot(spot.x - x, spot.y - y);
+			if (d < near && off < gap) {
+				gap = off;
+				best = spot.idx;
 			}
-		});
+		}
 		if (best !== null) return best;
 		const inside = m.items.findIndex((i) => i.kind === "wedge" && k >= i.from && k < i.to + 1);
 		return inside >= 0 ? inside : null;
@@ -11371,6 +11385,7 @@ export const FLOW_ENGINE_JS = `// The flow kit's engine: "Where does it come fro
 	const WORDS = {
 		total: "in all",
 		other: "Other",
+		rest: "Not accounted for",
 		assumed: "assumed",
 		unknown: "not known",
 		empty: "Nothing to show yet.",
@@ -11414,6 +11429,9 @@ body{margin:0}
 .fk.picking .fk-band{fill-opacity:.09}
 .fk.picking .fk-band.on{fill-opacity:.46}
 .fk-bar{fill:var(--fk-tone)}
+.fk-band.rest{fill:var(--q-text);fill-opacity:.05;stroke:color-mix(in srgb,var(--q-text) 28%,var(--q-bg));stroke-width:1.3;stroke-dasharray:5 6}
+.fk.picking .fk-band.rest.on{fill-opacity:.12}
+.fk-lab.rest .fk-name{fill:var(--q-muted);font-weight:550}
 .fk-bar.unk{fill:var(--q-bg);stroke:color-mix(in srgb,var(--q-text) 34%,var(--q-bg));stroke-width:1.5;stroke-dasharray:4 4}
 .fk-mid{fill:var(--q-text)}
 .fk-q{font-size:17px;font-weight:600;fill:var(--q-muted);text-anchor:middle;dominant-baseline:central;cursor:pointer}
@@ -11567,6 +11585,18 @@ body{margin:0}
 			const state = STATES.includes(raw.headline.state) ? raw.headline.state : value === null ? "unknown" : "known";
 			headline = { value: state === "unknown" ? null : value, state, label: cut(raw.headline.label, MAX.label) };
 		}
+		// Through the middle, what came in and what went out are the same money. Where the agent's two sides differ by
+		// more than a rounding (1 %), the side that is short gets the difference as a quiet band of its own, in the data's
+		// own word (words.rest), so no band is drawn wider or narrower than its amount. Not while an amount is not known.
+		const known = (nodes) => (nodes.every((n) => n.value !== null) ? nodes.reduce((t, n) => t + n.value, 0) : null);
+		const came = known(left.nodes);
+		const went = known(right.nodes);
+		if (!linked && came !== null && went !== null && Math.abs(came - went) > Math.max(came, went) * 0.01) {
+			const rest = { id: "\\u0000rest", name: words.rest, tone: "other", kept: false, rest: true, value: Math.abs(came - went), state: "known" };
+			const short = came > went ? right.nodes : left.nodes;
+			const at = short.findIndex((n) => n.kept);
+			short.splice(at < 0 ? short.length : at, 0, rest);
+		}
 		const middle = !linked && raw.middle !== false && raw.middle !== null ? cut(isObj(raw.middle) ? raw.middle.name : raw.middle, MAX.name) : null;
 		const source = typeof raw.source === "string" && /^(?:https:\\/\\/|folder:)/.test(raw.source) ? raw.source : "";
 		return {
@@ -11710,7 +11740,7 @@ body{margin:0}
 		const labs = s("g", { class: "fk-labs" });
 		const els = [];
 		const bandEl = (band, d, idx, g, ends) => {
-			const p = s("path", { class: \`fk-band\${band.value === null ? " unk" : band.state === "assumed" ? " a" : ""}\`, d, "data-k": idx });
+			const p = s("path", { class: \`fk-band\${band.rest ? " rest" : band.value === null ? " unk" : band.state === "assumed" ? " a" : ""}\`, d, "data-k": idx });
 			p.style.setProperty("--fk-tone", toneVar(band.tone));
 			g.append(p);
 			(els[idx] = els[idx] || []).push(p);
@@ -11760,11 +11790,11 @@ body{margin:0}
 		// the ends' bars and their names, the names kept apart where bands are thin
 		const label = (a, x, anchor, idxs) => {
 			const n = a.n;
-			const bar_ = s("rect", { class: \`fk-bar\${n.value === null ? " unk" : ""}\`, x: r1(x), y: r1(a.y), width: bar, height: r1(a.h), rx: Math.min(4, bar / 3) });
+			const bar_ = s("rect", { class: \`fk-bar\${n.value === null || n.rest ? " unk" : ""}\`, x: r1(x), y: r1(a.y), width: bar, height: r1(a.h), rx: Math.min(4, bar / 3) });
 			bar_.style.setProperty("--fk-tone", toneVar(n.tone));
 			bars.append(bar_);
 			const share = n.value === null ? "?" : \`\${f.num(n.value)}\${m.unit ? \` \${m.unit}\` : ""}\`;
-			const g = s("g", { class: "fk-lab", "data-k": idxs[0], "data-n": n.id });
+			const g = s("g", { class: \`fk-lab\${n.rest ? " rest" : ""}\`, "data-k": idxs[0], "data-n": n.id });
 			const tx = anchor === "end" ? x - 10 : x + bar + 10;
 			// a finger's room round the name and the bar, so a thin band is as easy to pick as a wide one
 			const wide = Math.max(Array.from(n.name).length * per, share.length * per * 0.86) + bar + 18;
@@ -11841,7 +11871,9 @@ body{margin:0}
 		}
 	}
 	// What a side's ends add up to: the whole the big number shows, "?" while one end is not known.
-	function sumOf(nodes) {
+	function sumOf(all) {
+		// the band for what is not accounted for is no end of the company's own
+		const nodes = all.filter((n) => !n.rest);
 		if (nodes.some((n) => n.value === null)) return { value: null, state: "unknown" };
 		return { value: nodes.reduce((t, n) => t + n.value, 0), state: nodes.some((n) => n.state === "assumed") ? "assumed" : "known" };
 	}

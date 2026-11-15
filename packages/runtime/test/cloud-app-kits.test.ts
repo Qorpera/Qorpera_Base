@@ -1735,14 +1735,49 @@ it("tells the maker of a ring what falls outside its span, and of a flow which e
 	).toEqual([
 		"2 marks or wedges are outside the ring's week, 2026-11-09 to 2026-11-15: the page leaves them out. Give start, or take them away.",
 	]);
+	// a ring held still on a day by now is the span that holds that day, as its page draws it
+	expect(
+		kitNotes(
+			"ring",
+			{
+				span: "week",
+				now: "2026-11-11",
+				marks: [{ name: "Løn", at: "2026-11-13" }],
+				wedges: [{ name: "Jul", from: "2026-11-21" }],
+			},
+			() => true,
+			new Date(2026, 10, 16, 9),
+		),
+	).toEqual([
+		"1 mark or wedge is outside the ring's week, 2026-11-09 to 2026-11-15: the page leaves it out. Give start, or take it away.",
+	]);
 	expect(kitNotes("ring", { ...RING, span: "month", start: "2026-02-01" }, () => true, today)).toEqual([
 		"3 marks or wedges are outside the ring's month, 2026-02-01 to 2026-02-28: the page leaves them out. Give start, or take them away.",
 	]);
 	expect(kitNotes("flow", FLOW, () => true)).toEqual([]);
 	const ends = Array.from({ length: 9 }, (_, at) => ({ id: `e${at}`, name: `End ${at}`, value: at }));
 	expect(kitNotes("flow", { ...FLOW, to: ends }, () => true)).toEqual([
-		"to names 9 ends: the page draws the 5 largest and joins the other 4 into one band (words.other). Fewer bands read better.",
+		"to has 9 ends to draw: the page draws 5 of them (the largest, and a kept one always) and joins the other 4 into one band (words.other). Fewer bands read better.",
 	]);
+	// with links, only the ends a link joins are drawn, so only they count
+	const linked = {
+		from: [{ id: "a", name: "A" }],
+		to: ends,
+		links: ends.slice(0, 6).map((end) => ({ from: "a", to: end.id, value: 1 })),
+	};
+	expect(kitNotes("flow", linked, () => true)).toEqual([]);
+	// Through the middle both sides are the same money: a difference past a rounding is drawn as a band of its own, and
+	// its maker is told. Not while an amount is live, which is not known at the save.
+	const sides = (came: number, went: number) => ({
+		from: [{ id: "shop", name: "Shop", value: came }],
+		to: [{ id: "parts", name: "Parts", value: went }],
+	});
+	expect(kitNotes("flow", sides(240000, 215000), () => true)).toEqual([
+		'from adds up to 240,000 and to to 215,000: the page draws the 25,000 between them as a quiet band, going out (words.rest, "Not accounted for"). Give the end it is, such as what was kept, so the two sides add up.',
+	]);
+	expect(kitNotes("flow", sides(200000, 240000), () => true)[0]).toContain("as a quiet band, coming in");
+	expect(kitNotes("flow", sides(241000, 240000), () => true)).toEqual([]);
+	expect(kitNotes("flow", FLOW, () => true)).toEqual([]);
 });
 
 it("makes a ring and a flow, and gives their pages the company's databases their data names", async () => {

@@ -16,6 +16,7 @@
 	const WORDS = {
 		total: "in all",
 		other: "Other",
+		rest: "Not accounted for",
 		assumed: "assumed",
 		unknown: "not known",
 		empty: "Nothing to show yet.",
@@ -59,6 +60,9 @@ body{margin:0}
 .fk.picking .fk-band{fill-opacity:.09}
 .fk.picking .fk-band.on{fill-opacity:.46}
 .fk-bar{fill:var(--fk-tone)}
+.fk-band.rest{fill:var(--q-text);fill-opacity:.05;stroke:color-mix(in srgb,var(--q-text) 28%,var(--q-bg));stroke-width:1.3;stroke-dasharray:5 6}
+.fk.picking .fk-band.rest.on{fill-opacity:.12}
+.fk-lab.rest .fk-name{fill:var(--q-muted);font-weight:550}
 .fk-bar.unk{fill:var(--q-bg);stroke:color-mix(in srgb,var(--q-text) 34%,var(--q-bg));stroke-width:1.5;stroke-dasharray:4 4}
 .fk-mid{fill:var(--q-text)}
 .fk-q{font-size:17px;font-weight:600;fill:var(--q-muted);text-anchor:middle;dominant-baseline:central;cursor:pointer}
@@ -212,6 +216,18 @@ body{margin:0}
 			const state = STATES.includes(raw.headline.state) ? raw.headline.state : value === null ? "unknown" : "known";
 			headline = { value: state === "unknown" ? null : value, state, label: cut(raw.headline.label, MAX.label) };
 		}
+		// Through the middle, what came in and what went out are the same money. Where the agent's two sides differ by
+		// more than a rounding (1 %), the side that is short gets the difference as a quiet band of its own, in the data's
+		// own word (words.rest), so no band is drawn wider or narrower than its amount. Not while an amount is not known.
+		const known = (nodes) => (nodes.every((n) => n.value !== null) ? nodes.reduce((t, n) => t + n.value, 0) : null);
+		const came = known(left.nodes);
+		const went = known(right.nodes);
+		if (!linked && came !== null && went !== null && Math.abs(came - went) > Math.max(came, went) * 0.01) {
+			const rest = { id: "\u0000rest", name: words.rest, tone: "other", kept: false, rest: true, value: Math.abs(came - went), state: "known" };
+			const short = came > went ? right.nodes : left.nodes;
+			const at = short.findIndex((n) => n.kept);
+			short.splice(at < 0 ? short.length : at, 0, rest);
+		}
 		const middle = !linked && raw.middle !== false && raw.middle !== null ? cut(isObj(raw.middle) ? raw.middle.name : raw.middle, MAX.name) : null;
 		const source = typeof raw.source === "string" && /^(?:https:\/\/|folder:)/.test(raw.source) ? raw.source : "";
 		return {
@@ -355,7 +371,7 @@ body{margin:0}
 		const labs = s("g", { class: "fk-labs" });
 		const els = [];
 		const bandEl = (band, d, idx, g, ends) => {
-			const p = s("path", { class: `fk-band${band.value === null ? " unk" : band.state === "assumed" ? " a" : ""}`, d, "data-k": idx });
+			const p = s("path", { class: `fk-band${band.rest ? " rest" : band.value === null ? " unk" : band.state === "assumed" ? " a" : ""}`, d, "data-k": idx });
 			p.style.setProperty("--fk-tone", toneVar(band.tone));
 			g.append(p);
 			(els[idx] = els[idx] || []).push(p);
@@ -405,11 +421,11 @@ body{margin:0}
 		// the ends' bars and their names, the names kept apart where bands are thin
 		const label = (a, x, anchor, idxs) => {
 			const n = a.n;
-			const bar_ = s("rect", { class: `fk-bar${n.value === null ? " unk" : ""}`, x: r1(x), y: r1(a.y), width: bar, height: r1(a.h), rx: Math.min(4, bar / 3) });
+			const bar_ = s("rect", { class: `fk-bar${n.value === null || n.rest ? " unk" : ""}`, x: r1(x), y: r1(a.y), width: bar, height: r1(a.h), rx: Math.min(4, bar / 3) });
 			bar_.style.setProperty("--fk-tone", toneVar(n.tone));
 			bars.append(bar_);
 			const share = n.value === null ? "?" : `${f.num(n.value)}${m.unit ? ` ${m.unit}` : ""}`;
-			const g = s("g", { class: "fk-lab", "data-k": idxs[0], "data-n": n.id });
+			const g = s("g", { class: `fk-lab${n.rest ? " rest" : ""}`, "data-k": idxs[0], "data-n": n.id });
 			const tx = anchor === "end" ? x - 10 : x + bar + 10;
 			// a finger's room round the name and the bar, so a thin band is as easy to pick as a wide one
 			const wide = Math.max(Array.from(n.name).length * per, share.length * per * 0.86) + bar + 18;
@@ -486,7 +502,9 @@ body{margin:0}
 		}
 	}
 	// What a side's ends add up to: the whole the big number shows, "?" while one end is not known.
-	function sumOf(nodes) {
+	function sumOf(all) {
+		// the band for what is not accounted for is no end of the company's own
+		const nodes = all.filter((n) => !n.rest);
 		if (nodes.some((n) => n.value === null)) return { value: null, state: "unknown" };
 		return { value: nodes.reduce((t, n) => t + n.value, 0), state: nodes.some((n) => n.state === "assumed") ? "assumed" : "known" };
 	}

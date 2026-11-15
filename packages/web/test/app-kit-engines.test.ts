@@ -2039,6 +2039,38 @@ describe("the ring kit's engine", () => {
 		expect(document.querySelector(".rk-tag")?.textContent).toBe("not known");
 	});
 
+	it("never draws one mark on another: a mark a day after another takes an orbit of its own", async () => {
+		const close = {
+			...year,
+			marks: [
+				{ name: "Annual report", at: "2026-05-31" },
+				{ name: "VAT return", at: "2026-06-01" },
+				{ name: "Payday", at: "2026-06-02" },
+			],
+		};
+		await open("ring", JSON.stringify(close));
+		const dots = [...document.querySelectorAll(".rk-mark")].map((dot) => ({
+			x: Number(dot.getAttribute("cx")),
+			y: Number(dot.getAttribute("cy")),
+			r: Number(dot.getAttribute("r")),
+		}));
+		expect(dots).toHaveLength(3);
+		// apart by more than two marks' width, room for a picked one drawn half as large again
+		for (const [a, b] of [
+			[0, 1],
+			[1, 2],
+			[0, 2],
+		])
+			expect(Math.hypot(dots[a].x - dots[b].x, dots[a].y - dots[b].y)).toBeGreaterThan(dots[a].r * 2.9);
+		// the pointer finds each where it lies
+		for (const [index, name] of ["Annual report", "VAT return", "Payday"].entries()) {
+			stage()?.dispatchEvent(
+				new MouseEvent("pointermove", { clientX: dots[index].x, clientY: dots[index].y, bubbles: true }),
+			);
+			expect(what()).toBe(name);
+		}
+	});
+
 	it("draws 12 marks and 8 wedges at most, and only what falls in its span", async () => {
 		const many = {
 			...year,
@@ -2098,7 +2130,7 @@ describe("the flow kit's engine", () => {
 			{ id: "parts", name: "Parts", value: 70000 },
 			{ id: "kept", name: "Kept", value: 30000, kept: true },
 			{ id: "salaries", name: "Salaries", value: 90000 },
-			{ id: "ads", name: "Ads", value: 25000 },
+			{ id: "ads", name: "Ads", value: 50000 },
 		],
 	};
 	const big = () => document.querySelector(".fk-n")?.textContent;
@@ -2122,7 +2154,9 @@ describe("the flow kit's engine", () => {
 		// what is kept stands last, under the rest
 		expect(names()).toEqual(["Web shop", "Retailers", "Parts", "Salaries", "Ads", "Kept"]);
 		expect(width(0) / width(1)).toBeCloseTo(3, 1);
-		expect(width(3) / width(4)).toBeCloseTo(90 / 25, 1);
+		expect(width(3) / width(4)).toBeCloseTo(90 / 50, 1);
+		// both sides add up: nothing is left over
+		expect(document.querySelector(".fk-band.rest")).toBeNull();
 		expect(big()).toBe("240,000");
 		expect(sub()).toBe("in all");
 	});
@@ -2135,7 +2169,7 @@ describe("the flow kit's engine", () => {
 		expect(document.querySelectorAll(".fk-band.on")).toHaveLength(1);
 		expect(document.querySelector(".fk.picking")).not.toBeNull();
 		key("End");
-		expect([big(), sub()]).toEqual(["30,000", "Kept14%"]);
+		expect([big(), sub()]).toEqual(["30,000", "Kept13%"]);
 		expect(stage()?.getAttribute("aria-valuetext")).toBe("Kept: 30,000 kr");
 		key("Escape");
 		expect(big()).toBe("240,000");
@@ -2145,6 +2179,7 @@ describe("the flow kit's engine", () => {
 	it("joins the smallest ends past six into one band, Other, and keeps what is kept", async () => {
 		const many = {
 			...money,
+			from: [{ id: "shop", name: "Web shop", value: 36500 }],
 			to: [
 				...["Parts", "Salaries", "Ads", "Tax", "Rent", "Freight", "Software", "Bank fees"].map((name, at) => ({
 					id: `t${at}`,
@@ -2155,8 +2190,8 @@ describe("the flow kit's engine", () => {
 			],
 		};
 		await open("flow", JSON.stringify(many));
-		expect(document.querySelectorAll(".fk-band")).toHaveLength(2 + 6);
-		expect(names().slice(2)).toEqual(["Parts", "Salaries", "Ads", "Tax", "Other", "Kept"]);
+		expect(document.querySelectorAll(".fk-band")).toHaveLength(1 + 6);
+		expect(names().slice(1)).toEqual(["Parts", "Salaries", "Ads", "Tax", "Other", "Kept"]);
 		// Other is the four smallest together: 4,000 + 3,000 + 2,000 + 1,000
 		key("End");
 		key("ArrowLeft");
@@ -2174,11 +2209,43 @@ describe("the flow kit's engine", () => {
 		document
 			.querySelector(".fk-lab[data-n=salaries] .fk-hit")
 			?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
-		expect([big(), sub()]).toEqual(["90,000", "Salaries42%"]);
+		expect([big(), sub()]).toEqual(["90,000", "Salaries38%"]);
 		leave("touch");
 		expect(big()).toBe("90,000");
 		leave("mouse");
 		expect(big()).toBe("240,000");
+	});
+
+	it("draws what one side lacks of the other as a quiet band of its own, in the data's word", async () => {
+		// 240,000 came in and 215,000 went out: the 25,000 between is drawn going out, before what is kept
+		await open(
+			"flow",
+			JSON.stringify({ ...money, to: money.to.map((end) => (end.id === "ads" ? { ...end, value: 25000 } : end)) }),
+		);
+		expect(names()).toEqual(["Web shop", "Retailers", "Parts", "Salaries", "Ads", "Not accounted for", "Kept"]);
+		expect(document.querySelectorAll(".fk-band.rest")).toHaveLength(1);
+		expect(document.querySelector(".fk-lab.rest .fk-amt")?.textContent).toBe("25,000 kr");
+		// it is no end of the company's own: the big number is still what came in
+		expect(big()).toBe("240,000");
+		key("End");
+		key("ArrowLeft");
+		expect([big(), sub()]).toEqual(["25,000", "Not accounted for12%"]);
+		document.body.replaceChildren();
+		// more out than in: the difference comes in, on the left, in the data's own word
+		await open(
+			"flow",
+			JSON.stringify({
+				...money,
+				words: { rest: "Unexplained" },
+				from: [{ id: "shop", name: "Web shop", value: 200000 }],
+			}),
+		);
+		expect(names().slice(0, 2)).toEqual(["Web shop", "Unexplained"]);
+		expect(document.querySelector(".fk-lab.rest .fk-amt")?.textContent).toBe("40,000 kr");
+		document.body.replaceChildren();
+		// a rounding (1 % at most) is no band
+		await open("flow", JSON.stringify({ ...money, from: [{ id: "shop", name: "Web shop", value: 241000 }] }));
+		expect(document.querySelector(".fk-band.rest")).toBeNull();
 	});
 
 	it("runs bands straight from each source to each end with links, with no middle", async () => {
