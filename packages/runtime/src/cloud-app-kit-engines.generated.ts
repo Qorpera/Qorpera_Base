@@ -270,6 +270,394 @@ part faces the viewer best, and shows its note. Never invent a value: a figure t
 \`\`\`
 `;
 
+/** The curve kit's guide for agents, as app_guide answers it. */
+export const CURVE_KIT_GUIDE = `# Curve kit: where is it going?
+
+Draws one value over time, big: money in the bank, orders a day, visitors a week. The past is a filled area under a
+solid line. What is expected is a dotted line inside a band: the wider the band, the less sure. A line marks now, a
+dashed line the safe level, and a few points carry a short mark. The value that matters stands large at the top; a
+member runs a finger or the pointer along the curve and the big number follows. You write only \`curve.json\`.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`unit\` (8): the unit after the big number, such as \`"kr"\` or \`"orders"\`.
+- \`tone\`: the curve's colour, \`"accent"\` (default), \`"good"\`, \`"warn"\` or \`"bad"\`.
+- \`points\`: 2 to 120 in time order, each \`{"label" (12), "value", "band"}\`:
+  - \`label\`: the time, such as \`"Nov"\` or \`"Mon"\`. Short: the page shows as many labels as fit.
+  - \`value\`: a number. Leave it out when nobody knows it: the past then has a gap, the future a band only.
+  - \`band\`: \`[low, high]\`, only for expected points: how far it may go each way. The page draws the band; never write
+    about how unsure it is.
+  - \`state\`: \`"assumed"\` for a value that is someone's assumption (drawn dashed).
+- \`now\`: the \`label\` of the point that is now. Points after it are expected. Leave it out when every point is past.
+  Expected points with neither value nor band are drawn as fog with a "?".
+- \`safe\`: \`{"value", "label" (24)}\`, a level the value should stay above, such as the money that must stay in the bank.
+- \`marks\`: up to 3 \`{"at": label, "text" (24)}\`, such as the low point. The page shows the value and the text there.
+- \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points. Default: the value at now.
+- \`words\`: the page's own words in your language: \`now\`, \`safe\`, \`expected\`, \`assumed\`, \`unknown\`, \`between\`
+  ("{low} to {high}"), \`empty\`.
+- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
+
+A point's \`value\` and the \`headline\`'s may be live from a company database: \`{"query": "<database>/<question>",
+"params": {}, "column": "balance", "example": 62400}\`. Known once it answers, else not known; \`example\` shows only
+outside Qorpera.
+
+## Rules
+
+- Every number comes from the company's files or databases. Never invent one. An expected value is the company's
+  own forecast, written down in its files; with none, leave the future out.
+- Labels, not sentences. Texts over their limit are cut with "…". No colours or sizes: the page does that.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Money ahead",
+  "line": "In the bank, six months back and six ahead",
+  "unit": "kr",
+  "tone": "good",
+  "points": [
+    { "label": "Sep", "value": 37200 },
+    { "label": "Oct", "value": 45600 },
+    { "label": "Nov", "value": { "query": "bank/balance", "column": "balance", "example": 62400 } },
+    { "label": "Dec", "value": 58000, "band": [52000, 65000] },
+    { "label": "Jan", "value": 49000, "band": [40000, 58000] },
+    { "label": "Feb", "value": 44000, "band": [33000, 55000] }
+  ],
+  "now": "Nov",
+  "safe": { "value": 25000, "label": "safe level" },
+  "marks": [{ "at": "Feb", "text": "low point" }],
+  "source": "folder:finance/forecast.md"
+}
+\`\`\`
+`;
+
+/** The stack kit's guide for agents, as app_guide answers it. */
+export const STACK_KIT_GUIDE = `# Stack kit: what wants my yes?
+
+Shows the things that wait on a member's yes, one big card at a time: a soft colour field or a picture, one big
+number, one line, the asking agent's figure, and the answers as buttons under it. A press answers the question;
+the card is stamped and the next comes forward. With nothing left the page says so. You write only \`stack.json\`.
+
+## How the buttons work
+
+A card's buttons are the options of an open question to the member that points at this app. Ask it with ask_member:
+its title the card's \`title\`, word for word, a link \`[title](app:<name>)\` in its body, and options such as No,
+Change, Yes. The last option is the big button. save_app gives the app the reads and writes this needs. A card
+whose question is not open shows no buttons, only that it is not asked yet. When the member answers, you are woken
+with the answer, as in the chat: act on it, then write \`answer\` into the card, or leave the card out.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`cards\`: up to 24 in order, the most urgent first. A card:
+  - \`id\`: letters, digits, \`-\`. \`title\` (48): the question, such as "Pay the parts bill?".
+  - \`value\`: the number that matters, such as 4200; or a short text (18), such as "Shop v2". \`unit\` (10): "kr".
+  - \`line\` (60): one line under the number, such as "Due Friday".
+  - \`picture\`: a picture file of the app, such as \`"pictures/ad.webp"\`, in place of the colour field.
+  - \`colour\`: \`"accent"\`, \`"good"\`, \`"violet"\`, \`"warn"\`, \`"teal"\`, \`"bad"\` or \`"plain"\`. Default: one after another.
+  - \`by\` (24): who asks, such as "Ida, brand". \`figure\`: that agent's figure: planet, acorn, flame, rocket, crown,
+    heart, star, cloud, bolt, mushroom, moon or puzzle.
+  - \`paper: true\`: drawn as a paper, such as a bill; \`line\` is then who it is from.
+  - \`question\`: the open question's id, when its title is not the card's.
+  - \`answer\`: what was answered, once it is: the card counts as done. \`stamp\` (16): the word stamped on the card.
+  - \`ask\` (40): a draft for a note to you about the card.
+- \`total\`: optional \`{"value", "unit", "label" (24)}\`, one figure beside the stack, such as what is owed in all.
+- \`words\`: the page's own words in your language: \`done\` ("Nothing waits on you"), \`answered\` ("{n} answered"),
+  \`waiting\` ("Not asked yet"), \`saving\`, \`card\` ("Card {n} of {total}"), \`assumed\`, \`unknown\`, \`empty\`, \`tell\`, \`told\`.
+
+A card's \`value\` and the \`total\`'s may be live from a company database: \`{"query": "<database>/<question>", "params":
+{}, "column": "amount", "example": 4200}\`. Known once it answers, else not known; \`example\` shows only outside Qorpera.
+
+## Rules
+
+- Every number comes from the company's files or databases. Never invent one.
+- One card is one decision. Labels, not sentences: the reasoning stays in its file.
+- Texts over their limit are cut with "…". No colours or sizes beyond \`colour\`: the page does that.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Wants your yes",
+  "line": "Things the team waits on",
+  "words": { "done": "All signed", "tell": "Ask Ida", "told": "Sent to Ida" },
+  "cards": [
+    { "id": "ad", "title": "Run this ad?", "value": 1500, "unit": "kr", "line": "7 days on Instagram",
+      "picture": "pictures/ad.webp", "by": "Ida, brand", "figure": "star", "ask": "Make it warmer" },
+    { "id": "parts", "title": "Pay the parts bill?", "value": 4200, "unit": "kr", "line": "Due Friday",
+      "colour": "accent", "by": "Mads, shipping", "figure": "rocket" },
+    { "id": "vat", "title": "Send the VAT return?", "value": 3120, "unit": "kr", "line": "Due 1 December",
+      "colour": "good", "by": "Co-Founder", "figure": "crown", "answer": "Send" }
+  ]
+}
+\`\`\`
+`;
+
+/** The shelf kit's guide for agents, as app_guide answers it. */
+export const SHELF_KIT_GUIDE = `# Shelf kit: how do our things stand?
+
+Shows the company's own things side by side on one shelf: its products, its parts, its finished work. Each is a big
+picture with one level behind it, a soft colour block as high as the level, and the number that matters under it. A
+low one turns warm. An agent's one-line note can sit on the thing that needs it. Without levels the shelf is a
+gallery: finished things, framed, with the maker's figure. A member taps a thing to see it larger. You write only
+\`shelf.json\`; the pictures lie in the app folder.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`unit\` (12): the unit after every thing's number, such as \`"in stock"\`. A thing's own \`unit\` wins.
+- \`things\`: 1 to 8 (6 read best), each:
+  - \`id\`: letters, digits, \`-\`. \`name\` (24). \`picture\`: a picture file of the app, such as
+    \`"pictures/desk-lamp.webp"\`. A cut-out on a transparent background is best, all at the same scale.
+  - \`value\`: the number that matters, such as 212; or a short text (14). Leave it out when nobody knows it.
+  - \`max\`: the full level, such as the stock the store room takes: the block is \`value\` of \`max\` high. Or \`level\`:
+    0 to 1 directly. With neither, the thing has no level (a gallery).
+  - \`low\`: the number at or under which the thing is low, such as 20; or \`true\`. A low thing turns warm.
+  - \`state\`: \`"assumed"\` (drawn dashed) or \`"unknown"\` (a hole with "?").
+  - \`note\` (60): one line on the thing, such as "Order more?". \`by\` (24): who says it, or who made the thing.
+    \`figure\`: that agent's figure: planet, acorn, flame, rocket, crown, heart, star, cloud, bolt, mushroom, moon
+    or puzzle.
+  - \`colour\`: \`"good"\`, \`"accent"\`, \`"violet"\`, \`"teal"\` or \`"warn"\`. Default: one after another.
+  - \`source\`: an \`https:\` or \`folder:\` link, shown when the thing is open. \`ask\` (40): a draft for a note to you.
+- \`words\`: the page's own words in your language: \`low\`, \`assumed\`, \`unknown\`, \`close\`, \`source\`, \`empty\`, \`tell\`, \`told\`.
+
+A thing's \`value\` may be live from a company database: \`{"query": "<database>/<question>", "params": {"sku": "desk"},
+"column": "stock", "example": 212}\`. Known once it answers, else not known; \`example\` shows only outside Qorpera.
+
+## Rules
+
+- Only the company's real things, with their real pictures. Every number comes from its files or databases.
+- One note, two at most, on the things that need one. Labels, not sentences.
+- Texts over their limit are cut with "…". No colours or sizes beyond \`colour\`: the page does that.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Lamps in stock",
+  "line": "What is on the shelf in the store room",
+  "unit": "in stock",
+  "words": { "tell": "Ask Mads", "told": "Sent to Mads" },
+  "things": [
+    { "id": "desk", "name": "Desk lamp", "picture": "pictures/desk-lamp.webp", "max": 240, "low": 20,
+      "value": { "query": "shop/stock", "params": { "sku": "desk" }, "column": "stock", "example": 212 } },
+    { "id": "mushroom", "name": "Mushroom lamp", "picture": "pictures/mushroom-lamp.webp", "value": 9, "max": 240,
+      "low": 20, "note": "Order more?", "by": "Mads", "figure": "rocket", "ask": "Order 60 more" },
+    { "id": "floor", "name": "Floor lamp", "picture": "pictures/floor-lamp.webp", "value": 64, "max": 240, "low": 20 }
+  ]
+}
+\`\`\`
+`;
+
+/** The map kit's guide for agents, as app_guide answers it. */
+export const MAP_KIT_GUIDE = `# Map kit: what are we making, and who is at it?
+
+Draws the company, or your own area, as one picture: three to seven things, each a shape that fills from the bottom
+as far as it is built or known, the agents' figures at the things they work on, and a mark where a thing waits for a
+founder. A thing opens into a layer of what is being made inside it (a product into its parts), so a member can dive
+in. You write only \`map.json\`; the page finds each agent's figure, and who works now, by itself.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`.
+- \`top\`: the first layer. \`"reading"\` draws the company's own reading of itself (\`QorperaOS/vision/reading.md\`),
+  live: the company's map, which the Co-Founder keeps; save_app adds \`reading\` to the app's reads. Or, for a map of
+  your own area: \`title\` (40), \`line\` (60), \`attention\` (the id of the thing drawn biggest, in the middle) and
+  \`things\`, 3 to 7.
+- \`layers\`: what is inside a thing, by the thing's \`id\` (a reading's thing by its \`key\`): \`line\` (60) and \`things\`,
+  1 to 12. A thing of a layer may have a layer of its own: four layers deep and 80 things in all at most. A thing
+  with no layer does not open.
+- A thing:
+  - \`id\`: letters, digits, \`-\`. \`name\` (24). \`shape\`: board, box, screen, phone, gear, code, person, people, heart,
+    pin, globe, chart, coin, bank, drop, megaphone, cart, handshake, truck, factory, scale, document, chat, wrench or
+    blob.
+  - \`full\`: 0 to 100, how much of it is built or known. Or \`state\`: \`"unknown"\` (a dashed outline with "?") or
+    \`"assumed"\` (dashed and pale).
+  - \`note\` (40): a few words under its name.
+  - \`agents\`: 0 to 4 agents' names, the ones at work on it; drawn as their figures.
+  - \`waits\`: \`true\` when it waits for a founder.
+  - \`seen\`: the date you last looked at it, such as \`"2026-11-15"\`; past 14 days it is drawn pale with its age.
+  - \`opens\`: \`"app:<name>"\`, another interface that shows the thing (its model, another owner's map).
+  - \`source\`: an \`https:\` or \`folder:\` link.
+- \`words\`: the page's own words in your language (English and Danish are built in): \`finding\`, \`stood\`,
+  \`notRight\`, \`draft\`, \`unknown\`, \`assumed\`, \`weeks\`, \`months\`, \`source\`, \`empty\`, \`tell\`, \`told\`.
+
+## Rules
+
+- Only the company's real things. A layer holds what is being made inside its thing, never a list of tasks.
+- Say \`unknown\`, or leave a thing out, instead of guessing. Set \`seen\` when you looked at a thing.
+- A thing that has an interface of its own opens it (\`opens\`) instead of being drawn again here.
+- Labels, not sentences; a text over its limit is cut with "…". Where things stand is the page's rule: the attended
+  thing biggest in the middle, the others bigger the more agents work on them. On the company's map, "Not right?"
+  under what changed lets a member send you a note.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "top": {
+    "title": "The repair tracker",
+    "line": "What the product is made of",
+    "attention": "app",
+    "things": [
+      { "id": "app", "name": "The tracker app", "shape": "phone", "full": 34, "note": "On paper",
+        "agents": ["Product", "Engineering"], "seen": "2026-11-14" },
+      { "id": "price", "name": "Its price", "shape": "coin", "full": 10, "note": "Waits for you", "waits": true },
+      { "id": "costs", "name": "What it costs", "shape": "chart", "opens": "app:business-model" },
+      { "id": "support", "name": "Support", "shape": "chat", "state": "unknown" }
+    ]
+  },
+  "layers": {
+    "app": {
+      "line": "Its parts",
+      "things": [
+        { "id": "jobs", "name": "Job list", "shape": "board", "full": 60, "agents": ["Product"] },
+        { "id": "sms", "name": "Text the customer", "shape": "chat", "state": "assumed", "note": "Wanted?" },
+        { "id": "login", "name": "Sign-in", "shape": "code", "full": 80, "seen": "2026-10-20" }
+      ]
+    }
+  }
+}
+\`\`\`
+`;
+
+/** The ring kit's guide for agents, as app_guide answers it. */
+export const RING_KIT_GUIDE = `# Ring kit: when is it?
+
+Draws a year, a month or a week as one ring: its months or days round it, the part gone by a shade darker, a hand at
+now. Marks are points in time (a deadline, a launch, a payday); wedges are stretches (a campaign, a holiday, a busy
+season), and with amounts they reach out as far as their amount (sales a day round a week). The middle holds one big
+thing: by default the next mark or wedge and how many days off it is, or a number you give. A member runs a finger or
+the pointer round the ring, or the arrow keys, and the middle follows. You write only \`ring.json\`.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`span\`: \`"year"\` (default), \`"month"\` or \`"week"\`. \`start\`: its first day, \`"YYYY-MM-DD"\`, such as a business year
+  from \`"2026-07-01"\`. Without it the ring is the calendar year, month or week (from Monday) of today.
+- \`marks\`: up to 12, each \`{"name" (24), "at": "YYYY-MM-DD"}\`, such as a VAT date or a launch.
+- \`wedges\`: up to 8, each \`{"name" (24), "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}\`, \`to\` included.
+- On a mark or a wedge: \`tone\`, one of \`"accent"\`, \`"good"\`, \`"warm"\`, \`"warn"\`, \`"bad"\`, \`"violet"\`, \`"teal"\`
+  (wedges without one take soft ones in turn); \`value\`, an amount the middle shows when it is picked (on a wedge it
+  also sets how far the wedge reaches out); \`state\`: \`"assumed"\` (drawn dashed) or \`"unknown"\` (a hole with "?").
+  What falls outside the ring's span is not drawn.
+- \`unit\` (8): the unit after every amount, such as \`"kr"\`.
+- \`centre\`: optional \`{"value", "unit" (8), "label" (24)}\`: a number for the middle when nobody points, such as the
+  week's sales. Without it the middle shows the next thing.
+- \`now\`: optional \`"YYYY-MM-DD"\` that holds the hand still on that day. Leave it out: the hand follows the clock.
+- \`words\`: the page's own words in your language: \`days\`, \`day\`, \`today\`, \`to\` ("to {name}"), \`left\`
+  ("left of {name}"), \`ago\` ("{n} days ago"), \`assumed\`, \`unknown\`, \`empty\`.
+- \`source\`: an \`https:\` or \`folder:\` link to where the dates come from (a small ↗).
+
+A \`value\` of a mark, a wedge or the \`centre\` may be live from a company database: \`{"query":
+"<database>/<question>", "params": {}, "column": "sales", "example": 3900}\`. Known once it answers, else not known;
+\`example\` shows only outside Qorpera.
+
+## Rules
+
+- Only real dates from the company's files: its deadlines, its plans, its seasons. Never invent one.
+- Names, not sentences: the middle says the rest. A few things on a ring read best; 12 marks and 8 wedges at most.
+- Texts over their limit are cut with "…". No colours or sizes beyond \`tone\`: the page does that.
+- Look at it on a machine: the next thing should stand in the middle, and every mark should sit on its day.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Our year",
+  "line": "Deadlines and seasons of 2026",
+  "span": "year",
+  "unit": "kr",
+  "marks": [
+    { "name": "VAT return", "at": "2026-03-01", "tone": "warm" },
+    { "name": "VAT return", "at": "2026-06-01", "tone": "warm" },
+    { "name": "VAT return", "at": "2026-09-01", "tone": "warm" },
+    { "name": "VAT return", "at": "2026-12-01", "tone": "warm",
+      "value": { "query": "books/vat_due", "column": "amount", "example": 41800 } },
+    { "name": "Lamp launch", "at": "2026-10-08", "tone": "good" }
+  ],
+  "wedges": [
+    { "name": "Christmas season", "from": "2026-11-15", "to": "2026-12-24", "tone": "warm" },
+    { "name": "Summer break", "from": "2026-07-06", "to": "2026-07-31", "tone": "teal" }
+  ],
+  "source": "folder:finance/deadlines.md"
+}
+\`\`\`
+`;
+
+/** The flow kit's guide for agents, as app_guide answers it. */
+export const FLOW_KIT_GUIDE = `# Flow kit: where does it come from, and where does it go?
+
+Draws money or people as a river: wide soft bands from where they come, on the left, through the company, a bar in the
+middle, to where they go, on the right. Every band is as wide as its amount. With \`links\` the bands run straight from
+each source to each end instead, such as visitors from each place to bought or left. One big number stands at the top,
+by default all that came in; a member points at a band, or steps with the arrow keys, and the number becomes that
+band's, with its share. You write only \`flow.json\`.
+
+## Fields
+
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`unit\` (8): the unit after every amount, such as \`"kr"\` or \`"people"\`.
+- \`from\`: where it comes from, 1 or more (24 at most), each \`{"id", "name" (20), "value"}\`: \`id\` letters, digits,
+  \`-\`; \`value\` the amount, 0 or more. Leave \`value\` out when nobody knows it: the band is drawn open with "?".
+- \`to\`: where it goes, the same; \`"kept": true\` on what the company keeps (drawn last, in green).
+- On an end: \`tone\`, one of \`"good"\`, \`"warm"\`, \`"accent"\`, \`"warn"\`, \`"bad"\`, \`"violet"\`, \`"teal"\` (default: green
+  in, warm out); \`state\`: \`"assumed"\` (drawn dashed).
+- More than 6 on a side: 5 stay (the largest, and a kept one always) and the rest join one band, \`words.other\`.
+- \`middle\`: the name under the middle bar, such as the company's or \`"Bank"\`. Ends of \`from\` flow into it and out to
+  \`to\`. Both sides are the same money: make them add up, with what was kept as an end of \`to\`. Where they differ by
+  more than 1 %, the page draws the difference on the short side as a quiet band, \`words.rest\`.
+- \`links\`: optional, up to 24 \`{"from": id, "to": id, "value"}\`: bands straight from an end of \`from\` to one of \`to\`,
+  with no middle. The ends' amounts are then what their bands carry, and their own \`value\` is not read.
+- \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points, such as what was kept.
+- \`words\`: the page's own words in your language: \`total\` (the big number's label, "in all"), \`other\`, \`rest\`
+  ("Not accounted for"), \`assumed\`, \`unknown\`, \`empty\`.
+- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
+
+A \`value\` of an end, a link or the \`headline\` may be live from a company database: \`{"query": "<database>/<question>",
+"params": {"month": "2026-11"}, "column": "amount", "example": 182000}\`. Known once it answers, else not known;
+\`example\` shows only outside Qorpera.
+
+## Rules
+
+- Every amount comes from the company's books, bank or databases, all of one span (a month, a year). Never invent one,
+  also not to make the sides add up: name the end the difference is.
+- Few bands: three or four on a side read best. Name each in a word or two.
+- Texts over their limit are cut with "…". No colours or sizes beyond \`tone\`: the page does that.
+- Look at it on a machine at 390 px wide too: every name should stand clear beside its band.
+
+## Example
+
+\`\`\`json
+{
+  "lang": "en",
+  "title": "Money in November",
+  "line": "From sales to what it paid for",
+  "unit": "kr",
+  "middle": "Bank",
+  "from": [
+    { "id": "shop", "name": "Web shop",
+      "value": { "query": "bank/money_in", "params": { "kind": "sales" }, "column": "amount", "example": 182400 } },
+    { "id": "retail", "name": "Retailers", "value": 64200 }
+  ],
+  "to": [
+    { "id": "parts", "name": "Parts", "value": 71800 },
+    { "id": "salaries", "name": "Salaries", "value": 92000 },
+    { "id": "ads", "name": "Ads", "value": 24600 },
+    { "id": "tax", "name": "VAT and tax", "value": 31500 },
+    { "id": "kept", "name": "Kept", "value": 26700, "kept": true }
+  ],
+  "source": "folder:finance/november.md"
+}
+\`\`\`
+`;
+
 /** The model kit's engine.js, as save_app writes it into an app's folder. */
 export const MODEL_ENGINE_JS = `/* Qorpera interface kit "model": an interactive model of how a business works in numbers.
  * The agent hands in model.json (inputs, small formulas, a flow, a curve). This engine draws it:
@@ -7221,6 +7609,4397 @@ body{margin:0}
 			/* no live changes here */
 		}
 		await refresh();
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The curve kit's engine.js, as save_app writes it into an app's folder. */
+export const CURVE_ENGINE_JS = `// The curve kit's engine: "Where is it going?"
+// One value over time, drawn big: the past as a filled area, the expected part as a dotted line inside a band that
+// widens with how unsure it is, a "now" line, a dashed safe level and a few marked points, with the value that matters
+// large at the top. A member runs a finger or the pointer along it (or the arrow keys) and the big number follows.
+// The agent writes only curve.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const SVGNS = "http://www.w3.org/2000/svg";
+	const MAX = { title: 40, line: 60, unit: 8, label: 12, mark: 24, safe: 24, head: 24, word: 28, points: 120, marks: 3 };
+	const WORDS = {
+		now: "now",
+		safe: "safe level",
+		expected: "expected",
+		assumed: "assumed",
+		unknown: "not known",
+		between: "{low} to {high}",
+		empty: "Nothing to show yet.",
+		source: "Source",
+	};
+	const STATES = ["known", "assumed", "unknown"];
+	const TONES = ["accent", "good", "warn", "bad"];
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.ck{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --ck-tone:var(--q-accent);--ck-ease:cubic-bezier(.22,.8,.24,1)}
+.ck *,.ck *::before,.ck *::after{box-sizing:border-box}
+.ck.t-good{--ck-tone:var(--q-good)}.ck.t-warn{--ck-tone:var(--q-warn)}.ck.t-bad{--ck-tone:var(--q-bad)}
+.ck-head{min-width:0;max-width:40em}
+.ck-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.ck-title-row{display:flex;align-items:baseline;gap:8px}
+.ck-src{display:inline-grid;place-items:center;min-width:24px;min-height:24px;font-size:14px;color:var(--q-muted);text-decoration:none;border-radius:6px}
+.ck-src:hover{color:var(--q-accent)}
+.ck-src:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.ck-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.ck--bare{padding:clamp(12px,1vw,16px)}
+.ck--bare .ck-head{display:none}
+.ck-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.ck--bare .ck-hero{margin-top:0}
+.ck-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
+.ck-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.ck-u{font-size:clamp(18px,1.9vw,26px);font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
+.ck-n.unk{color:var(--q-muted)}
+.ck-sub{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:8px;font-size:14px;line-height:1.3;color:var(--q-muted);min-height:20px}
+.ck-sub b{font-weight:650;color:var(--q-text)}
+.ck-tag{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;border:1.3px dashed color-mix(in srgb,var(--q-muted) 70%,transparent);font-size:12px;font-weight:550;color:var(--q-muted)}
+.ck-tag.exp{border-style:solid;border-color:transparent;background:color-mix(in srgb,var(--ck-tone) 13%,var(--q-bg));color:color-mix(in srgb,var(--ck-tone) 78%,var(--q-text))}
+.ck-plot{position:relative;flex:none;margin-top:clamp(8px,1.6vh,18px);min-height:240px;outline:none;touch-action:pan-y;cursor:crosshair;border-radius:12px}
+.ck-plot:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
+.ck-plot svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}
+.ck-area{fill:var(--ck-tone);fill-opacity:.2}
+.ck-past{fill:none;stroke:var(--ck-tone);stroke-width:5;stroke-linejoin:round;stroke-linecap:round}
+.ck-past.a{stroke-dasharray:10 9}
+.ck-gap{fill:none;stroke:var(--q-muted);stroke-width:2;stroke-dasharray:1 7;stroke-linecap:round;opacity:.7}
+.ck-band{fill:var(--ck-tone);fill-opacity:.11}
+.ck-band-edge{fill:none;stroke:var(--ck-tone);stroke-width:1.2;stroke-opacity:.28}
+.ck-ahead{fill:none;stroke:var(--ck-tone);stroke-width:4.5;stroke-dasharray:1.5 10;stroke-linecap:round;stroke-linejoin:round}
+.ck-fog{fill:url(#ck-hatch);opacity:.9}
+.ck-fog-tint{fill:var(--q-text);fill-opacity:.035}
+.ck-hatch-line{stroke:var(--q-muted);stroke-width:1.3;opacity:.35}
+.ck-q{font-size:30px;font-weight:600;fill:var(--q-muted);text-anchor:middle;dominant-baseline:central}
+.ck-safe{stroke:var(--q-warn);stroke-width:2;stroke-dasharray:8 8;opacity:.75}
+.ck-safe-t{font-size:13px;font-weight:550;fill:var(--q-warn);text-anchor:end}
+.ck-now{stroke:var(--q-text);stroke-width:2}
+.ck-now-dot{fill:var(--q-text)}
+.ck-x{font-size:13px;fill:var(--q-muted);text-anchor:middle}
+.ck-x.now{fill:var(--q-text);font-weight:700}
+.ck-mark{fill:var(--q-bg);stroke:var(--ck-tone);stroke-width:4}
+.ck-mark-v{font-size:20px;font-weight:700;fill:var(--q-text);text-anchor:middle;font-variant-numeric:tabular-nums}
+.ck-mark-t{font-size:13px;fill:var(--q-muted);text-anchor:middle}
+.ck-mark-v,.ck-mark-t,.ck-safe-t{paint-order:stroke;stroke:var(--q-bg);stroke-width:5px;stroke-linejoin:round}
+.ck-scrub{pointer-events:none;opacity:0;transition:opacity .15s}
+.ck-scrub.on{opacity:1}
+.ck-hair{stroke:var(--q-text);stroke-opacity:.35;stroke-width:1.5}
+.ck-hair-dot{fill:var(--ck-tone);stroke:var(--q-bg);stroke-width:3}
+.ck-hair-ring{fill:var(--q-bg);stroke:var(--ck-tone);stroke-width:2.5;stroke-dasharray:3 3}
+.ck-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+.ck.intro .ck-past{animation:ck-draw 1s var(--ck-ease) both}
+.ck.intro .ck-area{animation:ck-fade .9s var(--ck-ease) .15s both}
+.ck.intro .ck-later{animation:ck-fade .8s var(--ck-ease) .55s both}
+.ck.intro .ck-marks{animation:ck-fade .6s var(--ck-ease) .85s both}
+@keyframes ck-draw{from{stroke-dashoffset:var(--ck-len)}to{stroke-dashoffset:0}}
+@keyframes ck-fade{from{opacity:0}to{opacity:1}}
+@media (max-width:560px){.ck-plot{cursor:default}}
+@media (prefers-reduced-motion:reduce){.ck *,.ck *::before,.ck *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	function num(v) {
+		const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+		return Number.isFinite(n) ? n : null;
+	}
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function s(tag, attrs, ...kids) {
+		const el = D.createElementNS(SVGNS, tag);
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	const r1 = (v) => Math.round(v * 10) / 10;
+	const say = (tpl, map) => tpl.replace(/\\{(\\w+)\\}/g, (_, k) => (k in map ? map[k] : ""));
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.ck")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- data
+	function bandOf(v) {
+		let lo = null;
+		let hi = null;
+		if (Array.isArray(v)) {
+			lo = num(v[0]);
+			hi = num(v[1]);
+		} else if (isObj(v)) {
+			lo = num(v.low);
+			hi = num(v.high);
+		}
+		if (lo === null || hi === null) return null;
+		return lo <= hi ? [lo, hi] : [hi, lo];
+	}
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const points = list(raw.points)
+			.slice(0, MAX.points)
+			.filter(isObj)
+			.map((p) => {
+				const value = num(p.value);
+				const state = STATES.includes(p.state) ? p.state : value === null ? "unknown" : "known";
+				return { label: cut(p.label, MAX.label), value: state === "unknown" ? null : value, state, band: bandOf(p.band) };
+			});
+		if (points.length < 2) throw new Error("fewer than two points");
+		let now = -1;
+		if (typeof raw.now === "number" && Number.isInteger(raw.now) && raw.now >= 0 && raw.now < points.length) now = raw.now;
+		else if (typeof raw.now === "string") now = points.findIndex((p) => p.label === cut(raw.now, MAX.label));
+		const safeRaw = isObj(raw.safe) ? raw.safe : { value: raw.safe };
+		const safeValue = num(safeRaw.value);
+		const safe = safeValue === null ? null : { value: safeValue, label: cut(safeRaw.label, MAX.safe) || words.safe };
+		const marks = [];
+		for (const m of list(raw.marks)) {
+			if (!isObj(m) || marks.length >= MAX.marks) continue;
+			const i = typeof m.at === "number" && Number.isInteger(m.at) ? m.at : points.findIndex((p) => p.label === cut(m.at, MAX.label));
+			if (i < 0 || i >= points.length || marks.some((x) => x.i === i)) continue;
+			marks.push({ i, text: cut(m.text, MAX.mark) });
+		}
+		let headline = null;
+		if (isObj(raw.headline)) {
+			const value = num(raw.headline.value);
+			const state = STATES.includes(raw.headline.state) ? raw.headline.state : value === null ? "unknown" : "known";
+			headline = { value: state === "unknown" ? null : value, state, label: cut(raw.headline.label, MAX.head) };
+		}
+		const source = typeof raw.source === "string" && /^(?:https:\\/\\/|folder:)/.test(raw.source) ? raw.source : "";
+		return {
+			lang,
+			words,
+			title: cut(raw.title, MAX.title),
+			line: cut(raw.line, MAX.line),
+			unit: cut(raw.unit, MAX.unit),
+			tone: TONES.includes(raw.tone) ? raw.tone : "accent",
+			points,
+			now,
+			safe,
+			marks,
+			headline,
+			source,
+		};
+	}
+
+	// ---------------------------------------------------------------- numbers
+	function formatter(m) {
+		const all = [];
+		for (const p of m.points) {
+			if (p.value !== null) all.push(p.value);
+			if (p.band) all.push(p.band[0], p.band[1]);
+		}
+		const span = all.length ? Math.max(...all.map(Math.abs)) : 0;
+		const digits = span >= 100 ? 0 : span >= 10 ? 1 : 2;
+		let nf;
+		try {
+			nf = new Intl.NumberFormat(m.lang, { maximumFractionDigits: digits });
+		} catch {
+			nf = new Intl.NumberFormat("en", { maximumFractionDigits: digits });
+		}
+		return (v) => nf.format(v);
+	}
+
+	// A smooth line through points that never overshoots them (monotone cubic, Fritsch and Carlson).
+	function smooth(pts) {
+		if (pts.length < 2) return pts.length ? \`M\${r1(pts[0][0])} \${r1(pts[0][1])}\` : "";
+		if (pts.length === 2) return \`M\${r1(pts[0][0])} \${r1(pts[0][1])}L\${r1(pts[1][0])} \${r1(pts[1][1])}\`;
+		const n = pts.length;
+		const dx = [];
+		const dy = [];
+		const m = [];
+		for (let i = 0; i < n - 1; i++) {
+			dx.push(pts[i + 1][0] - pts[i][0]);
+			dy.push(pts[i + 1][1] - pts[i][1]);
+			m.push(dx[i] ? dy[i] / dx[i] : 0);
+		}
+		const t = [m[0]];
+		for (let i = 1; i < n - 1; i++) t.push(m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2);
+		t.push(m[n - 2]);
+		for (let i = 0; i < n - 1; i++) {
+			if (m[i] === 0) {
+				t[i] = 0;
+				t[i + 1] = 0;
+				continue;
+			}
+			const a = t[i] / m[i];
+			const b = t[i + 1] / m[i];
+			const q = a * a + b * b;
+			if (q > 9) {
+				const k = 3 / Math.sqrt(q);
+				t[i] = k * a * m[i];
+				t[i + 1] = k * b * m[i];
+			}
+		}
+		let d = \`M\${r1(pts[0][0])} \${r1(pts[0][1])}\`;
+		for (let i = 0; i < n - 1; i++) {
+			const third = dx[i] / 3;
+			d += \`C\${r1(pts[i][0] + third)} \${r1(pts[i][1] + t[i] * third)} \${r1(pts[i + 1][0] - third)} \${r1(pts[i + 1][1] - t[i + 1] * third)} \${r1(pts[i + 1][0])} \${r1(pts[i + 1][1])}\`;
+		}
+		return d;
+	}
+	// The same line backwards, for the lower edge of a band.
+	const reversed = (pts) => smooth(pts.slice().reverse()).replace(/^M/, "L");
+
+	// ---------------------------------------------------------------- page
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "curve" }, CSS);
+		D.head.append(style);
+	}
+	const ui = { model: null, root: null, plot: null, svg: null, hero: null, scrub: null, frame: 0, count: 0, width: 0, height: 0, shown: false };
+
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`ck\${BARE ? " ck--bare" : ""}\`, null, h("p", "ck-quiet", null, line)));
+		ui.root = null;
+	}
+
+	function render(intro) {
+		const m = ui.model;
+		ensureStyle();
+		D.documentElement.lang = m.lang;
+		const root = h("main", \`ck t-\${m.tone}\${BARE ? " ck--bare" : ""}\${intro && !still() ? " intro" : ""}\`, { lang: m.lang });
+		const title = h("div", "ck-title-row", null, h("h1", "ck-title", null, m.title || ""));
+		if (m.source) title.append(h("a", "ck-src", { href: m.source, title: m.words.source, "aria-label": m.words.source }, "↗"));
+		root.append(h("header", "ck-head", null, title, m.line ? h("p", "ck-line", null, m.line) : null));
+		const hero = h("div", "ck-hero", { "aria-live": "polite" });
+		root.append(hero);
+		const plot = h("div", "ck-plot", { tabindex: "0", role: "slider", "aria-label": m.title || m.words.now, "aria-valuemin": "0", "aria-valuemax": String(m.points.length - 1) });
+		root.append(plot);
+		show(root);
+		ui.root = root;
+		ui.hero = hero;
+		ui.plot = plot;
+		bindPlot(plot);
+		draw();
+		paintHero(intro && !still());
+		if (intro) setTimeout(() => root.classList.remove("intro"), 2200);
+	}
+
+	// The index whose value the big number shows when nobody points: now, or the last point with a value.
+	function restIndex(m) {
+		if (m.now >= 0) return m.now;
+		for (let i = m.points.length - 1; i >= 0; i--) if (m.points[i].value !== null) return i;
+		return m.points.length - 1;
+	}
+	const isAhead = (m, i) => m.now >= 0 && i > m.now;
+
+	function paintHero(count) {
+		const m = ui.model;
+		const fmt = formatter(m);
+		const i = ui.scrub;
+		let value;
+		let state;
+		let label;
+		let band = null;
+		let ahead = false;
+		if (i === null && m.headline) {
+			value = m.headline.value;
+			state = m.headline.state;
+			label = m.headline.label || m.words.now;
+		} else {
+			const at = i === null ? restIndex(m) : i;
+			const p = m.points[at];
+			value = p.value;
+			state = p.state;
+			ahead = isAhead(m, at);
+			band = ahead ? p.band : null;
+			label = i === null ? (m.now >= 0 ? m.words.now : p.label) : p.label;
+			if (value === null && band) state = "band";
+		}
+		const n = h("span", \`ck-n\${value === null ? " unk" : ""}\`);
+		const row = h("div", "ck-row", null, n);
+		if (value !== null && m.unit) row.append(h("span", "ck-u", null, m.unit));
+		if (value === null && band) {
+			n.textContent = \`\${fmt(band[0])}–\${fmt(band[1])}\`;
+			n.classList.remove("unk");
+			n.style.fontSize = "clamp(34px,4.6vw,60px)";
+			if (m.unit) row.append(h("span", "ck-u", null, m.unit));
+		} else if (value === null) n.textContent = "?";
+		else if (count) countTo(n, value, fmt);
+		else n.textContent = fmt(value);
+		const sub = h("div", "ck-sub", null, h("span", null, null, label));
+		if (ahead) sub.append(h("span", "ck-tag exp", null, m.words.expected));
+		if (state === "assumed") sub.append(h("span", "ck-tag", null, m.words.assumed));
+		if (state === "unknown" && value === null && !band) sub.append(h("span", "ck-tag", null, m.words.unknown));
+		if (band && value !== null) sub.append(h("span", null, null, say(m.words.between, { low: fmt(band[0]), high: fmt(band[1]) })));
+		ui.hero.replaceChildren(row, sub);
+		if (ui.plot) {
+			const at = i === null ? restIndex(m) : i;
+			const p = m.points[at];
+			ui.plot.setAttribute("aria-valuenow", String(at));
+			ui.plot.setAttribute("aria-valuetext", \`\${p.label}: \${p.value === null ? (p.band ? \`\${fmt(p.band[0])}–\${fmt(p.band[1])}\` : "?") : fmt(p.value)}\${m.unit ? \` \${m.unit}\` : ""}\`);
+		}
+	}
+	function countTo(el, to, fmt) {
+		cancelAnimationFrame(ui.count);
+		const t0 = performance.now();
+		const from = to * 0.6;
+		let frames = 0;
+		// by the clock, and never longer than about 100 frames, so a page whose frames come slowly still ends there
+		const step = (t) => {
+			const k = Math.min(1, Math.max((t - t0) / 800, ++frames / 96));
+			const e = 1 - (1 - k) ** 3;
+			el.textContent = fmt(k >= 1 ? to : from + (to - from) * e);
+			if (k < 1) ui.count = requestAnimationFrame(step);
+		};
+		el.textContent = fmt(from);
+		ui.count = requestAnimationFrame(step);
+	}
+
+	// ---------------------------------------------------------------- the drawing
+	function size() {
+		const plot = ui.plot;
+		const W = Math.max(240, plot.clientWidth || 0);
+		const top = plot.getBoundingClientRect ? plot.getBoundingClientRect().top + (window.scrollY || 0) : 0;
+		const pad = ui.root ? Number.parseFloat(getComputedStyle(ui.root).paddingBottom) || 24 : 24;
+		const avail = (window.innerHeight || 800) - top - pad;
+		const H = Math.round(Math.max(260, Math.min(avail, W < 600 ? W * 1.8 : W * 0.62)));
+		return { W, H };
+	}
+
+	function draw() {
+		const m = ui.model;
+		const plot = ui.plot;
+		if (!m || !plot) return;
+		const { W, H } = size();
+		plot.style.height = \`\${H}px\`;
+		ui.width = W;
+		ui.height = H;
+		const fmt = formatter(m);
+		const n = m.points.length;
+		const phone = W < 600;
+		const padL = 12;
+		const padR = 12;
+		const padT = 34;
+		const padB = 36;
+		const x = (i) => padL + ((W - padL - padR) * i) / (n - 1);
+		const vals = [];
+		for (const p of m.points) {
+			if (p.value !== null) vals.push(p.value);
+			if (p.band && isAhead(m, m.points.indexOf(p))) vals.push(p.band[0], p.band[1]);
+		}
+		if (m.safe) vals.push(m.safe.value);
+		if (m.headline && m.headline.value !== null && !vals.length) vals.push(m.headline.value);
+		let lo = vals.length ? Math.min(...vals) : 0;
+		let hi = vals.length ? Math.max(...vals) : 1;
+		if (lo >= 0 && lo <= hi * 0.4) lo = 0;
+		else lo -= (hi - lo) * 0.18 || 1;
+		hi += (hi - lo) * 0.1 || 1;
+		const bottom = H - padB;
+		const y = (v) => padT + (bottom - padT) * (1 - (v - lo) / (hi - lo));
+		const svg = s("svg", { viewBox: \`0 0 \${W} \${H}\`, width: W, height: H, "aria-hidden": "true" });
+		const defs = s("defs");
+		const hatch = s("pattern", { id: "ck-hatch", width: 9, height: 9, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, s("line", { x1: 0, y1: 0, x2: 0, y2: 9, class: "ck-hatch-line" }));
+		defs.append(hatch);
+		svg.append(defs);
+		const last = m.now >= 0 ? m.now : n - 1;
+
+		// the past: runs of points with a value, each a filled area under a solid line
+		const past = s("g");
+		let run = [];
+		let prevEnd = null;
+		const flush = () => {
+			if (!run.length) return;
+			const pts = run.map((i) => [x(i), y(m.points[i].value)]);
+			if (prevEnd) past.append(s("path", { class: "ck-gap", d: \`M\${r1(prevEnd[0])} \${r1(prevEnd[1])}L\${r1(pts[0][0])} \${r1(pts[0][1])}\` }));
+			const line = smooth(pts);
+			if (pts.length > 1) past.append(s("path", { class: "ck-area", d: \`\${line}L\${r1(pts[pts.length - 1][0])} \${bottom}L\${r1(pts[0][0])} \${bottom}Z\` }));
+			const assumed = run.some((i) => m.points[i].state === "assumed");
+			const stroke = s("path", { class: \`ck-past\${assumed ? " a" : ""}\`, d: line });
+			const len = pts.reduce((sum, p, k) => (k ? sum + Math.hypot(p[0] - pts[k - 1][0], p[1] - pts[k - 1][1]) : 0), 0) * 1.15 + 20;
+			if (!assumed) {
+				stroke.style.setProperty("--ck-len", String(Math.round(len)));
+				stroke.style.strokeDasharray = String(Math.round(len));
+			}
+			past.append(stroke);
+			prevEnd = pts[pts.length - 1];
+			run = [];
+		};
+		for (let i = 0; i <= last; i++) {
+			if (m.points[i].value === null) flush();
+			else run.push(i);
+		}
+		flush();
+
+		// what is expected: a band from now outwards, a dotted line inside it, and fog where nothing is said
+		const later = s("g", { class: "ck-later" });
+		if (m.now >= 0 && m.now < n - 1) {
+			const start = m.points[m.now].value;
+			const upper = [];
+			const lower = [];
+			const line = [];
+			const lines = [];
+			let fogFrom = -1;
+			if (start !== null) {
+				upper.push([x(m.now), y(start)]);
+				lower.push([x(m.now), y(start)]);
+				line.push([x(m.now), y(start)]);
+			}
+			for (let i = m.now + 1; i < n; i++) {
+				const p = m.points[i];
+				const band = p.band || (p.value !== null ? [p.value, p.value] : null);
+				if (!band) {
+					fogFrom = i;
+					break;
+				}
+				upper.push([x(i), y(band[1])]);
+				lower.push([x(i), y(band[0])]);
+				if (p.value !== null) line.push([x(i), y(p.value)]);
+				else if (line.length) {
+					lines.push(line.splice(0));
+				}
+			}
+			if (line.length) lines.push(line.splice(0));
+			if (upper.length > 1) {
+				const top = smooth(upper);
+				later.append(s("path", { class: "ck-band", d: \`\${top}\${reversed(lower)}Z\` }));
+				later.append(s("path", { class: "ck-band-edge", d: top }), s("path", { class: "ck-band-edge", d: smooth(lower) }));
+			}
+			for (const part of lines) if (part.length > 1) later.append(s("path", { class: "ck-ahead", d: smooth(part) }));
+			if (fogFrom > 0) {
+				const fx = x(fogFrom - 1) + (x(fogFrom) - x(fogFrom - 1)) * 0.5;
+				later.append(
+					s("rect", { class: "ck-fog-tint", x: r1(fx), y: padT - 10, width: r1(W - padR - fx), height: r1(bottom - padT + 10), rx: 10 }),
+					s("rect", { class: "ck-fog", x: r1(fx), y: padT - 10, width: r1(W - padR - fx), height: r1(bottom - padT + 10), rx: 10 }),
+					s("text", { class: "ck-q", x: r1((fx + W - padR) / 2), y: r1((padT + bottom) / 2) }, "?"),
+				);
+			}
+		}
+
+		// the safe level
+		const safeG = s("g");
+		// where the safe level's words stand: [left, top, bottom], which a mark's words keep clear of
+		let safeBox = null;
+		if (m.safe && m.safe.value >= lo && m.safe.value <= hi) {
+			const sy = r1(y(m.safe.value));
+			safeG.append(s("line", { class: "ck-safe", x1: 0, x2: W, y1: sy, y2: sy }));
+			safeG.append(s("text", { class: "ck-safe-t", x: W - padR, y: sy - 9 }, m.safe.label));
+			safeBox = [W - padR - Array.from(m.safe.label).length * 7.4 - 8, sy - 26, sy + 4];
+		}
+
+		// now
+		const nowG = s("g");
+		if (m.now >= 0) {
+			const nx = r1(x(m.now));
+			nowG.append(s("line", { class: "ck-now", x1: nx, x2: nx, y1: padT - 18, y2: bottom + 6 }));
+			const v = m.points[m.now].value;
+			if (v !== null) nowG.append(s("circle", { class: "ck-now-dot", cx: nx, cy: r1(y(v)), r: 8.5 }));
+		}
+
+		// the labels along the bottom: as many as fit, now always
+		const xs = s("g");
+		const widest = Math.max(...m.points.map((p) => Array.from(p.label).length), Array.from(m.words.now).length) * 7.6 + 18;
+		const fit = Math.max(2, Math.floor((W - padL - padR) / widest));
+		const every = Math.max(1, Math.ceil(n / fit));
+		for (let i = 0; i < n; i++) {
+			const isNow = i === m.now;
+			if (!isNow && (i % every !== 0 || (m.now >= 0 && Math.abs(i - m.now) < every))) continue;
+			const label = isNow ? m.words.now : m.points[i].label;
+			if (!label) continue;
+			const anchor = i === 0 && !isNow ? "start" : i === n - 1 && !isNow ? "end" : "middle";
+			const t = s("text", { class: \`ck-x\${isNow ? " now" : ""}\`, x: r1(i === 0 ? padL - 4 : i === n - 1 ? W - padR + 4 : x(i)), y: H - 10 }, label);
+			t.style.textAnchor = anchor;
+			xs.append(t);
+		}
+
+		// the marked points, each with its value and a few words, below a low and above a high
+		const marks = s("g", { class: "ck-marks" });
+		for (const mk of m.marks) {
+			const p = m.points[mk.i];
+			const v = p.value !== null ? p.value : p.band ? (p.band[0] + p.band[1]) / 2 : null;
+			if (v === null) continue;
+			const mx = x(mk.i);
+			const my = y(v);
+			const before = m.points[mk.i - 1];
+			const after = m.points[mk.i + 1];
+			const around = [before, after].filter((q) => q && q.value !== null).map((q) => q.value);
+			const low = around.length ? v <= Math.min(...around) : my > (padT + bottom) / 2;
+			marks.append(s("circle", { class: "ck-mark", cx: r1(mx), cy: r1(my), r: 8 }));
+			const cx = Math.min(W - 64, Math.max(64, mx));
+			// below a low and above a high, outside the band where there is one, and clear of the safe level's words
+			const band = isAhead(m, mk.i) && p.band ? p.band : [v, v];
+			const under = Math.max(my, y(band[0])) + 34;
+			const over = Math.min(my, y(band[1])) - 40;
+			const safeY = m.safe ? y(m.safe.value) : -1e9;
+			const fits = (ty) =>
+				ty - 20 > padT - 30 &&
+				ty + 24 < bottom &&
+				!(safeY > ty - 22 && safeY < ty + 26) &&
+				!(safeBox && cx + 64 > safeBox[0] && ty + 24 > safeBox[1] && ty - 20 < safeBox[2]);
+			const ty = (low ? [under, my + 34, over] : [over, my - 32, under]).find(fits) ?? (low ? my + 34 : my - 32);
+			marks.append(s("text", { class: "ck-mark-v", x: r1(cx), y: r1(ty) }, fmt(v)));
+			if (mk.text) marks.append(s("text", { class: "ck-mark-t", x: r1(cx), y: r1(ty + 19) }, mk.text));
+		}
+
+		// what follows a finger or the pointer
+		const scrub = s("g", { class: "ck-scrub" });
+		const hair = s("line", { class: "ck-hair", y1: padT - 18, y2: bottom });
+		const dot = s("circle", { class: "ck-hair-dot", r: 7 });
+		scrub.append(hair, dot);
+
+		svg.append(past, later, safeG, nowG, marks, xs, scrub);
+		plot.replaceChildren(svg);
+		ui.svg = svg;
+		ui.geo = { x, y, padL, padR, n, W, phone };
+		ui.scrubEls = { scrub, hair, dot };
+		paintScrub();
+	}
+
+	function paintScrub() {
+		const els = ui.scrubEls;
+		const m = ui.model;
+		if (!els || !m) return;
+		const i = ui.scrub;
+		if (i === null) {
+			els.scrub.classList.remove("on");
+			return;
+		}
+		const p = m.points[i];
+		const gx = r1(ui.geo.x(i));
+		els.hair.setAttribute("x1", gx);
+		els.hair.setAttribute("x2", gx);
+		const v = p.value !== null ? p.value : p.band && isAhead(m, i) ? (p.band[0] + p.band[1]) / 2 : null;
+		if (v === null) els.dot.setAttribute("r", "0");
+		else {
+			els.dot.setAttribute("r", "7");
+			els.dot.setAttribute("cx", gx);
+			els.dot.setAttribute("cy", r1(ui.geo.y(v)));
+			els.dot.setAttribute("class", p.value === null ? "ck-hair-ring" : "ck-hair-dot");
+		}
+		els.scrub.classList.add("on");
+	}
+
+	function setScrub(i) {
+		if (i === ui.scrub) return;
+		ui.scrub = i;
+		paintScrub();
+		paintHero(false);
+	}
+	function indexAt(clientX) {
+		const g = ui.geo;
+		const box = ui.plot.getBoundingClientRect();
+		const px = clientX - box.left;
+		const k = (px - g.padL) / ((g.W - g.padL - g.padR) / (g.n - 1));
+		return Math.max(0, Math.min(g.n - 1, Math.round(k)));
+	}
+	function bindPlot(plot) {
+		plot.addEventListener("pointermove", (e) => {
+			if (e.pointerType === "touch" && !e.isPrimary) return;
+			setScrub(indexAt(e.clientX));
+		});
+		plot.addEventListener("pointerdown", (e) => setScrub(indexAt(e.clientX)));
+		plot.addEventListener("pointerleave", (e) => {
+			if (D.activeElement !== plot || e.pointerType === "mouse") setScrub(null);
+		});
+		plot.addEventListener("focus", () => {
+			if (ui.scrub === null && plot.matches(":focus-visible")) setScrub(restIndex(ui.model));
+		});
+		plot.addEventListener("blur", () => setScrub(null));
+		plot.addEventListener("keydown", (e) => {
+			const n = ui.model.points.length;
+			const at = ui.scrub === null ? restIndex(ui.model) : ui.scrub;
+			let next = null;
+			if (e.key === "ArrowRight" || e.key === "ArrowUp") next = Math.min(n - 1, at + 1);
+			else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = Math.max(0, at - 1);
+			else if (e.key === "Home") next = 0;
+			else if (e.key === "End") next = n - 1;
+			else if (e.key === "Escape") {
+				setScrub(null);
+				return;
+			}
+			if (next === null) return;
+			e.preventDefault();
+			setScrub(next);
+		});
+	}
+
+	// ---------------------------------------------------------------- size changes
+	let resizeFrame = 0;
+	function onResize() {
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			if (!ui.model || !ui.plot || !ui.root) return;
+			const W = ui.plot.clientWidth;
+			if (W === ui.width && ui.lastH === window.innerHeight) return;
+			ui.lastH = window.innerHeight;
+			draw();
+		});
+	}
+	window.addEventListener("resize", onResize);
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	let lastText = null;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "curve.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			if (txt === lastText && ui.root) return;
+			raw = JSON.parse(txt);
+			const next = normalize(raw);
+			const first = !ui.shown;
+			const keep = ui.scrub;
+			ui.model = next;
+			ui.scrub = keep !== null && keep < next.points.length ? keep : null;
+			lastText = txt;
+			render(first);
+			ui.shown = true;
+			ui.lastH = window.innerHeight;
+		} catch {
+			if (!ui.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+		}
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	function start() {
+		ensureStyle();
+		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The stack kit's engine.js, as save_app writes it into an app's folder. */
+export const STACK_ENGINE_JS = `// The stack kit's engine: "What wants my yes?"
+// Things that want a member's yes, one big card at a time: a soft colour field or a picture, one big number, one line,
+// the asking agent's figure, and the answers as buttons under it. A card's buttons are the options of the agent's open
+// question that points at the app (qorpera.questions), and a press answers it (qorpera.answer): Qorpera shows the
+// member what will be sent, and it is sent on their yes. The card is stamped and the next comes forward; when none is
+// left, the page says so. A card whose question is not open shows no buttons.
+// The agent writes only stack.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const MAX = { title: 40, line: 60, card: 48, cardLine: 60, unit: 10, valueText: 18, by: 24, stamp: 16, word: 40, cards: 24, label: 24 };
+	const WORDS = {
+		done: "Nothing waits on you",
+		answered: "{n} answered",
+		waiting: "Not asked yet",
+		saving: "Sending…",
+		card: "Card {n} of {total}",
+		assumed: "assumed",
+		unknown: "not known",
+		empty: "Nothing to show yet.",
+		source: "Source",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
+	};
+	const TONES = ["accent", "good", "violet", "warn", "teal", "bad"];
+	const STATES = ["known", "assumed", "unknown"];
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.st{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --st-ease:cubic-bezier(.22,.8,.24,1);--st-shade:rgb(from var(--q-bg) calc(r*.3) calc(g*.3) calc(b*.32)/.3)}
+.st *,.st *::before,.st *::after{box-sizing:border-box}
+.st-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:16px 40px}
+.st-head{min-width:0;max-width:34em}
+.st-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.st-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.st--bare{padding:clamp(12px,1vw,16px)}
+.st--bare .st-head{display:none}
+.st-total{text-align:right}
+.st-total-n{font-size:clamp(30px,3.4vw,44px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.st-total-n small{margin-left:.25em;font-size:.48em;font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
+.st-total-n.unk{color:var(--q-muted)}
+.st-total-l{margin-top:6px;font-size:14px;color:var(--q-muted)}
+.st-stage{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:clamp(8px,2vh,24px) 0 clamp(16px,4vh,48px)}
+.st-dots{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:0;min-height:40px}
+.st-dot{display:grid;place-items:center;width:22px;height:40px;padding:0;border:0;background:none;cursor:pointer}
+.st-dot i{display:block;width:8px;height:8px;border-radius:4px;background:color-mix(in srgb,var(--q-text) 14%,var(--q-bg));transition:width .3s var(--st-ease),background .3s}
+.st-dot.done i{background:var(--q-text)}
+.st-dot.on{width:40px}
+.st-dot.on i{width:26px;background:var(--q-text)}
+.st-dot:focus-visible{outline:2px solid var(--q-accent);outline-offset:-6px;border-radius:10px}
+span.st-dot{cursor:default}
+.st-pile{position:relative;width:min(560px,100%);margin-top:clamp(10px,2vh,22px)}
+.st-back{position:absolute;border-radius:24px;background:color-mix(in srgb,var(--q-text) 4%,var(--q-bg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--q-text) 6%,transparent)}
+.st-back.b1{left:12px;right:12px;top:11px;bottom:-9px}
+.st-back.b2{left:26px;right:26px;top:22px;bottom:-18px;background:color-mix(in srgb,var(--q-text) 3%,var(--q-bg))}
+.st-card{position:relative;display:flex;flex-direction:column;border-radius:24px;background:var(--q-bg);overflow:hidden;
+ box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 9%,transparent),0 22px 48px -20px var(--st-shade);transition:transform .55s var(--st-ease),opacity .45s var(--st-ease)}
+.st-card.enter{animation:st-enter .6s var(--st-ease) both}
+.st-card.leave{transform:translate(-40%,-8px) rotate(-7deg);opacity:0}
+.st-field{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;height:clamp(190px,36vh,330px);padding:24px 28px;
+ background:linear-gradient(160deg,color-mix(in srgb,var(--st-tone) 12%,var(--q-bg)) 0%,color-mix(in srgb,var(--st-tone) 34%,var(--q-bg)) 100%)}
+.st-field.pic{height:auto;aspect-ratio:16/9.4;max-height:44vh;padding:0;background:color-mix(in srgb,var(--st-tone) 10%,var(--q-bg))}
+.st-field.pic img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.st-field .st-ph{position:absolute;inset:0;display:grid;place-items:center;font-size:40px;font-weight:600;color:color-mix(in srgb,var(--st-tone) 50%,var(--q-bg))}
+.st-num{display:flex;align-items:baseline;gap:.22em;white-space:nowrap;min-width:0}
+.st-num b{font-size:clamp(44px,5.6vw,72px);font-weight:700;letter-spacing:-.035em;line-height:1;font-variant-numeric:tabular-nums;color:color-mix(in srgb,var(--st-tone) 28%,var(--q-text))}
+.st-num b.txt{font-size:clamp(34px,4.2vw,52px)}
+.st-num small{font-size:clamp(17px,1.8vw,22px);font-weight:600;color:color-mix(in srgb,var(--st-tone) 40%,var(--q-muted))}
+.st-num .unk{color:var(--q-muted)}
+.st-fline{font-size:15px;line-height:1.35;color:color-mix(in srgb,var(--st-tone) 30%,var(--q-muted))}
+.st-tag{display:inline-flex;align-items:center;height:20px;margin-left:8px;padding:0 8px;border-radius:999px;border:1.3px dashed var(--q-muted);font-size:12px;font-weight:550;color:var(--q-muted);vertical-align:3px}
+.st-body{display:flex;align-items:center;gap:16px;padding:20px 24px 22px}
+.st-fig{flex:none;width:52px;height:52px;display:grid;place-items:center}
+.st-fig img{width:100%;height:100%;object-fit:contain;display:block}
+.st-fig.ini{border-radius:50%;background:color-mix(in srgb,var(--st-tone) 16%,var(--q-bg));font-size:20px;font-weight:650;color:color-mix(in srgb,var(--st-tone) 70%,var(--q-text))}
+.st-ask{min-width:0;flex:1}
+.st-ask h2{margin:0;font-size:clamp(18px,1.7vw,21px);font-weight:650;line-height:1.25;letter-spacing:-.01em}
+.st-ask p{margin:3px 0 0;font-size:14px;line-height:1.35;color:var(--q-muted)}
+.st-side{flex:none;text-align:right}
+.st-side .st-num b{font-size:clamp(26px,2.6vw,34px);color:var(--q-text)}
+.st-side .st-num small{font-size:15px;color:var(--q-muted)}
+/* the paper of a bill */
+.st-card.paper{border-radius:12px;padding:34px 34px 26px;gap:14px;background:var(--q-bg)}
+.st-pile.paper .st-back{border-radius:12px}
+.st-pile.paper .st-back.b1{left:4px;right:4px;top:4px;bottom:-4px;transform:rotate(-3.5deg)}
+.st-pile.paper .st-back.b2{left:6px;right:6px;top:6px;bottom:-6px;transform:rotate(5deg)}
+.st-paper-who{font-size:15px;color:var(--q-muted)}
+.st-card.paper .st-num b{font-size:clamp(44px,5vw,60px);color:var(--q-text)}
+.st-card.paper .st-num small{color:var(--q-muted)}
+.st-bars{display:flex;flex-direction:column;gap:11px;margin:18px 0 8px}
+.st-bars i{display:block;height:10px;border-radius:5px;background:color-mix(in srgb,var(--q-text) 7%,var(--q-bg))}
+.st-card.paper .st-body{padding:10px 0 0}
+.st-stamp{position:absolute;right:26px;top:26px;padding:8px 16px;border:4px solid currentColor;border-radius:12px;font-size:19px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;line-height:1.1;color:var(--q-muted);transform:rotate(-12deg);background:color-mix(in srgb,var(--q-bg) 70%,transparent);animation:st-stamp .35s var(--st-ease) both;pointer-events:none}
+.st-stamp.main{color:var(--q-good)}
+.st-card.paper .st-stamp{top:96px}
+.st-acts{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-top:clamp(30px,5vh,48px);min-height:48px;width:min(560px,100%)}
+.st .st-b{min-width:112px;min-height:48px;padding:0 24px;border-radius:14px;border:1px solid color-mix(in srgb,var(--q-text) 16%,transparent);background:var(--q-bg);color:var(--q-text);font:600 15px/1.2 var(--q-font);cursor:pointer;transition:transform .15s var(--st-ease),background .2s,opacity .2s}
+.st .st-b:hover{background:color-mix(in srgb,var(--q-text) 5%,var(--q-bg))}
+.st .st-b:active{transform:translateY(1px)}
+.st .st-b.main{background:var(--q-text);border-color:var(--q-text);color:var(--q-bg)}
+.st .st-b.main:hover{background:color-mix(in srgb,var(--q-text) 86%,var(--q-bg))}
+.st .st-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.st .st-b[aria-busy=true]{opacity:.6;cursor:progress}
+.st .st-b[disabled]{opacity:.45;cursor:default}
+.st-wait{display:flex;align-items:center;gap:8px;min-height:48px;font-size:15px;color:var(--q-muted)}
+.st-wait i{display:block;width:9px;height:9px;border-radius:50%;border:1.6px dashed var(--q-muted)}
+.st-why{width:min(560px,100%);min-height:20px;margin:12px 0 0;font-size:14px;line-height:1.35;text-align:center;color:var(--q-muted)}
+.st-tell{display:flex;justify-content:center;align-items:center;gap:12px;margin-top:4px}
+.st .st-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:none;color:var(--q-muted);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,color .2s}
+.st .st-tell-b:hover{background:color-mix(in srgb,var(--q-text) 6%,transparent);color:var(--q-text)}
+.st .st-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.st .st-tell-b svg{flex:none;width:17px;height:17px}
+.st .st-tell-b.st-bare{padding:0}
+.st .st-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.st .st-tell-b.st-told{cursor:default}
+.st .st-tell-b.st-told svg{color:var(--q-good)}
+.st-tell-why{margin:0;font-size:13px;color:var(--q-muted);max-width:22em}
+.st-done{display:flex;flex-direction:column;align-items:center;gap:14px;margin-top:clamp(40px,12vh,130px);text-align:center;animation:st-enter .7s var(--st-ease) both}
+.st-done .st-fig{width:120px;height:120px}
+.st-done-mark{display:grid;place-items:center;width:120px;height:120px;border-radius:50%;background:color-mix(in srgb,var(--q-good) 16%,var(--q-bg));color:var(--q-good)}
+.st-done-mark svg{width:52px;height:52px}
+.st-done h2{margin:6px 0 0;font-size:clamp(24px,2.6vw,30px);font-weight:700;letter-spacing:-.02em}
+.st-done p{margin:0;font-size:15px;color:var(--q-muted)}
+.st-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+@keyframes st-enter{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes st-stamp{from{opacity:0;transform:rotate(-12deg) scale(1.6)}to{opacity:1;transform:rotate(-12deg) scale(1)}}
+@media (max-width:560px){
+ .st-stage{justify-content:flex-start}
+ .st-total{text-align:left;width:100%}
+ .st-field:not(.pic){height:clamp(180px,34vh,260px);padding:20px 22px}
+ .st-body{padding:16px 18px 18px;gap:12px}
+ .st-fig{width:44px;height:44px}
+ .st-card.paper{padding:26px 22px 20px}
+ .st-acts{gap:10px}
+ .st .st-b{flex:1 1 0;min-width:0;padding:0 12px}
+}
+@media (prefers-reduced-motion:reduce){.st *,.st *::before,.st *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	// a number is a number: a text is shown as written (a live value arrives as a number)
+	const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function svg(markup, size) {
+		const el = D.createElementNS("http://www.w3.org/2000/svg", "svg");
+		el.setAttribute("viewBox", \`0 0 \${size} \${size}\`);
+		el.setAttribute("aria-hidden", "true");
+		el.setAttribute("fill", "none");
+		el.setAttribute("stroke", "currentColor");
+		el.setAttribute("stroke-width", "2");
+		el.setAttribute("stroke-linecap", "round");
+		el.setAttribute("stroke-linejoin", "round");
+		el.innerHTML = markup;
+		return el;
+	}
+	const say = (tpl, map) => tpl.replace(/\\{(\\w+)\\}/g, (_, k) => (k in map ? map[k] : ""));
+	const norm = (t) => text(t).toLowerCase().replace(/\\s+/g, " ").trim();
+	const esc = (t) => (window.CSS && window.CSS.escape ? window.CSS.escape(t) : String(t).replace(/["\\\\]/g, "\\\\$&"));
+	// A picture the page names (kitPage): its own element, whose src the frame has set.
+	function media(path) {
+		if (!path) return null;
+		return D.querySelector(\`#kit-media [data-kit-src="\${esc(path)}"]\`);
+	}
+	function toneVar(tone) {
+		if (tone === "violet") return "color-mix(in srgb,var(--q-accent) 55%,var(--q-bad))";
+		if (tone === "teal") return "color-mix(in srgb,var(--q-good) 60%,var(--q-accent))";
+		if (tone === "plain") return "var(--q-muted)";
+		return \`var(--q-\${tone})\`;
+	}
+	// The agent's figure from the page (kitPage carries the ones the data names), or its initial in a soft circle.
+	function figureEl(id, name) {
+		const found = id ? media(\`figure:\${id}\`) : null;
+		if (found && found.getAttribute("src")) {
+			const img = h("img", null, { src: found.getAttribute("src"), alt: name || "" });
+			return h("span", "st-fig", null, img);
+		}
+		const first = Array.from(name || "")[0];
+		return first ? h("span", "st-fig ini", { "aria-hidden": "true" }, first.toUpperCase()) : null;
+	}
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.st")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- data
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const seen = new Set();
+		const cards = [];
+		for (const c of list(raw.cards)) {
+			if (!isObj(c) || cards.length >= MAX.cards) continue;
+			const title = cut(c.title, MAX.card);
+			if (!title) continue;
+			let id = text(c.id).trim().slice(0, 64) || \`card-\${cards.length + 1}\`;
+			while (seen.has(id)) id += "+";
+			seen.add(id);
+			const value = num(c.value);
+			const state = STATES.includes(c.state) ? c.state : "known";
+			cards.push({
+				id,
+				title,
+				// the whole title, normalised before the cut: a question's title is matched against it
+				match: norm(c.title),
+				value: state === "unknown" ? null : value,
+				state: value === null && c.value !== undefined && typeof c.value !== "string" ? "unknown" : state,
+				valueText: typeof c.value === "string" && value === null ? cut(c.value, MAX.valueText) : "",
+				unit: cut(c.unit, MAX.unit),
+				line: cut(c.line, MAX.cardLine),
+				picture: typeof c.picture === "string" ? c.picture : "",
+				tone: [...TONES, "plain"].includes(c.colour) ? c.colour : TONES[cards.length % TONES.length],
+				by: cut(c.by, MAX.by),
+				figure: typeof c.figure === "string" ? c.figure : "",
+				paper: c.paper === true,
+				question: text(c.question).trim(),
+				answer: c.answer !== undefined && c.answer !== null && c.answer !== false ? cut(c.answer === true ? "" : c.answer, MAX.stamp) || "✓" : null,
+				stamp: cut(c.stamp, MAX.stamp),
+				ask: typeof c.ask === "string" && Array.from(c.ask.replace(/\\s+/g, " ").trim()).length <= 40 ? c.ask.replace(/\\s+/g, " ").trim() : "",
+			});
+		}
+		let total = null;
+		if (isObj(raw.total)) {
+			const value = num(raw.total.value);
+			const state = STATES.includes(raw.total.state) ? raw.total.state : value === null ? "unknown" : "known";
+			total = { value: state === "unknown" ? null : value, state, unit: cut(raw.total.unit, MAX.unit), label: cut(raw.total.label, MAX.label) };
+		}
+		return { lang, words, title: cut(raw.title, MAX.title), line: cut(raw.line, MAX.line), cards, total };
+	}
+	function formatter(lang) {
+		let nf;
+		try {
+			nf = new Intl.NumberFormat(lang, { maximumFractionDigits: 2 });
+		} catch {
+			nf = new Intl.NumberFormat("en", { maximumFractionDigits: 2 });
+		}
+		return (v) => nf.format(v);
+	}
+
+	// ---------------------------------------------------------------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button under a card's answers, drawn only where the
+	// bridge has \`tell\` and the words name it. It asks from a press on it alone, once per press; the member writes the
+	// note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	const TOLD = new Map();
+	const QUIET = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	const TELL_ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+	};
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about || !words.tell) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${id}\\n\${about}\`;
+		const b = h("button", "st-tell-b", { type: "button" });
+		const why = h("p", "st-tell-why", { role: "status", "aria-live": "polite" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			b.replaceChildren(svg(st.done ? TELL_ICON.tick : TELL_ICON.note, 24));
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("st-bare", !label);
+			b.classList.toggle("st-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async () => {
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
+				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
+				for (const x of D.querySelectorAll(".st-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "st-tell", null, b, why);
+	}
+
+	// ---------------------------------------------------------------- state
+	const S = {
+		model: null,
+		text: null,
+		root: null,
+		// the open questions as last read, and whether a read has worked yet
+		qs: [],
+		read: false,
+		retry: 0,
+		// card id -> the question id it was seen with, so a question answered elsewhere marks its card done
+		seen: new Map(),
+		// card id -> { label, main }: answered on this page, or elsewhere while it was open
+		answered: new Map(),
+		// ids of the questions answered on this page: a read that began before the answer may still list them
+		gone: new Set(),
+		// the card in front, by id, and the one being answered or leaving
+		at: null,
+		busy: null,
+		leaving: null,
+		why: new Map(),
+		first: true,
+	};
+
+	// Each card with the open question that is its own: by the question's id, or by its whole title, which is the
+	// card's. A card already done takes none: the same ask again (each month's bill) is a new question, not the old card's.
+	function deal() {
+		const m = S.model;
+		const used = new Set();
+		const cards = m.cards.map((c) => {
+			if (c.answer !== null || S.answered.has(c.id)) return { ...c, q: null };
+			const q = S.qs.find((x) => !used.has(x.id) && ((c.question && x.id === c.question) || norm(x.title) === c.match)) || null;
+			if (q) used.add(q.id);
+			return { ...c, q };
+		});
+		// open questions that point at the app and that no card names: drawn as plain cards, so nothing open is hidden
+		for (const q of S.qs) {
+			if (used.has(q.id)) continue;
+			cards.push({
+				id: \`q:\${q.id}\`,
+				title: cut(q.title, MAX.card),
+				value: null,
+				state: "known",
+				valueText: "",
+				unit: "",
+				line: cut(text(q.body).split("\\n")[0], MAX.cardLine),
+				picture: "",
+				tone: TONES[cards.length % TONES.length],
+				by: cut(q.agent, MAX.by),
+				figure: "",
+				paper: false,
+				question: q.id,
+				answer: null,
+				stamp: "",
+				ask: "",
+				q,
+			});
+		}
+		const done = [];
+		const open = [];
+		const waiting = [];
+		for (const c of cards) {
+			if (c.answer !== null || S.answered.has(c.id)) done.push(c);
+			else if (c.q) open.push(c);
+			else waiting.push(c);
+		}
+		return { done, pile: [...open, ...waiting] };
+	}
+
+	// ---------------------------------------------------------------- drawing
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "stack" }, CSS);
+		D.head.append(style);
+	}
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`st\${BARE ? " st--bare" : ""}\`, null, h("p", "st-quiet", null, line)));
+		S.root = null;
+	}
+	function numEl(c, fmt) {
+		if (c.valueText) return h("div", "st-num", null, h("b", "txt", null, c.valueText));
+		if (c.value === null && c.state !== "unknown") return null;
+		const row = h("div", "st-num", null, c.value === null ? h("b", "unk", null, "?") : h("b", null, null, fmt(c.value)));
+		if (c.value !== null && c.unit) row.append(h("small", null, null, c.unit));
+		if (c.state === "assumed") row.append(h("span", "st-tag", null, S.model.words.assumed));
+		return row;
+	}
+
+	function cardEl(c, fmt, enter) {
+		const words = S.model.words;
+		const card = h("article", \`st-card\${c.paper ? " paper" : ""}\${enter && !still() ? " enter" : ""}\`, { "aria-label": c.title, "data-id": c.id });
+		card.style.setProperty("--st-tone", toneVar(c.tone));
+		const fig = figureEl(c.figure, c.by);
+		const ask = h("div", "st-ask", null, h("h2", null, null, c.title), c.by ? h("p", null, null, c.by) : null);
+		if (c.paper) {
+			if (c.line) card.append(h("div", "st-paper-who", null, c.line));
+			const n = numEl(c, fmt);
+			if (n) card.append(n);
+			card.append(h("div", "st-bars", { "aria-hidden": "true" }, h("i", null, { style: "width:82%" }), h("i", null, { style: "width:61%" }), h("i", null, { style: "width:72%" }), h("i", null, { style: "width:38%" })));
+			card.append(h("div", "st-body", null, fig, ask));
+		} else {
+			const pic = c.picture ? media(c.picture) : null;
+			const field = h("div", \`st-field\${c.picture ? " pic" : ""}\`);
+			if (c.picture) {
+				if (pic && pic.getAttribute("src")) field.append(h("img", null, { src: pic.getAttribute("src"), alt: "" }));
+				else field.append(h("span", "st-ph", { "aria-hidden": "true" }, "?"));
+			} else {
+				const n = numEl(c, fmt);
+				if (n) field.append(n);
+				if (c.line) field.append(h("div", "st-fline", null, c.line));
+			}
+			card.append(field);
+			const body = h("div", "st-body", null, fig, ask);
+			if (c.picture) {
+				const n = numEl(c, fmt);
+				if (n) body.append(h("div", "st-side", null, n));
+				if (c.line) ask.append(h("p", null, null, c.line));
+			}
+			card.append(body);
+		}
+		const stamp = S.answered.get(c.id);
+		if (stamp) card.append(h("span", \`st-stamp\${stamp.main ? " main" : ""}\`, null, stamp.label || "✓"));
+		return card;
+	}
+
+	function paint() {
+		const m = S.model;
+		if (!m) return;
+		ensureStyle();
+		const fmt = formatter(m.lang);
+		const words = m.words;
+		const focusKey = D.activeElement && D.activeElement.dataset ? D.activeElement.dataset.key : null;
+		const { done, pile } = deal();
+		const front = pile.find((c) => c.id === S.at) || pile[0] || null;
+		S.at = front ? front.id : null;
+
+		const root = h("main", \`st\${BARE ? " st--bare" : ""}\`, { lang: m.lang });
+		const top = h("div", "st-top");
+		top.append(h("header", "st-head", null, h("h1", "st-title", null, m.title || ""), m.line ? h("p", "st-line", null, m.line) : null));
+		if (m.total) {
+			const t = m.total;
+			const n = h("div", \`st-total-n\${t.value === null ? " unk" : ""}\`, null, t.value === null ? "?" : fmt(t.value));
+			if (t.value !== null && t.unit) n.append(h("small", null, null, t.unit));
+			top.append(h("div", "st-total", null, n, t.label ? h("div", "st-total-l", null, t.label) : null));
+		}
+		root.append(top);
+		const stage = h("section", "st-stage");
+		root.append(stage);
+
+		if (!front) {
+			// all done: the asking agent's figure when there is one, else a tick, and how many were answered
+			const lastFig = [...done].reverse().find((c) => c.figure && media(\`figure:\${c.figure}\`));
+			const mark = lastFig ? figureEl(lastFig.figure, lastFig.by) : h("span", "st-done-mark", null, svg('<path d="M10 25.5l9 9L38 15"/>', 48));
+			const count = done.length;
+			stage.append(h("div", "st-done", { role: "status" }, mark, h("h2", null, null, words.done), count ? h("p", null, null, say(words.answered, { n: String(count) })) : null));
+		} else {
+			// progress: one dot a card, the answered ones dark, the one in front long; the waiting ones open it
+			const total = done.length + pile.length;
+			const dots = h("div", "st-dots", { role: "group", "aria-label": say(words.card, { n: String(done.length + pile.indexOf(front) + 1), total: String(total) }) });
+			for (let k = 0; k < done.length; k++) dots.append(h("span", "st-dot done", { "aria-hidden": "true" }, h("i")));
+			pile.forEach((c, k) => {
+				const on = c.id === front.id;
+				const b = h("button", \`st-dot\${on ? " on" : ""}\`, { type: "button", "aria-label": \`\${c.title} · \${say(words.card, { n: String(done.length + k + 1), total: String(total) })}\`, "aria-current": on ? "true" : null, "data-key": \`dot:\${c.id}\` }, h("i"));
+				b.addEventListener("click", () => {
+					if (S.busy) return;
+					S.at = c.id;
+					paint();
+				});
+				dots.append(b);
+			});
+			if (total > 1) stage.append(dots);
+			const pileEl = h("div", \`st-pile\${front.paper ? " paper" : ""}\`);
+			if (pile.length > 2) pileEl.append(h("div", "st-back b2", { "aria-hidden": "true" }));
+			if (pile.length > 1) pileEl.append(h("div", "st-back b1", { "aria-hidden": "true" }));
+			const enter = S.first || S.entering === front.id;
+			S.entering = null;
+			pileEl.append(cardEl(front, fmt, enter));
+			stage.append(pileEl);
+
+			// the answers: the open question's options, the last one the main one
+			const acts = h("div", "st-acts");
+			const q = front.q;
+			if (q && q.options.length) {
+				q.options.forEach((o, k) => {
+					const main = k === q.options.length - 1;
+					const busy = S.busy === \`\${front.id}\\n\${o.value}\`;
+					const b = h("button", \`st-b\${main ? " main" : ""}\`, { type: "button", "data-key": \`answer:\${front.id}:\${o.value}\`, "aria-busy": busy ? "true" : null, title: o.description || null }, busy ? words.saving : cut(o.label, MAX.label) || text(o.value));
+					if (S.busy && !busy) b.disabled = true;
+					b.addEventListener("click", () => answer(front, o, main));
+					acts.append(b);
+				});
+			} else acts.append(h("div", "st-wait", null, h("i", null, { "aria-hidden": "true" }), words.waiting));
+			stage.append(acts);
+			stage.append(h("p", "st-why", { role: "status", "aria-live": "polite" }, S.why.get(front.id) || ""));
+			const tell = tellFoot(words, front.title, front.id.startsWith("q:") ? "" : front.id, front.ask);
+			if (tell) stage.append(tell);
+		}
+		show(root);
+		S.root = root;
+		S.first = false;
+		if (focusKey) {
+			const back = root.querySelector(\`[data-key="\${esc(focusKey)}"]\`);
+			if (back) back.focus({ preventScroll: true });
+		}
+	}
+
+	// ---------------------------------------------------------------- answering
+	async function answer(card, option, main) {
+		if (S.busy || !card.q || !window.qorpera || typeof window.qorpera.answer !== "function") return;
+		S.busy = \`\${card.id}\\n\${option.value}\`;
+		S.why.delete(card.id);
+		paint();
+		try {
+			await window.qorpera.answer(card.q.id, card.q.multiSelect ? [option.value] : option.value);
+		} catch (err) {
+			S.busy = null;
+			S.why.set(card.id, cut((err && err.message) || String(err || ""), 140) || "—");
+			paint();
+			return;
+		}
+		// answered: the card is stamped with the answer, then leaves, and the next comes forward
+		S.busy = null;
+		S.answered.set(card.id, { label: card.stamp || cut(option.label, MAX.stamp), main });
+		S.gone.add(card.q.id);
+		S.qs = S.qs.filter((q) => q.id !== card.q.id);
+		const el = S.root && S.root.querySelector(\`.st-card[data-id="\${esc(card.id)}"]\`);
+		if (el) el.append(h("span", \`st-stamp\${main ? " main" : ""}\`, null, card.stamp || cut(option.label, MAX.stamp)));
+		for (const b of S.root ? S.root.querySelectorAll(".st-b") : []) {
+			b.disabled = true;
+			if (b.dataset.key === \`answer:\${card.id}:\${option.value}\`) {
+				b.removeAttribute("aria-busy");
+				b.textContent = cut(option.label, MAX.label) || text(option.value);
+			}
+		}
+		const next = () => {
+			const { pile } = deal();
+			const after = pile.find((c) => c.id !== card.id);
+			S.at = after ? after.id : null;
+			S.entering = S.at;
+			paint();
+			const first = S.root && S.root.querySelector(".st-acts .st-b, .st-dot.on");
+			if (first) first.focus({ preventScroll: true });
+		};
+		if (still() || !el) next();
+		else {
+			setTimeout(() => el.classList.add("leave"), 650);
+			setTimeout(next, 1150);
+		}
+	}
+
+	// ---------------------------------------------------------------- the open questions
+	async function ask() {
+		clearTimeout(S.retry);
+		const bridge = window.qorpera;
+		if (!bridge || typeof bridge.questions !== "function") return;
+		let qs;
+		try {
+			qs = list(await bridge.questions()).filter((q) => isObj(q) && q.id && Array.isArray(q.options) && !S.gone.has(String(q.id)));
+		} catch {
+			// keep the questions the page shows, and ask again ten seconds later, until a read works
+			S.retry = setTimeout(ask, 10000);
+			return;
+		}
+		S.qs = qs.map((q) => ({
+			id: String(q.id),
+			agent: text(q.agent),
+			title: text(q.title),
+			body: text(q.body),
+			multiSelect: q.multiSelect === true,
+			options: q.options.filter(isObj).map((o) => ({ label: text(o.label), value: text(o.value), description: text(o.description) })),
+		}));
+		S.read = true;
+		// a card whose question was open and is no longer was answered elsewhere, in the chat: it is done
+		if (S.model) {
+			const { pile } = deal();
+			const open = new Map(pile.filter((c) => c.q).map((c) => [c.id, c.q.id]));
+			for (const [id, qid] of S.seen) if (!open.has(id) && !S.answered.has(id) && !S.qs.some((q) => q.id === qid)) S.answered.set(id, { label: "", main: true });
+			S.seen = new Map([...S.seen, ...open]);
+		}
+		if (!S.busy) paint();
+	}
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "stack.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			if (txt !== S.text || !S.root) {
+				raw = JSON.parse(txt);
+				S.model = normalize(raw);
+				S.text = txt;
+				D.documentElement.lang = S.model.lang;
+				if (!S.busy) paint();
+			}
+		} catch {
+			if (!S.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+			return;
+		}
+		// open questions come and go by themselves: read them again with every load
+		await ask();
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	D.addEventListener("keydown", (e) => {
+		if (!S.root || S.busy || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
+		if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+		const t = e.target;
+		if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+		const { pile } = deal();
+		const k = pile.findIndex((c) => c.id === S.at);
+		const next = pile[k + (e.key === "ArrowRight" ? 1 : -1)];
+		if (!next) return;
+		S.at = next.id;
+		S.entering = next.id;
+		paint();
+	});
+	function start() {
+		ensureStyle();
+		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The shelf kit's engine.js, as save_app writes it into an app's folder. */
+export const SHELF_ENGINE_JS = `// The shelf kit's engine: "How do our things stand?"
+// The company's real things side by side on one shelf, each as a big picture with one level behind it: a soft colour
+// block whose height is the level, the number that matters under it (warm when it is low), and an agent's one-line note
+// on the thing that needs one. Without levels it is a gallery: finished things, framed, with the maker's figure. A
+// member taps a thing to see it larger, with its note, its source and a button for a note to the app's owner.
+// The agent writes only shelf.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const MAX = { title: 40, line: 60, name: 24, unit: 12, note: 60, by: 24, word: 40, things: 8 };
+	const WORDS = {
+		low: "low",
+		assumed: "assumed",
+		unknown: "not known",
+		close: "Close",
+		source: "Source",
+		empty: "Nothing to show yet.",
+		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
+		tell: "",
+		told: "",
+	};
+	const STATES = ["known", "assumed", "unknown"];
+	const TONES = ["good", "accent", "violet", "teal", "warn"];
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.sh{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --sh-ease:cubic-bezier(.22,.8,.24,1);--sh-warm:color-mix(in srgb,var(--q-bad) 70%,var(--q-warn));--sh-shade:rgb(from var(--q-bg) calc(r*.3) calc(g*.3) calc(b*.32)/.32)}
+.sh *,.sh *::before,.sh *::after{box-sizing:border-box}
+.sh-head{min-width:0;max-width:40em}
+.sh-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.sh-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.sh--bare{padding:clamp(12px,1vw,16px)}
+.sh--bare .sh-head{display:none}
+.sh-shelf{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;gap:clamp(28px,5vh,56px);padding:clamp(12px,3vh,36px) 0 clamp(8px,2vh,20px)}
+.sh-row{position:relative;display:grid;grid-template-columns:repeat(var(--sh-cols),minmax(0,var(--sh-w)));justify-content:center;column-gap:clamp(12px,2.4vw,40px)}
+.sh-row.planked::before{content:"";position:absolute;left:max(-16px,calc(var(--sh-pad) * -1));right:max(-16px,calc(var(--sh-pad) * -1));top:var(--sh-scene);height:12px;border-radius:6px;background:color-mix(in srgb,var(--q-text) 11%,var(--q-bg));box-shadow:0 7px 0 -2px color-mix(in srgb,var(--q-text) 6%,var(--q-bg))}
+.sh .sh-thing{position:relative;display:flex;flex-direction:column;align-items:center;min-width:0;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:center;cursor:pointer;border-radius:22px}
+.sh .sh-thing:focus-visible{outline:2px solid var(--q-accent);outline-offset:6px}
+.sh-scene{position:relative;display:block;width:100%;height:var(--sh-scene)}
+.sh-level{position:absolute;left:7%;right:7%;bottom:0;display:block;border-radius:28px 28px 0 0;background:color-mix(in srgb,var(--sh-tone) 17%,var(--q-bg));transform-origin:50% 100%;transition:height .6s var(--sh-ease)}
+.sh-level.low{background:color-mix(in srgb,var(--sh-warm) 19%,var(--q-bg))}
+.sh-level.a{background:transparent;border:2px dashed color-mix(in srgb,var(--sh-tone) 45%,var(--q-bg));border-bottom:0}
+.sh-level.unk{left:14%;right:14%;background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--q-text) 7%,transparent) 0 2px,transparent 2px 9px);border:2px dashed color-mix(in srgb,var(--q-text) 22%,var(--q-bg));border-bottom:0}
+.sh-level.unk::after{content:"?";position:absolute;left:0;right:0;top:12px;font-size:24px;font-weight:600;color:var(--q-muted)}
+.sh.intro .sh-level{animation:sh-grow .9s var(--sh-ease) both;animation-delay:calc(var(--i) * 60ms + 120ms)}
+.sh.intro .sh-pic,.sh.intro .sh-frame{animation:sh-rise .7s var(--sh-ease) both;animation-delay:calc(var(--i) * 60ms)}
+.sh.intro .sh-note{animation:sh-rise .6s var(--sh-ease) both;animation-delay:calc(var(--i) * 60ms + 700ms)}
+.sh-pic{position:absolute;left:8%;right:8%;bottom:0;height:min(76%,calc(var(--sh-w) * 1.05));display:flex;align-items:flex-end;justify-content:center;transition:transform .35s var(--sh-ease)}
+.sh-pic img{max-width:100%;max-height:100%;object-fit:contain;display:block;filter:drop-shadow(0 14px 14px rgb(from var(--q-bg) calc(r*.3) calc(g*.3) calc(b*.32)/.16))}
+.sh-ph{display:grid;place-items:center;width:62%;aspect-ratio:3/4;border-radius:16px;border:2px dashed color-mix(in srgb,var(--q-text) 20%,var(--q-bg));color:var(--q-muted);font-size:26px;font-weight:600}
+.sh .sh-thing:hover .sh-pic,.sh .sh-thing:focus-visible .sh-pic{transform:translateY(-6px)}
+.sh-frame{position:absolute;left:4%;right:4%;top:4%;bottom:0;display:block;border-radius:18px;overflow:hidden;background:color-mix(in srgb,var(--sh-tone) 12%,var(--q-bg));box-shadow:0 20px 44px -18px var(--sh-shade);transition:transform .35s var(--sh-ease)}
+.sh-frame img{width:100%;height:100%;object-fit:cover;display:block}
+.sh-frame .sh-ph{position:absolute;inset:0;width:auto;aspect-ratio:auto;border:0;border-radius:0}
+.sh .sh-thing:hover .sh-frame{transform:translateY(-4px)}
+.sh-note{position:absolute;left:50%;bottom:calc(min(76%,calc(var(--sh-w) * 1.05)) + 12px);z-index:2;display:flex;align-items:center;gap:9px;width:max-content;max-width:min(calc(var(--sh-w) + 24px),calc(100vw - 32px));padding:8px 14px 8px 8px;border-radius:16px;background:var(--q-bg);box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 7%,transparent),0 12px 26px -10px var(--sh-shade);transform:translateX(-50%);text-align:left}
+.sh-note .sh-fig{width:32px;height:32px}
+.sh-note span{min-width:0;font-size:14px;font-weight:600;line-height:1.25;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.sh-fig{flex:none;display:grid;place-items:center;width:28px;height:28px}
+.sh-fig img{width:100%;height:100%;object-fit:contain;display:block}
+.sh-fig.ini{border-radius:50%;background:color-mix(in srgb,var(--q-accent) 14%,var(--q-bg));font-size:13px;font-weight:650;color:var(--q-accent)}
+.sh-num{display:flex;align-items:baseline;justify-content:center;gap:.24em;margin-top:28px;white-space:nowrap;max-width:100%}
+.sh-num b{font-size:clamp(28px,3.1vw,42px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.sh-num small{font-size:14px;font-weight:550;color:var(--q-muted);overflow:hidden;text-overflow:ellipsis}
+.sh-num.low b{color:var(--sh-warm)}
+.sh-num.unk b{color:var(--q-muted)}
+.sh-name{display:block;margin-top:6px;max-width:100%;font-size:14px;line-height:1.3;color:var(--q-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sh-tag{display:inline-flex;align-items:center;height:18px;margin-left:6px;padding:0 7px;border-radius:999px;border:1.3px dashed var(--q-muted);font-size:11.5px;font-weight:550;color:var(--q-muted);vertical-align:2px}
+.sh-tag.low{border:0;background:color-mix(in srgb,var(--sh-warm) 15%,var(--q-bg));color:var(--sh-warm)}
+.sh-maker{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px;font-size:14px;color:var(--q-muted)}
+.sh-row.gallery .sh-num{margin-top:18px}
+.sh-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+/* a thing opened */
+.sh-sheet{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:clamp(12px,4vw,40px);background:color-mix(in srgb,var(--q-bg) 72%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);opacity:0;transition:opacity .25s var(--sh-ease)}
+.sh-sheet.is-open{opacity:1}
+.sh-card{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);width:min(860px,100%);max-height:calc(100vh - 32px);overflow:auto;border-radius:24px;background:var(--q-bg);box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 8%,transparent),0 30px 80px -30px var(--sh-shade);transform:translateY(10px) scale(.985);transition:transform .35s var(--sh-ease)}
+.sh-sheet.is-open .sh-card{transform:none}
+.sh-big{position:relative;display:flex;align-items:flex-end;justify-content:center;min-height:360px;padding:36px 28px 0;background:color-mix(in srgb,var(--sh-tone) 13%,var(--q-bg))}
+.sh-big.low{background:color-mix(in srgb,var(--sh-warm) 14%,var(--q-bg))}
+.sh-big img{max-width:100%;max-height:340px;object-fit:contain;display:block}
+.sh-big.framed{padding:0;align-items:stretch}
+.sh-big.framed img{width:100%;height:100%;max-height:none;object-fit:cover}
+.sh-big .sh-ph{width:46%;margin-bottom:36px}
+.sh-info{display:flex;flex-direction:column;gap:14px;padding:34px 32px 28px;min-width:0}
+.sh-info h2{margin:0;padding-right:40px;font-size:22px;font-weight:650;line-height:1.25;letter-spacing:-.01em}
+.sh-info .sh-num{justify-content:flex-start;margin-top:0}
+.sh-info .sh-num b{font-size:clamp(40px,4.4vw,56px)}
+.sh-bar{position:relative;height:12px;border-radius:6px;background:color-mix(in srgb,var(--q-text) 7%,var(--q-bg));overflow:hidden}
+.sh-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:6px;background:color-mix(in srgb,var(--sh-tone) 60%,var(--q-bg))}
+.sh-bar.low i{background:var(--sh-warm)}
+.sh-said{display:flex;align-items:center;gap:12px;font-size:15px;line-height:1.4}
+.sh-said .sh-fig{width:40px;height:40px}
+.sh-said small{display:block;font-size:13px;color:var(--q-muted)}
+.sh-src{align-self:flex-start;font-size:14px;color:var(--q-muted);text-decoration:none}
+.sh-src:hover{color:var(--q-accent)}
+.sh .sh-x{position:absolute;right:14px;top:14px;z-index:1;display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:50%;background:color-mix(in srgb,var(--q-text) 6%,var(--q-bg));color:var(--q-text);cursor:pointer}
+.sh .sh-x:hover{background:color-mix(in srgb,var(--q-text) 11%,var(--q-bg))}
+.sh .sh-x:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.sh .sh-x svg{width:18px;height:18px}
+.sh-tell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:14px;margin-top:auto;padding-top:6px}
+.sh-tell-c{position:relative;align-self:stretch}
+.sh .sh-tell-b{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:40px;min-height:40px;padding:0 16px 0 12px;border:0;border-radius:999px;background:color-mix(in srgb,var(--q-text) 7%,transparent);color:var(--q-text);font-size:14px;font-weight:550;line-height:1.2;cursor:pointer;transition:background .2s,opacity .2s}
+.sh .sh-tell-b:hover{background:color-mix(in srgb,var(--q-text) 12%,transparent)}
+.sh .sh-tell-b:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.sh .sh-tell-b.sh-bare{padding:0}
+.sh .sh-tell-b svg{flex:none;width:17px;height:17px}
+.sh .sh-tell-b[aria-busy=true]{opacity:.55;cursor:progress}
+.sh .sh-tell-b.sh-told{background:none;color:var(--q-muted);cursor:default;padding-left:4px}
+.sh .sh-tell-b.sh-told.sh-bare{padding:0}
+.sh .sh-tell-b.sh-told svg{color:var(--q-good)}
+.sh-tell-why{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;font-size:13px;line-height:1.3;color:var(--q-muted);overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+@keyframes sh-grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes sh-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@media (max-width:640px){
+ .sh-card{grid-template-columns:1fr}
+ .sh-big{min-height:240px}
+ .sh-big img{max-height:230px}
+ .sh-info{padding:22px 22px 22px}
+ .sh-note{padding:6px 10px 6px 6px;gap:7px}
+ .sh-note .sh-fig{width:26px;height:26px}
+ .sh-note span{font-size:13px}
+ .sh-num{margin-top:22px}
+}
+@media (prefers-reduced-motion:reduce){.sh *,.sh *::before,.sh *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	// a number is a number: a text is shown as written (a live value arrives as a number)
+	const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function svg(markup) {
+		const el = D.createElementNS("http://www.w3.org/2000/svg", "svg");
+		el.setAttribute("viewBox", "0 0 24 24");
+		el.setAttribute("aria-hidden", "true");
+		el.setAttribute("fill", "none");
+		el.setAttribute("stroke", "currentColor");
+		el.setAttribute("stroke-width", "2");
+		el.setAttribute("stroke-linecap", "round");
+		el.setAttribute("stroke-linejoin", "round");
+		el.innerHTML = markup;
+		return el;
+	}
+	const esc = (t) => (window.CSS && window.CSS.escape ? window.CSS.escape(t) : String(t).replace(/["\\\\]/g, "\\\\$&"));
+	function media(path) {
+		if (!path) return null;
+		return D.querySelector(\`#kit-media [data-kit-src="\${esc(path)}"]\`);
+	}
+	function toneVar(tone) {
+		if (tone === "violet") return "color-mix(in srgb,var(--q-accent) 55%,var(--q-bad))";
+		if (tone === "teal") return "color-mix(in srgb,var(--q-good) 60%,var(--q-accent))";
+		return \`var(--q-\${tone})\`;
+	}
+	function picture(path) {
+		const found = media(path);
+		if (found && found.getAttribute("src")) return h("img", null, { src: found.getAttribute("src"), alt: "", draggable: "false" });
+		return h("span", "sh-ph", { "aria-hidden": "true" }, "?");
+	}
+	function figureEl(id, name) {
+		const found = id ? media(\`figure:\${id}\`) : null;
+		if (found && found.getAttribute("src")) return h("span", "sh-fig", null, h("img", null, { src: found.getAttribute("src"), alt: name || "" }));
+		const first = Array.from(name || "")[0];
+		return first ? h("span", "sh-fig ini", { "aria-hidden": "true" }, first.toUpperCase()) : null;
+	}
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.sh")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- data
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const unit = cut(raw.unit, MAX.unit);
+		const seen = new Set();
+		const things = [];
+		for (const t of list(raw.things)) {
+			if (!isObj(t) || things.length >= MAX.things) continue;
+			const name = cut(t.name, MAX.name);
+			if (!name) continue;
+			let id = text(t.id).trim().slice(0, 64) || \`thing-\${things.length + 1}\`;
+			while (seen.has(id)) id += "+";
+			seen.add(id);
+			const value = num(t.value);
+			const state = STATES.includes(t.state) ? t.state : t.value !== undefined && typeof t.value !== "string" && value === null ? "unknown" : "known";
+			const max = num(t.max);
+			let level = num(t.level);
+			if (level !== null) level = Math.max(0, Math.min(1, level > 1 && level <= 100 ? level / 100 : level));
+			else if (value !== null && max !== null && max > 0) level = Math.max(0, Math.min(1, value / max));
+			// a level is drawn where the thing has one; one whose number is not known yet is a hole in the shelf
+			const hasLevel = t.level !== undefined || t.max !== undefined;
+			const lowAt = num(t.low);
+			const low = t.low === true || (lowAt !== null && value !== null && value <= lowAt);
+			const ask = typeof t.ask === "string" ? t.ask.replace(/\\s+/g, " ").trim() : "";
+			things.push({
+				id,
+				name,
+				picture: typeof t.picture === "string" ? t.picture : "",
+				value: state === "unknown" ? null : value,
+				valueText: typeof t.value === "string" && value === null ? cut(t.value, 14) : "",
+				state,
+				unit: t.unit === undefined ? unit : cut(t.unit, MAX.unit),
+				level: state === "unknown" ? null : level,
+				hasLevel,
+				low,
+				note: cut(t.note, MAX.note),
+				by: cut(t.by, MAX.by),
+				figure: typeof t.figure === "string" ? t.figure : "",
+				ask: Array.from(ask).length <= 40 ? ask : "",
+				source: typeof t.source === "string" && /^(?:https:\\/\\/|folder:)/.test(t.source) ? t.source : "",
+				tone: TONES.includes(t.colour) ? t.colour : TONES[things.length % TONES.length],
+			});
+		}
+		if (!things.length) throw new Error("no things");
+		return { lang, words, title: cut(raw.title, MAX.title), line: cut(raw.line, MAX.line), things };
+	}
+	function formatter(lang) {
+		let nf;
+		try {
+			nf = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 });
+		} catch {
+			nf = new Intl.NumberFormat("en", { maximumFractionDigits: 1 });
+		}
+		return (v) => nf.format(v);
+	}
+
+	// ---------------------------------------------------------------- a note to the app's owner
+	// qorpera.tell (RUNTIME-INTERFACE-APPS.md §3b and §5): one quiet button at the foot of an opened thing, drawn only
+	// where the bridge has \`tell\` (an older web, or the page opened outside Qorpera, has none). It asks from a press on
+	// it alone, once per press; the member writes the note on Qorpera's bar above the page.
+	const TELL_AT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+	const TOLD = new Map();
+	const QUIET = new Map();
+	const canTell = () => !!(window.qorpera && typeof window.qorpera.tell === "function");
+	const ICON = {
+		note: '<path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L7 19.5V16a2.5 2.5 0 0 1-2.5-2.5z"/>',
+		tick: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+		x: '<path d="M6 6l12 12M18 6L6 18"/>',
+	};
+	// a closed thing keeps no reason: it is gone at once
+	function hushTold() {
+		for (const [key, st] of TOLD)
+			if (st.why) {
+				clearTimeout(QUIET.get(key));
+				TOLD.delete(key);
+			}
+		for (const x of D.querySelectorAll(".sh-tell-b")) if (x.__tell) x.__tell.paint();
+	}
+	function tellFoot(words, about, id, ask) {
+		if (!canTell() || !about) return null;
+		const at = TELL_AT.test(id || "") ? id : null;
+		const key = \`\${id}\\n\${about}\`;
+		const b = h("button", "sh-tell-b", { type: "button" });
+		const why = h("p", "sh-tell-why", { role: "status", "aria-live": "polite" });
+		const paint = () => {
+			const st = TOLD.get(key) || {};
+			const label = st.done ? words.told : words.tell;
+			b.replaceChildren(svg(st.done ? ICON.tick : ICON.note));
+			if (label) b.append(h("span", null, null, label));
+			b.classList.toggle("sh-bare", !label);
+			b.classList.toggle("sh-told", !!st.done);
+			if (label) b.removeAttribute("aria-label");
+			else b.setAttribute("aria-label", st.done ? "Sent" : "Send a note");
+			b.setAttribute("aria-busy", String(!!st.busy));
+			if (st.done) b.setAttribute("aria-disabled", "true");
+			else b.removeAttribute("aria-disabled");
+			why.textContent = st.why || "";
+		};
+		b.__tell = { key, paint };
+		b.addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const st = TOLD.get(key) || {};
+			if (st.busy || st.done || !canTell()) return;
+			const note = { about };
+			if (at) note.at = at;
+			if (ask) note.text = ask;
+			const settle = (next) => {
+				clearTimeout(QUIET.get(key));
+				TOLD.set(key, next);
+				// most often the reason is the member's own "not now" of a moment ago: it goes by itself
+				if (next.why) QUIET.set(key, setTimeout(() => TOLD.get(key) === next && settle({}), 6000));
+				for (const x of D.querySelectorAll(".sh-tell-b")) if (x.__tell && x.__tell.key === key) x.__tell.paint();
+			};
+			settle({ busy: true });
+			try {
+				await window.qorpera.tell(note);
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+			}
+		});
+		paint();
+		return h("div", "sh-tell", null, b, h("div", "sh-tell-c", null, why));
+	}
+
+	// ---------------------------------------------------------------- drawing
+	const ui = { model: null, root: null, open: null, sheet: null, opener: null, width: 0, height: 0, shown: false, count: 0 };
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "shelf" }, CSS);
+		D.head.append(style);
+	}
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`sh\${BARE ? " sh--bare" : ""}\`, null, h("p", "sh-quiet", null, line)));
+		ui.root = null;
+	}
+	function numEl(t, fmt, words) {
+		const row = h("span", \`sh-num\${t.low ? " low" : ""}\${t.value === null && !t.valueText ? " unk" : ""}\`);
+		if (t.valueText) row.append(h("b", null, null, t.valueText));
+		else if (t.value === null) {
+			if (t.state !== "unknown") return null;
+			row.append(h("b", null, null, "?"));
+		} else {
+			const b = h("b", null, { "data-n": String(t.value) }, fmt(t.value));
+			row.append(b);
+			if (t.unit) row.append(h("small", null, null, t.unit));
+		}
+		if (t.state === "assumed") row.append(h("span", "sh-tag", null, words.assumed));
+		return row;
+	}
+
+	function layout() {
+		const W = Math.max(280, (ui.root && ui.root.clientWidth) || window.innerWidth || 1280);
+		const pad = Math.max(16, Math.min(36, W * 0.026));
+		const inner = W - pad * 2;
+		const n = ui.model.things.length;
+		const cols = W < 600 ? Math.min(n, 2) : W < 900 ? Math.min(n, 3) : Math.min(n, n === 7 || n === 8 ? 4 : 6);
+		const rows = Math.ceil(n / cols);
+		const gap = Math.max(12, Math.min(40, W * 0.024));
+		const w = Math.floor(Math.min(300, (inner - gap * (cols - 1)) / cols));
+		const head = BARE ? 0 : 70;
+		const labels = 112;
+		const H = window.innerHeight || 800;
+		const avail = (H - pad * 2 - head - 40) / rows - labels - (rows > 1 ? 40 : 0);
+		const scene = Math.round(Math.max(W < 600 ? 170 : 200, Math.min(avail, w * 1.7, 470)));
+		return { W, pad, cols, w, scene };
+	}
+
+	function render(intro) {
+		const m = ui.model;
+		ensureStyle();
+		D.documentElement.lang = m.lang;
+		const fmt = formatter(m.lang);
+		const root = h("main", \`sh\${BARE ? " sh--bare" : ""}\${intro && !still() ? " intro" : ""}\`, { lang: m.lang });
+		root.append(h("header", "sh-head", null, h("h1", "sh-title", null, m.title || ""), m.line ? h("p", "sh-line", null, m.line) : null));
+		const shelf = h("div", "sh-shelf");
+		root.append(shelf);
+		show(root);
+		ui.root = root;
+		const L = layout();
+		ui.width = L.W;
+		ui.height = window.innerHeight;
+		shelf.style.setProperty("--sh-w", \`\${L.w}px\`);
+		shelf.style.setProperty("--sh-scene", \`\${L.scene}px\`);
+		shelf.style.setProperty("--sh-pad", \`\${L.pad}px\`);
+		for (let r = 0; r < m.things.length; r += L.cols) {
+			const part = m.things.slice(r, r + L.cols);
+			const leveled = part.some((t) => t.hasLevel);
+			const row = h("div", \`sh-row\${leveled ? " planked" : " gallery"}\`);
+			row.style.setProperty("--sh-cols", String(part.length));
+			part.forEach((t, k) => row.append(thingEl(t, r + k, fmt, m.words, leveled)));
+			shelf.append(row);
+		}
+		if (intro && !still()) {
+			for (const b of root.querySelectorAll(".sh-num b[data-n]")) countUp(b, Number(b.dataset.n), fmt);
+			setTimeout(() => root.classList.remove("intro"), 2400);
+		}
+		if (ui.open) {
+			const t = m.things.find((x) => x.id === ui.open);
+			if (t) openSheet(t, true);
+			else closeSheet(true);
+		}
+	}
+
+	function thingEl(t, i, fmt, words, leveled) {
+		const b = h("button", "sh-thing", { type: "button", "data-id": t.id, "aria-haspopup": "dialog", "aria-expanded": ui.open === t.id ? "true" : "false" });
+		b.style.setProperty("--sh-tone", toneVar(t.tone));
+		b.style.setProperty("--i", String(i));
+		const scene = h("span", "sh-scene");
+		if (leveled && t.hasLevel) {
+			if (t.level === null) scene.append(h("span", "sh-level unk", { style: "height:46%" }));
+			else scene.append(h("span", \`sh-level\${t.low ? " low" : ""}\${t.state === "assumed" ? " a" : ""}\`, { style: \`height:\${Math.max(3, Math.round(t.level * 94))}%\` }));
+		}
+		if (leveled || t.hasLevel) {
+			const pic = h("span", "sh-pic", null, picture(t.picture));
+			scene.append(pic);
+		} else scene.append(h("span", "sh-frame", null, picture(t.picture)));
+		if (t.note) {
+			const fig = figureEl(t.figure, t.by);
+			scene.append(h("span", "sh-note", null, fig, h("span", null, null, t.note)));
+		}
+		b.append(scene);
+		const n = numEl(t, fmt, words);
+		if (n) b.append(n);
+		const name = h("span", "sh-name", null, t.name);
+		if (t.low && !t.note) name.append(h("span", "sh-tag low", null, words.low));
+		b.append(name);
+		// a gallery thing names its maker under it
+		if (!t.hasLevel && !t.note && (t.by || t.figure)) b.append(h("span", "sh-maker", null, figureEl(t.figure, t.by), t.by || ""));
+		const label = [t.name, t.value !== null ? \`\${fmt(t.value)}\${t.unit ? \` \${t.unit}\` : ""}\` : t.valueText, t.low ? words.low : "", t.note].filter(Boolean).join(", ");
+		b.setAttribute("aria-label", label);
+		b.addEventListener("click", (e) => {
+			e.stopPropagation();
+			if (ui.open === t.id) closeSheet();
+			else openSheet(t);
+		});
+		return b;
+	}
+
+	function countUp(el, to, fmt) {
+		const t0 = performance.now();
+		let frames = 0;
+		// by the clock, and never longer than about 100 frames, so a page whose frames come slowly still ends there
+		const step = (t) => {
+			const k = Math.min(1, Math.max((t - t0) / 900, ++frames / 96));
+			const e = 1 - (1 - k) ** 3;
+			el.textContent = fmt(k >= 1 ? to : Math.round(to * e));
+			if (k < 1) requestAnimationFrame(step);
+		};
+		el.textContent = fmt(0);
+		requestAnimationFrame(step);
+	}
+
+	// ---------------------------------------------------------------- a thing opened
+	function openSheet(t, again) {
+		const m = ui.model;
+		const fmt = formatter(m.lang);
+		const words = m.words;
+		if (!again) {
+			hushTold();
+			ui.opener = t.id;
+		}
+		// one sheet at a time: one still fading out goes at once
+		for (const old of ui.root.querySelectorAll(".sh-sheet")) old.remove();
+		ui.open = t.id;
+		for (const b of ui.root.querySelectorAll(".sh-thing")) b.setAttribute("aria-expanded", String(b.dataset.id === t.id));
+		const close = h("button", "sh-x", { type: "button", "aria-label": words.close }, svg(ICON.x));
+		close.addEventListener("click", (e) => {
+			e.stopPropagation();
+			closeSheet();
+		});
+		const big = h("div", \`sh-big\${t.low ? " low" : ""}\${t.hasLevel ? "" : " framed"}\`, null, picture(t.picture));
+		const info = h("div", "sh-info", null, h("h2", null, null, t.name));
+		const n = numEl(t, fmt, words);
+		if (n) {
+			if (t.low) n.append(h("span", "sh-tag low", null, words.low));
+			info.append(n);
+		}
+		if (t.hasLevel && t.level !== null) info.append(h("div", \`sh-bar\${t.low ? " low" : ""}\`, { role: "img", "aria-label": \`\${Math.round(t.level * 100)}%\` }, h("i", null, { style: \`width:\${Math.max(2, Math.round(t.level * 100))}%\` })));
+		if (t.note || t.by) {
+			const said = h("div", "sh-said", null, figureEl(t.figure, t.by), h("div", null, null, t.note || "", t.by ? h("small", null, null, t.by) : null));
+			info.append(said);
+		}
+		if (t.source) info.append(h("a", "sh-src", { href: t.source }, \`\${words.source} ↗\`));
+		const tell = tellFoot(words, t.name, t.id, t.ask);
+		if (tell) info.append(tell);
+		const card = h("div", "sh-card", null, close, big, info);
+		card.style.setProperty("--sh-tone", toneVar(t.tone));
+		card.addEventListener("click", (e) => e.stopPropagation());
+		const sheet = h("div", \`sh-sheet\${again ? " is-open" : ""}\`, { role: "dialog", "aria-modal": "true", "aria-label": t.name }, card);
+		sheet.addEventListener("click", () => closeSheet());
+		ui.root.append(sheet);
+		ui.sheet = sheet;
+		if (!again) {
+			requestAnimationFrame(() => sheet.classList.add("is-open"));
+			sheet.classList.add("is-open");
+			close.focus({ preventScroll: true });
+		}
+	}
+	function closeSheet(quietly) {
+		const sheet = ui.sheet;
+		const was = ui.opener || ui.open;
+		ui.open = null;
+		ui.sheet = null;
+		hushTold();
+		if (ui.root) for (const b of ui.root.querySelectorAll(".sh-thing")) b.setAttribute("aria-expanded", "false");
+		if (!sheet) return;
+		sheet.classList.remove("is-open");
+		sheet.setAttribute("inert", "");
+		sheet.setAttribute("aria-hidden", "true");
+		if (still() || quietly) sheet.remove();
+		else setTimeout(() => sheet.remove(), 260);
+		if (!quietly && was && ui.root) {
+			const back = ui.root.querySelector(\`.sh-thing[data-id="\${esc(was)}"]\`);
+			if (back) back.focus({ preventScroll: true });
+		}
+	}
+	D.addEventListener("keydown", (e) => {
+		if (e.key === "Escape" && ui.open) {
+			e.preventDefault();
+			closeSheet();
+		}
+	});
+
+	// ---------------------------------------------------------------- size changes
+	let resizeFrame = 0;
+	window.addEventListener("resize", () => {
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			if (!ui.model || !ui.root) return;
+			const W = ui.root.clientWidth;
+			if (W === ui.width && window.innerHeight === ui.height) return;
+			render(false);
+		});
+	});
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	let lastText = null;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "shelf.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			if (txt === lastText && ui.root) return;
+			raw = JSON.parse(txt);
+			ui.model = normalize(raw);
+			lastText = txt;
+			const first = !ui.shown;
+			render(first);
+			ui.shown = true;
+		} catch {
+			if (!ui.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+		}
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	function start() {
+		ensureStyle();
+		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The map kit's engine.js, as save_app writes it into an app's folder. */
+export const MAP_ENGINE_JS = `// The map kit's engine: "What are we making, and who is at it?"
+// The company, or one owner's area, as one picture: three to seven things, each its shape, pale and filled from the
+// bottom as far as it is known or built; the agents' figures at the things they work on, a mark where a thing waits
+// for a member; layers a member opens (a product opens into its parts), zoomed into with a spring. The first layer of
+// the company's own map is its reading of itself, live through qorpera.reading(): the company's sentence as the title,
+// the thing it attends to biggest and in the middle, a quiet line of what changed with "Not right?", and grey and still
+// while the company cannot run. Where things stand is this engine's rule, never the data's.
+// The agent writes only map.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const MAX = { title: 40, line: 60, sentence: 200, name: 24, rname: 40, note: 40, word: 120, top: 7, layer: 12, all: 80, depth: 4, agents: 4, crumb: 40, change: 120, draft: 280, about: 60 };
+	const EN = {
+		finding: "We are finding our feet. The first reading comes with the next plan.",
+		stood: "We have stood still since {time}.",
+		stoodNow: "We have stood still.",
+		full: "Your ChatGPT is full, so none of us can work.",
+		fullOf: "{member}'s ChatGPT is full, so none of us can work.",
+		opensAt: "It opens again at {time}.",
+		opensOn: "It opens again on {date}.",
+		signIn: "Your ChatGPT needs a new sign-in, so none of us can work.",
+		signInOf: "{member}'s ChatGPT needs a new sign-in, so none of us can work.",
+		noLogin: "You have not connected ChatGPT, so none of us can work.",
+		noLoginOf: "{member} has no ChatGPT yet, so none of us can work.",
+		fullAny: "A ChatGPT login is full, so none of us can work.",
+		signInAny: "A ChatGPT login needs a new sign-in, so none of us can work.",
+		noLoginAny: "A member has not connected ChatGPT, so none of us can work.",
+		notRight: "Not right?",
+		draft: "Not right: {changes}.",
+		changed: "What changed",
+		where: "Where you are",
+		open: "opens",
+		leaves: "opens elsewhere",
+		working: "working",
+		waits: "waits for a founder",
+		unknown: "not known",
+		assumed: "assumed",
+		weeks: "{n} w",
+		months: "{n} mo",
+		source: "Source",
+		empty: "Nothing to show yet.",
+		// a note to the app's owner from "Not right?": what the pill says once the note went
+		tell: "",
+		told: "Sent",
+	};
+	const DA = {
+		finding: "Vi er ved at finde fodfæste. Den første aflæsning kommer med den næste plan.",
+		stood: "Vi har stået stille siden {time}.",
+		stoodNow: "Vi har stået stille.",
+		full: "Din ChatGPT er fuld, så ingen af os kan arbejde.",
+		fullOf: "{member}s ChatGPT er fuld, så ingen af os kan arbejde.",
+		opensAt: "Den åbner igen kl. {time}.",
+		opensOn: "Den åbner igen den {date}.",
+		signIn: "Din ChatGPT skal logges ind igen, så ingen af os kan arbejde.",
+		signInOf: "{member}s ChatGPT skal logges ind igen, så ingen af os kan arbejde.",
+		noLogin: "Du har ikke forbundet ChatGPT, så ingen af os kan arbejde.",
+		noLoginOf: "{member} har ingen ChatGPT endnu, så ingen af os kan arbejde.",
+		fullAny: "Et ChatGPT-login er fuldt, så ingen af os kan arbejde.",
+		signInAny: "Et ChatGPT-login skal logges ind igen, så ingen af os kan arbejde.",
+		noLoginAny: "Et medlem har ikke forbundet ChatGPT, så ingen af os kan arbejde.",
+		notRight: "Ikke rigtigt?",
+		draft: "Ikke rigtigt: {changes}.",
+		changed: "Hvad der er ændret",
+		where: "Hvor du er",
+		open: "åbner",
+		leaves: "åbner et andet sted",
+		working: "arbejder",
+		waits: "venter på en stifter",
+		unknown: "ikke kendt",
+		assumed: "antaget",
+		weeks: "{n} u",
+		months: "{n} md",
+		source: "Kilde",
+		empty: "Intet at vise endnu.",
+		tell: "",
+		told: "Sendt",
+	};
+	const STATES = ["known", "assumed", "unknown"];
+	const SHAPE_NAMES = ["board", "box", "screen", "phone", "gear", "code", "person", "people", "heart", "pin", "globe", "chart", "coin", "bank", "drop", "megaphone", "cart", "handshake", "truck", "factory", "scale", "document", "chat", "wrench", "blob"];
+	const ID = /^[A-Za-z0-9-]{1,64}$/;
+	const STALE_DAYS = 14;
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const calm = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.mp{position:relative;box-sizing:border-box;min-height:100vh;display:flex;flex-direction:column;background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --mp-solid:var(--q-accent);--mp-pale:color-mix(in srgb,var(--mp-solid) 17%,var(--q-bg));--mp-dash:var(--q-muted);
+ --mp-spring:cubic-bezier(.3,1.25,.5,1);--mp-t:520ms;--mp-out:cubic-bezier(.2,.7,.2,1);--u:1px}
+@supports (transition-timing-function:linear(0,1)){.mp{--mp-spring:linear(0,.009,.035 2.1%,.141 4.4%,.723 15.4%,.938 22.4%,1.017 28.1%,1.044 33.6%,1.045 38.7%,1.025 48.3%,1.004 61.3%,.998 77.6%,1)}}
+.mp *,.mp *::before,.mp *::after{box-sizing:border-box}
+.mp.is-still{--mp-solid:color-mix(in srgb,var(--q-muted) 70%,var(--q-bg));--mp-pale:color-mix(in srgb,var(--q-muted) 16%,var(--q-bg))}
+.mp-head{flex:none;display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:640px;padding:38px 43px 0}
+.mp-title{margin:0;font-size:23px;font-weight:700;line-height:29px;letter-spacing:-.01em;text-wrap:pretty}
+.mp-titles{display:flex;align-items:flex-start;gap:12px}
+.mp-here{position:relative;flex:none;width:var(--hs);height:var(--hs);margin-top:-2px;--hs:34px}
+.mp-here .mp-fill .mp-solid{height:var(--hs)}
+.mp-here[hidden]{display:none}
+.mp-here svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
+.mp-here path{fill-rule:evenodd;stroke-width:5;stroke-linejoin:round}
+.mp-line{margin:0;color:var(--q-muted);font-size:14px;line-height:20px}
+.mp-src{font-size:13px;color:var(--q-muted);text-decoration:none}
+.mp-src:hover{color:var(--q-accent)}
+.mp--bare .mp-head{display:none}
+.mp-trail{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;padding:18px 43px 0;font-size:13px;line-height:18px;color:var(--q-muted)}
+.mp-trail[hidden]{display:none}
+.mp .mp-crumb{max-width:24em;padding:2px 6px;margin:0 -2px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mp .mp-crumb:hover{background:color-mix(in srgb,var(--q-text) 6%,transparent);color:var(--q-text)}
+.mp .mp-crumb:focus-visible{outline:2px solid var(--q-accent);outline-offset:1px}
+.mp-trail span[aria-current]{padding:2px 4px;color:var(--q-text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:24em}
+.mp-sep{color:color-mix(in srgb,var(--q-muted) 60%,var(--q-bg))}
+.mp-stage{flex:1 1 auto;min-height:0;display:flex;padding:12px 0}
+.mp-canvas{position:relative;flex:none;margin:auto;overflow:visible}
+.mp-thing{position:absolute;z-index:1;display:flex;flex-direction:column;align-items:center;transition:left var(--mp-t) var(--mp-spring),top var(--mp-t) var(--mp-spring),width var(--mp-t) var(--mp-spring)}
+.mp .mp-hit{display:flex;flex-direction:column;align-items:center;max-width:100%;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:center;text-decoration:none;border-radius:16px}
+.mp button.mp-hit,.mp a.mp-hit{cursor:pointer}
+.mp .mp-hit:focus-visible{outline:2px solid var(--q-accent);outline-offset:6px}
+.mp-shape{position:relative;flex:none;transition:width var(--mp-t) var(--mp-spring),height var(--mp-t) var(--mp-spring),transform .35s var(--mp-out)}
+.mp-hit:is(button,a):hover .mp-shape,.mp-hit:is(button,a):focus-visible .mp-shape{transform:translateY(-5px)}
+.mp-shape svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
+.mp-shape path{fill-rule:evenodd;stroke-width:5;stroke-linejoin:round;transition:fill .4s ease,stroke .4s ease}
+.mp-pale path{fill:var(--mp-pale);stroke:var(--mp-pale)}
+.mp-solid path{fill:var(--mp-solid);stroke:var(--mp-solid)}
+.mp-dash{opacity:0;transition:opacity .4s ease}
+.mp-dash path{fill:none;stroke:var(--mp-dash);stroke-width:2.6;stroke-dasharray:6 7;stroke-linecap:round}
+.mp-pale{transition:opacity .4s ease}
+.mp-fill{position:absolute;left:0;bottom:0;width:100%;overflow:hidden;transition:height var(--mp-t) var(--mp-out)}
+.mp-fill .mp-solid{top:auto;bottom:0}
+.mp-thing.is-empty .mp-dash,.mp-thing.is-unknown .mp-dash,.mp-thing.is-assumed .mp-dash{opacity:1}
+.mp-thing.is-empty .mp-pale,.mp-thing.is-unknown .mp-pale,.mp-thing.is-unknown .mp-fill,.mp-thing.is-assumed .mp-fill{opacity:0}
+.mp-thing.is-assumed .mp-dash{z-index:1}
+.mp-thing.is-stale .mp-shape{opacity:.5}
+.mp-thing.is-stale .mp-solid path{fill:var(--mp-pale);stroke:var(--mp-pale)}
+.mp-thing.is-stale .mp-pale path{fill:color-mix(in srgb,var(--mp-pale) 55%,var(--q-bg));stroke:color-mix(in srgb,var(--mp-pale) 55%,var(--q-bg))}
+.mp-q{position:absolute;transform:translate(-50%,-50%);color:var(--q-muted);font-weight:600;font-size:calc(var(--s) * .2);line-height:1}
+.mp-q[hidden]{display:none}
+.mp-mark{position:absolute;right:-2%;top:-2%;display:grid;place-items:center;width:calc(26 * var(--u));height:calc(26 * var(--u));border-radius:50%;background:var(--q-bg);color:var(--q-muted);box-shadow:0 0 0 1px color-mix(in srgb,var(--q-text) 12%,transparent);transition:transform .3s var(--mp-out),color .2s}
+.mp-mark svg{position:static;width:58%;height:58%}
+.mp-hit:is(button,a):hover .mp-mark,.mp-hit:is(button,a):focus-visible .mp-mark{color:var(--q-accent);transform:scale(1.15)}
+.mp-name{display:-webkit-box;max-width:100%;padding-top:calc(12 * var(--u));overflow:hidden;color:var(--q-text);font-size:calc(16 * var(--u));font-weight:600;line-height:calc(22 * var(--u));-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.mp-label{max-width:100%;overflow:hidden;color:var(--q-muted);font-size:calc(14 * var(--u));line-height:calc(20 * var(--u));text-overflow:ellipsis;white-space:nowrap}
+.mp-fig{position:absolute;z-index:2;display:block;border-radius:50%;transition:left var(--mp-t) var(--mp-spring),top var(--mp-t) var(--mp-spring),width var(--mp-t) var(--mp-spring),height var(--mp-t) var(--mp-spring)}
+.mp-fig img{display:block;width:100%;height:100%;object-fit:contain}
+.mp-fig.ini,.mp-face{display:grid;place-items:center;background:color-mix(in srgb,var(--q-accent) 14%,var(--q-bg));color:var(--q-accent);font-weight:650;font-size:calc(var(--f) * .36)}
+.mp-face{background:color-mix(in srgb,var(--q-text) 52%,var(--q-bg));color:var(--q-bg);box-shadow:0 0 0 calc(3 * var(--u)) var(--q-bg),0 1px 4px rgb(0 0 0 / 18%)}
+.mp-face.me,.mp-face.founder{background:var(--q-accent);color:var(--q-on-accent,#fff)}
+.mp-face svg{width:62%;height:62%}
+.mp-face svg path{fill:currentColor}
+.mp-dot{position:absolute;right:-2%;bottom:-4%;width:26%;height:26%;border-radius:50%;background:var(--q-good);box-shadow:0 0 0 2px var(--q-bg)}
+.mp.is-still .mp-fig img{filter:grayscale(1);opacity:.6}
+.mp.is-still .mp-dot{display:none}
+.mp.is-still .mp-face{filter:grayscale(1);opacity:.7}
+.mp.is-still *,.mp.is-still *::before,.mp.is-still *::after{transition:none!important;animation:none!important}
+.mp-fig.is-arriving{animation:mp-arrive 1200ms both}
+@keyframes mp-arrive{0%{opacity:0;transform:translateX(80%) rotate(6deg);animation-timing-function:var(--mp-out)}36%{opacity:1;transform:translateX(-4%) rotate(-1deg)}100%{transform:none}}
+.mp-thing.is-arriving{animation:mp-grow var(--mp-t) var(--mp-spring) both}
+@keyframes mp-grow{from{opacity:0;transform:scale(.6)}}
+.mp-thing.is-zoomed{animation:mp-in calc(var(--mp-t) * 1.1) var(--mp-out) both;animation-delay:calc(140ms + var(--i) * 35ms)}
+@keyframes mp-in{from{opacity:0;transform:translateY(10px) scale(.86)}}
+.mp-canvas.is-row{display:flex;flex-wrap:wrap;justify-content:center;gap:18px;max-width:640px;padding:24px}
+.mp-fig.is-flow{position:relative;flex:none}
+.mp-changes{flex:none;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:6px 8px;padding:6px 24px 18px;font-size:12px;line-height:18px}
+.mp-changes[hidden]{display:none}
+.mp-change{display:inline-flex;align-items:center;gap:7px}
+.mp-change .mp-fig{position:relative;flex:none;width:22px;height:22px}
+.mp-change.is-ended .mp-fig img{filter:grayscale(1);opacity:.6}
+.mp-cdot{color:var(--q-muted)}
+.mp .mp-pill{display:inline-flex;align-items:center;gap:6px;min-height:26px;margin-left:6px;padding:3px 12px;border:1px solid color-mix(in srgb,var(--q-text) 22%,var(--q-bg));border-radius:999px;background:var(--q-bg);color:var(--q-text);font:inherit;font-size:11px;font-weight:500;cursor:pointer}
+.mp .mp-pill:hover{background:color-mix(in srgb,var(--q-text) 6%,var(--q-bg))}
+.mp .mp-pill:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.mp .mp-pill[aria-busy=true]{opacity:.55;cursor:progress}
+.mp .mp-pill.told{border-color:transparent;color:var(--q-muted);cursor:default}
+.mp-why{flex-basis:100%;margin:0;text-align:center;color:var(--q-muted);font-size:12px}
+.mp-quiet{margin:auto;color:var(--q-muted);font-size:15px}
+@media (max-width:600px){.mp-head{padding:22px 20px 0}.mp-title{font-size:20px;line-height:26px}.mp-here{--hs:29px}.mp-trail{padding:14px 20px 0}}
+@media (prefers-reduced-motion:reduce){.mp *,.mp *::before,.mp *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- the shapes
+	// One path per name, one solid shape with white cuts in a 100 x 100 box (the cuts are subpaths: fill-rule evenodd).
+	// The same set as the company's reading names (READING_SHAPES); another name draws the blob.
+	const n2 = (v) => Number(v.toFixed(2));
+	const rr = (x, y, w, h, r) => \`M\${n2(x + r)},\${n2(y)}h\${n2(w - 2 * r)}a\${r},\${r} 0 0 1 \${r},\${r}v\${n2(h - 2 * r)}a\${r},\${r} 0 0 1 \${-r},\${r}h\${n2(-(w - 2 * r))}a\${r},\${r} 0 0 1 \${-r},\${-r}v\${n2(-(h - 2 * r))}a\${r},\${r} 0 0 1 \${r},\${-r}z\`;
+	const ci = (cx, cy, rx, ry) => \`M\${n2(cx - rx)},\${n2(cy)}a\${rx},\${ry === undefined ? rx : ry} 0 1 0 \${n2(2 * rx)},0a\${rx},\${ry === undefined ? rx : ry} 0 1 0 \${n2(-2 * rx)},0z\`;
+	const poly = (pts) => \`M\${pts.map(([x, y]) => \`\${n2(x)},\${n2(y)}\`).join("L")}Z\`;
+	function wrench() {
+		const rad = (d) => (d * Math.PI) / 180;
+		const at = (r, d) => [62 + r * Math.cos(rad(d)), 38 + r * Math.sin(rad(d))];
+		const head = [];
+		for (let d = -10; d <= 280; d += 10) head.push(at(22, d));
+		for (let d = 280; d >= -10; d -= 10) head.push(at(9, d));
+		const al = [Math.cos(rad(135)), Math.sin(rad(135))];
+		const ac = [Math.cos(rad(45)), Math.sin(rad(45))];
+		const p = (dist, side) => [62 + al[0] * dist + ac[0] * side, 38 + al[1] * dist + ac[1] * side];
+		return poly(head) + poly([p(22.5, 8), p(60, 8), p(60, -8), p(22.5, -8)]);
+	}
+	function gear(teeth, outer, inner) {
+		const step = (2 * Math.PI) / teeth;
+		const at = (a, r) => \`\${n2(50 + r * Math.cos(a))},\${n2(50 + r * Math.sin(a))}\`;
+		const pts = [];
+		for (let t = 0; t < teeth; t++) {
+			const m = t * step - Math.PI / 2;
+			pts.push(at(m - step * 0.34, inner), at(m - step * 0.18, outer), at(m + step * 0.18, outer), at(m + step * 0.34, inner));
+		}
+		return \`M\${pts.join("L")}Z\`;
+	}
+	// Each shape: its solid parts, its cuts, and where a "?" stands inside its outline. A thing not known, or only
+	// assumed, is drawn by the outline alone: the solid parts, dashed, with no cut.
+	const SHAPES = {
+		board: [rr(8, 12, 84, 76, 14), rr(19, 25, 17, 30, 4) + rr(41.5, 25, 17, 44, 4) + rr(64, 25, 17, 20, 4)],
+		box: [rr(10, 18, 80, 70, 10), rr(18, 32, 64, 12, 6) + rr(40, 56, 20, 14, 7), 50, 56],
+		screen: [rr(6, 12, 88, 60, 10) + "M41,72h18l4,10h-26Z" + rr(26, 82, 48, 8, 4), rr(16, 22, 68, 40, 4), 50, 42],
+		phone: [rr(26, 4, 48, 92, 12), rr(34, 14, 32, 62, 4) + ci(50, 85, 6), 50, 45],
+		gear: [gear(8, 44, 33), ci(50, 50, 14)],
+		code: [rr(6, 12, 88, 76, 14), "M38,28L16,50L38,72L48,62L36,50L48,38Z" + "M62,28L84,50L62,72L52,62L64,50L52,38Z"],
+		person: [ci(50, 30, 17) + "M16,92C16,70 31,58 50,58C69,58 84,70 84,92Z", "", 50, 78],
+		people: [ci(36, 32, 15) + "M8,86C8,66 20,56 36,56C52,56 64,66 64,86Z" + ci(80, 46, 10) + "M66,86V80C66,68 72,62 80,62C88,62 94,68 94,80V86Z", "", 36, 74],
+		heart: ["M50,88C50,88 10,62 10,36C10,22 21,12 33,12C41,12 47,17 50,23C53,17 59,12 67,12C79,12 90,22 90,36C90,62 50,88 50,88Z", "", 50, 44],
+		pin: ["M50,7C30,7 15,22 15,41C15,65 50,93 50,93C50,93 85,65 85,41C85,22 70,7 50,7Z", ci(50, 40, 13), 50, 42],
+		globe: [ci(50, 50, 42), ci(50, 50, 18, 42) + ci(50, 50, 9, 42) + rr(10, 44, 22, 12, 6) + rr(68, 44, 22, 12, 6)],
+		chart: [rr(6, 8, 88, 84, 12), rr(18, 50, 14, 28, 4) + rr(43, 34, 14, 44, 4) + rr(68, 20, 14, 58, 4)],
+		coin: [ci(50, 50, 42), rr(42, 29, 16, 42, 8)],
+		bank: ["M50,8L90,30V36H10V30Z" + rr(16, 42, 14, 34, 3) + rr(43, 42, 14, 34, 3) + rr(70, 42, 14, 34, 3) + rr(8, 80, 84, 10, 3), "", 50, 59],
+		drop: ["M50,7C50,7 19,45 19,62a31,31 0 0 0 62,0C81,45 50,7 50,7Z", ci(41, 64, 10), 50, 62],
+		megaphone: ["M14,38H30L74,14V86L30,62H14a6,6 0 0 1 -6,-6V44a6,6 0 0 1 6,-6Z" + "M30,72h12l5,16h-12Z" + rr(82, 38, 10, 24, 5), "", 48, 50],
+		cart: ["M4,12H22L25,24H94L84,62H32L22,22H4Z" + ci(38, 80, 8) + ci(76, 80, 8), rr(38, 34, 36, 12, 6), 58, 42],
+		handshake: ["M4,36L28,28L50,46L38,62L22,58L4,62Z" + "M96,36L72,28L54,40L66,54L78,58L96,62Z" + rr(30, 64, 40, 14, 7), "", 50, 30],
+		truck: [rr(4, 22, 58, 48, 6) + "M64,34H80L94,50V70H64Z" + ci(24, 80, 9) + ci(78, 80, 9), "M69,40H79L88,52H69Z", 33, 46],
+		factory: ["M50,10L90,42V86a5,5 0 0 1 -5,5H15a5,5 0 0 1 -5,-5V42Z", rr(40, 56, 20, 29, 5), 50, 60],
+		scale: [rr(46, 16, 8, 62, 4) + rr(8, 20, 34, 8, 4) + rr(58, 20, 34, 8, 4) + "M6,46h36a18,18 0 0 1 -36,0Z" + "M58,46h36a18,18 0 0 1 -36,0Z" + rr(26, 80, 48, 10, 5), "", 24, 70],
+		document: ["M20,6H62L86,30V88a6,6 0 0 1 -6,6H20a6,6 0 0 1 -6,-6V12a6,6 0 0 1 6,-6Z", "M58,10V34H82Z" + rr(24, 48, 50, 12, 6) + rr(24, 68, 36, 12, 6), 50, 58],
+		chat: ["M16,12H84a10,10 0 0 1 10,10V62a10,10 0 0 1 -10,10H40L20,90V72H16a10,10 0 0 1 -10,-10V22a10,10 0 0 1 10,-10Z", ci(30, 42, 7) + ci(50, 42, 7) + ci(70, 42, 7), 50, 42],
+		wrench: [wrench(), "", 62, 38],
+		blob: ["M50,8C72,8 92,22 90,46C88,70 74,92 50,90C26,88 8,74 10,50C12,26 28,8 50,8Z", ""],
+	};
+	const shapeEntry = (name) => (Object.prototype.hasOwnProperty.call(SHAPES, name) ? SHAPES[name] : SHAPES.blob);
+	/** The whole shape: its solid parts with their cuts. */
+	const shapeOf = (name) => shapeEntry(name)[0] + shapeEntry(name)[1];
+	/** The outline alone: the solid parts with no cut. */
+	const outlineOf = (name) => shapeEntry(name)[0];
+	/** Where a "?" stands inside the outline, in the 100 x 100 box. */
+	const askAt = (name) => [shapeEntry(name)[2] ?? 50, shapeEntry(name)[3] ?? 50];
+
+	// ---------------------------------------------------------------- where things stand
+	// The canvas is 1052 x 620 units, one unit one pixel at most; it shrinks whole, so it never overlaps itself. Each
+	// slot (middle x, middle y, size) keeps its footprint (the shape, two lines of label under it, the figures at its
+	// lower corners) clear of every other one and inside the canvas. Three to seven are the company page's own tables;
+	// one, two and eight to twelve (a layer's) follow the same rule. Under 720 px the things stack in one column.
+	const CANVAS = { w: 1052, h: 620 };
+	const LABEL = 76;
+	const REACH = 75;
+	const FIGURE = 62;
+	const FACE = 46;
+	const SPACING = 40;
+	const COLUMN_BELOW = 720;
+	const SLOTS = {
+		3: [[526, 300, 230], [180, 330, 150], [872, 330, 150]],
+		4: [[526, 300, 220], [186, 230, 150], [866, 230, 140], [526, 68, 90]],
+		5: [[526, 290, 220], [186, 202, 150], [866, 202, 132], [206, 472, 112], [846, 472, 112]],
+		6: [[526, 308, 220], [186, 202, 150], [866, 202, 132], [206, 472, 112], [846, 472, 112], [526, 70, 84]],
+		7: [[526, 320, 200], [150, 250, 130], [902, 250, 130], [220, 480, 104], [832, 480, 104], [400, 66, 76], [652, 66, 76]],
+	};
+	function slots(count) {
+		if (SLOTS[count]) return SLOTS[count];
+		if (count <= 1) return [[526, 280, 240]];
+		if (count === 2) return [[330, 290, 210], [722, 290, 210]];
+		// eight to twelve: three rows, the middle row's middle first
+		const rows = { 8: [3, 2, 3], 9: [3, 3, 3], 10: [3, 4, 3], 11: [4, 3, 4] }[count] || [4, 4, 4];
+		const size = Math.max(...rows) === 4 ? 100 : 116;
+		const rowH = size + LABEL;
+		const gap = (CANVAS.h - 3 * rowH) / 2;
+		const out = [];
+		rows.forEach((k, r) => {
+			const step = Math.min(CANVAS.w / k, size + 2 * REACH + 24);
+			for (let i = 0; i < k; i++) out.push([Math.round(526 + (i - (k - 1) / 2) * step), Math.round(r * (rowH + gap) + size / 2), size]);
+		});
+		const mid = rows[0] + Math.floor((rows[1] - 1) / 2);
+		return [out[mid], ...out.filter((_, i) => i !== mid)];
+	}
+	/** The things in slot order: the attended one (or, in a layer, the first with the most agents), then by agents. */
+	function slotOrder(things, attention) {
+		const ranked = things.map((t, i) => ({ t, i })).sort((a, b) => b.t.stands.agents.length - a.t.stands.agents.length || a.i - b.i);
+		const first = things.find((t) => t.id === attention) || (ranked[0] && ranked[0].t);
+		return first ? [first, ...ranked.map((x) => x.t).filter((t) => t !== first)] : [];
+	}
+	function layoutOf(things, attention, W, H) {
+		const ordered = slotOrder(things.slice(0, MAX.layer), attention);
+		const spot = (t, x, y, size, u) => ({ t, x: x * u, y: y * u, size: size * u, left: (x - size / 2 - REACH) * u, width: (size + 2 * REACH) * u });
+		if (W < COLUMN_BELOW) {
+			const u = Math.max(0.2, Math.min(1, W / (230 + 2 * REACH + 24)));
+			let top = 16;
+			const spots = ordered.map((t, i) => {
+				const size = i === 0 ? 150 : 110;
+				const s = spot(t, W / u / 2, top + size / 2, size, u);
+				top += size + LABEL + 28;
+				return s;
+			});
+			return { column: true, u, width: W, height: top * u, spots };
+		}
+		const table = slots(ordered.length);
+		const u = Math.max(0.2, Math.min(1, W / CANVAS.w, H > 0 ? H / CANVAS.h : 1));
+		return { column: false, u, width: CANVAS.w * u, height: CANVAS.h * u, spots: ordered.map((t, i) => spot(t, table[i][0], table[i][1], table[i][2], u)) };
+	}
+	/** Where the figures at a thing stand: agents first, then the members it waits for (smaller); right, then left, then
+	 * outward. Each side holds two at full size; more shrink and close up. */
+	function figureSpots(at, u, count, faces) {
+		const sides = [Math.ceil(count / 2), Math.floor(count / 2)];
+		const out = [];
+		for (let i = 0; i < count; i++) {
+			const side = i % 2;
+			const rank = Math.floor(i / 2);
+			const many = sides[side];
+			const fit = Math.min(1, 2 / many);
+			const size = (i >= count - faces ? FACE : FIGURE) * fit * u;
+			const spacing = (many > 1 ? Math.min(SPACING, SPACING / (many - 1)) : 0) * u;
+			const reach = at.size / 2 + 4 * u + rank * spacing;
+			const middle = side === 0 ? at.x + reach : at.x - reach;
+			out.push({ left: middle - size / 2, top: at.y + at.size / 2 + 4 * u - size, size });
+		}
+		return out;
+	}
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	const fill = (s, vars) => s.replace(/\\{(\\w+)\\}/g, (m, k) => (vars[k] === undefined ? m : vars[k]));
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	const SVGNS = "http://www.w3.org/2000/svg";
+	function svgPath(cls, d, box) {
+		const el = D.createElementNS(SVGNS, "svg");
+		el.setAttribute("viewBox", box || "0 0 100 100");
+		el.setAttribute("aria-hidden", "true");
+		if (cls) el.setAttribute("class", cls);
+		const p = D.createElementNS(SVGNS, "path");
+		p.setAttribute("d", d);
+		el.append(p);
+		return el;
+	}
+	function icon(markup) {
+		const el = D.createElementNS(SVGNS, "svg");
+		el.setAttribute("viewBox", "0 0 24 24");
+		el.setAttribute("aria-hidden", "true");
+		el.setAttribute("fill", "none");
+		el.setAttribute("stroke", "currentColor");
+		el.setAttribute("stroke-width", "2.2");
+		el.setAttribute("stroke-linecap", "round");
+		el.setAttribute("stroke-linejoin", "round");
+		el.innerHTML = markup;
+		return el;
+	}
+	const ICON = {
+		dive: '<path d="M9 5H5v4M15 5h4v4M9 19H5v-4M15 19h4v-4"/>',
+		leave: '<path d="M9 7h8v8M17 7L7 17"/>',
+	};
+	const esc = (t) => (window.CSS && window.CSS.escape ? window.CSS.escape(t) : String(t).replace(/["\\\\]/g, "\\\\$&"));
+	function figureSrc(id) {
+		if (!id) return "";
+		const found = D.querySelector(\`#kit-media [data-kit-src="\${esc(\`figure:\${id}\`)}"]\`);
+		return (found && found.getAttribute("src")) || "";
+	}
+	const initials = (name) =>
+		Array.from(name.split(/\\s+/).filter(Boolean).slice(0, 2).map((w) => Array.from(w)[0] || "").join("")).join("").toUpperCase() || "?";
+	function when(iso, lang, date) {
+		const at = new Date(iso);
+		if (Number.isNaN(at.getTime())) return "";
+		const now = new Date();
+		const options = date
+			? { day: "numeric", month: "long" }
+			: at.toDateString() === now.toDateString()
+				? { hour: "2-digit", minute: "2-digit" }
+				: Math.abs(now.getTime() - at.getTime()) < 6 * 864e5
+					? { weekday: "long", hour: "2-digit", minute: "2-digit" }
+					: { day: "numeric", month: "long" };
+		try {
+			return new Intl.DateTimeFormat(lang, options).format(at);
+		} catch {
+			return new Intl.DateTimeFormat("en", options).format(at);
+		}
+	}
+	function age(seen, words) {
+		const at = Date.parse(seen);
+		if (!Number.isFinite(at)) return "";
+		const days = (Date.now() - at) / 864e5;
+		if (days <= STALE_DAYS) return "";
+		const weeks = Math.floor(days / 7);
+		return weeks < 9 ? fill(words.weeks, { n: weeks }) : fill(words.months, { n: Math.floor(days / 30) });
+	}
+
+	// ---------------------------------------------------------------- data
+	/** One thing of map.json as the engine draws it. */
+	function thingOf(t, words) {
+		const id = text(t.id).trim();
+		const name = cut(t.name, MAX.name);
+		if (!ID.test(id) || !name) return null;
+		const state = STATES.includes(t.state) ? t.state : "known";
+		const full = typeof t.full === "number" && Number.isFinite(t.full) ? Math.max(0, Math.min(100, Math.round(t.full))) : 0;
+		const stale = typeof t.seen === "string" ? age(t.seen, words) : "";
+		const opens = typeof t.opens === "string" && /^app:[a-z0-9][a-z0-9-]{0,63}$/.test(t.opens) ? t.opens : "";
+		return {
+			id,
+			name,
+			shape: typeof t.shape === "string" ? t.shape : "blob",
+			state,
+			full: state === "known" ? full : 0,
+			label: stale || (state === "unknown" ? words.unknown : cut(t.note, MAX.note) || (state === "assumed" ? words.assumed : "")),
+			stale: !!stale,
+			names: list(t.agents).filter((a) => typeof a === "string" && a.trim()).slice(0, MAX.agents).map((a) => cut(a, MAX.name)),
+			waits: t.waits === true,
+			opens,
+			source: typeof t.source === "string" && /^(?:https:\\/\\/|folder:)/.test(t.source) ? t.source : "",
+		};
+	}
+	function thingsOf(raw, most, words, budget) {
+		const out = [];
+		const seen = new Set();
+		for (const t of list(raw)) {
+			if (!isObj(t) || out.length >= most || budget.left <= 0) continue;
+			const thing = thingOf(t, words);
+			if (!thing || seen.has(thing.id)) continue;
+			seen.add(thing.id);
+			budget.left--;
+			out.push(thing);
+		}
+		return out;
+	}
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...(lang.slice(0, 2) === "da" ? DA : EN) };
+		if (isObj(raw.words)) for (const k of Object.keys(EN)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const budget = { left: MAX.all };
+		let top;
+		if (raw.top === "reading") top = "reading";
+		else if (isObj(raw.top)) {
+			const things = thingsOf(raw.top.things, MAX.top, words, budget);
+			if (!things.length) throw new Error("no things");
+			const attention = text(raw.top.attention);
+			top = { title: cut(raw.top.title, MAX.title), line: cut(raw.top.line, MAX.line), attention: things.some((t) => t.id === attention) ? attention : things[0].id, things };
+		} else throw new Error("no top");
+		const layers = new Map();
+		if (isObj(raw.layers))
+			for (const key of Object.keys(raw.layers)) {
+				const layer = raw.layers[key];
+				if (!ID.test(key) || !isObj(layer)) continue;
+				const things = thingsOf(layer.things, MAX.layer, words, budget);
+				if (things.length) layers.set(key, { line: cut(layer.line, MAX.line), things });
+			}
+		return { lang, words, top, layers, names: top === "reading" || [top, ...layers.values()].some((l) => l.things.some((t) => t.names.length)) };
+	}
+
+	// ---------------------------------------------------------------- what the page draws now
+	const ui = { model: null, live: { reading: undefined, agents: null }, path: [], root: null, parts: null, things: new Map(), figs: new Map(), drawn: "", width: 0, height: 0, told: null, toldFor: "", u: 1, arriving: false, zooming: false, zoomKeep: "" };
+
+	/** The team as the company has it (reading's team), by lower-case name; null where it is not known. */
+	function teamByName() {
+		const r = ui.live.reading;
+		if (!r || !Array.isArray(r.team)) return null;
+		const by = new Map();
+		for (const a of r.team) if (a && typeof a.name === "string") by.set(a.name.toLowerCase(), a);
+		return by;
+	}
+	function workingOf(name) {
+		const r = ui.live.reading;
+		const fromTeam = r && Array.isArray(r.team) ? r.team.find((a) => a && a.name === name) : null;
+		if (fromTeam) return fromTeam.working === true;
+		const a = Array.isArray(ui.live.agents) ? ui.live.agents.find((x) => x && x.name === name) : null;
+		return !!(a && a.working === true);
+	}
+	/** The company's reading as the first layer's things. */
+	function readingThings(reading, words) {
+		return list(reading.things)
+			.slice(0, MAX.top)
+			.filter((t) => isObj(t) && typeof t.key === "string")
+			.map((t) => ({
+				id: t.key,
+				name: cut(t.name, MAX.rname),
+				shape: text(t.shape) || "blob",
+				state: "known",
+				full: typeof t.full === "number" ? Math.max(0, Math.min(100, Math.round(t.full))) : 0,
+				label: cut(t.state, MAX.note),
+				stale: false,
+				stands: {
+					agents: list(t.agents).filter(isObj).map((a) => ({ name: text(a.name), figure: text(a.figure), working: a.working === true })),
+					faces: list(t.waits).filter(isObj).map((w) => ({ name: text(w.name), me: w.me === true })),
+				},
+				opens: "",
+				source: "",
+				words,
+			}));
+	}
+	/** Who stands at a thing of map.json: the agents the company has (all named, where the team is not known). */
+	function standsOf(t) {
+		const team = teamByName();
+		const agents = [];
+		for (const name of t.names) {
+			const found = team ? team.get(name.toLowerCase()) : null;
+			if (team && !found) continue;
+			agents.push(found ? { name: found.name, figure: text(found.figure), working: found.working === true } : { name, figure: "", working: workingOf(name) });
+		}
+		return { agents, faces: t.waits ? [{ name: "", me: false, founder: true }] : [] };
+	}
+	/** The layer on screen: its title, line, things and how it was reached. */
+	function current() {
+		const m = ui.model;
+		const reading = m.top === "reading" ? ui.live.reading && ui.live.reading.reading : null;
+		const first =
+			m.top === "reading"
+				? reading
+					? { title: cut(reading.sentence, MAX.sentence), line: cut(reading.line, MAX.sentence), attention: text(reading.attention), things: readingThings(reading, m.words) }
+					: null
+				: { title: m.top.title, line: m.top.line, attention: m.top.attention, things: m.top.things.map((t) => ({ ...t, stands: standsOf(t) })) };
+		// the way down, as far as it still goes
+		const trail = [];
+		let layer = first;
+		const path = [];
+		for (const id of ui.path) {
+			if (!layer || path.length >= MAX.depth - 1) break;
+			const thing = layer.things.find((t) => t.id === id);
+			const inner = thing && !thing.opens && m.layers.get(id);
+			if (!inner) break;
+			trail.push({ title: layer.title, thing });
+			path.push(id);
+			layer = { title: thing.name, line: inner.line, attention: "", things: inner.things.map((t) => ({ ...t, stands: standsOf(t) })), thing };
+		}
+		if (path.length !== ui.path.length) ui.path = path;
+		return { first, layer, trail, depth: path.length };
+	}
+	const opensLayer = (t, depth) => !t.opens && ui.model.layers.has(t.id) && depth < MAX.depth - 1;
+
+	// ---------------------------------------------------------------- drawing
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "map" }, CSS);
+		D.head.append(style);
+	}
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.mp")) if (old !== main) old.remove();
+		if (main.parentNode !== D.body) D.body.append(main);
+	}
+	function quiet(line) {
+		ensureStyle();
+		const main = h("main", \`mp\${BARE ? " mp--bare" : ""}\`, null, h("p", "mp-quiet", null, line));
+		show(main);
+		ui.root = null;
+		ui.parts = null;
+		ui.things.clear();
+		ui.figs.clear();
+	}
+	function skeleton() {
+		const title = h("h1", "mp-title");
+		const herePale = svgPath("mp-pale", "");
+		const hereSolid = svgPath("mp-solid", "");
+		const hereFill = h("div", "mp-fill", null, hereSolid);
+		const here = h("span", "mp-here", { "aria-hidden": "true", hidden: "" }, herePale, hereFill);
+		const line = h("p", "mp-line");
+		const src = h("a", "mp-src", { hidden: "" });
+		const head = h("header", "mp-head", null, h("div", "mp-titles", null, here, title), line, src);
+		const trail = h("nav", "mp-trail", { hidden: "" });
+		const canvas = h("div", "mp-canvas");
+		const stage = h("div", "mp-stage", null, canvas);
+		const changes = h("div", "mp-changes", { role: "group", hidden: "" });
+		const root = h("main", \`mp\${BARE ? " mp--bare" : ""}\`, null, trail, head, stage, changes);
+		ui.root = root;
+		ui.parts = { title, here, herePaths: [herePale.firstChild, hereSolid.firstChild], hereFill, line, src, head, trail, canvas, stage, changes };
+		ui.things.clear();
+		ui.figs.clear();
+		show(root);
+	}
+
+	/** The title and its line: the layer's, or on the company's own map why it stands still. */
+	function words(view, standing) {
+		const p = ui.parts;
+		const w = ui.model.words;
+		const lang = ui.model.lang;
+		let title = view.layer ? view.layer.title : ui.model.top === "reading" ? w.finding : "";
+		let line = view.layer ? view.layer.line : "";
+		if (standing && standing.stopped && ui.model.top === "reading" && view.depth === 0) {
+			title = standing.since ? fill(w.stood, { time: when(standing.since, lang) }) : w.stoodNow;
+			const member = typeof standing.member === "string" && standing.member ? standing.member.split(/\\s+/)[0] : "";
+			// "Your" only when the reading says the login is the member looking's; another member by name; else no one
+			const you = standing.you === true;
+			const of = (own, other, any) => (you ? own : member ? fill(other, { member }) : any);
+			if (standing.why === "login_full") {
+				const reset = typeof standing.resetsAt === "string" ? Date.parse(standing.resetsAt) : NaN;
+				const opens = Number.isFinite(reset)
+					? reset - Date.now() < 864e5
+						? fill(w.opensAt, { time: when(standing.resetsAt, lang) })
+						: fill(w.opensOn, { date: when(standing.resetsAt, lang, true) })
+					: "";
+				line = [of(w.full, w.fullOf, w.fullAny), opens].filter(Boolean).join(" ");
+			} else if (standing.why === "sign_in") line = of(w.signIn, w.signInOf, w.signInAny);
+			else if (standing.why === "no_login") line = of(w.noLogin, w.noLoginOf, w.noLoginAny);
+			else line = "";
+		}
+		p.title.textContent = title;
+		p.line.textContent = line;
+		p.line.hidden = !line;
+		// where you are: the opened thing's own shape, small, filled as far as it is, left of its name
+		const thing = view.layer && view.layer.thing;
+		p.here.hidden = !thing;
+		if (thing) {
+			for (const path of p.herePaths) path.setAttribute("d", thing.state === "known" ? shapeOf(thing.shape) : outlineOf(thing.shape));
+			p.hereFill.style.height = \`\${thing.full}%\`;
+		}
+		const source = thing ? thing.source : "";
+		if (source) {
+			p.src.setAttribute("href", source);
+			p.src.textContent = \`\${w.source} ↗\`;
+			p.src.hidden = false;
+		} else p.src.hidden = true;
+	}
+
+	function trailEl(view) {
+		const p = ui.parts;
+		const w = ui.model.words;
+		p.trail.hidden = view.depth === 0;
+		p.trail.setAttribute("aria-label", w.where);
+		if (view.depth === 0) return p.trail.replaceChildren();
+		const items = [];
+		view.trail.forEach((step, k) => {
+			const b = h("button", "mp-crumb", { type: "button" }, cut(step.title, MAX.crumb));
+			b.addEventListener("click", () => go(k));
+			items.push(b, h("span", "mp-sep", { "aria-hidden": "true" }, "›"));
+		});
+		items.push(h("span", null, { "aria-current": "page" }, cut(view.layer.title, MAX.crumb)));
+		p.trail.replaceChildren(...items);
+	}
+
+	function thingParts(t) {
+		const dash = svgPath("mp-dash", "");
+		const pale = svgPath("mp-pale", "");
+		const solid = svgPath("mp-solid", "");
+		const fillEl = h("div", "mp-fill", null, solid);
+		const q = h("span", "mp-q", { "aria-hidden": "true" }, "?");
+		const shape = h("div", "mp-shape", null, dash, pale, fillEl, q);
+		const name = h("div", "mp-name");
+		const label = h("div", "mp-label");
+		const el = h("div", "mp-thing", { "data-id": t.id });
+		return { el, shape, paths: [dash, pale, solid].map((s) => s.firstChild), solid, fill: fillEl, q, name, label, hit: null, look: "" };
+	}
+
+	/** One thing where its spot is: its shape filled, its name and label, and what a press does. */
+	function placeThing(t, s, depth, i, still) {
+		let parts = ui.things.get(t.id);
+		const fresh = !parts;
+		if (!parts) {
+			parts = thingParts(t);
+			ui.things.set(t.id, parts);
+		}
+		const el = parts.el;
+		const u = ui.u;
+		el.style.left = \`\${s.left}px\`;
+		el.style.top = \`\${s.y - s.size / 2}px\`;
+		el.style.width = \`\${s.width}px\`;
+		el.style.setProperty("--i", String(i));
+		parts.shape.style.width = \`\${s.size}px\`;
+		parts.shape.style.height = \`\${s.size}px\`;
+		parts.shape.style.setProperty("--s", \`\${s.size}px\`);
+		parts.solid.style.height = \`\${s.size}px\`;
+		// a thing not known, or only assumed, is its outline alone: dashed, pale inside when assumed, no cut
+		const whole = shapeOf(t.shape);
+		const outline = outlineOf(t.shape);
+		const open = t.state !== "known";
+		[outline, open ? outline : whole, whole].forEach((d, k) => {
+			if (parts.paths[k].getAttribute("d") !== d) parts.paths[k].setAttribute("d", d);
+		});
+		const [qx, qy] = askAt(t.shape);
+		parts.q.style.left = \`\${qx}%\`;
+		parts.q.style.top = \`\${qy}%\`;
+		parts.fill.style.height = \`\${t.full}%\`;
+		el.classList.toggle("is-empty", t.state === "known" && t.full === 0);
+		el.classList.toggle("is-unknown", t.state === "unknown");
+		el.classList.toggle("is-assumed", t.state === "assumed");
+		el.classList.toggle("is-stale", t.stale);
+		parts.q.hidden = t.state !== "unknown";
+		parts.name.textContent = t.name;
+		parts.label.textContent = t.label;
+		parts.label.hidden = !t.label;
+		// what a press does: a layer opens, another interface opens, a source opens, or nothing
+		const w = ui.model.words;
+		const dive = opensLayer(t, depth);
+		const kind = dive ? "dive" : t.opens ? "leave" : t.source ? "source" : "";
+		const look = \`\${kind}|\${t.opens}|\${t.source}\`;
+		if (parts.look !== look || !parts.hit) {
+			parts.look = look;
+			const hit = dive
+				? h("button", "mp-hit", { type: "button", "aria-haspopup": "true" })
+				: t.opens || t.source
+					? h("a", "mp-hit", { href: t.opens || t.source })
+					: h("div", "mp-hit", { role: "img" });
+			if (dive) hit.addEventListener("click", () => dive$(t.id));
+			for (const old of parts.shape.querySelectorAll(".mp-mark")) old.remove();
+			if (kind === "dive" || kind === "leave" || kind === "source") parts.shape.append(h("span", "mp-mark", { "aria-hidden": "true" }, icon(kind === "dive" ? ICON.dive : ICON.leave)));
+			hit.append(parts.shape, parts.name, parts.label);
+			el.replaceChildren(hit);
+			parts.hit = hit;
+		}
+		parts.hit.setAttribute("aria-label", [t.name, t.label, kind === "dive" ? w.open : kind ? w.leaves : ""].filter(Boolean).join(", "));
+		if (parts.el.parentNode !== ui.parts.canvas) ui.parts.canvas.append(parts.el);
+		if (fresh && ui.arriving && !still && !calm()) {
+			el.classList.add("is-arriving");
+			setTimeout(() => el.classList.remove("is-arriving"), 900);
+		}
+		if (fresh && ui.zooming && t.id !== ui.zoomKeep && !calm()) {
+			el.classList.add("is-zoomed");
+			setTimeout(() => el.classList.remove("is-zoomed"), 1200);
+		}
+		return parts;
+	}
+
+	/** A figure: an agent by its picture (or its initial), a member who is waited for by a face. Kept by its key, so it
+	 * walks to its new place. */
+	function placeFigure(key, stand, left, top, size, still, flow) {
+		let el = ui.figs.get(key);
+		const fresh = !el;
+		const look = JSON.stringify(stand);
+		if (!el || el.__look !== look) {
+			const next = stand.face
+				? h("span", \`mp-face mp-fig\${stand.me ? " me" : ""}\${stand.founder ? " founder" : ""}\`, { role: "img" })
+				: h("span", \`mp-fig\${figureSrc(stand.figure) ? "" : " ini"}\`, { role: "img" });
+			if (stand.face) {
+				if (stand.founder) next.append(svgPath(null, shapeOf("person")));
+				else next.append(initials(stand.name));
+			} else {
+				const src = figureSrc(stand.figure);
+				if (src) next.append(h("img", null, { src, alt: "", draggable: "false" }));
+				else next.append(initials(stand.name));
+				if (stand.working) next.append(h("i", "mp-dot", { "aria-hidden": "true" }));
+			}
+			const label = stand.face ? (stand.founder ? ui.model.words.waits : stand.name) : stand.working ? \`\${stand.name}, \${ui.model.words.working}\` : stand.name;
+			next.setAttribute("aria-label", label);
+			next.title = label;
+			next.__look = look;
+			if (el) {
+				next.style.cssText = el.style.cssText;
+				el.replaceWith(next);
+			}
+			el = next;
+			ui.figs.set(key, el);
+		}
+		el.classList.toggle("is-flow", !!flow);
+		if (flow) {
+			el.style.removeProperty("left");
+			el.style.removeProperty("top");
+		} else {
+			el.style.left = \`\${left}px\`;
+			el.style.top = \`\${top}px\`;
+		}
+		el.style.width = \`\${size}px\`;
+		el.style.height = \`\${size}px\`;
+		el.style.setProperty("--f", \`\${size}px\`);
+		if (el.parentNode !== ui.parts.canvas) ui.parts.canvas.append(el);
+		if (fresh && ui.arriving && !still && !calm() && !flow) {
+			el.classList.add("is-arriving");
+			setTimeout(() => el.classList.remove("is-arriving"), 1300);
+		}
+	}
+
+	function measure() {
+		const p = ui.parts;
+		const W = Math.max(280, (p.stage && p.stage.clientWidth) || window.innerWidth || 1052);
+		const used = (p.head.offsetHeight || 0) + (p.trail.hidden ? 0 : p.trail.offsetHeight || 0) + (p.changes.hidden ? 0 : p.changes.offsetHeight || 0);
+		const H = Math.max(200, (window.innerHeight || 800) - used - 24);
+		return { W, H };
+	}
+
+	function render(how) {
+		if (!ui.model) return;
+		ensureStyle();
+		if (!ui.root) skeleton();
+		const m = ui.model;
+		const p = ui.parts;
+		D.documentElement.lang = m.lang;
+		ui.root.setAttribute("lang", m.lang);
+		const live = ui.live.reading;
+		const standing = live && isObj(live.standing) ? live.standing : null;
+		const still = !!(standing && standing.stopped);
+		ui.root.classList.toggle("is-still", still);
+		const view = current();
+		words(view, standing);
+		trailEl(view);
+		drawChanges(view, still);
+		const before = how && how.from ? how.from : null;
+		ui.arriving = how === "update";
+		ui.zooming = !!(how && how.zoom);
+		ui.zoomKeep = how && how.zoom === "out" ? how.id : "";
+		if (how && how.zoom) {
+			// another layer: none of the things before are kept
+			for (const [, parts] of ui.things) parts.el.remove();
+			ui.things.clear();
+			for (const [, el] of ui.figs) el.remove();
+			ui.figs.clear();
+		}
+		const keepThings = new Set();
+		const keepFigs = new Set();
+		const canvas = p.canvas;
+		if (!view.layer) {
+			// no reading yet: the team in a row, the Co-Founder first; no shapes
+			canvas.classList.add("is-row");
+			canvas.classList.remove("is-column");
+			canvas.style.removeProperty("width");
+			canvas.style.removeProperty("height");
+			const team = live && Array.isArray(live.team) ? live.team.filter(isObj) : [];
+			const row = [...team].sort((a, b) => Number(b.cofounder === true) - Number(a.cofounder === true));
+			const seen = new Map();
+			for (const a of row) {
+				const name = text(a.name);
+				const k = (seen.get(name) || 0) + 1;
+				seen.set(name, k);
+				const key = \`row:\${name}#\${k}\`;
+				keepFigs.add(key);
+				placeFigure(key, { name, figure: text(a.figure), working: !still && a.working === true }, 0, 0, FIGURE, still, true);
+			}
+		} else {
+			canvas.classList.remove("is-row");
+			const { W, H } = measure();
+			const L = layoutOf(view.layer.things, view.layer.attention, W, H);
+			ui.u = L.u;
+			canvas.classList.toggle("is-column", L.column);
+			canvas.style.width = \`\${L.width}px\`;
+			canvas.style.height = \`\${L.height}px\`;
+			canvas.style.setProperty("--u", \`\${L.u}px\`);
+			const seen = new Map();
+			const keyOf = (k) => {
+				const c = (seen.get(k) || 0) + 1;
+				seen.set(k, c);
+				return c === 1 ? k : \`\${k}#\${c}\`;
+			};
+			L.spots.forEach((s, i) => {
+				const t = s.t;
+				keepThings.add(t.id);
+				placeThing(t, s, view.depth, i, still);
+				const stands = [
+					...t.stands.agents.map((a) => ({ key: keyOf(\`agent:\${a.name}\`), stand: { name: a.name, figure: a.figure, working: !still && a.working } })),
+					...t.stands.faces.map((f) => ({ key: keyOf(\`face:\${f.founder ? "founder" : f.name}\`), stand: { face: true, name: f.name, me: f.me, founder: !!f.founder } })),
+				];
+				figureSpots(s, L.u, stands.length, t.stands.faces.length).forEach((at, k) => {
+					keepFigs.add(stands[k].key);
+					placeFigure(stands[k].key, stands[k].stand, at.left, at.top, at.size, still, false);
+				});
+			});
+			// the zoom: into a thing, the new layer grows out of where the thing stood; out of one, it shrinks back into
+			// the thing's place. The canvas moves as one, from its top left corner.
+			if (before && !calm() && !still) {
+				const came = how.zoom === "out" ? ui.things.get(how.id) : null;
+				const C = canvas.getBoundingClientRect();
+				const A = came ? came.shape.getBoundingClientRect() : C;
+				if (A.width > 0 && before.width > 0 && C.width > 0) {
+					const k = before.width / A.width;
+					canvas.style.transition = "none";
+					canvas.style.transformOrigin = "0 0";
+					canvas.style.transform = \`translate(\${before.left - C.left - k * (A.left - C.left)}px,\${before.top - C.top - k * (A.top - C.top)}px) scale(\${k})\`;
+					canvas.getBoundingClientRect();
+					requestAnimationFrame(() => {
+						canvas.style.transition = "transform calc(var(--mp-t) * 1.25) var(--mp-spring)";
+						canvas.style.transform = "";
+						setTimeout(() => {
+							canvas.style.removeProperty("transition");
+							canvas.style.removeProperty("transform-origin");
+						}, 900);
+					});
+				}
+			}
+		}
+		for (const [key, parts] of ui.things)
+			if (!keepThings.has(key)) {
+				ui.things.delete(key);
+				parts.el.remove();
+			}
+		for (const [key, el] of ui.figs)
+			if (!keepFigs.has(key)) {
+				ui.figs.delete(key);
+				el.remove();
+			}
+		ui.width = (p.stage && p.stage.clientWidth) || 0;
+		ui.height = window.innerHeight;
+	}
+
+	// ---------------------------------------------------------------- what changed, and "Not right?"
+	function drawChanges(view, still) {
+		const box = ui.parts.changes;
+		const w = ui.model.words;
+		const r = ui.live.reading && ui.live.reading.reading;
+		const changes = ui.model.top === "reading" && view.depth === 0 && r && !still ? list(r.changes).filter((c) => isObj(c) && typeof c.line === "string" && c.line.trim()) : [];
+		box.hidden = changes.length === 0;
+		box.setAttribute("aria-label", w.changed);
+		if (!changes.length) return box.replaceChildren();
+		const key = JSON.stringify(changes);
+		if (box.__key === key && box.childElementCount) return;
+		box.__key = key;
+		// a note sent about other changes says nothing of these
+		if (ui.toldFor !== key) ui.told = null;
+		const items = [];
+		changes.slice(0, 6).forEach((c, i) => {
+			if (i) items.push(h("span", "mp-cdot", { "aria-hidden": "true" }, "·"));
+			const a = isObj(c.agent) ? c.agent : null;
+			const src = a ? figureSrc(text(a.figure)) : "";
+			const fig = a ? h("span", \`mp-fig\${src ? "" : " ini"}\`, { "aria-hidden": "true" }, src ? h("img", null, { src, alt: "" }) : initials(text(a.name))) : null;
+			if (fig) fig.style.setProperty("--f", "22px");
+			items.push(h("span", \`mp-change\${c.what === "ended" ? " is-ended" : ""}\`, null, fig, h("span", null, null, cut(c.line, MAX.change))));
+		});
+		const pill = notRight(changes, view, key);
+		box.replaceChildren(...items, ...(pill || []).filter(Boolean));
+	}
+	// A note to the app's owner (qorpera.tell, RUNTIME-INTERFACE-APPS.md §5): a draft the member sends or changes on
+	// Qorpera's bar above the page, never sent by itself. Only where the bridge has tell.
+	function notRight(changes, view, key) {
+		const bridge = window.qorpera;
+		if (!bridge || typeof bridge.tell !== "function") return null;
+		const w = ui.model.words;
+		const st = ui.told || {};
+		const b = h("button", \`mp-pill\${st.done ? " told" : ""}\`, { type: "button", "aria-busy": String(!!st.busy) }, st.done ? w.told || w.notRight : w.tell || w.notRight);
+		if (st.done) b.setAttribute("aria-disabled", "true");
+		const why = st.why ? h("p", "mp-why", { role: "status" }, st.why) : null;
+		b.addEventListener("click", async () => {
+			const now = ui.told || {};
+			if (now.busy || now.done) return;
+			const settle = (next) => {
+				ui.told = next;
+				ui.toldFor = key;
+				ui.parts.changes.__key = "";
+				drawChanges(current(), false);
+			};
+			settle({ busy: true });
+			try {
+				await bridge.tell({ about: cut(view.first ? view.first.title : w.changed, MAX.about), text: cut(fill(w.draft, { changes: changes.map((c) => c.line.trim()).join("; ") }), MAX.draft) });
+				settle({ done: true });
+			} catch (err) {
+				settle({ why: cut((err && err.message) || String(err || ""), 140) || "—" });
+				setTimeout(() => {
+					if (ui.told && ui.told.why) settle(null);
+				}, 6000);
+			}
+		});
+		return [b, why];
+	}
+
+	// ---------------------------------------------------------------- diving in and coming back
+	function rectOf(el) {
+		return el ? el.getBoundingClientRect() : null;
+	}
+	function dive$(id) {
+		const parts = ui.things.get(id);
+		const from = rectOf(parts && parts.shape);
+		ui.path = [...ui.path, id];
+		render({ zoom: "in", from });
+		const first = ui.parts.canvas.querySelector(".mp-hit:is(button,a)");
+		(first || ui.parts.trail.querySelector(".mp-crumb") || ui.parts.title).focus({ preventScroll: true });
+	}
+	/** Up to the layer at \`depth\` (0: the first), the focus on the thing that was opened from it. */
+	function go(depth) {
+		if (depth >= ui.path.length) return;
+		const came = ui.path[depth];
+		const from = rectOf(ui.parts && ui.parts.canvas);
+		ui.path = ui.path.slice(0, depth);
+		render({ zoom: "out", from, id: came });
+		const back = ui.things.get(came);
+		if (back && back.hit) back.hit.focus({ preventScroll: true });
+	}
+	D.addEventListener("keydown", (e) => {
+		if (e.key !== "Escape" || e.isComposing || !ui.path.length || e.defaultPrevented) return;
+		e.preventDefault();
+		go(ui.path.length - 1);
+	});
+
+	// ---------------------------------------------------------------- size changes
+	let resizeFrame = 0;
+	window.addEventListener("resize", () => {
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			if (!ui.model || !ui.root) return;
+			const W = (ui.parts.stage && ui.parts.stage.clientWidth) || 0;
+			if (W === ui.width && window.innerHeight === ui.height) return;
+			render(null);
+		});
+	});
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	let lastText = null;
+	// a reading that could not be read waits before it is asked again: every refusal counts against the page
+	let readingWait = 0;
+	let readingFails = 0;
+	async function live(model) {
+		const bridge = window.qorpera;
+		if (!bridge) return;
+		if (model.names && typeof bridge.reading === "function" && Date.now() >= readingWait) {
+			try {
+				const answer = await bridge.reading();
+				if (isObj(answer)) ui.live.reading = answer;
+				readingFails = 0;
+			} catch (err) {
+				readingFails++;
+				// a manifest without reading asks no more until the page opens again: the company's map then has none
+				if (/reads in app\\.toml/.test(String(err && err.message))) {
+					readingWait = Infinity;
+					if (ui.live.reading === undefined) ui.live.reading = null;
+				} else readingWait = Date.now() + Math.min(6e5, 1e4 * 2 ** (readingFails - 1));
+			}
+		} else if (typeof bridge.reading !== "function" && ui.live.reading === undefined) ui.live.reading = null;
+		if (typeof bridge.agents === "function" && typeof bridge.reading !== "function")
+			try {
+				const agents = await bridge.agents();
+				if (Array.isArray(agents)) ui.live.agents = agents;
+			} catch {
+				/* the page may not read agents */
+			}
+	}
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "map.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			raw = JSON.parse(txt);
+			const model = txt === lastText && ui.model ? ui.model : normalize(raw);
+			await live(model);
+			// the company's map before its reading could be read once: nothing to draw yet, and asked again
+			if (model.top === "reading" && ui.live.reading === undefined) {
+				if (!ui.root) quiet(model.words.empty);
+				clearTimeout(pending);
+				pending = setTimeout(load, Math.min(6e5, Math.max(1e4, readingWait - Date.now())));
+				return;
+			}
+			const key = JSON.stringify([txt, ui.live.reading, ui.live.agents]);
+			if (key === ui.drawn && ui.root) return;
+			const first = !ui.drawn || !ui.root;
+			ui.model = model;
+			lastText = txt;
+			ui.drawn = key;
+			render(first ? null : "update");
+		} catch {
+			if (!ui.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || EN.empty);
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+		}
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	function start() {
+		ensureStyle();
+		load();
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The ring kit's engine.js, as save_app writes it into an app's folder. */
+export const RING_ENGINE_JS = `// The ring kit's engine: "When is it?"
+// A year, a month or a week as one ring: its months or days as soft segments round it, the part gone by a shade
+// darker, a hand at now, marks for a point in time (a deadline, a launch, a payday) and wedges for a stretch (a
+// campaign, a holiday, a busy season). Wedges with amounts reach out as far as their amount. The middle holds one big
+// thing: the next one and how far off it is, or a number. A member runs a finger or the pointer round the ring (or the
+// arrow keys) and the middle follows. The agent writes only ring.json (see KIT.md). Plain ES2020, one IIFE, no network,
+// colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const SVGNS = "http://www.w3.org/2000/svg";
+	const MAX = { title: 40, line: 60, name: 24, unit: 8, label: 24, word: 28, marks: 12, wedges: 8 };
+	const WORDS = {
+		days: "days",
+		day: "day",
+		today: "today",
+		to: "to {name}",
+		left: "left of {name}",
+		ago: "{n} days ago",
+		assumed: "assumed",
+		unknown: "not known",
+		empty: "Nothing to show yet.",
+		source: "Source",
+	};
+	const SPANS = ["year", "month", "week"];
+	const STATES = ["known", "assumed", "unknown"];
+	const TONES = ["accent", "good", "warm", "warn", "bad", "violet", "teal"];
+	const DAY = 86400000;
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.rk{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --rk-ease:cubic-bezier(.22,.8,.24,1);--rk-warm:color-mix(in srgb,var(--q-bad) 70%,var(--q-warn))}
+.rk *,.rk *::before,.rk *::after{box-sizing:border-box}
+.rk-head{min-width:0;max-width:40em;margin-bottom:clamp(8px,2vh,22px)}
+.rk-title-row{display:flex;align-items:baseline;gap:8px}
+.rk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.rk-src{display:inline-grid;place-items:center;min-width:24px;min-height:24px;font-size:14px;color:var(--q-muted);text-decoration:none;border-radius:6px}
+.rk-src:hover{color:var(--q-accent)}
+.rk-src:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.rk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.rk--bare{padding:clamp(12px,1vw,16px)}
+.rk--bare .rk-head{display:none}
+.rk-stage{position:relative;flex:none;margin:auto;outline:none;touch-action:pan-y;border-radius:50%;cursor:pointer}
+.rk-stage:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
+.rk-stage svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}
+.rk-seg{fill:color-mix(in srgb,var(--q-text) 5%,var(--q-bg))}
+.rk-seg.gone{fill:color-mix(in srgb,var(--q-text) 10%,var(--q-bg))}
+.rk-tick{font-size:13px;fill:var(--q-muted);text-anchor:middle;dominant-baseline:central}
+.rk-tick.now{fill:var(--q-text);font-weight:700}
+.rk-wedge{fill:color-mix(in srgb,var(--rk-tone) 34%,var(--q-bg));transition:opacity .2s}
+.rk-wedge.a{fill:color-mix(in srgb,var(--rk-tone) 12%,var(--q-bg));stroke:color-mix(in srgb,var(--rk-tone) 60%,var(--q-bg));stroke-width:2;stroke-dasharray:6 6}
+.rk-wedge.unk{fill:none;stroke:color-mix(in srgb,var(--q-text) 26%,var(--q-bg));stroke-width:2.5;stroke-dasharray:6 8}
+.rk-q{font-size:22px;font-weight:600;fill:var(--q-muted);text-anchor:middle;dominant-baseline:central}
+.rk-mark{fill:var(--q-bg);stroke:var(--q-text);stroke-width:3;transform-box:fill-box;transform-origin:center;transition:opacity .2s,transform .2s var(--rk-ease)}
+.rk-mark.gone{fill:color-mix(in srgb,var(--q-text) 78%,var(--q-bg));stroke:none}
+.rk-mark.toned{stroke:var(--rk-tone)}
+.rk-mark.gone.toned{fill:color-mix(in srgb,var(--rk-tone) 70%,var(--q-bg))}
+.rk-mark.next{fill:var(--rk-tone);stroke:var(--q-bg);stroke-width:3;transform:scale(1.45)}
+.rk-halo{fill:none;stroke:var(--rk-tone);stroke-width:3;stroke-opacity:.35}
+.rk.picking .rk-item:not(.on){opacity:.42}
+.rk-hand{stroke:var(--q-text);stroke-width:3;stroke-linecap:round}
+.rk-hand-dot{fill:var(--q-text);stroke:var(--q-bg);stroke-width:3}
+.rk-mid{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;text-align:center;pointer-events:none;max-width:var(--rk-mid-w,260px)}
+.rk-row{display:flex;align-items:baseline;justify-content:center;gap:.24em;white-space:nowrap}
+.rk-n{font-size:var(--rk-n,64px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums;color:var(--rk-big,var(--q-text))}
+.rk-n.unk{color:var(--q-muted)}
+.rk-u{font-size:calc(var(--rk-n,64px) * .36);font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
+.rk-what{margin-top:8px;max-width:100%;font-size:15px;font-weight:600;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-when{margin-top:2px;max-width:100%;font-size:13px;line-height:1.3;color:var(--q-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk-tag{display:inline-flex;align-items:center;height:20px;margin-top:6px;padding:0 8px;border-radius:999px;border:1.3px dashed color-mix(in srgb,var(--q-muted) 70%,transparent);font-size:12px;font-weight:550;color:var(--q-muted)}
+.rk-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+.rk.intro .rk-segs{animation:rk-fade .7s var(--rk-ease) both}
+.rk.intro .rk-wedges{animation:rk-grow .9s var(--rk-ease) .15s both;transform-box:view-box;transform-origin:50% 50%}
+.rk.intro .rk-marks{animation:rk-fade .6s var(--rk-ease) .5s both}
+.rk.intro .rk-hand-g{animation:rk-fade .5s var(--rk-ease) .7s both}
+.rk.intro .rk-mid{animation:rk-fade .6s var(--rk-ease) .3s both}
+@keyframes rk-fade{from{opacity:0}to{opacity:1}}
+@keyframes rk-grow{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
+@media (prefers-reduced-motion:reduce){.rk *,.rk *::before,.rk *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	function num(v) {
+		const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+		return Number.isFinite(n) ? n : null;
+	}
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function s(tag, attrs, ...kids) {
+		const el = D.createElementNS(SVGNS, tag);
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	const r1 = (v) => Math.round(v * 10) / 10;
+	const say = (tpl, map) => tpl.replace(/\\{(\\w+)\\}/g, (_, k) => (k in map ? map[k] : ""));
+	function toneVar(tone) {
+		if (tone === "warm") return "var(--rk-warm)";
+		if (tone === "violet") return "color-mix(in srgb,var(--q-accent) 55%,var(--q-bad))";
+		if (tone === "teal") return "color-mix(in srgb,var(--q-good) 60%,var(--q-accent))";
+		return \`var(--q-\${tone})\`;
+	}
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.rk")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- dates
+	// A date is a day: noon of it in the page's own time, so a change of summer time moves no day.
+	function parseDate(v) {
+		const m = typeof v === "string" ? /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(v.trim()) : null;
+		if (!m) return null;
+		const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+		return d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]) ? d : null;
+	}
+	const noon = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12);
+	// The day's number, the same for every hour of it and in every time zone, and the day of a number.
+	const dayNo = (d) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY;
+	const fromNo = (n) => {
+		const u = new Date(n * DAY);
+		return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), 12);
+	};
+
+	// The ring's span: the year, month or week that holds \`start\`, or that holds today when the data gives none. A year
+	// or a month may start on any day (a year from July is a business year); a week given no start starts on a Monday.
+	function spanOf(kind, start, today) {
+		let a;
+		if (start) a = start;
+		else if (kind === "year") a = new Date(today.getFullYear(), 0, 1, 12);
+		else if (kind === "month") a = new Date(today.getFullYear(), today.getMonth(), 1, 12);
+		else a = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7), 12);
+		const step = (k) =>
+			kind === "year"
+				? new Date(a.getFullYear(), a.getMonth() + k, a.getDate(), 12)
+				: kind === "month"
+					? new Date(a.getFullYear(), a.getMonth(), a.getDate() + k, 12)
+					: new Date(a.getFullYear(), a.getMonth(), a.getDate() + k, 12);
+		const end = kind === "year" ? step(12) : kind === "month" ? new Date(a.getFullYear(), a.getMonth() + 1, a.getDate(), 12) : step(7);
+		const first = dayNo(a);
+		const days = dayNo(end) - first;
+		// the segments round the ring: a year's months, a month's or a week's days
+		const segs = [];
+		if (kind === "year") for (let k = 0; k < 12; k++) segs.push({ from: dayNo(step(k)) - first, to: dayNo(step(k + 1)) - first, at: step(k) });
+		else for (let k = 0; k < days; k++) segs.push({ from: k, to: k + 1, at: step(k) });
+		return { kind, first, days, segs };
+	}
+
+	// ---------------------------------------------------------------- data
+	function valueOf(raw) {
+		const value = num(raw.value);
+		const given = raw.value !== undefined && raw.value !== null;
+		const state = STATES.includes(raw.state) ? raw.state : given ? (value === null ? "unknown" : "known") : null;
+		// no value at all: the thing has none to show (a date only); a value nobody knows: "?"
+		return state === null ? { value: null, state: null } : { value: state === "unknown" ? null : value, state };
+	}
+	function normalize(raw, clock) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const kind = SPANS.includes(raw.span) ? raw.span : "year";
+		const given = parseDate(raw.now);
+		const today = given || noon(clock);
+		const span = spanOf(kind, parseDate(raw.start), today);
+		const items = [];
+		const tone = (t, fallback) => (TONES.includes(t) ? t : fallback);
+		let order = 0;
+		for (const m of list(raw.marks)) {
+			if (!isObj(m) || items.filter((i) => i.kind === "mark").length >= MAX.marks) continue;
+			const at = parseDate(m.at);
+			if (!at) continue;
+			const k = dayNo(at) - span.first;
+			if (k < 0 || k >= span.days) continue;
+			items.push({ kind: "mark", name: cut(m.name, MAX.name), from: k, to: k, date: at, tone: tone(m.tone, null), order: order++, ...valueOf(m) });
+		}
+		let wedges = 0;
+		for (const w of list(raw.wedges)) {
+			if (!isObj(w) || wedges >= MAX.wedges) continue;
+			const a = parseDate(w.from);
+			const b = parseDate(w.to) || a;
+			if (!a || !b) continue;
+			let from = dayNo(a) - span.first;
+			let to = dayNo(b) - span.first;
+			if (to < from) [from, to] = [to, from];
+			if (to < 0 || from >= span.days) continue;
+			wedges++;
+			items.push({
+				kind: "wedge",
+				name: cut(w.name, MAX.name),
+				from: Math.max(0, from),
+				to: Math.min(span.days - 1, to),
+				date: fromNo(span.first + Math.max(0, from)),
+				end: fromNo(span.first + Math.min(span.days - 1, to)),
+				tone: tone(w.tone, null),
+				order: order++,
+				...valueOf(w),
+			});
+		}
+		items.sort((x, y) => x.from - y.from || x.to - y.to || x.order - y.order);
+		// tones: a wedge without one takes the next of a few soft ones, a mark keeps the plain ink
+		const soft = ["warm", "good", "violet", "teal", "accent"];
+		let next = 0;
+		for (const i of items) if (!i.tone) i.tone = i.kind === "wedge" ? soft[next++ % soft.length] : "accent";
+		let centre = null;
+		if (isObj(raw.centre)) {
+			const v = valueOf(raw.centre);
+			if (v.state !== null) centre = { ...v, unit: cut(raw.centre.unit, MAX.unit), label: cut(raw.centre.label, MAX.label) };
+		}
+		const source = typeof raw.source === "string" && /^(?:https:\\/\\/|folder:)/.test(raw.source) ? raw.source : "";
+		return {
+			lang,
+			words,
+			kind,
+			span,
+			fixed: given !== null,
+			today: dayNo(today) - span.first,
+			title: cut(raw.title, MAX.title),
+			line: cut(raw.line, MAX.line),
+			unit: cut(raw.unit, MAX.unit),
+			items,
+			centre,
+			source,
+		};
+	}
+
+	// ---------------------------------------------------------------- numbers and dates in words
+	function formats(m) {
+		const pick = (make, fallback) => {
+			try {
+				return make(m.lang);
+			} catch {
+				return make(fallback);
+			}
+		};
+		const all = m.items.map((i) => i.value).concat(m.centre ? [m.centre.value] : []).filter((v) => v !== null);
+		const span = all.length ? Math.max(...all.map(Math.abs)) : 0;
+		const nf = pick((l) => new Intl.NumberFormat(l, { maximumFractionDigits: span >= 100 ? 0 : span >= 10 ? 1 : 2 }), "en");
+		const df = pick((l) => new Intl.DateTimeFormat(l, m.kind === "week" ? { weekday: "short", day: "numeric", month: "short" } : { day: "numeric", month: "short" }), "en");
+		const month = pick((l) => new Intl.DateTimeFormat(l, { month: "short" }), "en");
+		const letter = pick((l) => new Intl.DateTimeFormat(l, { month: "narrow" }), "en");
+		const weekday = pick((l) => new Intl.DateTimeFormat(l, { weekday: "short" }), "en");
+		const weekletter = pick((l) => new Intl.DateTimeFormat(l, { weekday: "narrow" }), "en");
+		return {
+			num: (v) => nf.format(v),
+			date: (d) => df.format(d),
+			month: (d, narrow) => (narrow ? letter : month).format(d).replace(/\\.$/, ""),
+			weekday: (d, narrow) => (narrow ? weekletter : weekday).format(d).replace(/\\.$/, ""),
+		};
+	}
+
+	const fmt = (m) => m.f || (m.f = formats(m));
+
+	// What the middle says of a thing: the big part (a number and its unit, or a word), what it is, and when.
+	function describe(m, i, f) {
+		const when = i.kind === "wedge" && i.to > i.from ? \`\${f.date(i.date)} – \${f.date(i.end)}\` : f.date(i.date);
+		const days = (n) => (n === 1 ? m.words.day : m.words.days);
+		if (i.state !== null) {
+			return {
+				big: i.value === null ? "?" : f.num(i.value),
+				unit: i.value === null ? "" : m.unit,
+				what: i.name,
+				when,
+				state: i.state,
+				tone: i.tone,
+			};
+		}
+		const t = m.today;
+		if (i.from > t) {
+			const n = i.from - t;
+			return { big: f.num(n), unit: days(n), what: say(m.words.to, { name: i.name }), when, state: null, tone: i.tone };
+		}
+		if (i.kind === "mark" && i.from === t) return { big: m.words.today, unit: "", what: i.name, when, state: null, tone: i.tone, word: true };
+		if (i.kind === "wedge" && i.to >= t) {
+			const n = i.to - t + 1;
+			return { big: f.num(n), unit: days(n), what: say(m.words.left, { name: i.name }), when, state: null, tone: i.tone };
+		}
+		const ago = t - i.to;
+		return { big: f.date(i.kind === "wedge" ? i.end : i.date), unit: "", what: i.name, when: say(m.words.ago, { n: f.num(ago) }), state: null, tone: i.tone, word: true };
+	}
+
+	// The thing the middle shows when nobody points: the next mark (today's included) or the next wedge to begin, else
+	// a wedge going on now.
+	function nextIndex(m) {
+		const t = m.today;
+		const ahead = m.items.findIndex((i) => (i.kind === "mark" ? i.from >= t : i.from > t));
+		if (ahead >= 0) return ahead;
+		return m.items.findIndex((i) => i.kind === "wedge" && i.from <= t && i.to >= t);
+	}
+
+	// ---------------------------------------------------------------- page
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "ring" }, CSS);
+		D.head.append(style);
+	}
+	const ui = { model: null, root: null, stage: null, mid: null, pick: null, geo: null, width: 0, shown: false };
+
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`rk\${BARE ? " rk--bare" : ""}\`, null, h("p", "rk-quiet", null, line)));
+		ui.root = null;
+	}
+
+	function render(intro) {
+		const m = ui.model;
+		ensureStyle();
+		D.documentElement.lang = m.lang;
+		const root = h("main", \`rk\${BARE ? " rk--bare" : ""}\${intro && !still() ? " intro" : ""}\`, { lang: m.lang });
+		const title = h("div", "rk-title-row", null, h("h1", "rk-title", null, m.title || ""));
+		if (m.source) title.append(h("a", "rk-src", { href: m.source, title: m.words.source, "aria-label": m.words.source }, "↗"));
+		root.append(h("header", "rk-head", null, title, m.line ? h("p", "rk-line", null, m.line) : null));
+		const stage = h("div", "rk-stage", { tabindex: "0", role: "slider", "aria-label": m.title || m.words.today, "aria-valuemin": "0", "aria-valuemax": String(Math.max(0, m.items.length - 1)) });
+		const mid = h("div", "rk-mid", { "aria-live": "polite" });
+		stage.append(mid);
+		root.append(stage);
+		show(root);
+		ui.root = root;
+		ui.stage = stage;
+		ui.mid = mid;
+		bindStage(stage);
+		draw();
+		if (intro) setTimeout(() => root.classList.remove("intro"), 2000);
+	}
+
+	function size() {
+		const stage = ui.stage;
+		const W = Math.max(260, (stage.parentElement && stage.parentElement.clientWidth) || stage.clientWidth || 0);
+		const pad = ui.root ? (Number.parseFloat(getComputedStyle(ui.root).paddingLeft) || 0) * 2 : 0;
+		const inner = Math.max(260, W - pad);
+		// from under the title: the ring stands in the middle of the room left in the first screen
+		const head = BARE ? null : ui.root && ui.root.querySelector(".rk-head");
+		const top = head && head.getBoundingClientRect ? head.getBoundingClientRect().bottom + 22 + (window.scrollY || 0) : 0;
+		const bottom = ui.root ? Number.parseFloat(getComputedStyle(ui.root).paddingBottom) || 24 : 24;
+		const avail = (window.innerHeight || 800) - top - bottom;
+		const S = Math.round(Math.max(280, Math.min(inner, avail > 280 ? avail : inner, 820)));
+		return { S };
+	}
+
+	// An arc band between two radii, from one angle to another (radians, 0 at the top, clockwise).
+	function band(cx, cy, r0, r1_, a0, a1) {
+		const pt = (r, a) => \`\${r1(cx + r * Math.sin(a))} \${r1(cy - r * Math.cos(a))}\`;
+		const big = a1 - a0 > Math.PI ? 1 : 0;
+		if (a1 - a0 >= Math.PI * 2 - 1e-6) {
+			const mid = a0 + Math.PI;
+			return \`M\${pt(r1_, a0)}A\${r1_} \${r1_} 0 1 1 \${pt(r1_, mid)}A\${r1_} \${r1_} 0 1 1 \${pt(r1_, a0)}M\${pt(r0, a0)}A\${r0} \${r0} 0 1 0 \${pt(r0, mid)}A\${r0} \${r0} 0 1 0 \${pt(r0, a0)}Z\`;
+		}
+		return \`M\${pt(r1_, a0)}A\${r1_} \${r1_} 0 \${big} 1 \${pt(r1_, a1)}L\${pt(r0, a1)}A\${r0} \${r0} 0 \${big} 0 \${pt(r0, a0)}Z\`;
+	}
+
+	function draw() {
+		const m = ui.model;
+		const stage = ui.stage;
+		if (!m || !stage) return;
+		const { S } = size();
+		stage.style.width = \`\${S}px\`;
+		stage.style.height = \`\${S}px\`;
+		ui.width = S;
+		const f = fmt(m);
+		const c = S / 2;
+		const small = S < 460;
+		const margin = small ? 26 : 36;
+		const outer = c - margin;
+		const values = m.items.filter((i) => i.kind === "wedge" && i.value !== null).map((i) => i.value);
+		const rose = values.length > 0;
+		const T = Math.max(14, Math.min(34, S * 0.05));
+		// the track's middle: with amounts the wedges reach out from it, so it sits further in
+		const R = rose ? outer * 0.6 : outer - T / 2 - 6;
+		const rin = R - T / 2;
+		const rout = R + T / 2;
+		const days = m.span.days;
+		const ang = (k) => (k / days) * Math.PI * 2;
+		const svg = s("svg", { viewBox: \`0 0 \${S} \${S}\`, width: S, height: S, "aria-hidden": "true" });
+
+		// the segments, the ones gone by a shade darker, and their names outside
+		const segs = s("g", { class: "rk-segs" });
+		const ticks = s("g");
+		const gap = Math.min(0.012, (Math.PI * 2) / days / 6);
+		// the names of the months or days stand outside the ring, beyond the longest wedge
+		const tickR = rose ? outer + (small ? 13 : 18) : rout + (small ? 14 : 20);
+		const narrow = (2 * Math.PI * tickR) / m.span.segs.length < 46;
+		for (const g of m.span.segs) {
+			const gone = g.to <= m.today;
+			segs.append(s("path", { class: \`rk-seg\${gone ? " gone" : ""}\`, d: band(c, c, rin, rout, ang(g.from) + gap, ang(g.to) - gap) }));
+			let label = "";
+			if (m.kind === "year") label = f.month(g.at, narrow);
+			else if (m.kind === "week") label = f.weekday(g.at, narrow);
+			else if (g.at.getDate() === 1 || g.at.getDate() % 5 === 0 || (g.from <= m.today && m.today < g.to)) label = String(g.at.getDate());
+			if (!label) continue;
+			const a = ang((g.from + g.to) / 2);
+			const now = g.from <= m.today && m.today < g.to;
+			ticks.append(s("text", { class: \`rk-tick\${now ? " now" : ""}\`, x: r1(c + tickR * Math.sin(a)), y: r1(c - tickR * Math.cos(a)) }, label));
+		}
+
+		// the wedges: on the track, or reaching out as far as their amount
+		const wedges = s("g", { class: "rk-wedges" });
+		const marks = s("g", { class: "rk-marks" });
+		const most = rose ? Math.max(...values.map(Math.abs), 1) : 1;
+		const els = [];
+		const base = Math.max(6, Math.min(11, T * 0.34));
+		// Marks that would touch never lie on each other: a later one takes an orbit of its own, a step further in from
+		// the track for each one it would touch, with room for a picked mark (drawn half as large again) beside it. The
+		// orbits stay clear of the middle (as many as fit between the track and it); where they are all taken, the mark
+		// moves along the ring a step at a time, later and earlier in turn, so a crowd stays round its real date, and
+		// never past the ring's first or last day.
+		const turn = Math.PI * 2;
+		const apart = (x, y) => Math.min(Math.abs(x - y), turn - Math.abs(x - y));
+		const step = Math.max(base * 2 + 2, Math.min(base * 2.9 + 4, (R - rin * 0.78) / 2));
+		const deepest = Math.max(0, Math.floor((R - rin * 0.78) / step));
+		const placed = new Map();
+		const taken = [];
+		m.items.forEach((i, idx) => {
+			if (i.kind !== "mark") return;
+			const at = ang(i.from + 0.5);
+			for (let tries = 0; tries < 400; tries++) {
+				const k = Math.ceil(tries / 2) * (tries % 2 ? 1 : -1);
+				const a = at + (k * step) / R;
+				if (a < 0 || a >= turn) continue;
+				const free = [...Array(deepest + 1).keys()].find((o) => !taken.some((p) => p.o === o && apart(p.a, a) * (R - o * step) < step));
+				if (free !== undefined) {
+					taken.push({ a, o: free });
+					placed.set(idx, { a, r: R - free * step });
+					return;
+				}
+			}
+			placed.set(idx, { a: at, r: R });
+		});
+		const spots = [];
+		m.items.forEach((i, idx) => {
+			const g = s("g", { class: "rk-item" });
+			g.style.setProperty("--rk-tone", toneVar(i.tone));
+			if (i.kind === "wedge") {
+				const a0 = ang(i.from) + gap;
+				const a1 = ang(i.to + 1) - gap;
+				let r0 = rin - 3;
+				let r2 = rout + 3;
+				if (rose) {
+					r0 = rin;
+					// as far out as its amount, from the inner edge, so a day of half the sales reaches half as far
+					r2 = i.value === null ? rin + (outer - rin) * 0.55 : rin + Math.max(T * 0.5, (outer - rin) * (Math.abs(i.value) / most));
+				}
+				const cls = i.state === "unknown" ? " unk" : i.state === "assumed" ? " a" : "";
+				g.append(s("path", { class: \`rk-wedge\${cls}\`, d: band(c, c, r0, r2, a0, Math.max(a1, a0 + 0.004)) }));
+				if (i.state === "unknown") {
+					const am = (a0 + a1) / 2;
+					const rq = (r0 + r2) / 2;
+					g.append(s("text", { class: "rk-q", x: r1(c + rq * Math.sin(am)), y: r1(c - rq * Math.cos(am)) }, "?"));
+				}
+				wedges.append(g);
+			} else {
+				const { a, r } = placed.get(idx);
+				const cx = c + r * Math.sin(a);
+				const cy = c - r * Math.cos(a);
+				spots.push({ idx, x: cx - c, y: cy - c });
+				const gone = i.from < m.today;
+				const toned = i.tone !== "accent";
+				g.append(s("circle", { class: \`rk-halo\`, cx: r1(cx), cy: r1(cy), r: r1(base * 2.1), opacity: 0 }));
+				g.append(s("circle", { class: \`rk-mark\${gone ? " gone" : ""}\${toned ? " toned" : ""}\`, cx: r1(cx), cy: r1(cy), r: r1(base) }));
+				marks.append(g);
+			}
+			els[idx] = g;
+		});
+
+		// now: a hand from the middle's edge out to the track, and a dot on it
+		const hand = s("g", { class: "rk-hand-g" });
+		if (m.today >= 0 && m.today < days) {
+			const frac = m.fixed ? 0.5 : (() => {
+				const t = new Date();
+				return (t.getHours() * 60 + t.getMinutes()) / 1440;
+			})();
+			const a = ang(m.today + frac);
+			ui.handAngle = a;
+			const line = s("line", { class: "rk-hand" });
+			hand.append(line, s("circle", { class: "rk-hand-dot", cx: r1(c + R * Math.sin(a)), cy: r1(c - R * Math.cos(a)), r: r1(Math.max(5, T * 0.22)) }));
+			ui.hand = { line, a, c, end: rin - 4 };
+		} else {
+			ui.hand = null;
+		}
+
+		svg.append(segs, ticks, wedges, hand, marks);
+		ui.mid.style.setProperty("--rk-mid-w", \`\${Math.round(rin * 1.5)}px\`);
+		ui.mid.style.setProperty("--rk-n", \`\${Math.round(Math.max(34, Math.min(76, rin * 0.3)))}px\`);
+		stage.replaceChildren(svg, ui.mid);
+		ui.svg = svg;
+		ui.els = els;
+		ui.geo = { c, R, rin, rout, outer, days, T, ang, spots, step };
+		paint();
+	}
+
+	// The middle, the picked thing's halo, the hand's length (clear of the middle's words) and what a reader hears.
+	function paint() {
+		const m = ui.model;
+		if (!m || !ui.mid) return;
+		const f = fmt(m);
+		const at = ui.pick !== null ? ui.pick : nextIndex(m);
+		let d;
+		if (ui.pick === null && m.centre) {
+			d = {
+				big: m.centre.value === null ? "?" : f.num(m.centre.value),
+				unit: m.centre.value === null ? "" : m.centre.unit || m.unit,
+				what: m.centre.label,
+				when: "",
+				state: m.centre.state,
+				tone: null,
+			};
+		} else if (at >= 0) d = describe(m, m.items[at], f);
+		else d = { big: f.date(fromNo(m.span.first + Math.max(0, Math.min(m.span.days - 1, m.today)))), unit: "", what: m.words.today, when: "", state: null, tone: null, word: true };
+		const n = h("span", \`rk-n\${d.big === "?" ? " unk" : ""}\`, null, d.big);
+		if (d.word) n.style.fontSize = "calc(var(--rk-n,64px) * .62)";
+		if (d.tone && d.big !== "?") n.style.setProperty("--rk-big", \`color-mix(in srgb,\${toneVar(d.tone)} 82%,var(--q-text))\`);
+		const row = h("div", "rk-row", null, n, d.unit ? h("span", "rk-u", null, d.unit) : null);
+		const kids = [row];
+		if (d.what) kids.push(h("div", "rk-what", null, d.what));
+		if (d.when) kids.push(h("div", "rk-when", null, d.when));
+		if (d.state === "assumed") kids.push(h("span", "rk-tag", null, m.words.assumed));
+		if (d.state === "unknown" && d.big === "?") kids.push(h("span", "rk-tag", null, m.words.unknown));
+		ui.mid.replaceChildren(...kids);
+		// the thing the middle speaks of stands out; while one is picked the others step back
+		if (ui.root) ui.root.classList.toggle("picking", ui.pick !== null);
+		(ui.els || []).forEach((g, idx) => {
+			const on = idx === at && (ui.pick !== null || !m.centre);
+			g.classList.toggle("on", on);
+			const halo = g.querySelector(".rk-halo");
+			if (halo) halo.setAttribute("opacity", on ? "1" : "0");
+			const mark = g.querySelector(".rk-mark");
+			if (mark) mark.classList.toggle("next", on);
+		});
+		if (ui.hand) {
+			// from just outside the middle's words, along the hand's angle, to the track
+			const box = ui.mid.getBoundingClientRect ? ui.mid.getBoundingClientRect() : null;
+			const hw = box && box.width ? box.width / 2 + 12 : ui.geo.rin * 0.45;
+			const hh = box && box.height ? box.height / 2 + 10 : ui.geo.rin * 0.3;
+			const sx = Math.abs(Math.sin(ui.hand.a)) || 1e-6;
+			const cy = Math.abs(Math.cos(ui.hand.a)) || 1e-6;
+			const from = Math.min(hw / sx, hh / cy, ui.hand.end - 18);
+			const { c, a, end, line } = ui.hand;
+			line.setAttribute("x1", r1(c + from * Math.sin(a)));
+			line.setAttribute("y1", r1(c - from * Math.cos(a)));
+			line.setAttribute("x2", r1(c + end * Math.sin(a)));
+			line.setAttribute("y2", r1(c - end * Math.cos(a)));
+		}
+		if (ui.stage) {
+			ui.stage.setAttribute("aria-valuenow", String(Math.max(0, at)));
+			ui.stage.setAttribute("aria-valuetext", [\`\${d.big}\${d.unit ? \` \${d.unit}\` : ""}\`, d.what, d.when].filter(Boolean).join(", "));
+		}
+	}
+
+	function setPick(i) {
+		if (i === ui.pick) return;
+		ui.pick = i;
+		paint();
+	}
+	// The thing under a finger or the pointer: a mark near its angle, else the wedge it is in, else none.
+	function pickAt(clientX, clientY) {
+		const g = ui.geo;
+		const m = ui.model;
+		if (!g || !m) return null;
+		const box = ui.stage.getBoundingClientRect();
+		const x = clientX - box.left - g.c;
+		const y = clientY - box.top - g.c;
+		const dist = Math.hypot(x, y);
+		if (dist < g.rin * 0.55 || dist > g.outer + 30) return null;
+		let a = Math.atan2(x, -y);
+		if (a < 0) a += Math.PI * 2;
+		const k = (a / (Math.PI * 2)) * g.days;
+		// a mark under the pointer, wherever it was drawn; else of the marks near the pointer's angle, the nearest to it
+		let best = null;
+		let gap = g.step * 0.75;
+		for (const spot of g.spots) {
+			const off = Math.hypot(spot.x - x, spot.y - y);
+			if (off < gap) {
+				gap = off;
+				best = spot.idx;
+			}
+		}
+		if (best !== null) return best;
+		gap = Infinity;
+		const near = Math.max(g.days / 40, 0.6);
+		for (const spot of g.spots) {
+			let d = Math.abs(m.items[spot.idx].from + 0.5 - k);
+			d = Math.min(d, g.days - d);
+			const off = Math.hypot(spot.x - x, spot.y - y);
+			if (d < near && off < gap) {
+				gap = off;
+				best = spot.idx;
+			}
+		}
+		if (best !== null) return best;
+		const inside = m.items.findIndex((i) => i.kind === "wedge" && k >= i.from && k < i.to + 1);
+		return inside >= 0 ? inside : null;
+	}
+	function bindStage(stage) {
+		stage.addEventListener("pointermove", (e) => {
+			if (e.pointerType === "touch" && !e.isPrimary) return;
+			setPick(pickAt(e.clientX, e.clientY));
+		});
+		stage.addEventListener("pointerdown", (e) => setPick(pickAt(e.clientX, e.clientY)));
+		// a finger that lifts leaves what it picked (a tap is how a phone picks; the touch ends before the focus comes),
+		// a pointer that leaves takes it away
+		stage.addEventListener("pointerleave", (e) => {
+			if (e.pointerType !== "touch") setPick(null);
+		});
+		stage.addEventListener("blur", () => setPick(null));
+		stage.addEventListener("keydown", (e) => {
+			const m = ui.model;
+			const n = m.items.length;
+			if (!n) return;
+			// from what the middle shows: the picked thing, or the next one when the middle speaks of it
+			const base = ui.pick !== null ? ui.pick : nextIndex(m);
+			const shown = ui.pick !== null || (!m.centre && base >= 0);
+			let next = null;
+			if (e.key === "ArrowRight" || e.key === "ArrowDown") next = base < 0 ? 0 : shown ? Math.min(n - 1, base + 1) : base;
+			else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = base < 0 ? n - 1 : Math.max(0, base - 1);
+			else if (e.key === "Home") next = 0;
+			else if (e.key === "End") next = n - 1;
+			else if (e.key === "Escape") {
+				setPick(null);
+				return;
+			}
+			if (next === null) return;
+			e.preventDefault();
+			setPick(next);
+		});
+	}
+
+	// ---------------------------------------------------------------- size changes and the clock
+	let resizeFrame = 0;
+	function onResize() {
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			if (!ui.model || !ui.stage || !ui.root) return;
+			const { S } = size();
+			if (S === ui.width) return;
+			draw();
+		});
+	}
+	window.addEventListener("resize", onResize);
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	let lastText = null;
+	let lastDay = null;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "ring.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			const day = dayNo(new Date());
+			if (txt === lastText && day === lastDay && ui.root) return;
+			raw = JSON.parse(txt);
+			const next = normalize(raw, new Date());
+			const first = !ui.shown;
+			const keep = ui.pick;
+			ui.model = next;
+			ui.pick = keep !== null && keep < next.items.length ? keep : null;
+			lastText = txt;
+			lastDay = day;
+			render(first);
+			ui.shown = true;
+		} catch {
+			if (!ui.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+		}
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	// the hand moves with the clock: once a minute it is drawn again where it now points, and a new day reads anew
+	let tick = 0;
+	function onTick() {
+		clearTimeout(tick);
+		tick = setTimeout(() => {
+			if (ui.model && !ui.model.fixed && ui.root) {
+				if (dayNo(new Date()) !== lastDay) onChange();
+				else draw();
+			}
+			onTick();
+		}, 60000);
+	}
+	function start() {
+		ensureStyle();
+		load();
+		onTick();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
+	}
+	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
+	else start();
+})();
+`;
+
+/** The flow kit's engine.js, as save_app writes it into an app's folder. */
+export const FLOW_ENGINE_JS = `// The flow kit's engine: "Where does it come from, and where does it go?"
+// Money or people as a river: wide soft bands from where they come (on the left) through the company (a bar in the
+// middle) to where they go (on the right), or straight from each source to each end, every band as wide as its
+// amount. A few bands only: past six on a side the smallest join one band, "Other". One big number stands at the top;
+// a member points at a band (or steps with the arrow keys) and the number becomes that band's.
+// The agent writes only flow.json (see KIT.md). Plain ES2020, one IIFE, no network, colours only from --q-* tokens.
+(() => {
+	"use strict";
+
+	const KIT = window.QORPERA_KIT || {};
+	// A concept's page is the thing itself: no title block (kitPage says so, never the data).
+	const BARE = KIT.concept === true;
+	const D = document;
+	const SVGNS = "http://www.w3.org/2000/svg";
+	const MAX = { title: 40, line: 60, name: 20, unit: 8, label: 24, word: 28, side: 6, links: 24 };
+	const WORDS = {
+		total: "in all",
+		other: "Other",
+		rest: "Not accounted for",
+		assumed: "assumed",
+		unknown: "not known",
+		empty: "Nothing to show yet.",
+		source: "Source",
+	};
+	const STATES = ["known", "assumed", "unknown"];
+	const TONES = ["good", "warm", "accent", "warn", "bad", "violet", "teal"];
+	const reduceMQ = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+	const still = () => reduceMQ.matches;
+
+	// ---------------------------------------------------------------- style
+	const CSS = \`
+body{margin:0}
+.fk{position:relative;box-sizing:border-box;min-height:100vh;padding:clamp(16px,2.6vw,36px);background:var(--q-bg);color:var(--q-text);font-family:var(--q-font);display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+ --fk-ease:cubic-bezier(.22,.8,.24,1);--fk-warm:color-mix(in srgb,var(--q-bad) 70%,var(--q-warn))}
+.fk *,.fk *::before,.fk *::after{box-sizing:border-box}
+.fk-head{min-width:0;max-width:40em}
+.fk-title-row{display:flex;align-items:baseline;gap:8px}
+.fk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
+.fk-src{display:inline-grid;place-items:center;min-width:24px;min-height:24px;font-size:14px;color:var(--q-muted);text-decoration:none;border-radius:6px}
+.fk-src:hover{color:var(--q-accent)}
+.fk-src:focus-visible{outline:2px solid var(--q-accent);outline-offset:2px}
+.fk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
+.fk--bare{padding:clamp(12px,1vw,16px)}
+.fk--bare .fk-head{display:none}
+.fk-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.fk--bare .fk-hero{margin-top:0}
+.fk-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
+.fk-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.fk-n.unk{color:var(--q-muted)}
+.fk-u{font-size:clamp(18px,1.9vw,26px);font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
+.fk-sub{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:8px;font-size:14px;line-height:1.3;color:var(--q-muted);min-height:20px}
+.fk-sub b{font-weight:650;color:var(--q-text)}
+.fk-tag{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;border:1.3px dashed color-mix(in srgb,var(--q-muted) 70%,transparent);font-size:12px;font-weight:550;color:var(--q-muted)}
+.fk-stage{position:relative;flex:none;margin-top:clamp(12px,2.4vh,28px);outline:none;touch-action:pan-y;border-radius:12px}
+.fk-stage:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
+.fk-stage svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}
+.fk-band{fill:var(--fk-tone);fill-opacity:.24;transition:fill-opacity .2s;cursor:pointer}
+.fk-band.unk{fill:none;stroke:color-mix(in srgb,var(--q-text) 30%,var(--q-bg));stroke-width:1.5;stroke-dasharray:5 6}
+.fk-band.a{fill-opacity:.12;stroke:var(--fk-tone);stroke-opacity:.6;stroke-width:1.5;stroke-dasharray:6 6}
+.fk.picking .fk-band{fill-opacity:.09}
+.fk.picking .fk-band.on{fill-opacity:.46}
+.fk-bar{fill:var(--fk-tone)}
+.fk-band.rest{fill:var(--q-text);fill-opacity:.05;stroke:color-mix(in srgb,var(--q-text) 28%,var(--q-bg));stroke-width:1.3;stroke-dasharray:5 6}
+.fk.picking .fk-band.rest.on{fill-opacity:.12}
+.fk-lab.rest .fk-name{fill:var(--q-muted);font-weight:550}
+.fk-bar.unk{fill:var(--q-bg);stroke:color-mix(in srgb,var(--q-text) 34%,var(--q-bg));stroke-width:1.5;stroke-dasharray:4 4}
+.fk-mid{fill:var(--q-text)}
+.fk-q{font-size:17px;font-weight:600;fill:var(--q-muted);text-anchor:middle;dominant-baseline:central;cursor:pointer}
+.fk-name{font-size:15px;font-weight:600;fill:var(--q-text);cursor:pointer}
+.fk-amt{font-size:13px;fill:var(--q-muted);font-variant-numeric:tabular-nums;cursor:pointer}
+.fk-name,.fk-amt,.fk-mid-t{paint-order:stroke;stroke:var(--q-bg);stroke-width:4px;stroke-linejoin:round}
+.fk-mid-t{font-size:13px;fill:var(--q-muted);text-anchor:middle}
+.fk.picking .fk-lab:not(.on){opacity:.45}
+.fk-lab{transition:opacity .2s;cursor:pointer}
+.fk-quiet{margin:0;font-size:15px;color:var(--q-muted)}
+.fk.small .fk-name{font-size:13px}
+.fk.small .fk-amt{font-size:12px}
+.fk.intro .fk-in{animation:fk-fade .8s var(--fk-ease) .1s both}
+.fk.intro .fk-out{animation:fk-fade .8s var(--fk-ease) .45s both}
+.fk.intro .fk-labs{animation:fk-fade .6s var(--fk-ease) .7s both}
+@keyframes fk-fade{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.fk *,.fk *::before,.fk *::after{transition:none!important;animation:none!important}}
+\`;
+
+	// ---------------------------------------------------------------- helpers
+	const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+	const list = (v) => (Array.isArray(v) ? v : []);
+	const text = (v) => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "");
+	function cut(v, n) {
+		const chars = Array.from(text(v).replace(/\\s+/g, " ").trim());
+		return chars.length <= n ? chars.join("") : \`\${chars.slice(0, n - 1).join("").trimEnd()}…\`;
+	}
+	function num(v) {
+		const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+		return Number.isFinite(n) ? n : null;
+	}
+	function h(tag, cls, attrs, ...kids) {
+		const el = D.createElement(tag);
+		if (cls) el.className = cls;
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	function s(tag, attrs, ...kids) {
+		const el = D.createElementNS(SVGNS, tag);
+		if (attrs) for (const k of Object.keys(attrs)) if (attrs[k] !== null && attrs[k] !== undefined) el.setAttribute(k, String(attrs[k]));
+		for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+		return el;
+	}
+	const r1 = (v) => Math.round(v * 10) / 10;
+	function toneVar(tone) {
+		if (tone === "warm") return "var(--fk-warm)";
+		if (tone === "violet") return "color-mix(in srgb,var(--q-accent) 55%,var(--q-bad))";
+		if (tone === "teal") return "color-mix(in srgb,var(--q-good) 60%,var(--q-accent))";
+		if (tone === "other") return "color-mix(in srgb,var(--q-text) 42%,var(--q-bg))";
+		if (tone === "ink") return "color-mix(in srgb,var(--q-text) 80%,var(--q-bg))";
+		return \`var(--q-\${tone})\`;
+	}
+
+	// The page's own element: it takes the place of the one before and leaves the rest of the body (the pictures the
+	// page names in #kit-media) where it is.
+	function show(main) {
+		for (const old of D.querySelectorAll("body > main.fk")) old.remove();
+		D.body.append(main);
+	}
+
+	// ---------------------------------------------------------------- data
+	function amount(raw) {
+		const value = num(raw.value);
+		const state = STATES.includes(raw.state) ? raw.state : value === null ? "unknown" : "known";
+		return { value: state === "unknown" || value === null ? null : Math.max(0, value), state: value === null ? "unknown" : state };
+	}
+	const idOf = (raw, at, side) => (typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : \`\${side}\${at}\`);
+	// What several amounts add up to: their sum, assumed where one is, not known where all are.
+	function sum(parts) {
+		const known = parts.filter((p) => p.value !== null);
+		if (!known.length) return { value: null, state: "unknown" };
+		const value = known.reduce((t, p) => t + p.value, 0);
+		return { value, state: known.length < parts.length || parts.some((p) => p.state === "assumed") ? "assumed" : "known" };
+	}
+
+	// A side of more than MAX.side ends: the largest stay in their order, a kept one always, and the rest join "Other".
+	function cap(nodes, words) {
+		if (nodes.length <= MAX.side) return { nodes, merged: new Map() };
+		const room = MAX.side - 1;
+		const kept = nodes.filter((n) => n.kept).slice(0, room);
+		const ranked = nodes
+			.filter((n) => !n.kept)
+			.slice()
+			.sort((a, b) => (b.value ?? -1) - (a.value ?? -1))
+			.slice(0, room - kept.length);
+		const stay = new Set([...kept, ...ranked]);
+		const gone = nodes.filter((n) => !stay.has(n));
+		const other = { id: "\\u0000other", name: words.other, tone: "other", kept: false, ...sum(gone) };
+		const merged = new Map(gone.map((n) => [n.id, other.id]));
+		const out = nodes.filter((n) => stay.has(n) && !n.kept);
+		out.push(other, ...nodes.filter((n) => stay.has(n) && n.kept));
+		return { nodes: out, merged };
+	}
+
+	function normalize(raw) {
+		if (!isObj(raw)) throw new Error("not an object");
+		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(?:-[A-Za-z]{2})?$/.test(raw.lang) ? raw.lang : "en";
+		const words = { ...WORDS };
+		if (isObj(raw.words)) for (const k of Object.keys(WORDS)) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], MAX.word);
+		const linked = Array.isArray(raw.links) && raw.links.length > 0;
+		const side = (items, which, tone) => {
+			const seen = new Set();
+			const out = [];
+			list(items).forEach((n, at) => {
+				if (!isObj(n)) return;
+				const id = idOf(n, at, which);
+				if (seen.has(id)) return;
+				seen.add(id);
+				const kept = which === "to" && n.kept === true;
+				out.push({ id, name: cut(n.name, MAX.name), tone: TONES.includes(n.tone) ? n.tone : kept ? "good" : tone, kept, ...amount(n) });
+			});
+			// the kept ones last, under the rest, as the sketch of the money river has them
+			return out.filter((n) => !n.kept).concat(out.filter((n) => n.kept));
+		};
+		// through the middle money comes in green; straight through, the bands take the colour of where they end
+		let from = side(raw.from, "from", linked ? "ink" : "good");
+		let to = side(raw.to, "to", "warm");
+		if (!from.length || !to.length) throw new Error("no ends");
+		let links = [];
+		if (linked) {
+			for (const l of list(raw.links).slice(0, MAX.links * 4)) {
+				if (!isObj(l)) continue;
+				const a = from.find((n) => n.id === l.from);
+				const b = to.find((n) => n.id === l.to);
+				if (a && b) links.push({ from: a.id, to: b.id, ...amount(l) });
+			}
+			// an end's amount is what its bands carry
+			for (const n of [...from, ...to]) Object.assign(n, sum(links.filter((l) => l.from === n.id || l.to === n.id)));
+			from = from.filter((n) => links.some((l) => l.from === n.id));
+			to = to.filter((n) => links.some((l) => l.to === n.id));
+			if (!from.length || !to.length) throw new Error("no links");
+		}
+		const left = cap(from, words);
+		const right = cap(to, words);
+		if (linked) {
+			// bands of ends that joined Other join as well, one band from each end to each end
+			const joined = new Map();
+			for (const l of links) {
+				const a = left.merged.get(l.from) || l.from;
+				const b = right.merged.get(l.to) || l.to;
+				const key = \`\${a}\\u0000\${b}\`;
+				if (!joined.has(key)) joined.set(key, { from: a, to: b, parts: [] });
+				joined.get(key).parts.push(l);
+			}
+			links = [...joined.values()].map((j) => ({ from: j.from, to: j.to, ...sum(j.parts) })).slice(0, MAX.links);
+		}
+		let headline = null;
+		if (isObj(raw.headline)) {
+			const value = num(raw.headline.value);
+			const state = STATES.includes(raw.headline.state) ? raw.headline.state : value === null ? "unknown" : "known";
+			headline = { value: state === "unknown" ? null : value, state, label: cut(raw.headline.label, MAX.label) };
+		}
+		// Through the middle, what came in and what went out are the same money. Where the agent's two sides differ by
+		// more than a rounding (1 %), the side that is short gets the difference as a quiet band of its own, in the data's
+		// own word (words.rest), so no band is drawn wider or narrower than its amount. Not while an amount is not known.
+		const known = (nodes) => (nodes.every((n) => n.value !== null) ? nodes.reduce((t, n) => t + n.value, 0) : null);
+		const came = known(left.nodes);
+		const went = known(right.nodes);
+		if (!linked && came !== null && went !== null && Math.abs(came - went) > Math.max(came, went) * 0.01) {
+			const rest = { id: "\\u0000rest", name: words.rest, tone: "other", kept: false, rest: true, value: Math.abs(came - went), state: "known" };
+			const short = came > went ? right.nodes : left.nodes;
+			const at = short.findIndex((n) => n.kept);
+			short.splice(at < 0 ? short.length : at, 0, rest);
+		}
+		const middle = !linked && raw.middle !== false && raw.middle !== null ? cut(isObj(raw.middle) ? raw.middle.name : raw.middle, MAX.name) : null;
+		const source = typeof raw.source === "string" && /^(?:https:\\/\\/|folder:)/.test(raw.source) ? raw.source : "";
+		return {
+			lang,
+			words,
+			title: cut(raw.title, MAX.title),
+			line: cut(raw.line, MAX.line),
+			unit: cut(raw.unit, MAX.unit),
+			from: left.nodes,
+			to: right.nodes,
+			links: linked ? links : null,
+			middle,
+			headline,
+			source,
+		};
+	}
+
+	// The bands a member steps through: through the middle, one for each end; straight through, one for each pair.
+	function bandsOf(m) {
+		if (m.links) return m.links.map((l) => ({ kind: "link", ...l, tone: m.to.find((n) => n.id === l.to).tone }));
+		return [...m.from.map((n) => ({ kind: "from", ...n, end: n.id })), ...m.to.map((n) => ({ kind: "to", ...n, end: n.id }))];
+	}
+
+	// ---------------------------------------------------------------- numbers
+	function formats(m) {
+		const all = [...m.from, ...m.to].map((n) => n.value).filter((v) => v !== null);
+		const span = all.length ? Math.max(...all) : 0;
+		const pick = (make) => {
+			try {
+				return make(m.lang);
+			} catch {
+				return make("en");
+			}
+		};
+		const nf = pick((l) => new Intl.NumberFormat(l, { maximumFractionDigits: span >= 100 ? 0 : span >= 10 ? 1 : 2 }));
+		const pf = pick((l) => new Intl.NumberFormat(l, { style: "percent", maximumFractionDigits: 0 }));
+		return { num: (v) => nf.format(v), share: (v) => pf.format(v) };
+	}
+	const fmt = (m) => m.f || (m.f = formats(m));
+
+	// ---------------------------------------------------------------- page
+	let style = null;
+	function ensureStyle() {
+		if (style) return;
+		style = h("style", null, { "data-kit": "flow" }, CSS);
+		D.head.append(style);
+	}
+	const ui = { model: null, bands: [], root: null, stage: null, hero: null, pick: null, width: 0, shown: false };
+
+	function quiet(line) {
+		ensureStyle();
+		show(h("main", \`fk\${BARE ? " fk--bare" : ""}\`, null, h("p", "fk-quiet", null, line)));
+		ui.root = null;
+	}
+
+	function render(intro) {
+		const m = ui.model;
+		ensureStyle();
+		D.documentElement.lang = m.lang;
+		const root = h("main", \`fk\${BARE ? " fk--bare" : ""}\${intro && !still() ? " intro" : ""}\`, { lang: m.lang });
+		const title = h("div", "fk-title-row", null, h("h1", "fk-title", null, m.title || ""));
+		if (m.source) title.append(h("a", "fk-src", { href: m.source, title: m.words.source, "aria-label": m.words.source }, "↗"));
+		root.append(h("header", "fk-head", null, title, m.line ? h("p", "fk-line", null, m.line) : null));
+		const hero = h("div", "fk-hero", { "aria-live": "polite" });
+		const stage = h("div", "fk-stage", { tabindex: "0", role: "slider", "aria-label": m.title || m.words.total, "aria-valuemin": "0", "aria-valuemax": String(Math.max(0, ui.bands.length - 1)) });
+		root.append(hero, stage);
+		show(root);
+		ui.root = root;
+		ui.hero = hero;
+		ui.stage = stage;
+		bindStage(stage);
+		draw();
+		if (intro) setTimeout(() => root.classList.remove("intro"), 2000);
+	}
+
+	function size() {
+		const stage = ui.stage;
+		const W = Math.max(280, stage.clientWidth || 0);
+		const top = stage.getBoundingClientRect ? stage.getBoundingClientRect().top + (window.scrollY || 0) : 0;
+		const pad = ui.root ? Number.parseFloat(getComputedStyle(ui.root).paddingBottom) || 24 : 24;
+		const avail = (window.innerHeight || 800) - top - pad;
+		const H = Math.round(Math.max(W < 600 ? 380 : 320, Math.min(avail, W < 600 ? W * 1.45 : W * 0.56)));
+		return { W, H };
+	}
+
+	// A soft band from one edge to another: [x, top, bottom] at each end.
+	function ribbon(a, b) {
+		const mx = (a[0] + b[0]) / 2;
+		return \`M\${r1(a[0])} \${r1(a[1])}C\${r1(mx)} \${r1(a[1])} \${r1(mx)} \${r1(b[1])} \${r1(b[0])} \${r1(b[1])}L\${r1(b[0])} \${r1(b[2])}C\${r1(mx)} \${r1(b[2])} \${r1(mx)} \${r1(a[2])} \${r1(a[0])} \${r1(a[2])}Z\`;
+	}
+
+	function draw() {
+		const m = ui.model;
+		const stage = ui.stage;
+		if (!m || !stage) return;
+		const { W, H } = size();
+		stage.style.height = \`\${H}px\`;
+		ui.width = W;
+		const f = fmt(m);
+		const small = W < 600;
+		ui.root.classList.toggle("small", small);
+		// the columns of names: as wide as the longest name or amount, at most a quarter of the page
+		const per = small ? 7.3 : 8.4;
+		const longest = (nodes) => Math.max(...nodes.map((n) => Math.max(Array.from(n.name).length, (n.value === null ? 1 : f.num(n.value).length + Array.from(m.unit).length + 1) * 0.86)));
+		const colL = Math.min(W * (small ? 0.27 : 0.22), longest(m.from) * per + 14);
+		const colR = Math.min(W * (small ? 0.27 : 0.22), longest(m.to) * per + 14);
+		const bar = small ? 10 : 14;
+		const midW = small ? 12 : 18;
+		const x0 = colL;
+		const x2 = W - colR - bar;
+		const xm = (x0 + bar + x2) / 2 - midW / 2;
+		const padT = 4;
+		const padB = m.middle ? 28 : 6;
+		const gap = small ? 10 : 18;
+		// a band nobody knows the size of: open, as wide as a small band, with a "?" in it
+		const stub = small ? 16 : 24;
+		const total = (nodes) => nodes.reduce((t, n) => t + (n.value ?? 0), 0);
+		const stubs = (nodes) => nodes.filter((n) => n.value === null).length * stub;
+		const room = (nodes) => H - padT - padB - (nodes.length - 1) * gap - stubs(nodes);
+		const most = Math.max(total(m.from), total(m.to), 1e-9);
+		const k = Math.max(0, Math.min(room(m.from) / Math.max(total(m.from), 1e-9), room(m.to) / Math.max(total(m.to), 1e-9), (H - padT - padB - stub * 2) / most));
+		const bands = ui.bands;
+		// a band's width; straight through, an end is as tall as its bands together
+		const hb = (b) => (b.value === null ? stub : Math.max(m.links ? 1.5 : 2, b.value * k));
+		const hOf = (n) => (m.links ? bands.filter((b) => b.from === n.id || b.to === n.id).reduce((t, b) => t + hb(b), 0) : hb(n));
+		const place = (nodes) => {
+			const height = nodes.reduce((t, n) => t + hOf(n), 0) + (nodes.length - 1) * gap;
+			let y = padT + (H - padT - padB - height) / 2;
+			return nodes.map((n) => {
+				const at = { n, y, h: hOf(n) };
+				y += at.h + gap;
+				return at;
+			});
+		};
+		const L = place(m.from);
+		const R = place(m.to);
+		const svg = s("svg", { viewBox: \`0 0 \${W} \${H}\`, width: W, height: H, "aria-hidden": "true" });
+		const ins = s("g", { class: "fk-in" });
+		const outs = s("g", { class: "fk-out" });
+		const bars = s("g");
+		const labs = s("g", { class: "fk-labs" });
+		const els = [];
+		const bandEl = (band, d, idx, g, ends) => {
+			const p = s("path", { class: \`fk-band\${band.rest ? " rest" : band.value === null ? " unk" : band.state === "assumed" ? " a" : ""}\`, d, "data-k": idx });
+			p.style.setProperty("--fk-tone", toneVar(band.tone));
+			g.append(p);
+			(els[idx] = els[idx] || []).push(p);
+			if (band.value === null) g.append(s("text", { class: "fk-q", x: r1((ends[0][0] + ends[1][0]) / 2), y: r1((ends[0][1] + ends[0][2] + ends[1][1] + ends[1][2]) / 4), "data-k": idx }, "?"));
+		};
+		if (!m.links) {
+			// through the middle: each end's band meets the middle's bar, stacked in the ends' order
+			const inH = L.reduce((t, a) => t + a.h, 0);
+			const outH = R.reduce((t, a) => t + a.h, 0);
+			const midH = Math.max(inH, outH);
+			const midY = padT + (H - padT - padB - midH) / 2;
+			let yi = midY + (midH - inH) / 2;
+			L.forEach((a, i) => {
+				const ends = [[x0 + bar, a.y, a.y + a.h], [xm, yi, yi + a.h]];
+				bandEl(bands[i], ribbon(...ends), i, ins, ends);
+				yi += a.h;
+			});
+			let yo = midY + (midH - outH) / 2;
+			R.forEach((a, i) => {
+				const idx = L.length + i;
+				const ends = [[xm + midW, yo, yo + a.h], [x2, a.y, a.y + a.h]];
+				bandEl(bands[idx], ribbon(...ends), idx, outs, ends);
+				yo += a.h;
+			});
+			bars.append(s("rect", { class: "fk-mid", x: r1(xm), y: r1(midY), width: midW, height: r1(midH), rx: 5 }));
+			if (m.middle) labs.append(s("text", { class: "fk-mid-t", x: r1(xm + midW / 2), y: r1(midY + midH + 20) }, m.middle));
+		} else {
+			// straight through: at each end its bands stack in the order of the ends across
+			const offL = new Map(L.map((a) => [a.n.id, a.y]));
+			const offR = new Map(R.map((a) => [a.n.id, a.y]));
+			const order = (side, id) => side.findIndex((a) => a.n.id === id);
+			const byLeft = bands.map((b, i) => ({ b, i })).sort((p, q) => order(L, p.b.from) - order(L, q.b.from) || order(R, p.b.to) - order(R, q.b.to));
+			const startR = new Map();
+			for (const { b, i } of bands.map((b, i) => ({ b, i })).sort((p, q) => order(R, p.b.to) - order(R, q.b.to) || order(L, p.b.from) - order(L, q.b.from))) {
+				const y = offR.get(b.to);
+				startR.set(i, y);
+				offR.set(b.to, y + hb(b));
+			}
+			for (const { b, i } of byLeft) {
+				const y = offL.get(b.from);
+				offL.set(b.from, y + hb(b));
+				const yr = startR.get(i);
+				const ends = [[x0 + bar, y, y + hb(b)], [x2, yr, yr + hb(b)]];
+				bandEl(b, ribbon(...ends), i, ins, ends);
+			}
+		}
+		// the ends' bars and their names, the names kept apart where bands are thin
+		const label = (a, x, anchor, idxs) => {
+			const n = a.n;
+			const bar_ = s("rect", { class: \`fk-bar\${n.value === null || n.rest ? " unk" : ""}\`, x: r1(x), y: r1(a.y), width: bar, height: r1(a.h), rx: Math.min(4, bar / 3) });
+			bar_.style.setProperty("--fk-tone", toneVar(n.tone));
+			bars.append(bar_);
+			const share = n.value === null ? "?" : \`\${f.num(n.value)}\${m.unit ? \` \${m.unit}\` : ""}\`;
+			const g = s("g", { class: \`fk-lab\${n.rest ? " rest" : ""}\`, "data-k": idxs[0], "data-n": n.id });
+			const tx = anchor === "end" ? x - 10 : x + bar + 10;
+			// a finger's room round the name and the bar, so a thin band is as easy to pick as a wide one
+			const wide = Math.max(Array.from(n.name).length * per, share.length * per * 0.86) + bar + 18;
+			const hit = s("rect", { class: "fk-hit", x: r1(anchor === "end" ? x + bar - wide : x), width: r1(wide), height: 44, fill: "transparent" });
+			g.append(s("text", { class: "fk-name", x: r1(tx), "text-anchor": anchor }, n.name), s("text", { class: "fk-amt", x: r1(tx), "text-anchor": anchor }, share), hit);
+			labs.append(g);
+			for (const idx of idxs) (els[idx] = els[idx] || []).push(g);
+			return { g, y: a.y + a.h / 2 };
+		};
+		const ofEnd = (id, key) => bands.map((b, i) => (b[key] === id ? i : -1)).filter((i) => i >= 0);
+		const sideLabels = (side, x, anchor, key, offset) =>
+			side.map((a, i) => label(a, x, anchor, m.links ? ofEnd(a.n.id, key) : [offset + i]));
+		const spread = (labels) => {
+			const line = small ? 32 : 38;
+			let prev = -Infinity;
+			const ys = labels.map((l) => {
+				const y = Math.max(l.y, prev + line);
+				prev = y;
+				return y;
+			});
+			const over = ys.length ? ys[ys.length - 1] - (H - line / 2) : 0;
+			labels.forEach((l, i) => {
+				const y = Math.max(line / 2, ys[i] - Math.max(0, over));
+				const [name, amt, hit] = l.g.children;
+				name.setAttribute("y", r1(y - 3));
+				amt.setAttribute("y", r1(y + 14));
+				hit.setAttribute("y", r1(y - 24));
+			});
+		};
+		spread(sideLabels(L, x0, "end", "from", 0));
+		spread(sideLabels(R, x2, "start", "to", L.length));
+		svg.append(ins, outs, bars, labs);
+		stage.replaceChildren(svg);
+		ui.els = els;
+		paint();
+	}
+
+	// The big number, the picked band, and what a reader hears.
+	function paint() {
+		const m = ui.model;
+		if (!m || !ui.hero) return;
+		const f = fmt(m);
+		const b = ui.pick === null ? null : ui.bands[ui.pick];
+		let value;
+		let state;
+		const what = [];
+		if (b) {
+			value = b.value;
+			state = b.state;
+			const ends = b.kind === "link" ? [m.from.find((n) => n.id === b.from).name, m.to.find((n) => n.id === b.to).name] : [b.name];
+			what.push(h("b", null, null, ends.join(" → ")));
+			// a share of all the side's bands, the one for what is not accounted for too, so a side's shares add up
+			const side = b.kind === "to" ? m.to : m.from;
+			const whole = side.every((n) => n.value !== null) ? side.reduce((sum, n) => sum + n.value, 0) : 0;
+			if (value !== null && whole) what.push(h("span", null, null, f.share(value / whole)));
+		} else if (m.headline) {
+			value = m.headline.value;
+			state = m.headline.state;
+			what.push(h("span", null, null, m.headline.label || m.words.total));
+		} else {
+			({ value, state } = sumOf(m.from));
+			what.push(h("span", null, null, m.words.total));
+		}
+		const n = h("span", \`fk-n\${value === null ? " unk" : ""}\`, null, value === null ? "?" : f.num(value));
+		const row = h("div", "fk-row", null, n, value !== null && m.unit ? h("span", "fk-u", null, m.unit) : null);
+		if (state === "assumed") what.push(h("span", "fk-tag", null, m.words.assumed));
+		if (value === null) what.push(h("span", "fk-tag", null, m.words.unknown));
+		ui.hero.replaceChildren(row, h("div", "fk-sub", null, what));
+		ui.root.classList.toggle("picking", b !== null);
+		// the picked band, and the names of its ends (an end's name stands for all its bands)
+		for (const el of ui.stage.querySelectorAll(".on")) el.classList.remove("on");
+		if (b) for (const el of (ui.els && ui.els[ui.pick]) || []) el.classList.add("on");
+		if (ui.stage) {
+			ui.stage.setAttribute("aria-valuenow", String(ui.pick === null ? 0 : ui.pick));
+			ui.stage.setAttribute("aria-valuetext", \`\${b ? \`\${b.kind === "link" ? \`\${m.from.find((x) => x.id === b.from).name} → \${m.to.find((x) => x.id === b.to).name}\` : b.name}: \` : ""}\${value === null ? "?" : f.num(value)}\${value !== null && m.unit ? \` \${m.unit}\` : ""}\`);
+		}
+	}
+	// What a side's ends add up to: the whole the big number shows, "?" while one end is not known.
+	function sumOf(all) {
+		// the band for what is not accounted for is no end of the company's own
+		const nodes = all.filter((n) => !n.rest);
+		if (nodes.some((n) => n.value === null)) return { value: null, state: "unknown" };
+		return { value: nodes.reduce((t, n) => t + n.value, 0), state: nodes.some((n) => n.state === "assumed") ? "assumed" : "known" };
+	}
+
+	function setPick(i) {
+		if (i === ui.pick) return;
+		ui.pick = i;
+		paint();
+	}
+	function bindStage(stage) {
+		const at = (e) => {
+			const el = e.target && e.target.closest ? e.target.closest("[data-k]") : null;
+			return el ? Number(el.getAttribute("data-k")) : null;
+		};
+		stage.addEventListener("pointermove", (e) => {
+			if (e.pointerType === "touch" && !e.isPrimary) return;
+			setPick(at(e));
+		});
+		stage.addEventListener("pointerdown", (e) => setPick(at(e)));
+		// a finger that lifts leaves what it picked (a tap is how a phone picks; the touch ends before the focus comes),
+		// a pointer that leaves takes it away
+		stage.addEventListener("pointerleave", (e) => {
+			if (e.pointerType !== "touch") setPick(null);
+		});
+		stage.addEventListener("blur", () => setPick(null));
+		stage.addEventListener("keydown", (e) => {
+			const n = ui.bands.length;
+			let next = null;
+			if (e.key === "ArrowRight" || e.key === "ArrowDown") next = ui.pick === null ? 0 : Math.min(n - 1, ui.pick + 1);
+			else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = ui.pick === null ? n - 1 : Math.max(0, ui.pick - 1);
+			else if (e.key === "Home") next = 0;
+			else if (e.key === "End") next = n - 1;
+			else if (e.key === "Escape") {
+				setPick(null);
+				return;
+			}
+			if (next === null || !n) return;
+			e.preventDefault();
+			setPick(next);
+		});
+	}
+
+	// ---------------------------------------------------------------- size changes
+	let resizeFrame = 0;
+	function onResize() {
+		cancelAnimationFrame(resizeFrame);
+		resizeFrame = requestAnimationFrame(() => {
+			if (!ui.model || !ui.stage || !ui.root) return;
+			const W = ui.stage.clientWidth;
+			if (W === ui.width && ui.lastH === window.innerHeight) return;
+			ui.lastH = window.innerHeight;
+			draw();
+		});
+	}
+	window.addEventListener("resize", onResize);
+
+	// ---------------------------------------------------------------- loading
+	let lastRead = 0;
+	let pending = 0;
+	let lastText = null;
+	async function load() {
+		lastRead = Date.now();
+		let txt;
+		let raw = null;
+		try {
+			const bridge = window.qorpera;
+			if (!bridge || typeof bridge.read !== "function") throw new Error("no bridge");
+			// the page puts the company's live values in place of the data's bindings
+			const res = await (typeof KIT.load === "function" ? KIT.load() : bridge.read(\`apps/\${KIT.app || ""}/\${KIT.data || "flow.json"}\`));
+			txt = typeof res === "string" ? res : res && (res.text ?? (res.content && res.content.text) ?? res.content);
+			if (typeof txt !== "string") throw new Error("no text");
+			if (txt === lastText && ui.root) return;
+			raw = JSON.parse(txt);
+			const next = normalize(raw);
+			const first = !ui.shown;
+			const keep = ui.pick;
+			ui.model = next;
+			ui.bands = bandsOf(next);
+			ui.pick = keep !== null && keep < ui.bands.length ? keep : null;
+			lastText = txt;
+			render(first);
+			ui.shown = true;
+			ui.lastH = window.innerHeight;
+		} catch {
+			if (!ui.root) quiet((raw && isObj(raw.words) && cut(raw.words.empty, 60)) || WORDS.empty);
+			// a read that gave no text: keep what is shown, and read again ten seconds later, until a read works
+			if (typeof txt !== "string") {
+				clearTimeout(pending);
+				pending = setTimeout(load, 10000);
+			}
+		}
+	}
+	function onChange() {
+		clearTimeout(pending);
+		pending = setTimeout(load, Math.max(0, lastRead + 10000 - Date.now()));
+	}
+	function start() {
+		ensureStyle();
+		load();
+		// a live value that moved: read again at once
+		if (typeof KIT.onLive === "function") KIT.onLive(load);
+		try {
+			if (window.qorpera && typeof window.qorpera.onChange === "function") window.qorpera.onChange(onChange);
+		} catch {
+			/* the frame may not offer it */
+		}
 	}
 	if (D.readyState === "loading") D.addEventListener("DOMContentLoaded", start, { once: true });
 	else start();

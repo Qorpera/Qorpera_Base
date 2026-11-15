@@ -127,6 +127,7 @@ describe("the scene in the window", () => {
 			epoch: 0,
 			others: [],
 			generation: 0,
+			memberSleepSeconds: null,
 			...change,
 		};
 	}
