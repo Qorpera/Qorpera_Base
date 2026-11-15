@@ -39,16 +39,35 @@ export interface CodingFolderRepositorySession {
 	recordChange?(report: CodeChangeReport, signal: AbortSignal): Promise<{ state: string; change: number | null }>;
 	/** qorpera_code_checks_switch under the turn's lease: whether Qorpera's checks run for this repository, and whether
 	 * the site its checks leave is kept (own code storage, step 4). Both true when the answer was lost, and `site` true
-	 * when the kernel's answer does not say it; a refusal is thrown. Absent: this host runs no checks. */
-	checksSwitch?(signal: AbortSignal): Promise<{ checks: boolean; site: boolean }>;
+	 * when the kernel's answer does not say it; a refusal is thrown. From step 5 (migration 20260930756000), and only when
+	 * the kernel's answer says so: `rootLinks`, sites have hosts of their own, so a site's links from `/` are its own; and
+	 * `drill`, an operator's drill this answer took (once: the kernel hands it to no other answer). Absent: this host runs
+	 * no checks. */
+	checksSwitch?(signal: AbortSignal): Promise<CodeChecksSwitched>;
 	/** One run of `checks` on a clean copy of `commit` in the session's machine (own code storage, step 3). When `site`
 	 * is a recipe and every check passed, the run then takes the site the checks left (step 4): a site the code made
-	 * wrong is `site_refused`, and a run that passed says what became of it. Never throws for a check's, the site's or
-	 * the machine's sake (`not_run`, a missed site); throws only the turn's abort. Absent: this host runs no checks. */
+	 * wrong is `site_refused`, and a run that passed says what became of it. `rootLinks` true lets the site's links from
+	 * `/` through (step 5); absent, they are refused as before. Never throws for a check's, the site's or the machine's
+	 * sake (`not_run`, a missed site); throws only the turn's abort. Absent: this host runs no checks. */
 	runChecks?(
-		input: { commit: string; checks: readonly CodeCheck[]; attempt: number; site: CodeSiteRecipe | null },
+		input: {
+			commit: string;
+			checks: readonly CodeCheck[];
+			attempt: number;
+			site: CodeSiteRecipe | null;
+			rootLinks?: boolean;
+		},
 		signal: AbortSignal,
 	): Promise<CodeChecksRun>;
+}
+
+/** What the checks switch said (`qorpera.code-checks-switch/v1`): `rootLinks` and `drill` only when the kernel said
+ * them (own code storage, step 5), so that with a kernel before that, or sites' hosts off, it is as before. */
+export interface CodeChecksSwitched {
+	checks: boolean;
+	site: boolean;
+	rootLinks?: true;
+	drill?: "check" | "site";
 }
 
 export interface CodingFolderRepositories {
