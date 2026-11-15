@@ -114,6 +114,7 @@ import {
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { cloudToolsOnDemand } from "./cloud-native-tools-on-demand.ts";
 import { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
@@ -139,11 +140,9 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
-	CLOUD_ASK_MEMBER_BODY_MAX_BYTES,
-	CLOUD_ASK_MEMBER_INSTRUCTIONS,
-	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-	CLOUD_ASK_MEMBER_SURFACES,
+	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
+	cloudAskMemberInstructions,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
@@ -250,8 +249,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
 		 * company_search over it. */
 		folderSearch?: { readonly socketPath: string };
-		/** The data gateway's run door (company databases, slice 5): with it a run is offered data_describe, data_query
-		 * and, unless it is a worker, data_apply; without it none of them. */
+		/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
+		 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
 		companyData?: CloudCompanyDataDoor;
 	}) {
 		this.#control = options.controlPlane;
@@ -804,21 +803,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const ask: CloudNativeTool = {
 				name: "ask_member" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
-				description: CLOUD_ASK_MEMBER_INSTRUCTIONS,
-				inputSchema: {
-					type: "object",
-					properties: {
-						idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-						text: { type: "string", minLength: 1, maxLength: 4096 },
-						surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
-						title: { type: "string", minLength: 1, maxLength: 200 },
-						body: { type: "string", maxLength: CLOUD_ASK_MEMBER_BODY_MAX_BYTES },
-						expiresAt: { type: "string" },
-						payload: CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-					},
-					required: ["idempotencyKey", "text", "surface", "title", "payload"],
-					additionalProperties: false,
-				},
+				// The Gmail draft's steps only where the run has Gmail's tools (a connection made before 10 November 2026).
+				description: cloudAskMemberInstructions(
+					connectorDescriptors.some((descriptor) => descriptor.toolName === "gmail_get_profile"),
+				),
+				inputSchema: CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 				parseArguments(value) {
 					const input = parseCloudAskMemberInput(value);
 					// A card ends with its final sentence, so it waits for the decision too.
@@ -1281,12 +1270,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							// Listed only for a run that may raise their cards (composeContext).
 							...(proposals ? proposals.tools(operations) : []),
 						];
-						// Its instructions say only what fits these tools (track 3, T3-2).
-						offeredTools = new Set(runTools.map((tool) => tool.name));
+						// Every tool stays the run's; its catalog describes in full those its kind uses most, and more_tools
+						// lists and opens the rest (T3-6).
+						const offered = cloudToolsOnDemand(
+							runTools,
+							work.isWorker ? "worker" : context.agentKind === "cofounder" ? "cofounder" : "employee",
+						);
+						// Its instructions say only what fits these tools (track 3, T3-2): every one it has, also those it opens
+						// on demand, and more_tools, which tells it where those are.
+						offeredTools = new Set(offered.tools.map((tool) => tool.name));
 						return {
 							captures: computer?.captures,
 							folderReports: computer?.folderReports,
-							tools: runTools,
+							tools: offered.tools,
+							deferred: offered.deferred,
 							assertContext: (requestSignal, timeoutMs) =>
 								gateway.assertReadableContext(requestSignal, timeoutMs),
 							checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),

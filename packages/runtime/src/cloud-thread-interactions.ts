@@ -86,7 +86,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			},
 			dismissOnMoveOn: { type: "boolean" },
 		},
-		"surface question: an answer your work cannot go on without, with 1-6 likely answers; add allowCustom for an open one. Optional ideas, offers and news stay in chat.",
+		"surface question: 1 to 6 likely answers; allowCustom adds a field for the member's own.",
 	),
 	secret: closedObject(
 		["name", "label", "purpose"],
@@ -105,8 +105,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			),
 		},
 		"surface secret: the member saves a value into the company vault; you never see it. " +
-			// The guidance lives here: ask_member's description is at its 4096-byte limit.
-			"A coding value: when a coding session needs an environment variable only a person can give (a token for private packages, a build's API key), set connectorId environment, name the variable in lower case (npm_token for NPM_TOKEN), label it with the variable's name, say what it is for in plain words as purpose, and set repository owner/name; the member pastes it in the card and your next coding session in that repository gets it. Ask once, before you need it; never ask for one in chat. A key you can make yourself on npm, GitHub, Stripe or Resend needs no card: make it on that site in your machine's browser, press the site's Copy and save it with save_coding_value.",
+			"A coding value is an environment variable only a person can give a coding session (a token for private packages, a build's API key): connectorId environment, the variable's name in lower case (npm_token for NPM_TOKEN) labelled with that name, what it is for in plain words as purpose, and repository; the member pastes it in the card and your next coding session in that repository gets it. Ask once, before you need it. A key you can make on npm, GitHub, Stripe or Resend needs no card: make it in your machine's browser and save it with save_coding_value.",
 	),
 	form: closedObject(
 		["domain", "fields"],
@@ -154,7 +153,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			domain: matching(HOST_PATTERN),
 			idpDomain: matching(HOST_PATTERN),
 		},
-		"surface takeover: the member drives your computer for a sign-in or code, then hands it back.",
+		"surface takeover: the member signs in or enters a code on your computer's screen, then presses I'm done.",
 	),
 	draft: closedObject(
 		["platform", "connectorId", "from", "to", "body"],
@@ -182,7 +181,11 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 const ASK_QUESTION_SCHEMA: Schema = (() => {
 	const question = structuredClone(PAYLOAD_SCHEMAS.question) as Schema;
 	const option = ((question.properties as Schema).options as Schema).items as Schema;
-	(option.properties as Schema).label = chars(1, 40, "A button of 1 to 3 words that resolves the pending decision.");
+	(option.properties as Schema).label = chars(
+		1,
+		40,
+		"A button of 1 to 3 words (at most 40 bytes), such as Approve or Change it.",
+	);
 	return question;
 })();
 
@@ -222,16 +225,27 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 	return `the ${surface} payload must be ${sketch(PAYLOAD_SCHEMAS[surface])}.${extra} Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.`;
 }
 
-export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
-	"Show one member card: question, secret, takeover or draft. It is your final send; text only introduces the card: never answer its question, guess the member's choice or start on one in it. Finish independent work first, never actions depending on an unanswered decision. " +
-	"Use question for every answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them. Never ask for facts you can find or permission you have. Options are the likely answers, never generic ones like Get started; for an open question add allowCustom, a field for their own answer. Optional ideas, offers and news stay in chat. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
-	"Write every card for a member who reads it in seconds, in your messages' plain words and the company's language. The title is the question in plain words. The body is at most a few short lines or bullets: what is stopped until they answer (I've stopped the price list until you pick one), what is being chosen, the one or two things that matter for it, and a link to the full draft or file. Never put in a card what an answer does not do or allow, a list of what is not yet checked, or how approval works: that belongs in the file, if anywhere. Option labels are buttons of 1 to 3 words, such as Approve or Change it. " +
-	"When the choice is visual (a look, a product, a layout), first make a picture of each option, an SVG sketch in the company file or an interface app, and set its preview: the card shows big pictures to pick from. " +
-	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
-	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For sign-in or page entry on your desktop computer use takeover; while the member holds it your calls there are refused: end your turn, I'm done wakes you. With no such computer, say so. Then look: I'm done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
-	"For an email draft when Gmail tools are available, call gmail_get_profile for the real sender, then ask_member with surface draft, title New email, payload {platform: email, connectorId: gmail, from: email_address, to: [recipients], subject, body, cc?}. Put the complete email in the card, not just chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating a card neither sends nor saves a Gmail draft; a draft request never authorizes sending. Report saved/sent only after a successful tool result or card outcome. A sent outcome already sent it: never send again. For replies, replyTo is the original Gmail message id; threadRef alone is insufficient. If explicitly asked to save in Gmail immediately, use gmail_create_draft and report draft_id; do not create a separate unlinked card. Never invent the sender or infer a connection from conversation alone. " +
-	"payload must match the closed schema for surface. For question use {options: [{label, value?, description?, style?, preview?}], multiSelect?, allowCustom?}; options are objects, not strings. Text limits count UTF-8 bytes. Correct refused arguments before retrying; unsupported surfaces require a supported alternative. Reuse identical idempotencyKey and arguments for a retry of the same action. " +
-	"In your own shared thread, only the member you answer can answer the card. The answer wakes you as qorpera.interaction-answer/v1: the next wake input, or the request with the card it answers. It carries an outcome and chosen values for questions. Secret answers contain only the vault secret id/version and connectorId (default vault), never its value. A declined, dismissed or expired card is an answer; do not immediately raise it again.";
+const ASK_MEMBER_WORDS = [
+	"Raise one card for a member: question, secret, takeover or draft. The card is your final send, and text only introduces it: finish independent work first and nothing that depends on the answer, and in text do not answer the card's question, guess the choice or start on one.",
+	"- question: an answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them. Not for facts you can find or permission you have; ideas, offers and news stay in chat. Ask once, act on the chosen or custom answer, and follow up only for what is missing.",
+	"- secret: the member saves a value into the company vault; you never see it. It fills no page and signs in nowhere.",
+	"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you. Then look, since I'm done is not proof of a sign-in. With no desktop computer, say so.",
+	"- draft: an email or message the member edits, then saves, sends or discards. Raise it directly, with no question before it. A card neither sends nor saves anything and asking for a draft never allows sending: report saved or sent only from a tool result or the card's outcome; a sent outcome is already sent.",
+	"Form and credential cards are refused. Passwords, tokens and one-time codes never go in chat or in a question's answer, and a question's answer never bypasses an approval the platform requires.",
+	"Say each thing once across title, body, text and chat. When the choice is visual (a look, a product, a layout), make a picture of each option first, an SVG sketch or an interface app, and set its preview: the card shows big pictures to pick from.",
+	"The answer wakes you as qorpera.interaction-answer/v1, as the next input or as the request with the card it answers: an outcome, and a question's chosen values. A secret's answer holds only the vault secret's id, version and connectorId (default vault), never the value. A declined, dismissed or expired card is an answer: do not raise it again at once. In your own shared thread only the member you answer can answer the card.",
+	"payload follows the closed schema of its surface; text limits count UTF-8 bytes.",
+];
+const ASK_MEMBER_GMAIL =
+	"Gmail: for an email draft, call gmail_get_profile for the real sender, then raise draft with title New email and payload {platform: email, connectorId: gmail, from: email_address, to, subject, body, cc?}, the whole email in the card. A reply's replyTo is the original Gmail message id; threadRef alone is not enough. Asked to save in Gmail at once, use gmail_create_draft and report its draft_id instead of a card. Never invent the sender or infer a connection from the conversation.";
+
+/** ask_member's description for a run with or without Gmail's tools (its connections, if any). */
+export function cloudAskMemberInstructions(gmail: boolean): string {
+	return [...ASK_MEMBER_WORDS, ...(gmail ? [ASK_MEMBER_GMAIL] : [])].join("\n");
+}
+
+/** Every part: the description of a run with Gmail's tools. */
+export const CLOUD_ASK_MEMBER_INSTRUCTIONS = cloudAskMemberInstructions(true);
 
 export interface CloudInteractionRequestData {
 	schema: typeof CLOUD_INTERACTION_SCHEMA;
@@ -500,6 +514,26 @@ export const CLOUD_ASK_MEMBER_BODY_MAX_LINES = 5;
 export const CLOUD_ASK_MEMBER_LABEL_MAX_BYTES = 40;
 /** One line of a body: a short sentence or a bullet, its link included. */
 export const CLOUD_ASK_MEMBER_LINE_MAX_BYTES = 280;
+
+/** ask_member's input, as the company runtime offers it. */
+export const CLOUD_ASK_MEMBER_INPUT_SCHEMA: Schema = {
+	type: "object",
+	properties: {
+		idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+		text: { type: "string", minLength: 1, maxLength: 4096, description: "A sentence that introduces the card." },
+		surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
+		title: { type: "string", minLength: 1, maxLength: 200, description: "The question in plain words." },
+		body: {
+			type: "string",
+			maxLength: CLOUD_ASK_MEMBER_BODY_MAX_BYTES,
+			description: `At most ${CLOUD_ASK_MEMBER_BODY_MAX_LINES} short lines of at most ${CLOUD_ASK_MEMBER_LINE_MAX_BYTES} bytes, ${CLOUD_ASK_MEMBER_BODY_MAX_BYTES} in all: what is stopped until they answer, what is being chosen, the one or two things that matter, and a link to the full draft or file. Not what an answer does not allow, what is unchecked, or how approval works.`,
+		},
+		expiresAt: { type: "string", description: "A UTC time, such as 2026-09-25T12:00:00Z." },
+		payload: CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
+	},
+	required: ["idempotencyKey", "text", "surface", "title", "payload"],
+	additionalProperties: false,
+};
 
 function cardReadabilityIssue(card: Record<string, unknown>): string | undefined {
 	if (typeof card.body === "string") {

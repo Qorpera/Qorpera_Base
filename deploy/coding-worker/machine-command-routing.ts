@@ -96,7 +96,7 @@ interface MachineCommandRouterOptions {
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000): begins it as the member (member-control.ts); absent when this
 	 * executor takes no member's requests. */
-	memberStartBegin?(token: string, start: { companyId: string; machineId: string }, signal: AbortSignal): Promise<{ startId: string }>;
+	memberStartBegin?(token: string, start: { companyId: string; machineId: string; open?: string }, signal: AbortSignal): Promise<{ startId: string }>;
 	/** A member's start on this node's machine; absent when the executor carries no machines. */
 	memberStartLocal?(authority: MemberMachineStartAuthority, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 	/** A member's pointer pass (20260930744000): begun as the member (member-control.ts); absent when this executor takes
@@ -380,11 +380,12 @@ export class MachineCommandRouter {
 	 * database checks their token and answers a single-use id), then read again as the executor, and run on this node or
 	 * sent once to the machine's node. It takes no hold and needs no run of the agent's; a member's hold of the desktop
 	 * does not stop it (review r1 F1 of #1681: a hold does not prove the desktop runs, and a start of one that runs does
-	 * nothing). */
+	 * nothing). With `open` (20260930758000) the start also opens that path of the company folder once the desktop runs:
+	 * SQL keeps it on the start, and the machine's executor takes it from its own read of SQL, never from a peer. */
 	async memberStart(request: CloudMemberMachineStartRequest, signal: AbortSignal): Promise<CloudMemberMachineStart> {
 		if (!this.#options.memberStartBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		const begun = await this.#options.memberStartBegin(request.token, { companyId: request.companyId,
-			machineId: request.machineId }, signal);
+			machineId: request.machineId, ...(request.open === undefined ? {} : { open: request.open }) }, signal);
 		return this.#memberStartServe(begun.startId, signal, false);
 	}
 	/** A member's start another executor sent here (the peer listener): read again, and run on this node only. */
@@ -748,13 +749,14 @@ export function localMemberMachineAct(host: {
 
 /** How a router turns a desktop on for a member on this node's machines (MachineCommandRouter's `memberStartLocal`,
  * 20260930714000): the host's outcome, a machine too small, restarted, without a desktop or a desktop that did not start
- * as the member's refusals, and any other code a failure. */
+ * as the member's refusals, and any other code a failure. A start that opens something (20260930758000) passes what SQL
+ * read to the host, and its refusals (not there, no company folder, could not open) are the member's too. */
 export function localMemberMachineStart(host: {
 	memberStart(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<CompanyMachineMemberStartOutcome>;
 }): (authority: MemberMachineStartAuthority, signal: AbortSignal) => Promise<CloudMemberMachineStart> {
 	return async (authority, signal) => {
 		const outcome = await host.memberStart({ placementId: authority.placementId, bootId: authority.bootId,
-			startId: authority.startId }, signal);
+			startId: authority.startId, ...(authority.open === undefined ? {} : { open: authority.open }) }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMemberMachineStartRefusal(outcome.refused)) throw new CloudMemberMachineStartRefusal(outcome.refused);
 			throw new Error("MEMBER_MACHINE_START_FAILED");

@@ -138,8 +138,8 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 	}
 });
 
-// Company databases (slice 5, 20260930750000): when a database is the right home and when a file is, the folder's shape,
-// the three tools, and never a secret in a step.
+// Company databases (slice 5, 20260930750000; changes, slice 7, 20260930763000): when a database is the right home and
+// when a file is, the folder's shape, the tools, and never a secret in a step.
 it("tells an agent when a database is the right home, how its folder is laid out, and never to put a secret in it", () => {
 	for (const said of [
 		"\n# Company databases\nA database suits many rows of the same shape, numbers that change and things members act on (orders, bookings, stock, leads); a file suits what people read.",
@@ -147,8 +147,10 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		"tables/NNN-<name>.sql (its steps: SQL that makes or changes tables, applied once each in number order; never change an applied step, write the next)",
 		"queries/<name>.sql (one select each, :name for a value, -- lines on top that say what it answers)",
 		"data_apply applies waiting steps, data_describe shows what a database holds, data_query asks.",
-		"A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy.",
-		"Never put a secret in a step, a query or a row.",
+		"actions/<name>.sql (its changes: one insert, update, delete or merge each, :name for a value, -- lines on top that say in a member's words what it does, such as -- Mark order :id as shipped)",
+		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
+		"A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card.",
+		"Never put a secret in a step, a query, a change or a row.",
 	])
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
 });
@@ -691,6 +693,8 @@ it("compiles the instructions an agent's runs share, up to the head and views, b
 // tools those runs share (CLOUD_WAKE_TOOLS left out), the agent's kind and the vision's state, never the wake.
 /** A Co-Founder's company run with every staff tool, as the company runtime makes it on a host with machines. */
 const STAFF_TOOLS = [
+	// Every staff run opens its less-used tools through it (track 3, T3-6).
+	"more_tools",
 	"company_read",
 	"company_list",
 	"company_write",
@@ -707,6 +711,7 @@ const STAFF_TOOLS = [
 	"data_describe",
 	"data_apply",
 	"data_query",
+	"data_change",
 	"read_context",
 	"send_coworker_message",
 	"manage_routine",
@@ -748,6 +753,7 @@ const STAFF_TOOLS = [
 ];
 /** An agent's worker with write access on such a host. */
 const WORKER_TOOLS = [
+	"more_tools",
 	"company_read",
 	"company_list",
 	"company_write",
@@ -810,6 +816,7 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 			["send_message", "ask_member", "apply_proposal", "discard_proposal"],
 		],
 		["a coworker's message", situationWake("agent", "coworker", "optional"), []],
+		["its first run", situationWake("first-run", "input", "required"), ["send_message", "ask_member"]],
 	];
 	const shared = new Set<string>();
 	const compiled = new Set<string>();
@@ -825,6 +832,18 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 	expect(shared.size).toBe(1);
 	expect(compiled.size).toBe(wakes.length);
 	const [stable] = shared;
+	// Where the tools these texts name but a run does not see are (T3-6): in the shared part, the same for every wake.
+	expect(stable).toContain(
+		"Only this run's tools exist: the ones you see, and the ones more_tools lists, which you open there; a tool these texts name that you do not see is one of those. When the tool you need is in neither, say what you cannot do and what you can.",
+	);
+	expect(stable.indexOf("Only this run's tools exist")).toBeLessThan(stable.indexOf("\n# Your head\n"));
+	expect(
+		cloudNativeStableInstructions(context, {
+			head: "# Head\nBo's head.",
+			tools: new Set(STAFF_TOOLS.filter((tool) => tool !== "more_tools")),
+			visionAgreed: false,
+		}),
+	).toContain("Only this run's tools exist: when one you need is missing, say what you cannot do and what you can.");
 	expect(stable).toContain("Your daily plan is a weekly routine");
 	expect(stable).toContain("If the routine is missing, set it up again.");
 	expect(stable).not.toContain("In a planning run, read the vision");
@@ -1952,12 +1971,27 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // The same day the wall left the agents (the founder: "rather drop the wall - it's the wrong medium for activity"):
 // no Your wall section, and What members see, Cards, Writing and the owner's role say nothing of one. The staff
 // instructions were measured once more; a worker's never named the wall. Both, merged, measured once more.
+// Track 3, T3-6: a staff run that opens tools through more_tools reads where the tools its instructions name but it does
+// not see are, in How work gets done; the staff instructions were measured once more. A worker's core has no such line.
 // Master merged up through T3-2 (15 November 2026): the apps section says, in one voice, to read a kit's guide with app_guide before writing its file; all three measured once more.
 // v247's release merged into T3-1 (15 November 2026): its D1a sentence with T3-1's words and app_guide; the
 // conversation and private pairs measured once more.
 // Its D1a sentence in T3-2's Starting work too: the staff pair measured once more.
 // v247's release merged up through T3-2 (15 November 2026): Code projects says, in one voice, that changes/index.md also tells a site still being prepared; all three measured once more.
 // Master and v247's release merged up through T3-3 (15 November 2026) under no-wall: the staff pairs measured once more.
+// Master and v247's release merged up through T3-5 into T3-6 (15 November 2026): the staff pairs measured once more.
+// With a render's final frames kept in the company folder and no person built from plain shapes (the first real job
+// on the image with Blender and the starter set, 14 November 2026), all three were measured once more, and the
+// conversation's and a private conversation's again on the tree with release v247 (15 November 2026).
+// With a database's changes (actions/, data_change; company databases, slice 7, 20260930763000) in the staff's
+// "Company databases" paragraph, on release v247's tree (15 November 2026), the conversation's and a private
+// conversation's instructions moved; a worker's do not name databases.
+// With how a member is asked for a held step (data_apply's allow, 20260930764000) there, they moved again.
+// Master 01c90ff7a merged into T3-1 for landing (15 November 2026): measured once more.
+// Master 01c90ff7a merged up through T3-1 for landing (15 November 2026): the render frames and the data changes in T3-2's form; measured once more.
+// Master 01c90ff7a merged up through T3-2 for landing (15 November 2026): the render frames and a database's changes said in one voice; measured once more.
+// Master 01c90ff7a merged up through T3-3 for landing (15 November 2026) under no-wall: the staff pairs measured once more.
+// Master 01c90ff7a merged up through T3-5 into T3-6 for landing (15 November 2026): the staff pairs measured once more.
 // The company's reading of itself (overlay v18, 14 November 2026; the founder: "It should feel like the company is
 // conscious almost"): the head's words name the reading (every run, a worker's too), a staff run's context names
 // senses where it keeps the reading, the Co-Founder's and the owner's roles take their new sentences, and every prompt
@@ -1971,7 +2005,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "2e7c7543035b33d79e88678c0b6731ff1ff8a65a407a7e2a0e5bf3ed7e930ae1",
+			instructions: "e5fb4abd8824a4612f2be17ce61243a7d60d46672a66d15b9e5d5735ba8c8215",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -1979,7 +2013,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "a2c6b1bc43dd2b39f80e283edbc93fb2b24ec89b2a4243f3cea6b12f0b63c007",
+			instructions: "1b0960ecac63c251691b1a8b7a2875ba8e8d774fd53a387d47c9e65dc4e12e72",
 			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
@@ -1987,7 +2021,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "2e7c7543035b33d79e88678c0b6731ff1ff8a65a407a7e2a0e5bf3ed7e930ae1",
+			instructions: "e5fb4abd8824a4612f2be17ce61243a7d60d46672a66d15b9e5d5735ba8c8215",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
@@ -2159,6 +2193,36 @@ it("has a render lit and looked at like a photograph, on a machine sized for it 
 	);
 	expect(worker).toContain("size it for the job (machine_start says how) and stop it when done.");
 	expect(worker).not.toContain("minutes of busy processors");
+});
+
+// The first real job after the image with Blender and the starter set went live (a company's storyboard as real
+// photos, 14 November 2026): its worker took an 8-processor machine, the set's light and materials and a small frame
+// first, as told. Two things were still wrong. The six final frames lay on the machine's disk when the run ended
+// before it had copied them (the model account's usage limit). And the hand that reaches for the lamp was a ribbed
+// tube: the set has a room, not people. Jonas, the same day: "are they implemented in the best possible way, or are
+// we still using the wrong processes/machine sizes?", and to these two sentences: "Yes, build it".
+it("keeps a render's final frames in the folder and builds no person from plain shapes (14 November 2026)", () => {
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	const staff = cloudCompanyRuntimeInstructions(null, false);
+	const frames =
+		"Save each final frame into the company folder as it finishes (under /company on the machine): a run can end before it copies them.";
+	const people =
+		"A person, a hand or a face built from plain shapes gives a render away at once, so frame the shot without one; where the person is the point of the shot, make that picture with make_picture, describing the product as the render shows it.";
+	// A worker renders too, so both are in what every run reads, right after the look step they finish (T3-3: before
+	// the apps' network rule).
+	for (const instructions of [staff, worker]) {
+		const look = instructions.indexOf("because a render uses every processor it is given.");
+		expect(look).toBeGreaterThan(-1);
+		expect(instructions.indexOf(frames)).toBeGreaterThan(look);
+		expect(instructions.indexOf(people)).toBeGreaterThan(instructions.indexOf(frames));
+		expect(instructions.indexOf("An app has no network")).toBeGreaterThan(instructions.indexOf(people));
+	} // T3-2: the make_picture clause only where the run has it.
+	expect(cloudCompanyRuntimeInstructions(null, false, new Set(["company_read", "save_app", "machine_run"]))).toContain(
+		"so frame the shot without one.\nAn app has no network",
+	);
 });
 
 it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {

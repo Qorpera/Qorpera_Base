@@ -91,8 +91,22 @@ export type MachineStartRefusal =
 	| "DESKTOP_START_TOO_SOON"
 	| "MACHINE_BOOT_CHANGED"
 	| "MACHINE_IMAGE_WITHOUT_SCREEN"
-	| "DESKTOP_DID_NOT_START";
+	| "DESKTOP_DID_NOT_START"
+	// A start that opens something (20260930758000): no path of the company folder; not in it for this member, or not on
+	// that computer (told alike); someone else types privately; a computer without the company folder; an open that failed.
+	| "DESKTOP_OPEN_PATH_INVALID"
+	| "DESKTOP_OPEN_NOT_FOUND"
+	| "DESKTOP_MEMBER_IN_CONTROL"
+	| "DESKTOP_OPEN_NO_FOLDER"
+	| "DESKTOP_DID_NOT_OPEN"
+	| "DESKTOP_BUSY";
 const START_REFUSALS: ReadonlySet<string> = new Set<MachineStartRefusal>([
+	"DESKTOP_OPEN_PATH_INVALID",
+	"DESKTOP_OPEN_NOT_FOUND",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_OPEN_NO_FOLDER",
+	"DESKTOP_DID_NOT_OPEN",
+	"DESKTOP_BUSY",
 	"MACHINE_NOT_RUNNING",
 	"MACHINE_NEEDS_COMPANY_VIEW",
 	"DESKTOP_MACHINE_TOO_SMALL",
@@ -101,9 +115,11 @@ const START_REFUSALS: ReadonlySet<string> = new Set<MachineStartRefusal>([
 	"MACHINE_IMAGE_WITHOUT_SCREEN",
 	"DESKTOP_DID_NOT_START",
 ]);
-/** The desktop runs (started now, or running already), or why not. */
+/** Every refusal the start route answers, as the window acts on each (its tests go through them all). */
+export const MACHINE_START_REFUSALS: ReadonlySet<string> = START_REFUSALS;
+/** The desktop runs (started now, or running already; with something to open, it runs and that is open), or why not. */
 export type MachineStartAnswer =
-	| { readonly kind: "started" | "running" }
+	| { readonly kind: "started" | "running" | "opened" }
 	| { readonly kind: "refused"; readonly code: MachineStartRefusal };
 
 /** Why a member's pointer does not move (20260930744000, the executor's 409 codes): as an action's (the machine not
@@ -193,8 +209,9 @@ export interface WebMachineScreens {
 	/** The member's pointer (20260930744000): a pass's begin, or one move on it. Nothing typed is ever in it. */
 	pointer(machineId: string, request: MachinePointerRequest, signal: AbortSignal): Promise<MachinePointerAnswer>;
 	/** Turns the machine's desktop on (20260930714000): owners, admins and contributors, whatever its agent does. The body
-	 * is `{}` (what to open there is for later). */
-	start(machineId: string, signal: AbortSignal): Promise<MachineStartAnswer>;
+	 * is `{}`; with `open`, a path of the company folder (20260930758000), `{"open": path}`: the desktop is turned on and
+	 * that path opened on it. */
+	start(machineId: string, signal: AbortSignal, open?: string): Promise<MachineStartAnswer>;
 	/** The desktop's live picture (20260930745000), on the member's pointer pass of a hold or a sharing: a ticket bought on
 	 * the pointer route, then one stream on it, every message to `onMessage`, until it ends (why) or `signal` aborts.
 	 * Absent when the build names no stream address: the window keeps its looks. */
@@ -460,7 +477,7 @@ export function createWebMachineScreens(options: {
 				signal,
 			);
 		},
-		start: (machineId, signal) => {
+		start: (machineId, signal, open) => {
 			if (!UUID_PATTERN.test(options.companyId) || !UUID_PATTERN.test(machineId))
 				return Promise.reject(new MachineScreenError("Invalid machine start"));
 			return withCloudDeadline(
@@ -473,7 +490,7 @@ export function createWebMachineScreens(options: {
 					const response = await options.fetch(url, {
 						method: "POST",
 						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-						body: "{}",
+						body: open === undefined ? "{}" : JSON.stringify({ open }),
 						signal: requestSignal,
 						redirect: "error",
 						cache: "no-store",
@@ -500,7 +517,8 @@ export function createWebMachineScreens(options: {
 					}
 					if (
 						answer?.schema !== "qorpera.member-machine-start/v1" ||
-						(answer.outcome !== "started" && answer.outcome !== "running")
+						(answer.outcome !== "started" && answer.outcome !== "running" && answer.outcome !== "opened") ||
+						(answer.outcome === "opened") !== (open !== undefined)
 					)
 						throw new MachineScreenError("Invalid machine start answer");
 					return { kind: answer.outcome };

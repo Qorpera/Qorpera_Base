@@ -11,8 +11,10 @@ import { nativeCompanyContextFixture } from "./fixtures/native-company-context-f
 // now has, in the compiled instructions of every kind of run it applies to. A rule that leaves the text, or a kind of run
 // that stops receiving it, fails here by name. The founder rules of PLAN.md section 3 (P1-P7) are the first rows.
 
-/** The tools of the S0 captures (t3-2/after/*.request.json, 14 November 2026). */
+/** The tools of the S0 captures (t3-2/after/*.request.json, 14 November 2026), and more_tools, through which the runs
+ * have opened the ones they use less since track 3, T3-6. */
 const COFOUNDER_TOOLS = [
+	"more_tools",
 	"add_review_rule",
 	"app_guide",
 	"ask_member",
@@ -26,6 +28,7 @@ const COFOUNDER_TOOLS = [
 	"create_group_chat",
 	"crew_and_members",
 	"data_apply",
+	"data_change",
 	"data_describe",
 	"data_query",
 	"end_role",
@@ -77,6 +80,7 @@ const EMPLOYEE_TOOLS = COFOUNDER_TOOLS.filter(
 );
 const WORKER_TOOLS = [
 	"app_guide",
+	"more_tools",
 	"company_delete",
 	"company_edit",
 	"company_list",
@@ -639,7 +643,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"only this run's tools exist",
-		"Only this run's tools exist: when one you need is missing, say what you cannot do and what you can.",
+		"Only this run's tools exist: the ones you see, and the ones more_tools lists, which you open there; a tool these texts name that you do not see is one of those. When the tool you need is in neither, say what you cannot do and what you can.",
 		STAFF,
 	],
 	["5", "the size of the ask", "Do what they asked, at the size they asked: a file they ask for is the work.", STAFF],
@@ -783,6 +787,14 @@ const RULES: [string, string, string, Run[]][] = [
 		"on a machine of 8 cpus or more, because a render uses every processor it is given",
 		ALL,
 	],
+	// Master merged up through T3-2 for landing (15 November 2026): the render frames and no person built from shapes.
+	[
+		"5",
+		"a render's frames into the folder",
+		"Save each final frame into the company folder as it finishes (under /company on the machine)",
+		ALL,
+	],
+	["5", "no person built from plain shapes", "so frame the shot without one", ALL],
 	[
 		"5",
 		"when it is hard, never smaller",
@@ -1508,7 +1520,16 @@ const RULES: [string, string, string, Run[]][] = [
 		"A step that would drop a table or column or delete rows waits for a member's yes",
 		STAFF,
 	],
-	["10", "no secret in a database", "Never put a secret in a step, a query or a row.", ALL],
+	// Master merged up through T3-2 for landing (15 November 2026): a database's changes (slice 7) and the member's yes for a
+	// held step.
+	["10", "a change writes rows", "To add, change or remove rows, write a change and run it with data_change", STAFF],
+	[
+		"10",
+		"a held step is asked on a card",
+		"call data_apply again with the allow its answer gave, which asks them on a card",
+		STAFF,
+	],
+	["10", "no secret in a database", "Never put a secret in a step, a query, a change or a row.", ALL],
 	["10", "answer from what is known", "When asked, answer at once from what you and the files already know", STAFF],
 	[
 		"10",

@@ -12,7 +12,9 @@ import { finish, pass, platformCommit, proveCompanyRun, repositoryRoot, textObje
 // by the runtime's own tool factories, composed as the company runtime composes a run of that kind
 // (cloud-native-company-runtime.ts): machines available, the company's databases on, no Company Computer, no folder
 // search, no company accounts, no connectors, no waiting proposals, no Shared context view. The factories' outside
-// parts (the control plane, the gateways, the writers) are stand-ins: the scripted model calls no tool.
+// parts (the control plane, the gateways, the writers) are stand-ins: the scripted model calls no tool. The tools are
+// offered as the company runtime offers that kind's (T3-6): its catalog describes in full what the kind uses most, and
+// more_tools lists the rest, which the run still has.
 //
 //   QORPERA_CODEX_FENCE_BINARY=<patched codex> node scripts/prove-first-requests.mjs
 //
@@ -93,7 +95,8 @@ async function bundle(scratch) {
 				`export {cloudFolderFileTools} from "${src("cloud-folder-file-tools")}";`,
 				`export {CloudNativeToolRun} from "${src("cloud-native-tool-authority")}";`,
 				'export {nativeToolAuthorityFixture} from "./packages/runtime/test/fixtures/native-tool-authority-fixture.ts";',
-				`export {CLOUD_ASK_MEMBER_BODY_MAX_BYTES, CLOUD_ASK_MEMBER_INSTRUCTIONS, CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA, CLOUD_ASK_MEMBER_SURFACES} from "${src("cloud-thread-interactions")}";`,
+				`export * from "${src("cloud-thread-interactions")}";`,
+				`export {cloudToolsOnDemand} from "${src("cloud-native-tools-on-demand")}";`,
 			].join("\n"),
 		},
 		platform: "node",
@@ -256,7 +259,9 @@ async function dryNames(mine, kind) {
 			identity,
 		}),
 	];
-	return new Set(made.map((tool) => tool.name));
+	// more_tools too, as the company runtime compiles a run that opens tools through it (T3-6).
+	const onDemand = mine.cloudToolsOnDemand(made, onDemandKind(kind));
+	return new Set(onDemand.tools.map((tool) => tool.name));
 }
 
 /** The run's tools beside the folder file tools the harness gives, in the company runtime's order. */
@@ -280,11 +285,14 @@ function toolsOf(mine, kind, context, wake, { binding, folder, operations, ident
 		parseArguments: (value) => value,
 		execute: async () => ({ kind: "text", value: "{}" }),
 	};
+	// ask_member as the company runtime makes it, for a run without Gmail's tools (no connectors here).
 	const ask = {
 		name: "ask_member",
 		source: "runtime",
-		description: mine.CLOUD_ASK_MEMBER_INSTRUCTIONS,
-		inputSchema: {
+		description: mine.cloudAskMemberInstructions
+			? mine.cloudAskMemberInstructions(false)
+			: mine.CLOUD_ASK_MEMBER_INSTRUCTIONS,
+		inputSchema: mine.CLOUD_ASK_MEMBER_INPUT_SCHEMA ?? {
 			type: "object",
 			properties: {
 				idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
@@ -353,6 +361,12 @@ function toolsOf(mine, kind, context, wake, { binding, folder, operations, ident
 	];
 }
 
+/** The kind of run whose tools the company runtime offers (T3-6): what its catalog describes in full. */
+const onDemandKind = (kind) => (kind.endsWith("-worker") ? "worker" : kind.startsWith("cofounder") ? "cofounder" : "employee");
+
+/** The tools more_tools' description lists, by name. */
+const listedBy = (tool) => (tool ? [...tool.description.matchAll(/^- ([a-z][a-z0-9_]*)(?::|$)/gm)].map((match) => match[1]) : []);
+
 const bytes = (value) => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -400,6 +414,11 @@ function measure(body, developer, prompt, ourTools) {
 		toolCount: sent.length,
 		toolDescriptionBytes: sent.reduce((sum, tool) => sum + bytes(tool.description ?? ""), 0),
 		perTool: Object.fromEntries(sent.map((tool) => [tool.name, bytes(tool)])),
+		// A schema over about 5,000 bytes as sent loses every field description (T3-5's probe): each tool's, as sent.
+		perToolParameters: Object.fromEntries(sent.map((tool) => [tool.name, bytes(tool.parameters ?? {})])),
+		perToolFieldDescriptions: Object.fromEntries(
+			sent.map((tool) => [tool.name, (JSON.stringify(tool.parameters ?? {}).match(/"description"/g) ?? []).length]),
+		),
 		codexInstructionsBytes: typeof body.instructions === "string" ? bytes(body.instructions) : 0,
 	};
 }
@@ -457,6 +476,7 @@ async function main() {
 				]),
 				objects: textObjects([NOTE]),
 				calls: [() => ({ name: "company_list", arguments: { path: "notes" } })],
+				onDemand: onDemandKind(kind),
 				tools: (_code, { binding, folder, operations, identity }) => {
 					const context = contextOf(kind, identity);
 					tools = toolsOf(mine, kind, context, wakeOf(kind, context.identity), { binding, folder, operations, identity });
@@ -465,18 +485,30 @@ async function main() {
 				check: async ({ state }) => {
 					assert(tools, "the run's tools were made");
 					const body = state.agent[0].body;
-					const measured = measure(body, developer, prompt, tools.map((tool) => tool.name));
-					assert.deepEqual(
-						Object.keys(measured.perTool).sort(),
-						[...names].sort(),
-						"the instructions were compiled for the run's own tools",
+					// The run's tools as offered (T3-6): its catalog, and more_tools for the rest, as the request carries them
+					// (the harness adds the folder file tools to these, then offers them by the kind).
+					const offered = mine.cloudToolsOnDemand(tools, onDemandKind(kind));
+					const measured = measure(
+						body,
+						developer,
+						prompt,
+						offered.tools.filter((tool) => !offered.deferred.has(tool.name)).map((tool) => tool.name),
 					);
+					const sentMore = body.input[0]?.tools?.[0]?.tools?.find((tool) => tool.name === "more_tools");
+					const onDemand = listedBy(sentMore);
+					for (const name of offered.deferred) assert(onDemand.includes(name), `more_tools lists ${name}`);
+					assert.deepEqual(
+						[...Object.keys(measured.perTool).filter((name) => name !== "more_tools"), ...onDemand].sort(),
+						[...names].filter((name) => name !== "more_tools").sort(),
+						"the instructions were compiled for the run's own tools, every one in its catalog or in more_tools",
+					);
+					assert.equal(Object.hasOwn(measured.perTool, "more_tools"), onDemand.length > 0);
 					assert(
 						measured.input.some((item) => item.ours?.startsWith("our developer instructions")) ||
 							(typeof body.instructions === "string" && body.instructions.includes(developer)),
 						"the request carries our developer instructions whole",
 					);
-					const checked = checks(mine, developer, new Set(Object.keys(measured.perTool)));
+					const checked = checks(mine, developer, names);
 					const result = {
 						kind,
 						developerInstructionsBytes: bytes(developer),
@@ -486,6 +518,8 @@ async function main() {
 						contextMessageBytes: bytes(prompt),
 						requestBytes: bytes(body),
 						...measured,
+						onDemand,
+						moreTools: sentMore ?? null,
 						checks: checked,
 					};
 					summary[kind] = result;
@@ -497,7 +531,7 @@ async function main() {
 				},
 			});
 		}
-		process.stdout.write(`S0 SUMMARY ${JSON.stringify(Object.fromEntries(Object.entries(summary).map(([kind, r]) => [kind, { request: r.requestBytes, codex: r.codexInstructionsBytes, developer: r.developerInstructionsBytes, tools: r.namespaceBytes, toolCount: r.toolCount, context: r.contextMessageBytes, lacking: r.checks.lacking, offered: r.checks.offeredClauses }])))}\n`);
+		process.stdout.write(`S0 SUMMARY ${JSON.stringify(Object.fromEntries(Object.entries(summary).map(([kind, r]) => [kind, { request: r.requestBytes, codex: r.codexInstructionsBytes, developer: r.developerInstructionsBytes, tools: r.namespaceBytes, toolCount: r.toolCount, onDemand: r.onDemand.length, context: r.contextMessageBytes, lacking: r.checks.lacking, offered: r.checks.offeredClauses }])))}\n`);
 	} finally {
 		await rm(scratch, { recursive: true, force: true });
 	}

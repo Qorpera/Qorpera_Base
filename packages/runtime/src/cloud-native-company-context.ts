@@ -78,6 +78,13 @@ Everything else is the company's work, kept so that a person finds anything in a
 - Delete your scratch. Moving, renaming or deleting someone else's work breaks their links and habits, so do it only when asked, and on an unclear instruction say exactly what you would change and wait for a yes.
 Images a member attaches are listed as company paths: open one with company_read before you say anything about it.`;
 
+/** Which tools exist, as How work gets done says it. */
+const TOOLS_EXIST =
+	"Only this run's tools exist: when one you need is missing, say what you cannot do and what you can.";
+/** The same for a run that opens tools through more_tools (T3-6): a tool these texts name that it does not see is one. */
+const TOOLS_EXIST_ON_DEMAND =
+	"Only this run's tools exist: the ones you see, and the ones more_tools lists, which you open there; a tool these texts name that you do not see is one of those. When the tool you need is in neither, say what you cannot do and what you can.";
+
 /** How work gets done: a staff run's. A line about a tool the run lacks is left out (WORK_TOOL_LINES). */
 const HOW_WORK_GETS_DONE = `
 # How work gets done here
@@ -91,7 +98,7 @@ Results come back by themselves: a worker's report, a command started with notif
 - Commands (converting files, running code, looking at a page with Playwright): a machine, with the results saved in the company's files; for minutes of busy processors (a render, encoding, a big build), a machine sized for the job (machine_start says how), stopped when done.
 - Anything people use on a screen: try it once on a desktop machine (machine_start with desktop true, then machine_screen) before you call it done.
 - A server, database or app that must stay up: an always-on machine on Qorpera's own servers, never an outside host.
-Only this run's tools exist: when one you need is missing, say what you cannot do and what you can. A broken connection is reported or repaired, never replaced by a browser sign-in.`;
+${TOOLS_EXIST} A broken connection is reported or repaired, never replaced by a browser sign-in.`;
 /** How Work gets done's lines about a tool, by their first words, and the tool. */
 const WORK_TOOL_LINES: readonly (readonly [string, string])[] = [
 	["- Bigger work or many files", "manage_worker"],
@@ -211,7 +218,10 @@ function protocolCore(has: CloudOfferedTool, worker: boolean): string[] {
 		cloudRuntimeConstitution(has),
 		COMPANY_FILES,
 		results,
-		keep(HOW_WORK_GETS_DONE, WORK_TOOL_LINES),
+		// A run that opens tools through more_tools (T3-6) is told where the tools these texts name but it does not see are.
+		has("more_tools")
+			? keep(HOW_WORK_GETS_DONE, WORK_TOOL_LINES).replace(TOOLS_EXIST, TOOLS_EXIST_ON_DEMAND)
+			: keep(HOW_WORK_GETS_DONE, WORK_TOOL_LINES),
 		membersSee(has),
 		CARDS,
 		WRITING,
@@ -228,7 +238,7 @@ function appsSection(has: CloudOfferedTool): string {
 An app makes one thing of the company tangible, understood by looking at it and handling it: an object to turn (the product, a place), a model to try (the numbers, a process), an app to use (the product, a working tool) or a video that explains. It is never a document: a page to read is a file and stays in the folder. One app per thing (the product, the business model, the market, the customers, the look), never per area or per agent: add to the thing's app, whoever made it. An app that no longer matches the company is worse than none, so change it in the run that changes its thing. Whatever you make for members to look at or choose goes into its app the day you make it; this never grows a request, and a member who asks for a document gets the document.
 Give each thing the form that shows it best: clickable screens for software, a 3D view or turntable for an object or a space, a short video for what moves, a still picture only for a look. A picture of a screen is not a screen. save_app's kits draw these well, so use one nearly always: model (numbers to drag), board (things on one scale, directions to choose between, a wall of references), path (steps with their evidence and the gaps), object (a thing to turn), explainer (a narrated video).${has("app_guide") ? " Before you write a kit's file, read the kit's guide with app_guide: its fields, their bounds and an example are only there, and save_app saves the file only once this run has read it." : ""} Write a page by hand only for the product's own prototype or a tool no kit draws. Show what is unknown as open (a slider, a gap), never as text about it. Show a real thing by its real picture: research that finds something visible saves its picture beside the fact.
 ${machines ? "Before you link an app, look at it as a demanding designer: open it from /company/apps/<name>/ in a browser on a machine at 1280 and 390 px wide, save both screenshots outside apps/, look at them with company_read, fix the weakest thing, look again." : "Before you link an app, look at it as a demanding designer, fix the weakest thing, and look again."} Then cover the words in your mind: when what is left does not show the thing and how it stands, it is a document, and you remake it with a kit.${machines ? " A page that reads live data needs a stand-in qorpera object in the screenshot script (Playwright's addInitScript) that answers from the same files." : ""}
-A render meant to look real is lit and judged like a photograph: a real environment light (an HDRI) and textured materials, from the starter set every machine has (/opt/qorpera-assets/README.md) or Poly Haven (free, CC0). Render one small frame first, open it with company_read, name what gives it away as computer-made (flat light, an empty background, surfaces too clean, things that float), fix it, and render the finals only when the small one holds up, on a machine of 8 cpus or more, because a render uses every processor it is given.
+A render meant to look real is lit and judged like a photograph: a real environment light (an HDRI) and textured materials, from the starter set every machine has (/opt/qorpera-assets/README.md) or Poly Haven (free, CC0). Render one small frame first, open it with company_read, name what gives it away as computer-made (flat light, an empty background, surfaces too clean, things that float), fix it, and render the finals only when the small one holds up, on a machine of 8 cpus or more, because a render uses every processor it is given. Save each final frame into the company folder as it finishes (under /company on the machine): a run can end before it copies them. A person, a hand or a face built from plain shapes gives a render away at once, so frame the shot without one${has("make_picture") ? "; where the person is the point of the shot, make that picture with make_picture, describing the product as the render shows it" : ""}.
 An app has no network: put everything it needs in it. Other pages, prototypes and mockups are ordinary files, self-contained (inline CSS and JavaScript), which members open live from a folder: link. Only the brand's owner changes ${osPath("brand/logo.svg")}.`;
 }
 
@@ -280,11 +290,13 @@ function databaseSection(has: CloudOfferedTool): string {
 	return `
 # Company databases
 ${sentences(
-	'A database suits many rows of the same shape, numbers that change and things members act on (orders, bookings, stock, leads); a file suits what people read. A database is a folder data/<name>/ (a-z, 0-9 and _, starting with a letter), written with the file tools: database.toml (format = "qorpera.database/v1", name, about), tables/NNN-<name>.sql (its steps: SQL that makes or changes tables, applied once each in number order; never change an applied step, write the next), and queries/<name>.sql (one select each, :name for a value, -- lines on top that say what it answers).',
+	'A database suits many rows of the same shape, numbers that change and things members act on (orders, bookings, stock, leads); a file suits what people read. A database is a folder data/<name>/ (a-z, 0-9 and _, starting with a letter), written with the file tools: database.toml (format = "qorpera.database/v1", name, about), tables/NNN-<name>.sql (its steps: SQL that makes or changes tables, applied once each in number order; never change an applied step, write the next), queries/<name>.sql (one select each, :name for a value, -- lines on top that say what it answers) and actions/<name>.sql (its changes: one insert, update, delete or merge each, :name for a value, -- lines on top that say in a member\'s words what it does, such as -- Mark order :id as shipped).',
+	has("data_change") &&
+		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
 	has("data_apply")
-		? "data_apply applies waiting steps, data_describe shows what a database holds, data_query asks. A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy."
+		? "data_apply applies waiting steps, data_describe shows what a database holds, data_query asks. A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card."
 		: "data_describe shows what a database holds, and data_query asks.",
-	"Never put a secret in a step, a query or a row.",
+	"Never put a secret in a step, a query, a change or a row.",
 )}`;
 }
 
@@ -1445,7 +1457,7 @@ export function cloudCompanyContextTool(
 		name: "read_context" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description:
-			"Read more of a context source that was cut short. Pass sourceKind and id from the source, sha256 from its content.sha256, offset from its content.nextOffset (counted in Unicode characters) and limit, up to 16384 UTF-8 bytes. A page can be shorter than the limit so that it fits in one result; continue from each returned nextOffset until it is null. These fields are the handle even when the text itself stops in the middle of JSON; do not look for another handle inside the text, and try this one before saying a source is unavailable. Fix a rejected argument before retrying. This reads only what was already admitted to this run: it adds no new request or permission and does not fetch attachments.",
+			"Read more of a context source that was cut short: sourceKind and id from the source, sha256 from its content.sha256, offset from its content.nextOffset (counted in Unicode characters) and limit, up to 16384 UTF-8 bytes. A page can be shorter than the limit so that it fits one result: continue from each returned nextOffset until it is null. These fields are the handle even when the text stops in the middle of JSON: look for no other handle inside the text, and try this one before saying a source is unavailable. It reads only what was already admitted to this run: it adds no request or permission and fetches no attachment.",
 		// The same for every run, so the tool list stays a cached prefix (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the run's
 		// handles are in its prompt, and parseArguments admits only those.
 		inputSchema: {
