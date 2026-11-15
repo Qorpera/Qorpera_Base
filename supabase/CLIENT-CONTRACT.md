@@ -1800,8 +1800,11 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
   built today, cannot use the door; V2 must change one of these, and the choice is a security-header decision for the
   web's lead:
   - **A door page (recommended: the app keeps `no-referrer`).** A static same-origin page, say `/site-door/`, with its
-    own `_headers` entry: `Referrer-Policy: strict-origin` (it sends only `https://app.qorpera.com`), a CSP of its own
-    with `form-action https://*.qorpera.com`, `frame-ancestors 'self'` and its script from `'self'`, and no
+    own `_headers` entry. Cloudflare Pages applies the `/*` block to it too, and a browser enforces every CSP it gets,
+    so the entry first removes what it inherits, as `/page-preview/*` does: `! Content-Security-Policy`,
+    `! X-Frame-Options` and `! Referrer-Policy`. Then it sets `Referrer-Policy: strict-origin` (it sends only
+    `https://app.qorpera.com`), `X-Frame-Options: SAMEORIGIN` (or none), and a CSP of its own with
+    `form-action https://*.qorpera.com`, `frame-ancestors 'self'` and its script from `'self'`. The page has no
     `<meta name="referrer">` of `no-referrer`. The site view's frame loads it; the app hands it the pass by
     `postMessage` (target origin its own, checked on receipt); the page submits the form to `action` in its own
     document, so the frame navigates to the site.
