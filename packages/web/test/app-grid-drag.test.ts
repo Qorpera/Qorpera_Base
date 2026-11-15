@@ -358,3 +358,117 @@ describe("the apps drawer's order", () => {
 		expect(drops).toEqual([["members", "bank", "mailbox", "app:shop"]]);
 	});
 });
+
+describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
+	function withGroups(keys: readonly string[]) {
+		const element = grid(keys);
+		const drops: [string[], string][] = [];
+		const merges: [string, string][] = [];
+		new AppGridDrag(
+			element,
+			() => ({
+				canDrag: () => true,
+				drop: (order, moved) => drops.push([order, moved]),
+				end: () => {},
+				canMerge: (_dragged, onto) => onto !== "d",
+				merge: (dragged, onto) => merges.push([dragged, onto]),
+			}),
+			stop.signal,
+		);
+		return {
+			element,
+			drops,
+			merges,
+			icon: (key: string) => element.querySelector<HTMLElement>(`[data-app-key="${key}"]`)!,
+		};
+	}
+
+	it("puts an icon let go over another's middle into it, marks it after a moment, and swaps on an edge after one", () => {
+		vi.useFakeTimers();
+		try {
+			const { element, merges, drops, icon } = withGroups(["a", "b", "c", "d"]);
+			// Lift a, rest on b's middle: nothing swaps; after a moment b is marked, and letting go merges.
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 40, 30);
+			pointer("pointermove", 75, 30);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
+			vi.advanceTimersByTime(200);
+			expect(icon("b").classList.contains("is-merge-target")).toBe(true);
+			// The dragged icon is marked as going in, so the drawer draws a group forming.
+			expect(icon("a").classList.contains("is-merging")).toBe(true);
+			pointer("pointerup", 75, 30);
+			expect(merges).toEqual([["a", "b"]]);
+			expect(icon("a").classList.contains("is-merging")).toBe(false);
+			expect(icon("b").classList.contains("is-merge-target")).toBe(false);
+			expect(drops).toEqual([]);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
+			// Lift a again and rest on c's edge: after a moment they swap, and the drop names a.
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 40, 30);
+			pointer("pointermove", 103, 30);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
+			vi.advanceTimersByTime(150);
+			expect(gridOrder(element)).toEqual(["b", "c", "a", "d"]);
+			expect(icon("a").classList.contains("is-merging")).toBe(false);
+			// The pointer rested: the icon stays under it in its new place (review F5 on #1678).
+			expect(icon("a").style.translate).toBe("-22px 0px");
+			pointer("pointerup", 103, 30);
+			expect(drops).toEqual([[["b", "c", "a", "d"], "a"]]);
+			// d takes nothing in: resting on its middle never marks it, and letting go there takes its place.
+			pointer("pointerdown", 125, 30, icon("a"));
+			pointer("pointermove", 140, 30);
+			pointer("pointermove", 175, 30);
+			vi.advanceTimersByTime(500);
+			expect(icon("d").classList.contains("is-merge-target")).toBe(false);
+			pointer("pointerup", 175, 30);
+			expect(merges).toEqual([["a", "b"]]);
+			expect(drops.at(-1)).toEqual([["b", "c", "d", "a"], "a"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("decides a quick drag by where it is let go: into an icon, onto a place, past the end (Jonas, 12 Nov 2026)", () => {
+		vi.useFakeTimers();
+		try {
+			const { element, merges, drops, icon } = withGroups(["a", "b", "c", "d", "e"]);
+			element.getBoundingClientRect = () => new DOMRect(0, 0, 200, 120);
+			// Straight onto c's middle and let go at once: no wait, a goes into c.
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 125, 30);
+			pointer("pointerup", 125, 30);
+			expect(merges).toEqual([["a", "c"]]);
+			expect(drops).toEqual([]);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d", "e"]);
+			// Straight onto c's edge and let go at once: a takes c's place, and glides there from under the pointer (78 px
+			// right of its old place is 22 px left of its new one), never from its old offset (review F1 on #1705).
+			const glides: Keyframe[][] = [];
+			icon("a").animate = ((frames: Keyframe[]) => {
+				glides.push(frames);
+				return { addEventListener: () => {}, finish: () => {}, cancel: () => {} } as unknown as Animation;
+			}) as never;
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 103, 30);
+			pointer("pointerup", 103, 30);
+			expect(drops.at(-1)).toEqual([["b", "c", "a", "d", "e"], "a"]);
+			expect(glides.at(-1)?.[0]).toEqual({ translate: "-22px 0px" });
+			// Past the last icon, on its row: last.
+			pointer("pointerdown", 25, 30, icon("b"));
+			pointer("pointermove", 90, 90);
+			pointer("pointerup", 90, 90);
+			expect(drops.at(-1)).toEqual([["c", "a", "d", "e", "b"], "b"]);
+			// Below the grid's rows but outside it: nothing moves.
+			pointer("pointerdown", 25, 30, icon("c"));
+			pointer("pointermove", 260, 30);
+			pointer("pointerup", 260, 30);
+			expect(drops).toHaveLength(2);
+			expect(merges).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("leaves an icon fading out of the order (review F4 on #1678, round 2)", () => {
+		const { element } = withGroups(["a", "b", "c"]);
+		element.querySelector<HTMLElement>('[data-app-key="b"]')!.classList.add("is-leaving");
+		expect(gridOrder(element)).toEqual(["a", "c"]);
+	});
+});

@@ -13,17 +13,30 @@ import { uiScale } from "./scale.ts";
 export interface AppGridDragHooks {
 	/** Whether an icon may be picked up now (the drawer is open, no search covers it…). */
 	readonly canDrag: () => boolean;
-	/** The icons' keys in their new order, after a drag or a keyboard move that changed it. */
-	readonly drop: (order: string[]) => void;
+	/** The icons' keys in their new order, after a drag or a keyboard move that changed it, and the moved icon's key. */
+	readonly drop: (order: string[], moved: string) => void;
 	/** A drag ended, however it ended (dropped, put back, given up): what the drawer held back meanwhile may draw. */
 	readonly end: () => void;
+	/** Groups (Jonas, 11 Nov 2026): an icon let go over the middle of another goes into it, a group made of the two or the
+	 * group it is (12 Nov 2026: "if i drag interfaces over each other and let go it should create a group"). Without
+	 * these, an icon that comes over another's place takes it at once. */
+	readonly canMerge?: (dragged: string, onto: string) => boolean;
+	readonly merge?: (dragged: string, onto: string) => void;
 }
 
-const ITEM = "[data-app-key]";
+/** An icon of the drawer's order; one fading out of an opened or folded group is not. */
+const ITEM = "[data-app-key]:not(.is-leaving)";
 /** Design pixels a press moves before it drags. */
 const THRESHOLD = 6;
 const GLIDE_MS = 260;
 const SETTLE_MS = 220;
+/** With groups: how long the pointer rests on an icon's middle before it is marked as the group the dragged icon goes
+ * into, and on its edge before the others make way. Neither is needed to drop: letting go decides by where the
+ * pointer is then, so a quick drag does what a slow one shows (Jonas, 12 Nov 2026: "dragging is not fully working"). */
+const MERGE_MS = 150;
+const SWAP_MS = 120;
+/** The middle of an icon's place, as a share of its width and height on each side. */
+const MIDDLE_INSET = 0.22;
 
 const keyOf = (element: Element) => (element as HTMLElement).dataset.appKey ?? "";
 const itemsIn = (grid: HTMLElement) => [...grid.querySelectorAll<HTMLElement>(`:scope > ${ITEM}`)];
@@ -87,6 +100,12 @@ interface Drag {
 		/** The order at the lift, to put back on Escape. */
 		readonly before: readonly string[];
 	};
+	/** With groups: the icon under the pointer's middle, marked once the wait is over. */
+	merging?: { readonly key: string; readonly timer: ReturnType<typeof setTimeout> };
+	/** With groups: a swap waiting for the pointer to rest on that place's edge. */
+	swapping?: { readonly index: number; readonly timer: ReturnType<typeof setTimeout> };
+	/** Where the pointer was last: a swap that lands while it rests keeps the icon under it. */
+	at?: { x: number; y: number };
 }
 
 /** Where `item` is laid out, on screen: from its layout offsets, which no transform, `translate` or animation moves
@@ -107,6 +126,23 @@ export function layoutSlot(grid: HTMLElement, item: HTMLElement): DOMRect {
 }
 
 const inside = (r: DOMRect, x: number, y: number) => x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+
+/** The middle of an icon's place: over it, the dragged icon goes into the other. */
+const middleOf = (slot: DOMRect) =>
+	new DOMRect(
+		slot.left + slot.width * MIDDLE_INSET,
+		slot.top + slot.height * MIDDLE_INSET,
+		slot.width * (1 - 2 * MIDDLE_INSET),
+		slot.height * (1 - 2 * MIDDLE_INSET),
+	);
+
+/** Whether a point in the grid is past its last place: after it on its row, or below every row. */
+function pastEnd(grid: HTMLElement, slots: readonly DOMRect[], x: number, y: number): boolean {
+	const last = slots.at(-1);
+	const frame = grid.getBoundingClientRect();
+	if (!last || x < frame.left || x >= frame.right || y >= frame.bottom + last.height) return false;
+	return y >= last.bottom || (y >= last.top && x >= last.right);
+}
 
 /** Makes the icons in `grid` reorderable. Listeners live until `signal` aborts. */
 export class AppGridDrag {
@@ -153,16 +189,41 @@ export class AppGridDrag {
 
 	/** Puts every icon back where it stood at the lift, and drops a press not lifted yet. */
 	cancel(): void {
-		const lifted = this.#drag?.lifted;
+		const drag = this.#drag;
+		const lifted = drag?.lifted;
 		this.#drag = undefined;
+		if (drag) this.#stopWaits(drag);
 		if (!lifted) return;
+		this.#putBack(lifted.before);
+		this.#settle(lifted.item);
+		this.#hooks().end();
+	}
+
+	#putBack(order: readonly string[]): void {
 		const byKey = new Map(itemsIn(this.#grid).map((item) => [keyOf(item), item]));
-		for (const key of lifted.before) {
+		for (const key of order) {
 			const item = byKey.get(key);
 			if (item) this.#grid.append(item);
 		}
-		this.#settle(lifted.item);
-		this.#hooks().end();
+	}
+
+	#stopWaits(drag: Drag): void {
+		if (drag.merging) {
+			clearTimeout(drag.merging.timer);
+			this.#mark(drag.merging.key, false);
+		}
+		if (drag.swapping) clearTimeout(drag.swapping.timer);
+		drag.merging = undefined;
+		drag.swapping = undefined;
+	}
+
+	/** Marks the icon the dragged one would go into, and the dragged one as going in: the drawer draws a group forming
+	 * (Jonas, 12 Nov 2026: "make an animation too when hovering a group creation"). */
+	#mark(key: string, on: boolean): void {
+		itemsIn(this.#grid)
+			.find((item) => keyOf(item) === key)
+			?.classList.toggle("is-merge-target", on);
+		this.#drag?.lifted?.item.classList.toggle("is-merging", on);
 	}
 
 	#press(event: PointerEvent): void {
@@ -211,9 +272,56 @@ export class AppGridDrag {
 		// The place under the pointer is the icon's new place.
 		const target = slots.findIndex((slot) => inside(slot, event.clientX, event.clientY));
 		const others = itemsIn(this.#grid).filter((other) => other !== item);
-		if (target >= 0 && others.length + 1 === slots.length && itemsIn(this.#grid).indexOf(item) !== target)
-			moveGliding(this.#grid, item, others[target] ?? null, this.#moving);
+		const hooks = this.#hooks();
+		if (!hooks.canMerge || !hooks.merge) {
+			if (target >= 0 && others.length + 1 === slots.length && itemsIn(this.#grid).indexOf(item) !== target)
+				moveGliding(this.#grid, item, others[target] ?? null, this.#moving);
+		} else this.#hover(drag, target, event.clientX, event.clientY);
 		this.#follow(drag.lifted, event.clientX, event.clientY);
+	}
+
+	/** With groups: over another icon's middle, wait to go into it; over its edge, wait a moment, then swap. */
+	#hover(drag: Drag, target: number, x: number, y: number): void {
+		const lifted = drag.lifted!;
+		drag.at = { x, y };
+		const items = itemsIn(this.#grid);
+		const under = target >= 0 ? items[target] : undefined;
+		if (!under || under === lifted.item) {
+			this.#stopWaits(drag);
+			return;
+		}
+		const key = keyOf(under);
+		const hooks = this.#hooks();
+		if (inside(middleOf(lifted.slots[target]!), x, y) && hooks.canMerge?.(drag.key, key)) {
+			if (drag.swapping) clearTimeout(drag.swapping.timer);
+			drag.swapping = undefined;
+			if (drag.merging?.key === key) return;
+			this.#stopWaits(drag);
+			const timer = setTimeout(() => {
+				if (this.#drag === drag && drag.merging?.key === key) this.#mark(key, true);
+			}, MERGE_MS);
+			drag.merging = { key, timer };
+			return;
+		}
+		if (drag.merging) {
+			clearTimeout(drag.merging.timer);
+			this.#mark(drag.merging.key, false);
+			drag.merging = undefined;
+		}
+		if (drag.swapping?.index === target) return;
+		if (drag.swapping) clearTimeout(drag.swapping.timer);
+		const timer = setTimeout(() => {
+			if (this.#drag !== drag || drag.swapping?.index !== target) return;
+			drag.swapping = undefined;
+			const now = itemsIn(this.#grid);
+			const rest = now.filter((other) => other !== lifted.item);
+			if (rest.length + 1 === lifted.slots.length && now.indexOf(lifted.item) !== target) {
+				moveGliding(this.#grid, lifted.item, rest[target] ?? null, this.#moving);
+				// Its place changed under a resting pointer: it stays where the pointer holds it.
+				if (drag.at) this.#follow(lifted, drag.at.x, drag.at.y);
+			}
+		}, SWAP_MS);
+		drag.swapping = { index: target, timer };
 	}
 
 	/** Keeps the lifted icon under the pointer, inside the grid. */
@@ -246,10 +354,42 @@ export class AppGridDrag {
 			{ capture: true, signal: guard.signal },
 		);
 		setTimeout(() => guard.abort(), 0);
+		this.#stopWaits(drag);
+		const hooks = this.#hooks();
+		// Where it is let go decides, not what the waits showed: over another icon's middle it goes into it, over another
+		// place it takes that place, past the last icon it goes last.
+		const x = event.clientX;
+		const y = event.clientY;
+		const items = itemsIn(this.#grid);
+		const target = lifted.slots.findIndex((slot) => inside(slot, x, y));
+		const under = target >= 0 ? items[target] : undefined;
+		const merging =
+			under &&
+			under !== lifted.item &&
+			inside(middleOf(lifted.slots[target]!), x, y) &&
+			hooks.canMerge?.(drag.key, keyOf(under))
+				? keyOf(under)
+				: undefined;
+		if (merging && hooks.merge) {
+			// Into the icon it rests on: every icon goes back to its place, and the drawer draws the group.
+			this.#putBack(lifted.before);
+			this.#settle(lifted.item);
+			hooks.merge(drag.key, merging);
+			hooks.end();
+			return;
+		}
+		const rest = items.filter((other) => other !== lifted.item);
+		if (rest.length + 1 === lifted.slots.length) {
+			if (target >= 0 && items.indexOf(lifted.item) !== target)
+				moveGliding(this.#grid, lifted.item, rest[target] ?? null, this.#moving);
+			else if (target < 0 && pastEnd(this.#grid, lifted.slots, x, y) && items.at(-1) !== lifted.item)
+				moveGliding(this.#grid, lifted.item, null, this.#moving);
+			// Its place changed as it was let go: it glides from under the pointer, not from its old offset (review F1).
+			this.#follow(lifted, x, y);
+		}
 		this.#settle(lifted.item);
 		const order = gridOrder(this.#grid);
-		const hooks = this.#hooks();
-		if (order.join("\n") !== lifted.before.join("\n")) hooks.drop(order);
+		if (order.join("\n") !== lifted.before.join("\n")) hooks.drop(order, drag.key);
 		hooks.end();
 	}
 
@@ -258,7 +398,7 @@ export class AppGridDrag {
 		this.#grid.classList.remove("is-sorting");
 		const left = item.style.translate;
 		item.style.translate = "";
-		item.classList.remove("is-lifted");
+		item.classList.remove("is-lifted", "is-merging");
 		if (!left || reducedMotion() || typeof item.animate !== "function") return;
 		track(
 			this.#moving,
@@ -285,7 +425,7 @@ export class AppGridDrag {
 		moveGliding(this.#grid, item, earlier ? target : target.nextElementSibling, this.#moving);
 		item.focus({ preventScroll: true });
 		const hooks = this.#hooks();
-		hooks.drop(gridOrder(this.#grid));
+		hooks.drop(gridOrder(this.#grid), keyOf(item));
 		hooks.end();
 	}
 }

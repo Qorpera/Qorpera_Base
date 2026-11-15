@@ -12,7 +12,9 @@ export const COMPANY: Record<string, string> = {
 	Created: "Oprettet",
 	Deleted: "Slettet",
 	Download: "Hent",
-	"Downloading {name}.": "Henter {name}.",
+	"{name} is ready: your browser saves it in your downloads.":
+		"{name} er klar: din browser gemmer den i dine overførsler.",
+	"Getting {name}…": "Henter {name}…",
 	"Folder path": "Mappesti",
 	"History of {name}": "Historik for {name}",
 	History: "Historik",

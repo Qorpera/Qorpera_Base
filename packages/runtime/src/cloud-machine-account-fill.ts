@@ -12,7 +12,7 @@ import {
 	companyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
 
-/* fill_company_account's helper on a company machine (20260930711000; Jonas, 10 November 2026: "Build machine sign-ins").
+/* fill_company_account's helper on a company machine (20260930781000; Jonas, 10 November 2026: "Build machine sign-ins").
  * The agent opened the account's sign-in page with `desktop open` and clicked into the field. The coding executor runs
  * this fixed program, shipped in the machine image beside the guest helper (never anything the agent wrote), as root on
  * the boot the database named, in one exec whose stdin and stdout stay open for the exchange:

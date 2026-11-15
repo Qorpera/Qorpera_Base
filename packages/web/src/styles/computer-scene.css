@@ -1,0 +1,101 @@
+/* An agent's computer while it sleeps or starts (src/ui/computer-scene.ts): the desktop the member is about to see, on
+   the place the picture will take. Only transform and opacity move. */
+.computer-panel-body { container-type: size; }
+.computer-scene { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.computer-scene[hidden] { display: none; }
+/* The 16:10 screen sits where the picture will (the canvas is contained and centred). */
+.computer-scene-screen { position: absolute; inset: 0; margin: auto; width: min(100cqw, 160cqh); height: min(100cqh, 62.5cqw); overflow: hidden; container-type: size; }
+.computer-scene-ground { position: absolute; inset: 0; }
+/* Before boot the screen is off: dark at every hour. It lights up late as the machine boots. */
+.computer-scene-ground.is-off { transition: opacity 1300ms var(--ease-in) 500ms; }
+.computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-ground.is-off { opacity: 0; }
+.computer-scene-flat { position: absolute; inset: 0; display: block; width: 100%; height: 100%; overflow: visible; }
+.computer-scene-flat.is-on { opacity: 0; transition: opacity 1800ms var(--ease-in-out); }
+.computer-scene-flat.is-off { transition: opacity 1800ms var(--ease-in-out); }
+.computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-flat.is-on { opacity: 1; }
+.computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-flat.is-off { opacity: 0; }
+/* With the avatar painted, the flat figure lies under it at once and is revealed as the avatar settles. */
+.computer-scene[data-avatar=true] .computer-scene-flat.is-off { display: none; }
+.computer-scene[data-avatar=true] .computer-scene-flat.is-on { transition: none; }
+.computer-scene[data-avatar=false] .computer-scene-avatar { display: none; }
+/* The figure's own 100-unit frame (translate(560 200) scale(8) of 1920x1200: a square box over 28 % of the screen). It
+   holds still: a continuous breath cost 40 % of headless WebKit's frames (probe, 13 Nov 2026); the eyes alone keep it
+   alive, and between their moves nothing on the scene moves at all. */
+.computer-scene-body { position: absolute; left: 29.1667%; top: 16.6667%; width: 41.6667%; height: 66.6667%; }
+.computer-scene.is-paused .computer-scene-dock-icon { animation-play-state: paused; }
+/* The avatar and the eyes in the figure's 100-unit frame: translate(560 200) scale(8) rotate(-4 50 50) of 1920x1200. */
+.computer-scene-avatar, .computer-scene-eyes { position: absolute; inset: 0; rotate: -4deg; }
+.computer-scene-avatar-art { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+/* The settle: the figure loses its colour first (onto the grey copy, its shading kept), then its shading flattens into
+   the wallpaper; the eyes stay where they are throughout. */
+.computer-scene-avatar-art.is-colour { transition: opacity 700ms var(--ease-in-out); }
+.computer-scene-avatar-art.is-grey { transition: opacity 1100ms var(--ease-in-out) 600ms; }
+.computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-avatar-art { opacity: 0; }
+.computer-scene-eye { position: absolute; translate: -50% -50%; }
+.computer-scene-eye-shape { display: block; width: 100%; height: 100%; border-radius: 999px; background: #fff; transition: background-color 600ms var(--ease-out); }
+.computer-scene:is([data-phase=off], [data-phase=asleep]) .computer-scene-eye-shape { background: var(--computer-scene-lid, #fff); }
+.computer-scene[data-avatar=false]:is([data-phase=off], [data-phase=asleep]) .computer-scene-eye-shape { background: hsl(225 12% 52%); }
+/* The dock: the machine's bar (80 of 1000), its three icons (64), the date left and the time right; while it waits,
+   the window's line in its middle, at its left once the icons come, gone when the clocks come. */
+.computer-scene-dock { position: absolute; left: 0; right: 0; bottom: 0; height: 8%; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; background: #101218; font: 400 1.7cqh/1 "Liberation Sans", Arial, Helvetica, sans-serif; }
+.computer-scene-date { justify-self: start; padding-left: 1.3125cqw; color: #a3abba; }
+.computer-scene-time { justify-self: end; padding-right: 2.9cqw; color: #eef0f4; }
+.computer-scene-date, .computer-scene-time { opacity: 0; transition: opacity 500ms var(--ease-out); }
+.computer-scene:is([data-phase=screen], [data-phase=settled]) :is(.computer-scene-date, .computer-scene-time) { opacity: 1; }
+.computer-scene-icons { display: flex; gap: 1cqw; }
+.computer-scene-dock-icon { display: block; width: 4cqw; height: 6.4cqh; opacity: 0; transform: translateY(45%) scale(0.55); }
+.computer-scene-dock-icon svg { display: block; width: 100%; height: 100%; }
+.computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-dock-icon { opacity: 1; transform: none; transition: opacity 260ms var(--ease-out) 900ms, transform 520ms var(--ease-spring) 900ms; }
+.computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-dock-icon:nth-child(2) { transition-delay: 1010ms; }
+.computer-scene:is([data-phase=starting], [data-phase=screen], [data-phase=settled]) .computer-scene-dock-icon:nth-child(3) { transition-delay: 1120ms; }
+.computer-scene-line { position: absolute; left: 50%; top: 50%; translate: -50% -50%; max-width: 92%; overflow: hidden; color: #d4d8e0; white-space: nowrap; text-overflow: ellipsis; font: 500 11px/1.2 var(--font-sans, -apple-system, BlinkMacSystemFont, system-ui, sans-serif); opacity: 0; transition: opacity 300ms var(--ease-out); }
+.computer-scene-line.is-side { left: 1.3125cqw; translate: 0 -50%; max-width: calc(50% - 8.3cqw - 6px); color: #a3abba; font-size: 10.5px; }
+.computer-scene:is([data-phase=off], [data-phase=waking]) .computer-scene-line:not(.is-side, .is-short) { opacity: 1; }
+.computer-scene[data-phase=starting] .computer-scene-line.is-side { opacity: 1; transition-delay: 1200ms; }
+/* A small window says a wait in its short form; a large one says the line and, under the figure, the full sentence. */
+.computer-scene[data-short=true]:is([data-phase=off], [data-phase=waking]) .computer-scene-line:not(.is-side, .is-short) { opacity: 0; }
+.computer-scene[data-short=true]:is([data-phase=off], [data-phase=waking]) .computer-scene-line.is-short { opacity: 1; }
+.computer-scene-note { position: absolute; left: 0; right: 0; top: 79%; bottom: 8%; display: none; align-items: center; justify-content: center; margin: 0; padding: 0 16px; color: rgb(233 235 240 / 70%); text-align: center; font: 400 13px/1.3 var(--font-sans, -apple-system, BlinkMacSystemFont, system-ui, sans-serif); }
+@container (min-width: 44em) {
+	.computer-scene-line { font-size: 12.5px; }
+	.computer-scene-line.is-side { font-size: 12px; }
+	.computer-scene[data-short=true]:is([data-phase=off], [data-phase=waking]) .computer-scene-line:not(.is-side, .is-short) { opacity: 1; }
+	.computer-scene[data-short=true]:is([data-phase=off], [data-phase=waking]) .computer-scene-line.is-short { opacity: 0; }
+	.computer-scene[data-phase=waking] .computer-scene-note:not([hidden]) { display: flex; }
+}
+
+/* The window's own words over the scene (they stay in .computer-loading for screen readers and tests). Asleep, a viewer's
+   note and a failed wake stand in the dock's bar, the button where the clock will be: nothing near the figure
+   (round 3: the rocket's feet touched a row under it). On the way up the scene says the line in the dock itself and
+   these words are for screen readers only. The strip is the dock: 8 % of the 16:10 screen, at its foot. */
+.computer-loading.is-scene { --screen-h: min(100cqh, 62.5cqw); position: absolute; top: calc((100cqh - var(--screen-h)) / 2 + var(--screen-h) * 0.92); left: 0; right: 0; z-index: 1; width: min(100cqw, 160cqh); height: calc(var(--screen-h) * 0.08); margin: 0 auto; display: flex; flex-flow: row nowrap; align-items: center; justify-content: flex-start; gap: 6px; padding: 0 5px 0 10px; overflow: hidden; container-type: inline-size; pointer-events: none; }
+.computer-loading.is-scene[hidden] { display: none; }
+.computer-loading.is-scene > * { pointer-events: auto; }
+.computer-loading.is-scene p { flex: 0 1 auto; min-width: 0; max-width: none; overflow: hidden; color: #e9ebf0; font-size: 11px; font-weight: 500; line-height: 1.2; white-space: nowrap; text-overflow: ellipsis; }
+.computer-loading.is-scene p.computer-loading-detail { flex: 0 1000 auto; margin-top: 0; color: rgb(233 235 240 / 78%); font-weight: 400; }
+/* Asleep the screen is off: the strip may stand a little taller than the dock (28 px at least), on the dock's own
+   colour, so its words and button have room (review r1 on the real component). */
+.computer-loading.is-scene[data-scene=asleep] { top: auto; bottom: calc((100cqh - var(--screen-h)) / 2); height: max(28px, calc(var(--screen-h) * 0.08)); background: #101218; }
+.computer-panel .computer-loading.is-scene .computer-retry { flex: none; min-height: 0; height: calc(100% - 8px); max-height: 30px; margin-left: auto; padding: 0 10px; border: 0; border-radius: 999px; color: #1d1d1f; background: #fff; font-size: 11px; font-weight: 600; line-height: 1; }
+.computer-panel .computer-loading.is-scene .computer-retry:hover { background: #e9e9ec; }
+.computer-loading.is-scene:is([data-scene=off], [data-scene=waking], [data-scene=starting], [data-scene=screen]) > p:is([role=status], .computer-loading-detail) { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@container (min-width: 44em) {
+	.computer-loading.is-scene { padding: 0 6px 0 16px; gap: 10px; }
+	.computer-loading.is-scene p { font-size: 13px; }
+	.computer-panel .computer-loading.is-scene .computer-retry { padding: 0 14px; font-size: 13px; }
+}
+/* The first picture settles in over the same scene. */
+.computer-panel .machine-screen.is-arriving { animation: computer-picture-in 420ms var(--ease-out) both; }
+@keyframes computer-picture-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+	.computer-scene * { transition: none !important; }
+	.computer-panel .machine-screen.is-arriving { animation: none; }
+}
+/* On the dark screen the window's own ✕ takes the dark surface's ink (dark.css), not a glow meant for a
+   light picture (review r1 on the real component). The same where the window says something in plain words and
+   shows neither a picture nor the scene (the screen off, a start that failed): its body is dark there in the light
+   theme too, and the picture's dark ink with its white halo was hard to read on it (seen on screenshots, 14 Nov
+   2026). Not while the words are the scene's own strip (`.is-scene`): the scene's lit phases (starting, screen) draw
+   a light desktop by day, and keep the picture's ink (review r1 of #1801). */
+.computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])),
+.computer-panel:has(.computer-loading:not([hidden], .is-scene)) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }

@@ -16,11 +16,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CompanyFolderBrowser,
 	type CompanyFolderBrowserOptions,
+	type CompanyFolderPick,
 	type CompanyFolderSource,
 } from "../src/app/views/company-folder.ts";
+import { chooseInCompanyFolder } from "../src/app/views/company-folder-choose.ts";
 import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
-import { setTimeZonePreference } from "../src/ui/preferences.ts";
+import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, settle, team, visibleText } from "./fixtures.ts";
 
 const me = id(1);
@@ -138,6 +140,14 @@ function folderFake() {
 		})),
 		readFile: vi.fn(async (reference: CloudMemberFolderFile) =>
 			new TextEncoder().encode(texts.get(reference.fileSha256) ?? ""),
+		),
+		/** A download reads the file as its pieces: here one, the whole text. */
+		readFilePieces: vi.fn(
+			async (
+				reference: CloudMemberFolderFile,
+				_signal: AbortSignal,
+				onPiece: (piece: Uint8Array, index: number, count: number) => void,
+			): Promise<void> => onPiece(new TextEncoder().encode(texts.get(reference.fileSha256) ?? ""), 0, 1),
 		),
 		pathHistory: vi.fn(
 			async (path: string): Promise<CloudMemberFolderPathHistory> => ({
@@ -462,6 +472,26 @@ describe("a folder-v2 company's Company File", () => {
 		expect(fake.client.list).toHaveBeenLastCalledWith("big", "big/older.txt", 200, expect.any(AbortSignal));
 		expect(rows(host)).toEqual(["newest.txt", "newer.txt", "older.txt"]);
 		expect(host.querySelector(".storage-count")?.textContent).toBe("3 items");
+	});
+
+	it("counts one item as one, in English and in Danish", async () => {
+		const { host, fake } = await opened({ embedded: true });
+		const count = () => host.querySelector(".storage-count")?.textContent;
+		await click(row(host, "big"));
+		expect(count()).toBe("0 items");
+		fake.contents.set("big/only.txt", "one");
+		await click(host.querySelector(".files-crumb"));
+		await click(row(host, "big"));
+		expect(count()).toBe("1 item");
+		setLanguagePreference("da");
+		try {
+			await click(host.querySelector(".files-crumb"));
+			expect(count()).toBe("4 elementer");
+			await click(row(host, "big"));
+			expect(count()).toBe("1 element");
+		} finally {
+			setLanguagePreference("system");
+		}
 	});
 
 	it("shows searchable Recents from the company change feed, opens a file, and returns to Documents", async () => {
@@ -1278,9 +1308,9 @@ describe("a folder-v2 company's Company File", () => {
 		await click(row(host, "readme.txt"));
 		expect(viewer.open).toBe(true);
 		let fail!: (error: Error) => void;
-		fake.client.readFile.mockImplementationOnce(
+		fake.client.readFilePieces.mockImplementationOnce(
 			() =>
-				new Promise<Uint8Array<ArrayBuffer>>((_, reject) => {
+				new Promise<void>((_, reject) => {
 					fail = reject;
 				}),
 		);
@@ -1647,9 +1677,66 @@ describe("a folder-v2 company's Company File", () => {
 		expect(fake.client.list.mock.calls.length).toBe(before + 2);
 	});
 
-	it("offers no download over 8 MiB, and says why", async () => {
+	it("downloads a file as the pieces it is read in, handed to the browser as one file", async () => {
 		const { fake, host } = await opened();
-		const huge = { ...entry("huge.zip", "x"), file: { ...file("x"), bytes: 9 * 1024 * 1024 } };
+		const saved: { name: string; href: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+			saved.push({ name: this.download, href: this.href });
+		});
+		await click(row(host, "readme.txt"));
+		await click(action(host, "Download"));
+		expect(fake.client.readFilePieces).toHaveBeenCalledWith(
+			file("Hello."),
+			expect.any(AbortSignal),
+			expect.any(Function),
+		);
+		expect(saved).toEqual([{ name: "readme.txt", href: "blob:fixture-picture" }]);
+		const handed = vi.mocked(URL.createObjectURL).mock.calls.at(-1)![0] as Blob;
+		expect(handed.size).toBe(6);
+		// Handed over, the file is ready: the page cannot know when the browser has saved it, so it says no more.
+		expect(status(host)).toBe("readme.txt is ready: your browser saves it in your downloads.");
+		// The line's words are taken when it is said: in Danish, once the language is Danish.
+		setLanguagePreference("da");
+		try {
+			await click(action(host, "Download"));
+			expect(status(host)).toBe("readme.txt er klar: din browser gemmer den i dine overførsler.");
+		} finally {
+			setLanguagePreference("system");
+		}
+		// A file of 20 MiB arrives as five pieces: the line says how far it is, and the browser gets one Blob of them.
+		const MIB = 1024 * 1024;
+		const big = { ...entry("big/site.zip", "x"), file: { ...file("x"), bytes: 20 * MIB } };
+		fake.client.list.mockResolvedValueOnce({ asOfSeq: 4, entries: [big], next: null });
+		const said: string[] = [];
+		fake.client.readFilePieces.mockImplementationOnce(async (_reference, _signal, onPiece) => {
+			for (let index = 0; index < 5; index++) {
+				onPiece(new Uint8Array(4 * MIB).fill(index + 1), index, 5);
+				said.push(status(host));
+				await Promise.resolve();
+			}
+		});
+		await click(row(host, "big"));
+		await click(row(host, "site.zip"));
+		await click(action(host, "Download"));
+		expect(said).toEqual([20, 40, 60, 80, 100].map((percent) => `Getting site.zip…${percent}%`));
+		expect(saved.at(-1)).toEqual({ name: "site.zip", href: "blob:fixture-picture" });
+		const whole = vi.mocked(URL.createObjectURL).mock.calls.at(-1)![0] as Blob;
+		expect(whole.size).toBe(20 * MIB);
+		// The pieces are in their order: the second ends and the third begins at 8 MiB (jsdom's Blob has no arrayBuffer()).
+		const seam = await new Promise<Uint8Array>((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+			reader.onerror = () => reject(reader.error);
+			reader.readAsArrayBuffer(whole.slice(8 * MIB - 1, 8 * MIB + 1));
+		});
+		expect(seam).toEqual(Uint8Array.of(2, 3));
+		expect(status(host)).toBe("site.zip is ready: your browser saves it in your downloads.");
+		expect(fake.client.readFile).toHaveBeenCalledTimes(1);
+	});
+
+	it("offers no download over 256 MiB, and says why", async () => {
+		const { fake, host } = await opened();
+		const huge = { ...entry("huge.zip", "x"), file: { ...file("x"), bytes: 257 * 1024 * 1024 } };
 		fake.client.list.mockResolvedValueOnce({ asOfSeq: 4, entries: [huge], next: null });
 		await click(row(host, "big"));
 		await click(row(host, "huge.zip"));
@@ -1657,6 +1744,7 @@ describe("a folder-v2 company's Company File", () => {
 		expect(actions).not.toContain("Download");
 		expect(actions).toContain("too large to download here");
 		expect(fake.client.readFile).not.toHaveBeenCalled();
+		expect(fake.client.readFilePieces).not.toHaveBeenCalled();
 	});
 
 	it("follows again after a reset whose reload failed", async () => {
@@ -1818,5 +1906,164 @@ describe("the Company File page", () => {
 		await settle();
 		expect(view.el.classList.contains("folder-page")).toBe(true);
 		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+	});
+});
+
+describe("choose mode: Open's \"A file…\" on an agent's computer (20260930758000)", () => {
+	it("picks one file, or the folder open, from the same rows; a file picked again is unpicked", async () => {
+		const picks: (CompanyFolderPick | null)[] = [];
+		const { host } = await opened({ choose: (pick) => picks.push(pick) });
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		expect(host.classList.contains("is-choosing")).toBe(true);
+		expect(picks.at(-1)).toBeNull();
+		await click(row(host, "readme.txt"));
+		expect(picks.at(-1)).toEqual({ path: "readme.txt", kind: "file" });
+		expect(row(host, "readme.txt")?.getAttribute("aria-pressed")).toBe("true");
+		expect(row(host, "readme.txt")?.closest(".files-row")?.classList.contains("is-open")).toBe(true);
+		await click(row(host, "logo.png"));
+		expect(picks.at(-1)).toEqual({ path: "logo.png", kind: "file" });
+		expect(row(host, "readme.txt")?.getAttribute("aria-pressed")).toBe("false");
+		await click(row(host, "logo.png"));
+		expect(picks.at(-1)).toBeNull();
+		// A folder's row opens it, as in Storage; the folder open is the pick until a file in it is.
+		await click(row(host, "notes"));
+		expect(rows(host)).toEqual(["log.txt", "plan.md"]);
+		expect(picks.at(-1)).toEqual({ path: "notes", kind: "folder" });
+		await click(row(host, "plan.md"));
+		expect(picks.at(-1)).toEqual({ path: "notes/plan.md", kind: "file" });
+		await click(host.querySelector("button.files-crumb"));
+		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		expect(picks.at(-1)).toBeNull();
+	});
+
+	it("reaches nothing that changes the folder: no preview, history, Restore, download, Recents or code tools", async () => {
+		const fake = folderFake(),
+			src = source(fake),
+			host = document.createElement("section");
+		document.body.append(host);
+		const codeDownloads = vi.fn();
+		const browser = new CompanyFolderBrowser(host, { ...src.value, codeDownloads }, people, { choose: () => {} });
+		disposers.push(() => browser.dispose());
+		await browser.open();
+		await settle();
+		expect(host.querySelector("h1")).toBeNull();
+		expect(host.querySelector(".files-tool")).toBeNull();
+		await click(row(host, "readme.txt"));
+		await click(row(host, "notes"));
+		await click(row(host, "plan.md"));
+		expect(host.querySelector<HTMLElement>(".files-preview")?.hidden).toBe(true);
+		expect(host.querySelector(".storage-viewer, .files-preview-actions, .folder-history-row")).toBeNull();
+		expect(codeDownloads).not.toHaveBeenCalled();
+		for (const method of ["readFile", "readFilePieces", "pathHistory", "history", "commit"] as const)
+			expect(fake.client[method], method).not.toHaveBeenCalled();
+		const labels = [...host.querySelectorAll("button")].map((button) => button.textContent ?? "");
+		for (const label of ["Restore", "Download", "Delete", "Rename", "Upload", "New folder", "Recent changes"])
+			expect(
+				labels.some((text) => text.includes(label)),
+				label,
+			).toBe(false);
+		expect(host.querySelector("[draggable=true]")).toBeNull();
+	});
+
+	it("shows a link, and does not pick it", async () => {
+		const fake = folderFake();
+		fake.links.set("latest", "notes/plan.md");
+		const picks: (CompanyFolderPick | null)[] = [];
+		const src = source(fake),
+			host = document.createElement("section");
+		document.body.append(host);
+		const browser = new CompanyFolderBrowser(host, src.value, people, { choose: (pick) => picks.push(pick) });
+		disposers.push(() => browser.dispose());
+		await browser.open();
+		await settle();
+		expect(rows(host)).toContain("latest");
+		expect(row(host, "latest")?.matches(":disabled")).toBe(true);
+		await click(row(host, "latest"));
+		expect(picks.at(-1)).toBeNull();
+	});
+
+	async function dialog(fake = folderFake(), signal = new AbortController().signal) {
+		const src = source(fake);
+		const answer = chooseInCompanyFolder(src.value, signal);
+		await settle();
+		const el = document.querySelector<HTMLDialogElement>("dialog.folder-choose-dialog")!;
+		const confirm = () =>
+			[...el.querySelectorAll<HTMLButtonElement>(".folder-choose-actions button")].find(
+				(button) => button.textContent === "Open on this computer",
+			)!;
+		const cancel = () =>
+			[...el.querySelectorAll<HTMLButtonElement>(".folder-choose-actions button")].find(
+				(button) => button.textContent === "Cancel",
+			)!;
+		const line = () => el.querySelector(".folder-choose-pick")?.textContent;
+		return { el, answer, confirm, cancel, line, src };
+	}
+
+	it("answers the file picked, or the folder gone into, with one button; nothing until something is picked", async () => {
+		const one = await dialog();
+		expect(one.el.getAttribute("aria-label")).toBe("Choose a file or a folder");
+		expect(one.confirm().disabled).toBe(true);
+		expect(one.line()).toBe("Pick a file, or go into a folder to open it.");
+		await click(row(one.el, "readme.txt"));
+		expect(one.line()).toBe("Opens readme.txt.");
+		expect(one.confirm().disabled).toBe(false);
+		await click(one.confirm());
+		await expect(one.answer).resolves.toBe("readme.txt");
+		expect(document.querySelector("dialog.folder-choose-dialog")).toBeNull();
+		const two = await dialog();
+		await click(row(two.el, "notes"));
+		expect(two.line()).toBe("Opens the folder notes.");
+		await click(two.confirm());
+		await expect(two.answer).resolves.toBe("notes");
+	});
+
+	it("Cancel, Escape and the window closing choose nothing", async () => {
+		const one = await dialog();
+		await click(row(one.el, "readme.txt"));
+		await click(one.cancel());
+		await expect(one.answer).resolves.toBeNull();
+		const two = await dialog();
+		await click(row(two.el, "readme.txt"));
+		two.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await expect(two.answer).resolves.toBeNull();
+		const window = new AbortController();
+		const three = await dialog(folderFake(), window.signal);
+		await click(row(three.el, "readme.txt"));
+		window.abort();
+		await expect(three.answer).resolves.toBeNull();
+		expect(document.querySelector("dialog.folder-choose-dialog")).toBeNull();
+	});
+
+	it("says the folder's states in plain words: opening, empty, and a read that failed, with Try again", async () => {
+		const fake = folderFake();
+		fake.folders.add("empty");
+		const first = deferred<void>();
+		const list = fake.client.list.getMockImplementation()!;
+		fake.client.list.mockImplementationOnce(async (...args) => {
+			await first.promise;
+			return list(...args);
+		});
+		const opening = await dialog(fake);
+		expect(opening.line()).toBe("Opening Company File");
+		expect(opening.confirm().disabled).toBe(true);
+		first.resolve();
+		await settle();
+		expect(opening.line()).toBe("Pick a file, or go into a folder to open it.");
+		await click(row(opening.el, "empty"));
+		expect(visibleText(opening.el)).toContain("This folder is empty.");
+		expect(opening.line()).toBe("Opens the folder empty.");
+		await click(opening.cancel());
+		const failing = folderFake();
+		failing.client.list.mockRejectedValueOnce(new Error("offline"));
+		const failed = await dialog(failing);
+		expect(visibleText(failed.el)).toContain("The Company File could not be read just now.");
+		expect(failed.confirm().disabled).toBe(true);
+		const again = [...failed.el.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Try again",
+		)!;
+		await click(again);
+		expect(rows(failed.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		await click(failed.cancel());
+		await expect(failed.answer).resolves.toBeNull();
 	});
 });

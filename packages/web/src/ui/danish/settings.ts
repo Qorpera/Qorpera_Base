@@ -2,7 +2,7 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Good will, Friends, Company, AI subscriptions, Company connections, Sites. */
+/** Settings: General, Good will, Friends, Company, AI subscriptions, Sites. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -193,13 +193,10 @@ export const SETTINGS: Record<string, string> = {
 
 	// Company execution (app/views/company-execution.ts)
 
-	// AI subscriptions and Company connections (app/views/settings.ts)
+	// AI subscriptions (app/views/settings.ts)
 	"AI subscriptions": "AI-abonnementer",
-	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
 		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
-	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
-		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
 	// AI subscriptions: model accounts (app/views/settings-connections.ts)
 	"Continue with ChatGPT": "Fortsæt med ChatGPT",
@@ -292,29 +289,11 @@ export const SETTINGS: Record<string, string> = {
 	"The Claude sign-in could not be finished. Try again.": "Login hos Claude kunne ikke afsluttes. Prøv igen.",
 	"Claude · coding only": "Claude · kun kode",
 
-	// Company connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
-	Services: "Tjenester",
-	"Only founders and admins can connect or disconnect them.":
-		"Kun stiftere og administratorer kan forbinde eller afbryde dem.",
-	"Read and search the mailbox, send email.": "Læs og søg i postkassen, send e-mail.",
-	"Find, read, create and update documents.": "Find, læs, opret og opdater dokumenter.",
-	"Repositories, issues, pull requests and files.": "Repositories, issues, pull requests og filer.",
-	"Use a personal access token instead": "Brug et personligt adgangstoken i stedet",
-	"A fine-grained token with the repositories the agents may use.":
-		"Et fine-grained token med de repositories, agenterne må bruge.",
+	// Connect, Disconnect, Working… and Connected (several pages)
 	Connect: "Forbind",
-	"Opening sign-in…": "Åbner login…",
 	Disconnect: "Afbryd",
 	"Working…": "Arbejder…",
 	Connected: "Forbundet",
-	"Connected as {account}": "Forbundet som {account}",
-	"Connected by {member}": "Forbundet af {member}",
-	"Connected as {account} by {member}": "Forbundet som {account} af {member}",
-	"Available to every agent in the company, including new hires.":
-		"Tilgængelig for alle virksomhedens agenter, også nyansatte.",
-	"Paste the token": "Indsæt tokenet",
-	"{service} token": "Token til {service}",
-	"Save token": "Gem token",
 	// Digital Post (app/views/settings-digital-post.ts)
 	"Digital Post could not be read.": "Digital Post kunne ikke læses.",
 	"This is not a Digital Post API key. Copy the key from the receipt Administrativ Adgang shows.":
@@ -365,25 +344,11 @@ export const SETTINGS: Record<string, string> = {
 	"Every agent in the company can read the letters.": "Alle agenter i virksomheden kan læse brevene.",
 	"Only founders and admins can connect or disconnect it.":
 		"Kun stiftere og administratorer kan forbinde eller afbryde den.",
-	"Finishing the {service} connection…": "Afslutter forbindelsen til {service}…",
-	"{service} is connected. The company's agents can use it from their next run.":
-		"{service} er forbundet. Virksomhedens agenter kan bruge den fra deres næste kørsel.",
-	"{service} was not connected.": "{service} blev ikke forbundet.",
-	"Try again.": "Prøv igen.",
-	"The sign-in was cancelled before access was granted.": "Login blev annulleret, før der blev givet adgang.",
 	"The sign-in took too long. Try again.": "Login tog for lang tid. Prøv igen.",
-	"Google did not grant lasting access. Try again and allow all requested access.":
-		"Google gav ikke varig adgang. Prøv igen, og tillad al den adgang, der bliver bedt om.",
-	"The service did not complete the sign-in. Try again.": "Tjenesten gennemførte ikke login. Prøv igen.",
 	"This sign-in link is no longer valid. Try again.": "Dette loginlink er ikke længere gyldigt. Prøv igen.",
 	"The sign-in was finished in another browser. Start it again here.":
 		"Login blev afsluttet i en anden browser. Start det igen her.",
-	"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.":
-		"Kontoen er forbundet, men virksomhedens agenter kunne ikke få adgang til den endnu. Afbryd den, og forbind den igen.",
-	"The company's services could not be read.": "Virksomhedens tjenester kunne ikke hentes.",
 	"The sign-in could not be started. Try again.": "Login kunne ikke startes. Prøv igen.",
-	"The token could not be saved. Try again.": "Tokenet kunne ikke gemmes. Prøv igen.",
-	"The service could not be disconnected. Try again.": "Tjenesten kunne ikke afbrydes. Prøv igen.",
 
 	// Company connections: webhooks and mailboxes (app/views/settings-hooks.ts)
 	Webhooks: "Webhooks",
@@ -425,7 +390,6 @@ export const SETTINGS: Record<string, string> = {
 	"e.g. invoices": "f.eks. fakturaer",
 	"What it is for": "Hvad den er til",
 	"What it is for, e.g. new orders from the shop": "Hvad den er til, f.eks. nye ordrer fra webshoppen",
-	"What it is for, e.g. invoices from suppliers": "Hvad den er til, f.eks. fakturaer fra leverandører",
 	"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.":
 		"Små bogstaver, tal og bindestreger, og den starter med et bogstav. Virksomhedens agenter læser, hvad den er til, når der kommer noget.",
 	"The part before the @: lowercase letters, digits, dots, hyphens and underscores.":
@@ -453,28 +417,27 @@ export const SETTINGS: Record<string, string> = {
 
 	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
 	Sites: "Hjemmesider",
-	"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.":
-		"Hjemmesider, som virksomhedens agenter har udgivet. Hver har sit eget link og sin egen adgangskode; del begge med dem, der skal se den.",
+	"Share a site with its link and password.": "Del en hjemmeside med dens link og adgangskode.",
 	"Only founders and admins can see passwords or take sites offline.":
 		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
-	"No sites yet. When an agent publishes a website for the company, it shows here with its link and password.":
-		"Ingen hjemmesider endnu. Når en agent udgiver en hjemmeside for virksomheden, vises den her med sit link og sin adgangskode.",
+	"No sites yet": "Ingen hjemmesider endnu",
+	"Ask an agent for a website and it shows up here.": "Bed en agent om en hjemmeside, så dukker den op her.",
 	"The company's sites could not be read.": "Virksomhedens hjemmesider kunne ikke hentes.",
 	"Publishing…": "Udgiver…",
 	"Published {time} by {agent}": "Udgivet {time} af {agent}",
 	"Published {time}": "Udgivet {time}",
-	"1 file": "1 fil",
-	"From {source}": "Fra {source}",
+	"Copy the link": "Kopiér linket",
+	"The link": "Linket",
 	"The link is copied.": "Linket er kopieret.",
-	"The link could not be copied. Select it and copy it.": "Linket kunne ikke kopieres. Markér det, og kopiér det.",
 	"Show password": "Vis adgangskode",
-	Hide: "Skjul",
+	"Hide password": "Skjul adgangskode",
+	"Copy the password": "Kopiér adgangskoden",
+	"The password": "Adgangskoden",
 	"The password is copied.": "Adgangskoden er kopieret.",
-	"The password could not be copied. Select it and copy it.":
-		"Adgangskoden kunne ikke kopieres. Markér den, og kopiér den.",
-	"Share the link and this password only with the people who should see the site. A visitor's own link opens the site for 7 days; a new password ends every visit.":
-		"Del kun linket og denne adgangskode med dem, der skal se hjemmesiden. En besøgendes eget link åbner hjemmesiden i 7 dage; en ny adgangskode afslutter alle besøg.",
+	"Press ⌘C to copy.": "Tryk ⌘C for at kopiere.",
+	"Press Ctrl+C to copy.": "Tryk Ctrl+C for at kopiere.",
 	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
+	"More options for {name}": "Flere muligheder for {name}",
 	"Change password": "Skift adgangskode",
 	"Type a new password, 10 to 128 characters": "Skriv en ny adgangskode på 10 til 128 tegn",
 	"New password for {name}": "Ny adgangskode til {name}",
@@ -483,18 +446,96 @@ export const SETTINGS: Record<string, string> = {
 	"Every visitor enters the new password; the old one stops working at once.":
 		"Alle besøgende skal skrive den nye adgangskode; den gamle holder op med at virke med det samme.",
 	"A site password is 10 to 128 characters.": "En adgangskode til en hjemmeside er på 10 til 128 tegn.",
-	"The password is changed. Every visitor enters the new one.":
-		"Adgangskoden er skiftet. Alle besøgende skal skrive den nye.",
+	"The password is changed.": "Adgangskoden er skiftet.",
 	"The password could not be changed. Try again.": "Adgangskoden kunne ikke skiftes. Prøv igen.",
-	Unpublish: "Tag offline",
+	"Take offline": "Tag offline",
 	"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Filerne bliver i Virksomhedsfilen.",
+	"{name} is offline.": "{name} er offline.",
 	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
 	// An app link: one port of a company machine at a site's link (v195)
-	"App on machine {name}, port {port}": "App på maskinen {name}, port {port}",
-	"App on port {port} of a machine that was deleted": "App på port {port} på en maskine, der er slettet",
 	"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
+	// A project's site made from its code kept in Qorpera: its version goes live from What's new (own code storage step 4)
+	"Version {version}": "Version {version}",
+	"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.":
+		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder med en ny adgangskode, til du sætter den live.",
+	// A site Qorpera took down: why, in place of its link and password (own code storage step 5.1)
+	"Taken down": "Taget ned",
+	"Qorpera took this site down: {reason}. If you think this is wrong, tell us with {feedback} in your menu.":
+		"Qorpera har taget hjemmesiden ned: {reason}. Hvis du mener, det er forkert, så skriv til os under {feedback} i din menu.",
+
+	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
+	"What's new": "Nyheder",
+	"What's new could not be read.": "Nyheder kunne ikke hentes.",
+	"Live now": "Live nu",
+	"Not live yet": "Ikke live endnu",
+	"Version {version} · since {time}": "Version {version} · siden {time}",
+	"Version {version} · since {time} · {name} said go": "Version {version} · siden {time} · {name} sagde ja",
+	"Version {version} · since {time} · {name} went back":
+		"Version {version} · siden {time} · {name} satte den live igen",
+	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
+	"Open the site": "Åbn hjemmesiden",
+	"Go back to version {version}": "Gå tilbage til version {version}",
+	"Put version {version} back up? Version {current} comes off the site at once; its changes stay ready.":
+		"Sæt version {version} live igen? Version {current} tages af hjemmesiden med det samme; dens ændringer er stadig klar.",
+	"Go back": "Gå tilbage",
+	"1 change is ready": "1 ændring er klar",
+	"{count} changes are ready": "{count} ændringer er klar",
+	"and 1 change behind the scenes": "og 1 ændring bag kulisserne",
+	"and {count} changes behind the scenes": "og {count} ændringer bag kulisserne",
+	"1 change behind the scenes": "1 ændring bag kulisserne",
+	"{count} changes behind the scenes": "{count} ændringer bag kulisserne",
+	"Was live before": "Har været live før",
+	"Put it live": "Sæt live",
+	"Put the first version live": "Sæt den første version live",
+	"Not yet": "Ikke endnu",
+	"Not yet: ": "Ikke endnu: ",
+	"Putting it live…": "Sætter den live…",
+	"Version {version} is live.": "Version {version} er live.",
+	"Nothing new is ready.": "Intet nyt er klar.",
+	"1 more change is not ready yet.": "1 ændring mere er ikke klar endnu.",
+	"{count} more changes are not ready yet.": "{count} ændringer mere er ikke klar endnu.",
+	"Founders and admins put changes live.": "Stiftere og administratorer sætter ændringer live.",
+	"Something changed while you looked. Here is what is ready now.":
+		"Noget har ændret sig, mens du kiggede. Her er det, der er klar nu.",
+	"Something changed while you looked. Here is what is live now.":
+		"Noget har ændret sig, mens du kiggede. Her er det, der er live nu.",
+	"It did not go live: {why}. Nothing changed.": "Det blev ikke sat live: {why}. Intet er ændret.",
+	"It did not go back: {why}. Nothing changed.": "Den blev ikke sat live igen: {why}. Intet er ændret.",
+	"only founders and admins can put a version live": "kun stiftere og administratorer kan sætte en version live",
+	"Qorpera was busy for a moment": "Qorpera havde travlt et øjeblik",
+	"the project is no longer there": "projektet findes ikke længere",
+	"something went wrong on Qorpera's side": "noget gik galt hos Qorpera",
+	"This project can't get a site: the company has 10. Take one offline in Sites.":
+		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10. Tag en offline under Hjemmesider.",
+	"The newest version could not be prepared. Qorpera is trying again.":
+		"Den nyeste version kunne ikke gøres klar. Qorpera prøver igen.",
+	"The newest version could not be prepared. The next change that is saved gets a new try.":
+		"Den nyeste version kunne ikke gøres klar. Den næste ændring, der gemmes, får et nyt forsøg.",
+	"It may not have gone live: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live: Qorpera kunne ikke nås. Tjekker…",
+	"It may not have gone back: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live igen: Qorpera kunne ikke nås. Tjekker…",
+	"Qorpera could not be reached, so it is not known whether it went live. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live. Åbn denne side igen om lidt.",
+	"Qorpera could not be reached, so it is not known whether it went back. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live igen. Åbn denne side igen om lidt.",
+	// Look first: the ready version at the site's next address, before it goes live; and a site Qorpera took down (own
+	// code storage step 5.1)
+	"Look first": "Se den først",
+	// "A change is ready" in the agent's thread (app/views/thread-ready.ts)
+	"Ready to go live": "Klar til at gå live",
+	"and 1 more change": "og 1 ændring mere",
+	"and {count} more changes": "og {count} ændringer mere",
+	"The next version could not be opened. Try again.": "Den næste version kunne ikke åbnes. Prøv igen.",
+	"The next version could not be opened: Qorpera could not be reached. Try again.":
+		"Den næste version kunne ikke åbnes: Qorpera kunne ikke nås. Prøv igen.",
+	"Qorpera took this site down, so it can't be opened. See why in Sites.":
+		"Qorpera har taget hjemmesiden ned, så den kan ikke åbnes. Se hvorfor under Hjemmesider.",
+	"Only founders and admins can look at a version before it goes live.":
+		"Kun stiftere og administratorer kan se en version, før den går live.",
+	"Qorpera took this site down": "Qorpera har taget hjemmesiden ned",
 
 	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
 	"Environment variables for coding": "Miljøvariabler til kodning",

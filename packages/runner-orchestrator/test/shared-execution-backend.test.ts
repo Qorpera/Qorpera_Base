@@ -172,6 +172,7 @@ async function fixture(
 		slotCount?: number;
 		epoch?: number;
 		codingCommand?: { origin: string; token: string };
+		companyData?: { origin: string; token: string; caCertificate: string; caSha256: string };
 		mountInfoPath?: string;
 		warmIdleMs?: number;
 		folderSearch?: boolean;
@@ -224,6 +225,7 @@ async function fixture(
 		recoveryVolumePrefix: "phql-a1-recovery-",
 		recoveryVolumeSize: "4GiB",
 		...(options.codingCommand ? { codingCommand: options.codingCommand } : {}),
+		...(options.companyData ? { companyData: options.companyData } : {}),
 	};
 	const state: Fixture = {
 		backend: undefined as unknown as SharedExecutionProviderBackend,
@@ -467,6 +469,32 @@ describe("shared execution provider backend", () => {
 		expect(environment).not.toContain(gateway.token);
 	});
 
+	it("hands the sandbox the company data run door, its token and its CA when the host is configured for it", async () => {
+		const door = {
+			origin: "https://10.41.0.1:8481",
+			token: token(),
+			caCertificate: secretBrokerCa,
+			caSha256: sha256(secretBrokerCa),
+		};
+		const f = await fixture({ companyData: door });
+		await f.backend.acquire(runId, work(), new AbortController().signal);
+		const slotRun = join(f.runRoot, "slots", "0");
+		expect(await readFile(join(slotRun, "credentials", "qorpera-company-data"), "utf-8")).toBe(`${door.token}\n`);
+		expect(await readFile(join(slotRun, "credentials", "qorpera-company-data-ca"), "utf-8")).toBe(secretBrokerCa);
+		for (const name of ["qorpera-company-data", "qorpera-company-data-ca"])
+			expect((await stat(join(slotRun, "credentials", name))).mode & 0o077).toBe(0);
+		const environment = await readFile(join(slotRun, "native-provider.env"), "utf-8");
+		expect(environment).toContain(`QORPERA_COMPANY_DATA_URL=${door.origin}\n`);
+		// The CA's path is the unit's own (%d), never the slot's env.
+		expect(environment).not.toContain("QORPERA_COMPANY_DATA_CA_FILE");
+		expect(environment).not.toContain(door.token);
+		// A token another credential of the node holds is refused when the service starts.
+		const shared = { origin: "https://coding.example.test:8789", token: token() };
+		await expect(fixture({ codingCommand: shared, companyData: { ...door, token: shared.token } })).rejects.toThrow(
+			"Company databases require",
+		);
+	});
+
 	it("gives the native host the node's folder search when it is on: the slot's relay socket, started first", async () => {
 		const f = await fixture({ folderSearch: true });
 		await f.backend.acquire(runId, work(), new AbortController().signal);
@@ -477,8 +505,8 @@ describe("shared execution provider backend", () => {
 		]);
 		const environment = await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8");
 		expect(environment).toContain("QORPERA_FOLDER_SEARCH_SOCKET=/run/qorpera-folder-relay/0.sock\n");
-		// Off unless on; anything else is refused at start.
-		expect(folderSearch({})).toBe(false);
+		// On unless an operator set it off (keyholes S4: search for every run); anything else is refused at start.
+		expect(folderSearch({})).toBe(true);
 		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "off" })).toBe(false);
 		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "on" })).toBe(true);
 		expect(() => folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "yes" })).toThrow("on or off");
@@ -521,6 +549,8 @@ describe("shared execution provider backend", () => {
 			"qorpera-cloud-secret-ca",
 			"qorpera-cloud-secret-runtime",
 			"qorpera-coding-command",
+			"qorpera-company-data",
+			"qorpera-company-data-ca",
 			"qorpera-native-bridge",
 			"qorpera-native-identity",
 			"qorpera-native-identity-epoch",
@@ -565,7 +595,11 @@ describe("shared execution provider backend", () => {
 		});
 		expect(await readFile(join(slotRun, "credentials", "qorpera-office-native"), "utf-8")).toBe("");
 		expect(await readFile(join(slotRun, "credentials", "qorpera-coding-command"), "utf-8")).toBe("");
+		// Without a run door the two credential sources still exist, empty, and the host offers no data tools.
+		expect(await readFile(join(slotRun, "credentials", "qorpera-company-data"), "utf-8")).toBe("");
+		expect(await readFile(join(slotRun, "credentials", "qorpera-company-data-ca"), "utf-8")).toBe("");
 		const environment = await readFile(join(slotRun, "native-provider.env"), "utf-8");
+		expect(environment).not.toContain("QORPERA_COMPANY_DATA_URL");
 		expect(environment).toContain("QORPERA_NATIVE_PROVIDER_PORT=20000\n");
 		expect(environment).toContain(`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${computeIdentityId}\n`);
 		expect(environment).toContain(

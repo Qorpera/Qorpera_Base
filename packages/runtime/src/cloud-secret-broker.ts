@@ -326,7 +326,7 @@ export interface CloudSecretBrokerAuthority {
 	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
 	setCompanyAccountState?: CompanyAccountAuthority["setCompanyAccountState"];
 	readCompanyAccountFill?: CompanyAccountAuthority["readCompanyAccountFill"];
-	/** A company machine's fill (fill_company_account, 20260930711000); without it every machine fill is refused. */
+	/** A company machine's fill (fill_company_account, 20260930781000); without it every machine fill is refused. */
 	readCompanyAccountMachineFill?: CompanyAccountAuthority["readCompanyAccountMachineFill"];
 	/** Signed hooks' secrets (E3b-2, E3b-3); a broker whose database cannot serve them leaves these out. */
 	describeSignedHook?: EventHookAuthority["describeSignedHook"];
@@ -1168,7 +1168,7 @@ export class CloudSecretBroker {
 		return this.#companyAccounts.fill(request, signal);
 	}
 
-	/** One fill_company_account on a company machine (20260930711000), asked by the machine's executor: the value sealed
+	/** One fill_company_account on a company machine (20260930781000), asked by the machine's executor: the value sealed
 	 * to the key the machine's fill helper made for this call. */
 	companyAccountMachineFill(
 		request: CompanyAccountMachineFillRequest,
@@ -2081,7 +2081,7 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	/** A company machine's fill (20260930711000): the call, and where the executor runs the helper with the helper's key. */
+	/** A company machine's fill (20260930781000): the call, and where the executor runs the helper with the helper's key. */
 	readCompanyAccountMachineFill(request: CompanyAccountMachineFillRequest, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_fill_company_account_on_machine($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::text,$8::uuid,$9::uuid,$10::text) as result",
@@ -2278,6 +2278,25 @@ export class PostgresCloudSecretBrokerAuthority
 				input.lease,
 				JSON.stringify(input.accountKeys),
 				JSON.stringify(input.transactions),
+			],
+			signal,
+		);
+	}
+
+	/** The company's days by kind for the leased sync's range (20260930769000). */
+	recordBankDays(input: Parameters<BankSyncAuthority["recordBankDays"]>[0], signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_bank_days($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::jsonb,$7::date,$8::date,$9::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				JSON.stringify(input.accountKeys),
+				input.from,
+				input.to,
+				JSON.stringify(input.days),
 			],
 			signal,
 		);

@@ -884,7 +884,65 @@ describe("dragging agents in the rail", () => {
 		expect(rail.querySelector(".rail-hidden")).toBeNull();
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
 	});
-	it("keeps the drop spot when the rail redraws mid-drag", async () => {
+	it("opens a space where the agent will land while it is dragged, and drops it there", async () => {
+		const { rail, manage, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		const target = boxes.get(rowOf(rail, "Ada"))!;
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		// Lifted: the row is out of the list and an empty space stands where it was.
+		const section = rowOf(rail, "Bo").parentElement!;
+		const unassigned = row.parentElement!;
+		const order = (list: Element) =>
+			[...list.children].map((child) =>
+				child.matches(".rail-drop-gap") ? "space" : child.matches(".is-drag-source") ? "lifted" : names([child])[0],
+			);
+		expect(order(section)).toEqual(["Bo", "Ada"]);
+		expect(order(unassigned).slice(0, 2)).toEqual(["space", "lifted"]);
+		expect(document.querySelector(".rail-drag-ghost")).not.toBeNull();
+		// Over Ada the space moves above her at once, and Unassigned closes up; no line marks the place.
+		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
+		expect(order(section)).toEqual(["Bo", "space", "Ada"]);
+		expect(order(unassigned)).not.toContain("space");
+		expect(order(unassigned)[0]).toBe("lifted");
+		expect(rail.querySelector(".rail-drop-marker")).toBeNull();
+		expect(manage).not.toHaveBeenCalled();
+		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: cy.id,
+			sectionId: research,
+			order: [bo.id, cy.id, ada.id],
+		});
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Cy", "Ada"]);
+		expect(rail.querySelector(".rail-drop-gap, .is-drag-source, .is-drag-landing")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("puts the space back where the agent started when it is dragged off the rail, and sends nothing", async () => {
+		const { rail, manage, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(rowOf(rail, "Bo"))!.top + 5));
+		expect(rail.querySelector(".rail-drop-gap")!.nextElementSibling).toBe(rowOf(rail, "Bo"));
+		document.dispatchEvent(pointer("pointermove", 900, boxes.get(rowOf(rail, "Bo"))!.top + 5));
+		expect(rail.querySelector(".rail-drop-gap")!.nextElementSibling).toBe(row);
+		document.dispatchEvent(pointer("pointerup", 900, boxes.get(rowOf(rail, "Bo"))!.top + 5));
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada"]);
+		expect(row.isConnected && !row.classList.contains("is-drag-source")).toBe(true);
+		expect(rail.querySelector(".rail-drop-gap, .is-drag-source")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("holds the rail still while an agent is lifted and draws what changed when it is let go", async () => {
 		const { rail, manage, company, ready } = companyWith(demo());
 		await ready;
 		await settle();
@@ -894,11 +952,14 @@ describe("dragging agents in the rail", () => {
 		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
 		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
 		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
-		expect(rail.querySelector(".rail-drop-marker")).not.toBeNull();
-		// An activity poll redraws the rail while the pointer holds still.
+		const space = rail.querySelector(".rail-drop-gap")!;
+		expect(space.nextElementSibling).toBe(rowOf(rail, "Ada"));
+		// An activity poll would redraw the rail; the space and the lifted row stay as they are.
 		company.store.set({ activity: [] });
 		await settle();
-		expect(rail.querySelector(".rail-drop-marker")).not.toBeNull();
+		expect(space.isConnected).toBe(true);
+		expect(space.nextElementSibling).toBe(rowOf(rail, "Ada"));
+		expect(row.classList.contains("is-drag-source")).toBe(true);
 		expect(rail.querySelector(".is-drop-target")?.getAttribute("data-drop-zone")).toBe(`section:${research}`);
 		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
 		await settle();
@@ -908,6 +969,31 @@ describe("dragging agents in the rail", () => {
 			sectionId: research,
 			order: [bo.id, cy.id, ada.id],
 		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("keeps a pin made elsewhere while an agent was lifted, and drops the agent among the pins as they are now", async () => {
+		const { rail, manage, company, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		const target = boxes.get(rail.querySelector(".rail-pin")!)!;
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
+		expect(rail.querySelector(".rail-pinned > .rail-drop-gap")).not.toBeNull();
+		// Bo is pinned on another device; the lifted rail still shows Dee alone.
+		const sidebar = company.store.get().sidebar!;
+		company.store.set({ sidebar: { ...sidebar, pinned: [bo.id, dee.id] } });
+		await settle();
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
+		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [bo.id, cy.id, dee.id],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	it("does not pick an agent up while searching, and Escape puts a drag back", async () => {
 		const { rail, manage, draw, ready } = companyWith(demo());
@@ -1417,5 +1503,279 @@ describe("group chats in the rail", () => {
 		await settle();
 		expect(rail.textContent).toContain("Launch could not be deleted.");
 		expect(rail.textContent).not.toContain("gateway said no");
+	});
+});
+
+describe("each member's own sidebar (20260930727000)", () => {
+	const own = (changes: Partial<NonNullable<CompanySidebar["own"]>> = {}): NonNullable<CompanySidebar["own"]> => ({
+		changes: 0,
+		moved: [],
+		sections: [],
+		pinned: 0,
+		hidden: 0,
+		contacts: 0,
+		pages: 0,
+		apps: 0,
+		...changes,
+	});
+	const viewerTeam = { ...team, role: "viewer" as const, capabilities: { ...team.capabilities, write: false } };
+	const resetMenu = () =>
+		[...document.querySelectorAll<HTMLButtonElement>(".context-menu [role^=menuitem]")].find((item) =>
+			item.textContent?.startsWith("Reset sidebar"),
+		);
+
+	it("reads what the member changed and which sections are theirs; a reset is drawn by the cloud's answer", () => {
+		const parsed = parseCompanySidebar({
+			...demoWire(),
+			sections: [
+				{ sectionId: research, name: "Research" },
+				{ sectionId: ops, name: "Mine", mine: true },
+			],
+			own: {
+				changes: 3,
+				moved: [ada.id],
+				sections: [{ change: "renamed", from: "Labs", name: "Research" }],
+				pinned: 1,
+				hidden: 0,
+				contacts: 0,
+				pages: 0,
+			},
+		});
+		expect(parsed.sections).toEqual([
+			{ sectionId: research, name: "Research" },
+			{ sectionId: ops, name: "Mine", mine: true },
+		]);
+		expect(parsed.own).toEqual(
+			own({
+				changes: 3,
+				moved: [ada.id],
+				sections: [{ change: "renamed", from: "Labs", name: "Research" }],
+				pinned: 1,
+			}),
+		);
+		expect(() => parseCompanySidebar({ ...demoWire(), own: { ...parsed.own, changes: -1 } })).toThrow();
+		expect(() =>
+			parseCompanySidebar({ ...demoWire(), own: { ...parsed.own, sections: [{ change: "moved", name: "x" }] } }),
+		).toThrow();
+		expect(parseCompanySidebar(demoWire()).own).toBeUndefined();
+		const sidebar = { ...demo(), own: own({ changes: 2 }) };
+		expect(applySidebarRequest(sidebar, { action: "reset" }, roster)).toEqual(sidebar);
+		const made = applySidebarRequest(sidebar, { action: "create_section", sectionId: id(62), name: "New" }, roster);
+		expect(made.sections.at(-1)).toEqual({ sectionId: id(62), name: "New", mine: true });
+		expect(made.own).toEqual(sidebar.own);
+	});
+
+	it("lets a viewer organise their own sidebar and offers Reset sidebar, greyed out with nothing to reset", async () => {
+		const { company, rail, ready } = companyWith({ ...demo(), own: own() });
+		company.store.set({ team: viewerTeam });
+		await ready;
+		await settle();
+		rightClick(rail.querySelector(".rail-scroll")!);
+		expect(menuItems()).toEqual(["New section", "Reset sidebarYou have Company A PRIVATE's sidebar"]);
+		expect(resetMenu()!.disabled).toBe(true);
+		expect(document.querySelector(".context-menu [role^=menuitem] .icon path")?.getAttribute("d")).toBe("M3.5 5h7");
+		openMenu()?.close();
+		rightClick(rail.querySelector(".rail-section-title[data-section-id]")!);
+		expect(menuItems()).toEqual([
+			"Rename section",
+			"Delete section",
+			"Reset sidebarYou have Company A PRIVATE's sidebar",
+		]);
+	});
+
+	it("asks with what goes, resets, and puts it all back with Undo", async () => {
+		localStorage.setItem(
+			`qorpera.web.rail-apps-order:${profileA.profileId}`,
+			JSON.stringify(["concepts", "page:bank"]),
+		);
+		cleanup.push(() => localStorage.clear());
+		const mine = {
+			...demo(),
+			own: own({
+				changes: 4,
+				moved: [ada.id],
+				sections: [
+					{ change: "added", name: "Mine" },
+					{ change: "renamed", from: "Labs", name: "Research" },
+				],
+				pinned: 1,
+			}),
+		};
+		const company_ = { ...demo(), pinned: [], own: own() };
+		const { f, rail, read, ready } = companyWith(mine);
+		const manage = vi.spyOn(f.api, "manageCompanySidebar").mockImplementation(async (_profileId, request) => {
+			const next = request.action === "reset" ? company_ : mine;
+			read.mockImplementation(async () => structuredClone(next));
+			return structuredClone(next);
+		});
+		await ready;
+		await settle();
+		rightClick(rail.querySelector(".rail-scroll")!);
+		// Four in the cloud and the apps' order on this device.
+		expect(menuItems()).toEqual(["New section", "Reset sidebar…5 changes of yours"]);
+		resetMenu()!.click();
+		await settle();
+		expect(document.querySelector(".modal p")?.textContent).toBe(
+			"Reset your sidebar? These changes of yours go away, and you get Company A PRIVATE's sidebar:",
+		);
+		expect([...document.querySelectorAll(".modal-list li")].map((item) => item.textContent)).toEqual([
+			"Ada where you put it",
+			'Your section "Mine"',
+			'"Labs" renamed "Research"',
+			"1 pinned",
+			"The order of your apps",
+		]);
+		[...document.querySelectorAll<HTMLButtonElement>(".modal button")]
+			.find((b) => b.textContent === "Reset")!
+			.click();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "reset" });
+		expect(localStorage.getItem(`qorpera.web.rail-apps-order:${profileA.profileId}`)).toBe("[]");
+		const line = [...rail.querySelectorAll(".notice")].find((n) => n.textContent?.includes("Sidebar reset"))!;
+		expect(line.textContent).toContain("Sidebar reset to Company A PRIVATE's.");
+		[...line.querySelectorAll("button")].find((b) => b.textContent === "Undo")!.click();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "undo_reset" });
+		expect(JSON.parse(localStorage.getItem(`qorpera.web.rail-apps-order:${profileA.profileId}`)!)).toEqual([
+			"concepts",
+			"page:bank",
+		]);
+		expect([...rail.querySelectorAll(".notice")].some((n) => n.textContent?.includes("Sidebar reset"))).toBe(false);
+	});
+
+	it("deletes a section from the member's own sidebar in the member's words", async () => {
+		const sidebar: CompanySidebar = {
+			...demo(),
+			sections: [...demo().sections, { sectionId: id(62), name: "Mine", mine: true }],
+			own: own({ changes: 1, sections: [{ change: "added", name: "Mine" }] }),
+		};
+		const { rail, ready } = companyWith(sidebar);
+		await ready;
+		await settle();
+		const titles = rail.querySelectorAll<HTMLElement>(".rail-section-title[data-section-id]");
+		rightClick(titles[0]!);
+		choose("Delete section");
+		await settle();
+		expect(document.querySelector(".modal p")?.textContent).toBe(
+			'Remove "Research" from your sidebar? Its agents and group chats move to Unassigned. Nobody else\'s sidebar changes.',
+		);
+		[...document.querySelectorAll<HTMLButtonElement>(".modal button")]
+			.find((b) => b.textContent === "Cancel")!
+			.click();
+		await settle();
+		const mineTitle = [...rail.querySelectorAll<HTMLElement>(".rail-section-title[data-section-id]")].find(
+			(title) => title.dataset.sectionId === id(62),
+		)!;
+		rightClick(mineTitle);
+		choose("Delete section");
+		await settle();
+		expect(document.querySelector(".modal p")?.textContent).toBe(
+			'Delete your section "Mine"? Its agents and group chats go back to where the company keeps them.',
+		);
+	});
+
+	it("sends a section change to the cloud, not to the company's sections file", async () => {
+		const { f, company, ready } = companyWith({ ...demo(), own: own() });
+		const write = vi.fn(() => {
+			throw new Error("the file is the company's");
+		});
+		company.useSectionsFile(write as never);
+		await ready;
+		await settle();
+		const manage = vi.mocked(f.api.manageCompanySidebar);
+		expect(await company.changeSidebar({ action: "move_agent", staffAgentId: cy.id, sectionId: ops })).toBe(true);
+		expect(write).not.toHaveBeenCalled();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: cy.id,
+			sectionId: ops,
+		});
+		expect(company.unassignedOrderLost()).toBe(false);
+	});
+});
+
+describe("Reset sidebar's Undo (review of #1677)", () => {
+	const own = (changes: number): NonNullable<CompanySidebar["own"]> => ({
+		changes,
+		moved: [],
+		sections: [],
+		pinned: changes,
+		hidden: 0,
+		contacts: 0,
+		pages: 0,
+		apps: 0,
+	});
+	async function resetOnce() {
+		const appsKey = `qorpera.web.rail-apps-order:${profileA.profileId}`;
+		localStorage.setItem(appsKey, JSON.stringify(["concepts"]));
+		cleanup.push(() => localStorage.clear());
+		const mine = { ...demo(), own: own(1) };
+		const reset = { ...demo(), pinned: [], own: own(0) };
+		const made = companyWith(mine);
+		const manage = vi.spyOn(made.f.api, "manageCompanySidebar");
+		manage.mockImplementation(async (_profileId, request) =>
+			structuredClone(request.action === "reset" ? reset : mine),
+		);
+		await made.ready;
+		await settle();
+		rightClick(made.rail.querySelector(".rail-scroll")!);
+		[...document.querySelectorAll<HTMLButtonElement>(".context-menu [role^=menuitem]")]
+			.find((item) => item.textContent?.startsWith("Reset sidebar"))!
+			.click();
+		await settle();
+		[...document.querySelectorAll<HTMLButtonElement>(".modal button")]
+			.find((b) => b.textContent === "Reset")!
+			.click();
+		await settle();
+		const undo = () =>
+			[...made.rail.querySelectorAll<HTMLButtonElement>(".notice button")].find((b) => b.textContent === "Undo");
+		return { ...made, manage, undo, appsKey };
+	}
+
+	it("keeps Undo after a failed try, and it works on the next", async () => {
+		const { manage, undo, rail } = await resetOnce();
+		manage.mockRejectedValueOnce(new Error("offline"));
+		undo()!.click();
+		await settle();
+		expect(undo()).toBeDefined();
+		expect(rail.textContent).toContain("The sidebar could not be changed. Try again.");
+		undo()!.click();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "undo_reset" });
+		expect(undo()).toBeUndefined();
+	});
+
+	it("leaves an apps order the member made after the reset as it is", async () => {
+		const { undo, appsKey } = await resetOnce();
+		expect(localStorage.getItem(appsKey)).toBe("[]");
+		localStorage.setItem(appsKey, JSON.stringify(["page:bank", "concepts"]));
+		undo()!.click();
+		await settle();
+		expect(JSON.parse(localStorage.getItem(appsKey)!)).toEqual(["page:bank", "concepts"]);
+	});
+	it("sends Undo once, however often it is pressed while on its way", async () => {
+		const { manage, undo } = await resetOnce();
+		const answer = deferred<CompanySidebar>();
+		manage.mockImplementationOnce(() => answer.promise);
+		undo()!.click();
+		await settle();
+		expect(undo()!.disabled).toBe(true);
+		undo()!.click();
+		answer.resolve({ ...demo(), own: own(1) });
+		await settle();
+		expect(manage.mock.calls.filter(([, request]) => request.action === "undo_reset")).toHaveLength(1);
+		expect(undo()).toBeUndefined();
+	});
+	it("never puts an older offer back over a newer reset's when its Undo fails late", async () => {
+		const { manage, undo, company } = await resetOnce();
+		const answer = deferred<CompanySidebar>();
+		manage.mockImplementationOnce(() => answer.promise);
+		undo()!.click();
+		await settle();
+		const newer = { appsOrder: ["page:bank"] };
+		company.store.set({ sidebarReset: newer });
+		answer.reject(new Error("offline"));
+		await settle();
+		expect(company.store.get().sidebarReset).toBe(newer);
 	});
 });

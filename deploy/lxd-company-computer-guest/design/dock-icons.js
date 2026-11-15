@@ -25,8 +25,12 @@ const glyphs = {
 // a small dot: at 64 px on the dark dock it must be seen at a glance through a
 // scaled-down viewer (solid white = open, outline = opening, amber = did not open).
 const MARK = { x: 43, y: 100, width: 26, height: 9, radius: 4.5 };
+// A machine's dock stands on its wallpaper, light by day (deploy/machine/desktop-look, 14 Nov 2026): on a light
+// ground the mark is dark, and the amber deeper. `tone` is the ground's; the office dock is always dark.
+const MARK_INK = { dark: { open: "#fff", failed: "#f5a524" }, light: { open: "#1d2026", failed: "#c2410c" } };
 // `scope` keeps gradient ids apart when one page draws an icon state twice.
-function dockIcon(name, state = "idle", scope = "") {
+function dockIcon(name, state = "idle", scope = "", tone = "dark") {
+	const ink = MARK_INK[tone] ?? MARK_INK.dark;
 	const [top, bottom] = tiles[name];
 	const failed = state === "failed";
 	// `launching-2` is the second frame of the short pulse the launcher plays
@@ -36,11 +40,11 @@ function dockIcon(name, state = "idle", scope = "") {
 		`<rect x="${MARK.x}" y="${MARK.y}" width="${MARK.width}" height="${MARK.height}" rx="${MARK.radius}" ${attributes}/>`;
 	const mark =
 		state === "running"
-			? pill('fill="#fff"')
+			? pill(`fill="${ink.open}"`)
 			: failed
-				? pill('fill="#f5a524"')
+				? pill(`fill="${ink.failed}"`)
 				: state === "launching" || pulse
-					? `<rect x="${MARK.x + 1.25}" y="${MARK.y + 1.25}" width="${MARK.width - 2.5}" height="${MARK.height - 2.5}" rx="${MARK.radius - 1.25}" fill="none" stroke="#fff" stroke-width="2.5"/>`
+					? `<rect x="${MARK.x + 1.25}" y="${MARK.y + 1.25}" width="${MARK.width - 2.5}" height="${MARK.height - 2.5}" rx="${MARK.radius - 1.25}" fill="none" stroke="${ink.open}" stroke-width="2.5"/>`
 					: "";
 	const centre = TILE.y + TILE.size / 2;
 	const scale = pulse ? ` transform="translate(56 ${centre}) scale(.88) translate(-56 -${centre})"` : "";

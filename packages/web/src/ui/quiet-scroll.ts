@@ -1,3 +1,5 @@
+import { smoothWheel } from "./smooth-wheel.ts";
+
 /** How far a quiet scroller's top fade reaches, in design pixels; app.css draws it the same size. */
 export const QUIET_SCROLL_FADE = 8;
 
@@ -7,12 +9,14 @@ export const QUIET_SCROLL_FADE = 8;
  * app.css draws while the scroller is away from its top. Programmatic scrolls fire scroll events
  * too, but only with the next rendered frame; the returned refresh reads the position at once,
  * for a scroller that moves itself while the page is not being drawn (a pin from a ResizeObserver
- * in a hidden window).
+ * in a hidden window). A stepped mouse wheel glides here rather than jumping (smoothWheel), as
+ * Safari moves it with no easing at all.
  */
 export function quietScroll(scroller: HTMLElement): () => void {
 	scroller.classList.add("scroll-quiet");
 	const update = () => scroller.toggleAttribute("data-scrolled", scroller.scrollTop > 0);
 	scroller.addEventListener("scroll", update, { passive: true });
+	smoothWheel(scroller);
 	update();
 	return update;
 }

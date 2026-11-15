@@ -21,12 +21,14 @@ import { UUID_PATTERN } from "./parse.ts";
  *
  * The company's bank (`bank`) signs in the same way, from the Bank page: the
  * start names the bank the member picked, the bank's own sign-in (MitID) sends
- * the member back, and the broker seals the session. It is not one of the
- * Services cards, and no agent tool uses it.
+ * the member back, and the broker seals the session. No agent tool uses it.
+ *
+ * The Gmail, Google Drive and GitHub sign-ins were started from Settings → Company connections, which is gone
+ * (Jonas, 10 Nov 2026: companies are fully Qorpera-hosted); the bank is the only sign-in the web starts now.
  */
 
 export type HostedConnectorId = "gmail" | "google_drive" | "github";
-/** Every connector a sign-in can be started for: the Services cards' and the bank. */
+/** Every connector a sign-in can be finished for. */
 export type SignInConnectorId = HostedConnectorId | "bank";
 
 /** The bank a member picked for the company's bank connection, as Enable Banking names it, and whether the account

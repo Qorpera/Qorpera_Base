@@ -243,6 +243,7 @@ export function parseTeam(value: unknown): HostedProfileTeam {
 	const manageFounders = flag(capabilities.manage_founders);
 	const leave = flag(capabilities.leave);
 	const deleteCompany = flag(capabilities.delete_company);
+	const timeZone = input.time_zone;
 	return {
 		profileId: uuid(input.profile_id, "team profile id"),
 		role: teamRole,
@@ -257,7 +258,16 @@ export function parseTeam(value: unknown): HostedProfileTeam {
 		},
 		members: array(input.members, "profile member list").map(parseMember),
 		invitations: array(input.invitations, "profile invitation list").map(parseInvitation),
+		...(timeZone === null || (typeof timeZone === "string" && timeZone !== "") ? { timeZone } : {}),
 	};
+}
+
+/** The company's time zone as `qorpera_ensure_company_time_zone` answers it (migration 20260930739000): the one the
+ * company has now, whether this call's was taken or an earlier one stands. */
+export function parseCompanyTimeZone(value: unknown): string {
+	const timeZone = record(value, "company time zone").timeZone;
+	if (typeof timeZone !== "string" || timeZone === "") throw new CloudShapeError("company time zone");
+	return timeZone;
 }
 
 function parseSessionAudience(input: Record<string, unknown>): HostedSessionAudience {

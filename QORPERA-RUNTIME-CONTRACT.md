@@ -837,6 +837,17 @@ On a human-authored wake, the agent MUST:
 “On it” is acknowledgement, not delivery. A long job MUST NOT disappear, and
 raw command-by-command narration MUST NOT become the substitute.
 
+2026-11-13 amendment (proposed, not approved): the closing message is the last
+message, not the last act. After it a run may still keep its own bookkeeping
+(its wall, to-do list, apps layout and sidebar) and nothing else, so the member
+gets the answer without waiting for it. See the
+[2026-11-13 amendment](#2026-11-13-amendment-the-answer-first-then-the-bookkeeping).
+2026-11-14: the founder dropped the wall for agents ("rather drop the wall - it's
+the wrong medium for activity"), so no run keeps a wall: after the closing
+message the runtime runs only `manage_todo`, `organize_apps` and
+`organize_sidebar`. The kernel's list (`20260930748000`) still names
+`update_wall`, which no run is offered or can call.
+
 ### 7.2 Other wakes
 
 The wake envelope determines whether an initial or terminal send is required,
@@ -1020,6 +1031,10 @@ Co-Founder routing and responsibility operation do not add wake kinds. Direct
 member input uses a human wake, delegation uses an agent wake, project-room
 participation uses a room wake, and measure or source changes use Company File
 event or routine wakes.
+
+> **Amended 2026-11-14.** A light ask is an agent wake with the source kind
+> `light-ask`, with no parent run and no conversation: the entrypoints stay
+> five. See the [light asks amendment](#2026-11-14-amendment-light-asks).
 
 The acceptance suite MUST prove that the same agent behaves differently at all
 five entrypoints and that a routine can complete successfully with no send.
@@ -2413,6 +2428,11 @@ member's other login); the 2026-10-04 amendment below settles it.
 > [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
 > item 1.
 
+> **Amended 2026-11-14.** A member's own light ask is work that member starts,
+> made while they are there: their own login pays for it, a ChatGPT plan too,
+> whether or not it works while they are away. See the
+> [light asks amendment](#2026-11-14-amendment-light-asks), item 3.
+
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
 member's ChatGPT Plus or Pro plan pays only for work that member starts, and
@@ -3472,6 +3492,8 @@ keep their meaning.
    the company: every member sees the same sections, and owners, admins and
    contributors create, rename and delete them and move agents between them.
    The Co-Founder stands above all sections and is never placed.
+   (Amended 2026-11-11, "Each member's own sidebar" at the end of section 19: the
+   company's sections are what a new member sees; what a member changes is theirs.)
 2. **Agents organize themselves.** Any active company agent may list, create,
    rename and delete sections and move itself or a coworker between them
    through its run authority (`organize_sidebar`), with no member approval, so
@@ -4681,15 +4703,45 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    (item 5); the provider's SPF, DKIM and DMARC results travel with it. An
    agent sends from a live mailbox of its company as itself (M2b): plain
    text from "<agent> at <company>" at the mailbox's address, always ending
-   with a line saying an AI agent wrote and sent it. Every email passes the
-   automatic review as an outside action first, and only the platform's
-   sender, which alone holds the provider key, sends it. A reply to a
-   received email joins its thread and says it is an automatic response; an
-   email sent automatically is never answered, and a company never emails
-   its own mailboxes. No email goes out as if from Qorpera: a sender name or
-   mailbox that reads as Qorpera is refused (founder decision, 1 October
-   2026). Sending has its own platform switch, built off, and each company
-   an hourly and a daily limit on recipients that operators set.
+   with a line saying an AI agent wrote and sent it. Every email an agent
+   sends passes the automatic review as an outside action first, and only
+   the platform's sender, which alone holds the provider key, sends any
+   email. A reply to a received email joins its thread and says it is an
+   automatic response; an email sent automatically is never answered, and a
+   company never emails its own mailboxes. No email goes out as if from
+   Qorpera: a sender name or mailbox that reads as Qorpera is refused
+   (founder decision, 1 October 2026). Sending has its own platform switch,
+   built off, and each company an hourly and a daily limit on recipients
+   that operators set.
+
+   A member sends too (founder decision, 10 November 2026: "Let a member
+   send an email with no agent"; it amends this item and the decisions of
+   1 October 2026, under which company email left only through an agent).
+   A member who may write in the company (owner, admin or contributor)
+   sends a new plain-text email from a live mailbox of the company as
+   themself: from "<member> at <company>" at the mailbox's address, the
+   text as they wrote it. It is the member's own act, so it carries no AI
+   line, does not say it is an automatic response and passes no automatic
+   review. Everything else stands for it: the same address, count, subject
+   and text rules, the sending switch, never to the company's own
+   mailboxes, never as if from Qorpera, the company's limits counted
+   together with the agents' email, and only the platform's sender sends
+   it. No mail is private to a member: the email begins a thread every
+   member of the company reads, with who sent it, and an outside answer
+   joins that thread and wakes routines as any received email does. Agents
+   read received email only, as before.
+
+   A member's email may answer a message (founder, 12 November 2026: the
+   Mailbox gets "similar answer/reply buttons as in the real gmail/outlook
+   app, not the chatcomposer to tell other agents what to reply"). The
+   member names the message it answers, a received email of the company or
+   one the company sent, an agent's or a member's. The email then joins
+   that message's thread and carries the message's ids (In-Reply-To and
+   References), so the other side's mail program threads it too. It stays
+   the member's own act in every other way: unlike an agent's reply it also
+   answers an email that was sent automatically, since a person replying
+   starts no mail loop, and it never says it is an automatic response.
+   Mail for one of the company's accounts on a site is not answered.
 
 Section 21, item 33, is the event-wake acceptance item.
 
@@ -5302,6 +5354,9 @@ amendment governs. In-place edits are marked "(changed in place)".
    awake: a company machine after 5 minutes, a coding machine after 10
    minutes, an agent's task machine after an hour. These stay per-node or
    per-environment settings.
+   - A task machine that is awake only because a member woke it sleeps 10
+     minutes after that member's last sign (the 2026-11-14 amendment "a
+     machine a member woke sleeps when that member is gone").
    - Sleep stops what is still running. Files and disks stay as before.
    - The next run of the agent that started a stopped program is told what
      stopped and why, once.
@@ -6330,6 +6385,494 @@ each step. It now leaves the envelope.
    - The room goes to the result's own content. Tools now leave the envelope 800 bytes instead of 2.2 KiB, so a
      Company File read shows up to about 7 KiB of plain text in one result, instead of about 5.7 KiB.
    - That means fewer model rounds for the same reading.
+
+### 2026-11-08 amendment: one tool result holds up to 32 KiB
+
+> **Proposed, not approved.** Built in the performance sprint's round 2 (measure T2), as a draft PR, and brought up
+> to master on 12 November 2026 by the lane that removes the agents' keyholes. Jonas decides. It goes live only with
+> the release that carries the rebuilt Codex pin and its runtime bundle together, after its migration. It amends the
+> 2026-10-21 amendment's item 5 ("The result fence stays at 8 KiB") and the native boundary's 8 KiB envelope bound.
+> Nothing else changes: every check on a result stays, and each result stays one host-issued envelope.
+
+1. **The bound.** One tool result's envelope, escaping and provenance included, is at most 32 KiB (32,768 bytes), not
+   8 KiB. The patched Codex's result fence refuses a larger one, the runtime fits every result to it, and the run's
+   context view and run log check it (migration `20260930733000`).
+   - A run's work log keeps each step's result envelope whole, up to the same bound, in its database check and in
+     the shared parser the runtime runs on every log block it writes, reads back and resumes from
+     (`memory-run-files.ts`). Both take it from one constant, the one the runtime fits results to
+     (`CLOUD_TOOL_RESULT_MAX_BYTES`), so a reader cannot fall behind the bound a writer uses. A step's arguments,
+     text and paths keep 8 KiB each and its read references 16 KiB, and a step line stays at most 49 KiB.
+   - `company_read` asks for up to 32 KiB a call and shows as much as fits one result: about 31 KiB of plain text,
+     less where characters need escaping. It was about 7 KiB.
+   - Every other tool that pages to one result (`machine_read`, `read_context`, `zoom`, `read_event`, skills, coding
+     commands) shows more per page by the same rule, within its own limit.
+   - Codex's history keeps each issued result whole: the governed session's fixed `tool_output_token_limit=65536`
+     replaces the model's own truncation policy, whatever the model's metadata says. Unchanged here.
+2. **What the provider sees.** Larger tool outputs, in fewer requests per run. The `company_read` tool's schema
+   names the new maximum (`limit` up to 32,768) in its description, and `read_event`'s description says how much
+   of a body one piece now shows (up to 16,000 characters of plain text, or about 23 KiB as base64; it said about
+   4,000 and about 3 KiB). Nothing else: the same Codex version, request kinds, headers, prewarm, model list calls,
+   cache key and compaction.
+3. **Why.** A model round has a floor of about 2.7 s that does not grow with the prompt, so each page a run reads
+   costs a round. In the runs of 7 November, continuation pages were about 4 % of run time and replaying the same
+   reads at 32 KiB removes about nine in ten of them; in the reading-heavy founding runs of 5–6 November it was
+   about 11 % of run time (perf sprint A3). Each removed round also no longer resends the whole prompt.
+4. **Rolling.** The migration first: larger bounds harm no runtime at 8 KiB. Then the bundle that pins the rebuilt
+   Codex and raises the runtime's bound, with the images and hosts that carry that binary, together. A runtime ahead
+   of its binary would have every larger result refused at the fence. Undo is the same pair rolled back; the migration
+   stays.
+   - The run log's parser rides in that bundle: the runtime parses what it stages, reads and resumes itself, and a
+     run's log is read only by attempts of that run, which run on its own bundle. The folder service, the object
+     gateway, the vault and the coding executor carry the same parser but never take a run log's block (the
+     database writes a run's log only for the platform or that run), so they need no step of their own and take the
+     change with their next build. The web shows a log's files as text and parses none.
+
+### 2026-11-12 amendment: a command's output fills one result
+
+> **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
+> (lanes/keyholes-20261112/PLAN.md, slice S1): "Yes, build them". No migration and no Codex rebuild. It goes live with
+> the coding executor on each node first, then a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result;
+> a company machine's guest takes larger pages from the machine image built after it. It amends the 2026-11-08
+> amendment's item 1 for `machine_read` and coding commands ("within its own limit").
+
+1. **One read, one result.** `machine_read` and `coding_read_command` ask for one result's room when the agent names no
+   `limit` (31,968 bytes; `limit` 4 to 32,768 asks for less; it was 4,096 by default and 16,384 at most), and cut the
+   page that comes back to what fits one result, once, at an exact cursor: the start of the page for a read from an
+   offset, its end for a tail. Plain output shows up to about 31 KiB a call, less where characters need escaping. A
+   page is asked again only when its cut's cursor cannot be told from the page (U+FFFD, which also stands for a byte
+   that is not UTF-8, on both sides of the cut), for exactly the bytes that fit. The answer says where the output goes
+   on (`log.nextOffset`, or `log.offset` for a tail), as before; nothing is left out without its cursor.
+2. **A short command in one call.** `machine_run` reads its command once, at once, when its start shows less than a
+   read can (on a machine with the company folder a start holds its output back; a command that already ended may
+   have printed more than the start's first page); `coding_run_command` does when its command already ended with more
+   output than its start shows. Nothing waits for the command, and the start's receipt is unchanged: the read's page
+   is the answer in its place, and a refused or failed read leaves the start's own answer.
+3. **Asked only for what each side takes.** A page holds up to 65,536 bytes of output on the wire
+   (`CLOUD_CODING_COMMAND_PAGE_BYTES`; it was 16,384), and a guest's page also stays within 60,000 bytes as JSON
+   writes it. An executor or guest from before refuses a larger read, so each caller asks only for what the other side
+   said it takes, and 16,384 when it said nothing:
+   - the executor's command service answers every call with `x-qorpera-command-page-bytes` (65,536); the runtime's
+     gateways, and an executor's gateways to its peers, learn it per executor from each answer;
+   - a company machine's guest helper says `pageBytes` in its answer to the boot's claim (`prepare`), which the
+     executor keeps per placement; the coding image's helper (the NAS model) is asked for 16,384.
+   - A smaller page than asked answers a read as well, so old and new parts work in any order. An executor that stops
+     saying what it takes (one rolled back under a running runtime) refuses a larger read once, without the header:
+     the gateway asks that read once more, in the same call, for what the executor takes now.
+4. **What the provider sees.** The descriptions of `machine_run`, `machine_read`, `coding_run_command` and
+   `coding_read_command`, and the two read tools' `limit` maximum (32,768). Nothing else.
+
+### 2026-11-10 amendment: members message each other
+
+> **Asked for by Jonas, 10 November 2026** ("for multiplayer companies, I should also have a contact for the members I
+> work with that's a direct way to message and communicate with my friends im building with"). Migration
+> `20260930715000_member_messages`; database and web only, no runtime bundle. It adds to section 14 and changes
+> nothing there.
+
+Members of a company can write to each other: one chat per pair of members per company (the client contract's "Member
+chats"), shown in the rail as a contact for each other member.
+
+1. **What a member chat is.** Plain messages between two people. It is not a conversation of section 14: it has no
+   agent, no room, no session and no transcript events, and it is in no agent's context.
+2. **What it never does.** It wakes no agent, takes no model account and no computer hours, and writes nothing to
+   the company folder. A company's pause does not stop it. Every member may write, viewers too.
+3. **Whose it is.** The company's: a chat is deleted with its company and kept when an account is deleted, as a
+   conversation's messages are. The same two people have another chat in another company.
+4. **Who reads it.** Its two members, through the member functions only. This does not bring back member-private
+   conversations (the 2026-09-17 amendment): an agent's conversations stay shared with every member, and a member chat
+   holds no agent.
+5. **Not decided.** Whether agents read member chats (memory is company first, section 15). Until that is decided, no
+   run reads them and no memory holds them.
+6. **Where a contact stands in the rail** (added the same day, migration `20260930717000_member_contact_places`;
+   Jonas: "not sure I like the member contacts at the top, undraggable and un-hideable"). A contact is a rail row
+   like an agent's: its member drags it among the agents, pins it and hides it. That place is the member's own, as
+   their pins and hidden agents are. The company's sections file (`QorperaOS/agents/sections.md`, 5.6) names agents
+   and group chats only and is the same for every member; no member's contacts are written to it, and no agent
+   places them.
+
+### 2026-11-11 amendment: each member's own sidebar
+
+Jonas, 11 November 2026: "company's on creation. but when a member changes something it's specific to that member,
+like with any other change to the sidepanel. we should really add a reset sidepanel button too, getting you back to
+companywide defaults." Migration `20260930727000_member_own_sidebar`, SQL test 1220. Amends the 2026-09-24 founder
+decision above, item 1.
+
+1. **The company's sidebar** stays `QorperaOS/agents/sections.md` (5.6), kept by agents (`organize_sidebar`), and is
+   what a new member sees and what every member sees wherever they changed nothing.
+2. **A member's own sidebar.** Creating, renaming and deleting sections and moving agents and group chats change only
+   the member's own sidebar, for any member, viewers too. What the member touched is theirs; everything else keeps
+   following the company's (an agent's later re-sort reaches every item the member did not move). A member's change
+   never writes the company's file.
+3. **Reset sidebar** takes away everything the member changed in the company's sidebar: their sections and places,
+   pins, hidden agents and group chats, contact places and hidden pages (and, from `20260930728000`, their own
+   arrangement of the apps drawer). Its Undo puts back the last reset's rows where nothing newer took their place.
+4. **`organize_sidebar`'s text** says the tool changes the company's sidebar, which every member sees except where a
+   member placed things themself, and that what a member placed is theirs, like pins and hidden agents (done after
+   this amendment; it changes the tool catalog, so it rides a runtime bundle).
+
+### 2026-11-11 amendment: groups of apps
+
+Jonas, 11 November 2026: "the same way we have categories and groups for agents, we should have so for the
+interfaces as well … the agents should be able to organize the interfaces for you natively and help group interfaces
+to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1221.
+
+1. **The company's groups of apps** are the plain file `apps/groups.md` (a nested list, two group levels; keys
+   `page:<name>`, `app:<name>`, `concepts`, `sites`; `group <id>: <name>`), kept by agents. It is what a new member
+   sees; a drawer key the file does not name stands loose at the end.
+2. **A member's own arrangement** is a document of theirs in the cloud (`qorpera_member_app_layouts`), laid over the
+   file the same way as the sidebar: what the member moved, grouped, renamed or ungrouped is theirs, the rest follows
+   the file. Reset sidebar takes it away with the rest; Undo puts it back.
+3. **Every emblem in the drawer is drawn in its app's colour** (its manifest's `colour`; fixed colours for the
+   built-in pages), no longer black only.
+4. **Apps take their group's colour** (Jonas, 12 November 2026: "I would like for all the icons to share the same
+   color as their group" and "you should also be able to change their colors"; migration
+   `20260930731000_member_app_colours`, SQL test 1224). A group is drawn in its first app's colour, a group inside a
+   group in the group it stands in's, and everything in a group in the group's. A member gives a group or a loose app a
+   colour of their own (Colour in its menu, one of the agents' palette colours, or Default); it is in their own
+   arrangement (`colours`), so Reset sidebar takes it away too. The open page's emblem keeps its colour, on a soft wash
+   of it, no longer white on the selection colour. The company's file names no colours yet: what colour agents give a
+   group is a later change.
+5. **Icon and colour** (Jonas, 12 November 2026: "change the icons of the interfaces", then "still missing a selection
+   of colors from a pallette"; design page 6gSTTCcz3D8AjBpV3GmrH6; migration `20260930732000_member_app_emblems`, SQL
+   test 1225). An app's menu opens one panel: the palette row (for an app in a group, the group's colour), the app's
+   own icons, the 24 built-in ones and Generate icon. A group's Colour is the same palette row. A member's icon pick is
+   in their own arrangement (`emblems`: a built-in name or `custom:<id>`), so Reset sidebar takes it away too.
+6. **An app's own icons** (Jonas, 12 November 2026: "change the icons of the interfaces and have a generate icon
+   button too for them to create a new custom one based on it's name or contents"). The built-in emblems are 24. An
+   app may also hold icons of its own, `apps/<name>/icons/<id>.svg`, drawn as the emblems are: one shape on a 48 by 48
+   grid, black where the app's colour goes and white where it is cut out, in the fixed SVG subset of
+   `@qorpera/cloud-client/app-icons` (at most 8 KiB, at most 12 an app). A member's Generate icon asks the app's maker
+   (its manifest's `owner`, else the Co-Founder) in the chat for new ones; the agent draws 3 from the app's name and
+   what its page shows, saves them with `save_app` in one call of files alone, never changing `manifest.emblem`, and
+   tells the member that they pick one under Icon and colour. `save_app` refuses an icon it could not draw, any other
+   file under `icons/`, and a save that would leave more than 12: a new icon takes the id of an old one, or an old one
+   is deleted first. What a member picks is theirs and changes only their own drawer.
+7. **The company's group colours** (Jonas, 12 November 2026: "have the co-founder pick colours for fjeldtur's
+   groups"; the later change item 4 named; no migration). `apps/groups.md` holds them in one note line after the list,
+   `<!-- group colours: <id>=<colour>, … -->`, each one of the agents' palette colours; a reader from before it keeps
+   the line as a note. The drawer draws a group and everything in it in the company's colour unless a member chose
+   their own, which wins in their drawer. Agents set it with `organize_apps colour_group {group, colour}` (`null`
+   takes it away) or `create_group`'s `colour`; `list` shows each group's colour, every other change keeps it, and
+   `ungroup` takes it away with the group. The tool's rules say to give every group a colour that sets it apart and
+   fits its product or area, and to leave a group inside a group unset, so it takes its parent's. The Co-Founder's
+   tidy pass (`qorpera.hire-overlay/v15`) takes a top-level group without a colour as a sign to sort the drawer.
+
+### 2026-11-12 amendment: more of the company folder in one call
+
+> **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
+> (lanes/keyholes-20261112/PLAN.md, slices S2 and S3): "Yes, build them". Runtime only: no migration and no Codex
+> rebuild. It goes live with a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result (it works at 8 KiB
+> too, with less a call). It amends the 2026-10-21 amendment's item 5 for listings and reads.
+
+1. **A listing shows a tree.** `company_list` takes `depth` (1 to 8; default 1, or 8 with a glob) and `glob`
+   (`company_search`'s syntax: `*` and `?` within a name, `**` across folders, a glob without `/` matches names
+   alone; matched on folder keys, so case does not matter), and `after` and `limit` may be left out. A call without
+   them lists one level, as before.
+   - One call shows up to 500 entries (`limit`, default 500), as many as fit one result, one short line each: a
+     file's path and size in bytes, a folder's path and `/`, a link's path and the first 512 bytes of its target. A
+     listing no longer shows each entry's version; `company_read` does.
+   - Past depth 1 the runtime filters the folder core's subtree listing (`p_recursive`, which the native host's
+     entry point passes by its declared name, 20260928409985) by depth and glob. One call looks through at most
+     5,000 entries, or stops after about 2 s of pages, and then says where it got to.
+   - Nothing is left out silently: the answer says when there is more and gives `after` to go on with; a call that
+     stopped at its bound names the last path it looked at, which it releases with the rest. Every entry shown, and
+     the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
+   - One answer is one moment of the folder (13 November 2026, owed from v240: a rename between two of a call's
+     pages showed a path twice or not at all). A look whose pages answered at different folder clocks is taken
+     again, at most three looks a call, all within about 4 s; the answer is a look whose pages answered at one clock
+     (each page is one statement, so that look is the folder at that moment). If no look was, the answer says so in
+     one line and to call again the same way for a clean listing.
+   - `asOfSeq` is the folder clock of the first page of the look the call answers with, as `company_move` takes it.
+2. **Several files in one read.** `company_read` takes `paths` (1 to 8 company paths, each once) instead of `path`;
+   `offset` and `limit` go with `path` only, and may be left out there (0, and one result's bound).
+   - Each file is read from its start into the one result. Every text is cut at the same number of characters, the
+     largest that fits: small files are whole and the larger ones share what is left alike. Each file says what a
+     read of it alone would: its version, `offset` 0, `bytesRead`, `totalBytes` and `nextOffset`, from which it is
+     read on with `path` and `offset`. A link's target is shown the same way.
+   - Each path is answered on its own: absent (also for a path the run may not read, as today), a folder, a file
+     that is not text or an image format not shown (`refused`, with today's words), or one the folder could not
+     read now (its own failure, or a request that timed out or lost its connection, also after the answer began).
+     A company whose work is stopped, a cancel, bytes that fail their check, or a read the run may no longer show
+     at its release, shows nothing.
+   - An image among several is named, never shown (`kind: "image"`, its media type and size, `shown: false`): one
+     result shows one picture, after the answer that names it. Read alone from offset 0, it is shown as before.
+   - Every file the answer names is its own release, in the answer's order, all under the hash of the whole answer,
+     and the answer cites the first, as `company_search` cites its first part: the context view cites one release an
+     output, and the run log keeps every release of the step. No SQL changes.
+   - The paths' entries are read side by side, and their bytes one file at a time: the object gateway serves bytes
+     from two NAS lanes, one operation at a time on any one object, and answers 503 for a file with no Storage copy
+     yet (one just written) when it cannot take it now. Files of the same content share objects, so one call never
+     contends with itself there.
+   - A secret the boundary cuts out of an answer (#1721) is cut before the answer is hashed and released, for a read
+     of several files as for one, so the context view cites what the model was shown.
+   - A window never starts or ends inside a secret, for a file read from any offset, files read together and cut
+     alike, a link's target, and a listed target's start (keyholes S3, 13 November 2026). A window's end that falls
+     inside one moves to where it starts, so the next window holds it whole and the boundary cuts it; a window that
+     starts at one takes it whole, past `limit` if need be (shown cut); an offset inside one starts the window where it
+     starts, and the answer's `offset` says so. To see them the read takes 1 KiB past the window and before it.
+     `nextOffset` stays an exact byte position in the file. A secret-shaped run longer than a window plus that 1 KiB
+     (no real key is) is shown cut as far as read, and the answer says in `secretRun` that reading on shows the rest
+     of it, which nothing can cut on its own; a read asked to start more than 1 KiB inside such a run cannot see it.
+   - Codex still sends one call a model response, so this is what lets one round read several files.
+3. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
+   `depth`, `glob`, `after` and `limit` optional), and `company_read`'s description and input schema (`paths`
+   added; no property is required).
+### 2026-11-12 amendment: folder search for every run, and wider
+
+> **Proposed, not approved.** The keyholes lane, slice S4 (12 November 2026): Jonas said "Yes, build them" to the
+> plan's slices S1 to S4; its decision 6 (search on for every company, at about 1 GiB per node per 16 large searching
+> runs) is his. It amends the 2026-10-21 amendment's item 6 ("off until the coordinator switches it on … so no chat
+> run had it") and goes live only with the release below. Nothing else changes: read rights per path, the release of
+> every read before the model sees an answer, and the review class `read` stay as they are.
+
+1. **Every run on a shared execution host has `company_search`.** The host's folder search is on unless an operator
+   sets `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=off`. A run the fresh-VM overflow path takes has no relay to the node's
+   folder service, so its catalog has no `company_search` (never a failed run); giving it one is a slice of its own
+   (runner image, LXD provider and the folder service's admission).
+2. **What it finds.** Literal text, or with `regex` a regular expression of RE2's kind (no back-references, no
+   lookaround, counts up to 16), run in linear time on the node's shared event loop by V8's linear-time engine, where
+   the node's folder service runs that engine (off as it first ships, 13 Nov 2026: a pattern is then refused in words,
+   `REGEX_OFF`; which engine is the founder's choice); `context` shows up to 5 lines before and after each hit, `files_only` lists each matching file once with its
+   number of matching lines, and a `glob` without a `query` lists every path it matches. `names_only` is as before.
+3. **One call answers more.** A call asks the node for pages until about 20 KiB shows, the search ends, six pages were
+   asked or about 10 s passed; a page holds about 26 KiB of hits as shown. The answer is fitted to one tool result
+   (32 KiB, the 2026-11-08 amendment) and gives a cursor when there is more. Nothing is left out silently: an answer
+   shown in part goes on from the first hit it left out, a count of a file the answer ended inside says it goes on,
+   and a regular expression, which sees whole lines only, does not search a line over 1 MiB: the answer says how many
+   such lines it left, to search as text or read. A file that changes while a search is inside it shows in one
+   version only, the one there now: what the same call had shown of the old version is left out and not released,
+   and when an earlier answer showed part of it, the answer says it changed (searched again from its start) or is no
+   longer as that answer saw it (gone, emptied or no longer the run's to read). A cursor inside a file does not tell
+   that: the run keeps, with each cursor, whether an answer showed part of that file at that version (13 November
+   2026, the v240 release review's finding), and says nothing of a file no answer showed. A search whose own path
+   is gone by a later page answers that there is no such path, and shows and releases nothing.
+4. **Cost and bounds.** There is no index: each page reads the files' text through the node's object cache, and each
+   searching run holds its view's tree, about 670 bytes a path. A node's run views hold at most 1,500,000 paths in all
+   (about 1 GiB of the folder service's 3 GiB): a view that would take them past it, at its listing or as it grows,
+   is closed, and its run is refused another while the node is full. At most 4 pages run at once on the node and at
+   most 32 wait, each up to 20 s; past either the run is told the folder search is full or busy now. One tree per company per node, shared by
+   its runs, is a later step.
+5. **What the provider sees.** `company_search`'s description and input schema change: `regex`, `context` and
+   `files_only` are new, and `query` is no longer required; the description offers a pattern only where the node's
+   search runs them (`REGEX_OFF` otherwise). Nothing else. Turning patterns on later is the folder service unit's
+   flag (`--enable-experimental-regexp-engine`) and its installer pin, with no change the provider sees.
+6. **Rolling.** The folder service on each node first (its unit unchanged, so patterns stay off, and only while no
+   company machine runs on the node), then the runtime bundle, then each node's shared execution service after one hello through a
+   slot's relay reaches that node's folder service. Either order of runtime and service works: the node says in its
+   hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
+   what it takes and says so for the rest.
+
+### 2026-11-13 amendment: company databases
+
+Ratified 13 November 2026 (Jonas). To "Put a second Postgres on your nodes for companies' data?" he answered "Yes,
+go". The three points the design then left open were put to him with a recommendation each: the store as a small
+machine pair of its own (item 2), agents making and changing databases themselves with only what destroys data
+waiting for a member (item 5), and named questions and changes as the only road for interfaces (item 6). He
+answered: "Yes, all three".
+
+Jonas, 13 November 2026: "you can't act very much inside of the interfaces and [...] the numbers are never live. since
+we now host our own database, I think it's obvious that as long as we build the tools needed for companies to build
+their own databases on our servers too, we should absolutely be able to provide live numbers. if a company
+folder/file could contain databases that lived on our servers, and the interfaces could then project those
+numbers/values we would have it. that's a top priority item too. [...] I just like having the entire company inside
+the company folder/files, aiming for full centralization of data."
+
+This is the amendment the 2026-10-02 amendment "interfaces project company state from the company folder", item 4,
+left open: "A table that outgrows a file waits for the company's table store. The store has its own amendment, which
+says where it runs." It puts the store back in scope (the 2026-10-17 scope amendment had taken it out) and grows it
+from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABASES.md`.
+
+1. **A company database is a folder of the company folder**, `data/<name>/`. Its files say everything it is:
+   - `database.toml`: its name, what it holds, who reads it and who changes it;
+   - `tables/NNN-<name>.sql`: numbered steps that make and change its tables, each applied once, in order;
+   - `queries/<name>.sql`: named questions, each one read with named parameters;
+   - `actions/<name>.sql`: named changes, each one write, with the words a member is shown;
+   - `snapshot/`: its rows, written by the platform at least daily (item 8).
+
+   `data/` joins the top of the folder (5.6) as the company's own work: agents and members write it, and the platform
+   writes `snapshot/`. They are plain files, and the folder stays their one truth: the platform uses a file's text
+   only when its hash is the live file's, read with the caller's own rights. A step that was applied is never applied
+   again; when one was changed afterwards, applying stops and says so.
+2. **The rows live in the company data store**: a PostgreSQL on Qorpera's own nodes that holds companies' rows and
+   nothing else, with a standby on the other node and backups on Qorpera's own storage. It is not the platform's
+   database and shares no server process with it. Each company has one database there, each `data/<name>/` one schema
+   in it. "It holds all company state" keeps the one exception the 2026-10-02 amendment gave it, now for these rows.
+3. **The rows belong to the company like the folder.** They never go to the platform's database. Deleting a
+   database's folder removes its rows; deleting or erasing the company removes all of them, and the store's backups
+   hold them no longer than those backups are kept.
+4. **One gateway is the only door.** No member, agent, machine or service holds a login to the store; the data
+   gateway does, and every caller goes through it with their own proven identity. A company is bounded there in
+   connections, time per statement, memory, temporary files and size, so no company's work reaches another's or the
+   platform's.
+5. **Agents make and change databases without a member.** They write the files as they write any of the company's
+   work. What destroys data waits for a member: a step that drops or empties a table, drops a column or deletes rows,
+   and deleting a database's folder. Until that approval is built these are refused with their reason. The rule that
+   agents do not define the earlier tables and pages (`QorperaOS/tables`, `QorperaOS/interfaces`) is unchanged.
+6. **Interfaces reach rows only through the named questions and changes.** A page never sends SQL of its own. A
+   question runs with the rights of the member looking: the folder's path authority for the question's file. A change from a page runs after that member's yes on a bar the platform draws (item 5 of the 2026-10-02
+   amendment: the platform draws every confirmation), with the file's own words. Agents may also ask any read, because they analyse. Nothing is
+   public unless a file marks it public, and that road has its own design first.
+7. **Interfaces show the values live.** When rows change, a notice that carries no rows reaches the open page, and
+   the page shows the new answers within about a second of the change. Notices do not pass through the platform's
+   database.
+8. **The folder gets a snapshot of each database that changed, at least daily**: its shape as SQL and its rows as
+   text files, enough to make the database again from the folder alone. The platform writes it. Path versions are
+   kept for good (the 2026-09-27 amendment "every machine works in the company folder", item 6) with one exception
+   so far, git's objects (the same amendment, item 9); the old versions of files under `data/<name>/snapshot/` are
+   the second: they are pruned after 7 days. The newest snapshot is always whole.
+9. **The earlier tables stay.** `QorperaOS/tables/<table>/` (the 2026-10-02 amendment, item 4) is unchanged: rows in
+   a file, `rows = "store"` still refused. A table moves into a database by a step and a copy, when a company wants it.
+10. **Order.** Live reads first (the store, the files, the gateway, the agents' tools, the bridge and the kits, the
+    snapshot); then named changes from interfaces and routines that wake on a change; then the product's doors (a
+    server's own connection, public questions and changes, hooks into tables), each after its own design; then what
+    Qorpera holds about a company (bank, mail, todos, agents, usage) as read-only tables in its database.
+
+### 2026-11-13 amendment: the answer first, then the bookkeeping
+
+> **Proposed, not approved.** The agent's home program, build B2 (lanes/agent-box-20261113/B2-ANSWER-FIRST.md): the
+> lead's recommendation "let the agent answer before its bookkeeping", which Jonas agreed to with the program on 13
+> November 2026 ("I agree on almost all of this"). It amends 7.1 item 4 and the kernel's reading of it ("No governed
+> effect … after the final report"). It goes live with migration `20260930748000`, then the runtime bundle.
+
+1. **The closing message is the last message, not the last act.** A run's final send (a card's sentence counts as one)
+   still carries the result, a concrete blocker or the decision it needs, and everything it names is done before it.
+   After it the run may still change only its own bookkeeping: its wall (`update_wall`), its to-do list
+   (`manage_todo`), the apps drawer's layout (`organize_apps`) and the sidebar (`organize_sidebar`). Why: a chat turn
+   spent 5.7 s on average on these before its answer (8.5 s in the 30 of 45 measured turns that did any), and the
+   member waited through it. **2026-11-14:** the founder dropped the wall for agents ("rather drop the wall - it's the
+   wrong medium for activity"): `update_wall` is offered to no run, so the runtime runs only `manage_todo`,
+   `organize_apps` and `organize_sidebar` after the final. The kernel's list in `20260930748000` still admits
+   `update_wall` receipts; nothing calls it, and taking the name out would need a migration.
+2. **Nothing else.** After the final the runtime runs no other call: one ends the turn without running, as the final
+   used to (the answer's own call again only replays it). The kernel admits only those four tools' folder receipts
+   after the final (each keyed with the tool's own name) and still refuses a second send, so nothing after the answer
+   speaks. The acknowledgement rule, a paused company, a cancelled worker and the wake's authority apply as before.
+3. **The turn ends when the model stops**, or at a call outside the four. No count or time caps it (the 24 September
+   2026 rule: no caps on a run's calls). A second message waits for the rest of it, as it waited for the same
+   bookkeeping before the answer.
+4. **A failure after the answer is not the run's failure.** When the model provider fails a turn after its final send,
+   the run ends as delivered; the turn's own record says it failed, and a usage limit, rate limit or outage it met is
+   recorded against the run's login as a failed run's is (section 17). A tool left unconfirmed, or a run cut off, ends
+   as before (a run cut off after its final is never resumed, 20260930547000).
+5. **A delivered answer carries no failure for the member.** A run that has sent its final message is no longer part of
+   its agent's activity for a member once it fails: the thread shows the answer alone, and the Try again that would
+   answer the same message twice is not offered. A failure with no answer still stands, and so does a delivered run
+   whose work left a proposal to decide, which is shown as that decision. The failure itself stays in the run's record,
+   its job's error and the operator views (migration 20260930751000). Why here: 7.1's tail widens that window from
+   0.13 s to a few seconds, and a duplicate answer to a member is worse than the seconds the tail saves.
+6. **Cost.** One closing model round per run that sends a final, after the answer: in chat about 58,000 input tokens,
+   about 98 % of them cached (+15.8 % input tokens, +2.1 % uncached, per turn).
+7. **What the provider sees.** The run's instructions ("How a turn works", the two wake texts that said "end with a
+   final send", the closing reminder, "Writing to people") and the descriptions of `send_message`, `ask_member` and
+   `update_wall` (`update_wall`'s until 2026-11-14, when it left every run's tools with the wall). Nothing else; no
+   tool's schema changes.
+
+### 2026-11-14 amendment: light asks
+
+> Jonas, 14 November 2026, on a group just made in the apps drawer: "when a new group is created, I would like to run a
+> light call, having an agent name it". Asked whether as a visible message in the Co-Founder's thread or as a new hidden
+> ask, he chose "Build the light call". The design is `deploy/first-node/RUNTIME-LIGHT-ASK.md`. It goes live with
+> migration `20260930761000`, then the runtime bundle. It adds to 8.1, 9 and 17. On item 3, asked whether a ChatGPT
+> plan may pay for its owner's own light ask, Jonas answered the same day: "Yes, a ChatGPT plan can pay for it".
+
+1. **What it is.** A light ask is one small question a member's own action raises, answered by one call to the small
+   model with no tools, with nothing shown in any conversation. The first kind, `name-app-group`, names a new group in
+   the member's apps drawer. Why not a message to an agent: a name is not worth a line in a thread or a whole agent run.
+2. **It is a wake (8).** Every activation enters through the wake bus, and a model call on a member's login runs only
+   inside a run. So a light ask is an `agent` wake with the source kind `light-ask`: no parent run, no conversation, its
+   causal chain itself. The woken agent is the Co-Founder. The entrypoints stay five. The ask is a row the cloud keeps
+   (`qorpera_light_asks`); the wake's agent, payer and payload come from that row, never from what the inserter sends.
+3. **Who pays (17).** The asking member's own Codex login, the one with the most room, as new work of theirs takes it.
+   A ChatGPT plan pays too, whether or not it works while its member is away (the founder's decision of 14 November
+   2026): the ask is the plan owner's own request, the call is made within ten minutes of it or not at all, and no
+   other member's activity triggers it. No company
+   account and no other member's login pays. A member with no login of their own gets no answer.
+4. **What the run may do: one call.** It offers no tool: its admission takes an empty tool catalog, and only an empty
+   one, as every other run's takes at least one tool. It composes no context (9) and reads nothing of the company: its
+   context is the kind's instructions and the ask's input, bound as any run's context is. It asks once, on a fresh
+   tool-less side thread with the model and effort auto-review and the memory compactor use, on the run's payer, as the
+   compactor's calls are made; the run's own pinned model (17) starts no thread. It never asks twice.
+5. **Closed kinds; the input is data.** The cloud takes a kind and that kind's input, checked, never a prompt. Each
+   kind's instructions are the runtime bundle's. The input goes to the model between tags, escaped as a summary line's
+   text is, and the instructions say it is never to be obeyed.
+6. **Nothing shows.** An agent wake's own policy forbids a send, and the run has no conversation. The run stores its
+   answer in the ask's row through its own call (`qorpera_native_light_ask_answer`); only the asker reads it
+   (`qorpera_read_light_ask`). The run is the Co-Founder's in the company's records, as any run of its is. A coworker's
+   message held for the Co-Founder waits for its next ordinary run: a light run takes none.
+7. **Bounds and failure.** A member has at most 8 light asks waiting in a company; an input is at most 4 KiB, an answer
+   at most 200 characters, one line. An ask not answered within ten minutes reads as failed, and that stands: its
+   wake no longer runs, and an answer that comes after is not kept. A reply that is no answer, or no reply, is stored as none, and the run still ends. A usage limit or a rate
+   limit the call met is recorded against the run's login (17). A company that is paused or being deleted keeps no ask.
+8. **Cost.** One call to the small model per ask (a few hundred tokens in, a few out), and one run's start on an
+   execution host.
+9. **What the provider sees.** The kind's instructions and the input between tags, on a thread with no tools. No
+   company instructions, no history, no file.
+
+### 2026-11-14 amendment: a machine a member woke sleeps when that member is gone
+
+Founder decision of 14 November 2026: "if a person has an idle tab in qorpera open, we should be able to close the
+machines when the user clearly isn't actually online"; "im referring to machines that start due to a users laptop being
+open on the platform - as we keep a machine warm for any requests they may send. not the always on machines"; and, to
+"Sleep a member-woken machine 5 minutes after the member leaves, not an hour?": "let's go with 10 minutes". It amends
+item 3 of the 2026-10-03 amendment "one idle rule for every machine" ("an agent's task machine after an hour"), for one
+kind of task machine. Nothing else of that amendment changes: no caps, busy work an agent started runs on, sleep stops
+what runs and the agent is told, always-on machines are never stopped by the kernel. It goes live with migration
+`20260930759000`, in a release the founder names.
+
+1. **Awake only for a member.** An agent's task machine is awake only for a member when the start that stands was a
+   member's (the computer window's wake, or a computer a member started for an agent) and no agent has used it since:
+   no command of an agent's that still runs or that started since (a worker's and a coding conversation's are
+   commands), no agent at its screen since, and no run that still goes that started the machine or asked for it by
+   `machine_start`. Once an agent uses it, it is an agent's machine again, and the hour decides, until it has slept and
+   a member wakes it.
+2. **It sleeps 10 minutes after that member's last sign**, counted from its boot when that is later. The time is a
+   per-node setting beside the quiet window (`member_sleep_after_seconds`, 600).
+3. **A member's signs** are what a member does at the machine: waking it, watching its screen, typing on its desktop
+   (privately or on the desktop shared with the agent), moving the pointer over it, turning its screen on. Watching
+   counts for as long as the member's word that they watch is at most that time old: a window in a tab nobody touches
+   stops counting, and the window itself stops looking then and asks whether the member still watches. A private
+   hold's heartbeat is no sign.
+4. **A busy machine is no sign.** For this kind of machine only, busy work does not keep it awake: what runs on it was
+   started from a member's desktop, or starts by itself at boot, and no agent's turn is waiting on it. A program a
+   member left running on the desktop stops with the machine.
+5. **Coming back.** The machine is asleep as after any idle sleep; the member's own ask wakes it (opening the computer,
+   or saying they still watch). Nothing new is shown to members.
+
+### 2026-11-15 amendment: the Co-Founder reflects on the platform's updates
+
+> The founder, 15 November 2026: "I would like to develop something entirely different - sort of a reflection mechanic
+> that the co-founder runs on an update hook. not any update, but when a newer better model is released, or an update
+> to behavior or platform capability drops, it should reflect. if it's a model-drop theres a lot to go over and review
+> since we now have smarter brains. if it's a platform capability that's been added, the co-founder may want to use it.
+> like the interface kit, or if it was added support for banking or other stuff. I hope such a hook is possible". Shown
+> the lead's design, he said "continue". The items below are that design. It adds to 9.1, 10 and 14.2. It goes live with
+> migration `20260930780000`, then the runtime bundle that carries it.
+
+1. **The list.** The runtime bundle carries `PLATFORM_UPDATES` (`packages/runtime/src/cloud-platform-updates.ts`): each
+   update an id (lowercase letters, digits and hyphens, never reused), a kind (`model`, `behaviour` or `capability`),
+   the day its PR was written, a title of at most 60 bytes and at most 700 bytes of plain words to the Co-Founder.
+   An entry reaches agents exactly when its release does; a release with no new entry asks for nothing. A PR that gives
+   agents a new capability, model or behaviour they should take up adds its entry (AGENTS.md), and a test fails when a
+   model agents can be given is neither one of today's nor named by a model update.
+2. **The company's record (5.6).** `QorperaOS/vision/reflections.md`, a plain file the Co-Founder keeps, one line per
+   reflection, newest last: `- <id> | <YYYY-MM-DD> | <use|later|not|reviewed> | <one line>`
+   (RUNTIME-COMPANY-STATE-FILES.md beside the reading).
+3. **Pending.** An update is pending for a company when it is dated no more than 30 days before the day the company's
+   `QorperaOS/vision` folder was made (seeded at its creation, never moved or deleted), and the record has no line for
+   it, or its newest line is `later` and more than 28 days old. The 30 days cover the time between a PR's day and its
+   release: a young company that reflects once on something it already had loses little, one that never hears of a
+   capability loses it. The whole record is read, up to 256 KiB; a record the run cannot read gives `updates` a
+   `problem` in place of the list, telling the Co-Founder to keep only the newest line for each update.
+4. **The hook (9.1).** No wake of its own: the Co-Founder's planning run (any routine run of the Co-Founder in the
+   company, not a worker's) reads the pending updates beside `openWork` and gets them as the context key `updates`
+   (`{pending: [{id, kind, date, title, text}], more?}`, at most 6, oldest first, or `{problem}`), with one sentence group first in its
+   planning run that says how to reflect on each kind. No other run reads them. A failed read leaves the key out, logs
+   its category, and the run goes on. A company without a planning routine reflects once it has one again.
+5. **The tool (10).** `record_reflection {operationKey, update, decision, line}`, the Co-Founder's company runs only,
+   opened through `more_tools`: a capability takes `use`, `later` or `not`; a model `reviewed`; a change in behaviour
+   any of the four; the line one line of at most 160 bytes. A record that would pass 64 KiB is refused with the same
+   advice: keep only the newest line for each update, which keeps every decision. It writes the record as the run, under the call's receipt
+   (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
+   class: the company's bookkeeping, no card.
 
 ## 20. Enforcement matrix
 

@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
-import { type Cloud, describeError } from "../cloud/client.ts";
+import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
@@ -13,6 +13,8 @@ import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
+import { UUID_PATTERN } from "../cloud/parse.ts";
+import { type CodeReleases, codeReleaseCalls } from "../cloud/releases.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -21,24 +23,27 @@ import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import { createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
-import { nativeColorOf } from "../ui/avatar.ts";
+import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
+import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
-import { agentWallReader } from "./agent-wall.ts";
+import { AgentNotes } from "./agent-notes.ts";
+import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, displayName } from "./auth.ts";
-import { CompanyController } from "./company.ts";
+import { agentWorks, CompanyController } from "./company.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
+import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { CompanyApps, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
+import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
@@ -47,15 +52,19 @@ import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { watchOnline } from "./online-mark.ts";
 import { OpenQuestions } from "./open-questions.ts";
+import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { showWaitingInTitle } from "./tab-title.ts";
+import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
 import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
+import { chooseInCompanyFolder } from "./views/company-folder-choose.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
@@ -67,6 +76,7 @@ import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import { MemberChatView } from "./views/member-chat.ts";
 import {
 	hasWebsiteIdea,
 	keepWebsiteIdea,
@@ -79,11 +89,11 @@ import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
-import { noteConnectorReturn } from "./views/settings-services.ts";
 import { SitesView } from "./views/settings-sites.ts";
-import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
+import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
+import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -92,6 +102,20 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
+
+/** An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
+ * company's apps as last read. Undefined while they have not been read, or when no such app is there. */
+function cardAppOf(apps: readonly CompanyApp[] | undefined, name: string): InteractionCardApp | undefined {
+	const found = apps?.find((app) => app.name === name);
+	const manifest = found?.manifest;
+	return manifest
+		? {
+				title: manifest.name,
+				emblem: manifest.emblem,
+				cover: manifest.cover ? `${found.path}/${manifest.cover}` : null,
+			}
+		: undefined;
+}
 
 export function mountApplication(
 	root: HTMLElement,
@@ -279,13 +303,26 @@ export function mountApplication(
 	}
 	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
 	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
-	// card, in a message, on a wall or in a choice, opens the app's page.
+	// card, in a message or in a choice, opens the app's page.
 	function onFolderLink(event: MouseEvent): void {
 		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
 		if (app?.dataset.appName && !event.defaultPrevented) {
 			event.preventDefault();
 			openApp(app.dataset.appName);
 			return;
+		}
+		// A link to the page of the app that is already open (its icon in the rail) leads nowhere new, and the app's page
+		// has no Reload of its own: an ordinary press on it reads the app again, which also lets it ask again (§5). A
+		// modified click stays the link's own (a new tab), and a link to any other place goes there by itself.
+		const here = event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-href]") : null;
+		if (here && !event.defaultPrevented && appPage && here.getAttribute("data-href") === location.hash) {
+			const route = currentRoute();
+			const ordinary = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+			if (ordinary && route.name === "company" && route.section === "app" && route.id) {
+				event.preventDefault();
+				openApp(route.id);
+				return;
+			}
 		}
 		const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
 		const path = link?.dataset.folderPath;
@@ -302,19 +339,38 @@ export function mountApplication(
 		if (settings && settings !== open) settingsFromConversation = fromConversation;
 	}
 	root.addEventListener("click", onFolderLink);
-	// An app's card in a message names it by its folder; once the company's apps are read it shows the app's own emblem
-	// and line (ui/markdown.ts draws it plain, as it has no company).
+	// An app's card in a message names it by its folder; once the company's apps are read it shows the app as the drawer
+	// does (its emblem in its colour there, views/shell.ts `appLook`) and what it is about in one line, whole on a
+	// hover (ui/markdown.ts draws the card plain, as it has no company). The card a note from an app opens with keeps
+	// what the note is about as its line, and takes the app's own name as its title.
+	// A question card's option that previews an app gets the app's cover, or its emblem and title, the same way: in a
+	// thread, in an app's page and in the Concepts viewer's dock, all on this page, and without redrawing the card, so
+	// a pick or an answer being typed stays (ui/interaction-card.ts refreshAppPreviews; review r1 of #1763, F1).
 	const decorateAppCards = () => {
 		const apps = company?.store.get().apps;
-		if (!apps) return;
+		if (!company || !apps) return;
+		refreshAppPreviews(main, (name) => cardAppOf(apps, name), cardImages.get(company));
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
-			const manifest = apps.find((app) => app.name === card.dataset.appName)?.manifest;
-			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.about]) : "";
-			if (!manifest || card.dataset.shown === shown) continue;
+			const app = apps.find((entry) => entry.name === card.dataset.appName);
+			const look = app && appLook(company, app);
+			if (!app?.manifest || !look) continue;
+			const about = app.manifest.about ?? "";
+			const shown = JSON.stringify([look.key, about, app.manifest.name]);
+			if (card.dataset.shown === shown) continue;
 			card.dataset.shown = shown;
-			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, 30));
-			const note = card.querySelector(".app-card-note");
-			if (note && manifest.about) note.textContent = `${manifest.about} · ${t("App")}`;
+			card.querySelector(".app-card-emblem")?.replaceChildren(look.emblem());
+			if (look.colour) card.style.setProperty("--app-colour", look.colour);
+			else card.style.removeProperty("--app-colour");
+			if (card.classList.contains("is-note")) {
+				const title = card.querySelector<HTMLElement>(".app-card-title");
+				if (title) title.textContent = app.manifest.name;
+				continue;
+			}
+			const note = card.querySelector<HTMLElement>(".app-card-note");
+			if (!note) continue;
+			note.textContent = about || t("App");
+			if (about) note.title = about;
+			else note.removeAttribute("title");
 		}
 	};
 	let decorating = false;
@@ -403,9 +459,8 @@ export function mountApplication(
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
-	/** The agents' walls on top of their threads, told of each change hint of the folder through whichever apps reader
-	 * the open company has now (it is made again when the company opens again). */
-	const wallListeners = new Set<() => void>();
+	/** The agents' next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
+	let agentNotes: AgentNotes | undefined;
 	/** Makes the side panel of a Company File page for the open company: set while one is drawn. */
 	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
 	/** The agent's app on its own page (`#/c/{id}/a/{name}`), while that route shows. */
@@ -420,17 +475,53 @@ export function mountApplication(
 		| undefined;
 	/** The company whose sites were read for the apps drawer. */
 	let sitesRead: CompanyController | undefined;
+	/** The company's What's new page (`#/c/{id}/whats-new`), kept while that route shows, and the company read for the
+	 * apps drawer's entry. */
+	let whatsNewPage:
+		| { readonly company: CompanyController; readonly view: WhatsNewView; readonly el: HTMLElement }
+		| undefined;
+	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let conversation: ConversationView | undefined;
+	/** The chat with another member on screen, and the company it is in. */
+	let memberChat: { view: MemberChatView; company: CompanyController } | undefined;
 	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
+	/** Each company's What's new reads and writes, as the apps drawer, What's new's page and the threads' "a change is
+	 * ready" cards make them: numbered as they start, one shared read out at a time for the drawer and the threads, never
+	 * across a write from any of them, and the latest-started answer as the company's last read (app/release-reads.ts). */
+	const releaseReads = new WeakMap<CompanyController, CompanyReleaseReads>();
+	const companyReleases = (controller: CompanyController): CompanyReleaseReads => {
+		let reads = releaseReads.get(controller);
+		if (!reads) {
+			reads = companyReleaseReads(codeReleaseCalls(cloud, controller.profile.profileId), controller.signal);
+			releaseReads.set(controller, reads);
+		}
+		return reads;
+	};
+	/** The drawer's entry and the versions the Sites page names, from the company's latest-started read that answered:
+	 * an answer that comes back after a newer one changes neither. `read` stands in until one did. */
+	const showReleases = (controller: CompanyController, read: CodeReleases) => {
+		const newest = companyReleases(controller).last ?? read;
+		controller.store.set({ whatsNew: whatsNewEntry(controller, newest), siteVersions: liveVersions(newest) });
+	};
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
+	/** Each company's databases for its app pages: one held watch call for all of them, while the company is open. */
+	const appData = new WeakMap<CompanyController, CompanyData>();
+	/** Notes held for the company's apps, by app, while their thread could not take them (app/app-actions.ts
+	 * `HeldNote`): kept while the company is open, whichever page the member goes to meanwhile. */
+	const heldNotes = new WeakMap<
+		CompanyController,
+		{ readonly notes: Map<string, HeldNote>; readonly back: Map<string, () => void> }
+	>();
+	/** Each company's reading of itself for its app pages that read `reading` (the map kit), while the company is open. */
+	const appReading = new WeakMap<CompanyController, CompanyReading>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -553,12 +644,16 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
+		memberChat?.view.dispose();
+		memberChat = undefined;
 		appPage?.dispose();
 		appPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
 		sitesPage?.view.dispose();
 		sitesPage = undefined;
+		whatsNewPage?.view.dispose();
+		whatsNewPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -578,6 +673,8 @@ export function mountApplication(
 		interfaceOffers = undefined;
 		companyApps?.dispose();
 		companyApps = undefined;
+		agentNotes?.dispose();
+		agentNotes = undefined;
 		sidePanel = undefined;
 		appPage?.dispose();
 		appPage = undefined;
@@ -589,10 +686,13 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
+		memberChat?.view.dispose();
+		memberChat = undefined;
 		newConversation?.dispose();
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
+		showWaitingInTitle(0);
 		agentPage = undefined;
 		computer = undefined;
 		computerPanels = undefined;
@@ -652,7 +752,11 @@ export function mountApplication(
 								route.profileId !== profile.profileId ||
 								!(
 									(route.section === "chat" && route.id === target) ||
-									(route.section === "new" && startingSession?.sessionId === target)
+									(route.section === "new" && startingSession?.sessionId === target) ||
+									// A note the member sent from elsewhere in the company (an app's page, the Mailbox, Generate icon
+									// in the apps drawer), on its way: their press, which named the agent, stands for the thread on
+									// screen (CompanyController.sendNote).
+									controller.noteOnItsWay(target)
 								)
 							)
 								throw new Error(t("Company access is unavailable."));
@@ -687,7 +791,8 @@ export function mountApplication(
 					)
 					.catch(() => undefined);
 			});
-			// The company's sections are QorperaOS/agents/sections.md: the rail's moves are the member's edits of it.
+			// On a cloud from before each member's own sidebar (20260930727000), the company's sections are
+			// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
 			controller.useSectionsFile((signal) => {
 				const current = () => {
 					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -724,25 +829,51 @@ export function mountApplication(
 					});
 				}
 			}
-			if (connectorReturn?.connector === "bank") {
-				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it.
-				noteBankReturn(connectorReturn);
-				connectorReturn = undefined;
-			} else if (connectorReturn) {
-				// A provider sign-in (Step 7 connector) sent the member back to this
-				// company: show the outcome where the connection was started.
-				noteConnectorReturn(connectorReturn);
-				connectorReturn = undefined;
-				queueMicrotask(() => {
-					if (!disposed && company === controller) openSettings("company-connections");
-				});
-			}
+			// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
+			// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
+			if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
+			connectorReturn = undefined;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error(t("Company access is unavailable."));
 			});
-			// Open computers outlive the thread they were opened in; leaving the company ends them.
-			computerPanels = new ComputerPanels(computer, controller.signal);
+			// Open computers outlive the thread they were opened in; leaving the company ends them. A `machines` hint
+			// reads an open window's machines at once.
+			computerPanels = new ComputerPanels(computer, controller.signal, {
+				hints: (listener) => controller.onInvalidate(listener),
+				// The machine's clock and backdrop follow the company's time zone (20260930739000).
+				timeZone: () => controller.store.get().team?.timeZone,
+				// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
+				// folder when the page is its index.html (the helper serves the folder), else the page itself.
+				apps: () =>
+					controller.store
+						.get()
+						.apps?.filter((app) => app.manifest !== null)
+						.map((app) => ({
+							name: app.manifest?.name ?? app.name,
+							path:
+								app.manifest === null || app.manifest.entry === "index.html"
+									? app.path
+									: `${app.path}/${app.manifest.entry}`,
+						})),
+				// Open's "A file…": the company folder's own browser in choose mode, read as the member.
+				chooseFile: (signal) => {
+					const role = controller.store.get().team?.role;
+					if (!role) return Promise.resolve(null);
+					return chooseInCompanyFolder(
+						new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+						}),
+						signal,
+					);
+				},
+			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
 			return controller;
@@ -843,7 +974,8 @@ export function mountApplication(
 		}
 		frame.classList.toggle(
 			"has-thread",
-			route.name === "company" && (route.section === "chat" || route.section === "new"),
+			route.name === "company" &&
+				(route.section === "chat" || route.section === "new" || route.section === "member"),
 		);
 		// The Concepts viewer is full screen: no rail and no top bar, its own side panel instead.
 		frame.classList.toggle("has-concepts", route.name === "company" && route.section === "concepts");
@@ -949,7 +1081,8 @@ export function mountApplication(
 				route.section === "home" ||
 				route.section === "chat" ||
 				route.section === "staff" ||
-				route.section === "new"
+				route.section === "new" ||
+				route.section === "member"
 			)
 				showThreadSkeleton(t("Opening company"));
 			else replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
@@ -1056,10 +1189,111 @@ export function mountApplication(
 				agent: (agentId) => controller.staffById(agentId),
 				memberName: (userId) => controller.memberName(userId),
 				image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				app: (name) => cardApp(name),
 				conversation: (sessionId) => controller.conversation(sessionId, false),
-				chatHref: (sessionId) =>
-					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),
 			};
+		};
+		// The company's databases, asked and watched as the member through the member gateway; none where the build
+		// names no member gateway.
+		const dataHost = (): CompanyData | undefined => {
+			if (!cloud.config.memberCompanyGatewayUrl) return undefined;
+			let data = appData.get(controller);
+			if (!data) {
+				data = new CompanyData(
+					() => {
+						const role = controller.store.get().team?.role;
+						const client = role
+							? new WebCompanyFiles(
+									cloud,
+									controller.profile,
+									controller.userId,
+									role,
+									controller.signal,
+									companyCurrent,
+								).data()
+							: undefined;
+						if (!client) throw new Error(t("Company access changed."));
+						return client;
+					},
+					controller.signal,
+					companyCurrent,
+				);
+				appData.set(controller, data);
+			}
+			return data;
+		};
+		// A note an app's page asks the member to send to the agent that owns the app (RUNTIME-INTERFACE-APPS.md §5
+		// "tell"), written by the member on the bar: their own message in that agent's thread, or the Co-Founder's, on
+		// their own model account for the thread, chosen as the thread chooses it (app/tell-agent.ts).
+		const appNotes = (): AppTellSource => {
+			let accounts: TellAccounts | undefined;
+			const kept = () => {
+				let found = heldNotes.get(controller);
+				if (!found) {
+					found = { notes: new Map(), back: new Map() };
+					heldNotes.set(controller, found);
+				}
+				return found;
+			};
+			return {
+				receiver: (owner) => {
+					const found = noteReceiver(controller, owner);
+					return "agent" in found ? { agentId: found.agent.id } : found;
+				},
+				agent: (agentId) => controller.staffById(agentId),
+				held: (app) => kept().notes.get(app),
+				// A note that was on its way and is held again is back for the app's page on screen, whichever sent it. Any
+				// other kept note comes back when the app's page is next shown.
+				hold: (app, note, isBack) => {
+					const { notes, back } = kept();
+					if (note) notes.set(app, note);
+					else notes.delete(app);
+					if (note && isBack) back.get(app)?.();
+				},
+				listen: (app, listener) => {
+					const { back } = kept();
+					back.set(app, listener);
+					return () => {
+						if (back.get(app) === listener) back.delete(app);
+					};
+				},
+				send: (agentId, note) => {
+					accounts ??= createWebNativeSubscription(
+						cloud,
+						controller.profile.profileId,
+						controller.userId,
+						controller.signal,
+						companyCurrent,
+					);
+					return tellAgent(controller, accounts, agentId, { text: note.text, quotes: [], header: note.header });
+				},
+			};
+		};
+		// The company's reading of itself, its agents and its standing, for a page that reads `reading`
+		// (app/company-reading.ts): read as the member, handed over as plain names.
+		const readingHost = (): CompanyReading => {
+			let reading = appReading.get(controller);
+			if (!reading) {
+				reading = new CompanyReading(
+					{
+						folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+						people: () => {
+							const state = controller.store.get();
+							return {
+								staff: state.staff,
+								working: (agentId) => agentWorks(controller.agentState(agentId)),
+								cofounderId: controller.cofounderId(),
+								members: state.team?.members ?? [],
+								viewer: controller.userId,
+							};
+						},
+						standing: () => readCompanyStanding(cloud, controller.profile.profileId),
+					},
+					controller.signal,
+				);
+				appReading.set(controller, reading);
+			}
+			return reading;
 		};
 		const panelHost = (beside: boolean): AppPanelHost => ({
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
@@ -1072,9 +1306,10 @@ export function mountApplication(
 						return {
 							name: agent.displayName,
 							role: agent.role,
-							working: now === "working" || now === "writing",
+							working: agentWorks(now),
 						};
 					}),
+			reading: readingHost(),
 			readApps: () => companyApps?.read() ?? Promise.resolve([]),
 			apps: () => companyApps?.apps ?? [],
 			agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
@@ -1085,8 +1320,15 @@ export function mountApplication(
 				openSettings("storage", path);
 				if (settings && settings !== open) settingsFromConversation = beside && conversation !== undefined;
 			},
+			// A link to an app in an app's page, as its card in a message.
+			openApp,
 			budgetKey: controller.profile.profileId,
 			questions: questionsHost(),
+			// A change an app asked for and the member allowed is the member's own save, under the company's checks.
+			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
+			current: companyCurrent,
+			data: dataHost(),
+			tell: appNotes(),
 		});
 		sidePanel = (target) =>
 			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });
@@ -1117,7 +1359,8 @@ export function mountApplication(
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
 		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
-			if (conversation?.show(agentId, page)) return;
+			// The member's own click: a sleeping computer wakes (computer.ts OPEN_STARTS).
+			if (conversation?.show(agentId, page, true)) return;
 			// It waits a little while for the chat; a request the member moved away from does not come back later.
 			agentPage = { agentId, page, until: Date.now() + AGENT_PAGE_WAIT_MS };
 			navigate({ name: "company", profileId: controller.profile.profileId, section: "staff", id: agentId });
@@ -1128,6 +1371,43 @@ export function mountApplication(
 			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
 			cardImages.set(controller, cardImage);
 		}
+		// The apps that question options' previews name, as the company's apps were last read; a card drawn before they
+		// were read is brought up to date by decorateAppCards.
+		const cardApp = (name: string) => cardAppOf(controller.store.get().apps, name);
+		// What's new's calls and what it reads beside them: its page and the "a change is ready" card in an agent's thread
+		// share them (views/release-desk.ts).
+		const releaseDesk = (shared = false) => ({
+			client: shared ? companyReleases(controller).shared : companyReleases(controller).own,
+			// The company's last read, which a thread's card starts from.
+			last: () => companyReleases(controller).last,
+			options: {
+				image: (path: string, signal: AbortSignal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				// Every read, from What's new's page or a thread's card, is numbered as it starts (its client), so the latest
+				// to start is the company's last read: a thread opened next starts from what is true now (a change put live on
+				// the page is no card), with no read of its own. The drawer counts from it too.
+				listed: (read: CodeReleases) => showReleases(controller, read),
+				// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
+				// project's site that never went live is one too (the review of #1774, F4); the list is read only for an
+				// entry that names none.
+				takenDown: async (signal: AbortSignal) => {
+					const sites = createWebSites(cloud, controller.profile);
+					const access = await sites.access(signal);
+					const slugs = new Set<string>();
+					for (const id of access.takenDown.keys()) {
+						const named = access.named.get(id);
+						if (named) slugs.add(named.slug);
+					}
+					if ([...access.takenDown.keys()].every((id) => access.named.has(id))) return slugs;
+					for (const site of await sites.list(signal)) if (access.takenDown.has(site.id)) slugs.add(site.slug);
+					return slugs;
+				},
+			},
+		});
+		// Who may see a site's password and change it: owners and admins (the kernel enforces the same rule).
+		const managesSites = () => {
+			const role = controller.store.get().team?.role;
+			return role === "owner" || role === "admin";
+		};
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
 			const opened = new AgentDetails(
@@ -1181,14 +1461,28 @@ export function mountApplication(
 			opened.dialog.findOpener = findAnchor;
 			agentCard = opened;
 		};
+		// The tab counts the agents that wait on the member here (app/tab-title.ts).
+		showWaitingInTitle(controller.agentsWaitingOnMe());
 		if (!rail.hidden)
 			renderRail(rail, controller, {
 				...context,
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 				openAgentCard,
 				openGroupCard,
-				hideInterfacePage: (page, hidden) => interfacePages?.hide(page, hidden) ?? Promise.resolve(),
+				hideInterfacePage: (page, hidden) =>
+					(interfacePages?.hide(page, hidden) ?? Promise.resolve()).then(() => {
+						// Reset sidebar counts hidden pages among the member's changes (20260930727000), and a newer choice
+						// is never undone by an older reset's Undo.
+						if (controller.ownSidebar()) {
+							controller.store.set({ sidebarReset: undefined });
+							void controller.refreshSidebar();
+						}
+					}),
+				refreshInterfacePages: () => void interfacePages?.refresh(),
 			});
+		// The drawer may draw an app otherwise now (the member's icon or colour for it, its group's colour): its cards
+		// in the messages follow.
+		decorateAppCards();
 		if (navigationFocus) {
 			// The drawer opens on its first control: the company's name, or the search field when it is open (the
 			// name is inert under it).
@@ -1213,10 +1507,14 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
+			agentNotes?.dispose();
+			agentNotes = undefined;
 			mail?.dispose();
 			mail = undefined;
 			closeSettings(false);
 			conversation?.dispose();
+			memberChat?.view.dispose();
+			memberChat = undefined;
 			newConversation?.dispose();
 			appPage?.dispose();
 			appPage = undefined;
@@ -1313,25 +1611,29 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
+			agentNotes?.dispose();
+			agentNotes = undefined;
+			controller.store.set({ agentNotes: undefined });
 		}
 		if (!interfaceFolder && state.team?.capabilities.read) {
+			const folderCurrent = () => {
+				const now = controller.store.get();
+				if (
+					disposed ||
+					company !== controller ||
+					auth.userId !== controller.userId ||
+					now.accessLost ||
+					!now.team?.capabilities.read
+				)
+					throw new Error(t("Company access changed."));
+			};
 			const files = new WebCompanyFiles(
 				cloud,
 				controller.profile,
 				controller.userId,
 				state.team.role,
 				controller.signal,
-				() => {
-					const now = controller.store.get();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== controller.userId ||
-						now.accessLost ||
-						!now.team?.capabilities.read
-					)
-						throw new Error(t("Company access changed."));
-				},
+				folderCurrent,
 			);
 			// The offers of claimed cells are read with them, and again each time the folder the pages read changes,
 			// since the save that changes a cell settles its offers (step I9c) and makes or ends a supervision (I9b).
@@ -1373,17 +1675,60 @@ export function mountApplication(
 			pages.open();
 			void reader.open();
 			// The agents' apps, for the apps drawer and the apps' own pages (RUNTIME-INTERFACE-APPS.md §4).
-			const apps = new CompanyApps(shared, (next) => {
-				if (companyApps !== apps) return;
-				controller.store.set({ apps: next });
-				decorateAppCards();
-			});
+			const apps = new CompanyApps(
+				shared,
+				(next) => {
+					if (companyApps !== apps) return;
+					controller.store.set({ apps: next });
+					decorateAppCards();
+					// The apps changed: the icons read for some of them may have too (an agent drew new ones).
+					controller.refreshAppIcons();
+				},
+				(groups) => {
+					if (companyApps !== apps) return;
+					controller.store.set({ appGroups: groups });
+				},
+			);
 			companyApps = apps;
-			apps.onChange(() => {
-				for (const listener of [...wallListeners]) listener();
-			});
+			controller.appIconReader = (app) => apps.icons(app);
+			// Generate icon's message takes the thread's own model account, as an answer from an app does.
+			controller.appIconAccounts = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				companyCurrent,
+			);
+			// An agent's icons-only save changes no app's manifest: every read of the apps (a hint, the minute's clock, the tab
+			// coming back) reads the icons read before (review F5 on #1696).
+			apps.onRead(() => controller.refreshAppIcons());
+			// The rail's line under each agent's name: its next planned run, read with the member's own access and again on
+			// each change hint of the folder (routines are files of it).
+			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>
+				files.folder(),
+			);
+			const notes = new AgentNotes(
+				{
+					agents: () =>
+						controller.store
+							.get()
+							.staff.filter((agent) => agent.employmentStatus === "active")
+							.map((agent) => agent.id),
+					listRoutines: () => routines.list(),
+					signal: files.signal,
+				},
+				(next) => {
+					if (agentNotes === notes) controller.store.set({ agentNotes: next });
+				},
+			);
+			agentNotes = notes;
+			window.addEventListener("focus", () => notes.changed(), { signal: files.signal });
+			apps.onChange(() => notes.changed());
 			apps.open();
+			notes.open();
 		}
+		// The roster arrives after the company opens, and agents are hired and let go: the rail's notes follow it.
+		agentNotes?.agentsChanged();
 		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
 		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
 		if (sitesRead !== controller && state.team?.capabilities.read) {
@@ -1398,6 +1743,24 @@ export function mountApplication(
 				);
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
+		}
+		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
+		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
+		if (releasesRead !== controller && state.team?.capabilities.read) {
+			releasesRead = controller;
+			const releases = companyReleases(controller).shared;
+			const readReleases = () =>
+				void releases.list(controller.signal).then(
+					(read) => {
+						if (!controller.signal.aborted) showReleases(controller, read);
+					},
+					(error: unknown) => {
+						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))
+							controller.store.set({ whatsNew: undefined, siteVersions: undefined });
+					},
+				);
+			readReleases();
+			window.addEventListener("focus", readReleases, { signal: controller.signal });
 		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
 		if (mail && !state.team?.capabilities.read) {
@@ -1452,6 +1815,10 @@ export function mountApplication(
 			conversation = undefined;
 			controller.setOpenSession(undefined);
 		}
+		if (route.section !== "member") {
+			memberChat?.view.dispose();
+			memberChat = undefined;
+		}
 		// Where this tab is in the rail, for the other members' rails (a conversation says its own: company.ts).
 		controller.setOpenPlace(
 			route.section === "interface" && route.id
@@ -1460,7 +1827,7 @@ export function mountApplication(
 					? `app:${route.id}`
 					: route.section === "staff" && route.id
 						? `agent:${route.id.toLowerCase()}`
-						: route.section === "concepts" || route.section === "sites"
+						: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
 							? route.section
 							: undefined,
 		);
@@ -1478,6 +1845,10 @@ export function mountApplication(
 		if (route.section !== "sites" || sitesPage?.company !== controller) {
 			sitesPage?.view.dispose();
 			sitesPage = undefined;
+		}
+		if (route.section !== "whats-new" || whatsNewPage?.company !== controller) {
+			whatsNewPage?.view.dispose();
+			whatsNewPage = undefined;
 		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
@@ -1734,18 +2105,12 @@ export function mountApplication(
 							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
 							// role, and the thread offers it to the roles that route takes (M3c).
-							// The agent's wall above its composer, read with the member's own folder client and again after
-							// each change hint of the company's folder (the apps' hint channel).
-							agentWall: {
-								read: agentWallReader(() =>
-									memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
-								),
-								onFolderChange: (listener) => {
-									wallListeners.add(listener);
-									return () => wallListeners.delete(listener);
-								},
-							},
 							folderImage: cardImage,
+							folderApp: cardApp,
+							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
+							// the Sites page's row under the words.
+							codeReleases: releaseDesk(true),
+							companySites: { client: createWebSites(cloud, controller.profile), canManage: managesSites },
 							messageErases: {
 								request: (sessionId, eventId, signal) =>
 									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),
@@ -1766,8 +2131,37 @@ export function mountApplication(
 				} else conversation.update();
 				conversation.setNavigationOpen(navigationOpen);
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
-				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
+				if (
+					agentPage &&
+					(Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page, true))
+				)
 					agentPage = undefined;
+				return;
+			}
+			case "member": {
+				// This member's chat with another member of the company. A link to oneself, or to no member's id, leads home.
+				const userId = route.id?.toLowerCase() ?? "";
+				if (!UUID_PATTERN.test(userId) || userId === controller.userId) {
+					navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					return;
+				}
+				if (!state.team) {
+					showThreadSkeleton(t("Opening company"));
+					return;
+				}
+				if (memberChat?.view.userId !== userId || memberChat.company !== controller) {
+					memberChat?.view.dispose();
+					memberChat = {
+						view: new MemberChatView(controller, userId, () => setNavigationOpen(!navigationOpen)),
+						company: controller,
+					};
+					replace(main, memberChat.view.el);
+					if (!frame.inert) memberChat.view.focus();
+				} else {
+					if (!main.contains(memberChat.view.el)) replace(main, memberChat.view.el);
+					memberChat.view.update();
+				}
+				memberChat.view.setNavigationOpen(navigationOpen);
 				return;
 			}
 			case "app": {
@@ -1921,6 +2315,13 @@ export function mountApplication(
 							environmentId: controller.profile.environmentId,
 						};
 						const keys = createDigitalPostKeys(cloud, environment);
+						const accounts = createWebNativeSubscription(
+							cloud,
+							controller.profile.profileId,
+							controller.userId,
+							controller.signal,
+							companyCurrent,
+						);
 						return {
 							hooks: createWebEventHooks(cloud, environment),
 							digitalPost: {
@@ -1928,6 +2329,12 @@ export function mountApplication(
 								save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
 								disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
 							},
+							// Who answers an address: the agent's routine that starts on its mail, written as the member's own
+							// save, on one of the member's own model accounts.
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
+								memberFolder(companyCurrent, t("Company access changed.")),
+							),
+							accounts: (signal) => accounts.listConnections(signal),
 						};
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
@@ -1940,43 +2347,56 @@ export function mountApplication(
 				// them offline (the kernel enforces the same rule).
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
-						access: {
-							canManage: () => {
-								const role = controller.store.get().team?.role;
-								return role === "owner" || role === "admin";
-							},
-						},
+						access: { canManage: managesSites },
 						listed: (list) => controller.store.set({ siteCount: list.length }),
+						// A site made from a project's code names the version What's new has live, and links there.
+						releases: {
+							href: `#/c/${controller.profile.profileId}/whats-new`,
+							version: (site) => controller.store.get().siteVersions?.[site.slug],
+						},
+						// No site yet: the Co-Founder stands on the page (its crown while the roster is still on its way).
+						mascot: () =>
+							agentFigure(
+								controller.staffById(controller.cofounderId()) ?? {
+									id: "",
+									displayName: "Co-Founder",
+									appearance: { color: "", shape: "" },
+									templateId: "co-founder",
+								},
+								"Co-Founder",
+								{ size: 96, className: "sites-mascot" },
+							),
 					});
-					sitesPage = {
+					// The page draws its own title and line (views/settings-sites.ts).
+					sitesPage = { company: controller, view, el: h("section", { class: "page sites-page" }, view.el) };
+				}
+				sitesPage.view.update();
+				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
+			case "whats-new": {
+				// The changes to the company's sites made from its code, ready to go live, and what is live (own code storage
+				// step 4). Every member sees it; owners and admins put a version live and go back (the kernel's own rule).
+				if (!whatsNewPage) {
+					const desk = releaseDesk();
+					const view = new WhatsNewView(controller, desk.client, controller.signal, desk.options);
+					whatsNewPage = {
 						company: controller,
 						view,
 						el: h(
 							"section",
-							{ class: "page sites-page" },
+							{ class: "page whats-new-page" },
 							h(
 								"header",
 								{ class: "sites-page-heading" },
-								interfaceEmblem("globe", 40),
-								h(
-									"div",
-									null,
-									h("h1", null, t("Sites")),
-									h(
-										"p",
-										null,
-										t(
-											"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
-										),
-									),
-								),
+								interfaceEmblem("spark", 40),
+								h("div", null, h("h1", null, t("What's new"))),
 							),
 							view.el,
 						),
 					};
 				}
-				sitesPage.view.update();
-				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				if (whatsNewPage.el.parentElement !== main) replace(main, whatsNewPage.el);
 				return;
 			}
 			case "team":
@@ -2042,7 +2462,7 @@ export function mountApplication(
 /** The query keys qorpera.com's box sends (landing/src/site/site.js): the idea, and the kind of company picked.
  * "kind", not "type": the sign-in callback takes a type parameter. */
 export const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
-/** How long a card's request for its agent's computer or wall waits for that agent's chat to open. */
+/** How long a card's request for its agent's computer waits for that agent's chat to open. */
 const AGENT_PAGE_WAIT_MS = 20_000;
 
 /** qorpera.com's arrow opens `app.qorpera.com/?ide=…&kind=…`; a link may also say `#/new?idea=…`. What it carries

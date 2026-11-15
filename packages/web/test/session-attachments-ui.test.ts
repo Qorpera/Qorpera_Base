@@ -87,6 +87,7 @@ async function setup() {
 		if (url.endsWith("/qorpera_list_session_turn_requests")) return Response.json([]);
 		if (url.endsWith("/qorpera_list_member_notifications")) return Response.json([]);
 		if (url.endsWith("/qorpera_select_member_session_account")) return Response.json(id(81));
+		if (url.endsWith("/qorpera_get_native_account_refresh")) return Response.json(null);
 		if (url.endsWith("/qorpera_begin_native_account_refresh"))
 			return Response.json({
 				request_id: id(83),
@@ -184,9 +185,13 @@ async function setup() {
 		fetcher.mock.calls.filter(
 			([url]) =>
 				!String(url).includes("/qorpera_member_folder_") &&
+				// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts). The agents' walls
+				// are no longer read (Jonas, 14 Nov 2026), and with them went the state folders' read at open.
+				!String(url).endsWith("/qorpera_list_cloud_routines") &&
 				!String(url).endsWith("/qorpera_list_member_notifications") &&
 				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
 				!String(url).endsWith("/qorpera_select_member_session_account") &&
+				!String(url).endsWith("/qorpera_get_native_account_refresh") &&
 				!String(url).endsWith("/qorpera_begin_native_account_refresh") &&
 				!String(url).endsWith("/qorpera_list_member_native_execution_connections"),
 		);
@@ -217,8 +222,11 @@ describe("actual product conversation attachments", () => {
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
 			name === "qorpera_member_interface_pages" ||
-			// The apps drawer's Sites entry.
+			// The apps drawer's Sites and What's new entries.
 			name === "qorpera_list_company_sites" ||
+			name === "qorpera_list_code_releases" ||
+			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+			name === "qorpera_list_cloud_routines" ||
 			// The account marks itself online for its friends (online-mark.ts).
 			name === "qorpera_mark_online" ||
 			// Company figures ask for the company's logo (app/company-logos.ts).

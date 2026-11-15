@@ -16,6 +16,8 @@ import {
 	type MailAddress,
 	type MailCursor,
 	type MailDirection,
+	type MailMemberSend,
+	type MailMemberSent,
 	type MailMessage,
 	type MailMessageCursor,
 	type MailThread,
@@ -27,12 +29,12 @@ import {
 	readMailThread,
 	readMailThreads,
 	readMailWaiting,
+	sendMemberMail,
 } from "../cloud/mail.ts";
-import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
-import { t } from "../ui/preferences.ts";
 import { type CompanyController, needsModelAccount } from "./company.ts";
 import type { QuotedText } from "./quotes.ts";
+import { chooseThreadAccount, type TellAccounts, type TellResult, tellAgent } from "./tell-agent.ts";
 
 /* The company's mail as this member reads it (Interfaces step I5c; the member mail read of step I5a, cloud/mail.ts),
  * for the Mailbox page and the `mail` and `mail_addresses` sources (RUNTIME-INTERFACES.md §4).
@@ -97,7 +99,7 @@ export interface MailAnswer {
 }
 
 /** The member's model accounts, as a conversation's thread reads them (views/session-execution.ts). */
-export type MailAccounts = Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
+export type MailAccounts = TellAccounts;
 
 /** A letter's `letter.md` as the Mailbox reads it. */
 export type DigitalPostLetterRead =
@@ -196,6 +198,9 @@ export class CompanyMail {
 	#companyTimer: ReturnType<typeof setInterval> | undefined;
 	#pageTimer: ReturnType<typeof setInterval> | undefined;
 	#reading = new Set<string>();
+	/** The address reads begun, and the first of them whose answer still counts: one begun before it is let go. */
+	#addressReads = 0;
+	#addressesSince = 0;
 	#watched: {
 		lists: Map<string, MailListRequest>;
 		threads: Set<string>;
@@ -255,6 +260,13 @@ export class CompanyMail {
 		return this.#closed ? Promise.resolve() : this.#refreshCompany();
 	}
 
+	/** Reads the addresses with a read begun now, and says whether it was read: after a change to who answers an
+	 * address (the Mailbox's Addresses). A read already on its way is from before the change: its answer is let go,
+	 * whether this read is read or not. A read that fails keeps the addresses as they were read last. */
+	addressesAfresh(): Promise<boolean> {
+		return this.#closed ? Promise.resolve(false) : this.#readAddresses(true);
+	}
+
 	dispose(): void {
 		this.#disposed = true;
 		clearInterval(this.#companyTimer);
@@ -281,17 +293,32 @@ export class CompanyMail {
 		}
 	}
 
+	/** Reads the addresses, and says whether they were read. Reads may answer out of turn: one begun before another
+	 * whose answer is already in says nothing newer, and is let go. So is one begun before a read asked for after a
+	 * change (`afterChange`), from the moment that read begins: what it says is from before the change. */
+	async #readAddresses(afterChange = false): Promise<boolean> {
+		const read = ++this.#addressReads;
+		if (afterChange) this.#addressesSince = read;
+		const take = (addresses: MailAddress[]) => {
+			if (read < this.#addressesSince) return;
+			this.#addressesSince = read;
+			this.#set((state) => ({ ...state, addresses }));
+		};
+		try {
+			take(await readMailAddresses(this.#cloud, this.#environmentId));
+			return true;
+		} catch (error) {
+			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
+			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return false;
+			take([]);
+			return true;
+		}
+	}
+
 	async #refreshCompany(): Promise<void> {
 		await Promise.all([
 			this.#once("addresses", async () => {
-				try {
-					const addresses = await readMailAddresses(this.#cloud, this.#environmentId);
-					this.#set((state) => ({ ...state, addresses }));
-				} catch (error) {
-					// A cloud without the member mail read has no mail to show; another failure keeps what was read.
-					if (error instanceof CloudRpcError && (error.missing || error.denied))
-						this.#set((state) => ({ ...state, addresses: [] }));
-				}
+				await this.#readAddresses();
 			}),
 			this.#once("waiting", async () => {
 				try {
@@ -742,7 +769,9 @@ export class CompanyMail {
 		const set = (given: MailAnswer) =>
 			this.#set((state) => ({ ...state, answers: { ...state.answers, [reviewId]: given } }));
 		set({ pending: true });
-		await this.#chooseAccount(sessionId);
+		// While the agent still waits, its answer needs no account, so a choice that fails only leaves the answer to say
+		// whether it needed one.
+		await chooseThreadAccount(this.#company, this.#accounts, sessionId);
 		try {
 			await this.#company.answerActionReview(sessionId, reviewId, answer);
 		} catch (error) {
@@ -764,79 +793,25 @@ export class CompanyMail {
 		]);
 	}
 
-	/** Sends the member's note to an agent as the member's own message, its outside words as quotes (the Mailbox's
-	 * "Tell Ida what to answer", "Write an email" and an address's new handler, views/mailbox.ts). It goes from here
-	 * only into a conversation with nothing drafted in it, on the account the cloud chooses for that conversation (as an
-	 * answer does); otherwise, or when the send doesn't go, the note waits in that conversation's composer, and `href`
-	 * is the agent's thread where it waits. Throws when the agent's thread can't be opened or the note can't be added. */
-	async tell(agentId: string, note: QuotedText): Promise<{ readonly sent: boolean; readonly href: string }> {
-		const company = this.#company;
-		const profileId = company.profile.profileId;
-		const cofounder = agentId === company.cofounderId();
-		const href = cofounder ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agentId}`;
-		let sessionId: string;
-		if (cofounder) {
-			const opened = await company.openCofounderConversation();
-			if (!opened.sessionId) throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
-			sessionId = opened.sessionId;
-		} else {
-			const agent = company.staffById(agentId);
-			if (agent?.employmentStatus !== "active") throw new Error(t("That agent is no longer at work."));
-			sessionId = await company.openStaffConversation(agent);
-		}
-		// What is drafted there decides: the member's own draft as this browser has it and, where drafts are shared,
-		// as the room has it now. Only a note into nothing drafted goes from here.
-		const room = company.roomDrafts.room(sessionId);
-		if (room) await room.refresh();
-		if (this.#closed) return { sent: false, href };
-		const conversation = () => company.conversation(sessionId, false).get();
-		const shared = () => room?.draft(company.userId)?.body ?? "";
-		const before = conversation();
-		const empty =
-			(!room || room.usable()) &&
-			!shared().trim() &&
-			!(before.draft ?? "").trim() &&
-			!before.attachments?.length &&
-			!before.sending &&
-			!before.retrySend;
-		company.addToDraft(sessionId, note);
-		// The submission meant: exactly the note. Anything that changes it while the account is chosen (another tab, a
-		// merged shared draft, an attachment) leaves it in the composer for the member to send.
-		const intended = conversation().draft ?? "";
-		if (!empty || this.#closed) return { sent: false, href };
-		await this.#chooseAccount(sessionId);
-		const now = conversation();
-		if (
-			this.#closed ||
-			now.draft !== intended ||
-			now.attachments?.length ||
-			now.sending ||
-			now.retrySend ||
-			![intended, ""].includes(shared())
-		)
-			return { sent: false, href };
-		const sent = await company.sendPrompt(sessionId, intended);
-		return { sent, href };
+	/** Sends the member's own email from one of the company's addresses, with no agent (the Mailbox's "Send",
+	 * views/mailbox.ts; cloud/mail.ts `sendMemberMail`), as a new email or as an answer in a thread. It throws what the
+	 * cloud refuses, for the window it was written in to say. The lists and the threads a page shows are then read
+	 * again, so the email is in Sent and an answer stands in its thread. */
+	async send(request: MailMemberSend): Promise<MailMemberSent> {
+		const sent = await sendMemberMail(this.#cloud, this.#environmentId, request);
+		await Promise.all([
+			...[...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)),
+			...[...this.#watched.threads].map((thread) => this.#readThread(thread)),
+		]);
+		return sent;
 	}
 
-	/** Gives the conversation the model account the cloud chooses for it, as its thread does when it opens
-	 * (views/session-execution.ts): the conversation's own account, never another one (founder decision 2026-10-04).
-	 * A conversation with a message on its way keeps the account that message carries, and one the cloud has no
-	 * account for keeps what it has. While the agent still waits, its answer needs no account, so a choice that fails
-	 * only leaves the answer to say whether it needed one. */
-	async #chooseAccount(sessionId: string): Promise<void> {
-		const conversation = this.#company.conversation(sessionId, false).get();
-		if (conversation.sending || conversation.retrySend || !this.#accounts.selectSessionAccount) return;
-		const signal = this.#company.signal;
-		try {
-			const connectionId = await this.#accounts.selectSessionAccount(sessionId, signal);
-			if (!connectionId) return;
-			const observed = await this.#accounts.listConnections(signal);
-			const now = this.#company.conversation(sessionId, false).get();
-			if (now.sending || now.retrySend) return;
-			this.#company.setExecutionSponsor(sessionId, observed, connectionId);
-		} catch {
-			// The answer still goes.
-		}
+	/** Sends the member's note to an agent as the member's own message, its outside words as quotes (the Mailbox's
+	 * answer or new email an agent is asked to write, and an address's new handler, views/mailbox.ts), as an app's
+	 * note goes (app/tell-agent.ts): it goes from here only into a conversation with nothing drafted in it; otherwise,
+	 * or when the send doesn't go, the note waits in that conversation's composer, and `href` is the agent's thread
+	 * where it waits. Throws when the agent's thread can't be opened or the note can't be added. */
+	tell(agentId: string, note: QuotedText): Promise<TellResult> {
+		return tellAgent(this.#company, this.#accounts, agentId, note, () => this.#closed);
 	}
 }

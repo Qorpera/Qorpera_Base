@@ -1,3 +1,4 @@
+import { type MemberAppLayout, type MemberAppLayoutRead, parseMemberAppLayoutRead } from "./app-groups.ts";
 import type { Cloud } from "./client.ts";
 import {
 	type CodingSession,
@@ -49,6 +50,7 @@ import {
 	parseAccountMatch,
 	parseAgentThreadHandle,
 	parseCompanyFile,
+	parseCompanyTimeZone,
 	parseEvents,
 	parseFriends,
 	parseIncomingInvitations,
@@ -92,6 +94,7 @@ import {
 	type RoomDraftWrite,
 	subscribeRoomDrafts,
 } from "./room-drafts.ts";
+import { listScreensInUse, type ScreensInUse } from "./screens-in-use.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import { type Leaderboard, markOnline, readLeaderboard, setLeaderboardHidden } from "./social.ts";
 import type {
@@ -115,6 +118,7 @@ import type {
 	StaffSessionHandle,
 	WorkerRunControl,
 } from "./types.ts";
+import { listWaitingWork, type WaitingWork } from "./waiting-work.ts";
 
 /* Typed member surface over CLIENT-CONTRACT.md §2. One method per RPC the web
  * app uses; nothing here writes a table, runs an agent, or resolves a secret. */
@@ -374,6 +378,18 @@ export class CloudApi {
 			.then(parseTeam);
 	}
 
+	/** Hands in the time zone this member's app shows times in, for a company that has none (migration
+	 * 20260930739000): an owner, admin or contributor; taken only while the company has none. Answers the company's
+	 * zone either way. A name the cloud does not know is refused (22023). */
+	ensureCompanyTimeZone(profileId: string, timeZone: string): Promise<string> {
+		return this.cloud
+			.rpc("qorpera_ensure_company_time_zone", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_time_zone: timeZone,
+			})
+			.then(parseCompanyTimeZone);
+	}
+
 	inviteMember(
 		profileId: string,
 		email: string,
@@ -500,9 +516,42 @@ export class CloudApi {
 		return listWaitingApprovals(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
+	/** What each agent's work waits on the signed-in member for: its open cards for them and the approval cards they
+	 * answer, by agent (20260930723000). */
+	listWaitingWork(profileId: string): Promise<WaitingWork[]> {
+		return listWaitingWork(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** Which agents use their desktop computers now (20260930742000). */
+	listScreensInUse(profileId: string): Promise<ScreensInUse> {
+		return listScreensInUse(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
 	/** The question cards raised for the signed-in member in the company's agent threads that still wait for them. */
 	listOpenQuestions(profileId: string): Promise<OpenQuestion[]> {
 		return listOpenQuestions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The member's own arrangement of the apps drawer over the company's apps/groups.md (20260930728000). */
+	readMemberAppLayout(profileId: string): Promise<MemberAppLayoutRead> {
+		return this.cloud
+			.rpc("qorpera_member_app_layout", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseMemberAppLayoutRead);
+	}
+
+	/** Writes it whole; refused (QAL01) when another tab wrote since `expected`. */
+	setMemberAppLayout(
+		profileId: string,
+		layout: MemberAppLayout,
+		expected: string | null,
+	): Promise<MemberAppLayoutRead> {
+		return this.cloud
+			.rpc("qorpera_set_member_app_layout", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_layout: layout,
+				p_expected: expected,
+			})
+			.then(parseMemberAppLayoutRead);
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */

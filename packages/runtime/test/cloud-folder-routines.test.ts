@@ -633,7 +633,8 @@ it("lists the routines from the index as many as fit, with a cursor, or one whol
 	expect(first.next).toContain("company_read");
 	expect(one).not.toHaveProperty("next");
 	// One routine too long for one tool result: its instructions are cut, at a character, to fit, and marked.
-	const huge = "Ré ".repeat(7000).trim();
+	// Within the routine's 32 KiB of instructions, escaped past one 32 KiB result.
+	const huge = "<é> ".repeat(5000).trim();
 	const g = await fixture({ files: { [`${ROUTINES}/huge.md`]: file({ instructions: huge }) } });
 	const cut = await g.routines().list({ routineKey: "huge" }, g.context, fitsOneResult);
 	expect(fitsOneResult(String(cut.value))).toBe(true);
@@ -674,17 +675,21 @@ it("is manage_routine: its description, its list arguments, the checks before re
 		{ routineKey: "inbox", decisionOwed: () => false, settled: () => settled++ },
 		f.routines(),
 	)[0];
-	expect(tool?.description).not.toBe(CLOUD_ROUTINE_TOOL_DESCRIPTION);
+	expect(tool?.description).toBe(CLOUD_ROUTINE_TOOL_DESCRIPTION);
 	expect(tool?.description).toContain("Each change passes a quick automatic review against your job");
 	expect(tool?.description).toContain("routines/<routineKey>.md");
-	expect(tool?.description).toContain("cursor: the nextCursor of an earlier page");
-	expect(tool?.description).toContain("resume switches a routine back on");
+	expect(tool?.description).toContain("- list: your routines a page at a time (cursor), or one whole by routineKey.");
+	expect(tool?.description).toContain("resume switches it back on");
 	expect(tool?.description).toContain(
-		"file_change (a Company File path you can read, match exact or subtree), or event (hookId, a hook or mailbox from list_hooks; optional only, the event types to take; IANA timeZone). ",
+		"- file_change: each saved change under path, a company path you can read (match exact or subtree), wakes you once with what changed, never your own.",
 	);
 	expect(tool?.description).toContain(
-		"Both listen from their last save, which drops what was not delivered yet; report required needs your public thread or the run is skipped. ",
+		"- event: what other services send to a hook or mailbox (hookId from list_hooks; only, its event types)",
 	);
+	expect(tool?.description).toContain(
+		"file_change and event listen from their last save, which drops what was not delivered yet.",
+	);
+	expect(tool?.description).toContain("required (always; it needs your public thread, or the run is skipped)");
 	expect(tool?.description).toContain("each run gets up to 20 new events");
 	expect(tool?.description).not.toMatch(/No member approval|not available/);
 	// The tool boundary takes a description of at most 4096 bytes.

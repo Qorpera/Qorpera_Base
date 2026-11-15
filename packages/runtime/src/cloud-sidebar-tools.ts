@@ -20,16 +20,15 @@ const FIELDS: Record<SidebarAction, { required: readonly string[]; optional: rea
 	move_agent: { required: ["agentId", "section"], optional: [] },
 };
 
-export const CLOUD_SIDEBAR_TOOL_DESCRIPTION =
-	"Organize the company's sidebar sections, the groups agents appear under in every member's rail (the Co-Founder always stays on top, outside any section). Use it to keep the team findable as it grows: group agents who work together, and move yourself or a coworker when work shifts. No member approval is needed and everyone sees the change at once. " +
-	"action list shows every section with its agents in order, then the Unassigned agents. create_section makes a section (a name that already exists is that section). rename_section and delete_section name the section by its id or name; deleting a section keeps its agents, they become Unassigned. move_agent moves agentId (yourself or a coworker id from your context) into section, or out of any section when section is null; it goes last in that section. " +
-	"Sections are shared structure, not a place for notes: short plain names such as Research or Customer support. Tell the member what you changed. When the result has refused, nothing changed and it says why (no such section, the name is taken, the Co-Founder stays on top): correct the request or tell the member. Pins and hidden agents are each member's own and not yours to change.";
-
-/** A folder-v2 company's sections are QorperaOS/agents/sections.md, named by their names (thin writers, W2). */
-const CLOUD_SIDEBAR_TOOL_DESCRIPTION_FOLDER = `${CLOUD_SIDEBAR_TOOL_DESCRIPTION.replace(
-	"rename_section and delete_section name the section by its id or name;",
-	"rename_section and delete_section name the section by its name;",
-)} In this company the sections live in the file ${osPath("agents/sections.md")}; a change already made saves nothing and says so, and a save can come back refused when the file changed since it was read: call again.`;
+export const CLOUD_SIDEBAR_TOOL_DESCRIPTION = [
+	"Organize the company's sidebar sections, the groups agents appear under in the members' rails (the Co-Founder always stays on top, outside any section), to keep the team findable as it grows: group agents who work together, and move yourself or a coworker when work shifts. No member approval is needed, and every member sees a change, except where a member placed things themself. Pins, hidden agents and what a member placed themself are each member's own, not yours to change.",
+	"Actions:",
+	"- list: every section with its agents in order, then the agents in no section (Unassigned).",
+	"- create_section: a section called name (a name that already exists is that section). Short plain names, such as Research or Customer support: sections are shared structure, not a place for notes.",
+	"- rename_section, delete_section: name the section by its name; deleting one keeps its agents, which become Unassigned.",
+	"- move_agent: agentId (yourself or a coworker's id from your context) goes last into section, or out of any section with section null.",
+	`Tell the member what you changed. refused changed nothing and says why (no such section, the name is taken, the Co-Founder stays on top): correct the request or tell the member. The sections are the file ${osPath("agents/sections.md")}: a change already made saves nothing and says so; when one is refused because the file changed since it was read, call again.`,
+].join("\n");
 
 function sectionName(value: unknown): string {
 	if (typeof value !== "string") throw new Error("Invalid sidebar section name");
@@ -76,7 +75,7 @@ export function cloudSidebarTools(
 	const tool: CloudNativeTool = {
 		name: "organize_sidebar" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_SIDEBAR_TOOL_DESCRIPTION_FOLDER,
+		description: CLOUD_SIDEBAR_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,

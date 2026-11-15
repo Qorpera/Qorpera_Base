@@ -1,7 +1,13 @@
-import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-client/cloud-member-folder";
+import { CloudMemberData } from "@qorpera/cloud-client/cloud-member-data";
+import {
+	CloudMemberFolderClient,
+	CloudMemberFolderFileCache,
+	CloudMemberFolderHints,
+} from "@qorpera/cloud-client/cloud-member-folder";
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
+import { type CodeDownloadCalls, codeDownloadCalls } from "./code-downloads.ts";
 import { memberRouteTarget } from "./deployment-config.ts";
 import { createWebMessageErases, type WebMessageErases } from "./message-erases.ts";
 import type { HostedProfile, HostedProfileRole } from "./types.ts";
@@ -14,6 +20,27 @@ interface MemberFolderOptions {
 	readonly objectGatewayUrl: string;
 	readonly accessToken: (signal: AbortSignal) => Promise<string>;
 	readonly fetch: typeof fetch;
+	readonly files: CloudMemberFolderFileCache;
+}
+
+/** The bytes of files this tab's member has read, for every company they open: an app or a page opened again, and
+ * the files it reads, are not fetched again (cloud-member-folder.ts `CloudMemberFolderFileCache`). Each read still asks
+ * the folder for the file's entry as the member, so what they may read is decided live. Another member signed in here
+ * starts from an empty one. */
+let memberFiles: { readonly memberId: string; readonly files: CloudMemberFolderFileCache } | undefined;
+
+function memberFileCache(memberId: string): CloudMemberFolderFileCache {
+	if (memberFiles?.memberId !== memberId) {
+		memberFiles?.files.clear();
+		memberFiles = { memberId, files: new CloudMemberFolderFileCache() };
+	}
+	return memberFiles.files;
+}
+
+/** Forgets every file read in this tab: at sign-out. */
+export function forgetMemberFiles(): void {
+	memberFiles?.files.clear();
+	memberFiles = undefined;
 }
 
 /** The product owns member lifetime; the shared SDK owns the company folder's calls. Every company is folder-v2
@@ -24,6 +51,8 @@ export class WebCompanyFiles {
 	readonly signal: AbortSignal;
 	readonly #options: MemberFolderOptions;
 	readonly #current: () => void;
+	readonly #code: CodeDownloadCalls;
+	readonly #dataGateway: string | undefined;
 	constructor(
 		cloud: Cloud,
 		profile: HostedProfile,
@@ -36,6 +65,8 @@ export class WebCompanyFiles {
 		this.company = Object.freeze({ role, canWrite });
 		this.signal = signal;
 		this.#current = current;
+		this.#code = codeDownloadCalls(cloud, profile.profileId);
+		this.#dataGateway = cloud.config.memberCompanyGatewayUrl;
 		this.#options = {
 			environmentId: profile.environmentId,
 			supabaseUrl: cloud.config.projectUrl,
@@ -56,6 +87,7 @@ export class WebCompanyFiles {
 					throw new Error("Sign in again to open Company File.");
 				return data.session.access_token;
 			},
+			files: memberFileCache(memberId),
 			fetch: async (input, init) => {
 				this.current();
 				// Enable the public bridge only after its deployment has been accepted.
@@ -94,7 +126,44 @@ export class WebCompanyFiles {
 			publishableKey: this.#options.publishableKey,
 			accessToken: this.#options.accessToken,
 			fetch: this.#options.fetch,
+			files: this.#options.files,
 		});
+	}
+	/** The company's databases, asked as the member through the member gateway (RUNTIME-COMPANY-DATABASES.md §3);
+	 * undefined where the build names no member gateway. A question's file the gateway asks for is read with the
+	 * member's own folder client, its bytes as they are (a leading byte order mark kept), so its hash is the entry's. */
+	data(): CloudMemberData | undefined {
+		this.current();
+		const gatewayUrl = this.#dataGateway;
+		if (!gatewayUrl) return undefined;
+		const folder = this.folder();
+		return new CloudMemberData({
+			environmentId: this.#options.environmentId,
+			gatewayUrl,
+			accessToken: this.#options.accessToken,
+			fetch: this.#options.fetch,
+			readText: async (path, maximumBytes, signal) => {
+				const entry = (await folder.read(path, signal)).entry;
+				const file = entry?.kind === "file" ? entry.file : null;
+				if (!file || file.bytes > maximumBytes) return null;
+				try {
+					const bytes = await folder.readFile(file, signal, maximumBytes);
+					return {
+						text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+						sha256: file.fileSha256,
+					};
+				} catch (error) {
+					signal.throwIfAborted();
+					if (error instanceof TypeError) return null;
+					throw error;
+				}
+			},
+		});
+	}
+	/** The company's code kept in Qorpera: its repositories, and a download of one (cloud/code-downloads.ts). */
+	codeDownloads(): CodeDownloadCalls {
+		this.current();
+		return this.#code;
 	}
 	/** The member's erases of single messages (summary trees M3c), through the same member route transport. */
 	messageErases(): WebMessageErases {

@@ -165,8 +165,10 @@ verb = "message"                    # required; §3.3
 label = "Ask {kept_by} about it"    # required; 1–40 characters
 ```
 
-- **Emblems** (proposed): pulse, mail, members, coin, board, queue, calendar, hire, chart, page. Each is drawn by the
-  client as one solid shape in the interface's colour with white cuts, the material the agents' figures use.
+- **Emblems** (24 since 12 November 2026): pulse, mail, members, coin, board, queue, calendar, hire, chart, page, map,
+  mountain, tent, pin, cart, box, truck, chat, star, heart, book, camera, code, rocket. Each is drawn by the client as
+  one solid shape in the interface's colour with white cuts, the material the agents' figures use. An app may also
+  hold icons of its own, drawn the same way (RUNTIME-INTERFACE-APPS.md §2, "Icons").
 - **Colours:** the `colour` names of `agent.md` (charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink,
   gray).
 - **`main`:** exactly one interface is the main one, drawn as the big card on top of the Interfaces tab. The seeded

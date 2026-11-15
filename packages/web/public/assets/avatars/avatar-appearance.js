@@ -2,26 +2,33 @@
 
 (() => {
 	const model = window.QORPERA_MOTION_MODEL;
-	// Native Ghost, Acorn, Rocket, and Crown shades remain shared choices.
+	// Eleven colours, spaced so that no two read alike on a figure (November 10,
+	// 2026: Red, Sky and Slate took the places of Coral, Teal and Gray; Green,
+	// Purple and Pink moved apart). Every figure's own shade is one of them
+	// (November 13, 2026: the Planet became Sky, the Flame Orange and the Heart
+	// Red).
 	const palette = Object.freeze([
 		{ name: "Charcoal", color: "#312f2d" },
 		{ name: "Brown", color: "#87674c" },
-		{ name: "Coral", color: "#ff365e" },
+		{ name: "Red", color: "#e22538" },
 		{ name: "Orange", color: "#f96e2d" },
 		{ name: "Gold", color: "#fcb51b" },
-		{ name: "Green", color: "#00c878" },
-		{ name: "Teal", color: "#00bfb3" },
+		{ name: "Green", color: "#0fbd59" },
+		{ name: "Sky", color: "#3faff3" },
 		{ name: "Blue", color: "#2047bd" },
-		{ name: "Purple", color: "#b83ff5" },
-		{ name: "Pink", color: "#ff2994" },
-		{ name: "Gray", color: "#7c7c7a" },
+		{ name: "Purple", color: "#a145f7" },
+		{ name: "Pink", color: "#fa59ac" },
+		{ name: "Slate", color: "#6c839b" },
 	].map(Object.freeze));
 	const selected = new Map();
 	const originals = new Map();
 	const rendered = new Map();
 	const materials = new Map();
 	// White-eye thresholds in each source's least-colored channel.
-	const eyeStarts = Object.freeze({ planet: 125, acorn: 100, flame: 72, rocket: 100, crown: 75, heart: 95, ghost: 95 });
+	const eyeStarts = Object.freeze({ planet: 125, acorn: 100, flame: 72, rocket: 100, crown: 75, heart: 95, star: 41, cloud: 79, bolt: 84, mushroom: 56, moon: 51, puzzle: 32 });
+	// The shade a source was drawn in, where its own shade has since moved to a
+	// palette colour: the eyes are found in the source's least-colored channel.
+	const sourceShades = Object.freeze({ planet: "#5ec0b5", flame: "#fa752e", heart: "#fb672a" });
 	const linearChannels = Array.from({ length: 256 }, (_, index) => {
 		const channel = index / 255;
 		return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
@@ -192,7 +199,8 @@
 	// How white each pixel of a body is as part of an eye: the measured eye
 	// shapes, then the source's white in its least-colored channel.
 	function eyeCover(id, pixels, width, height) {
-		const source = [1, 3, 5].map((start) => Number.parseInt(avatar(id).color.slice(start, start + 2), 16));
+		const shade = sourceShades[id] ?? avatar(id).color;
+		const source = [1, 3, 5].map((start) => Number.parseInt(shade.slice(start, start + 2), 16));
 		const eyeChannel = source.indexOf(Math.min(...source));
 		const eyeStart = eyeStarts[id] / 255;
 		const eyes = model.faces[id].map((eye) => ({ ...eye, cosine: Math.cos(eye.rotation * Math.PI / 180), sine: Math.sin(eye.rotation * Math.PI / 180) }));

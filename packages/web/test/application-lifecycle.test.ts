@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import { tellAgent } from "../src/app/tell-agent.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
@@ -15,7 +16,9 @@ import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
-import { markdown } from "../src/ui/markdown.ts";
+import { h } from "../src/ui/dom.ts";
+import { appCard, markdown } from "../src/ui/markdown.ts";
+import { PAGE_READY } from "../src/ui/page-frame.ts";
 import {
 	deferred,
 	fixture,
@@ -137,6 +140,7 @@ function executionTransport() {
 			if (method === "qorpera_request_session_turn_v2") return send(init);
 			if (method === "qorpera_list_session_turn_requests") return Response.json([]);
 			if (method === "qorpera_select_member_session_account") return Response.json(id(81));
+			if (method === "qorpera_get_native_account_refresh") return Response.json(null);
 			if (method === "qorpera_begin_native_account_refresh")
 				return Response.json({
 					request_id: id(83),
@@ -1055,20 +1059,21 @@ describe("account and route ownership", () => {
 		expect(page).not.toBeNull();
 		// The whole main area: no chat, and nothing beside one.
 		expect(f.root.querySelector(".thread, .thread-body.has-beside")).toBeNull();
-		expect(page.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
-		expect(page.querySelector(".side-panel-by")?.textContent).toBe(
-			"Made by Fixture agent · Qorpera never asks for passwords here",
-		);
+		// The app is the whole page (Jonas, 10 November 2026: no header): nothing of Qorpera's stands over it, and the
+		// page carries the app's name for assistive technology.
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
+		expect(page.querySelector(".side-panel-header, .side-panel-button, .side-panel-way")).toBeNull();
+		// What Qorpera keeps there shows only when needed: the bar of a request above the page, the questions dock over it.
+		expect([...page.children].map((child) => child.className)).toEqual([
+			"app-ask",
+			"side-panel-body",
+			"question-dock",
+		]);
+		expect(page.querySelector<HTMLElement>(".app-ask")?.hidden).toBe(true);
+		expect(page.querySelector<HTMLElement>(".question-dock")?.hidden).toBe(true);
 		expect(page.querySelector(".side-panel-body iframe.side-panel-frame")?.getAttribute("sandbox")).toBe(
 			"allow-scripts",
 		);
-		expect(page.querySelector('[aria-label="Reload"]')).not.toBeNull();
-		expect(page.querySelector('[aria-label="Show in Storage"]')).not.toBeNull();
-		// Opened straight from a link, it leads back to the company; it has no Close, as a page has none.
-		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
-		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
-		expect(back.getAttribute("aria-label")).toBe("Back to the company");
-		expect(page.querySelector('[aria-label="Close"]')).toBeNull();
 		// The rail's icon for it is a link to this page, marked as the open one.
 		const icon = f.root.querySelector<HTMLAnchorElement>(
 			`.rail a.rail-app[data-href="#/c/${profileA.profileId}/a/sales-board"]`,
@@ -1082,19 +1087,23 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		expect(page.isConnected).toBe(false);
-		expect(appPage(f.root)?.querySelector(".side-panel-status")?.textContent).toBe(
-			"This app isn't in the company anymore.",
-		);
+		const gone = appPage(f.root)!;
+		expect(gone.querySelector(".side-panel-status")?.textContent).toBe("This app isn't in the company anymore.");
+		// With no header, the line has its own ways on: back to the company (it was opened straight from a link), and
+		// Reload. There is no folder to show.
+		const ways = [...gone.querySelectorAll<HTMLElement>(".side-panel-way")];
+		expect(ways.map((way) => way.textContent)).toEqual(["Back to the company", "Reload"]);
+		expect(ways[0]?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 	});
 
-	it("waits for the company's staff before a deep-linked app's page names its maker and answers its roster", async () => {
+	it("waits for the company's staff before a deep-linked app's page opens and answers its roster", async () => {
 		withApp();
 		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
 		const staffRead = deferred<HostedStaffAgent[]>();
 		vi.mocked(f.api.listStaff).mockReturnValue(staffRead.promise);
 		await draw();
 		await draw();
-		// The membership and the folder are read; the staff are not yet: no page with a nameless maker.
+		// The membership and the folder are read; the staff are not yet: no page with a roster it can't answer.
 		expect(f.api.listStaff).toHaveBeenCalled();
 		expect(appPage(f.root)).toBeNull();
 		expect(f.root.querySelector("main > .page .skeleton-page")).not.toBeNull();
@@ -1102,13 +1111,11 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		const page = appPage(f.root)!;
-		expect(page.querySelector(".side-panel-by")?.textContent).toBe(
-			"Made by Fixture agent · Qorpera never asks for passwords here",
-		);
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
 		expect(page.querySelector("iframe.side-panel-frame")).not.toBeNull();
 	});
 
-	it("opens an app's card in a chat as the app's page, which leads back to the conversation", async () => {
+	it("opens an app's card in a chat as the app's page", async () => {
 		withApp();
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
@@ -1124,10 +1131,212 @@ describe("account and route ownership", () => {
 		// Not beside the chat: the chat is gone, and the app has the page.
 		expect(f.root.querySelector(".thread")).toBeNull();
 		const page = appPage(f.root)!;
-		expect(page.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
-		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
+		expect(page.querySelector(".side-panel-header")).toBeNull();
+	});
+
+	it("draws an app's card in a chat as the drawer draws the app, with what it is about", async () => {
+		const fake = withApp();
+		fake.put(
+			"apps/sales-board/app.toml",
+			`name = "Sales board"\nabout = "This week's sales, shop by shop"\nemblem = "chart"\ncolour = "blue"\nowner = "${staff.id}"\nposted = true\n`,
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("[Sales board](app:sales-board) has new numbers. So has [Old board](app:old-board).");
+		f.root.querySelector(".thread")!.append(prose);
+		await draw();
+		const [card, gone] = prose.querySelectorAll<HTMLElement>(".app-cards > button.app-card");
+		// One line about the app, whole on a hover.
+		const note = card?.querySelector<HTMLElement>(".app-card-note");
+		expect([note?.textContent, note?.title]).toEqual(Array(2).fill("This week's sales, shop by shop"));
+		// The drawer's own colour for the app, and its emblem in place of the plain page's.
+		const tile = f.root.querySelector<HTMLElement>('.rail .rail-app[data-app-key="app:sales-board"]');
+		const colour = tile?.style.getPropertyValue("--app-colour");
+		expect(colour).toMatch(/^#[0-9a-f]{6}$/);
+		expect(card?.style.getPropertyValue("--app-colour")).toBe(colour);
+		const shapes = (root: Element | null | undefined) =>
+			[...(root?.querySelectorAll("svg.interface-emblem > g > *") ?? [])].map((part) => part.outerHTML);
+		expect(shapes(card)).not.toEqual([]);
+		expect(shapes(card)).toEqual(shapes(tile));
+		expect(shapes(card)).not.toEqual(shapes(gone));
+		// A card whose app the company does not have stays plain.
+		expect(gone?.querySelector(".app-card-note")?.textContent).toBe("App");
+		expect(gone?.style.getPropertyValue("--app-colour")).toBe("");
+	});
+
+	it("names the card a note from an app opens with as the drawer names the app, keeps its line, and opens the app", async () => {
+		const fake = withApp();
+		fake.put(
+			"apps/sales-board/app.toml",
+			`name = "Sales board"\nabout = "This week's sales, shop by shop"\nemblem = "chart"\nowner = "${staff.id}"\nposted = true\n`,
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		// As views/conversation.ts draws a member's message that opens with `> app:sales-board#4 · Shop 4 · Aarhus`.
+		const card = appCard("sales-board", "sales-board", "Shop 4 · Aarhus");
+		f.root.querySelector(".thread")!.append(h("div", { class: "app-cards" }, card));
+		await draw();
+		expect(card.querySelector(".app-card-title")?.textContent).toBe("Sales board");
+		expect(card.querySelector(".app-card-note")?.textContent).toBe("Shop 4 · Aarhus");
+		// The drawer's own emblem for the app, in place of the plain page's.
+		const tile = f.root.querySelector<HTMLElement>('.rail .rail-app[data-app-key="app:sales-board"]');
+		// Each emblem names its own mask: the drawing is what is compared.
+		const emblem = (root: Element | null | undefined) =>
+			root?.querySelector(".interface-emblem")?.innerHTML.replace(/emblem-cuts-\d+/g, "");
+		expect(emblem(card)).toBe(emblem(tile));
+		expect(emblem(card)).not.toBe(emblem(appCard("sales-board", "sales-board", "x")));
+		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
+		card.dispatchEvent(followed);
+		expect(followed.defaultPrevented).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		expect(appPage(f.root)?.getAttribute("aria-label")).toBe("Sales board");
+	});
+
+	/** The app's own page open (its thread is not on screen), the controller the app made for the company, and the
+	 * member transport a send goes out on. Every send below passes the app's own check of where the member is. */
+	async function onAppPage() {
+		const start = vi.spyOn(CompanyController.prototype, "start");
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		const send = executionTransport();
+		await draw();
+		await draw();
+		expect(appPage(f.root)).not.toBeNull();
+		const controller = start.mock.contexts[0] as CompanyController;
+		const texts = () =>
+			send.mock.calls.map((call) => (JSON.parse(String(call[0]?.body)) as { p_body: { text: string } }).p_body.text);
+		return { f, controller, send, texts };
+	}
+
+	it("sends a note from an app's page, its thread not on screen, and no other message from there", async () => {
+		const { controller, texts } = await onAppPage();
+		const accounts = controller.appIconAccounts!;
+		const note = { text: "Get a quote for shop 4.", quotes: [], header: "app:sales-board#4 · Shop 4" };
+		expect(await tellAgent(controller, accounts, staff.id, note)).toEqual({
+			sent: true,
+			href: `#/c/${profileA.profileId}/staff/${staff.id}`,
+		});
+		expect(texts()).toEqual(["> app:sales-board#4 · Shop 4\n\nGet a quote for shop 4."]);
+		// Any other send from here is refused, as before: the member is not looking at the thread.
+		expect(await controller.sendPrompt(session.sessionId, "From the app's page")).toBe(false);
+		expect(controller.conversation(session.sessionId).get().sendError).toBe("Company access is unavailable.");
+		expect(texts()).toHaveLength(1);
+	});
+
+	it("asks an app's owner for new icons from the drawer while another page is on screen", async () => {
+		const { controller, texts } = await onAppPage();
+		const app = controller.store.get().apps?.find((entry) => entry.name === "sales-board");
+		expect(await controller.requestAppIcons(app!)).toEqual({ ok: true, agent: staff.displayName });
+		expect(texts()).toEqual([
+			"Please draw 3 new icons for Sales board (apps/sales-board), from its name and what it shows.",
+		]);
+	});
+
+	it("leads back to the conversation from a card whose app is gone", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("See [Old board](app:old-board).");
+		f.root.querySelector(".thread")!.append(prose);
+		prose.querySelector<HTMLButtonElement>("button.app-card")!.click();
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page.querySelector(".side-panel-status")?.textContent).toBe("This app isn't in the company anymore.");
+		const back = page.querySelector<HTMLElement>("a.side-panel-way")!;
+		expect(back.textContent).toBe("Back to the conversation");
 		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		expect(back.getAttribute("aria-label")).toBe("Back to the conversation");
+	});
+
+	it("reads the open app again from its icon in the rail, which also lets it ask again", async () => {
+		// The app's page has no Reload of its own (no header), and a link to where one already is does nothing: a press
+		// on the open app's icon is the member's reload (review r1 of #1636).
+		const fake = withApp();
+		fake.put(
+			"apps/sales-board/app.toml",
+			`name = "Sales board"\nowner = "${staff.id}"\nposted = true\nwrites = ["table:orders"]\n`,
+		);
+		fake.put(
+			"QorperaOS/tables/orders/table.toml",
+			'format = "qorpera.table/v0"\n\n[table]\nid = "1d6e4a57-8b3c-4f21-9e6d-0a7c5b2f8e15"\nname = "Orders"\nrows = "file"\nkey = ["order"]\n\n[[column]]\nname = "order"\ntype = "text"\n\n[[column]]\nname = "status"\ntype = "text"\n\n[write]\nagents = "all"\nmembers = "all"\n',
+		);
+		fake.put("QorperaOS/tables/orders/rows.csv", "order,status\n1042,packed\n");
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		/** Plays the frame's side up to the hand-over, as the frame document would: a way to send a call on its port. */
+		const played = async () => {
+			const frame = await vi.waitFor(() => {
+				const found = page.querySelector<HTMLIFrameElement>("iframe.side-panel-frame");
+				if (!found?.contentWindow || found.dataset.played) throw new Error("no new frame yet");
+				return found;
+			});
+			frame.dataset.played = "true";
+			const post = vi.spyOn(frame.contentWindow as Window, "postMessage").mockImplementation(() => {});
+			frame.dispatchEvent(new Event("load"));
+			const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+			Object.defineProperty(ready, "source", { value: frame.contentWindow });
+			window.dispatchEvent(ready);
+			const port = (post.mock.calls[0] as unknown as [unknown, string, MessagePort[]])[2][0] as MessagePort;
+			let calls = 0;
+			const call = (method: string, params: Record<string, unknown>) =>
+				new Promise<{ ok: boolean; error?: string }>((resolve) => {
+					const id = ++calls;
+					const answer = (event: MessageEvent) => {
+						if (event.data?.id !== id) return;
+						port.removeEventListener("message", answer);
+						resolve(event.data);
+					};
+					port.addEventListener("message", answer);
+					port.start();
+					port.postMessage({ type: "qorpera-app-call", id, method, params });
+				});
+			return { frame, call };
+		};
+		const ship = { table: "orders", key: "1042", cells: { status: "shipped" } };
+		const bar = () => page.querySelector<HTMLElement>(".app-ask") as HTMLElement;
+		const asked = () =>
+			vi.waitFor(() => {
+				if (bar().hidden) throw new Error("no request on the bar yet");
+			});
+		const first = await played();
+		// Three times Not now: the app asks no more.
+		for (let round = 0; round < 3; round++) {
+			const answer = first.call("setRow", ship);
+			await asked();
+			[...bar().querySelectorAll("button")].find((button) => button.textContent === "Not now")?.click();
+			expect(await answer).toMatchObject({ ok: false, error: "The member said not now" });
+		}
+		expect(await first.call("setRow", ship)).toMatchObject({
+			ok: false,
+			error: expect.stringContaining("three times"),
+		});
+		const icon = f.root.querySelector<HTMLAnchorElement>(
+			`.rail a.rail-app[data-href="#/c/${profileA.profileId}/a/sales-board"]`,
+		)!;
+		// A modified click on the icon stays the link's own (a new tab): nothing is read again.
+		const tab = vi.spyOn(window, "open").mockReturnValue(null);
+		icon.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+		expect(tab).toHaveBeenCalledOnce();
+		await draw();
+		expect(page.querySelector("iframe.side-panel-frame")).toBe(first.frame);
+		// An ordinary press on the icon of the app that is open reads it again, in a new frame, and it may ask again.
+		icon.click();
+		const second = await played();
+		expect(second.frame).not.toBe(first.frame);
+		expect(appPage(f.root)).toBe(page);
+		void second.call("setRow", ship);
+		await asked();
+		expect(bar().textContent).toContain("This app wants to change a row in a company table");
+		expect(tab).toHaveBeenCalledOnce();
 	});
 
 	/** The company's folder with two concepts of its product, `shop-a` then `shop-b` (the newer), and the posted app. */
@@ -1155,12 +1364,32 @@ describe("account and route ownership", () => {
 		};
 		return Object.assign(fake, { changed });
 	}
-	/** Whose the open concept is and the password line: a strip of the side panel outside the list that folds. */
-	const conceptGuard = (root: HTMLElement) => {
-		const guard = root.querySelector<HTMLElement>(".concepts > .concepts-side > .concepts-guard");
-		expect(guard?.closest(".concepts-panel")).toBeNull();
-		expect(guard?.hidden).toBe(false);
-		return guard?.textContent;
+	/** The side panel ends with its list: no controls under it and no strip (Jonas, 13 November 2026: "get rid of this
+	 * at the bottom of the concepts sidepanel"), open or folded. */
+	const endsWithItsList = (root: HTMLElement) => {
+		const side = root.querySelector<HTMLElement>(".concepts > .concepts-side")!;
+		expect(side.querySelector(".concepts-guard, .concepts-foot, .concepts-actions")).toBeNull();
+		expect(side.lastElementChild?.classList.contains("concepts-panel")).toBe(true);
+		expect(side.querySelector(".concepts-panel")?.lastElementChild?.tagName).toBe("NAV");
+		expect(side.textContent).not.toContain("never asks for passwords");
+	};
+	/** A concept's row's menu, opened as a right-click (`at` the pointer) or the keyboard's menu key (no point) opens it. */
+	const rowMenu = (root: HTMLElement, name: string, at = { clientX: 40, clientY: 120 }) => {
+		const row = root.querySelector<HTMLAnchorElement>(`.concepts-side a.concepts-item[data-concept="${name}"]`)!;
+		const opened = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, ...at });
+		row.dispatchEvent(opened);
+		expect(opened.defaultPrevented).toBe(true);
+		const menu = document.querySelector<HTMLElement>(".context-menu");
+		expect(menu?.getAttribute("aria-label")).toContain("actions");
+		return {
+			row,
+			menu: menu!,
+			labels: [...menu!.querySelectorAll("[role=menuitem]")].map((item) => item.textContent),
+			choose: (label: string) =>
+				[...menu!.querySelectorAll<HTMLButtonElement>("[role=menuitem]")]
+					.find((item) => item.textContent === label)!
+					.click(),
+		};
 	};
 	const concepts = (root: HTMLElement) => root.querySelector<HTMLElement>("main > section.concepts");
 	const conceptItems = (root: HTMLElement) =>
@@ -1197,11 +1426,10 @@ describe("account and route ownership", () => {
 		expect(a.querySelector(".concepts-item-about")?.textContent).toBe("A calm shop");
 		expect(a.querySelector(".concepts-item-by")?.textContent).toBe("Made by Fixture agent");
 		expect(a.querySelector(".concepts-thumb svg.interface-emblem")).not.toBeNull();
-		// The concept's frame fills the stage, with no header bar over it; the panel says no password is asked for.
+		// The concept's frame fills the stage, with no header bar over it; the panel ends with its list.
 		expect(conceptFrame(f.root)?.getAttribute("sandbox")).toBe("allow-scripts");
 		expect(view.querySelector(".concepts-stage .side-panel-header")).toBeNull();
-		expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
-		expect(view.querySelector('.concepts-foot [aria-label="Reload"]')).not.toBeNull();
+		endsWithItsList(f.root);
 		// The posted app that is no concept is not listed.
 		expect(view.querySelector(`a.concepts-item[data-href$="/sales-board"]`)).toBeNull();
 		// The company's redraws keep the viewer and its frame as they are.
@@ -1341,16 +1569,19 @@ describe("account and route ownership", () => {
 			const view = concepts(f.root)!;
 			const fold = view.querySelector<HTMLButtonElement>("button.concepts-collapse")!;
 			expect(view.classList.contains("is-collapsed")).toBe(false);
-			expect(fold.getAttribute("aria-label")).toBe("Hide the concepts");
+			// It says what it does now, as a sidebar's toggle does, and whether the sidebar is open.
+			expect(fold.getAttribute("aria-label")).toBe("Hide sidebar");
+			expect(fold.title).toBe("Hide sidebar");
 			expect(fold.getAttribute("aria-expanded")).toBe("true");
 			fold.click();
 			expect(view.classList.contains("is-collapsed")).toBe(true);
-			expect(fold.getAttribute("aria-label")).toBe("Show the concepts");
+			expect(fold.getAttribute("aria-label")).toBe("Show sidebar");
+			expect(fold.title).toBe("Show sidebar");
 			expect(fold.getAttribute("aria-expanded")).toBe("false");
 			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("1");
-			// The concept stays open while the panel folds, and whose it is and the password line stay in the strip.
+			// The concept stays open while the panel folds, and the folded strip has nothing under its buttons.
 			expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
-			expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			endsWithItsList(f.root);
 			// Opened again, it is folded still.
 			dispose?.();
 			dispose = undefined;
@@ -1359,16 +1590,49 @@ describe("account and route ownership", () => {
 			await draw();
 			await draw();
 			expect(concepts(again.root)?.classList.contains("is-collapsed")).toBe(true);
-			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			endsWithItsList(again.root);
 			concepts(again.root)!.querySelector<HTMLButtonElement>("button.concepts-collapse")!.click();
-			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			endsWithItsList(again.root);
 			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("0");
 		} finally {
 			localStorage.removeItem("qorpera.web.concepts-collapsed");
 		}
 	});
 
-	it("never styles away whose a concept is or the password line: open, folded or at phone width", () => {
+	it("keeps Reload and Show in Storage in a concept's row menu, where the panel's foot had them", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts`);
+		await draw();
+		await draw();
+		endsWithItsList(f.root);
+		// The open concept's row: Reload and Show in Storage, in the rail's own menu.
+		const open = rowMenu(f.root, "shop-b");
+		expect(open.menu.classList.contains("context-menu")).toBe(true);
+		expect(open.row.classList.contains("menu-open")).toBe(true);
+		expect(open.labels).toEqual(["Reload", "Show in Storage"]);
+		// Reload reads the concept again, in a new frame (which also lets it ask again after three Not nows).
+		const before = conceptFrame(f.root);
+		open.choose("Reload");
+		await draw();
+		await draw();
+		expect(conceptFrame(f.root)).not.toBe(before);
+		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+		// Another concept's row: Show in Storage; a press opens it, read fresh.
+		expect(rowMenu(f.root, "shop-a").labels).toEqual(["Show in Storage"]);
+		document
+			.querySelector<HTMLElement>(".context-menu")!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		// From the keyboard (Shift+F10 or the menu key on the focused row): the browser's contextmenu has no point.
+		const keyed = rowMenu(f.root, "shop-b", { clientX: 0, clientY: 0 });
+		expect(keyed.labels).toEqual(["Reload", "Show in Storage"]);
+		// Show in Storage opens Storage at the concept's folder.
+		keyed.choose("Show in Storage");
+		await draw();
+		await draw();
+		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
+	});
+
+	it("keeps who made a concept in its row, with no strip and no controls under the list, in any layout", () => {
 		const style = document.createElement("style");
 		style.textContent = conversationCss;
 		document.head.append(style);
@@ -1381,26 +1645,16 @@ describe("account and route ownership", () => {
 							? rules(rule.cssRules).map((entry) => ({ ...entry, media: rule.media.mediaText }))
 							: [],
 				);
-			// The strip and what holds it: the viewer and its side panel.
-			const holds = (selector: string) =>
-				selector.split(",").some((part) => /\.concepts-(guard|side)\b|\.concepts(?![\w-])\s*$/.test(part.trim()));
 			const all = rules(style.sheet!.cssRules);
+			// The strip and the foot are gone, in every layout (Jonas, 13 November 2026).
+			expect(all.filter(({ selector }) => /\.concepts-(guard|foot|actions)\b/.test(selector))).toEqual([]);
+			// Who made each concept stands in its row: nothing styles that line away.
 			const hiding = all.filter(
 				({ selector, rule }) =>
-					holds(selector) &&
-					!selector.includes("[hidden]") &&
-					(rule.style.display === "none" ||
-						rule.style.visibility === "hidden" ||
-						rule.style.opacity === "0" ||
-						rule.style.height === "0px" ||
-						rule.style.width === "0px"),
+					/\.concepts-item(-copy|-by)?\b/.test(selector) &&
+					(rule.style.display === "none" || rule.style.visibility === "hidden" || rule.style.opacity === "0"),
 			);
 			expect(hiding.map(({ selector, media }) => `${media} ${selector}`)).toEqual([]);
-			// It has a rule of its own in each of the three layouts.
-			const guard = all.filter(({ selector }) => selector.includes(".concepts-guard"));
-			expect(guard.some(({ selector, media }) => media === "" && selector === ".concepts-guard")).toBe(true);
-			expect(guard.some(({ selector, media }) => media === "" && selector.includes(".is-collapsed"))).toBe(true);
-			expect(guard.some(({ media }) => media.includes("max-width: 760px"))).toBe(true);
 		} finally {
 			style.remove();
 		}
@@ -1440,7 +1694,7 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
-		expect(appPage(f.root)?.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
+		expect(appPage(f.root)?.getAttribute("aria-label")).toBe("Sales board");
 		expect(concepts(f.root)).toBeNull();
 	});
 
@@ -1872,5 +2126,169 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 			{ timeout: 3000 },
 		);
 		expect(f.calls).not.toContain("member-folder-commit");
+	});
+});
+
+describe("the rail's line under an idle agent's name in the app", () => {
+	it("reads the agents' notes once the roster arrives, also when the team answers first", async () => {
+		const routine = {
+			routine_id: id(62),
+			client_routine_id: id(162),
+			version: 1,
+			status: "active",
+			staff_agent_id: staff.id,
+			title: "Morning brief",
+			prompt: "Brief me.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: id(87),
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: userA.created_at,
+			updated_at: userA.created_at,
+			next_run_at: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+		};
+		const answer = async (method: string): Promise<unknown> => {
+			if (method === "qorpera_member_company_state_folders")
+				return {
+					schema: "qorpera.member-company-state-folders/v1",
+					agents: [{ staffAgentId: staff.id, file: "QorperaOS/agents/nora/agent.md" }],
+					groups: [],
+					routines: [],
+				};
+			if (method === "qorpera_member_folder_read")
+				return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false };
+			if (method === "qorpera_list_cloud_routines") return [routine];
+			if (method === "qorpera_list_member_notifications") return [];
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request) =>
+				Response.json(await answer(new URL(String(input)).pathname.split("/").at(-1)!)),
+			),
+		);
+		history.replaceState(null, "", `/#/c/${profileA.profileId}`);
+		const f = fixture();
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		vi.mocked(f.cloud.rpc).mockImplementation((method: string) => answer(method));
+		// The team answers at once; the roster later, so the notes first read with no agents.
+		const roster = deferred<HostedStaffAgent[]>();
+		vi.mocked(f.api.listStaff).mockReturnValue(roster.promise);
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await vi.waitFor(
+			() =>
+				expect(vi.mocked(f.cloud.rpc).mock.calls.some(([method]) => method === "qorpera_list_cloud_routines")).toBe(
+					true,
+				),
+			{ timeout: 3000 },
+		);
+		roster.resolve([staff]);
+		await vi.waitFor(
+			() =>
+				expect(root.querySelector(`.rail [data-agent-id="${staff.id}"] small`)?.textContent).toMatch(
+					/^Next: Morning brief · /,
+				),
+			{ timeout: 3000 },
+		);
+	});
+
+	it("shows no wall in the agent's thread and reads none, though its folder holds a wall.md", async () => {
+		// Jonas, 14 Nov 2026: "rather drop the wall - it's the wrong medium for activity"; of the line under the name
+		// that came from it: "Let it go too". A wall.md left in the agent's folder is never asked for.
+		const wall = "QorperaOS/agents/nora/wall.md";
+		const routine = {
+			routine_id: id(63),
+			client_routine_id: id(163),
+			version: 1,
+			status: "active",
+			staff_agent_id: staff.id,
+			title: "Morning brief",
+			prompt: "Brief me.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: id(87),
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: userA.created_at,
+			updated_at: userA.created_at,
+			next_run_at: new Date(Date.now() + 30 * 3_600_000).toISOString(),
+		};
+		const asked: { method: string; args: unknown }[] = [];
+		const answer = async (method: string, args: unknown): Promise<unknown> => {
+			asked.push({ method, args });
+			if (method === "qorpera_member_company_state_folders")
+				return {
+					schema: "qorpera.member-company-state-folders/v1",
+					agents: [{ staffAgentId: staff.id, file: "QorperaOS/agents/nora/agent.md" }],
+					groups: [],
+					routines: [],
+				};
+			if (method === "qorpera_member_folder_read") {
+				const path = (args as { p_path?: unknown } | undefined)?.p_path;
+				if (path !== wall) return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false };
+				return {
+					schema: "qorpera.folder-read/v1",
+					asOfSeq: 1,
+					found: true,
+					entry: {
+						path: wall,
+						kind: "file",
+						version: id(92),
+						seq: 1,
+						updatedAt: userA.created_at,
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: 64,
+						mediaType: "text/markdown",
+						executable: false,
+					},
+				};
+			}
+			if (method === "qorpera_list_cloud_routines") return [routine];
+			if (method === "qorpera_list_member_notifications") return [];
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = new URL(String(input));
+				const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
+				return Response.json(await answer(url.pathname.split("/").at(-1)!, body));
+			}),
+		);
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.cloud.rpc).mockImplementation((method: string, args?: Record<string, unknown>) =>
+			answer(method, args),
+		);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		await vi.waitFor(
+			() =>
+				expect(f.root.querySelector(`.rail [data-agent-id="${staff.id}"] small`)?.textContent).toMatch(
+					/^Next: Morning brief · /,
+				),
+			{ timeout: 3000 },
+		);
+		await vi.waitFor(() => expect(f.root.querySelector(".thread footer.composer")).not.toBeNull(), {
+			timeout: 3000,
+		});
+		// The tab coming back and the agent's run ending read the wall until 14 Nov 2026; neither does now.
+		window.dispatchEvent(new Event("focus"));
+		await draw();
+		expect(f.root.querySelector(".agent-wall")).toBeNull();
+		expect(f.root.querySelector(".thread-foot")?.textContent ?? "").not.toMatch(/waits? on you/i);
+		expect(asked.filter(({ args }) => JSON.stringify(args ?? null).includes("wall.md"))).toEqual([]);
 	});
 });

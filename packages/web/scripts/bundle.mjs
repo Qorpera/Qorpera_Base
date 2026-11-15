@@ -3,8 +3,9 @@
 //
 // main.js is split (esbuild `splitting`): the vendor chunk (src/vendor.ts),
 // which main.js imports and index.html preloads, plus chunks main.js loads
-// only when needed: the figures' recorded motion (ui/figure-motion-data.ts)
-// and the computer screen renderer with noVNC (ui/screen-viewer.mjs).
+// only when needed: the figures' recorded motion (ui/figure-motion-data.ts),
+// and the computer screen renderer with noVNC (ui/screen-viewer.mjs) once the
+// stream imports it again (the computer window shows pictures since 20260930712000).
 // theme.js is a separate classic script for the head.
 import { join, relative, resolve, sep } from "node:path";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";

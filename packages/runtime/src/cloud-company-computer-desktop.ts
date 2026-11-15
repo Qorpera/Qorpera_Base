@@ -6,7 +6,8 @@ import {
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
-	isStaffCharacterId,
+	drawnStaffCharacter,
+	RETIRED_STAFF_CHARACTERS,
 	STAFF_CHARACTER_BY_TEMPLATE,
 	STAFF_CHARACTER_IDS,
 	type StaffCharacterId,
@@ -14,8 +15,10 @@ import {
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
+	COMPANY_COMPUTER_FIRST_WALLPAPER_IDS,
 	COMPANY_COMPUTER_SCREEN_HOURS,
 	COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER,
+	type CompanyComputerFirstWallpaperId,
 	type CompanyComputerWallpaperId,
 } from "./cloud-company-computer-wallpapers.ts";
 
@@ -26,9 +29,10 @@ const FOUNDER_TEMPLATE_CHARACTER: Readonly<Record<string, StaffCharacterId>> = O
 
 /**
  * The avatar a client draws for this agent, by the clients' own rules
- * (`figureFor` in the web client): the saved figure, else the template's, else a
- * stable one derived from the agent id. The hash walks the avatar list, not the
- * asset list, so an agent without a saved figure still gets its own backdrop.
+ * (`figureFor` in the web client): the saved figure (a retired one's
+ * replacement), else the template's, else a stable one derived from the agent
+ * id. The hash walks the avatar list, not the asset list, so the desktop of an
+ * agent without a saved figure follows the figure its avatar shows.
  */
 export function companyComputerScreenCharacter(
 	binding: CompanyComputerScreenBinding,
@@ -36,7 +40,8 @@ export function companyComputerScreenCharacter(
 	creature?: string,
 ): StaffCharacterId {
 	assertCompanyComputerScreenBinding(binding, binding);
-	if (isStaffCharacterId(creature)) return creature;
+	const saved = drawnStaffCharacter(creature);
+	if (saved) return saved;
 	const mapped = Object.entries({ ...STAFF_CHARACTER_BY_TEMPLATE, ...FOUNDER_TEMPLATE_CHARACTER }).find(
 		([id]) => id === templateId,
 	);
@@ -46,13 +51,38 @@ export function companyComputerScreenCharacter(
 	return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
 }
 
-/** Resolve current avatar identities to the guest image's stable asset catalog. */
+/** Resolve current avatar identities to the guest image's asset catalog: the backdrop that draws the figure. */
 export function companyComputerScreenCreature(
 	binding: CompanyComputerScreenBinding,
 	templateId?: string,
 	creature?: string,
 ): CompanyComputerWallpaperId {
 	return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[companyComputerScreenCharacter(binding, templateId, creature)];
+}
+
+/**
+ * The backdrop on an image built before its figure had one, which has only the
+ * first seven files: the figure's own when it is one of those; the retired
+ * figure's it replaced (the ghost's for the moon); else a stable one of the
+ * seven, derived from the agent id.
+ */
+export function companyComputerScreenFirstCreature(
+	binding: CompanyComputerScreenBinding,
+	templateId?: string,
+	creature?: string,
+): CompanyComputerFirstWallpaperId {
+	const character = companyComputerScreenCharacter(binding, templateId, creature);
+	const drawn: Readonly<Record<string, CompanyComputerWallpaperId>> = COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER;
+	const replaced = Object.entries(RETIRED_STAFF_CHARACTERS)
+		.filter(([, replacement]) => replacement === character)
+		.map(([retired]) => retired);
+	for (const figure of [character, ...replaced]) {
+		const installed = COMPANY_COMPUTER_FIRST_WALLPAPER_IDS.find((id) => id === drawn[figure]);
+		if (installed) return installed;
+	}
+	let seed = 0;
+	for (const letter of binding.staffAgentId) seed = (seed * 31 + letter.charCodeAt(0)) >>> 0;
+	return COMPANY_COMPUTER_FIRST_WALLPAPER_IDS[seed % COMPANY_COMPUTER_FIRST_WALLPAPER_IDS.length];
 }
 
 async function assertPhysicalDirectory(directory: string): Promise<void> {
@@ -125,11 +155,18 @@ export async function prepareCompanyComputerScreenWallpaper(
 	const binding = Object.freeze({ ...options.binding });
 	const root = options.layout.screenStateRoot;
 	const imageRoot = options.imageRoot ?? "/usr/share/backgrounds";
-	const creature = companyComputerScreenCreature(binding, options.templateId, options.creature);
+	let creature = companyComputerScreenCreature(binding, options.templateId, options.creature);
 	await options.boundary.assertReady(binding, signal);
 	signal.throwIfAborted();
 	await assertPhysicalDirectory(root);
 	await assertPhysicalDirectory(imageRoot);
+	// An image built before this figure had a backdrop has no file for it: it keeps to the seven it has, so its
+	// desktop still starts. A file that is there but wrong (a link, empty, too large) is refused as before.
+	const missing = await lstat(join(imageRoot, `qorpera-screen-${creature}.png`)).then(
+		() => false,
+		(error: NodeJS.ErrnoException) => error.code === "ENOENT",
+	);
+	if (missing) creature = companyComputerScreenFirstCreature(binding, options.templateId, options.creature);
 	const bytes = await readImage(join(imageRoot, `qorpera-screen-${creature}.png`), signal);
 	// An image without the full hourly set (or an older image) keeps the static
 	// wallpaper; the wrapper refuses partial sets rather than cycling them.

@@ -1,22 +1,42 @@
 import { readBoundedCloudResponse, supabaseServiceHeaders } from "../../packages/cloud-client/src/cloud-request.ts";
+import { CODE_CHANGE_RPCS } from "../../packages/runner-orchestrator/src/code-change-records.ts";
 import { CODE_HOST_DELETION_RPCS } from "../../packages/runner-orchestrator/src/code-host.ts";
+import { CODE_CARE_RPCS } from "../../packages/runner-orchestrator/src/code-host-care.ts";
+import { CODE_REQUEST_RPCS } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
 import { CODE_HOST_RPCS } from "../../packages/runner-orchestrator/src/code-host-views.ts";
+import { CODE_SITE_RPCS } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { CODING_EXECUTOR_RPCS, CodingControlBusy, CodingControlRefused } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CODING_SNAPSHOT_RPCS } from "../../packages/runner-orchestrator/src/coding-snapshots.ts";
 import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 
-const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
-	...CODE_HOST_DELETION_RPCS, "qorpera_authorize_coding_command", "qorpera_route_coding_command",
+/** The executor's closed RPC set (exported for the tests, which run the routes and the host against it: F33 of #1661). */
+export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
+	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
+	"qorpera_authorize_coding_command", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_account_fill",
-	"qorpera_native_binding_proven"]);
+	"qorpera_authorize_machine_screen",
+	"qorpera_member_machine_screen_authority", "qorpera_member_machine_desktop_act_authority",
+	// A member's start of a desktop (20260930714000; it was missing, as F33 of #1661 found for take-over's record).
+	"qorpera_member_machine_desktop_start_authority", "qorpera_native_binding_proven",
+	// The agent was told a member touched the shared screen (20260930734000, review r1 F4 of #1701).
+	"qorpera_machine_desktop_shared_told",
+	// A member's pointer pass, read once per pass (20260930744000).
+	"qorpera_member_machine_desktop_pointer_authority",
+	// A run's channel to its home, before a byte reaches the machine (20260930752000).
+	"qorpera_authorize_home_session"]);
 
 /** Calls whose refusal (SQLSTATE 42501) the caller acts on: a test machine's folder view open, which the executor
  * answers with a boot without /company, or with a move to a new disk when the open refused its disk (F3 6d), and a
  * run's take-in of a test machine's reads, whose refusal of a read no longer readable moves the machine to a new disk
  * (F3 6d-3b). The code host's open (F3 5e-3b) is the same call as the first; it fails on a refusal as on any other
- * failure (`CODE_HOST_VIEW_UNAVAILABLE`). */
-const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads"]);
+ * failure (`CODE_HOST_VIEW_UNAVAILABLE`). A member's read check of a machine's reads (20260930712000), whose refusal
+ * hides that member's picture and nothing else. A member's pointer pass SQL no longer holds (replaced by a newer one,
+ * older than 10 s, a member made a viewer: 20260930744000), which the window begins again. */
+const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads",
+	"qorpera_folder_member_machine_reads", "qorpera_member_machine_desktop_pointer_authority",
+	// A member's live picture's release cycle (20260930745000): its read check's refusal ends that member's stream alone.
+	"qorpera_member_machine_stream_release"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
 /** A turn's lease renewal and describe (R2, 31 Oct 2026): the kernel's refusal says the lease is gone, and the executor
@@ -84,7 +104,7 @@ export class CodingExecutorHttpControl {
 		this.#fetch = options.fetch ?? fetch;
 	}
 	async call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		if (!METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
+		if (!CODING_CONTROL_METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
 		const body = JSON.stringify(args);
 		if (Buffer.byteLength(body) > 128 * 1024) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);

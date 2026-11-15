@@ -1,8 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	type CloudCodingCommandRead,
 	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
@@ -10,19 +12,56 @@ import {
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
+import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "./cloud-command-pages.ts";
 import {
+	CLOUD_HOME_CHANNEL_HANDSHAKE_MS,
+	CLOUD_HOME_CHANNEL_KEEPALIVE_MS,
+	CLOUD_HOME_CHANNEL_PATH,
+	CLOUD_HOME_CHANNEL_PROTOCOL,
+	CLOUD_HOME_CHANNEL_REASON,
+	CloudHomeChannelRefused,
+	type CloudHomeChannelRequest,
+	type CloudHomeChannelSide,
+	type CloudHomeSessionAnswer,
+	type CloudHomeSessionAuthorized,
+	cloudHomeChannelKeepAlive,
+	cloudHomeChannelLines,
+	cloudHomeChannelWithoutKeepAlive,
+	parseCloudHomeChannelHandshake,
+} from "./cloud-home-channel.ts";
+import {
+	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
 	CloudMachineAccountFillRefusal,
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
+	CloudMachineScreenRefusal,
+	CloudMemberMachineActRefusal,
+	CloudMemberMachinePointerRefusal,
+	CloudMemberMachineScreenRefusal,
+	CloudMemberMachineStartRefusal,
+	cloudMemberMachineActAnswer,
+	cloudMemberMachinePointerAnswer,
+	cloudMemberMachineScreenAnswer,
+	cloudMemberMachineStartAnswer,
+	cloudMemberMachineStreamFrame,
+	cloudMemberMachineStreamFrameHead,
 	parseCloudMachineAccountFillAnswer,
 	parseCloudMachineAccountFillHttpRequest,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
+	parseCloudMachineScreenAnswer,
+	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
+	parseCloudMemberMachineActPeerRequest,
+	parseCloudMemberMachinePointerPeerRequest,
+	parseCloudMemberMachineScreenPeerRequest,
+	parseCloudMemberMachineStartPeerRequest,
+	parseCloudMemberMachineStreamPeerRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
+import { type MemberStreamWay, writeMemberStreamMessage } from "./cloud-member-machine-stream-http.ts";
 import {
 	type CloudNativeToolBinding,
 	isNativeJobHolder,
@@ -156,6 +195,9 @@ export function createHttpCloudCodingCommandGateway(options: {
 	 * executor forwarding to its peer, which holds no run's lease. */
 	holder: (() => string) | null;
 	authorize: CloudCodingCommandGateway["authorize"];
+	/** What the executors said they take for a page (keyholes S1): one per process, shared by its gateways. A gateway
+	 * without it learns only from its own answers. */
+	pages?: CloudCommandPages;
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
 }): CloudCodingCommandGateway {
@@ -165,15 +207,21 @@ export function createHttpCloudCodingCommandGateway(options: {
 	const binding = parseCloudNativeToolBinding(options.binding);
 	const holder = options.holder;
 	const transport = options.fetch ?? fetch;
-	const request = async (
+	const pages = options.pages ?? new CloudCommandPages();
+	const send = async (
 		action: "start" | "read" | "cancel",
 		admittedScope: CloudCodingCommandScope,
 		input: CommandInput | CloudCodingCommandRead,
 		signal: AbortSignal,
+		/** Set when the executor answered with a refusal of its own (4xx), not a proxy's or a server's failure (5xx). */
+		answer: { refused: boolean } = { refused: false },
 	): Promise<unknown> => {
 		try {
+			// A read asks the executor for no more than it said it takes; a smaller page answers it as well.
+			const read = action === "read" ? parseCloudCodingCommandRead(input) : undefined;
+			const asked = read ? { ...read, limit: Math.min(read.limit ?? 4096, pages.of(origin)) } : input;
 			const admitted = parseRequest(
-				{ schema: "qorpera.coding-command-http/v1", binding, scope: admittedScope, action, input },
+				{ schema: "qorpera.coding-command-http/v1", binding, scope: admittedScope, action, input: asked },
 				action,
 			);
 			const body = JSON.stringify(admitted);
@@ -191,7 +239,9 @@ export function createHttpCloudCodingCommandGateway(options: {
 						},
 						body,
 					});
+					pages.heard(origin, response.headers);
 					if (!response.ok || response.status !== 200) {
+						answer.refused = response.status < 500;
 						void response.body?.cancel().catch(() => undefined);
 						throw new Error(ERROR);
 					}
@@ -220,6 +270,33 @@ export function createHttpCloudCodingCommandGateway(options: {
 			);
 		} catch {
 			throw new Error(ERROR);
+		}
+	};
+	/** A call; a read once more when the executor stopped saying what it takes (one rolled back under this process),
+	 * since such an executor refuses a page past what it takes and says nothing, and a refused read showed nothing. A
+	 * failure that is not the executor's refusal (5xx, no answer) is never asked again. */
+	const request = async (
+		action: "start" | "read" | "cancel",
+		admittedScope: CloudCodingCommandScope,
+		input: CommandInput | CloudCodingCommandRead,
+		signal: AbortSignal,
+	): Promise<unknown> => {
+		// What a read may ask the executor for now; nothing for any other call, or a read that does not parse (`send`
+		// refuses it).
+		const limit = (): number => {
+			try {
+				return action === "read" ? Math.min(parseCloudCodingCommandRead(input).limit ?? 4096, pages.of(origin)) : 0;
+			} catch {
+				return 0;
+			}
+		};
+		const asked = limit();
+		const answer = { refused: false };
+		try {
+			return await send(action, admittedScope, input, signal, answer);
+		} catch (error) {
+			if (!answer.refused || limit() >= asked) throw error;
+			return send(action, admittedScope, input, signal);
 		}
 	};
 	return Object.freeze<CloudCodingCommandGateway>({
@@ -258,8 +335,28 @@ export interface CloudCodingCommandServiceOptions {
 	/** Company machines' commands on the same ingress (/v1/machine-commands/*),
 	 * when this executor routes them. */
 	machines?: CloudMachineCommandServiceOptions;
+	/**
+	 * The agent's home on the same ingress (slice 1): the one route that keeps a channel open, so a run's Codex can
+	 * run its own shell and file tools on its machine. `authorize` is SQL's
+	 * (`qorpera_authorize_home_session`), asked after the holder is proven and before a byte reaches the machine;
+	 * `open` starts `codex exec-server --listen stdio` on the machine as its agent account, on this node's own machine
+	 * or, for a machine another node holds, through that node's peer listener (as a machine command is forwarded).
+	 */
+	home?: {
+		authorize(
+			request: { binding: CloudNativeToolBinding; machineId: string; sessionId: string },
+			signal: AbortSignal,
+		): Promise<CloudHomeSessionAnswer>;
+		open(
+			authority: CloudHomeSessionAuthorized,
+			request: CloudHomeChannelRequest,
+			signal: AbortSignal,
+		): Promise<CloudHomeChannelSide>;
+	};
 	host?: "127.0.0.1" | "::1";
 	port?: number;
+	/** How often an open home channel says it is still there (CLOUD_HOME_CHANNEL_KEEPALIVE): the tests' own shorter one. */
+	homeKeepAliveMs?: number;
 }
 
 async function readRequest(request: IncomingMessage, signal: AbortSignal): Promise<unknown> {
@@ -284,14 +381,17 @@ async function readRequest(request: IncomingMessage, signal: AbortSignal): Promi
 		signal.removeEventListener("abort", abort);
 	}
 }
-function replyJson(reply: ServerResponse, status: number, value: unknown): void {
+/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). Each says
+ * what a page of a command's log may ask this executor for (keyholes S1). */
+function replyJson(reply: ServerResponse, status: number, value: unknown, limit = RESULT_LIMIT): void {
 	const body = JSON.stringify(value);
-	if (Buffer.byteLength(body) > RESULT_LIMIT) throw new Error(ERROR);
+	if (Buffer.byteLength(body) > limit) throw new Error(ERROR);
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
 		"cache-control": "no-store",
 		"x-content-type-options": "nosniff",
+		[CLOUD_COMMAND_PAGE_HEADER]: String(CLOUD_CODING_COMMAND_PAGE_BYTES),
 	});
 	reply.end(body);
 }
@@ -306,6 +406,8 @@ export class HttpCloudCodingCommandService {
 		if (
 			!validToken(options.token) ||
 			(options.host !== undefined && !["127.0.0.1", "::1"].includes(options.host)) ||
+			(options.homeKeepAliveMs !== undefined &&
+				(!Number.isSafeInteger(options.homeKeepAliveMs) || options.homeKeepAliveMs < 1)) ||
 			!Number.isSafeInteger(options.port ?? 0) ||
 			(options.port ?? 0) < 0 ||
 			(options.port ?? 0) > 65535
@@ -314,12 +416,127 @@ export class HttpCloudCodingCommandService {
 		this.#options = Object.freeze({ ...options });
 		this.#token = Buffer.from(`Bearer ${options.token}`);
 	}
+	/**
+	 * One run's channel to its home (slice 1), on an upgraded socket: the transport token, then the run's holder
+	 * proven as every other route proves it, then the handshake line, then SQL's authority for this session, and only
+	 * then the machine. Anything that does not hold ends the socket with one line saying why, in the words the host
+	 * gives the model, and never an address, a token or a session of another run.
+	 */
+	async #home(request: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
+		const home = this.#options.home;
+		const prove = this.#options.proveBinding;
+		const controller = new AbortController();
+		this.#controllers.add(controller);
+		const bearer = Buffer.from(String(request.headers.authorization ?? ""));
+		const header = request.headers["x-qorpera-identity"];
+		// The run's ingress proves the run's holder; a peer listener takes none, as for a machine command: only
+		// executors hold its token, and the forwarding one proved the holder at its own ingress.
+		const holder = typeof header === "string" && isNativeJobHolder(header) ? header : undefined;
+		socket.on("error", () => undefined);
+		// Bytes that came in behind the request's own head belong to the channel.
+		if (head.byteLength > 0) socket.unshift(head);
+		const refuse = (reason: string): void => {
+			// Before the upgrade is completed there is no channel to answer on, so the socket simply ends.
+			socket.end(
+				`HTTP/1.1 403 Forbidden\r\nconnection: close\r\ncontent-length: 0\r\nx-qorpera-home: ${reason}\r\n\r\n`,
+			);
+		};
+		let side: CloudHomeChannelSide | undefined;
+		let stopKeepAlive = (): void => undefined;
+		try {
+			if (
+				!home ||
+				request.method !== "GET" ||
+				request.url !== CLOUD_HOME_CHANNEL_PATH ||
+				String(request.headers.upgrade ?? "").toLowerCase() !== CLOUD_HOME_CHANNEL_PROTOCOL ||
+				bearer.length !== this.#token.length ||
+				!timingSafeEqual(bearer, this.#token) ||
+				(prove && holder === undefined)
+			) {
+				refuse("unavailable");
+				return;
+			}
+			socket.write(
+				`HTTP/1.1 101 Switching Protocols\r\nupgrade: ${CLOUD_HOME_CHANNEL_PROTOCOL}\r\nconnection: Upgrade\r\n\r\n`,
+			);
+			const reader = cloudHomeChannelLines(socket);
+			const first = await Promise.race([
+				reader.next(),
+				new Promise<never>((_resolve, reject) =>
+					setTimeout(() => reject(new Error(ERROR)), CLOUD_HOME_CHANNEL_HANDSHAKE_MS).unref(),
+				),
+			]);
+			const handshake = first.done ? undefined : parseCloudHomeChannelHandshake(first.value);
+			if (!handshake) {
+				socket.end(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
+				return;
+			}
+			const binding = parseCloudNativeToolBinding(handshake.binding);
+			if (prove && holder !== undefined) await prove(binding, holder, controller.signal);
+			const authority = await home.authorize(
+				{ binding, machineId: handshake.machineId, sessionId: handshake.sessionId },
+				controller.signal,
+			);
+			if (authority.state !== "authorized") {
+				socket.end(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
+				return;
+			}
+			side = await home.open(authority, { binding, holder }, controller.signal);
+			socket.write(`${JSON.stringify({ ok: true, sessionId: authority.sessionId, machine: authority.machine })}\n`);
+			// A front ends an upgraded connection that is quiet for its read timeout: while the channel is open this end
+			// says it is there, and the run's own such lines go no further than here.
+			stopKeepAlive = cloudHomeChannelKeepAlive(
+				socket,
+				this.#options.homeKeepAliveMs ?? CLOUD_HOME_CHANNEL_KEEPALIVE_MS,
+			);
+			const machine = side;
+			// Either side ending ends the other (review round 1, F3): the exec-server on the machine waits on its
+			// stdin, so a run's slot that went must not leave a process running there, and a machine whose channel
+			// closed must not leave the slot waiting for an answer that cannot come.
+			const fromMachine = (async () => {
+				try {
+					for await (const line of machine.lines) {
+						if (!socket.writable) break;
+						socket.write(`${line}\n`);
+					}
+				} finally {
+					socket.destroy();
+				}
+			})();
+			try {
+				for await (const line of cloudHomeChannelWithoutKeepAlive(reader)) machine.write(line);
+			} finally {
+				await side.close().catch(() => undefined);
+				side = undefined;
+			}
+			await fromMachine.catch(() => undefined);
+		} catch (error) {
+			// A peer's refusal keeps its reason, so the run's host can tell the model which it is; anything else is
+			// only "unavailable", never the error's own words.
+			const reason =
+				error instanceof CloudHomeChannelRefused && CLOUD_HOME_CHANNEL_REASON.test(error.reason)
+					? error.reason
+					: "unavailable";
+			if (socket.writable) socket.end(`${JSON.stringify({ ok: false, reason })}\n`);
+		} finally {
+			stopKeepAlive();
+			this.#controllers.delete(controller);
+			controller.abort();
+			await side?.close().catch(() => undefined);
+			socket.destroy();
+		}
+	}
+
 	async start(signal?: AbortSignal): Promise<number> {
 		if (this.#server) throw new Error(ERROR);
 		signal?.throwIfAborted();
 		const server = createServer((request, reply) => {
 			void this.#handle(request, reply);
 		});
+		// The home's channel (slice 1). An upgraded socket leaves the per-request bounds below behind, which a channel
+		// that lives as long as a model's turn cannot keep; every other route stays exactly as it is.
+		if (this.#options.home)
+			server.on("upgrade", (request, socket, head) => void this.#home(request, socket as Socket, head));
 		this.#server = server;
 		server.requestTimeout = 15000;
 		server.headersTimeout = 10000;
@@ -382,13 +599,50 @@ export class HttpCloudCodingCommandService {
 			// save_coding_value (20260930705000): the machine's clipboard helper, for one executing receipt.
 			const codingValueRoute =
 				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
-			// fill_company_account (20260930711000): the machine's fill helper, for one executing receipt.
+			// fill_company_account (20260930781000): the machine's fill helper, for one executing receipt.
 			const accountFillRoute =
 				this.#options.machines?.accountFill && request.url === "/v1/machine-commands/account-fill";
+			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
+			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
+			// A member's look (20260930712000): on the peer listener only (no run's lease to prove), from another executor.
+			const memberScreenRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberScreen &&
+				request.url === "/v1/machine-commands/member-screen";
+			// A member's action (20260930713000): on the peer listener only, from another executor, as the look.
+			const memberActRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberAct &&
+				request.url === "/v1/machine-commands/member-act";
+			// A member's start of the desktop (20260930714000): on the peer listener only, from another executor, as the look.
+			const memberStartRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberStart &&
+				request.url === "/v1/machine-commands/member-start";
+			// A member's pointer move (20260930744000): on the peer listener only, from another executor, as the look.
+			const memberPointerRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberPointer &&
+				request.url === "/v1/machine-commands/member-pointer";
+			// A member's live picture (20260930745000): on the peer listener only, from the executor that admitted the stream.
+			const memberStreamRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberStream &&
+				request.url === "/v1/machine-commands/member-stream";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute && !codingValueRoute && !accountFillRoute) ||
+				(!route &&
+					!machineRoute &&
+					!wakeRoute &&
+					!codingValueRoute &&
+					!accountFillRoute &&
+					!screenRoute &&
+					!memberScreenRoute &&
+					!memberActRoute &&
+					!memberStartRoute &&
+					!memberPointerRoute &&
+					!memberStreamRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -446,6 +700,143 @@ export class HttpCloudCodingCommandService {
 						code: error.code,
 						...(error.vault !== undefined ? { vault: error.vault } : {}),
 					});
+				}
+				return;
+			}
+			if (screenRoute && this.#options.machines?.screen) {
+				const admitted = parseCloudMachineScreenHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineScreenAnswer(
+							admitted,
+							await this.#options.machines.screen(admitted, controller.signal),
+						),
+						CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code.
+					if (!(error instanceof CloudMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberScreenRoute && this.#options.machines?.memberScreen) {
+				const admitted = parseCloudMemberMachineScreenPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineScreenAnswer(
+							admitted,
+							await this.#options.machines.memberScreen(admitted, controller.signal),
+						),
+						CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberActRoute && this.#options.machines?.memberAct) {
+				// The body holds what the member typed: it is read here and passed on, and never logged or answered.
+				const admitted = parseCloudMemberMachineActPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineActAnswer(
+							admitted,
+							await this.#options.machines.memberAct(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineActRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberStreamRoute && this.#options.machines?.memberStream) {
+				const admitted = parseCloudMemberMachineStreamPeerRequest(body);
+				// A live picture lasts while it is watched (its own bound, 8 h), not a command's 30 s; it ends when the asking
+				// executor closes its request.
+				clearTimeout(timeout);
+				let begun = false;
+				const begin = () => {
+					if (begun) return;
+					begun = true;
+					reply.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
+				};
+				const way: MemberStreamWay = { unflushed: 0 };
+				const sink = {
+					send: async (message: Buffer) => {
+						if (controller.signal.aborted) throw new Error(ERROR);
+						begin();
+						// The head and the picture as writes in one, corked: the picture's bytes are never copied here. Waiting
+						// for the asking executor to drain ends with this request too: nothing of it waits past the stream's end
+						// (review r2 F3 of #1746); and at most MEMBER_STREAM_UNFLUSHED_MESSAGES wait unflushed.
+						await writeMemberStreamMessage(
+							reply,
+							way,
+							cloudMemberMachineStreamFrameHead(1, message.byteLength),
+							message,
+							controller.signal,
+						);
+					},
+				};
+				let reason: string;
+				try {
+					reason = await this.#options.machines.memberStream(admitted, sink, controller.signal);
+				} catch (error) {
+					// Only a refusal before anything was sent is told apart, by its fixed code.
+					if (!begun && error instanceof CloudMemberMachinePointerRefusal) {
+						replyJson(reply, 409, { code: error.code });
+						return;
+					}
+					if (!begun) throw error;
+					reason = "STREAM_UNAVAILABLE";
+				}
+				begin();
+				reply.end(cloudMemberMachineStreamFrame(2, Buffer.from(reason, "utf8")));
+				return;
+			}
+			if (memberPointerRoute && this.#options.machines?.memberPointer) {
+				const admitted = parseCloudMemberMachinePointerPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachinePointerAnswer(
+							admitted,
+							await this.#options.machines.memberPointer(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachinePointerRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberStartRoute && this.#options.machines?.memberStart) {
+				const admitted = parseCloudMemberMachineStartPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineStartAnswer(
+							admitted,
+							await this.#options.machines.memberStart(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineStartRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
 				}
 				return;
 			}

@@ -228,11 +228,24 @@ export function button(
 
 /* Small stroked icons, the desktop's set (Lucide, ISC). Drawn inline so they
  * inherit the row's colour; an <img> could not. */
+
+/** Icons drawn on a grid of their own instead of Lucide's 24, so their lines fall on whole pixels at the size they are
+ * shown: the grid's size (the viewBox) and its line. The sidebar's toggle (Jonas, 13 November 2026: it read thin and
+ * soft) is drawn for the 20 px box the Concepts viewer gives it at the default scale (styles/conversation.css): a
+ * 1.5 px line, Lucide's 1.8 of 24 at that size, so it weighs what the icons beside it weigh. Its lines are centred on
+ * quarter pixels, so at 2x every edge is a whole device pixel and at 1x the outline's outer edge is a whole pixel. The
+ * outline is 16 by 14, the optical size of the search and plus icons beside it in the rail, with outer corners of 3.5;
+ * the divider stands a third in from the panel's side. */
+const ICON_GRIDS: Readonly<Record<string, { readonly size: number; readonly stroke: number }>> = {
+	navigation: { size: 20, stroke: 1.5 },
+};
+
 const ICON_PATHS: Record<string, string[]> = {
 	// Lucide list / table-2, matching the existing ISC-licensed icon set.
 	list: ["M3 5h.01", "M3 12h.01", "M3 19h.01", "M8 5h13", "M8 12h13", "M8 19h13"],
 	table: ["M3 9h18", "M9 3v18"],
-	navigation: ["M3 5h18v14H3Z", "M9 5v14"],
+	// The sidebar, on a grid of its own (ICON_GRIDS): its outline is a rectangle (icon), this is its divider.
+	navigation: ["M7.75 3.75v12.5"],
 	interfaces: ["M3 12h4l3-7 4 14 3-7h4"],
 	check: ["m5 12 4 4L19 6"],
 	appearance: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 3v18", "M12 7h7M12 12h9M12 17h7"],
@@ -258,6 +271,19 @@ const ICON_PATHS: Record<string, string[]> = {
 		"M9 8V6a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 6v2M4 13h16",
 	],
 	brush: ["M14.5 5.5l4 4-2 2-4-4z", "M12.5 7.5L5 15l4 4 7.5-7.5"],
+	// Two sparks: Generate icon, which asks an agent to draw.
+	sparkle: [
+		"M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z",
+		"M18 15l.9 2.1 2.1.9-2.1.9L18 21l-.9-2.1-2.1-.9 2.1-.9z",
+	],
+	// A painter's palette (Lucide palette): the drawer's Colour menu.
+	palette: [
+		"M12 2.5a9.5 9.5 0 1 0 0 19c1.2 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.8 1.8-1.8h2.1a4.8 4.8 0 0 0 4.8-4.8c0-4.6-4.3-8.2-9.5-8.2z",
+		"M7.5 11.5h.01",
+		"M9.5 7h.01",
+		"M14.5 7h.01",
+		"M17 10.5h.01",
+	],
 	code: ["M9 8l-4 4 4 4M15 8l4 4-4 4"],
 	feedback: ["M21 15a4 4 0 0 1-4 4H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"],
 	close: ["m6 6 12 12M6 18 18 6"],
@@ -266,6 +292,10 @@ const ICON_PATHS: Record<string, string[]> = {
 	"chevron-down": ["m6 9 6 6 6-6"],
 	search: ["M18 11a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z", "m20 20-3.9-3.9"],
 	back: ["m14 5-7 7 7 7M7 12h14"],
+	// Lucide reply, reply-all and forward: a mail app's three answers.
+	reply: ["m9 17-5-5 5-5", "M20 18v-2a4 4 0 0 0-4-4H4"],
+	reply_all: ["m7 17-5-5 5-5", "m12 17-5-5 5-5", "M22 18v-2a4 4 0 0 0-4-4H7"],
+	forward: ["m15 17 5-5-5-5", "M4 18v-2a4 4 0 0 1 4-4h12"],
 	computer: ["M4 3h16a1 1 0 0 1 1 1v12H3V4a1 1 0 0 1 1-1Z", "M8 21h8M12 16v5"],
 	attach: ["m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8", "m8 12 5-5"],
 	more: ["M5 12h.01M12 12h.01M19 12h.01"],
@@ -275,6 +305,10 @@ const ICON_PATHS: Record<string, string[]> = {
 	edit: ["m4 16 11-11a2 2 0 0 1 4 4L8 20H4v-4Z", "m13 7 4 4"],
 	file: ["M14 2H5v20h14V7l-5-5ZM14 2v6h5", "M8 12h8M8 16h6"],
 	link: ["M9 17H7A5 5 0 0 1 7 7h2", "M15 7h2a5 5 0 1 1 0 10h-2", "M8 12h8"],
+	// Lucide arrow-up-right: open in a new tab.
+	external: ["M7 17 17 7", "M7 7h10v10"],
+	// Lucide power: take something offline.
+	power: ["M12 2v10", "M18.4 6.6a9 9 0 1 1-12.77.04"],
 	copy: ["M8 8h12v13H8Z", "M16 8V3H3v13h5"],
 	mail: [
 		"M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z",
@@ -306,6 +340,13 @@ const ICON_PATHS: Record<string, string[]> = {
 		"m8.3 10.9 7.4-4.8M8.3 13.1l7.4 4.8",
 	],
 	info: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 11v5M12 8h.01"],
+	// Lucide hand: the rail's raised hand on an agent whose work waits on the member.
+	hand: [
+		"M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2",
+		"M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2",
+		"M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8",
+		"M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15",
+	],
 	settings: [
 		"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z",
 		"M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
@@ -350,10 +391,18 @@ const ICON_PATHS: Record<string, string[]> = {
 	folder: [
 		"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
 	],
-	folder_plus: [
-		"M12 10v6M9 13h6",
-		"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+	/* A section's title over two agents' rows, and a plus (Jonas, 11 Nov 2026: the folder with a plus read as files). */
+	section_plus: [
+		"M3.5 5h7",
+		"M18 2.5v6",
+		"M15 5.5h6",
+		"M9.5 12h11",
+		"M9.5 18.5h11",
+		"M6.5 12a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0",
+		"M6.5 18.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0",
 	],
+	/* Back to how it was: Reset sidebar. */
+	reset: ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
 	hide: [
 		"M10.73 5.08a10.74 10.74 0 0 1 11.2 6.57 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49",
 		"M14.08 14.16a3 3 0 0 1-4.24-4.24",
@@ -378,10 +427,11 @@ const ICON_PATHS: Record<string, string[]> = {
 
 export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-	svg.setAttribute("viewBox", "0 0 24 24");
+	const grid = ICON_GRIDS[name];
+	svg.setAttribute("viewBox", `0 0 ${grid?.size ?? 24} ${grid?.size ?? 24}`);
 	svg.setAttribute("fill", "none");
 	svg.setAttribute("stroke", "currentColor");
-	svg.setAttribute("stroke-width", "1.8");
+	svg.setAttribute("stroke-width", String(grid?.stroke ?? 1.8));
 	svg.setAttribute("stroke-linecap", "round");
 	svg.setAttribute("stroke-linejoin", "round");
 	svg.setAttribute("aria-hidden", "true");
@@ -391,18 +441,20 @@ export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 		path.setAttribute("d", d);
 		svg.append(path);
 	}
-	// Lucide layout-grid / table-2 use native rectangles rather than path outlines.
+	// Lucide layout-grid / table-2 and the sidebar's outline use native rectangles rather than path outlines.
 	const rectangles =
-		name === "grid"
-			? [
-					[3, 3, 7, 7, 1],
-					[14, 3, 7, 7, 1],
-					[14, 14, 7, 7, 1],
-					[3, 14, 7, 7, 1],
-				]
-			: name === "table"
-				? [[3, 3, 18, 18, 2]]
-				: [];
+		name === "navigation"
+			? [[2.75, 3.75, 14.5, 12.5, 2.75]]
+			: name === "grid"
+				? [
+						[3, 3, 7, 7, 1],
+						[14, 3, 7, 7, 1],
+						[14, 14, 7, 7, 1],
+						[3, 14, 7, 7, 1],
+					]
+				: name === "table"
+					? [[3, 3, 18, 18, 2]]
+					: [];
 	for (const [x, y, width, height, radius] of rectangles) {
 		const rectangle = document.createElementNS("http://www.w3.org/2000/svg", "rect");
 		for (const [key, value] of Object.entries({ x, y, width, height, rx: radius }))
@@ -426,20 +478,22 @@ export function spinner(label = t("Loading")): HTMLElement {
  * figure or an uploaded image). Until it exists, a company wears a placeholder
  * figure and colour derived from its profile id, which survive a rename. The
  * Crown is left out: it is the Co-Founder's. The colour is one of the
- * palette's bright colours (avatar-appearance.js), never Charcoal or Gray, so
- * the hub is not a row of black figures (Jonas, 8 November 2026). */
-const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "ghost"] as const;
+ * palette's bright colours (avatar-appearance.js), never Charcoal or Slate, so
+ * the hub is not a row of black figures (Jonas, 8 November 2026). The moon
+ * took the retired ghost's place (10 November 2026); the list keeps its
+ * length, so every other company keeps its figure. */
+const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "moon"] as const;
 export type CompanyFigure = (typeof COMPANY_FIGURES)[number];
 export const COMPANY_COLORS = [
 	"#87674c",
-	"#ff365e",
+	"#e22538",
 	"#f96e2d",
 	"#fcb51b",
-	"#00c878",
-	"#00bfb3",
+	"#0fbd59",
+	"#3faff3",
 	"#2047bd",
-	"#b83ff5",
-	"#ff2994",
+	"#a145f7",
+	"#fa59ac",
 ] as const;
 
 function seedHash(seed: string, multiplier: bigint): bigint {
@@ -473,6 +527,8 @@ export function confirmDialog(
 	danger = false,
 	typed?: string,
 	signal?: AbortSignal,
+	/** Lines under the message, as a list: what the choice changes. */
+	details?: readonly string[],
 ): Promise<boolean> {
 	if (signal?.aborted) return Promise.resolve(false);
 	return new Promise((resolve) => {
@@ -523,6 +579,7 @@ export function confirmDialog(
 				"div",
 				{ class: "modal", role: "alertdialog", "aria-modal": "true" },
 				h("p", null, message),
+				details?.length ? h("ul", { class: "modal-list" }, ...details.map((line) => h("li", null, line))) : null,
 				input ?? null,
 				h(
 					"div",

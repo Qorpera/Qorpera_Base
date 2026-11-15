@@ -42,6 +42,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"update_skill",
 	// Company sidebar sections, shared with members (2026-09-24).
 	"organize_sidebar",
+	// The apps drawer's groups, the company's layout of its apps (APP-GROUPS-SPEC §3, 11 November 2026).
+	"organize_apps",
 	// Auto-review (v130): an agent adds an Ask first rule for its member.
 	"add_review_rule",
 	// Good will (20260930566000): a company agent lists and sorts the payments the company's good will counts.
@@ -96,8 +98,26 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"offer_agents_to_member",
 	// A key the agent made, saved off its company machine's clipboard into the vault (20260930705000).
 	"save_coding_value",
-	// A company account's value typed into a company machine's browser by the vault (20260930711000).
+	// A company account's value typed into a company machine's browser by the vault (20260930781000).
 	"fill_company_account",
+	// A look at, or one action on, a company machine's desktop, with the screen shown to the model (20260930708000).
+	"machine_screen",
+	// The company's code kept in Qorpera (20260930720000): taking a change out of main, and describing one.
+	"manage_code",
+	// Company databases (slice 5, 20260930750000): describing them, applying their steps, and asking them.
+	"data_describe",
+	"data_apply",
+	"data_query",
+	// A named change of a company database, which writes rows (slice 7, 20260930763000).
+	"data_change",
+	// A picture the agent makes, saved in the company folder and shown to the model (20260930746000).
+	"make_picture",
+	// How one part of an interface app is made, read before it is made (20260930762000).
+	"app_guide",
+	"record_reflection",
+	// The company's reading of itself (20260930766000): the Co-Founder's writer of it, and ending an agent's role.
+	"update_reading",
+	"end_role",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

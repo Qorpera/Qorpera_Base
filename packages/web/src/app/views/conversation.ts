@@ -19,9 +19,8 @@ import {
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
-import { replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
+import { appNoteHeader, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
-import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
 import {
 	type ActionReviewDraft,
@@ -49,8 +48,9 @@ import {
 	interfaceChangeText,
 	renderInterfaceChangeLine,
 } from "../../ui/interface-change-line.ts";
+import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { markdownBubbles } from "../../ui/markdown.ts";
+import { appCard, type LinkedSite, markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { easing, foldFrom, leave, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
@@ -67,9 +67,16 @@ import {
 	runWaitingReason,
 } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
+import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
-import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
+import {
+	type AgentState,
+	agentWorks,
+	answersInteraction,
+	type CompanyController,
+	type ConversationState,
+} from "../company.ts";
 import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -92,6 +99,9 @@ import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
+import { type AppLook, appLook } from "./shell.ts";
+import { ThreadReady } from "./thread-ready.ts";
+import { ThreadSites } from "./thread-sites.ts";
 
 /* How often the thread re-reads its coding sessions while one is still going: the
  * pill's figures follow them. Nothing is read once they all settled. */
@@ -218,7 +228,14 @@ function copyShape(target: Node, source: Node, labelsOnly: boolean): void {
 /** How long an answered card settles (styles/motion.css, the longest of its parts). */
 const SETTLING = 1500;
 /** Its parts (not the fold, which restarts from the height it had got to). */
-const SETTLING_PARTS = new Set(["decided-edge", "decided-line", "decided-mark", "draw-stroke", "motion-hold"]);
+const SETTLING_PARTS = new Set([
+	"decided-answer",
+	"decided-edge",
+	"decided-line",
+	"decided-mark",
+	"draw-stroke",
+	"motion-hold",
+]);
 const DECIDED = [
 	".action-review-card.is-folded",
 	".interaction-card:is(.state-answered, .state-declined)",
@@ -252,6 +269,12 @@ interface ContinueLogin {
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
 
+/** A peer chip's time for a screen reader, as its description; the chip's name says what it opens. A status line like
+ * this shows no time on a hover (Jonas, 14 Nov 2026): only messages do (ui/sent-time-hover.ts). */
+const peerTimeId = (linkId: string) => `peer-time-${linkId}`;
+const peerTime = (linkId: string, at: string) =>
+	h("span", { class: "visually-hidden", id: peerTimeId(linkId) }, fmtTime(at));
+
 export class ConversationView {
 	readonly el: HTMLElement;
 	readonly #company: CompanyController;
@@ -267,15 +290,6 @@ export class ConversationView {
 	/** The first sequence of the live log: the oldest item the thread showed first. */
 	#liveFrom: number | undefined;
 	readonly #status = h("div", { class: "thread-status" });
-	/** The agent's wall, right above the composer of its own thread (ui/agent-wall-poster.ts). */
-	readonly #wall: AgentWallPoster;
-	/** The agent whose wall is read, its text as last read, and the read on its way. */
-	#wallAgent: string | undefined;
-	#wallText: string | null = null;
-	#wallReading = false;
-	#wallAgain = false;
-	/** The agent was working at the last update: the end of its run reads the wall again. */
-	#wallWorking = false;
 	readonly #composer: HTMLTextAreaElement;
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
 	readonly #skills: SkillMentions;
@@ -296,17 +310,21 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
-	/** The wall's question being answered, in the composer. */
+	/** What the draft answers, in the composer: the app a note from it is about (RUNTIME-INTERFACE-APPS.md §5 "tell"),
+	 * which the message opens with once it is sent. */
 	readonly #answerStrip: HTMLElement;
+	readonly #answerEmblem = h("span", { class: "composer-answer-emblem", "aria-hidden": "true", hidden: true });
+	readonly #answerLabel = h("span", { class: "composer-answer-label" }, t("Answering"));
 	readonly #answerQuestion = h("span", { class: "composer-answer-question" });
+	readonly #answerStop: HTMLButtonElement;
+	/** What the strip shows now: the line answered, and for an app's note the app as the company's apps say it. */
+	#answerDrawn = "";
 	#answerShown: string | undefined;
 	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
 	 * message is still the same: its text, the question it answers and its files. */
 	#sendSoon:
 		| { text: string; answering?: string; files: readonly File[]; until: number; login?: ContinueLogin }
 		| undefined;
-	/** The wall's item that question is, once Answer was pressed in this view. */
-	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
 	readonly #sharedDrafts: SharedDrafts;
 	/** Names to mention, shown while "@" and the start of a name are typed. */
@@ -397,7 +415,7 @@ export class ConversationView {
 	 * grows (window, computer panel, composer), or messages that grow after they are
 	 * drawn, must keep showing the latest message. */
 	readonly #sizes: ResizeObserver | undefined;
-	/** What stands under the messages (notices, the wall, the coding pill, the composer), laid over the thread's foot
+	/** What stands under the messages (notices, the coding pill, the composer), laid over the thread's foot
 	 * with no background of its own, so the messages scroll on behind it (Jonas, 9 Nov 2026). */
 	readonly #foot = h("div", { class: "thread-foot" });
 	readonly #unsubscribe: (() => void)[] = [];
@@ -419,6 +437,24 @@ export class ConversationView {
 	/** The working figure's row and the empty thread's line, kept while they read the same. */
 	#activityRow: { key: string; element: HTMLElement } | undefined;
 	#emptyRow: HTMLElement | undefined;
+	/** The agent's computer is a row of the thread (Jonas, 14 Nov 2026: "a bigger window next to the working agent inside
+	 * of the thread"): its window stands beside the agent's figure. While the agent uses its computer the row is the live
+	 * end, in the working figure's place; once it stops, the row stays where it stood and what comes next goes under it. */
+	readonly #computerSlot = h("div", { class: "thread-computer-window" });
+	readonly #computerFigure = h("div", { class: "thread-computer-figure" });
+	readonly #computerCaption = h("p", { class: "thread-computer-caption" });
+	readonly #computerRow = h(
+		"div",
+		{ class: "thread-computer" },
+		this.#computerFigure,
+		h("div", { class: "thread-computer-main" }, this.#computerSlot, this.#computerCaption),
+	);
+	/** What the figure beside the window was drawn for, kept while it reads the same (its motion runs on). */
+	#computerFigureKey: string | undefined;
+	/** The row stands after every item of the thread up to this time (ms): set while it is the live end, kept after. */
+	#computerAfter: number | undefined;
+	/** A redraw for the computer's row is on its way. */
+	#computerRedraw = false;
 	/** The thread has shown its first messages: what joins the log after this comes in moving. */
 	#filled = false;
 	/** "Show earlier" at the top of a thread that has not read all its history yet. */
@@ -440,6 +476,13 @@ export class ConversationView {
 	/** The day each shown moment falls on in #daysZone, so a redraw need not work it out again. */
 	readonly #days = new Map<string, string>();
 	#daysZone = "";
+	/** "A change is ready" (own code storage): a card below the thread for each project with a change ready from this
+	 * thread's agent, with What's new's own buttons (views/thread-ready.ts). Made once the company has a project that
+	 * makes a website, in an agent's thread. */
+	#ready: ThreadReady | undefined;
+	/** The company's sites, for the card of a site a message links (views/thread-sites.ts). Made once the company has a
+	 * site. */
+	#siteCards: ThreadSites | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -448,19 +491,6 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
-		this.#wall = new AgentWallPoster({
-			member: company.userId,
-			...(actions.folderImage ? { image: actions.folderImage } : {}),
-			onAnswer: (question, item) => {
-				// A message on its way keeps the question it goes with.
-				if (this.#composer.disabled || this.#submitting) return;
-				this.#answeringItem = item;
-				// Enter was for the question before this one.
-				this.#sendSoon = undefined;
-				company.conversation(sessionId).set({ answering: replyQuestion(question) });
-				this.#composer.focus();
-			},
-		});
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
@@ -492,7 +522,7 @@ export class ConversationView {
 				if (this.#mentionKey(event)) return;
 				if (this.#skills.keydown(event)) return;
 				if (event.key === "Escape" && !event.isComposing && this.#answerShown) {
-					company.conversation(sessionId).set({ answering: undefined });
+					company.setAnswering(sessionId, undefined);
 					return;
 				}
 				if (matchesKey(event, "accept") && !event.shiftKey) {
@@ -708,29 +738,26 @@ export class ConversationView {
 				this.#setMenu(false, false);
 			}
 		});
+		this.#answerStop = h(
+			"button",
+			{
+				type: "button",
+				class: "composer-answer-stop icon-button",
+				"aria-label": t("Stop answering"),
+				title: t("Stop answering"),
+				onclick: () => {
+					company.setAnswering(sessionId, undefined);
+					this.#composer.focus();
+				},
+			},
+			icon("close"),
+		);
 		this.#answerStrip = h(
 			"div",
 			{ class: "composer-answer", hidden: true },
-			h(
-				"div",
-				{ class: "composer-answer-words" },
-				h("span", { class: "composer-answer-label" }, t("Answering")),
-				this.#answerQuestion,
-			),
-			h(
-				"button",
-				{
-					type: "button",
-					class: "composer-answer-stop icon-button",
-					"aria-label": t("Stop answering"),
-					title: t("Stop answering"),
-					onclick: () => {
-						company.conversation(sessionId).set({ answering: undefined });
-						this.#composer.focus();
-					},
-				},
-				icon("close"),
-			),
+			this.#answerEmblem,
+			h("div", { class: "composer-answer-words" }, this.#answerLabel, this.#answerQuestion),
+			this.#answerStop,
 		);
 		this.#composerShell = h(
 			"div",
@@ -810,6 +837,7 @@ export class ConversationView {
 		);
 		this.#earlier = h("div", { class: "thread-earlier" }, this.#earlierButton, this.#earlierNote);
 		this.#messages.append(this.#log);
+		sentTimeHover(this.#messages, this.#lifetime.signal);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -857,9 +885,6 @@ export class ConversationView {
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
-			// The wall before the coding sessions: with both showing, the sessions' pill sits on the wall's own line,
-			// level with its button (conversation.css).
-			this.#wall.el,
 			this.#coding.el,
 			this.#composerWrap,
 		);
@@ -895,11 +920,6 @@ export class ConversationView {
 			},
 			{ signal: this.#lifetime.signal },
 		);
-		// The wall is read again after each change hint of the company's folder and when the member comes back to the tab.
-		if (actions.agentWall) {
-			this.#unsubscribe.push(actions.agentWall.onFolderChange(() => void this.#readWall()));
-			window.addEventListener("focus", () => void this.#readWall(), { signal: this.#lifetime.signal });
-		}
 		company.setOpenSession(sessionId);
 		this.#unsubscribe.push(
 			company.conversation(sessionId).subscribe(() => this.update()),
@@ -912,7 +932,6 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
-		this.#wall.dispose();
 		window.clearInterval(this.#timestampTimer);
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
@@ -1112,7 +1131,7 @@ export class ConversationView {
 		};
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
-					computer: () => this.show(agent.id, "computer"),
+					computer: () => this.show(agent.id, "computer", true),
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -1127,8 +1146,9 @@ export class ConversationView {
 	}
 
 	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does not know
-	 * its agent yet: the card's request then waits. */
-	show(agentId: string, page: AgentPage): boolean {
+	 * its agent yet: the card's request then waits. `asked`: the member's own click asked for it just now, so a sleeping
+	 * computer wakes (computer.ts OPEN_STARTS); false, the default, for the page's own opens. */
+	show(agentId: string, page: AgentPage, asked = false): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
@@ -1137,7 +1157,13 @@ export class ConversationView {
 		// The computer sits under the pages laid over the thread: they close for it.
 		this.#closePair(false);
 		this.#closeCodingSession();
-		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
+		if (page === "computer") {
+			const shown = this.#panel;
+			// Already here: the click still asks for the computer (a sleeping one wakes).
+			if (shown && asked) this.#panels.open(agent, { asked });
+			(shown ?? this.#showPanel(agent, asked))?.focus();
+			this.#revealComputer();
+		}
 		return true;
 	}
 
@@ -1221,9 +1247,12 @@ export class ConversationView {
 
 	#toggleComputer(): void {
 		if (this.#panel) {
+			// Closing it is the member's no for the rest of the agent's stretch at its computer (20260930742000).
+			this.#panels.byItself.closed(this.#panel.agentId, this.#company.atComputer(this.#panel.agentId)?.since);
 			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
+			this.#redrawComputer();
 			if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
 			return;
 		}
@@ -1571,20 +1600,104 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
-	#takeOver(agent: HostedStaffAgent): void {
-		const panel = this.#panel ?? this.#showPanel(agent);
+	/** The take-over card's Open computer (review r1 F1 of #1812): what its Take over did, but the hold. The agent's
+	 * computer here, asked by the member's own click (a sleeping one wakes: computer.ts OPEN_STARTS), focused, and its
+	 * large view once a picture shows, where the member uses it as it is shared. */
+	#openComputer(agent: HostedStaffAgent): void {
+		if (this.#panel) this.#panels.open(agent, { asked: true });
+		const panel = this.#panel ?? this.#showPanel(agent, true);
 		panel?.focus();
+		this.#revealComputer();
+		panel?.enterWhenShown();
 	}
 
-	/** Show the agent's computer here: the one already open, or one started now. */
-	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
-		const panel = this.#panels.open(agent);
+	/** The computer opened on the member's click (the agent card's Computer, the take-over card's Open computer): the
+	 * thread goes to where its window stands, for a click whose answer is under the fold is no answer (found on the
+	 * live app, 15 Nov 2026: the window came in at the thread's end, under the composer). A window at the thread's end
+	 * keeps the thread at its end while it grows into its place (the start scene, then the picture: the size observer
+	 * pins it); one that stands further up, where the agent left it, comes into view between the thread's top and the
+	 * foot laid over its bottom. The window takes the keyboard without a scroll of the browser's own (ComputerPanel
+	 * focus): that scroll knew nothing of the foot and left the thread just short of its end, where it no longer
+	 * followed. A window that shows by itself (#computerByItself) never moves a thread the member has scrolled. */
+	#revealComputer(): void {
+		// After the redraw that puts the row in its place (#redrawComputer's microtask, queued before this one).
+		queueMicrotask(() => {
+			const row = this.#computerRow;
+			if (this.#disposed || !this.#panel || !row.isConnected) return;
+			// The large view covers the thread from the row: nothing to bring into view.
+			if (this.#panel.el.classList.contains("is-entered")) return;
+			const followed = this.#timestampRows.some(
+				({ node }) => (row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+			);
+			if (!followed) {
+				this.#stickToBottom = true;
+				this.#pinToBottom();
+				return;
+			}
+			const view = this.#messages.getBoundingClientRect();
+			const box = row.getBoundingClientRect();
+			const gap = 12 * uiScale();
+			const top = view.top + gap;
+			const bottom = view.bottom - this.#foot.offsetHeight - gap;
+			// Taller than the room, or above it: its top at the top. Below it: its bottom at the foot.
+			const by = box.top < top || box.height > bottom - top ? box.top - top : Math.max(0, box.bottom - bottom);
+			if (by !== 0) this.#messages.scrollTop += by;
+		});
+	}
+
+	/** The agent's computer shows here by itself while the agent works at it (20260930742000; the rules are in
+	 * computer-by-itself.ts): watch only, without focus, once per stretch of the agent's use; it stays after. */
+	#computerByItself(agent: HostedStaffAgent | undefined): void {
+		if (!agent || this.#disposed) return;
+		const rules = this.#panels.byItself;
+		const since = this.#agentState === "computer" ? this.#company.atComputer(agent.id)?.since : undefined;
+		if (since === undefined || !rules.wanted(agent.id, since, this.#panel !== undefined, this.#panels.busy())) return;
+		// Not the member's ask (`asked: false`): a window that shows by itself never wakes or starts a computer (the agent's
+		// machine runs while it uses it); a sleeping one shows the asleep scene with Wake it, for the member to press.
+		const panel = this.#showPanel(agent, false);
+		if (panel) rules.opened(agent.id, since);
+	}
+
+	/** Show the agent's computer here: the one already open, or one started now. `asked`: the member's own click. */
+	#showPanel(agent: HostedStaffAgent, asked = false): ComputerPanel | undefined {
+		const panel = this.#panels.open(agent, { asked });
 		if (!panel) return undefined;
+		// A window that comes into the thread stands at its end; one already here stays where it is.
+		if (!this.#computerSlot.contains(panel.el)) this.#computerAfter = undefined;
 		this.#panel = panel;
-		panel.attach(this.#body, () => this.#toggleComputer());
+		// In the thread at once (at its end, where a new window stands), before the window comes into it: one that comes
+		// back entered covers the thread from there (review r1 F3 of #1787). The redraw puts the row in its place.
+		if (!this.#computerRow.isConnected) this.#log.append(this.#computerRow);
+		panel.attach(this.#computerSlot, () => this.#toggleComputer());
 		this.#autosize();
+		this.#redrawComputer();
 		return panel;
+	}
+
+	/** The computer came into the thread or left it outside a redraw: its row is placed again (a row with no window
+	 * leaves at once). */
+	#redrawComputer(): void {
+		if (!this.#panel) this.#computerRow.remove();
+		if (this.#computerRedraw) return;
+		this.#computerRedraw = true;
+		queueMicrotask(() => {
+			this.#computerRedraw = false;
+			this.update();
+		});
+	}
+
+	/** The figure beside the computer's window: working at it while the agent uses it, else still, as in its messages.
+	 * The line under the window says so in words. */
+	#drawComputerFigure(agent: HostedStaffAgent | undefined, agentName: string, working: boolean, locale: string): void {
+		const state = working ? this.#agentState : "idle";
+		const key = JSON.stringify([state, agentName, agent?.id, agent?.appearance, agent?.templateId, locale]);
+		if (key === this.#computerFigureKey) return;
+		this.#computerFigureKey = key;
+		const look = AGENT_LOOK[state];
+		replace(this.#computerFigure, agentFigure(agent, agentName, { size: 40, activity: look.figure }));
+		const caption = working ? activityCaption(look, agentName).label : "";
+		this.#computerCaption.textContent = caption;
+		this.#computerCaption.hidden = !caption;
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -1839,18 +1952,127 @@ export class ConversationView {
 		];
 	}
 
-	/** A member's message; one that answers a question from the wall shows the question above the member's words. */
-	#memberBody(text: string, quotes: readonly MessageQuote[] = []): HTMLElement {
+	/** What the draft answers, above the field: for a note sent from an app's page and left waiting here
+	 * (app/tell-agent.ts), the app (its own name and emblem once the company's apps are read) and what the note is about.
+	 * Never the line as written: the send puts it first (cloud/wall-reply.ts `withReply`). A line that names no app
+	 * shows as "Answering" and the line: the agent's wall used to set one, and nothing in the web does since it went
+	 * (Jonas, 14 Nov 2026). */
+	#showAnswering(answering: string | undefined): void {
+		const note = answering === undefined ? undefined : appNoteHeader(answering);
+		const app = this.#answerApp(answering);
+		this.#answerStrip.hidden = !answering;
+		this.#answerStrip.classList.toggle("is-note", note !== undefined);
+		this.#answerEmblem.hidden = note === undefined;
+		replace(this.#answerEmblem, note ? (app?.look?.emblem() ?? interfaceEmblem("page", 34)) : "");
+		if (app?.look?.colour) this.#answerEmblem.style.setProperty("--app-colour", app.look.colour);
+		else this.#answerEmblem.style.removeProperty("--app-colour");
+		this.#answerLabel.textContent = note ? (app?.name ?? note.app) : t("Answering");
+		this.#answerQuestion.textContent = note ? note.about : (answering ?? "");
+		const stop = note ? t("Leave the app out") : t("Stop answering");
+		this.#answerStop.setAttribute("aria-label", stop);
+		this.#answerStop.title = stop;
+		this.#composer.placeholder = answering && !note ? t("Your answer…") : t("Message…");
+	}
+
+	/** The app a waiting note answers, as the company's apps say it now (its name, and its emblem and colour as the
+	 * drawer draws them), with a key that changes when any of it does. */
+	#answerApp(answering: string | undefined): { name: string; look?: AppLook; key: string } | undefined {
+		const note = answering === undefined ? undefined : appNoteHeader(answering);
+		const app = note && this.#company.store.get().apps?.find((entry) => entry.name === note.app);
+		if (!app?.manifest) return undefined;
+		const look = appLook(this.#company, app);
+		return {
+			name: app.manifest.name,
+			...(look ? { look } : {}),
+			key: `${app.manifest.name}\u0000${look?.key ?? ""}`,
+		};
+	}
+
+	/** A member's message; one that opens with a quoted line (`> question`, an empty line, the member's words) shows the
+	 * line above the member's words. Members answered the questions on an agent's wall this way from 7 Nov 2026 until the
+	 * wall went (14 Nov 2026), and those messages stay in the threads. A note
+	 * sent from an app's page (RUNTIME-INTERFACE-APPS.md §5 "tell") opens with the app's card instead, with what the note
+	 * is about as its line: it stands on the thread above the member's words, as an agent's message has its cards, and a
+	 * press on it opens the app. */
+	#memberParts(text: string, quotes: readonly MessageQuote[] = []): HTMLElement[] {
+		const parts = this.#memberWords(text, quotes);
+		// A site of the company the member's words link: its card under them, as under an agent's. (A message may come
+		// without text: it shows as "(empty)".)
+		if (!this.#siteCards || typeof text !== "string") return parts;
+		const sites = new Map<string, HTMLElement>();
+		for (const [href] of text.matchAll(/https:\/\/[^\s<>"'`]+/g)) {
+			const site = this.#linkedSite(href.replace(/[.,;:!?)\]]+$/, ""));
+			if (site && !sites.has(site.id)) sites.set(site.id, site.card());
+		}
+		return sites.size ? [...parts, h("div", { class: "app-cards site-cards" }, [...sites.values()])] : parts;
+	}
+
+	/** The card of the company's site a link leads to, once the thread knows the company's sites. */
+	#linkedSite(href: string): LinkedSite | undefined {
+		const cards = this.#siteCards;
+		const site = cards?.match(href);
+		return cards && site ? { id: site.id, card: () => cards.card(site) } : undefined;
+	}
+
+	/** Brings in the thread's pieces of the company's projects and sites once the company has any: the card of a change
+	 * ready from this thread's agent (not in a group chat), and the cards of sites its messages link. */
+	#threadPieces(room: boolean, known: boolean): void {
+		const company = this.#company.store.get();
+		const signal = AbortSignal.any([this.#lifetime.signal, this.#company.signal]);
+		const releases = this.#actions.codeReleases;
+		if (!this.#ready && releases && known && !room && company.whatsNew !== undefined)
+			this.#ready = new ThreadReady(this.#company, this.#sessionId, releases.client, releases.options, signal, {
+				agentId: () =>
+					this.#isRoom
+						? undefined
+						: this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId)?.staffAgentId,
+				focusComposer: () => {
+					this.focus();
+					const end = this.#composer.value.length;
+					this.#composer.setSelectionRange(end, end);
+				},
+				shownChanged: () => this.#redrawItems(),
+				...(releases.last ? { last: releases.last } : {}),
+			});
+		this.#ready?.update();
+		const sites = this.#actions.companySites;
+		if (!this.#siteCards && sites && (company.siteCount ?? 0) > 0)
+			this.#siteCards = new ThreadSites(sites.client, sites.canManage, this.#company.profile.profileId, signal, () =>
+				this.#redrawItems(),
+			);
+		this.#siteCards?.update();
+	}
+
+	/** Draws the thread's items again, after the update that asked for it: a card came or went, or the company's sites
+	 * changed what a message's links show. */
+	#redrawItems(): void {
+		queueMicrotask(() => {
+			if (this.#disposed) return;
+			this.#renderedKey = "";
+			this.update();
+		});
+	}
+
+	/** A member's words, as #memberParts draws them before any card of a site they link. */
+	#memberWords(text: string, quotes: readonly MessageQuote[]): HTMLElement[] {
 		const reply = splitReply(text);
-		if (!reply) return h("div", { class: "text" }, ...(text ? this.#withMentions(text, quotes) : [t("(empty)")]));
+		if (!reply) return [h("div", { class: "text" }, ...(text ? this.#withMentions(text, quotes) : [t("(empty)")]))];
 		const shift = [...text.slice(0, reply.start)].length;
 		const own = quotes.map((quote) => ({ ...quote, start: quote.start - shift, end: quote.end - shift }));
-		return h(
-			"div",
-			{ class: "text" },
-			h("span", { class: "message-reply" }, reply.question),
-			...this.#withMentions(reply.text, own),
-		);
+		const note = appNoteHeader(reply.question);
+		if (note)
+			return [
+				h("div", { class: "app-cards" }, appCard(note.app, note.app, note.about)),
+				...(reply.text ? [h("div", { class: "text" }, ...this.#withMentions(reply.text, own))] : []),
+			];
+		return [
+			h(
+				"div",
+				{ class: "text" },
+				h("span", { class: "message-reply" }, reply.question),
+				...this.#withMentions(reply.text, own),
+			),
+		];
 	}
 
 	/** A member's message with its mentions set apart, this member's own name most of all, and its quotes of outside
@@ -1919,7 +2141,6 @@ export class ConversationView {
 		const state = this.#company.conversation(this.#sessionId).get();
 		const files = [...(state.attachments ?? [])];
 		const retry = state.retrySend;
-		const answered = state.answering ? this.#answeringItem : undefined;
 		this.#dictation.cancel();
 		this.#submitting = true;
 		this.#syncSend();
@@ -1955,7 +2176,6 @@ export class ConversationView {
 				// Read at once by the send, before anything else may run: the message goes on this login.
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
-					if (answered) this.#wall.answerSent(answered);
 					if (!this.#isRoom) this.#run?.messageSent();
 					void this.#execution?.refresh();
 				}
@@ -2031,15 +2251,11 @@ export class ConversationView {
 			void this.#run?.refresh();
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
-		this.#working = this.#agentState === "working" || this.#agentState === "writing";
+		this.#working = agentWorks(this.#agentState);
 		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
-		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
-		this.#syncWall(
-			room || session?.audience.kind !== "company" || company.accessLost || !company.team?.capabilities.read
-				? undefined
-				: agent,
-		);
+		this.#threadPieces(room, Boolean(session));
+		if (!room) this.#computerByItself(agent);
 		this.#renderHere();
 		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
@@ -2082,11 +2298,14 @@ export class ConversationView {
 		this.#dictation.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && this.#menuOpen) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
-		if (conversation.answering !== this.#answerShown) {
+		const drawn = JSON.stringify([
+			conversation.answering ?? null,
+			this.#answerApp(conversation.answering)?.key ?? null,
+		]);
+		if (conversation.answering !== this.#answerShown || drawn !== this.#answerDrawn) {
 			this.#answerShown = conversation.answering;
-			this.#answerStrip.hidden = !conversation.answering;
-			this.#answerQuestion.textContent = conversation.answering ?? "";
-			this.#composer.placeholder = conversation.answering ? t("Your answer…") : t("Message…");
+			this.#answerDrawn = drawn;
+			this.#showAnswering(conversation.answering);
 			this.#autosize();
 		}
 		// Until the company says who may write here, the composer's place holds a placeholder.
@@ -2118,45 +2337,6 @@ export class ConversationView {
 		this.#renderMentionNote();
 		this.#renderQuoteNote();
 		this.#sharedDrafts.update();
-	}
-
-	/** The agent's wall in its own company thread: read when the thread knows its agent and again when its run ends. A
-	 * group chat and a member's private chat have none. */
-	#syncWall(agent: HostedStaffAgent | undefined): void {
-		const id = this.#actions.agentWall ? agent?.id : undefined;
-		if (id !== this.#wallAgent) {
-			this.#wallAgent = id;
-			this.#wallText = null;
-			if (id) void this.#readWall();
-		} else if (id && this.#wallWorking && !this.#working) void this.#readWall();
-		this.#wallWorking = this.#working;
-		this.#wall.show(id ? agent : undefined, this.#wallText);
-	}
-
-	async #readWall(): Promise<void> {
-		const source = this.#actions.agentWall;
-		if (!source || !this.#wallAgent || this.#disposed) return;
-		// One read at a time; a hint while one is on its way reads once more after it.
-		if (this.#wallReading) {
-			this.#wallAgain = true;
-			return;
-		}
-		this.#wallReading = true;
-		const id = this.#wallAgent;
-		try {
-			const text = await source.read(id, this.#lifetime.signal);
-			if (this.#disposed || id !== this.#wallAgent) return;
-			this.#wallText = text;
-			this.#wall.show(this.#company.staffById(id), text);
-		} catch {
-			/* What the poster shows stands; the next hint reads again. */
-		} finally {
-			this.#wallReading = false;
-			if (this.#wallAgain && !this.#disposed) {
-				this.#wallAgain = false;
-				void this.#readWall();
-			}
-		}
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
@@ -2426,6 +2606,8 @@ export class ConversationView {
 			[...this.#undos],
 			// A sent message learns its input id: the element passes on by it (see `handedOver`).
 			conversation.optimistic.map((item) => item.inputId ?? null),
+			this.#ready?.shown,
+			this.#siteCards?.key,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -2541,7 +2723,9 @@ export class ConversationView {
 			// A "/name" may be a skill. (An item that arrives without text still draws, as "(empty)".)
 			const skilled = item.text?.includes("/") === true;
 			// The mention targets and skill names go in as they are, once serialized for the render.
-			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`;
+			// A link may lead to one of the company's sites, whose card stands under the words: the sites as read go in too.
+			const linked = this.#siteCards && item.text?.includes("https://") ? `\n${this.#siteCards.key}` : "";
+			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`;
 			const time = `${zone} ${when(item.createdAt)}`;
 			// The input this form stands for, which the next form finds it by.
 			const input = optimisticInputs.has(item.id)
@@ -2564,7 +2748,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -2716,8 +2900,8 @@ export class ConversationView {
 										type: "button",
 										class: "peer-chip",
 										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id },
-										title: `${label} · ${fmtTime(item.createdAt)}`,
 										"aria-label": t("{label}. Open the conversation", { label }),
+										"aria-describedby": peerTimeId(item.id),
 										onclick: (event: MouseEvent) =>
 											this.#openPair(
 												item.pairSessionId,
@@ -2729,6 +2913,7 @@ export class ConversationView {
 									agentFigure(counterpart, name, { size: 16 }),
 									h("span", null, name),
 									after.trim() ? h("span", null, after.trim()) : null,
+									peerTime(item.id, item.createdAt),
 								),
 							);
 						},
@@ -2855,16 +3040,48 @@ export class ConversationView {
 								takeOver,
 							]),
 				]);
-				nodes.push(
-					keep(item.id, cardKey, email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`, () =>
+				// The agent's figure, waiting, as it stands beside its question in the questions dock: the head of a card
+				// that waits for the member. It becomes a "?" for a question and a "!" for anything else that waits (a
+				// secret, a takeover, a draft), as in the rail.
+				const ask = item.request.surface === "question" ? "question" : "bang";
+				const waitingFigure = agent
+					? () => agentFigure(agent, agentName, { size: 30, activity: "Waiting", ask })
+					: undefined;
+				const card = keep(
+					item.id,
+					cardKey,
+					email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`,
+					() =>
 						renderInteractionCard(
 							{ ...item, answer },
 							{
 								agentName,
 								memberName: (userId) => this.#company.memberName(userId),
 								canAnswer: answers,
+								inThread: true,
+								viewerId: this.#company.userId,
+								...(waitingFigure ? { figure: waitingFigure } : {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
-								answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+								...(this.#actions.folderApp ? { app: this.#actions.folderApp } : {}),
+								answer: async (outcome, answer) => {
+									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
+									// looks are let in again (20260930713000).
+									// It answers only once the database confirmed it has the desktop back (review r1 F4): otherwise the card
+									// stays open and says so, and I'm done asks again. It asks the company's ledger, not a window: a window
+									// closed meanwhile may still have a hand-back on its way (review r2 F4).
+									if (takeOver && outcome === "handed_back") {
+										const current = currentAgent();
+										if (current && !(await this.#panels.releaseAgent(current.id))) {
+											this.#company.conversation(this.#sessionId).set({
+												interactionError: t(
+													"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.",
+												),
+											});
+											throw new Error("The computer was not given back");
+										}
+									}
+									return this.#answerInteraction(item.id, outcome, answer);
+								},
 								...(email
 									? {
 											emailDraft: this.#company.emailDraftEditor(item.id),
@@ -2879,9 +3096,9 @@ export class ConversationView {
 									: {}),
 								...(takeOver
 									? {
-											takeOver: () => {
+											openComputer: () => {
 												const current = currentAgent();
-												if (current) this.#takeOver(current);
+												if (current) this.#openComputer(current);
 											},
 										}
 									: {}),
@@ -2894,8 +3111,17 @@ export class ConversationView {
 									: {}),
 							},
 						),
-					),
 				);
+				// The figure follows the agent's look by itself. The look is no part of the card's key: a card drawn
+				// again for it would lose an answer half made in it (review r1 F1 on #1730).
+				const stand = card.querySelector<HTMLElement>(".interaction-figure");
+				if (stand && waitingFigure) {
+					const look = JSON.stringify([agent?.id, agent?.appearance, agent?.templateId]);
+					if (stand.dataset.look !== undefined && stand.dataset.look !== look)
+						stand.replaceChildren(waitingFigure());
+					stand.dataset.look = look;
+				}
+				nodes.push(card);
 			}
 			const date = parseConversationTimestamp(item.createdAt);
 			const node = nodes[nodes.length - 1];
@@ -2922,6 +3148,9 @@ export class ConversationView {
 					h("div", { class: "conversation-note", role: "note" }, t("More saved changes wait after these.")),
 				),
 			);
+		// A change of this agent's that is ready to go live waits below them; the card draws itself in place.
+		const ready = this.#ready;
+		if (ready?.shown) nodes.push(keep("code ready", "", "", () => ready.el));
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
@@ -2949,6 +3178,7 @@ export class ConversationView {
 			!items.length &&
 			!codingSessions.length &&
 			!proposals.length &&
+			!this.#ready?.shown &&
 			!conversation.error &&
 			!this.#working &&
 			!conversation.hasEarlier
@@ -2958,7 +3188,32 @@ export class ConversationView {
 			nodes.push(this.#emptyRow);
 		}
 		const priorActivity = this.#activityRow?.element;
-		if (this.#working && !conversation.loading) {
+		// The agent's computer, while this thread shows it: its own row (#computerRow). The live end while the agent uses
+		// it, in the working figure's place; else where it stood then, before the first item that came after.
+		const computer = this.#panel !== undefined && this.#computerSlot.contains(this.#panel.el);
+		const atComputer = computer && this.#agentState === "computer" && !conversation.loading;
+		const latest = this.#timestampRows.reduce(
+			(time, row) => Math.max(time, (row.last ?? row.date).getTime()),
+			Number.NEGATIVE_INFINITY,
+		);
+		if (computer) this.#drawComputerFigure(agent, agentName, atComputer, locale);
+		if (computer && !atComputer) {
+			// Its place is fixed once the thread has read what it holds; while it reads, or after a read that failed, the row
+			// waits at the end (review r1 F1, r2 F1 of #1787).
+			if (!conversation.loading && !conversation.error) this.#computerAfter ??= latest;
+			const after = this.#computerAfter;
+			const next =
+				after === undefined ? undefined : this.#timestampRows.find((row) => row.date.getTime() > after)?.node;
+			const at = next ? nodes.indexOf(next) : -1;
+			const index = at < 0 ? nodes.length : at;
+			nodes.splice(index, 0, this.#computerRow);
+			if (index < liveStart) liveStart += 1;
+		}
+		if (atComputer) {
+			this.#computerAfter = latest;
+			this.#activityRow = undefined;
+			nodes.push(this.#computerRow);
+		} else if (this.#working && !conversation.loading) {
 			// As on the desktop: the figure works or writes, and "Nova is writing"
 			// shows beside it on hover or focus, never as a bubble. The row is kept while it
 			// reads the same, so its figure's motion runs on through new messages.
@@ -3216,6 +3471,8 @@ export class ConversationView {
 		// message gone from the thread leaves it on the thread.
 		if (focusedMessage && (!document.activeElement?.isConnected || document.activeElement === document.body))
 			this.#focusMessage(focusedMessage);
+		// Rows drawn now beside the computer's way are covered while its large view is open.
+		this.#panel?.coverAgain();
 		this.#pinToBottom();
 	}
 
@@ -3263,7 +3520,8 @@ export class ConversationView {
 		if (element.className !== className) element.className = className;
 		const label = `${author} · ${fmtTime(item.createdAt)}`;
 		if (element.getAttribute("aria-label") !== label) element.setAttribute("aria-label", label);
-		if (element.title !== label) element.title = label;
+		// Its time shows on a hover (ui/sent-time-hover.ts).
+		if (element.dataset.sentAt !== item.createdAt) element.dataset.sentAt = item.createdAt;
 		if (element.dataset.messageId !== item.id) element.dataset.messageId = item.id;
 		const shown = (item.kind === "agent" && room) || (item.kind === "member" && !mine);
 		const authorPart = !shown
@@ -3277,9 +3535,9 @@ export class ConversationView {
 				item.erased
 					? [h("div", { class: "text" }, t("(erased)"))]
 					: item.kind === "agent"
-						? markdownBubbles(item.text)
+						? markdownBubbles(item.text, (href) => this.#linkedSite(href))
 						: item.text || !item.attachmentCount
-							? [this.#memberBody(item.text, item.quotes)]
+							? this.#memberParts(item.text, item.quotes)
 							: []
 			).map((part) => h("div", { class: "bubble" }, part));
 			// Marked before they join the log, which then reads them once.
@@ -3452,8 +3710,8 @@ export class ConversationView {
 					type: "button",
 					class: compact ? "peer-chip figure-only" : "peer-chip",
 					dataset: { pairSessionId: link.pairSessionId, linkIds: ids },
-					title: `${name} · ${fmtTime(link.createdAt)}`,
 					"aria-label": t("{label}. Open the conversation", { label: name }),
+					"aria-describedby": peerTimeId(link.id),
 					onclick: (event: MouseEvent) =>
 						this.#openPair(
 							link.pairSessionId,
@@ -3463,6 +3721,7 @@ export class ConversationView {
 				},
 				agentFigure(staff, name, { size: 16 }),
 				compact ? null : h("span", null, name),
+				peerTime(link.id, link.createdAt),
 			),
 		);
 		const words = (text: string) => (text.trim() ? h("span", { class: "peer-words" }, text.trim()) : null);

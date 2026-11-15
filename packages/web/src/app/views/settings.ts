@@ -1,7 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
-import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -24,7 +23,6 @@ import { CompanyBrandView } from "./settings-brand.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
 import { RulesView } from "./settings-rules.ts";
-import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
 
@@ -57,23 +55,17 @@ const TABS = [
 		keywords:
 			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
 	},
-	{
-		id: "company-connections",
-		label: phrase("Company connections"),
-		icon: "connections",
-		keywords:
-			"services accounts gmail google drive github token secrets agents virksomhedens forbindelser tjenester konti hemmeligheder agenter",
-	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
 /** "my-connections" is AI subscriptions' old name: Settings opened on it show AI subscriptions. "appearance" was a
  * tab of its own: it is part of General now. Sites, webhooks, mailboxes and Digital Post left Settings (Jonas, 9 Nov
  * 2026): Sites is a page of the apps drawer, webhooks are under an agent's routines, and the Mailbox makes its own
- * addresses and connects Digital Post. */
+ * addresses and connects Digital Post. Company connections (Gmail, Google Drive, GitHub) left too (Jonas, 10 Nov 2026:
+ * companies are fully Qorpera-hosted; back only if it is needed). */
 export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connections" | "appearance";
 /** Pages of the open company. Settings with no company open (from the company list with several) show only the
  * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
-const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections"]);
+const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company"]);
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
@@ -155,7 +147,6 @@ export class SettingsView {
 	#connections: ConnectionsView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
 	#accountSubscriptions: AccountSubscriptionsView | undefined;
-	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
 	#brand: CompanyBrandView | undefined;
 	/** The company's good will, on the Company tab. */
@@ -449,7 +440,6 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#accountSubscriptions?.dispose();
-		this.#services?.dispose();
 		this.#rules?.dispose();
 		this.#goodWill?.dispose();
 		this.#myGoodWill?.dispose();
@@ -723,13 +713,8 @@ export class SettingsView {
 		else if (this.#company) {
 			const company = this.#company;
 			const memberId = this.#auth.userId!;
-			const signal = () => AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
-			const environment = {
-				profileId: company.profile.profileId,
-				environmentId: company.profile.environmentId,
-			};
 			if (tab === "ai-subscriptions" && !this.#connections) {
-				const lifetime = signal();
+				const lifetime = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
 				const signIns = memberProviderSignIns(memberId, company.profile.profileId);
 				// A sign-in belongs to the member, not to this page: it continues while
 				// the page is rebuilt or closed, and stops only if the account changes.
@@ -759,29 +744,6 @@ export class SettingsView {
 				// Coding values (environment variables a coding session gets) are no longer drawn here (Jonas, 9 Nov 2026:
 				// not something to show founders); the cloud keeps them.
 				this.#panels.set(tab, connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el));
-			} else if (tab === "company-connections" && !this.#services) {
-				// Step 7 connectors. Owners and admins manage them, everyone sees them. The company's coding values are no
-				// longer drawn here (Jonas, 9 Nov 2026); the cloud keeps them.
-				const canManage = () => {
-					const role = company.store.get().team?.role;
-					return role === "owner" || role === "admin";
-				};
-				this.#services = new ServicesView(createWebConnectors(this.#api.cloud, environment), signal(), {
-					access: {
-						canManage,
-						memberName: (userId) =>
-							company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
-							undefined,
-					},
-				});
-				this.#panels.set(
-					tab,
-					connectionsPage(
-						t("Company connections"),
-						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
-						this.#services.el,
-					),
-				);
 			}
 		}
 		const panel =
@@ -886,8 +848,6 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#accountSubscriptions?.dispose();
 		this.#accountSubscriptions = undefined;
-		this.#services?.dispose();
-		this.#services = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
 		this.#brand = undefined;
@@ -902,14 +862,13 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "ai-subscriptions", "company-connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "ai-subscriptions"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
 					this.#close();
 					return;
 				}
-				this.#services?.update();
 				this.#rules?.update();
 				this.#drawCompany();
 				if (this.#folder || this.#mode === "storage") this.#drawStorage();

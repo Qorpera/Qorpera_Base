@@ -177,11 +177,12 @@ export function withinBytes(text: string, bytes: number): string {
 }
 /** The paths a refused landing names, quoted: at most 20 of them and at most 2000 bytes, so that what to do about
  * them always fits the summary after them (a path may be 4 KiB, and its characters several bytes each); then how many
- * more there are. Empty when there is none. */
-function namedPaths(paths: readonly string[]): string {
+ * more there are. A null is a path counted and never named (the import look's rule, `codeImportShown`). Empty when there
+ * is none. */
+function namedPaths(paths: readonly (string | null)[]): string {
 	const shown: string[] = [];
 	let used = 0;
-	for (const path of paths.slice(0, 20)) {
+	for (const path of paths.filter((path) => path !== null).slice(0, 20)) {
 		const quoted = JSON.stringify(path);
 		const size = Buffer.byteLength(quoted) + 2;
 		if (used + size > 2000) break;
@@ -189,7 +190,10 @@ function namedPaths(paths: readonly string[]): string {
 		used += size;
 	}
 	const more = paths.length - shown.length;
-	if (!shown.length) return more ? `${more} path${more === 1 ? "" : "s"} too long to name here` : "";
+	if (!shown.length)
+		return more
+			? `${more} path${more === 1 ? "" : "s"} ${paths.includes(null) ? "not named here" : "too long to name here"}`
+			: "";
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 /** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
@@ -216,20 +220,30 @@ export function prepareUnfinished(error: unknown): string {
  * log. */
 export const TURN_START_UNFINISHED =
 	"The coding turn could not start, so nothing ran and nothing was changed. The workspace is kept; a follow-up tries again. [code=CODING_TURN_START_UNFINISHED]";
-/** What to change after a landing the code host refused by rule (its code, and the paths it named), or whose refs it
- * could not read, or undefined for a code this does not know. Never a plain "finish again" for work that would be
- * refused the same way. */
-export function landRefusal(baseBranch: string, code: string, paths: readonly string[]): string | undefined {
+/** The codes a landing refused for its files' names, or for a file too large, ends its words with (`[code=…]`), as the
+ * checks' do: the kernel keeps the words and takes the code as the turn's reason (migration 20260930743000), and a
+ * member's page says the change was not saved. Codes of their own, not the code host's, so a page can tell such a
+ * landing (the turn ran) from a workspace refused for the same names (the session could not start). */
+export const CODING_LAND_NAMES_REFUSED = "CODING_LAND_NAMES_REFUSED";
+export const CODING_LAND_FILE_TOO_LARGE = "CODING_LAND_FILE_TOO_LARGE";
+/** What to change after a landing the code host refused by rule (its code, and the paths it named, a null for one not
+ * to be named), or whose refs it could not read, or undefined for a code this does not know. Never a plain "finish
+ * again" for work that would be refused the same way. A refusal for the files' names or size ends with its code. */
+export function landRefusal(baseBranch: string, code: string, paths: readonly (string | null)[]): string | undefined {
 	const named = paths.length ? `: ${namedPaths(paths)}` : "";
 	const not = `The change was not landed, and nothing changed on ${baseBranch}`;
 	switch (code) {
 		case "CODE_HOST_FILE_TOO_LARGE":
-			return `${not}: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take${named}. Take them out, commit and finish again.`;
+			return `${not}: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take${named}. Take them out, commit and finish again. [code=${CODING_LAND_FILE_TOO_LARGE}]`;
 		case "CODE_HOST_NAMES_DIFFER_BY_CASE":
-			return `${not}: it holds names in one folder that differ only by upper and lower case${named}. Rename them so that each is its own name, commit and finish again.`;
+			return `${not}: it holds names in one folder that differ only by upper and lower case${named}. Rename them so that each is its own name, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
 		case "CODE_HOST_NAMES_NOT_UTF8":
 		case "CODE_HOST_NAMES_NOT_NFC":
-			return `${not}: it holds file names that are not plain Unicode text (UTF-8, in its composed form NFC)${named}. Rename them, commit and finish again.`;
+			return `${not}: it holds file names that are not plain Unicode text (UTF-8, in its composed form NFC)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
+		case "CODE_HOST_NAMES_FOLDER_REFUSES":
+			// git takes such names; the company folder, which holds the repository's files, does not. The landing asks its
+			// rule where any session's worktree would hold a path (CODE_FOLDER_ANY_SESSION), 42 bytes deeper than main/.
+			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
 		case "CODE_HOST_EXPORT_MOVED":
 		case "CODE_HOST_EXPORT_NO_BRANCH":
 			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;
@@ -244,6 +258,9 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly st
 		case "CODE_HOST_LINK":
 		case "CODE_HOST_UNEXPECTED_FILE":
 			return `${not}: the repository's own storage in the company folder is not as Qorpera left it, so nothing can go into ${baseBranch} until Qorpera has repaired it. Finishing again will not help. The work is kept on the session's branch; say so in your report.`;
+		case "CODE_HOST_RESTORE_IN_PROGRESS":
+			// Every job on the repository is refused while it is put back from its stored copy (own code storage, step 2b).
+			return `${not}: the repository is being restored from its copy. A follow-up in a few minutes works.`;
 		default:
 			return undefined;
 	}
@@ -251,6 +268,10 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly st
 /** A publication that failed for another reason than a refusal (the step's own code is in the executor's log). */
 export const PUBLICATION_UNFINISHED =
 	"Handing in the work did not finish, so it may not have reached the repository yet. The work is kept on the session's branch; finishing again hands it in. [code=CODING_PUBLICATION_UNFINISHED]";
+/** The turn's step while the work of a session on a repository kept in Qorpera lands: its checks run, then it goes
+ * into the default branch (own code storage, step 3). Set before the executor knows whether the repository has checks.
+ * The web shows the founder's card line for checks by these exact words. */
+export const CODING_LANDING_STEP = "Checking and saving the change";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -304,9 +325,11 @@ export interface CodingSessionClaim {
 	followUp: string | null;
 }
 
-/** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). */
+/** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). `picture`: the screenshot the
+ * session committed to show its change, by its path in the repository (own code storage, step 2b). The sentence on
+ * what a customer will notice stays in the kernel: the executor never needs it. */
 export type CodingSubmission =
-	| { kind: "finish"; summary: string; headSha: string; operationKey: string }
+	| { kind: "finish"; summary: string; headSha: string; operationKey: string; picture?: string }
 	| { kind: "ask"; summary: string; question: string; options: string[]; operationKey: string };
 
 /** The turn as qorpera_describe_coding_turn reports it. */
@@ -337,8 +360,14 @@ export interface CodingExecutorPublication {
 	/** True only after a trusted comparison against the pinned original head. */
 	readonly noChange: boolean;
 	/** A repository kept in Qorpera (own code storage, slice 1): where the submitted commit landed on its default
-	 * branch. It has no pull request. */
-	readonly landed?: { readonly state: "fast-forward" | "merged" | "unchanged"; readonly mainSha: string };
+	 * branch. It has no pull request. `filesChanged`: how many paths differ between the default branch before and after
+	 * (0 when unchanged). `change`: the landing's number in the repository's change record, when the kernel gave it one. */
+	readonly landed?: {
+		readonly state: "fast-forward" | "merged" | "unchanged";
+		readonly mainSha: string;
+		readonly filesChanged: number;
+		readonly change: number | null;
+	};
 }
 export interface CodingExecutorHost {
 	/** Plan and wake the member's coding machine on genuine node capacity, attach
@@ -432,6 +461,11 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 	};
 }
 
+/** A picture's path in the repository, as qorpera_submit_coding_turn takes it: plain names, no part that is `.` or
+ * `..`, a picture's ending, at most 300 bytes. */
+const PICTURE_PATH =
+	/^[A-Za-z0-9._-][A-Za-z0-9._ -]*(?:\/[A-Za-z0-9._-][A-Za-z0-9._ -]*)*\.(?:png|jpg|jpeg|webp|PNG|JPG|JPEG|WEBP)$/;
+
 export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 	if (value === null || value === undefined) return null;
 	const item = record(value, "Invalid coding submission");
@@ -444,7 +478,21 @@ export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 		throw new Error("Invalid coding submission");
 	if (item.kind === "finish") {
 		if (typeof item.headSha !== "string" || !SHA40.test(item.headSha)) throw new Error("Invalid coding submission");
-		return { kind: "finish", summary: item.summary, headSha: item.headSha, operationKey: item.operationKey };
+		// A picture that is not a path the kernel takes is dropped: the work is handed in without one.
+		const picture =
+			typeof item.picture === "string" &&
+			Buffer.byteLength(item.picture) <= 300 &&
+			PICTURE_PATH.test(item.picture) &&
+			!item.picture.split("/").some((part) => part === "." || part === "..")
+				? { picture: item.picture }
+				: {};
+		return {
+			kind: "finish",
+			summary: item.summary,
+			headSha: item.headSha,
+			operationKey: item.operationKey,
+			...picture,
+		};
 	}
 	if (item.kind === "ask") {
 		if (typeof item.question !== "string" || !item.question.trim()) throw new Error("Invalid coding submission");
@@ -916,9 +964,10 @@ export class CloudCodingExecutor {
 			if (submission?.kind === "finish" && turn.jobStatus === "completed") {
 				await progress({
 					p_phase: "publishing",
-					// A repository kept in Qorpera has no pull request: its work lands (own code storage).
+					// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
+					// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
 					p_last_step:
-						claimed.repository.host === "qorpera" ? "Landing the change" : "Publishing the draft pull request",
+						claimed.repository.host === "qorpera" ? CODING_LANDING_STEP : "Publishing the draft pull request",
 				});
 				let publication: CodingExecutorPublication;
 				try {
@@ -961,21 +1010,33 @@ export class CloudCodingExecutor {
 				if (!publication.pullRequest && !publication.noChange && !publication.landed)
 					throw new Error("Coding publication unconfirmed");
 				end();
+				const landed = publication.landed;
+				// How many files the landing changed on the default branch, for the session's card: only for a landing that
+				// moved it, and only a count the kernel takes.
+				const filesChanged =
+					landed &&
+					landed.state !== "unchanged" &&
+					Number.isSafeInteger(landed.filesChanged) &&
+					landed.filesChanged >= 0 &&
+					landed.filesChanged <= 2_147_483_647
+						? landed.filesChanged
+						: null;
 				await complete("succeeded", submission.summary, {
 					p_pull_request: publication.pullRequest,
 					p_harness_session_ref: claimed.harnessSessionRef,
 					// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
-					...(publication.landed
+					...(landed
 						? {
 								p_artifacts: [
 									{
 										kind: "landed",
-										state: publication.landed.state,
+										state: landed.state,
 										branch: claimed.repository.baseBranch,
 										headSha: submission.headSha,
-										mainSha: publication.landed.mainSha,
+										mainSha: landed.mainSha,
 									},
 								],
+								p_files_changed: filesChanged,
 							}
 						: {}),
 				});

@@ -4,14 +4,12 @@ export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
 /** How an agent links a file of the company folder in a message: a markdown link whose target is `folder:` and the
  * file's company path, which the app opens in the folder's view (21 October 2026). */
 export const CLOUD_FOLDER_LINK_EXAMPLE = "[sales-dashboard.html](folder:sales/sales-dashboard.html)";
-export const CLOUD_AGENT_SEND_INSTRUCTIONS =
-	"send_message sends a message to this conversation. It is your only public voice: ordinary assistant text, reasoning, tool calls and tool results stay private. " +
-	"phase progress keeps people informed and does not end your turn. When the reply policy asks you to acknowledge a request, do it with one short progress message before you start work, and never acknowledge twice in the same run. " +
-	"phase final delivers this turn's result, a concrete blocker or a decision request, and it ends the turn at once: " +
-	"nothing after it runs, so finish every file change, check and coworker message before it. " +
-	"Never end with a promise such as I'll do it: say what is done and where it is, and when work goes on after the turn, what runs it (a worker, or a todo behind it). " +
-	`Link every file you made or changed in the company folder as a markdown link to folder: and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}. ` +
-	"If a send's result was lost, retry with the same idempotencyKey and exactly the same arguments. Never include private reasoning or credentials.";
+export const CLOUD_AGENT_SEND_INSTRUCTIONS = [
+	"Send a message to this conversation: your only public voice. Your own text, reasoning, tool calls and their results stay private.",
+	"- progress: keeps people informed and does not end your turn. When the reply policy asks you to acknowledge, send one short progress message before you start work, once in a run.",
+	"- final: this turn's result, a concrete blocker or a decision request. It is your last message: make every file change, check and coworker message first. End with what is done and where it is, and, when work goes on after the turn, what runs it (a worker, or a todo behind it); not with a promise such as I'll do it.",
+	"A send whose result was lost is retried with the same idempotencyKey and exactly the same arguments. Credentials never go in a message.",
+].join("\n");
 
 /** The fixed code of a run whose turn ended without the final send it owed, also after the one more turn it was
  * given to send it (10 November 2026). The run's stored failure carries it, and the member reads "the agent finished

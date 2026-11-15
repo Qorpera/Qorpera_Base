@@ -1,6 +1,19 @@
+import {
+	drawnStaffCharacter,
+	STAFF_CHARACTER_BY_TEMPLATE,
+	STAFF_CHARACTER_IDS,
+	type StaffCharacterId,
+} from "@qorpera/cloud-client/staff-characters";
 import { AGENT_COLOUR_HEX } from "../cloud/agent-colours.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
-import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
+import {
+	type Activity,
+	type Ask,
+	type FigureArtwork,
+	type FigureMotion,
+	type Moment,
+	mountFigureMotion,
+} from "./figure-motion.ts";
 import { phrase, t } from "./preferences.ts";
 import { designPx } from "./scale.ts";
 
@@ -57,8 +70,9 @@ export function figureArtwork(): FigureArtwork | undefined {
 	};
 }
 
-export const FIGURE_IDS = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
-export type FigureId = (typeof FIGURE_IDS)[number];
+/** The figures on offer, in the shared order (cloud-client staff-characters): the runtime walks the same list. */
+export const FIGURE_IDS = STAFF_CHARACTER_IDS;
+export type FigureId = StaffCharacterId;
 
 const FIGURE_NAMES: Record<FigureId, string> = {
 	planet: phrase("planet"),
@@ -67,7 +81,12 @@ const FIGURE_NAMES: Record<FigureId, string> = {
 	rocket: phrase("rocket"),
 	crown: phrase("crown"),
 	heart: phrase("heart"),
-	ghost: phrase("ghost"),
+	star: phrase("star"),
+	cloud: phrase("cloud"),
+	bolt: phrase("bolt"),
+	mushroom: phrase("mushroom"),
+	moon: phrase("moon"),
+	puzzle: phrase("puzzle"),
 };
 
 /** A figure's spoken name in the chosen language. */
@@ -75,22 +94,10 @@ export function figureName(figure: FigureId): string {
 	return t(FIGURE_NAMES[figure]);
 }
 
-/* The desktop's own resolution rules (renderer.js on master), ported so a
- * company's saved appearance means the same thing in every client. */
-const FIGURE_BY_TEMPLATE: Record<string, FigureId> = {
-	"co-founder": "crown",
-	"agent-manager": "crown",
-	"financial-officer": "acorn",
-	"marketing-lead": "flame",
-	"product-manager": "planet",
-	"software-developer": "rocket",
-	"product-designer": "heart",
-	"legal-expert": "ghost",
-	"operations-specialist": "acorn",
-	"research-lead": "planet",
-	"costumer-relationist": "heart",
-	"outreaching-conversationalist": "flame",
-};
+/* The shared resolution rules (cloud-client staff-characters), so a company's
+ * saved appearance means the same thing in every client and on the agent's
+ * desktop. The founding agent's template is not a hireable one. */
+const FIGURE_BY_TEMPLATE: Record<string, FigureId> = { "co-founder": "crown", ...STAFF_CHARACTER_BY_TEMPLATE };
 const COLOR_TOKENS: Record<string, string> = Object.fromEntries(
 	Object.entries(AGENT_COLOUR_HEX).map(([colour, hex]) => [`qorpera-${colour}`, hex]),
 );
@@ -100,15 +107,13 @@ export function colourNameHex(colour: string): string | undefined {
 	return COLOR_TOKENS[`qorpera-${colour}`];
 }
 
-function isFigure(value: string | undefined): value is FigureId {
-	return (FIGURE_IDS as readonly string[]).includes(value ?? "");
-}
-
 /** The figure a saved appearance resolves to: the stored one when it is still
- * in the roster, else the template's, else a stable one derived from identity
- * so two clients agree without anybody writing. */
+ * in the roster (a retired one's replacement: a saved ghost is drawn as the
+ * moon), else the template's, else a stable one derived from identity so two
+ * clients agree without anybody writing. */
 export function figureFor(agent: Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">): FigureId {
-	if (isFigure(agent.appearance?.creature)) return agent.appearance.creature;
+	const saved = drawnStaffCharacter(agent.appearance?.creature);
+	if (saved) return saved;
 	const byTemplate = agent.templateId ? FIGURE_BY_TEMPLATE[agent.templateId] : undefined;
 	if (byTemplate) return byTemplate;
 	const identity = agent.id || agent.displayName || "";
@@ -127,15 +132,15 @@ export function PALETTE(): { name: string; color: string }[] {
 const COLOR_NAMES: readonly string[] = [
 	phrase("Charcoal"),
 	phrase("Brown"),
-	phrase("Coral"),
+	phrase("Red"),
 	phrase("Orange"),
 	phrase("Gold"),
 	phrase("Green"),
-	phrase("Teal"),
+	phrase("Sky"),
 	phrase("Blue"),
 	phrase("Purple"),
 	phrase("Pink"),
-	phrase("Gray"),
+	phrase("Slate"),
 ];
 
 /** A palette colour's spoken name in the chosen language. */
@@ -206,6 +211,18 @@ export interface FigureOptions {
 	activity?: Activity;
 	identity?: string;
 	className?: string;
+	/** What waits on the member, if anything does: a question ("question") or anything else ("bang"). A figure
+	 * that needs them becomes that symbol in its own colour; one that works comes back as it now and then. */
+	ask?: Ask;
+	/** Left alone, the figure still blinks, looks around and moves now and then. */
+	alive?: boolean;
+}
+
+/** A short act on a figure built here (`figureElement`'s host): "cheer" when its work is done. Nothing happens on
+ * any other element, or for a member who wants no motion. */
+export function playFigure(host: Element | null | undefined, kind: Moment): void {
+	if (!host) return;
+	for (const entry of live) if (entry.host === host) entry.rig.play(kind);
 }
 
 /** One built figure, ready to place. Returns an empty span when the vendored

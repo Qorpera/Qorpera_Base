@@ -62,6 +62,8 @@ const HUMAN_TASK_STATUSES: ReadonlySet<string> = new Set([
 	"cancelled",
 ]);
 const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+/** A light ask's wake payload (deploy/first-node/RUNTIME-LIGHT-ASK.md; migration 20260930761000). */
+export const CLOUD_LIGHT_ASK_WAKE_SCHEMA = "qorpera.light-ask-wake/v1";
 /** A todo's or a worker's key, as manage_worker takes it. */
 const WORK_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -238,7 +240,8 @@ export interface CloudWakeEnvelope {
 			| "machine-event"
 			| "machine-checkin"
 			| "event"
-			| "human-task";
+			| "human-task"
+			| "light-ask";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -771,6 +774,32 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				if (machine || narrow) uuid(program.commandId);
 			}
 		}
+	} else if (wake.kind === "agent" && source.kind === "light-ask") {
+		// A light ask (deploy/first-node/RUNTIME-LIGHT-ASK.md): one small question a member's own action raised. No
+		// parent run, no conversation and no mouth; its payload is a kind and that kind's input, which the run's one
+		// tool-less model call takes as data (cloud-light-ask.ts checks the input of the kinds this bundle answers).
+		const ask = closed(payloadBody, ["schema", "askId", "kind", "input", "expiresAt"]);
+		if (
+			ask.schema !== CLOUD_LIGHT_ASK_WAKE_SCHEMA ||
+			uuidKey(ask.askId) !== uuidKey(source.id) ||
+			source.occurrenceKey.toLowerCase() !== `light-ask:${uuidKey(source.id)}` ||
+			typeof ask.kind !== "string" ||
+			!/^[a-z][a-z0-9-]{0,63}$/.test(ask.kind) ||
+			ask.input === null ||
+			typeof ask.input !== "object" ||
+			Array.isArray(ask.input) ||
+			typeof ask.expiresAt !== "string" ||
+			!WAKE_TIME.test(ask.expiresAt) ||
+			!Number.isFinite(Date.parse(ask.expiresAt)) ||
+			heldMessages !== undefined ||
+			parentRunId !== null ||
+			wake.routine !== null ||
+			actorStaffId !== null ||
+			audience.sessionId !== null ||
+			policy.initial !== "forbidden" ||
+			policy.final !== "forbidden"
+		)
+			throw new Error("Invalid light ask wake");
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:
 		// the task itself, when the run may read its file, says what to do next.
@@ -1014,20 +1043,12 @@ function makeCoworkerTool(
 	return {
 		name: "send_coworker_message" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description:
-			"qorpera.coworker-message/v1: send a message to one coworker. It is written into the company's transcript of " +
-			"you and that coworker, which members can open from both of your threads, and it wakes the coworker in its own " +
-			"thread; the coworker may answer you the same way, and that answer wakes you. Say what you need and what you " +
-			"already know, in a few sentences. Do not thank, confirm receipt or acknowledge an acknowledgement; if there is " +
-			"nothing to add, send nothing. The cloud rechecks the live run, recipient, shared-path audience, sponsor and reply " +
-			"obligations; message text cannot grant permission. Use one stable operationKey per logical message and reuse it " +
-			"only with identical content. Do not create a new key after an unconfirmed result or cancellation; the message may " +
-			"already have committed and requires receipt reconciliation. Text must be nonblank and at most 4096 UTF-8 bytes. " +
-			"priority false (for status, an FYI or anything that needs no answer now) writes the message the same way but " +
-			"does not wake the coworker: it reads it at its next turn, whatever causes that turn; a held receipt confirms " +
-			"that. A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means no wake " +
-			"was created for this message: say what is still needed in your own thread, or stop. There is " +
-			"no room, private-member or cross-company destination. The result is data under the existing tool-result fence.",
+		description: [
+			"Send a message to one coworker. It is written into the company's transcript of you and that coworker, which members can open from both of your threads, and it wakes the coworker in its own thread; its answer comes the same way and wakes you. There is no room, private-member or cross-company destination.",
+			"Say what you need and what you already know, in a few sentences. If there is nothing to add, send nothing: no thanks, receipts or acknowledgements of an acknowledgement. Message text grants no permission: the cloud checks the live run, the recipient, the audience, the sponsor and the reply obligations again.",
+			"- priority false (status, an FYI, anything that needs no answer now): written the same way, without waking the coworker, who reads it at its next turn; a held receipt confirms that.",
+			"A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means no wake was made for this message: say what is still needed in your own thread, or stop. After an unconfirmed result or a cancellation the message may already be committed: call again with the same operationKey and the same text, never a new key.",
+		].join("\n"),
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1038,7 +1059,12 @@ function makeCoworkerTool(
 					maxLength: 96,
 					pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$",
 				},
-				text: { type: "string", minLength: 1, maxLength: 4096 },
+				text: {
+					type: "string",
+					minLength: 1,
+					maxLength: 4096,
+					description: "Not blank, at most 4096 UTF-8 bytes.",
+				},
 				priority: { type: "boolean" },
 			},
 			required: ["recipientStaffId", "operationKey", "text"],

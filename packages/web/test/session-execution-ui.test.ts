@@ -294,75 +294,40 @@ describe("room startup usage refresh", () => {
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(hydrate).toHaveBeenCalledOnce();
 	});
-	it("offers the retry of an uncertain answer to the wall's question, whose text opens with the question", async () => {
+	it("offers the retry of an uncertain app's note, whose text opens with the app's line", async () => {
 		const f = setup();
 		await settle();
 		f.company.conversation(session.sessionId).set({
 			draft: "Hello",
-			answering: "Who first?",
+			answering: "app:orders-board#1043 · Lund, A",
 			retrySend: {
 				clientInputId: id(150),
 				clientRequestId: id(150),
-				text: "> Who first?\n\nHello",
+				text: "> app:orders-board#1043 · Lund, A\n\nHello",
 				files: [],
 				executionSponsor: f.sponsor()!,
 			},
 		});
 		await settle();
 		expect(f.send().disabled).toBe(false);
-		// Without the question it is another message, which waits for the retry to be settled.
+		// Without the app's line it is another message, which waits for the retry to be settled.
 		f.company.conversation(session.sessionId).set({ answering: undefined });
 		await settle();
 		expect(f.send().disabled).toBe(true);
 	});
-	it("does not send when another question is picked during the account check", async () => {
+	it("does not send when the note's line changes during the account check", async () => {
 		const f = setup();
 		await settle();
-		f.company.conversation(session.sessionId).set({ answering: "Who first?" });
+		f.company.conversation(session.sessionId).set({ answering: "app:orders-board#1043 · Lund, A" });
 		type(f.view, "Young couples");
 		await settle();
 		const pending = deferred<NativeExecutionConnections>();
 		f.listConnections.mockImplementationOnce(() => pending.promise);
 		f.send().click();
-		f.company.conversation(session.sessionId).set({ answering: "Who second?" });
+		f.company.conversation(session.sessionId).set({ answering: "app:orders-board#1044 · Berg, B" });
 		pending.resolve(connections());
 		await settle();
 		expect(f.sendMessage).not.toHaveBeenCalled();
-	});
-	it("keeps the question a message goes with when another with the same headline is pressed during its account check", async () => {
-		const f = setup();
-		const wall = "# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n- Approve the post\n  The second.\n";
-		const view = new ConversationView(f.company, session.sessionId, {
-			nativeSubscription: f.native,
-			sendMessage: f.sendMessage,
-			agentWall: { read: async () => wall, onFolderChange: () => () => {} },
-		});
-		document.body.append(view.el);
-		await settle();
-		const toggle = () => view.el.querySelector<HTMLButtonElement>(".agent-wall-toggle")!;
-		const answers = () => [...view.el.querySelectorAll<HTMLButtonElement>(".agent-wall-answer")];
-		toggle().click();
-		answers()[0]!.click();
-		await settle();
-		type(view, "Yes");
-		await settle();
-		const pending = deferred<NativeExecutionConnections>();
-		f.listConnections.mockImplementationOnce(() => pending.promise);
-		const send = () => view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
-		// The first try does not go through: the second must still answer the first item.
-		f.sendMessage.mockResolvedValueOnce(false);
-		send().click();
-		toggle().click();
-		answers()[1]!.click();
-		pending.resolve(connections());
-		await settle();
-		expect(f.sendMessage).toHaveBeenCalledOnce();
-		expect(answers().map((button) => button.textContent)).toEqual(["Answer", "Answer"]);
-		send().click();
-		await settle();
-		expect(f.sendMessage).toHaveBeenCalledTimes(2);
-		expect(answers().map((button) => button.textContent)).toEqual(["Answered", "Answer"]);
-		view.dispose();
 	});
 	it("sends what Enter pressed a moment before Send opened, if the text is still the same", async () => {
 		const f = setup();
@@ -379,7 +344,7 @@ describe("room startup usage refresh", () => {
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledOnce();
 	});
-	it.each(["the question", "the files"] as const)(
+	it.each(["the note's line", "the files"] as const)(
 		"does not send what Enter held when %s changed before Send opened",
 		async (change) => {
 			const f = setup();
@@ -394,8 +359,8 @@ describe("room startup usage refresh", () => {
 			f.company
 				.conversation(session.sessionId)
 				.set(
-					change === "the question"
-						? { answering: "Who first?" }
+					change === "the note's line"
+						? { answering: "app:orders-board#1043 · Lund, A" }
 						: { attachments: [new File(["bytes"], "image.png", { type: "image/png" })] },
 				);
 			pending.resolve(connections());
@@ -403,33 +368,6 @@ describe("room startup usage refresh", () => {
 			expect(f.sendMessage).not.toHaveBeenCalled();
 		},
 	);
-	it("does not send what Enter held when another item with the same headline is answered before Send opened", async () => {
-		const f = setup();
-		const wall = "# Wall\n\n## Waits on you\n- Approve the post\n  The first.\n- Approve the post\n  The second.\n";
-		const view = new ConversationView(f.company, session.sessionId, {
-			nativeSubscription: f.native,
-			sendMessage: f.sendMessage,
-			agentWall: { read: async () => wall, onFolderChange: () => () => {} },
-		});
-		document.body.append(view.el);
-		await settle();
-		const toggle = () => view.el.querySelector<HTMLButtonElement>(".agent-wall-toggle")!;
-		const answers = () => [...view.el.querySelectorAll<HTMLButtonElement>(".agent-wall-answer")];
-		toggle().click();
-		answers()[0]!.click();
-		await settle();
-		const pending = deferred<NativeExecutionConnections>();
-		f.listConnections.mockImplementationOnce(() => pending.promise);
-		refresh();
-		type(view, "Yes");
-		view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-		toggle().click();
-		answers()[1]!.click();
-		pending.resolve(connections());
-		await settle();
-		expect(f.sendMessage).not.toHaveBeenCalled();
-		view.dispose();
-	});
 	it("does not cancel a send when a newly due optional probe resolves during its account check", async () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});
@@ -850,7 +788,7 @@ describe("conversation execution account", () => {
 		const reply = f.view.el.querySelector<HTMLElement>(".from-agent")!;
 		expect(reply.querySelector(".message-author")!.textContent).toBe("Agent reply · speaker unavailable");
 		expect(reply.getAttribute("aria-label")).toMatch(/^Agent reply · /);
-		expect(reply.title).toMatch(/^Agent reply · /);
+		expect(reply.dataset.sentAt).toBeTruthy();
 		expect(reply.getAttribute("aria-label")).not.toContain(session.title);
 		expect(reply.getAttribute("aria-label")).not.toContain(f.company.memberName(userA.id));
 		expect(reply.textContent).toContain("Room response");

@@ -782,7 +782,10 @@ describe("machine command guest", () => {
 			schema: "qorpera.machine-guest/v1",
 			machineId: m.machineId,
 			generation: 7,
+			// What this helper takes for a page of a command's log (keyholes S1); the identity it keeps does not say it.
+			pageBytes: 65536,
 		});
+		expect(JSON.parse(await readFile(join(m.root, "run", "machine.json"), "utf8"))).not.toHaveProperty("pageBytes");
 		const refused = randomUUID();
 		await runMachineGuestCli([refused, "start", "not-a-command-id"], m.ports);
 		expect(JSON.parse(await readFile(join(m.root, "run", "replies", `${refused}.json`), "utf8"))).toEqual({
@@ -976,8 +979,11 @@ describe("company folder on the machine", () => {
 		// The unit reads the pass only from that file: no environment of its own, and the paths are the helper's.
 		const unit = await readFile(FOLDER_UNIT, "utf8");
 		expect(unit).not.toMatch(/^(Environment|EnvironmentFile|PassEnvironment|SetCredential|LoadCredential)\w*=/m);
+		// 20260930754000: the virtual files belong to the image's own agent account, so the model's own file tools,
+		// which run as that account and not as root, can write through the mount; root writes through
+		// default_permissions either way.
 		expect(unit).toContain(
-			`\nExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file ${MACHINE_FOLDER.root}/view.json --mountpoint ${MACHINE_FOLDER.mountpoint} --state-dir ${MACHINE_FOLDER.root}/state --cache-dir ${MACHINE_FOLDER.cache} --allow-other yes\n`,
+			`\nExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file ${MACHINE_FOLDER.root}/view.json --mountpoint ${MACHINE_FOLDER.mountpoint} --state-dir ${MACHINE_FOLDER.root}/state --cache-dir ${MACHINE_FOLDER.cache} --allow-other yes --owner-uid 2000 --owner-gid 2000\n`,
 		);
 		expect(MACHINE_FOLDER.cache).toBe("/var/lib/qorpera-folder/cache/machine");
 		// The cache folder and the two above it, made before the start: root's (this process's user here), real folders

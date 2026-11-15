@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseCloudCodingCommandRead } from "@qorpera/contracts";
+import { CODING_GUEST_HELPER_MAX_BYTES, parseCloudCodingCommandRead } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { LxdCodingCommandTransport } from "../src/coding-command-transport.ts";
 import type { LxdInspectableClient } from "../src/lxd-client.ts";
@@ -46,7 +46,9 @@ function fixture() {
 				});
 		}),
 		readInstanceFile: vi.fn<LxdInspectableClient["readInstanceFile"]>(async (_project, _name, path, maximum) => {
-			if (maximum > 65536) throw new Error("LXD_FILE_LIMIT_INVALID");
+			// As the LXD client allows: a coding guest helper within its own bound, any other file within 64 KiB.
+			if (maximum > (/^\/opt\/qorpera-coding\/[a-z-]+\.mjs$/.test(path) ? CODING_GUEST_HELPER_MAX_BYTES : 65536))
+				throw new Error("LXD_FILE_LIMIT_INVALID");
 			return {
 				uid: 0,
 				gid: 0,
@@ -118,6 +120,14 @@ describe("fixed coding guest transport", () => {
 		expect(f.client.readInstanceFile.mock.calls.map((call) => call[2])).toContain(
 			`/run/qorpera-coding/${f.workerId}/configuration/guest.json`,
 		);
+		// The pinned helper, read whole within the helpers' bound.
+		expect([
+			...new Set(
+				f.client.readInstanceFile.mock.calls
+					.filter((call) => call[2] === "/opt/qorpera-coding/cloud-coding-command-guest.mjs")
+					.map((call) => call[3]),
+			),
+		]).toEqual([CODING_GUEST_HELPER_MAX_BYTES]);
 		expect(push[4]).toBe(0o444);
 		expect(JSON.parse(push[3])).toEqual({ schema: "qorpera.coding-command-request/v2", ...f.scope, ...f.input });
 		expect(f.authorize).toHaveBeenCalledWith("start", f.scope, f.input.commandId, f.input.inputSha256, f.signal);
@@ -192,6 +202,11 @@ describe("fixed coding guest transport", () => {
 			"4",
 		]);
 		expect(f.client.readInstanceFile.mock.calls.some((call) => /read-page-[0-9]+\.json$/.test(call[2]))).toBe(true);
+		// The guest helper of the coding image says nothing of its pages: it is asked for the legacy 16,384 at most, and its
+		// page answers the larger read (keyholes S1).
+		f.client.execInstance.mockClear();
+		await f.transport.read(f.scope, { commandId: f.input.commandId, offset: 3, limit: 40000 }, f.signal);
+		expect(f.client.execInstance.mock.calls[0][2].slice(5)).toEqual(["3", "16384"]);
 		f.client.execInstance.mockClear();
 		await expect(f.transport.read(f.scope, { commandId: f.input.commandId, offset: -1 }, f.signal)).rejects.toThrow();
 		expect(f.client.execInstance).not.toHaveBeenCalled();

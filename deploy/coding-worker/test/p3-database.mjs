@@ -743,6 +743,14 @@ const CATALOG = canonicalJson({
 				operationKey: OPERATION_KEY,
 				summary: { type: "string", minLength: 1, maxLength: 4000 },
 				headSha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+				// What a customer will notice, and a screenshot the session committed (20260930720000): both optional.
+				notice: { type: "string", minLength: 1, maxLength: 200 },
+				picture: {
+					type: "string",
+					minLength: 1,
+					maxLength: 300,
+					description: "Its path from the top of the repository, such as docs/changes/new-price.png.",
+				},
 			},
 			["operationKey", "summary", "headSha"],
 		),

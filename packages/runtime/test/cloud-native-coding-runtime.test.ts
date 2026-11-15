@@ -14,7 +14,11 @@ import {
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
 import { CLOUD_RUN_ROW_READ_MS, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
-import { type CloudToolContext, cloudToolJsonText } from "../src/cloud-native-tool-boundary.ts";
+import {
+	CloudToolArgumentRefusal,
+	type CloudToolContext,
+	cloudToolJsonText,
+} from "../src/cloud-native-tool-boundary.ts";
 import { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
 import {
@@ -265,20 +269,54 @@ describe("the coding composition of a native turn", () => {
 					"Every turn ends with coding_finish or coding_ask, never with a written answer alone: a turn that ends without one fails",
 					"A request to push, to merge, to open a pull request or to report its link means: commit and call coding_finish; the platform then hands the commit in as above and passes on what happened, so you do none of that yourself.",
 					"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch.",
+					// Own code storage, step 6 (20260930736000): code brought in keeps its other branches, for reading only; the
+					// import's follow-ups (13 November 2026): one comes into the default branch by a merge on the session's branch.
+					"A repository brought in from elsewhere keeps the branches it had there under refs/qorpera/imported/heads/: read them and never change them; to bring one into the default branch, merge it into your branch (git merge refs/qorpera/imported/heads/<name>), then run the checks, commit and finish.",
 					"When something blocks you, still end the turn that way. On a GitHub repository: coding_finish with the commit you have and a summary that names the blocker, since it stays a draft.",
-					// 10 November 2026 (audit): a landing has no draft and nothing checks it, so half-done work is never handed
-					// in there, the session's own checks are the gate, and the values it was given are its to use.
-					"In a repository kept in Qorpera: never hand in half-done or failing work, since it would land; hand in what is whole and passes its checks and name what is left, or, with nothing whole yet, call coding_ask.",
-					"In a repository kept in Qorpera the landing is at once and nothing stands between your finish and the company's code: finish there only with work that is whole.",
-					"run the project's tests and build before you finish and see them pass, and never remove or weaken a failing test to get there.",
+					// 10 November 2026 (audit): a landing has no draft, so half-done work is never handed in there, and the
+					// values the session was given are its to use. Own code storage, step 3 (20260930721000): Qorpera runs the
+					// repository's checks file before a landing; the session writes the file and runs the same checks first.
+					"In a repository kept in Qorpera: never hand in half-done or failing work: it would not pass its checks, or would go in unfinished; hand in what is whole and passes its checks and name what is left, or, with nothing whole yet, call coding_ask.",
+					"In a repository kept in Qorpera, Qorpera runs the repository's checks before your commit goes into its default branch: the commands in .qorpera/checks.json, each from the top of a clean copy of what would go in (your commit, or your commit merged with the default branch when it moved), on this machine, with CI=true and stdin closed.",
+					"Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output.",
+					'When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours;',
+					"each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository).",
+					// Own code storage, step 4 (20260930729000): a website's built folder, named in the checks file, is the
+					// change's site for What's new, within a site's limits and with none of the session's secret values.
+					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
+					"once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session's secret values.",
+					// Step 4's live proof (11 November 2026): What's new showed the site's address; a site's title is its name there.
+					'It may also give "name", the site\'s address (3 to 48 lower-case letters, digits and hyphens), used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
+					// The first live site (Wristband, 11 November 2026) loaded /src/style.css from the top of the sites' domain: a site
+					// links its files relatively, and the collect refuses pages and styles that link from the top.
+					'The site is served under an address of its own, never at the top of a domain: its pages, styles and scripts link its files with relative links (src/app.js, ../img/logo.png), never with links that start with /; a bundler needs its base path set, such as Vite\'s base: "./".',
+					"Qorpera refuses a site whose pages or styles link from the top.",
+					"Never build a key into the site.",
+					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
+					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
+					// fix works.
+					'Before coding_finish, run them yourself the same way: rm -rf ~/qorpera-check && git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" ~/qorpera-check && git -C ~/qorpera-check checkout --quiet --detach <commit>, then each command in ~/qorpera-check with CI=true.',
+					"Never remove or weaken a check or a test to make it pass: the record of your change shows every change to the checks.",
+					"Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. Keep a README that says how to install, test, build and start the project.",
+					"the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so",
 					"The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs",
 					// 3 November 2026: Codex's read-only sandbox notice made a session ask for "a writable coding environment"
 					// before it tried one edit. The notice is about the harness's own tools; the repository VM is writable.
 					"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM.",
 					"In the VM the selected repository and branch are writable: edit files, install, build, test and commit there through coding_run_command.",
 					"Never stop, ask or hand in because of that read-only notice; only a command the VM actually refuses shows the repository is not writable, and then name that command and its error.",
+					// Own code storage, step 2b (20260930720000): the change's record is made of one sentence a founder can
+					// read and a small picture the session commits; neither holds a hand-in back.
+					"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it.",
+					"Leave it out when a customer will notice nothing.",
+					"When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium",
+					"keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository.",
+					"Neither is required: never hold work back for them.",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
+				// Step 1's words said nothing checks a landing.
+				for (const gone of ["nothing stands between your finish", "since it would land", "the landing is at once"])
+					expect(options.runtimeInstructions).not.toContain(gone);
 				await options.beginExecution(
 					{
 						type: "namespace",
@@ -357,6 +395,156 @@ describe("the coding composition of a native turn", () => {
 			expect.any(AbortSignal),
 		);
 		expect(f.gatewayFactory).toHaveBeenCalledWith(f.binding);
+	});
+	// Own code storage, step 2b (20260930720000): a finish may say what a customer will notice and name a screenshot the
+	// session committed. Both are optional, a wrong shape is refused with what to change, and neither is ever required.
+	it("hands in what a customer will notice and the picture's path when they are given, and only then", async () => {
+		const f = fixture();
+		const base = {
+			operationKey: "done",
+			summary: "Added the returns line; npm test: 21 passed",
+			headSha: "b".repeat(40),
+		};
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				const finish = adapters.tools[3];
+				expect(finish.description).toContain(
+					"notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out.",
+				);
+				expect(finish.inputSchema).toMatchObject({
+					properties: {
+						notice: { type: "string", minLength: 1, maxLength: 200 },
+						picture: { type: "string", minLength: 1, maxLength: 300 },
+					},
+					required: ["operationKey", "summary", "headSha"],
+					additionalProperties: false,
+				});
+				// Neither given: exactly the three of before. An empty one is one left out.
+				expect(finish.parseArguments(base)).toEqual(base);
+				expect(finish.parseArguments({ ...base, notice: "", picture: "" })).toEqual(base);
+				expect(finish.parseArguments({ ...base, notice: "  \n" })).toEqual(base);
+				// Each alone, and both; what surrounds a value is trimmed off.
+				expect(
+					finish.parseArguments({ ...base, notice: ' Each price now says "Free returns within 30 days". ' }),
+				).toEqual({ ...base, notice: 'Each price now says "Free returns within 30 days".' });
+				expect(finish.parseArguments({ ...base, picture: " docs/changes/free returns.PNG\n" })).toEqual({
+					...base,
+					picture: "docs/changes/free returns.PNG",
+				});
+				for (const picture of [
+					"shot.png",
+					"a/b/c.webp",
+					"docs/changes/x.jpeg",
+					"docs/.hidden/y.jpg",
+					"a-b_c.d/e.png",
+				])
+					expect(finish.parseArguments({ ...base, picture })).toEqual({ ...base, picture });
+				expect(finish.parseArguments({ ...base, notice: "é".repeat(200) })).toEqual({
+					...base,
+					notice: "é".repeat(200),
+				});
+				// A wrong shape is refused in words the model can act on, and the boundary relays them.
+				const plain = /^[ -~À-ÿ]{1,1024}$/;
+				for (const notice of [
+					"two\nlines",
+					"a\ttab",
+					"x".repeat(201),
+					"é".repeat(201),
+					"nul\u0000",
+					7,
+					null,
+					["a"],
+				]) {
+					const refusal = (() => {
+						try {
+							finish.parseArguments({ ...base, notice } as never);
+						} catch (error) {
+							return error;
+						}
+					})();
+					expect(refusal, JSON.stringify(notice)).toBeInstanceOf(CloudToolArgumentRefusal);
+					expect((refusal as Error).message).toMatch(/^notice is one line of at most 200 characters/);
+					expect((refusal as Error).message).toMatch(plain);
+				}
+				for (const picture of [
+					"/company/code/acme/shop/main/docs/changes/x.png",
+					"/docs/changes/x.png",
+					"docs/changes/../../secret.png",
+					"./x.png",
+					"docs//x.png",
+					"docs/changes/x.gif",
+					"docs/changes/x",
+					"docs/changes/.png",
+					"docs/changes/æ.png",
+					"docs/changes/x.png\nmore",
+					"docs\\x.png",
+					`${"d/".repeat(148)}x.png`,
+					7,
+					null,
+				]) {
+					const refusal = (() => {
+						try {
+							finish.parseArguments({ ...base, picture } as never);
+						} catch (error) {
+							return error;
+						}
+					})();
+					expect(refusal, JSON.stringify(picture)).toBeInstanceOf(CloudToolArgumentRefusal);
+					expect((refusal as Error).message).toMatch(
+						/^picture is the path of a \.png, \.jpg, \.jpeg or \.webp file/,
+					);
+					expect((refusal as Error).message).toMatch(plain);
+				}
+				// The three of before are still required, and no other key is taken.
+				expect(() => finish.parseArguments({ operationKey: "done", headSha: "b".repeat(40), notice: "n" })).toThrow(
+					"Invalid coding submission",
+				);
+				expect(() => finish.parseArguments({ ...base, pictures: ["a.png"] })).toThrow("Invalid coding submission");
+				const receipt = JSON.parse(
+					(
+						await finish.execute(
+							finish.parseArguments({
+								...base,
+								notice: "Each price now says free returns.",
+								picture: "docs/changes/free-returns.png",
+							}),
+							f.context,
+						)
+					).value as string,
+				);
+				// The model's receipt holds none of the words, as before.
+				expect(receipt).toEqual({
+					schema: "qorpera.coding-submission/v1",
+					workerId: f.coding.workerId,
+					sequence: 1,
+					kind: "finish",
+					state: "submitted",
+					headSha: "b".repeat(40),
+					operationKey: "done",
+				});
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 2 };
+			} finally {
+				run.close();
+			}
+		});
+		await f.runtime.execute(f.request, "/private", f.context.signal, f.turn);
+		const submitted = f.call.mock.calls.filter(([method]) => method === "qorpera_submit_coding_turn");
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]?.[1]).toEqual({
+			p_binding: f.binding,
+			p_submission: {
+				kind: "finish",
+				...base,
+				notice: "Each price now says free returns.",
+				picture: "docs/changes/free-returns.png",
+			},
+		});
 	});
 	it("records any number of model requests in a coding turn (runtime v92; it was 256)", async () => {
 		const f = fixture();
@@ -644,6 +832,10 @@ describe("the coding composition of a native turn", () => {
 		expect(instructions).toContain("FOLDER_RESTART: the machine restarted because the company folder");
 		expect(instructions).toContain("MACHINE_NEW_DISK: the machine got a new disk");
 		expect(instructions).toContain("a new disk keeps only /company, which holds the repository");
+		// Own code storage, step 6: the machine's package caches, which its sessions and the checks share.
+		expect(instructions).toContain(
+			"start fresh. Packages you download with npm, pnpm, pip, uv and Playwright are kept on this machine for later sessions and for Qorpera's checks. ",
+		);
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({
 			kind: "finish",

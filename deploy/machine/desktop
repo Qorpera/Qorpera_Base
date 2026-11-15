@@ -6,22 +6,31 @@
 set -euo pipefail
 export DISPLAY=:1
 UNIT=qorpera-machine-desktop.service
-# The unit's runtime folder: there while the desktop runs, gone when it stops. Root keeps the desktop's notes in it.
+# Root's notes about the desktop: its idle clock, the language and time zone it was started with, the folders it serves,
+# a screenshot on its way. The folder is root's (qorpera-machine-desktop.service makes it so, empty at every start):
+# the desktop's account may read it and can never put, replace or point anything in it, so whatever this command reads,
+# writes or touches there is root's own.
 RUN=/run/qorpera-desktop
+# The account's own runtime folder (its session bus, what its programs keep): only handed to its programs as a path.
+SESSION=$RUN/session
 CHROME=/usr/lib/qorpera-chromium/chrome
 SELFTEST=/opt/qorpera-machine/desktop-selftest.html
-# Where files and folders opened on the desktop are put: the desktop user's own Desktop folder.
-DESK=/home/desktop/Desktop
+# What is done with files where the desktop's account can reach (its Desktop folder, a copy for it, a saved picture).
+FILES=/opt/qorpera-machine/desktop-files
 MIN_CPUS=2
 # A 4 GiB machine shows a little under 4 GiB of memory.
 MIN_MEMORY_KB=3500000
+# The company's time zone: one word in root's file, which the machine's executor writes (an IANA name such as
+# Europe/Copenhagen; a company has one, taken once from a member's browser). A start without --tz takes it.
+TIMEZONE=/etc/qorpera-machine/desktop-timezone
 usage() {
 	cat <<'EOF'
 desktop start [--lang TAG] [--tz ZONE] [--size WxH] [TARGET...]
                               start the desktop (1600x1000, XFCE, Chromium) and open each TARGET on it (see open);
                               does nothing to a desktop that runs. --lang da-DK and --tz Europe/Copenhagen set the
-                              browser's language and the programs' time zone (default en-US, UTC). It needs a
-                              machine of at least 2 processors and 4 GB (machine_start with desktop true).
+                              browser's language and the programs' time zone (default en-US, and the company's
+                              time zone when the machine names one, else UTC). It needs a machine of at least
+                              2 processors and 4 GB (machine_start with desktop true).
                               It stops by itself after an hour without a desktop command.
 desktop stop                  stop it and every program on it
 desktop status                running or stopped, and the open windows
@@ -57,6 +66,24 @@ to FILE a moment after the action, so one command acts and shows what came of it
 EOF
 }
 fail() { echo "$1" >&2; exit "${2:-1}"; }
+# The company's time zone as the machine names it (TIMEZONE), when that is a zone this image has; else nothing, and the
+# desktop is on UTC as a machine without the file. The word came from a browser. Only a plain file of root's own is
+# read, never a link or a pipe, and 65 bytes of it at most (a longer or an empty file is no zone). The file's BYTES
+# are exactly the word, or the word and one line end, and nothing else: the shell's read skips a NUL and stops at a
+# line end, so what it read is compared with the file byte for byte (a NUL anywhere, a carriage return, a second line,
+# a byte before the word: no zone). And the word has a zone name's shape (letters, digits, _, + and -, in at most three
+# parts with a / between, 64 bytes at most: no dot, so no way out of the folder) BEFORE it is ever put after
+# /usr/share/zoneinfo/. Bytes are counted and letters are ASCII's, whatever language the caller has.
+company_zone() {
+	local LC_ALL=C name= size plain='^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$'
+	[[ -f $TIMEZONE && ! -L $TIMEZONE && -O $TIMEZONE ]] || return 0
+	size=$(stat -c %s -- "$TIMEZONE" 2>/dev/null) || return 0
+	[[ $size =~ ^[0-9]{1,2}$ ]] && (( size >= 1 && size <= 65 )) || return 0
+	IFS= read -r -n 65 name <"$TIMEZONE" 2>/dev/null || true
+	printf '%s' "$name" | cmp -s -- "$TIMEZONE" - || printf '%s\n' "$name" | cmp -s -- "$TIMEZONE" - || return 0
+	[[ ${#name} -le 64 && $name =~ $plain && -f /usr/share/zoneinfo/$name ]] || return 0
+	printf %s "$name"
+}
 # The unit is active and its display answers (a socket left by a killed display does not).
 running() { [[ $(systemctl is-active "$UNIT" 2>/dev/null || true) == active ]] && xdpyinfo >/dev/null 2>&1; }
 need() {
@@ -65,7 +92,13 @@ need() {
 	touch "$RUN/last-use"
 }
 number() { [[ ${1:-} =~ ^[0-9]{1,5}$ ]] || fail "not a pixel position: ${1:-}" 2; }
-size() { xdpyinfo | awk '/dimensions:/ {print $2}'; }
+# The screen's size as the display says it, WxH, or nothing. The display is a program of the desktop's account: what
+# it says is only ever taken as digits (it goes into this shell's arithmetic, which would run what a name in it says).
+size() {
+	local dims
+	dims=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2; exit}') || true
+	if [[ $dims =~ ^[0-9]{1,5}x[0-9]{1,5}$ ]]; then echo "$dims"; fi
+}
 # A program on the desktop runs in a unit of its own in the machine's slice, as the desktop's user: it outlives the
 # command that started it and stops with the desktop. Requisite refuses its start unless the desktop is active, and
 # BindsTo stops it whenever the desktop stops, so no program outlives a stop however the two race. Its arguments
@@ -76,15 +109,15 @@ launch() {
 	[[ -s $RUN/lang ]] && extra+=(--setenv=LANGUAGE="$(<"$RUN/lang")")
 	systemd-run --quiet --collect --expand-environment=no --slice=qorpera-machine.slice --uid=desktop --gid=desktop \
 		-p WorkingDirectory=/home/desktop -p Requisite="$UNIT" -p BindsTo="$UNIT" -p After="$UNIT" \
-		--setenv=HOME=/home/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR="$RUN" \
-		--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$RUN/bus" "${extra[@]}" -- "$@"
+		--setenv=HOME=/home/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR="$SESSION" \
+		--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$SESSION/bus" "${extra[@]}" -- "$@"
 }
 # Chromium on the desktop. --disable-infobars hides Chrome for Testing's "only for automated testing" bar (what
 # Playwright passes; it does nothing else). --enable-unsafe-swiftshader gives pages 3D drawing (WebGL) on a machine
 # without a graphics card: the drawing runs in software inside the browser's own sandbox, on a machine that holds no
 # credentials.
 # Its own profile, and a DevTools port on the machine's loopback that the kernel picks: the port fill_company_account's
-# helper types a company account's value through (20260930711000), read off the kernel as the socket this browser holds,
+# helper types a company account's value through (20260930781000), read off the kernel as the socket this browser holds,
 # never off a file. A Chromium already running with this profile takes the address and keeps its port.
 PROFILE=/home/desktop/.config/qorpera-chromium
 browser() {
@@ -113,74 +146,56 @@ serve() { # folder -> prints the port
 	echo "$port"
 }
 quote() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1"; }
-# Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy).
+# Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy). Everything about the
+# file is found out and done by desktop-files (as the desktop's account, or by root inside folders it holds: its
+# header says how); this command looks at no path of the target itself. It goes by the three lines desktop-files
+# answers: what kind of thing is opened, its path, and its name on the desktop.
 open_target() { # target copy(0|1)
-	local target=$1 copy=$2 path name shown place port taken
-	if [[ $target =~ ^[a-zA-Z][a-zA-Z0-9+.-]*: && ! -e $target ]]; then
-		browser "$target"
-		echo "opening $target"
-		return
-	fi
-	path=$(realpath -e -- "$target" 2>/dev/null) || fail "no such file or folder: $target"
-	[[ $path != / ]] || fail "open a file or a folder, not the whole disk" 2
-	name=$(basename -- "$path")
-	install -d -o desktop -g desktop -m 0755 "$DESK"
-	if [[ $path == "$DESK"/* ]]; then
-		# Already on the desktop (an earlier copy, say): opened where it is.
-		place=$path
-	else
-		# Nothing on the desktop is ever replaced. The same link is used again; a name that is taken (an earlier copy,
-		# which may have been changed since, or another folder of the same name) gets a number instead.
-		place=$DESK/$name
-		taken=1
-		while [[ -e $place || -L $place ]]; do
-			if (( ! copy )) && [[ -L $place && $(readlink -- "$place") == "$path" ]]; then break; fi
-			taken=$(( taken + 1 ))
-			if [[ -f $path && $name == ?*.* ]]; then place=$DESK/${name%.*}-$taken.${name##*.}; else place=$DESK/$name-$taken; fi
-		done
-		if [[ ! -e $place && ! -L $place ]]; then
-			if (( copy )); then
-				cp -a -- "$path" "$place"
-				chown -R desktop:desktop -- "$place"
-			else
-				ln -s -- "$path" "$place"
-				chown -h desktop:desktop -- "$place"
-			fi
-		fi
-		if (( copy )); then path=$place; fi
-	fi
-	# The name on the desktop may carry a number; the page's address is built from the file that is opened.
-	shown=$(basename -- "$place")
-	name=$(basename -- "$path")
-	runuser -u desktop -- test -r "$path" ||
-		fail "the desktop's user cannot read $path: open it with --copy"
-	if [[ -d $path && -f $path/index.html ]]; then
+	local target=$1 copy=$2 words=(open) found kind path shown name port
+	if (( copy )); then words+=(--copy); fi
+	found=$("$FILES" "${words[@]}" -- "$target") || exit $?
+	{ IFS= read -r kind && IFS= read -r path && IFS= read -r shown; } <<<"$found" || fail "$target could not be opened"
+	case $kind in
+	url)
+		browser "$path"
+		echo "opening $path"
+		;;
+	site)
 		port=$(serve "$path")
 		browser "http://127.0.0.1:$port/"
 		echo "opening $path at http://127.0.0.1:$port/ (on the desktop as $shown)"
-	elif [[ -d $path ]]; then
+		;;
+	folder)
 		launch /usr/bin/thunar "$path"
 		echo "opening the folder $path in the file manager (on the desktop as $shown)"
-	elif [[ ${path,,} == *.html || ${path,,} == *.htm ]]; then
+		;;
+	page)
+		# The name on the desktop may carry a number; the page's address is built from the file that is opened.
+		name=$(basename -- "$path")
 		port=$(serve "$(dirname -- "$path")")
 		browser "http://127.0.0.1:$port/$(quote "$name")"
 		echo "opening $path at http://127.0.0.1:$port/$(quote "$name") (on the desktop as $shown)"
-	else
+		;;
+	file)
 		browser "file://$(quote "$path")"
 		echo "opening $path in Chromium (on the desktop as $shown)"
-	fi
+		;;
+	*) fail "$target could not be opened" ;;
+	esac
 }
+# Saves a picture of the screen. Root takes it into its own folder, and desktop-files puts it at FILE: as root where
+# the whole way to FILE is root's alone (/company, /root), else as the desktop's account. What is printed is read
+# from root's own picture, never from FILE.
 shot() { # file
-	local file=$1 folder
+	local file=$1 taken=$RUN/shot-$$.png status=0
 	[[ $file == *.png ]] || fail "FILE must end in .png" 2
-	folder=$(realpath -m -- "$(dirname -- "$file")")
-	# Without the company folder mounted, /company is a plain folder on this machine: nothing would ever show the picture.
-	if [[ $folder == /company || $folder == /company/* ]] && ! mountpoint -q /company; then
-		fail "this machine has no company folder at /company, so company_read cannot show a picture saved there (machine_start says which machines get it)" 4
+	scrot --overwrite --silent -- "$taken"
+	"$FILES" save "$taken" -- "$file" || status=$?
+	if (( status == 0 )); then
+		echo "$file $(stat -c %s -- "$taken") bytes $(file -b -- "$taken" | sed -n 's/.*, \([0-9]* x [0-9]*\),.*/\1/p')"
 	fi
-	mkdir -p -- "$folder"
-	scrot --overwrite --silent -- "$file"
-	echo "$file $(stat -c %s -- "$file") bytes $(file -b -- "$file" | sed -n 's/.*, \([0-9]* x [0-9]*\),.*/\1/p')"
+	rm -f -- "$taken"
+	return "$status"
 }
 resize() { # WxH
 	[[ $1 =~ ^([0-9]{3,4})x([0-9]{3,4})$ ]] && (( BASH_REMATCH[1] >= 320 && BASH_REMATCH[1] <= 3840 && BASH_REMATCH[2] >= 240 && BASH_REMATCH[2] <= 2160 )) ||
@@ -190,6 +205,33 @@ resize() { # WxH
 	[[ $(size) == "$1" ]] || fail "the screen stayed $(size)"
 }
 titles() { wmctrl -l 2>/dev/null | awk '{ $1=$2=$3=""; sub(/^ +/,""); print }'; }
+# Where the pointer is and how large the screen is, asked of xdotool in one call (each call is a program started, which
+# costs most when the machine is busiest): sets pointer_x, pointer_y, screen_width and screen_height, each empty when
+# xdotool cannot say.
+find_pointer() {
+	local where size
+	pointer_x= pointer_y= screen_width= screen_height=
+	{ read -r where; read -r size; } < <(xdotool getmouselocation getdisplaygeometry 2>/dev/null) || true
+	if [[ ${where:-} =~ ^x:([0-9]+)\ y:([0-9]+)\  ]]; then pointer_x=${BASH_REMATCH[1]} pointer_y=${BASH_REMATCH[2]}; fi
+	if [[ ${size:-} =~ ^([0-9]+)\ ([0-9]+)$ ]]; then screen_width=${BASH_REMATCH[1]} screen_height=${BASH_REMATCH[2]}; fi
+}
+# Where a move to X Y ends, put in land_x and land_y: at the screen's edge for a position past it.
+lands() { # X Y
+	land_x=$(( 10#$1 )) land_y=$(( 10#$2 ))
+	if [[ -n $screen_width && -n $screen_height ]]; then
+		(( land_x < screen_width )) || land_x=$(( screen_width - 1 ))
+		(( land_y < screen_height )) || land_y=$(( screen_height - 1 ))
+	fi
+}
+# xdotool's words for moving the pointer to X Y from where it is (nothing when that is not known), put in `move`.
+# `mousemove --sync` waits until the pointer has moved, and for 15 s when it is already there: a second click on one
+# button, a drag that ends where it starts (measured 12 Nov 2026: 15.2 s, also at the screen's edge for a position
+# past it). So the move is waited for only when the pointer will move. It is sent all the same when it will not, so
+# the click lands on X Y whatever moved the pointer since it was read.
+move_to() { # from-x from-y X Y
+	lands "$3" "$4"
+	if [[ $1 == "$land_x" && $2 == "$land_y" ]]; then move=(mousemove "$3" "$4"); else move=(mousemove --sync "$3" "$4"); fi
+}
 
 command=${1:-help}
 shift || true
@@ -205,7 +247,7 @@ open | click | double | move | drag | type | key | scroll)
 esac
 # Starting, stopping and launching take turns, so a stop never meets a launch half done.
 case $command in
-start | stop | open | run)
+start | stop | open | run | dock)
 	exec 9>/run/qorpera-desktop.lock
 	flock 9
 	;;
@@ -236,6 +278,25 @@ start)
 		# nothing can be driven.
 		for _ in $(seq 1 100); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done
 		wmctrl -m >/dev/null 2>&1 || { systemctl stop "$UNIT"; fail "the desktop's session did not start"; }
+		# The dock and the backdrop are drawn a second or two after that (1.2 to 1.7 s after the start, measured on
+		# 12 Nov 2026; the backdrop last); until then the screen is one colour and a screenshot of it shows nothing. XFCE's
+		# desktop names its picture on the root window (_XROOTPMAP_ID) the moment it has drawn it, and a screen of one
+		# colour is a PNG of about a thousandth of its pixels' bytes (4760 bytes at 1600x1000 when black, 7101 in another
+		# colour; the drawn desktop is 15 KB or more): wait, about 6 s at most, for both, so the first look at a started
+		# desktop shows it whole, never a bare ground or a dock without its backdrop.
+		dims=$(size)
+		[[ -n $dims ]] || dims=1600x1000
+		drawn=$RUN/drawn-$$.png
+		for _ in $(seq 1 35); do
+			[[ $(xprop -root _XROOTPMAP_ID 2>/dev/null) == *"pixmap id # 0x"* ]] &&
+				scrot --overwrite --silent -- "$drawn" 2>/dev/null &&
+				(( $(stat -c %s -- "$drawn") > ${dims%x*} * ${dims#*x} * 3 / 1000 + 3000 )) && break
+			sleep 0.1
+		done
+		rm -f -- "$drawn"
+		# Nobody named a zone for this desktop: the company's, when the machine names one. Only here, at the start of a
+		# desktop: one that runs keeps the zone it has, so a word that changes meanwhile is taken at the next start.
+		[[ -n $tz ]] || tz=$(company_zone)
 	fi
 	touch "$RUN/last-use"
 	if [[ -n $lang ]]; then printf %s "$lang" >"$RUN/lang"; fi
@@ -276,26 +337,55 @@ run)
 	launch "$@"
 	echo "started $1"
 	;;
+dock)
+	# For a press on the dock only (desktop-dock-open runs it; it is no command for agents and not in the help). It
+	# starts one of three fixed programs the way `desktop open URL` and `desktop run` start one, and takes nothing from
+	# its caller but which of the three: every word the program gets is written here, no word is looked up as a file
+	# (the address goes to the browser as an address, whatever folder this runs in), and nothing is put on the
+	# desktop. Files and the terminal open in the company folder when this machine has it, else in the account's home.
+	need
+	folder=/home/desktop
+	if mountpoint -q /company; then folder=/company; fi
+	case ${1:-} in
+	browser) browser chrome://newtab/ ;;
+	files) launch /usr/bin/thunar "$folder" ;;
+	terminal) launch /usr/bin/xfce4-terminal --working-directory="$folder" ;;
+	*) fail "desktop dock browser|files|terminal" 2 ;;
+	esac
+	echo "started $1"
+	;;
 click)
 	need
 	number "${1:-}"; number "${2:-}"
 	case ${3:-left} in left) button=1 ;; middle) button=2 ;; right) button=3 ;; *) fail "BUTTON is left, middle or right" 2 ;; esac
-	xdotool mousemove --sync "$1" "$2" click "$button"
+	find_pointer
+	move_to "$pointer_x" "$pointer_y" "$1" "$2"
+	xdotool "${move[@]}" click "$button"
 	;;
 double)
 	need
 	number "${1:-}"; number "${2:-}"
-	xdotool mousemove --sync "$1" "$2" click --repeat 2 --delay 80 1
+	find_pointer
+	move_to "$pointer_x" "$pointer_y" "$1" "$2"
+	xdotool "${move[@]}" click --repeat 2 --delay 80 1
 	;;
 move)
 	need
 	number "${1:-}"; number "${2:-}"
-	xdotool mousemove --sync "$1" "$2"
+	find_pointer
+	move_to "$pointer_x" "$pointer_y" "$1" "$2"
+	xdotool "${move[@]}"
 	;;
 drag)
 	need
 	for value in "${1:-}" "${2:-}" "${3:-}" "${4:-}"; do number "$value"; done
-	xdotool mousemove --sync "$1" "$2" mousedown 1 sleep 0.1 mousemove --sync "$3" "$4" sleep 0.1 mouseup 1
+	# Both ends: a drag that starts where the pointer is, and one that ends where it starts (the pointer is where the
+	# first move ends by then).
+	find_pointer
+	move_to "$pointer_x" "$pointer_y" "$1" "$2"
+	start=("${move[@]}")
+	move_to "$land_x" "$land_y" "$3" "$4"
+	xdotool "${start[@]}" mousedown 1 sleep 0.1 "${move[@]}" sleep 0.1 mouseup 1
 	;;
 type)
 	need
@@ -315,9 +405,21 @@ type)
 	fi
 	;;
 key)
-	need
 	(( $# > 0 )) || fail "desktop key KEY..." 2
-	xdotool key --delay 40 -- "$@"
+	# xdotool runs any of its own commands that follows the keys, whatever its case (`key exec id` runs id as root): none
+	# is a key. The list is the installed xdotool's own, so a newer one's commands are refused too; without it (xdotool
+	# may want the display for its help), no keys.
+	commands=$(xdotool help 2>/dev/null | awk 'NR > 1 && NF == 1 { print tolower($1) }' || true)
+	[[ -n $commands ]] || { need; fail "cannot read xdotool's commands, so no key is pressed"; }
+	for name in "$@"; do
+		if grep -qxF -- "${name,,}" <<<"$commands"; then fail "not a key: $name (it is an xdotool command)" 2; fi
+	done
+	need
+	# xdotool skips a key name it does not know with a word on stderr, and exits 0: say so rather than that it pressed it.
+	skipped=$(xdotool key --delay 40 -- "$@" 2>&1 >/dev/null) || { [[ -z $skipped ]] || echo "$skipped" >&2; exit 1; }
+	if [[ $skipped == *"No such key name"* ]]; then
+		fail "no such key: $(sed -n "s/.*No such key name '\([^']*\)'.*/\1/p" <<<"$skipped" | head -n 1) (any other keys were pressed)" 2
+	fi
 	;;
 scroll)
 	need
@@ -357,7 +459,8 @@ selftest)
 	sleep 0.6
 	[[ $(titles | grep -F 'SELFTEST[' | head -1) == *"typed=$danish]"* ]] ||
 		fail "selftest: text with Danish capitals arrived as: $(titles | grep -F 'SELFTEST[' | head -1)"
-	picture=$(mktemp --suffix=.png)
+	# The picture goes where the whole way is root's alone (its own folder for the desktop), as one into /company does.
+	picture=$RUN/selftest-$$.png
 	"$0" shot "$picture" | grep -q " $(size | sed 's/x/ x /')$" || { rm -f -- "$picture"; fail "selftest: the screenshot is not the screen's size"; }
 	rm -f -- "$picture"
 	if (( ! was )); then "$0" stop >/dev/null; fi

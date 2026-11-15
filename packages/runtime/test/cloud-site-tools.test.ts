@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudActionEffect, describeCloudAction, siteAccessCheck } from "@qorpera/runtime/cloud-action-review";
 import type { CloudCompanyFolderClient, CloudCompanyFolderEntry } from "@qorpera/runtime/cloud-company-folder-client";
@@ -11,7 +12,7 @@ import {
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
-import { cloudSiteTools } from "@qorpera/runtime/cloud-site-tools";
+import { cloudSiteTools, SITE_NAME_RULE } from "@qorpera/runtime/cloud-site-tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -360,7 +361,9 @@ describe("publish_site", () => {
 		expect(f.calls("qorpera_site_publish_finish")).toHaveLength(1);
 		expect(result.answer).toMatchObject({ state: "live", url: URL_OF("wristband-shop"), mode: "new" });
 		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.md"]);
-		expect(result.text).toContain("Settings → Sites");
+		// Sites left Settings for the apps drawer (9 November 2026).
+		expect(result.text).toContain("the password is on the Sites page in the apps drawer");
+		expect(result.text).not.toContain("Settings");
 		expect(result.text).not.toMatch(/password":\s*"[a-z0-9]{4}-/);
 	});
 
@@ -429,6 +432,37 @@ describe("publish_site", () => {
 		expect(result.status).toBe("denied");
 		expect(f.call).not.toHaveBeenCalled();
 		expect(f.folder.read).not.toHaveBeenCalled();
+	});
+
+	// Own code storage, step 4: a repository kept in Qorpera goes live only from What's new, on a member's yes. The
+	// source is refused in any letters, code/ itself too, before prepare: no folder read, no database check, no card.
+	it.each([
+		["a repository's main", "code/qorpera/shop/main/dist"],
+		["the code folder in other letters", "Code/qorpera/shop/main"],
+		["the code folder itself", "code"],
+	])("refuses %s as a source before prepare, the review or any card", async (_label, source) => {
+		const f = await fixture({ [`${source}/index.html`]: "<h1>Shop</h1>" });
+		const publish = f.tools.find((tool) => tool.name === "publish_site") as CloudNativeTool;
+		const prepare = vi.spyOn(publish, "prepare");
+		const result = outcome(await f.boundary.invoke("code", "qorpera", "publish_site", { slug: "shop", source }));
+		expect(result.status).toBe("denied");
+		expect(result.text).toBe(
+			"INVALID_ARGUMENTS: source must not be under code/: a repository kept in Qorpera goes live only through What's new, on a member's yes",
+		);
+		expect(prepare).not.toHaveBeenCalled();
+		expect(f.call).not.toHaveBeenCalled();
+		expect(f.folder.read).not.toHaveBeenCalled();
+		expect(f.reviewed).toEqual([]);
+	});
+
+	it.each([
+		["a website folder", "website"],
+		["a folder whose name starts with code", "codebase/site"],
+	])("still publishes %s", async (_label, source) => {
+		const f = await fixture({ [`${source}/index.html`]: "<h1>Shop</h1>" });
+		const result = outcome(await f.boundary.invoke("site", "qorpera", "publish_site", { slug: "shop", source }));
+		expect(result.status, result.text).toBe("ok");
+		expect(f.reviewed[0]).toMatchObject({ source, files: 1 });
 	});
 
 	it.each([
@@ -570,6 +604,55 @@ describe("publish_site", () => {
 		expect(f.calls("qorpera_site_publish_finish")).toEqual([]);
 	});
 
+	it("relays a site Qorpera took down in its own words, never with the site's link, at the check and during the upload", async () => {
+		const down =
+			"SITE_TAKEN_DOWN: This site was taken down by Qorpera (Reported as phishing.) and cannot be published until Qorpera restores it. Tell a member of the company.";
+		for (const step of [
+			"qorpera_site_publish_check",
+			"qorpera_site_publish_begin",
+			"qorpera_site_publish_put",
+			"qorpera_site_publish_finish",
+		] as const) {
+			const f = await fixture(SHOP, { refuse: { [step]: new CloudControlRpcRefused("55000", down) } });
+			const result = outcome(
+				await f.boundary.invoke("call_1", "qorpera", "publish_site", {
+					slug: "wristband-shop",
+					source: "product/webshop",
+				}),
+			);
+			expect(result.status, step).toBe("denied");
+			expect(result.text, step).toBe(`REFUSED: ${down}`);
+			expect(result.text, step).not.toContain("https://");
+		}
+	});
+
+	it("says the name rule in the kernel's one sentence for a slug of the wrong shape (migration 20260930756000)", async () => {
+		// The lead's words (13 Nov 2026, the cross-check's seam 2), as qorpera_site_name_words() writes them, byte for byte.
+		expect(SITE_NAME_RULE).toBe(
+			"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).",
+		);
+		const migration = readFileSync(
+			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
+			"utf8",
+		);
+		const words =
+			/create function public\.qorpera_site_name_words\(\)[^\n]*\n\t-- 20260930756000\n\tselect '((?:[^']|'')*)'::text\n\$\$;/.exec(
+				migration,
+			)?.[1];
+		expect(words?.replaceAll("''", "'")).toBe(SITE_NAME_RULE);
+		const f = await fixture(SHOP);
+		for (const [tool, args] of [
+			["publish_site", { slug: "Wristband shop", source: "product/webshop" }],
+			["unpublish_site", { slug: "../x" }],
+			["share_app", { slug: "ab", machine: "shop-server", port: 3000 }],
+		] as const) {
+			const result = outcome(await f.boundary.invoke(`bad-${tool}`, "qorpera", tool, args));
+			expect(result.status, tool).toBe("denied");
+			expect(result.text, tool).toBe(`INVALID_ARGUMENTS: SITE_NAME_INVALID: ${SITE_NAME_RULE}`);
+		}
+		expect(f.call).not.toHaveBeenCalled();
+	});
+
 	it("refuses when the files changed after the review", async () => {
 		const f = await fixture(SHOP);
 		const original = f.folder.listAll.getMockImplementation();
@@ -617,6 +700,18 @@ describe("unpublish_site", () => {
 		const none = outcome(await f.boundary.invoke("call_2", "qorpera", "unpublish_site", { slug: "other-site" }));
 		expect(none.answer).toMatchObject({ removed: false });
 		expect(none.answer.note).toContain("nothing was taken offline");
+	});
+
+	it("relays a site Qorpera took down in its own words: it stays until Qorpera restores it (migration 20260930756000)", async () => {
+		const down =
+			"SITE_TAKEN_DOWN: This site was taken down by Qorpera (Reported as phishing.) and cannot be published until Qorpera restores it. Tell a member of the company.";
+		const f = await fixture(SHOP, { refuse: { qorpera_site_unpublish: new CloudControlRpcRefused("55000", down) } });
+		const result = outcome(
+			await f.boundary.invoke("call_1", "qorpera", "unpublish_site", { slug: "wristband-shop" }),
+		);
+		expect(result.status).toBe("denied");
+		expect(result.text).toBe(`REFUSED: ${down}`);
+		expect(f.calls("qorpera_site_unpublish")).toEqual([{ p_binding: f.binding, p_slug: "wristband-shop" }]);
 	});
 
 	it("refuses a bad slug without calling the cloud", async () => {
@@ -715,7 +810,7 @@ describe("share_app", () => {
 			next: expect.stringContaining("The platform started the link program on shop-server"),
 			password: expect.stringContaining("new password"),
 		});
-		expect(result.answer.next).toContain("the password is in Settings → Sites");
+		expect(result.answer.next).toContain("the password is on the Sites page in the apps drawer");
 		// The tool's answer never holds the claim.
 		expect(result.text).not.toContain(CLAIM);
 		expect(result.text).not.toContain("curl");
@@ -918,6 +1013,16 @@ describe("share_app", () => {
 		expect(result.answer.next).toContain("machine_read");
 	});
 
+	it("relays an app link Qorpera took down in its own words before the review, with no link", async () => {
+		const down =
+			"SITE_TAKEN_DOWN: This site was taken down by Qorpera (Reported.) and cannot be published until Qorpera restores it. Tell a member of the company.";
+		const f = await fixture({}, { refuse: { qorpera_site_share_check: new CloudControlRpcRefused("55000", down) } });
+		const result = outcome(await f.boundary.invoke("call_1", "qorpera", "share_app", SHARE));
+		expect(result.status).toBe("denied");
+		expect(result.text).toBe(`REFUSED: ${down}`);
+		expect(f.reviewed).toEqual([]);
+	});
+
 	it("relays the check's refusal in plain words before the review", async () => {
 		const f = await fixture(
 			{},
@@ -992,7 +1097,13 @@ describe("share_app", () => {
 		expect(share.description).toContain("The platform starts the link program");
 		expect(share.description).toContain("only that program can use it again");
 		expect(share.description).not.toContain("timeoutMs");
-		expect(share.description).toContain("Settings → Sites");
+		expect(share.description).toContain("the password is on the Sites page in the apps drawer");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
+		// Sites left Settings for the apps drawer (9 November 2026).
+		const publish = tools.find((tool) => tool.name === "publish_site")!;
+		expect(publish.description).toContain(
+			"the password is on the Sites page in the apps drawer, where founders and admins see, copy and change it.",
+		);
+		for (const tool of tools) expect(tool.description).not.toContain("Settings");
 	});
 });

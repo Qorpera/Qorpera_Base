@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
 	appendFile,
+	chmod,
+	link,
 	lstat,
 	mkdir,
 	mkdtemp,
@@ -9,6 +11,7 @@ import {
 	realpath,
 	rm,
 	symlink,
+	truncate,
 	utimes,
 	writeFile,
 } from "node:fs/promises";
@@ -16,9 +19,21 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { CODING_GUEST, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import {
+	CODING_GUEST,
+	CODING_PACKAGE_CACHES,
+	parseCodingGuestAnswer,
+	parseCodingGuestRequest,
+	SHA256_HEX_PATTERN,
+} from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CodingGuestAgentPorts, runCodingGuestAgent } from "../src/cloud-coding-guest-agent.ts";
+import {
+	ageCodingPackageTrees,
+	type CodingGuestAgentPorts,
+	codingPackageCachesTmpfiles,
+	runCodingGuestAgent,
+	trimCodingPackageCaches,
+} from "../src/cloud-coding-guest-agent.ts";
 
 interface Unit {
 	ActiveState: string;
@@ -46,6 +61,8 @@ interface MachineState {
 	terminateAtOnce: boolean;
 	realSleep: boolean;
 	useraddGate: Promise<void>;
+	/** What systemd-tmpfiles does with the package caches' file: makes each `d` line's folder, or fails. */
+	tmpfiles: "make" | "fail";
 }
 
 const UID = 200001;
@@ -92,6 +109,9 @@ async function machine() {
 	// The machine's disk: /var/lib/qorpera-folder/cache/machine.
 	const folderCache = join(root, "lib", "qorpera-folder", "cache", "machine");
 	const systemdRoot = join(root, "systemd");
+	// The machine's package caches and the tmpfiles file that makes them (/var/cache/qorpera-packages, /etc/tmpfiles.d).
+	const packages = join(root, "cache", "qorpera-packages");
+	const tmpfiles = join(root, "tmpfiles.d", "qorpera-packages.conf");
 	const subuid = join(root, "subuid");
 	const subgid = join(root, "subgid");
 	const resolv = join(root, "resolv.conf");
@@ -123,6 +143,7 @@ async function machine() {
 		terminateAtOnce: false,
 		realSleep: false,
 		useraddGate: Promise.resolve(),
+		tmpfiles: "make",
 	};
 	function systemctl(args: readonly string[]): string {
 		const [action, ...names] = args;
@@ -188,11 +209,17 @@ async function machine() {
 		folderRoot,
 		folderCache,
 		systemdRoot,
+		packageCaches: { root: packages, config: tmpfiles, limitBytes: 64 * 1024 * 1024 },
 		subidFiles: { uid: subuid, gid: subgid },
 		resolvConf: resolv,
 		system: async (executable, args) => {
 			const tool = basename(executable);
 			calls.push([tool, ...args]);
+			if (tool === "systemd-tmpfiles") {
+				if (state.tmpfiles === "fail") throw failure(73);
+				for (const line of (await readFile(args[1], "utf8")).split("\n"))
+					if (line.startsWith("d ")) await mkdir(line.split(" ")[1], { recursive: true });
+			}
 			if (tool === "getent") {
 				const entry = (args[0] === "passwd" ? passwd : groups).get(Number(args[1]));
 				if (entry === undefined) throw failure(2);
@@ -257,6 +284,8 @@ async function machine() {
 		folderRoot,
 		folderCache,
 		systemdRoot,
+		packages,
+		tmpfiles,
 		subuid,
 		subgid,
 		resolv,
@@ -505,6 +534,7 @@ describe("mounting a session", () => {
 		expect(answer.bytes).toHaveLength(0);
 		expect(answer.raw.toString()).not.toContain("pass-secret-1");
 		expect(brief(m.calls)).toEqual([
+			["systemd-tmpfiles", "--create", m.tmpfiles],
 			["getent", "passwd", "200001"],
 			["getent", "group", "200001"],
 			["groupadd", "--gid", "200001", "qorpera-200001"],
@@ -787,7 +817,7 @@ describe("mounting a session", () => {
 			expect((await call(m, "mount", mountRequest(workerId))).line).toEqual(
 				refusal("CODING_GUEST_SESSION_USER_CONFLICT"),
 			);
-			expect(m.calls).toEqual(calls);
+			expect(m.calls).toEqual([["systemd-tmpfiles", "--create", m.tmpfiles], ...calls]);
 			await gone(sessionAt(m, workerId).session);
 		}
 	});
@@ -797,7 +827,7 @@ describe("mounting a session", () => {
 		await writeFile(m.subuid, "other:1048576:65536\n");
 		await writeFile(m.subgid, "x:1114112:1\n200001:2000000:65536\n");
 		expect((await call(m, "mount", mountRequest(randomUUID()))).line.mount).toBe("mounted");
-		expect(m.calls.slice(0, 4)).toEqual([
+		expect(m.calls.slice(1, 5)).toEqual([
 			["getent", "passwd", "200001"],
 			["chmod", "0700", "/home/qorpera-200001"],
 			["usermod", "--add-subuids", "1179648-1245183", "qorpera-200001"],
@@ -889,6 +919,335 @@ describe("mounting a session", () => {
 		);
 		open();
 		expect((await first).line.mount).toBe("mounted");
+	});
+});
+
+const MIB = 1024 * 1024;
+/** A file of `bytes` written through (not sparse), its folders made. */
+async function planted(path: string, bytes = MIB): Promise<string> {
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, Buffer.alloc(bytes, 1));
+	return path;
+}
+
+describe("the machine's package caches (own code storage, step 6)", () => {
+	it("are the folder and one per tool, the group's to share, aged by tmpfiles", () => {
+		expect(CODING_PACKAGE_CACHES).toEqual({
+			root: "/var/cache/qorpera-packages",
+			group: "qorpera-coding",
+			limitBytes: 8589934592,
+			ageDays: 30,
+			tools: [
+				{ folder: "npm", variables: ["npm_config_cache"], settings: {}, trees: ["_npx/*"] },
+				{
+					folder: "pnpm",
+					variables: ["npm_config_store_dir", "pnpm_config_store_dir"],
+					settings: {},
+					trees: ["v*/links/*"],
+				},
+				{ folder: "pip", variables: ["PIP_CACHE_DIR"], settings: {}, trees: [] },
+				{
+					folder: "uv",
+					variables: ["UV_CACHE_DIR"],
+					settings: {},
+					trees: ["archive-v*/*", "environments-v*/*", "builds-v*/*"],
+				},
+				// Playwright's own browser GC, run by one session, removes another's browsers (its install unreadable).
+				{
+					folder: "ms-playwright",
+					variables: ["PLAYWRIGHT_BROWSERS_PATH"],
+					settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
+					trees: ["*"],
+				},
+			],
+		});
+		const acl = "group:qorpera-coding:rwx,default:group:qorpera-coding:rwx";
+		expect(codingPackageCachesTmpfiles(CODING_PACKAGE_CACHES.root)).toBe(
+			[
+				"# The machine's package caches, which its coding sessions and Qorpera's checks share. Written by the coding guest",
+				"# agent at the first mount of each boot (CODING_PACKAGE_CACHES).",
+				...["", "/npm", "/pnpm", "/pip", "/uv", "/ms-playwright"].flatMap((folder) => [
+					`d /var/cache/qorpera-packages${folder} 2775 root qorpera-coding 30d`,
+					`a /var/cache/qorpera-packages${folder} - - - - ${acl}`,
+				]),
+				// The trees tmpfiles ages no file of: the agent ages each whole.
+				"x /var/cache/qorpera-packages/npm/_npx/*",
+				"x /var/cache/qorpera-packages/pnpm/v*/links/*",
+				"x /var/cache/qorpera-packages/uv/archive-v*/*",
+				"x /var/cache/qorpera-packages/uv/environments-v*/*",
+				"x /var/cache/qorpera-packages/uv/builds-v*/*",
+				"x /var/cache/qorpera-packages/ms-playwright/*",
+				"",
+			].join("\n"),
+		);
+	});
+
+	it("are made at the first mount of a boot, before the session's user, once a boot", async () => {
+		const m = await machine();
+		const workerId = randomUUID();
+		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
+		expect(m.calls[0]).toEqual(["systemd-tmpfiles", "--create", m.tmpfiles]);
+		expect(m.calls.filter(([tool]) => tool === "systemd-tmpfiles")).toHaveLength(1);
+		expect(await readFile(m.tmpfiles, "utf8")).toBe(codingPackageCachesTmpfiles(m.packages));
+		expect(await mode(m.tmpfiles)).toBe(0o644);
+		for (const { folder } of CODING_PACKAGE_CACHES.tools)
+			expect((await lstat(join(m.packages, folder))).isDirectory()).toBe(true);
+		// Once a boot: the same session's mount again and another session's make nothing of it.
+		m.calls.length = 0;
+		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
+		expect((await call(m, "mount", mountRequest(randomUUID(), VIEW, 200002))).line.mount).toBe("mounted");
+		expect(m.calls.some(([tool]) => tool === "systemd-tmpfiles")).toBe(false);
+		// Its record is in memory: a restarted machine makes them again, at its first mount.
+		await rm(join(m.runRoot, "packages.ready"));
+		m.calls.length = 0;
+		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
+		expect(m.calls[0]).toEqual(["systemd-tmpfiles", "--create", m.tmpfiles]);
+	});
+
+	it("says in a v2 answer whether they are ready, and answers a v1 request exactly as an agent from before", async () => {
+		const m = await machine();
+		const workerId = randomUUID();
+		const v2 = await call(m, "mount", { ...mountRequest(workerId), schema: "qorpera.coding-guest-mount/v2" });
+		expect(v2.line).toEqual({
+			schema: "qorpera.coding-guest-mounted/v1",
+			workerId,
+			viewId: "view-1",
+			mount: "mounted",
+			packageCaches: true,
+		});
+		// Once a boot: asked again in v2, from the boot's record.
+		const again = await call(m, "mount", { ...mountRequest(workerId), schema: "qorpera.coding-guest-mount/v2" });
+		expect(again.line).toMatchObject({ mount: "mounted", packageCaches: true });
+		expect(m.calls.filter(([tool]) => tool === "systemd-tmpfiles")).toHaveLength(1);
+		// An executor from before asks in v1 and reads exactly the four keys it knows (its parse is closed).
+		const v1 = await call(m, "mount", mountRequest(workerId));
+		expect(Object.keys(v1.line).sort()).toEqual(["mount", "schema", "viewId", "workerId"]);
+		expect(
+			parseCodingGuestAnswer("mount", parseCodingGuestRequest("mount", mountRequest(workerId)), v1.line),
+		).toEqual(v1.line);
+	});
+
+	it("say no while tmpfiles fails, and the mount still shows the view; the next mount makes them", async () => {
+		const m = await machine();
+		m.state.tmpfiles = "fail";
+		const workerId = randomUUID();
+		const request = { ...mountRequest(workerId), schema: "qorpera.coding-guest-mount/v2" };
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: false });
+		expect(m.calls[0]).toEqual(["systemd-tmpfiles", "--create", m.tmpfiles]);
+		expect(m.calls).toContainEqual(expect.arrayContaining(["useradd"]));
+		await gone(join(m.runRoot, "packages.ready"));
+		m.state.tmpfiles = "make";
+		m.calls.length = 0;
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+		expect(m.calls[0]).toEqual(["systemd-tmpfiles", "--create", m.tmpfiles]);
+		expect((await lstat(join(m.runRoot, "packages.ready"))).isFile()).toBe(true);
+	});
+
+	it("say no when their file or their trim fails, keeping no record of the boot", async () => {
+		// The tmpfiles file's folder is a file.
+		const m = await machine();
+		await writeFile(dirname(m.tmpfiles), "");
+		const request = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: false });
+		expect(m.calls.some(([tool]) => tool === "systemd-tmpfiles")).toBe(false);
+		await gone(join(m.runRoot, "packages.ready"));
+		// A folder in a tool folder that its walk cannot read (this test's user is not root).
+		const t = await machine();
+		const locked = join(t.packages, "npm", "locked");
+		await mkdir(locked, { recursive: true });
+		await chmod(locked, 0);
+		try {
+			const asked = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
+			expect((await call(t, "mount", asked)).line).toMatchObject({ mount: "mounted", packageCaches: false });
+			await gone(join(t.runRoot, "packages.ready"));
+		} finally {
+			await chmod(locked, 0o700);
+		}
+	});
+
+	it("have their trees not used for the age removed whole at the first mount of a boot, before the trim", async () => {
+		const m = await machine();
+		const browser = await planted(join(m.packages, "ms-playwright", "chromium_headless_shell-1243", "chrome"), 1024);
+		await planted(join(m.packages, "npm", "_cacache", "index-v5", "a"), 1024);
+		// The machine's clock 31 days on: nothing of the browser was used since.
+		m.state.skewMs = 31 * 86_400_000;
+		const request = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+		await gone(dirname(browser));
+		expect(await readdir(join(m.packages, "npm", "_cacache", "index-v5"))).toEqual(["a"]);
+		// 29 days on, the age (30 days) has not passed.
+		const young = await machine();
+		const kept = await planted(join(young.packages, "ms-playwright", "chromium_headless_shell-1243", "chrome"), 1024);
+		young.state.skewMs = 29 * 86_400_000;
+		expect((await call(young, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+		expect((await lstat(kept)).isFile()).toBe(true);
+	});
+
+	it("are trimmed at the first mount of a boot, the least recently used tool folder emptied first", async () => {
+		const m = await machine();
+		m.ports.packageCaches = { root: m.packages, config: m.tmpfiles, limitBytes: 1.5 * MIB };
+		const old = await planted(join(m.packages, "npm", "_cacache", "content-v2", "a"));
+		await utimes(old, new Date("2020-01-01"), new Date("2020-01-01"));
+		await planted(join(m.packages, "pip", "http-v2", "b"));
+		expect((await call(m, "mount", mountRequest(randomUUID()))).line.mount).toBe("mounted");
+		expect(await readdir(join(m.packages, "npm"))).toEqual([]);
+		expect(await readdir(join(m.packages, "pip"))).toEqual(["http-v2"]);
+		// Once a boot: over the limit again, the next mount leaves it.
+		await planted(join(m.packages, "npm", "_cacache", "content-v2", "c"));
+		expect((await call(m, "mount", mountRequest(randomUUID(), VIEW, 200002))).line.mount).toBe("mounted");
+		expect(await readdir(join(m.packages, "npm"))).toEqual(["_cacache"]);
+	});
+});
+
+describe("the package caches' trim", () => {
+	async function caches() {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "coding-package-caches-")));
+		roots.push(root);
+		return root;
+	}
+	const past = new Date("2020-01-01T00:00:00Z");
+	const ahead = (days: number) => new Date(Date.now() + days * 86_400_000);
+	/** The blocks of everything below `root`'s folders (no file linked twice here). */
+	async function held(path: string): Promise<number> {
+		let bytes = 0;
+		for (const name of await readdir(path)) {
+			const stat = await lstat(join(path, name));
+			bytes += stat.blocks * 512 + (stat.isDirectory() ? await held(join(path, name)) : 0);
+		}
+		return bytes;
+	}
+
+	it("empties whole tool folders, the least recently read, written or changed first, until they hold the limit", async () => {
+		const root = await caches();
+		// Made and changed in this order, so that their change times are in it: uv, pip, pnpm, npm. uv was read since and
+		// pip written since, both later than any change; pnpm and npm only changed (a hard link into a project changes
+		// only that), pnpm first.
+		const at = async (folder: string, atime: Date, mtime: Date) => {
+			const file = await planted(join(root, folder, "store", "entry"));
+			await utimes(file, atime, mtime);
+			await delay(30);
+		};
+		await at("uv", ahead(1), past);
+		await at("pip", past, ahead(2));
+		await at("pnpm", past, past);
+		await at("npm", past, past);
+		const browser = await planted(join(root, "ms-playwright", "ffmpeg-1013", "tiny"), 1024);
+		await utimes(browser, ahead(3), ahead(3));
+		expect(await trimCodingPackageCaches(root, 2.5 * MIB)).toEqual(["pnpm", "npm"]);
+		for (const folder of ["pnpm", "npm"]) {
+			expect((await lstat(join(root, folder))).isDirectory()).toBe(true);
+			expect(await readdir(join(root, folder))).toEqual([]);
+		}
+		for (const folder of ["uv", "pip"]) expect(await readdir(join(root, folder, "store"))).toEqual(["entry"]);
+		expect(await readdir(join(root, "ms-playwright", "ffmpeg-1013"))).toEqual(["tiny"]);
+		// At the limit, nothing goes; a byte under it, the least recently used that holds anything.
+		let total = 0;
+		for (const folder of await readdir(root)) total += await held(join(root, folder));
+		expect(await trimCodingPackageCaches(root, total)).toEqual([]);
+		expect(await trimCodingPackageCaches(root, total - 1)).toEqual(["uv"]);
+		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip", "ms-playwright"]);
+	});
+
+	it("counts the blocks a folder holds: a file linked twice once, a sparse file as what it holds", async () => {
+		const root = await caches();
+		const shared = await planted(join(root, "pnpm", "files", "00", "a"));
+		// Linked twice in pnpm's own folder too: one folder, however many of its names.
+		await link(shared, join(root, "pnpm", "files", "00", "b"));
+		await mkdir(join(root, "uv", "archive-v0"), { recursive: true });
+		await link(shared, join(root, "uv", "archive-v0", "a"));
+		await planted(join(root, "pip", "wheels", "sparse"), 0);
+		await truncate(join(root, "pip", "wheels", "sparse"), 1024 * MIB);
+		await utimes(join(root, "pip", "wheels", "sparse"), ahead(1), ahead(1));
+		await utimes(await planted(join(root, "npm", "_cacache", "used"), 64 * 1024), ahead(2), ahead(2));
+		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual([]);
+		expect(await readdir(join(root, "uv", "archive-v0"))).toEqual(["a"]);
+		// Under half of it, pnpm goes first (a tie with uv, in the tools' order), and the file stays on disk through uv's
+		// link: uv goes too. Then they hold less than the limit: pip and npm, used later, stay.
+		expect(await trimCodingPackageCaches(root, 0.5 * MIB)).toEqual(["pnpm", "uv"]);
+		expect(await readdir(join(root, "pnpm"))).toEqual([]);
+		expect(await readdir(join(root, "uv"))).toEqual([]);
+		expect(await readdir(join(root, "pip", "wheels"))).toEqual(["sparse"]);
+		expect(await readdir(join(root, "npm", "_cacache"))).toEqual(["used"]);
+	});
+
+	it("removes a tool's tree whole when nothing in it was used for the age, and nothing else", async () => {
+		const root = await caches();
+		const day = 86_400_000;
+		const age = 30 * day;
+		const trees = [
+			"ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell",
+			"ms-playwright/ffmpeg-1011/ffmpeg-linux",
+			"npm/_npx/0123abcd/node_modules/tool/index.js",
+			"pnpm/v10/links/@/express/4.21.2/node_modules/express/index.js",
+			"uv/archive-v0/AbCd123/six.py",
+			"uv/environments-v2/tool-abc/lib/python3.14/site-packages/rich.py",
+			"uv/builds-v0/.tmpXyZ/setup.py",
+		];
+		const others = [
+			"npm/_cacache/content-v2/sha512/aa/bb",
+			"pnpm/v10/files/00/abc",
+			"pip/http-v2/a/b",
+			"uv/wheels-v5/pypi/six/six-1.17.0.http",
+		];
+		for (const path of [...trees, ...others]) await planted(join(root, path), 1024);
+		await mkdir(join(root, "ms-playwright", "__dirlock"));
+		// A browser one of whose files was read later than the age: kept whole, its old files too.
+		const read = await planted(join(root, "ms-playwright", "chromium_headless_shell-1254", "used"), 1024);
+		await planted(join(root, "ms-playwright", "chromium_headless_shell-1254", "never-read"), 1024);
+		const later = Date.now() + age + day;
+		await utimes(read, new Date(later), new Date(Date.now()));
+		// Now: nothing goes.
+		expect(await ageCodingPackageTrees(root, Date.now(), age)).toEqual([]);
+		// A folder's read time is not a use: listing it moves it (on a strictatime mount at every listing, so set here,
+		// after the walk above).
+		await utimes(join(root, "npm", "_npx", "0123abcd"), new Date(later), new Date(Date.now()));
+		// After the age: each tree that was not used since, whole; the rest left to tmpfiles' age of files.
+		expect((await ageCodingPackageTrees(root, later, age)).sort()).toEqual(
+			[
+				"ms-playwright/__dirlock",
+				"ms-playwright/chromium_headless_shell-1243",
+				"ms-playwright/ffmpeg-1011",
+				"npm/_npx/0123abcd",
+				"pnpm/v10/links/@",
+				"uv/archive-v0/AbCd123",
+				"uv/builds-v0/.tmpXyZ",
+				"uv/environments-v2/tool-abc",
+			].sort(),
+		);
+		expect((await readdir(join(root, "ms-playwright"))).sort()).toEqual(["chromium_headless_shell-1254"]);
+		expect((await readdir(join(root, "ms-playwright", "chromium_headless_shell-1254"))).sort()).toEqual([
+			"never-read",
+			"used",
+		]);
+		for (const path of others) expect((await lstat(join(root, path))).isFile()).toBe(true);
+		for (const folder of ["npm/_npx", "pnpm/v10/links", "uv/archive-v0", "uv/environments-v2"])
+			expect(await readdir(join(root, folder))).toEqual([]);
+	});
+
+	it("removes a link that stands for a tree, never what it points to, and never walks through a link to trees", async () => {
+		const root = await caches();
+		const elsewhere = await planted(join(root, "elsewhere", "browser"), 1024);
+		await mkdir(join(root, "ms-playwright"));
+		await symlink(dirname(elsewhere), join(root, "ms-playwright", "chromium-link"));
+		const outside = await planted(join(root, "outside", "AbCd", "six.py"), 1024);
+		await mkdir(join(root, "uv"));
+		await symlink(dirname(dirname(outside)), join(root, "uv", "archive-v0"));
+		expect(await ageCodingPackageTrees(root, Date.now() + 31 * 86_400_000, 30 * 86_400_000)).toEqual([
+			"ms-playwright/chromium-link",
+		]);
+		expect(await readdir(dirname(elsewhere))).toEqual(["browser"]);
+		expect(await readdir(dirname(outside))).toEqual(["six.py"]);
+		expect(await ageCodingPackageTrees(join(root, "none"), Date.now(), 0)).toEqual([]);
+	});
+
+	it("neither counts nor empties a tool folder that is not a real folder, and takes a missing one as empty", async () => {
+		const root = await caches();
+		const elsewhere = await planted(join(root, "elsewhere", "big"), 2 * MIB);
+		await symlink(dirname(elsewhere), join(root, "npm"));
+		await planted(join(root, "pip", "small"), 1024);
+		expect(await trimCodingPackageCaches(root, MIB)).toEqual([]);
+		expect(await readdir(dirname(elsewhere))).toEqual(["big"]);
+		expect(await trimCodingPackageCaches(join(root, "none"), 0)).toEqual([]);
 	});
 });
 

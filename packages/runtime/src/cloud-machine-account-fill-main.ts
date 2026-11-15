@@ -1,6 +1,6 @@
 import { runMachineAccountFillCli } from "./cloud-machine-account-fill.ts";
 
-/* fill_company_account's helper as a program (20260930711000): scripts/package-machine-guest.mjs bundles this entry alone
+/* fill_company_account's helper as a program (20260930781000): scripts/package-machine-guest.mjs bundles this entry alone
  * as /opt/qorpera-machine/cloud-machine-account-fill.mjs, and the coding executor runs it on a company machine. Nothing
  * imports it: loading it runs the helper. The exchange is on stdin and stdout (cloud-machine-account-fill.ts); each line
  * it prints is the key's public half or a code. It exits once its answer is written, whatever is still open (a browser

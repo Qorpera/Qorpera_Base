@@ -336,11 +336,10 @@ describe("company_account", () => {
 		for (const rule of [
 			"# Accounts on websites",
 			"Open one only when an open todo of yours needs it",
-			"never by signing up or signing in on its website",
-			"Never ask anyone for a password; the vault types one: on a machine with fill_company_account",
+			"A site that checks for automated browsers is a person's task in their own browser",
+			"Never ask anyone for a password and never type one yourself: on a machine the vault types it with fill_company_account",
 			"open the page with desktop open and click into the field first",
-			"Never type, say or screenshot a password yourself.",
-			"stop at once and never retry: mark the account needs_person",
+			"stop at once without retrying: mark the account needs_person",
 		])
 			expect(instructions, rule).toContain(rule);
 	});

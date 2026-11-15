@@ -109,6 +109,9 @@ export interface HostedProfileTeam {
 	};
 	members: HostedProfileMember[];
 	invitations: HostedProfileInvitation[];
+	/** The company's time zone, an IANA name; null while no member's browser has handed one in (migration
+	 * 20260930739000). Absent from a cloud before it, which takes none. */
+	timeZone?: string | null;
 }
 
 export type HostedSessionAudience = { kind: "company" } | { kind: "member_private"; userId: string };

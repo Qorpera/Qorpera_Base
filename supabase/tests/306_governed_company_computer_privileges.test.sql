@@ -57,6 +57,8 @@ begin
 	-- Coding value captures (20260930695000) add preparing a coding value's capture key, and reading and storing a
 	-- value a vault_capture browser call took from its service's screen, each bound to the agent's effect receipt;
 	-- 20260930698000 adds describing what the key is derived from, bound the same way.
+	-- The company's days by kind (20260930769000) add recording the leased bank sync's days, on the company's own
+	-- authority.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -99,7 +101,7 @@ begin
 		'qorpera_describe_model_login_sign_in_v2(uuid,text,uuid,text)',
 		'qorpera_digital_post_held_among(uuid,text,uuid,bigint,uuid,jsonb)',
 		'qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)',
-		-- A company machine's fill (20260930711000): the vault's read for the machine's executor.
+		-- A company machine's fill (20260930781000): the vault's read for the machine's executor.
 		'qorpera_fill_company_account_on_machine(uuid,text,jsonb,uuid,text,text,text,uuid,uuid,text)',
 		'qorpera_fill_event_hook_secret(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_finish_bank_sync(uuid,text,uuid,bigint,uuid,text,jsonb,timestamp with time zone,text,text)',
@@ -126,6 +128,7 @@ begin
 		'qorpera_native_binding_proven(jsonb,text)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
+		'qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)',
 		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',

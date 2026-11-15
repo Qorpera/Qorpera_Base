@@ -14,15 +14,27 @@ export type MenuEntry =
 			label: string;
 			icon?: string;
 			danger?: boolean;
-			/** A radio choice in a submenu: the current one carries a check. */
+			/** A radio choice: the current one carries a check, at the row's end when a picture leads it. */
 			checked?: boolean;
+			/** With `checked`: one of several that may be chosen together (a checkbox), not one choice of a group. */
+			multiple?: boolean;
 			/** A picture in the icon's place: a member's face. */
 			lead?: HTMLElement;
 			/** A second, quieter line under the label. */
 			hint?: string;
+			/** Shown greyed out and not chosen: the hint says why. */
+			disabled?: boolean;
 			select: () => void;
 	  }
 	| { kind: "submenu"; label: string; icon?: string; items: MenuEntry[] }
+	/** A row that opens a panel of its own beside it, as a submenu opens (the apps drawer's Icon and colour): `panel`
+	 * builds it, with `close` to close the whole menu, and `dispose` runs when it closes. */
+	| {
+			kind: "panel";
+			label: string;
+			icon?: string;
+			panel: (close: () => void) => { el: HTMLElement; dispose?: () => void };
+	  }
 	| { kind: "separator" }
 	/** A line of plain text: what the rows below are about, or what choosing one does. */
 	| { kind: "caption"; label: string };
@@ -39,6 +51,9 @@ export interface ContextMenuOptions {
 	findOpener?: () => HTMLElement | null;
 	/** The menu closed; `press` is the press outside it that closed it, when one did. */
 	onClose?: (press?: Event) => void;
+	/** Where the menu and its submenus are put (default the page's body): the element that is full screen when the
+	 * opener is in it, since the browser shows nothing outside that element then. */
+	container?: HTMLElement;
 }
 
 export interface ContextMenu {
@@ -70,7 +85,7 @@ function place(element: HTMLElement, x: number, y: number, flipX?: number): void
 }
 
 function menuItems(menu: HTMLElement): HTMLElement[] {
-	return [...menu.querySelectorAll<HTMLElement>(":scope > [role^=menuitem]")];
+	return [...menu.querySelectorAll<HTMLElement>(":scope > [role^=menuitem]:not(:disabled)")];
 }
 
 function moveFocus(menu: HTMLElement, event: KeyboardEvent): boolean {
@@ -93,7 +108,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 	active?.close();
 	const lifetime = new AbortController();
 	const opener = options.opener;
-	let submenu: { el: HTMLElement; trigger: HTMLElement } | undefined;
+	let submenu: { el: HTMLElement; trigger: HTMLElement; dispose?: () => void } | undefined;
 	let closed = false;
 	let closedBy: Event | undefined;
 
@@ -102,6 +117,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 		submenu.trigger.setAttribute("aria-expanded", "false");
 		submenu.trigger.classList.remove("is-open");
 		submenu.el.remove();
+		submenu.dispose?.();
 		if (focusTrigger) submenu.trigger.focus();
 		submenu = undefined;
 	};
@@ -123,37 +139,62 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 				continue;
 			}
 			const glyph = entry.icon ? icon(entry.icon) : h("span", { class: "icon", "aria-hidden": "true" });
-			if (entry.kind === "submenu") {
+			if (entry.kind === "submenu" || entry.kind === "panel") {
 				const trigger = h(
 					"button",
 					{
 						type: "button",
 						class: "context-menu-item",
 						role: "menuitem",
-						"aria-haspopup": "menu",
+						"aria-haspopup": entry.kind === "panel" ? "dialog" : "menu",
 						"aria-expanded": "false",
 					},
 					glyph,
 					h("span", { class: "context-menu-label" }, entry.label),
 					h("span", { class: "context-menu-chevron" }, icon("chevron")),
 				);
+				// A panel's first control takes focus as a submenu's first row does, or the one it marks (`data-autofocus`).
+				const first = (el: HTMLElement) =>
+					entry.kind === "panel"
+						? el.querySelector<HTMLElement>(
+								"[data-autofocus], button:not(:disabled)[tabindex='0'], button:not(:disabled)",
+							)
+						: menuItems(el)[0];
 				const open = (focusFirst: boolean) => {
 					if (submenu?.trigger === trigger) {
-						if (focusFirst) menuItems(submenu.el)[0]?.focus();
+						if (focusFirst) first(submenu.el)?.focus();
 						return;
 					}
 					closeSubmenu();
-					const child = build(entry.items, entry.label, true);
-					document.body.append(child);
+					let dispose: (() => void) | undefined;
+					let child: HTMLElement;
+					if (entry.kind === "panel") {
+						const built = entry.panel(() => handle.close());
+						dispose = built.dispose;
+						child = h(
+							"div",
+							{ class: "context-menu context-submenu context-panel", role: "dialog", "aria-label": entry.label },
+							built.el,
+						);
+						child.addEventListener("keydown", (event) => {
+							if (matchesKey(event, "dismiss")) {
+								event.preventDefault();
+								event.stopPropagation();
+								closeSubmenu(true);
+							}
+						});
+						child.addEventListener("contextmenu", (event) => event.preventDefault());
+					} else child = build(entry.items, entry.label, true);
+					(options.container ?? document.body).append(child);
 					const row = trigger.getBoundingClientRect();
 					const parent = menu.getBoundingClientRect();
 					const scale = uiScale();
 					// The submenu's first row lines up with its trigger: its padding (6px) plus its border (1px).
 					place(child, parent.right - 2 * scale, row.top - 7 * scale, parent.left + 2 * scale);
-					submenu = { el: child, trigger };
+					submenu = { el: child, trigger, ...(dispose ? { dispose } : {}) };
 					trigger.setAttribute("aria-expanded", "true");
 					trigger.classList.add("is-open");
-					if (focusFirst) menuItems(child)[0]?.focus();
+					if (focusFirst) first(child)?.focus();
 				};
 				trigger.addEventListener("click", () => open(true));
 				trigger.addEventListener("pointerenter", () => open(false));
@@ -173,13 +214,15 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 				{
 					type: "button",
 					class: entry.danger ? "context-menu-item danger" : "context-menu-item",
-					role: radio ? "menuitemradio" : "menuitem",
+					role: radio ? (entry.multiple ? "menuitemcheckbox" : "menuitemradio") : "menuitem",
 					...(radio ? { "aria-checked": String(entry.checked) } : {}),
+					...(entry.disabled ? { disabled: true } : {}),
 				},
 				entry.lead ?? (radio ? (entry.checked ? icon("check") : glyph) : glyph),
 				entry.hint
 					? h("span", { class: "context-menu-text" }, label, h("span", { class: "context-menu-hint" }, entry.hint))
 					: label,
+				entry.lead && entry.checked ? icon("check") : null,
 			);
 			item.addEventListener("click", () => {
 				// Focus goes back to the opener first, so a dialog the choice opens returns it there.
@@ -232,7 +275,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 			options.onClose?.(closedBy);
 		},
 	};
-	document.body.append(root);
+	(options.container ?? document.body).append(root);
 	place(root, options.x, options.y);
 	opener?.classList.add("menu-open");
 	active = handle;
@@ -268,6 +311,77 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 	window.addEventListener("blur", () => handle.close(), { signal });
 	window.addEventListener("hashchange", () => handle.close(), { signal });
 	return handle;
+}
+
+/** A long press is the right-click of a touch screen (iOS Safari sends no contextmenu event): it calls `open` with a
+ * contextmenu event of its own, at the press, for the element pressed inside `list`. Used by the rail, the apps drawer
+ * and the Concepts viewer's list; it stops with `signal`. */
+export function pressToOpenMenu(list: HTMLElement, signal: AbortSignal, open: (event: MouseEvent) => void): void {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let start: { x: number; y: number } | undefined;
+	// When a press last opened a menu; never, at first, so the page's first 800 ms
+	// (performance.now() counts from its start) do not swallow a right-click.
+	let opened = Number.NEGATIVE_INFINITY;
+	const clear = () => {
+		clearTimeout(timer);
+		timer = undefined;
+	};
+	// A press still held when its owner goes (the rail, the drawer or the Concepts viewer put away) opens nothing: the
+	// timer stops with the listeners, and one that already fired checks again (review r1 of #1767, F1).
+	signal.addEventListener("abort", clear, { once: true });
+	list.addEventListener(
+		"pointerdown",
+		(event) => {
+			if (event.pointerType !== "touch") return;
+			clear();
+			start = { x: event.clientX, y: event.clientY };
+			const target = event.target as Element;
+			timer = setTimeout(() => {
+				timer = undefined;
+				if (signal.aborted) return;
+				opened = performance.now();
+				const synthetic = new MouseEvent("contextmenu", {
+					clientX: start!.x,
+					clientY: start!.y,
+					bubbles: true,
+					cancelable: true,
+				});
+				Object.defineProperty(synthetic, "target", { value: target });
+				open(synthetic);
+			}, 550);
+		},
+		{ signal },
+	);
+	list.addEventListener(
+		"pointermove",
+		(event) => {
+			if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) clear();
+		},
+		{ signal },
+	);
+	for (const type of ["pointerup", "pointercancel", "scroll"])
+		list.addEventListener(type, clear, { signal, passive: true });
+	// The browser's own long-press menu (Android) and the tap that ends the press do nothing more.
+	list.addEventListener(
+		"contextmenu",
+		(event) => {
+			if (performance.now() - opened < 800) {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+			}
+		},
+		{ capture: true, signal },
+	);
+	list.addEventListener(
+		"click",
+		(event) => {
+			if (performance.now() - opened < 800) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+		},
+		{ capture: true, signal },
+	);
 }
 
 /** Where a context menu opened from the keyboard (Shift+F10, the menu key) stands: under its element. */

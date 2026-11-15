@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { type MeetState, renderMeet } from "../src/app/views/meet.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
-import { agentFigure } from "../src/ui/avatar.ts";
+import { agentFigure, figureFor } from "../src/ui/avatar.ts";
 import { FigurePicker } from "../src/ui/figure-picker.ts";
 import { fixture, profileA, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
@@ -51,6 +51,15 @@ describe("agent colour", () => {
 		// Blue chosen in a file is blue, the Co-Founder's too.
 		expect(colorOf(agentFigure(agent("qorpera-blue", "co-founder")))).toBe("#2047bd");
 		expect(colorOf(agentFigure(agent("qorpera-blue", "software-developer")))).toBe("#2047bd");
+	});
+
+	it("draws an agent saved as the retired ghost as the moon, as its desktop does", () => {
+		expect(figureFor(agent("native", "software-developer", "ghost"))).toBe("moon");
+		// The legal expert's own figure was the ghost.
+		expect(figureFor(agent("native", "legal-expert"))).toBe("moon");
+		expect(figureFor(agent("native", "software-developer", "puzzle"))).toBe("puzzle");
+		// A name that was never a figure falls to the template's.
+		expect(figureFor(agent("native", "software-developer", "wisp"))).toBe("rocket");
 	});
 
 	it("lets a figure in its own shade bring the new figure's shade, and keeps a chosen colour", () => {

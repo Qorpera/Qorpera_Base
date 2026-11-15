@@ -76,8 +76,15 @@ const live = () => new AbortController().signal;
 const later = () => Date.now() + 60_000;
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
-const mounted = (asked: CodingGuestRequests["mount"], mount: string) =>
-	line({ schema: "qorpera.coding-guest-mounted/v1", workerId: asked.workerId, viewId: asked.view.viewId, mount });
+/** The agent's mount answer; to a v2 request also its word on the package caches, `caches` (none when undefined). */
+const mounted = (asked: CodingGuestRequests["mount"], mount: string, caches?: boolean) =>
+	line({
+		schema: "qorpera.coding-guest-mounted/v1",
+		workerId: asked.workerId,
+		viewId: asked.view.viewId,
+		mount,
+		...(asked.schema === "qorpera.coding-guest-mount/v2" && caches !== undefined ? { packageCaches: caches } : {}),
+	});
 const refused = (code: string) => line({ schema: "qorpera.coding-guest-refusal/v1", code });
 /** A program's file written beside its place, to be renamed over it. */
 const beside = (path: string) => new RegExp(`^${path.replaceAll(".", "\\.")}\\.[0-9a-f-]{36}\\.new$`);
@@ -150,6 +157,8 @@ function fixture({ installed = true }: { installed?: boolean } = {}) {
 		/** Each mount's answer in turn, then `mountAfter` for every later one; likewise the core's opens and closes. */
 		mount: [] as Scripted<MountScript>[],
 		mountAfter: "mounted" as Scripted<MountScript>,
+		/** What the agent says of the package caches in a v2 answer: a new agent that made them, by default. */
+		caches: true as boolean | undefined,
 		open: [] as Scripted<unknown>[],
 		openAfter: (() => openAnswer(opened++)) as Scripted<unknown>,
 		close: [] as Scripted<unknown>[],
@@ -197,7 +206,7 @@ function fixture({ installed = true }: { installed?: boolean } = {}) {
 				mounts.push(asked);
 				const next = take(script.mount, script.mountAfter);
 				if (next instanceof Error) throw next;
-				if (typeof next === "string") return done(0, mounted(asked, next));
+				if (typeof next === "string") return done(0, mounted(asked, next, script.caches));
 				return "refusal" in next ? done(0, refused(next.refusal)) : done(next.exitCode);
 			}
 			throw new Error(`Unexpected command ${request.command.join(" ")}`);
@@ -356,7 +365,10 @@ describe("CodingFolderViews", () => {
 				environmentId: ENVIRONMENT.toUpperCase(),
 				attachmentToken: TOKEN.toUpperCase(),
 			});
-			await expect(at.views.attach(upper, later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			await expect(at.views.attach(upper, later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: true,
+			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "open", "mount"]);
 			expect(at.boundaries).toEqual([{ machine: MACHINE, final: [] }]);
 			expect(at.opens).toEqual([
@@ -369,7 +381,7 @@ describe("CodingFolderViews", () => {
 			]);
 			expect(at.mounts).toEqual([
 				{
-					schema: "qorpera.coding-guest-mount/v1",
+					schema: "qorpera.coding-guest-mount/v2",
 					workerId: WORKER,
 					uid: 200001,
 					gid: 200001,
@@ -384,12 +396,56 @@ describe("CodingFolderViews", () => {
 			]);
 		});
 
+		it("asks the mount in v2 and says what the agent said of the package caches; an agent from before is asked again in v1 (own code storage, step 6)", async () => {
+			// An agent that could not make them says so.
+			const no = fixture();
+			no.script.caches = false;
+			await expect(no.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: false,
+			});
+			// A v2 answer without the word reads as no caches.
+			const silent = fixture();
+			silent.script.caches = undefined;
+			await expect(silent.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: false,
+			});
+			// An agent from before refuses v2 as an invalid request, having done nothing; asked the same in v1, it mounts,
+			// and its answer, which knows nothing of the caches, is read as no caches.
+			const old = fixture();
+			old.script.mount.push({ refusal: "CODING_GUEST_REQUEST_INVALID" });
+			await expect(old.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: false,
+			});
+			expect(old.mounts.map((asked) => asked.schema)).toEqual([
+				"qorpera.coding-guest-mount/v2",
+				"qorpera.coding-guest-mount/v1",
+			]);
+			expect(old.mounts[1]).toEqual({ ...old.mounts[0], schema: "qorpera.coding-guest-mount/v1" });
+			expect(old.events).toEqual(["sha256sum", "boundary", "open", "mount", "mount"]);
+			// A v1 request refused as invalid is not asked again.
+			const bad = fixture();
+			bad.script.mount.push(
+				{ refusal: "CODING_GUEST_REQUEST_INVALID" },
+				{ refusal: "CODING_GUEST_REQUEST_INVALID" },
+			);
+			await expect(bad.views.attach(session(), later(), live())).rejects.toMatchObject({
+				code: "CODING_GUEST_REQUEST_INVALID",
+			});
+			expect(bad.mounts).toHaveLength(2);
+		});
+
 		it("still opens the view when the boundary before it fails", async () => {
 			const at = fixture();
 			at.script.boundary = () => {
 				throw new Error("CODING_FOLDER_CONTROL_UNANSWERED");
 			};
-			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: true,
+			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "open", "mount"]);
 		});
 
@@ -417,7 +473,10 @@ describe("CodingFolderViews", () => {
 		it("takes a deadline in a fraction of a millisecond, or past a timer's range", async () => {
 			for (const until of [later() + 0.5, Date.now() + 2 ** 33]) {
 				const at = fixture();
-				await expect(at.views.attach(session(), until, live())).resolves.toEqual({ viewId: VIEWS[0] });
+				await expect(at.views.attach(session(), until, live())).resolves.toEqual({
+					viewId: VIEWS[0],
+					packageCaches: true,
+				});
 				expect(at.events).toEqual(["sha256sum", "boundary", "open", "mount"]);
 			}
 		});
@@ -426,7 +485,10 @@ describe("CodingFolderViews", () => {
 			const at = fixture();
 			await at.views.attach(session(), later(), live());
 			at.events.splice(0);
-			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: true,
+			});
 			expect(at.events).toEqual(["sha256sum", "mount"]);
 			expect(at.mounts).toHaveLength(2);
 			expect(at.mounts[1]).toEqual(at.mounts[0]);
@@ -458,7 +520,7 @@ describe("CodingFolderViews", () => {
 			]);
 			await expect(
 				at.views.attach(session({ attachmentToken: TOKEN_2, bootId: BOOT_2 }), later(), live()),
-			).resolves.toEqual({ viewId: VIEWS[1] });
+			).resolves.toEqual({ viewId: VIEWS[1], packageCaches: true });
 		});
 
 		it("refuses READS_UNPROVEN, before any view opens, when the boundary before a new view answers the machine's reads unproven", async () => {
@@ -522,6 +584,7 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.attach(session({ machine: OTHER_MACHINE_BINDING }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
 				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: false, closed: true },
+				packageCaches: true,
 			});
 		});
 
@@ -536,6 +599,7 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.attach(session({ machine: OTHER_MACHINE_BINDING }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
 				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: false, closed: true },
+				packageCaches: true,
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -548,6 +612,7 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.attach(session({ attachmentToken: TOKEN_2 }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
 				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
+				packageCaches: true,
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -563,6 +628,7 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.attach(session({ bootId: BOOT_2 }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
 				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
+				packageCaches: true,
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -581,6 +647,7 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.attach(session({ machine: OTHER_MACHINE_BINDING }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
 				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
+				packageCaches: true,
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -623,7 +690,10 @@ describe("CodingFolderViews", () => {
 		it("tries a busy or unconfirmed open again with the same arguments", async () => {
 			const at = fixture();
 			at.script.open.push(new CodingControlBusy(), new Error("CODING_CONTROL_UNCONFIRMED"));
-			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: true,
+			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "open", "open", "open", "mount"]);
 			expect(at.opens[1]).toEqual(at.opens[0]);
 			expect(at.opens[2]).toEqual(at.opens[0]);
@@ -674,7 +744,10 @@ describe("CodingFolderViews", () => {
 				{ exitCode: 1 },
 				new Error("LXD exec stream failed"),
 			);
-			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: true,
+			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "open", ...Array.from({ length: 6 }, () => "mount")]);
 			for (const asked of at.mounts) expect(asked).toEqual(at.mounts[0]);
 		});
@@ -738,7 +811,10 @@ describe("CodingFolderViews", () => {
 			}
 			for (const uid of [200000, 524287]) {
 				const at = fixture();
-				await expect(at.views.attach(session({ uid }), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+				await expect(at.views.attach(session({ uid }), later(), live())).resolves.toEqual({
+					viewId: VIEWS[0],
+					packageCaches: true,
+				});
 				expect(at.mounts[0]).toMatchObject({ uid, gid: uid });
 			}
 		});
@@ -792,7 +868,10 @@ describe("CodingFolderViews", () => {
 			await expect(at.views.end("not-a-uuid", live())).resolves.toBeUndefined();
 			expect(at.events).toEqual([]);
 			// The same attachment's next turn opens a new view.
-			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[1] });
+			await expect(at.views.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[1],
+				packageCaches: true,
+			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [] });
 		});
@@ -1034,7 +1113,10 @@ describe("CodingFolderViews", () => {
 			at.events.splice(0);
 			// The executor restarts: its next instance has only the records.
 			const restarted = new CodingFolderViews(at.options);
-			await expect(restarted.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			await expect(restarted.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: true,
+			});
 			expect(at.events.splice(0)).toEqual(["sha256sum", "mount"]);
 			expect(at.mounts.at(-1)?.view).toEqual({ environmentId: ENVIRONMENT, viewId: VIEWS[0], pass: PASSES[0] });
 			await expect(new CodingFolderViews(at.options).end(WORKER, live())).resolves.toEqual({
@@ -1064,6 +1146,7 @@ describe("CodingFolderViews", () => {
 			await expect(restarted.attach(session({ attachmentToken: TOKEN_2 }), later(), live())).resolves.toEqual({
 				viewId: VIEWS[1],
 				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
+				packageCaches: true,
 			});
 			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
@@ -1111,7 +1194,10 @@ describe("CodingFolderViews", () => {
 			writeFileSync(join(at.root, ".write-12345678-1234-4234-8234-0000000000f8"), '{"schema":"qorpera.cod');
 			expect(statSync(join(at.root, `${WORKER}.json`)).nlink).toBe(2);
 			const restarted = new CodingFolderViews(at.options);
-			await expect(restarted.attach(session(), later(), live())).resolves.toEqual({ viewId: VIEWS[0] });
+			await expect(restarted.attach(session(), later(), live())).resolves.toEqual({
+				viewId: VIEWS[0],
+				packageCaches: true,
+			});
 			expect(at.events.splice(0)).toEqual(["sha256sum", "mount"]);
 			expect(readdirSync(at.root).sort()).toEqual([`${WORKER}.json`, `${WORKER_2}.json`]);
 			expect(statSync(join(at.root, `${WORKER}.json`)).nlink).toBe(1);

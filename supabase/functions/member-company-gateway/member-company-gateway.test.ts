@@ -1,12 +1,33 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { forwardMemberCompanyGateway, type MemberCompanyGatewayOptions } from "./member-company-gateway.ts";
+import { after, before, describe, it } from "node:test";
+import {
+	forwardMemberCompanyGateway,
+	type MemberCompanyGatewayOptions,
+	memberTokenShaped,
+} from "./member-company-gateway.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const object = `/v1/member-folder-objects/${id}/${"a".repeat(64)}`;
 const commit = `/v1/member-folder-commits/${id}`;
 const upstreamUrl = "https://node.tailnet.ts.net:10000";
 const base = "https://project.supabase.co/functions/v1/member-company-gateway";
+/** The issuer as a stack states it: the pinned self-hosted configuration issues with `API_EXTERNAL_URL` unchanged, so
+ * a real one often has no path at all (review r2 F2 of #1746). Both shapes are tested below. */
+const issuer = "https://project.supabase.co";
+const NOW = Date.parse("2026-11-13T10:00:00Z");
+/** A token as the project's auth service issues it (its signature is the database's to check, not the bridge's). */
+function jwt(claims: Record<string, unknown> = {}, header: Record<string, unknown> = { alg: "ES256", typ: "JWT" }) {
+	const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+	return `${part(header)}.${part({
+		iss: issuer,
+		aud: "authenticated",
+		role: "authenticated",
+		sub: "22222222-2222-4222-8222-222222222222",
+		exp: NOW / 1000 + 3600,
+		...claims,
+	})}.${Buffer.from("s".repeat(64)).toString("base64url")}`;
+}
+const memberJwt = jwt();
 /** A request as the bridge receives it: a body of known size carries its length, as a browser sends it. */
 function request(path = object, init: RequestInit = {}) {
 	const length =
@@ -29,6 +50,8 @@ function request(path = object, init: RequestInit = {}) {
 function forward(req: Request, options: MemberCompanyGatewayOptions) {
 	return forwardMemberCompanyGateway(req, {
 		memberSignedIn: async (authorization) => authorization === "Bearer member.jwt.token",
+		memberTokenIssuer: issuer,
+		now: () => NOW,
 		...options,
 	});
 }
@@ -267,6 +290,103 @@ describe("public member Company File gateway", () => {
 		],
 		["a snapshot-v1 upload", request(`/v1/member-company-file/${id}/uploads`, { method: "PUT", body: "x" }), 404],
 		["a member file export", request(`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`), 404],
+		["a machine screen write", request(`/v1/member-machine-screens/${id}/${id}`, { method: "POST", body: "{}" }), 405],
+		["a machine screen of one id", request(`/v1/member-machine-screens/${id}`), 404],
+		["a machine screen with another tail", request(`/v1/member-machine-screens/${id}/${id}/keep`), 404],
+		["a machine screen with a query", request(`/v1/member-machine-screens/${id}/${id}?keep=1`), 404],
+		["a machine action read", request(`/v1/member-machine-screens/${id}/${id}/act`), 405],
+		[
+			"a machine action past 16 KiB",
+			request(`/v1/member-machine-screens/${id}/${id}/act`, { method: "POST", body: "x".repeat(16 * 1024 + 1) }),
+			413,
+		],
+		["a machine action of one id", request(`/v1/member-machine-screens/${id}/act`, { method: "POST", body: "{}" }), 404],
+		["a machine start read", request(`/v1/member-machine-screens/${id}/${id}/start`), 405],
+		[
+			"a machine start past 1 KiB",
+			request(`/v1/member-machine-screens/${id}/${id}/start`, { method: "POST", body: "x".repeat(1025) }),
+			413,
+		],
+		["a machine start of one id", request(`/v1/member-machine-screens/${id}/start`, { method: "POST", body: "{}" }), 404],
+		["a pointer read", request(`/v1/member-machine-screens/${id}/${id}/pointer`), 405],
+		[
+			"a pointer past 256 bytes",
+			request(`/v1/member-machine-screens/${id}/${id}/pointer`, { method: "POST", body: "x".repeat(257) }),
+			413,
+		],
+		["a pointer of one id", request(`/v1/member-machine-screens/${id}/pointer`, { method: "POST", body: "{}" }), 404],
+		["a pointer with a tail", request(`/v1/member-machine-screens/${id}/${id}/pointer/1`, { method: "POST", body: "{}" }), 404],
+		...(["query", "watch", "apply", "describe"] as const).flatMap((verb) => {
+			const path = `/v1/company-data/${id}/${verb}`;
+			return [
+				[`a company data ${verb} read`, request(path), 405],
+				[`a company data ${verb} put`, request(path, { method: "PUT", body: "{}" }), 405],
+				[`a company data ${verb} with a query`, request(`${path}?wait=1`, { method: "POST", body: "{}" }), 404],
+				[
+					`a company data ${verb} with a tail`,
+					request(`${path}/${id}`, { method: "POST", body: "{}" }),
+					404,
+				],
+				[
+					`a company data ${verb} without a bearer`,
+					request(path, { method: "POST", body: "{}", headers: { authorization: "" } }),
+					401,
+				],
+				[
+					`a company data ${verb} with a basic login`,
+					request(path, { method: "POST", body: "{}", headers: { authorization: "Basic bWU6cGFzcw==" } }),
+					401,
+				],
+				[
+					`a company data ${verb} with a bearer of two words`,
+					request(path, { method: "POST", body: "{}", headers: { authorization: "Bearer member jwt" } }),
+					401,
+				],
+				[
+					`a company data ${verb} from a foreign origin`,
+					request(path, { method: "POST", body: "{}", headers: { origin: "https://evil.test" } }),
+					403,
+				],
+			] as const;
+		}),
+		["a company data drop", request(`/v1/company-data/${id}/drop`, { method: "POST", body: "{}" }), 404],
+		["a company data call without a verb", request(`/v1/company-data/${id}`, { method: "POST", body: "{}" }), 404],
+		["a company data call of no environment", request("/v1/company-data/query", { method: "POST", body: "{}" }), 404],
+		[
+			"a company data call of an upper case environment",
+			request(`/v1/company-data/${id.replace(/1/g, "A")}/query`, { method: "POST", body: "{}" }),
+			404,
+		],
+		[
+			"a company data call of a name for an environment",
+			request("/v1/company-data/shop/query", { method: "POST", body: "{}" }),
+			404,
+		],
+		[
+			"a company data call of a path for an environment",
+			request(`/v1/company-data/..%2F${id}/query`, { method: "POST", body: "{}" }),
+			404,
+		],
+		[
+			"a company data query past 64 KiB",
+			request(`/v1/company-data/${id}/query`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data watch past 512 KiB",
+			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "x".repeat(512 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data describe past 64 KiB",
+			request(`/v1/company-data/${id}/describe`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data apply past 1 MiB",
+			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
+			413,
+		],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forward(req, {
@@ -444,6 +564,306 @@ describe("public member Company File gateway", () => {
 			{ upstreamUrl, fetchImplementation },
 		);
 		assert.equal(preflight.status, 403);
+	});
+	it("forwards a member's look at a desktop with the member's token and etag alone, and its picture, 304 or refusal", async () => {
+		const picture = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+		const etag = `"${"e".repeat(64)}"`;
+		const seen: string[] = [];
+		let answer: () => Response = () =>
+			new Response(picture, { status: 200, headers: { "content-type": "image/png", etag, "x-node": "node-01" } });
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent}`);
+			assert.equal(init?.body, undefined);
+			return answer();
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}`;
+		const shown = await forward(request(path, { headers: { "if-none-match": etag, cookie: "a=b" } }), {
+			upstreamUrl,
+			fetchImplementation,
+		});
+		assert.equal(shown.status, 200);
+		assert.equal(shown.headers.get("content-type"), "image/png");
+		assert.equal(shown.headers.get("etag"), etag);
+		assert.equal(shown.headers.get("x-node"), null);
+		assert.match(shown.headers.get("access-control-expose-headers") ?? "", /\betag\b/);
+		assert.deepEqual(new Uint8Array(await shown.arrayBuffer()), picture);
+		answer = () => new Response(null, { status: 304, headers: { etag } });
+		const same = await forward(request(`${path}/watching`), { upstreamUrl, fetchImplementation });
+		assert.equal(same.status, 304);
+		assert.equal(same.headers.get("etag"), etag);
+		answer = () => Response.json({ code: "SCREEN_HIDDEN" }, { status: 409 });
+		const hidden = await forward(request(path), { upstreamUrl, fetchImplementation });
+		assert.equal(hidden.status, 409);
+		assert.deepEqual(await hidden.json(), { code: "SCREEN_HIDDEN" });
+		assert.deepEqual(seen, [
+			`GET ${path} authorization=Bearer member.jwt.token if-none-match=${etag}`,
+			`GET ${path}/watching authorization=Bearer member.jwt.token`,
+			`GET ${path} authorization=Bearer member.jwt.token`,
+		]);
+		// The browser may ask for the etag header, and nothing else beside the token.
+		const preflight = (headers: string) =>
+			forward(
+				request(path, {
+					method: "OPTIONS",
+					headers: { "access-control-request-method": "GET", "access-control-request-headers": headers },
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+		const allowed = await preflight("authorization,if-none-match");
+		assert.equal(allowed.status, 204);
+		assert.equal(allowed.headers.get("access-control-allow-headers"), "authorization, if-none-match");
+		assert.equal((await preflight("authorization,content-type")).status, 403);
+		assert.equal(seen.length, 3);
+	});
+	it("forwards a member's action on a desktop they hold with the member's token and its JSON alone (20260930713000)", async () => {
+		const seen: string[] = [];
+		const bodies: string[] = [];
+		let answer: () => Response = () => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent}`);
+			bodies.push(new TextDecoder().decode(init?.body as Uint8Array));
+			return answer();
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}/act`;
+		// The epoch and the seat of the hold the input was captured under (F24, F26) pass as they came, as the rest of the
+		// body.
+		const body = JSON.stringify({ action: { type: "type", text: "hunter2 Åse" }, epoch: 7, seat: 12 });
+		const done = await forward(
+			request(path, { method: "POST", body, headers: { "content-type": "application/json", cookie: "a=b" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(done.status, 200);
+		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-act/v1", exitCode: 0 });
+		answer = () => Response.json({ code: "DESKTOP_CONTROL_ENDED" }, { status: 409 });
+		const ended = await forward(
+			request(path, { method: "POST", body, headers: { "content-type": "application/json" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(ended.status, 409);
+		assert.deepEqual(await ended.json(), { code: "DESKTOP_CONTROL_ENDED" });
+		const length = new TextEncoder().encode(body).byteLength;
+		assert.deepEqual(seen, [
+			`POST ${path} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
+			`POST ${path} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
+		]);
+		assert.deepEqual(bodies, [body, body]);
+		// Exactly 16 KiB passes; someone signed out is not read.
+		const full = JSON.stringify({ action: { type: "click", x: 1, y: 2 }, epoch: 7, seat: 12, pad: "" });
+		const padded = full.replace('"pad":""', `"pad":"${"p".repeat(16 * 1024 - full.length)}"`);
+		assert.equal(new TextEncoder().encode(padded).byteLength, 16 * 1024);
+		answer = () => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });
+		assert.equal(
+			(await forward(request(path, { method: "POST", body: padded }), { upstreamUrl, fetchImplementation })).status,
+			200,
+		);
+		const stranger = await forward(
+			request(path, { method: "POST", body, headers: { authorization: "Bearer someone.else.token" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(stranger.status, 401);
+		assert.equal(seen.length, 3);
+		// The browser may send the token and the content type, and nothing else.
+		const preflight = (headers: string) =>
+			forward(
+				request(path, {
+					method: "OPTIONS",
+					headers: { "access-control-request-method": "POST", "access-control-request-headers": headers },
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+		const allowed = await preflight("authorization,content-type");
+		assert.equal(allowed.status, 204);
+		assert.equal(allowed.headers.get("access-control-allow-methods"), "POST");
+		assert.equal((await preflight("authorization,if-none-match")).status, 403);
+	});
+	it("forwards a member's start of the desktop as it came, with the member's token, up to 1 KiB (20260930714000)", async () => {
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent} ${new TextDecoder().decode(init?.body as Uint8Array)}`);
+			return Response.json({ schema: "qorpera.member-machine-start/v1", outcome: "started" });
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}/start`;
+		const done = await forward(
+			request(path, { method: "POST", body: "{}", headers: { "content-type": "application/json", cookie: "a=b" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(done.status, 200);
+		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-start/v1", outcome: "started" });
+		assert.deepEqual(seen, [
+			`POST ${path} authorization=Bearer member.jwt.token content-length=2 content-type=application/json {}`,
+		]);
+		const stranger = await forward(
+			request(path, { method: "POST", body: "{}", headers: { authorization: "Bearer someone.else.token" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(stranger.status, 401);
+		assert.equal(seen.length, 1);
+	});
+	it("forwards a member's pointer pass and moves up to 256 bytes without asking the auth service, and keeps its preflight 10 minutes (20260930744000)", async () => {
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent} ${new TextDecoder().decode(init?.body as Uint8Array)}`);
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", moved: true });
+		};
+		let asked = 0;
+		const path = `/v1/member-machine-screens/${id}/${id}/pointer`;
+		const move = JSON.stringify({ pass: id, x: 812, y: 443 });
+		const member = { authorization: `Bearer ${memberJwt}` };
+		const done = await forwardMemberCompanyGateway(
+			request(path, {
+				method: "POST",
+				body: move,
+				headers: { ...member, "content-type": "application/json", cookie: "a=b" },
+			}),
+			{
+				upstreamUrl,
+				fetchImplementation,
+				memberTokenIssuer: issuer,
+				now: () => NOW,
+				memberSignedIn: async () => {
+					asked++;
+					return true;
+				},
+			},
+		);
+		assert.equal(done.status, 200);
+		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-pointer/v1", moved: true });
+		assert.deepEqual(seen, [
+			`POST ${path} authorization=Bearer ${memberJwt} content-length=${move.length} content-type=application/json origin=https://app.qorpera.com ${move}`,
+		]);
+		// The auth service is never asked for a move: the executor checks the token against the pass.
+		assert.equal(asked, 0);
+		// A live picture's ticket is bought on the same route, and the browser's Origin goes with it: the ticket opens
+		// the stream for that Origin alone (20260930745000). It is an allowed one, or nothing is forwarded at all.
+		const stream = JSON.stringify({ stream: { pass: id, hold: { generation: 3 } } });
+		const ticket = await forward(
+			request(path, { method: "POST", body: stream, headers: { ...member, "content-type": "application/json" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(ticket.status, 200);
+		assert.equal(
+			seen.at(-1),
+			`POST ${path} authorization=Bearer ${memberJwt} content-length=${stream.length} content-type=application/json origin=https://app.qorpera.com ${stream}`,
+		);
+		const elsewhere = await forward(
+			request(path, { method: "POST", body: stream, headers: { ...member, origin: "https://evil.example" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(elsewhere.status, 403);
+		assert.equal(seen.length, 2);
+		// 256 bytes pass; the preflight is kept 10 minutes and names the route's own method and headers.
+		const largest = await forward(request(path, { method: "POST", body: "y".repeat(256), headers: member }), {
+			upstreamUrl,
+			fetchImplementation,
+		});
+		assert.equal(largest.status, 200);
+		const preflight = await forward(
+			request(path, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "POST",
+					"access-control-request-headers": "authorization,content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(preflight.status, 204);
+		assert.equal(preflight.headers.get("access-control-allow-methods"), "POST");
+		assert.equal(preflight.headers.get("access-control-max-age"), "600");
+		// No other route's preflight is kept.
+		const act = await forward(
+			request(`/v1/member-machine-screens/${id}/${id}/act`, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "POST",
+					"access-control-request-headers": "authorization,content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(act.headers.get("access-control-max-age"), null);
+	});
+	it("forwards a pointer request only with a member's own unexpired token of this project, read here with no call out (20260930745000)", async () => {
+		let forwarded = 0;
+		let asked = 0;
+		const fetchImplementation: typeof fetch = async () => {
+			forwarded++;
+			return Response.json({ schema: "qorpera.member-machine-pointer/v1", moved: true });
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}/pointer`;
+		const body = JSON.stringify({ pass: id, x: 1, y: 2 });
+		const send = (authorization: string, options: Partial<MemberCompanyGatewayOptions> = {}) =>
+			forward(request(path, { method: "POST", body, headers: { authorization, "content-type": "application/json" } }), {
+				upstreamUrl,
+				fetchImplementation,
+				memberSignedIn: async () => {
+					asked++;
+					return true;
+				},
+				...options,
+			});
+		const segments = memberJwt.split(".");
+		for (const [name, token] of [
+			["no token at all, only a string", "member.jwt.token"],
+			["two parts", segments.slice(0, 2).join(".")],
+			["a short signature", `${segments[0]}.${segments[1]}.c2ln`],
+			["a header that is no JSON", `bm9wZQ.${segments[1]}.${segments[2]}`],
+			["no algorithm", jwt({}, { typ: "JWT" })],
+			["the none algorithm", jwt({}, { alg: "none" })],
+			["another type", jwt({}, { alg: "HS256", typ: "JWE" })],
+			["claims that are no JSON", `${segments[0]}.bm9wZQ.${segments[2]}`],
+			["the project's publishable (anon) key", jwt({ role: "anon", sub: undefined })],
+			["a service key", jwt({ role: "service_role", aud: undefined })],
+			["another audience", jwt({ aud: "other" })],
+			["another project", jwt({ iss: "https://other.supabase.co/auth/v1" })],
+			["no member", jwt({ sub: "someone" })],
+			["no expiry", jwt({ exp: undefined })],
+			["run out", jwt({ exp: NOW / 1000 })],
+			["an expiry that is no whole number", jwt({ exp: "2099" })],
+		] as const) {
+			const refused = await send(`Bearer ${token}`);
+			assert.equal(refused.status, 401, name);
+			assert.deepEqual(await refused.json(), { error: "Member sign-in is required" }, name);
+		}
+		// Nothing of it went on, and no auth service was asked.
+		assert.equal(forwarded, 0);
+		assert.equal(asked, 0);
+		// The issuer is the auth service's own, which only the deployment can tell: unnamed, the route still serves and
+		// every other check still holds (review r1 F2 of #1746; naming the transport address would refuse every real
+		// member token). A token of another issuer passes the bridge then and the database refuses it, as before.
+		const unnamed = await send(`Bearer ${memberJwt}`, { memberTokenIssuer: undefined });
+		assert.equal(unnamed.status, 200);
+		assert.equal(
+			(await send(`Bearer ${jwt({ iss: "https://other.supabase.co/auth/v1" })}`, { memberTokenIssuer: undefined }))
+				.status,
+			200,
+		);
+		assert.equal((await send(`Bearer ${jwt({ exp: NOW / 1000 })}`, { memberTokenIssuer: undefined })).status, 401);
+		assert.equal((await send("Bearer member.jwt.token", { memberTokenIssuer: undefined })).status, 401);
+		assert.equal(forwarded, 2);
+		forwarded = 0;
+		// The member's own token goes on, with an audience list too; the bridge's clock decides its expiry.
+		assert.equal((await send(`Bearer ${memberJwt}`)).status, 200);
+		assert.equal((await send(`Bearer ${jwt({ aud: ["authenticated", "other"] }, { alg: "HS256" })}`)).status, 200);
+		assert.equal((await send(`Bearer ${memberJwt}`, { now: () => NOW + 3600_000 })).status, 401);
+		assert.equal(forwarded, 2);
+		assert.equal(asked, 0);
+		// The issuer a deployment names is the token's own, never the address the functions reach the stack at.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, "http://api-gw:8000/auth/v1", NOW / 1000), false);
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, undefined, NOW / 1000), true);
+		// The other routes keep their own checks.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, issuer, NOW / 1000), true);
+		// A trailing slash either way is the same issuer; another host is not.
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, `${issuer}/`, NOW / 1000), true);
+		assert.equal(memberTokenShaped(`Bearer ${memberJwt}`, "https://other.supabase.co", NOW / 1000), false);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);
@@ -636,6 +1056,201 @@ describe("public member Company File gateway", () => {
 		assert.equal(down.status, 503);
 		assert.match(await down.text(), /Chat images are unavailable/);
 	});
+	it("forwards a member's calls to the company's databases with the member's token and its JSON alone", async () => {
+		const seen: string[] = [];
+		const bodies: string[] = [];
+		let answer: () => Response = () =>
+			Response.json({ columns: ["total"], rows: [[12]], more: false }, { headers: { "cache-control": "no-store" } });
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			assert.equal(init?.redirect, "error");
+			assert.equal(init?.credentials, "omit");
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${String(url)} ${sent}`);
+			bodies.push(new TextDecoder().decode(init?.body as Uint8Array));
+			return answer();
+		};
+		const body = JSON.stringify({ name: "shop/sales-this-month", params: { since: "2026-11-01" } });
+		const length = new TextEncoder().encode(body).byteLength;
+		for (const verb of ["query", "watch", "apply", "describe"]) {
+			const path = `/v1/company-data/${id}/${verb}`;
+			const done = await forward(
+				request(path, {
+					method: "POST",
+					body,
+					headers: { "content-type": "application/json", cookie: "a=b", apikey: "ignore", "x-qorpera-company": id },
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(done.status, 200, verb);
+			assert.equal(done.headers.get("content-type"), "application/json");
+			assert.equal(done.headers.get("cache-control"), "no-store");
+			assert.equal(done.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+			assert.deepEqual(await done.json(), { columns: ["total"], rows: [[12]], more: false });
+		}
+		assert.deepEqual(
+			seen,
+			["query", "watch", "apply", "describe"].map(
+				(verb) =>
+					`POST ${upstreamUrl}/v1/company-data/${id}/${verb} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
+			),
+		);
+		assert.deepEqual(bodies, [body, body, body, body]);
+		// A refusal passes back as the data gateway gave it, a held step with what it would destroy.
+		answer = () =>
+			Response.json(
+				{ error: "The step would destroy data", destroys: [{ table: "orders", rows: 3 }] },
+				{ status: 409, headers: { "x-node": "node-01", "set-cookie": "node=1" } },
+			);
+		const held = await forward(
+			request(`/v1/company-data/${id}/apply`, {
+				method: "POST",
+				body: "{}",
+				headers: { "content-type": "application/json" },
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(held.status, 409);
+		assert.equal(held.headers.get("content-type"), "application/json");
+		assert.equal(held.headers.get("x-node"), null);
+		assert.equal(held.headers.get("set-cookie"), null);
+		assert.deepEqual(await held.json(), {
+			error: "The step would destroy data",
+			destroys: [{ table: "orders", rows: 3 }],
+		});
+		answer = () => {
+			throw new TypeError("node unreachable");
+		};
+		const down = await forward(
+			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "{}" }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(down.status, 503);
+		assert.match(await down.text(), /Steps sent may still apply/);
+		const watchDown = await forward(
+			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "{}" }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(watchDown.status, 503);
+		assert.match(await watchDown.text(), /Company data is unavailable just now/);
+		assert.equal(seen.length, 7);
+	});
+	it("bounds a company data call's body: 64 KiB for a question or a look, 512 KiB for a watch, 1 MiB for steps", async () => {
+		const sizes: number[] = [];
+		const fetchImplementation: typeof fetch = async (_url, init) => {
+			sizes.push((init?.body as Uint8Array).byteLength);
+			return Response.json({ ok: true });
+		};
+		for (const [verb, limit] of [
+			["query", 64 * 1024],
+			["watch", 512 * 1024],
+			["describe", 64 * 1024],
+			["apply", 1024 * 1024],
+		] as const) {
+			const path = `/v1/company-data/${id}/${verb}`;
+			const full = await forward(request(path, { method: "POST", body: "x".repeat(limit) }), {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(full.status, 200, verb);
+			const over = await forward(request(path, { method: "POST", body: "x".repeat(limit + 1) }), {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(over.status, 413, verb);
+		}
+		assert.deepEqual(sizes, [64 * 1024, 512 * 1024, 64 * 1024, 1024 * 1024]);
+	});
+	it("reads a company data call's body only for a signed-in member, a watch too", async () => {
+		const fetchImplementation = async () => assert.fail("unchecked company data call forwarded");
+		for (const verb of ["query", "watch", "apply", "describe"])
+			for (const [memberSignedIn, status] of [
+				[async () => false, 401],
+				[
+					async () => {
+						throw new Error("auth down");
+					},
+					503,
+				],
+				[undefined, 503],
+			] as const) {
+				const state = { pulled: false, cancelled: false };
+				const body = new ReadableStream<Uint8Array>(
+					{
+						pull() {
+							state.pulled = true;
+						},
+						cancel() {
+							state.cancelled = true;
+						},
+					},
+					{ highWaterMark: 0 },
+				);
+				const init: RequestInit & { duplex: "half" } = {
+					method: "POST",
+					body,
+					duplex: "half",
+					headers: { "content-type": "application/json", "content-length": "1024" },
+				};
+				const response = await forwardMemberCompanyGateway(request(`/v1/company-data/${id}/${verb}`, init), {
+					upstreamUrl,
+					fetchImplementation,
+					memberSignedIn,
+				});
+				assert.equal(response.status, status, verb);
+				assert.deepEqual(state, { pulled: false, cancelled: true }, verb);
+			}
+	});
+	it("answers a company data call's preflight for POST with the token and the content type alone", async () => {
+		const fetchImplementation = async () => assert.fail("preflight forwarded");
+		for (const verb of ["query", "watch", "apply", "describe"]) {
+			const preflight = (method: string, headers: string, origin = "https://app.qorpera.com") =>
+				forward(
+					request(`/v1/company-data/${id}/${verb}`, {
+						method: "OPTIONS",
+						headers: { origin, "access-control-request-method": method, "access-control-request-headers": headers },
+					}),
+					{ upstreamUrl, fetchImplementation },
+				);
+			const allowed = await preflight("POST", "authorization, content-type");
+			assert.equal(allowed.status, 204, verb);
+			assert.equal(allowed.headers.get("access-control-allow-methods"), "POST");
+			assert.equal(allowed.headers.get("access-control-allow-headers"), "authorization, content-type");
+			assert.equal(allowed.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+			assert.equal((await preflight("GET", "authorization")).status, 403, verb);
+			assert.equal((await preflight("POST", "authorization,if-none-match")).status, 403, verb);
+			assert.equal((await preflight("POST", "authorization,x-qorpera-company-path")).status, 403, verb);
+			assert.equal((await preflight("POST", "authorization", "https://evil.test")).status, 403, verb);
+		}
+		const drop = await forward(
+			request(`/v1/company-data/${id}/drop`, {
+				method: "OPTIONS",
+				headers: { "access-control-request-method": "POST", "access-control-request-headers": "authorization" },
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(drop.status, 404);
+	});
+	it("gives a held watch 30 s, past the data gateway's 20 s hold and the sign-in check, and the others 25 s", async () => {
+		const original = AbortSignal.timeout;
+		const deadlines: number[] = [];
+		AbortSignal.timeout = (ms: number) => {
+			deadlines.push(ms);
+			return original.call(AbortSignal, ms);
+		};
+		try {
+			for (const verb of ["watch", "query", "apply", "describe"]) {
+				const response = await forward(
+					request(`/v1/company-data/${id}/${verb}`, { method: "POST", body: "{}" }),
+					{ upstreamUrl, fetchImplementation: async () => Response.json({ same: true }) },
+				);
+				assert.equal(response.status, 200, verb);
+			}
+		} finally {
+			AbortSignal.timeout = original;
+		}
+		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000]);
+	});
 	it("supports the governed folder object read route", async () => {
 		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;
 		assert.equal(
@@ -647,5 +1262,96 @@ describe("public member Company File gateway", () => {
 			).status,
 			200,
 		);
+	});
+});
+
+describe("the bridge's own entrypoint (index.ts)", () => {
+	type Handler = (request: Request) => Promise<Response>;
+	let handler: Handler | undefined;
+	let environment: Record<string, string> = {};
+	const served: Handler = (request) => (handler as Handler)(request);
+
+	// index.ts as it is, under Node: Deno is a stand-in that gives it this deployment's settings and keeps its handler.
+	before(async () => {
+		Reflect.set(globalThis, "Deno", {
+			env: { get: (name: string) => environment[name] },
+			serve: (taken: Handler) => {
+				handler = taken;
+			},
+		});
+		await import("./index.ts");
+	});
+	after(() => {
+		Reflect.deleteProperty(globalThis, "Deno");
+	});
+
+	/** The stack as it is deployed: the functions reach it on the compose network, members' tokens say the public host
+	 * (review r1 F2 of #1746: the two differ, and only the second is an issuer). */
+	const deployment = (change: Record<string, string | undefined> = {}) => {
+		environment = Object.fromEntries(
+			Object.entries({
+				SUPABASE_URL: "http://api-gw:8000",
+				SUPABASE_ANON_KEY: "synthetic-anon-key",
+				QORPERA_MEMBER_GATEWAY_UPSTREAM_URL: upstreamUrl,
+				QORPERA_MEMBER_TOKEN_ISSUER: "https://api.example",
+				...change,
+			}).filter(([, value]) => value !== undefined),
+		) as Record<string, string>;
+	};
+	/** A token as it is while the entrypoint reads the real clock (the suite's fixed NOW is already past). */
+	const live = (change: Record<string, unknown> = {}) =>
+		jwt({ exp: Math.floor(Date.now() / 1000) + 3600, ...change });
+	const pointer = (token: string) =>
+		served(
+			new Request(`${base}/v1/member-machine-screens/${id}/${id}/pointer`, {
+				method: "POST",
+				headers: {
+					origin: "https://app.qorpera.com",
+					authorization: `Bearer ${token}`,
+					"content-type": "application/json",
+					"content-length": "2",
+				},
+				body: "{}",
+			}),
+		);
+
+	it("takes the issuer from its own setting, so a deployment whose internal and public URLs differ serves real members", async () => {
+		deployment();
+		// A token of the public issuer passes the bridge's own check and is forwarded (the upstream is unreachable here,
+		// so the answer is the gateway's own 503 for a destination it could not reach, never 401).
+		const member = await pointer(live({ iss: "https://api.example" }));
+		assert.notEqual(member.status, 401);
+		assert.deepEqual(await member.json(), { error: "The computer is unavailable just now." });
+		// The internal transport address is no issuer: a token claiming it is refused when an issuer is named.
+		assert.equal((await pointer(live({ iss: "http://api-gw:8000/auth/v1" }))).status, 401);
+		assert.equal((await pointer(live({ iss: "https://other.supabase.co/auth/v1" }))).status, 401);
+		// Nobody's token is refused whatever the issuer setting says.
+		assert.equal((await pointer("member.jwt.token")).status, 401);
+		assert.equal((await pointer(live({ role: "anon" }))).status, 401);
+	});
+
+	it("serves the route when no issuer is named, and refuses a setting that is not an exact https issuer", async () => {
+		deployment({ QORPERA_MEMBER_TOKEN_ISSUER: undefined });
+		const member = await pointer(live({ iss: "https://api.example" }));
+		assert.notEqual(member.status, 401);
+		// Still nobody's token, and still not an expired one.
+		assert.equal((await pointer("member.jwt.token")).status, 401);
+		assert.equal((await pointer(jwt({ exp: NOW / 1000 - 1 }))).status, 401);
+		// An issuer with a path and one without are both taken as the stack states them; only a string that is no exact
+		// https URL is refused (review r2 F2: nothing demands `/auth/v1`).
+		for (const good of ["https://api.example", "https://api.example/", "https://api.example/auth/v1"]) {
+			deployment({ QORPERA_MEMBER_TOKEN_ISSUER: good });
+			const taken = await pointer(live({ iss: good.replace(/\/$/, "") }));
+			assert.notEqual(taken.status, 401, good);
+		}
+		for (const value of [
+			"http://api.example/auth/v1",
+			"https://api.example/auth/v1?x=1",
+			"https://api.example/auth/v1#x",
+			"https://user:pass@api.example/auth/v1",
+		]) {
+			deployment({ QORPERA_MEMBER_TOKEN_ISSUER: value });
+			await assert.rejects(async () => await pointer(live()), /exact https issuer/, value);
+		}
 	});
 });

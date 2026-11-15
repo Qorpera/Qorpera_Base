@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
+	CODING_LAND_FILE_TOO_LARGE,
+	CODING_LAND_NAMES_REFUSED,
+	CODING_LANDING_STEP,
 	CODING_LEASE_MARGIN_MS,
 	CODING_RETRY_PAUSES_MS,
 	CodingControlBusy,
@@ -25,6 +28,7 @@ import {
 	landRefusal,
 	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
+	parseCodingSubmission,
 	parseCodingTurnState,
 	prepareUnfinished,
 	TURN_START_UNFINISHED,
@@ -397,7 +401,7 @@ describe("the coding executor over a session turn", () => {
 		vi.mocked(w.host.publish).mockResolvedValueOnce({
 			pullRequest: null,
 			noChange: false,
-			landed: { state: "merged", mainSha: "c".repeat(40) },
+			landed: { state: "merged", mainSha: "c".repeat(40), filesChanged: 3, change: 14 },
 		});
 		const finish = {
 			schema: "qorpera.coding-submission/v1",
@@ -417,7 +421,145 @@ describe("the coding executor over a session turn", () => {
 			p_outcome: "succeeded",
 			p_summary: "Tests passed",
 			p_pull_request: null,
+			// The artifact is as it was: the change's number is the kernel's own to add to its line.
 			p_artifacts: [{ kind: "landed", state: "merged", branch: "main", headSha, mainSha: "c".repeat(40) }],
+			// How many files the landing changed on the default branch, for the session's card.
+			p_files_changed: 3,
+		});
+		expect(Object.keys((completion.p_artifacts as object[])[0] ?? {})).toEqual([
+			"kind",
+			"state",
+			"branch",
+			"headSha",
+			"mainSha",
+		]);
+	});
+
+	it("passes the files a landing changed with the completion, only for a landing that moved the default branch", async () => {
+		const completed = async (publication: Record<string, unknown>) => {
+			const w = world();
+			vi.mocked(w.host.publish).mockResolvedValueOnce(publication as never);
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			// The kernel's call has the parameter either way: a count, or null.
+			expect("p_files_changed" in completion).toBe(true);
+			return completion.p_files_changed;
+		};
+		const landed = (landing: Record<string, unknown>) => ({
+			pullRequest: null,
+			noChange: false,
+			landed: { mainSha: "c".repeat(40), change: null, ...landing },
+		});
+		expect(await completed(landed({ state: "fast-forward", filesChanged: 1 }))).toBe(1);
+		expect(await completed(landed({ state: "merged", filesChanged: 0 }))).toBe(0);
+		// Main held the commit already: this turn changed nothing there.
+		expect(await completed(landed({ state: "unchanged", filesChanged: 0 }))).toBeNull();
+		// A count the kernel would refuse is not sent, so the report always lands.
+		for (const filesChanged of [undefined, -1, 1.5, 2 ** 31, Number.NaN, "3"])
+			expect(await completed(landed({ state: "fast-forward", filesChanged }))).toBeNull();
+		// A pull request on GitHub says nothing of files.
+		expect(
+			await completed({
+				pullRequest: { url: "https://github.com/Qorpera/app/pull/12", number: 12, headSha },
+				noChange: false,
+			}),
+		).toBeNull();
+	});
+
+	it("keeps the picture a session named with its hand-in when it is a path the kernel takes, and hands it to the publication", async () => {
+		const submission = (extra: Record<string, unknown>) =>
+			parseCodingSubmission({
+				schema: "qorpera.coding-submission/v1",
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+				...extra,
+			});
+		const plain = { kind: "finish", summary: "Tests passed", headSha, operationKey: "done" };
+		expect(submission({})).toEqual(plain);
+		for (const picture of [
+			"docs/changes/free-returns.png",
+			"shot.PNG",
+			"docs/before and after.jpeg",
+			"a/b/c/d.webp",
+			".hidden/x-1_2.jpg",
+			`${"d/".repeat(147)}x.png`,
+		])
+			expect(submission({ picture, notice: "Each price now says so." })).toEqual({ ...plain, picture });
+		// What a customer will notice stays in the kernel; a picture that is no such path is dropped, and the work is
+		// handed in without one.
+		for (const picture of [
+			"/company/code/shop/shot.png",
+			"../shot.png",
+			"docs/../shot.png",
+			"docs/./shot.png",
+			"./shot.png",
+			"docs//shot.png",
+			"docs/shot.gif",
+			"docs/shot.png ",
+			" docs/shot.png",
+			"docs/sh\not.png",
+			"docs/shot.png\n",
+			"docs/s*.png",
+			"shot",
+			"",
+			`${"d/".repeat(148)}x.png`,
+			7,
+			null,
+			["docs/shot.png"],
+		]) {
+			const parsed = submission({ picture });
+			expect(parsed).toEqual(plain);
+			expect(parsed && "picture" in parsed).toBe(false);
+		}
+		// An ask has none.
+		expect(
+			parseCodingSubmission({
+				schema: "qorpera.coding-submission/v1",
+				kind: "ask",
+				state: "submitted",
+				summary: "Blocked",
+				question: "Which price?",
+				options: [],
+				operationKey: "ask",
+				picture: "docs/shot.png",
+			}),
+		).toEqual({ kind: "ask", summary: "Blocked", question: "Which price?", options: [], operationKey: "ask" });
+
+		// Through a turn: the host's publication gets the submission with its picture.
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+			notice: "Each price now says so.",
+			picture: "docs/changes/free-returns.png",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(vi.mocked(w.host.publish).mock.calls[0]?.[1]).toEqual({
+			...plain,
+			picture: "docs/changes/free-returns.png",
 		});
 	});
 
@@ -450,8 +592,23 @@ describe("the coding executor over a session turn", () => {
 		const w = world();
 		const summary = landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["assets/film.mov"])!;
 		expect(summary).toBe(
-			'The change was not landed, and nothing changed on main: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take: "assets/film.mov". Take them out, commit and finish again.',
+			'The change was not landed, and nothing changed on main: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take: "assets/film.mov". Take them out, commit and finish again. [code=CODING_LAND_FILE_TOO_LARGE]',
 		);
+		// A refusal for the files' names or size ends with a code of its own, which the kernel keeps as the turn's reason
+		// (migration 20260930743000) and a member's page reads; every other refusal ends with no code, as before.
+		expect(CODING_LAND_NAMES_REFUSED).toBe("CODING_LAND_NAMES_REFUSED");
+		expect(CODING_LAND_FILE_TOO_LARGE).toBe("CODING_LAND_FILE_TOO_LARGE");
+		for (const code of [
+			"CODE_HOST_NAMES_FOLDER_REFUSES",
+			"CODE_HOST_NAMES_NOT_UTF8",
+			"CODE_HOST_NAMES_NOT_NFC",
+			"CODE_HOST_NAMES_DIFFER_BY_CASE",
+		])
+			expect(landRefusal("main", code, ["bad."]), code).toMatch(
+				/ finish again\. \[code=CODING_LAND_NAMES_REFUSED\]$/,
+			);
+		for (const code of ["CODE_HOST_AREA_FROM_GITHUB", "CODE_HOST_EXPORT_MOVED", "CODE_HOST_REF_UNREADABLE"])
+			expect(landRefusal("main", code, []), code).not.toContain("[code=");
 		// A storage that is not as Qorpera left it is never a "finish again"; a code this does not know has no words.
 		expect(landRefusal("main", "CODE_HOST_AREA_FROM_GITHUB", ["code/acme/web"])).toMatch(
 			/^The change was not landed, and nothing changed on main: the repository's own storage .+ Finishing again will not help\./,
@@ -473,13 +630,22 @@ describe("the coding executor over a session turn", () => {
 			landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])!,
 		]) {
 			expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4000);
-			expect(text).toMatch(/(commit and finish again\.|Take them out, commit and finish again\.)$/);
+			expect(text).toMatch(
+				/(commit and finish again\.|Take them out, commit and finish again\.)( \[code=CODING_LAND_[A-Z_]+\])?$/,
+			);
 		}
 		expect(landRefusal("main", "CODE_HOST_NAMES_NOT_NFC", accented)).toContain(
-			" more. Rename them, commit and finish again.",
+			" more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]",
 		);
 		expect(landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])).toContain(
 			": 1 path too long to name here. Take them out",
+		);
+		// Names the company folder does not take: what to rename, the paths a null stands for only counted.
+		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", ["bad.", null, "x "])).toBe(
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "bad.", "x " and 1 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
+		);
+		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", [null])).toContain(
+			": 1 path not named here. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]",
 		);
 		// Any summary is cut by bytes, whole characters only.
 		expect(withinBytes("abc", 4000)).toBe("abc");
@@ -503,6 +669,103 @@ describe("the coding executor over a session turn", () => {
 		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
 		expect([completion.p_outcome, completion.p_summary, completion.p_artifacts]).toEqual(["failed", summary, null]);
 		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: "CODE_HOST_FILE_TOO_LARGE" }));
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
+	it("says the change is being checked and saved while a repository kept in Qorpera lands, and only there", async () => {
+		const stepOf = async (host: "qorpera" | "github.com") => {
+			const w = world();
+			w.world.claim.repository = (
+				host === "qorpera" ? { host, owner: "acme", name: "shop", baseBranch: "main" } : repository
+			) as never;
+			vi.mocked(w.host.publish).mockResolvedValueOnce(
+				host === "qorpera"
+					? {
+							pullRequest: null,
+							noChange: false,
+							landed: { state: "fast-forward", mainSha: headSha, filesChanged: 1, change: 2 },
+						}
+					: {
+							pullRequest: { url: "https://github.com/Qorpera/app/pull/12", number: 12, headSha },
+							noChange: false,
+						},
+			);
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+			const publishing = w.world.calls.filter(
+				(c) => c.method === "qorpera_record_coding_progress" && c.args.p_phase === "publishing",
+			);
+			expect(publishing).toHaveLength(1);
+			// Set before the landing starts: the checks run inside it.
+			const calls = vi.mocked(w.control.call).mock;
+			const set = calls.calls.findIndex(
+				(c) => c[0] === "qorpera_record_coding_progress" && c[1].p_phase === "publishing",
+			);
+			expect(calls.invocationCallOrder[set]).toBeLessThan(vi.mocked(w.host.publish).mock.invocationCallOrder[0]!);
+			return publishing[0]?.args.p_last_step;
+		};
+		// The founder's card draws its line for the checks by exactly these words (the web, part E).
+		expect(CODING_LANDING_STEP).toBe("Checking and saving the change");
+		expect(await stepOf("qorpera")).toBe("Checking and saving the change");
+		expect(await stepOf("github.com")).toBe("Publishing the draft pull request");
+	});
+
+	it.each([
+		[
+			"CODING_CHECKS_FAILED",
+			'Nothing went into main: the check "test" failed on this change. It ran `npm test` and ended with exit code 1 after 41 s. The end of its output:\n\n    1 failing\n\nIts whole output is in ~/.qorpera-checks/out/2-test.log on the session\'s machine. Fix the cause in the code, never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and finish again. [code=CODING_CHECKS_FAILED]',
+		],
+		[
+			"CODING_CHECKS_REFUSED",
+			"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]",
+		],
+		[
+			"CODING_CHECKS_DID_NOT_RUN",
+			"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine stopped). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again. [code=CODING_CHECKS_DID_NOT_RUN]",
+		],
+		[
+			"CODING_CHECKS_MAIN_MOVED",
+			"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more. [code=CODING_CHECKS_MAIN_MOVED]",
+		],
+	])("fails the turn with the checks' own words, as they are, for %s", async (code, summary) => {
+		const w = world();
+		w.world.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" } as never;
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandRefused(code, summary));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const report = vi.fn();
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		// Nothing landed: no artifact, no files, and the words with their code for the kernel to keep.
+		expect([completion.p_outcome, completion.p_summary, completion.p_artifacts, completion.p_files_changed]).toEqual([
+			"failed",
+			summary,
+			null,
+			null,
+		]);
+		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: code }));
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 

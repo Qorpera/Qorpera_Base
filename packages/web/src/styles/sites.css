@@ -1,0 +1,212 @@
+/* The Sites page (app/views/settings-sites.ts) and What's new's live row (app/views/whats-new.ts), redone on 12 Nov 2026
+ * as the Mailbox was (Jonas: "easy, minimalistic and pleasing"): no boxes. A title and one short line, then one row per
+ * site on a hairline: the Sites globe in the app's blue, the site's title and whether it is live, then its link and its
+ * password as pills. What just happened is said in a small dark toast at the foot.
+ *
+ * Both pages lay their rows out by their own width (container `site-rows`), as the app's rail may take any share of the
+ * window. Container widths are in em (14 design px each): the design-px build step keeps px out of container
+ * conditions. 36em is about a 1024 px window with the sidebar open, and a phone. */
+
+:is(.sites, .whats-new) {
+	/* The Sites app's colour, as its icon in the apps drawer (views/shell.ts, "blue"). */
+	--site-ink: #2047bd;
+	container: site-rows / inline-size;
+}
+:root[data-theme="dark"] :is(.sites, .whats-new) { --site-ink: #7193f2; }
+
+/* ---- the page ------------------------------------------------------------------ */
+.page.sites-page { display: flex; flex-direction: column; height: 100%; max-width: none; padding: 0; overflow: hidden; }
+.sites { position: relative; flex: 1; min-height: 0; color: var(--text); }
+.sites-scroll { height: 100%; overflow-y: auto; }
+.sites-column, .sites-toast-area { --site-gutter: 32px; max-width: calc(680px + 2 * var(--site-gutter)); margin: 0 auto; }
+.sites-column { padding: 44px var(--site-gutter) 112px; }
+.sites-head h1 { margin: 0; font-size: 24px; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; }
+.sites-head p { margin: 6px 0 0; color: var(--text-muted); font-size: 15px; line-height: 1.45; }
+.sites-column > .skeleton-list { margin-top: 20px; }
+.sites-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 22px 0 0; color: var(--danger); font-size: 14.5px; }
+.site-rows { margin-top: 14px; }
+
+/* No site yet: the Co-Founder, and how a site comes to be. */
+.sites-empty {
+	display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0 32px; text-align: center;
+	animation: site-up var(--motion-slow) var(--ease-out) both;
+}
+.sites-empty > .figure { margin-bottom: 12px; }
+.sites-empty h2 { margin: 0; font-size: 19px; font-weight: 650; }
+.sites-empty p { margin: 0; max-width: 340px; color: var(--text-muted); font-size: 15px; line-height: 1.5; text-wrap: balance; }
+
+/* ---- a site's row (both pages) -------------------------------------------------- */
+.site-row {
+	display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; grid-template-areas: "emblem head end" ". body body";
+	align-items: center; column-gap: 14px; row-gap: 12px; padding: 18px 0 20px; border-bottom: 1px solid var(--border);
+}
+.site-row.is-new { animation: site-up var(--motion-slow) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 45ms); }
+.site-row.is-leaving { overflow: hidden; animation: site-out 0.45s var(--ease-in-out) both; pointer-events: none; }
+.site-emblem {
+	grid-area: emblem; align-self: start; width: 28px; height: 28px; margin-top: -2px; --emblem-ink: var(--site-ink);
+	transition: transform var(--motion-base) var(--ease-spring);
+}
+/* The row lifts its globe under the pointer, as the apps drawer lifts an app's. A site that is off has a grey one. */
+.site-row:hover .site-emblem { transform: translateY(-2px) scale(1.06); }
+.site-row.is-off .site-emblem { --emblem-ink: var(--text-soft); }
+.site-head { grid-area: head; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0; }
+.site-name { font-size: 16px; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
+.site-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 13px; white-space: nowrap; }
+.site-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--agent-active); }
+.site-state.is-publishing .site-dot { background: var(--warning); animation: site-breathe 1.6s ease-in-out infinite; }
+.site-state.is-off .site-dot { background: var(--text-soft); }
+/* A site Qorpera took down (step 5.1): a grey globe, a red dot, and one plain sentence where its link and password were. */
+.site-row.is-down .site-emblem { --emblem-ink: var(--text-soft); }
+.site-state.is-down .site-dot { background: var(--danger); }
+.site-down { grid-area: body; max-width: 34em; margin: 0; color: var(--text); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.site-from, .site-meta { color: var(--text-muted); font-size: 13px; }
+:is(.site-from, .site-meta) a { color: inherit; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+:is(.site-from, .site-meta) a:hover { color: var(--text); text-decoration-color: currentColor; }
+
+/* The rare things: "⋯", at the row's end. */
+.site-more {
+	grid-area: end; align-self: start; display: grid; place-items: center; width: 36px; height: 36px; margin: -6px -8px 0 0;
+	padding: 0; border: 0; border-radius: 50%; background: none; color: var(--text-muted); cursor: pointer;
+	transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.site-more:hover:not(:disabled), .site-more[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.site-more:disabled { opacity: 0.45; cursor: default; }
+.site-more svg { width: 20px; height: 20px; stroke-width: 2.8; }
+
+/* The link and the password, each a pill: a press on it copies it. One over the other, as wide as each other; side by
+ * side where the page is wide (below). */
+.site-share { grid-area: body; display: grid; grid-template-columns: minmax(0, 25em); gap: 8px; min-width: 0; }
+.site-pill {
+	display: flex; align-items: center; min-width: 0; height: 38px;
+	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: var(--bg);
+	transition: border-color var(--motion-fast) ease;
+}
+.site-pill:hover, .site-pill:focus-within { border-color: color-mix(in srgb, var(--text) 32%, transparent); }
+.site-pill-main {
+	display: flex; flex: 1 1 auto; align-items: center; gap: 9px; min-width: 0; height: 100%; padding: 0 10px 0 13px;
+	border: 0; border-radius: var(--radius-pill); background: none; color: var(--text); font: inherit; font-size: 14px;
+	text-align: left; cursor: pointer; transition: background var(--motion-fast) ease;
+}
+.site-pill-main:hover:not(:disabled) { background: var(--hover); }
+.site-pill-main:disabled { cursor: default; }
+.site-pill-main:focus-visible, .site-pill-icon:focus-visible { outline-offset: -2px; }
+/* The pill's mark: what it holds, a copy sign under the pointer, a check once copied. */
+.site-pill-lead { flex: none; display: grid; width: 15px; height: 15px; color: var(--text-soft); }
+.site-pill-main:is(:hover:not(:disabled), :focus-visible) .site-pill-lead { color: var(--text-muted); }
+.site-pill-lead > svg {
+	grid-area: 1 / 1; width: 15px; height: 15px;
+	transition: opacity var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring);
+}
+.site-pill-lead > svg:nth-child(n + 2),
+.site-pill-main:is(:hover:not(:disabled), :focus-visible, .is-copied) .site-pill-lead > svg { opacity: 0; transform: scale(0.5); }
+.site-pill-main:is(:hover:not(:disabled), :focus-visible):not(.is-copied) .site-pill-lead > svg:nth-child(2),
+.site-pill-main.is-copied .site-pill-lead > svg:nth-child(3) { opacity: 1; transform: none; }
+.site-pill-main.is-copied .site-pill-lead { color: var(--agent-active); }
+.site-pill-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A password the kernel makes is 14 characters (three groups of four): shown or hidden, it takes that room. */
+.site-secret-text { min-width: 14ch; font-family: var(--font-mono); font-size: 13.5px; }
+.site-secret-copy:not(.is-shown) .site-secret-text { color: var(--text-muted); letter-spacing: 0.08em; }
+.site-pill.is-reading .site-secret-text { animation: site-breathe 1.2s ease-in-out infinite; }
+/* The browser would not copy: the text, whole and selected, to copy by hand. */
+.site-pill-field {
+	flex: 1 1 auto; min-width: 0; width: 22em; height: 100%; padding: 0 4px 0 0; border: 0; border-radius: 0;
+	background: none; color: var(--text); font-size: 14.5px;
+}
+.site-pill-field:focus-visible { outline: none; }
+.site-secret .site-pill-field { width: 15em; font-family: var(--font-mono); font-size: 13.5px; }
+.site-pill-icon {
+	flex: none; display: grid; place-items: center; width: 32px; height: 32px; margin-right: 3px; padding: 0; border: 0;
+	border-radius: 50%; background: none; color: var(--text-muted); cursor: pointer;
+	transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.site-pill-icon:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.site-pill-icon:disabled { opacity: 0.45; cursor: default; }
+.site-pill-icon svg { width: 16px; height: 16px; }
+
+/* A quiet pill button: Try again, What's new's Open the site and Go back. */
+.site-button {
+	display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 16px;
+	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: none; color: var(--text);
+	font: inherit; font-size: 14px; font-weight: 600; white-space: nowrap; text-decoration: none; cursor: pointer;
+	transition: background var(--motion-fast) ease;
+}
+.site-button:hover:not(:disabled) { background: var(--hover); color: var(--text); text-decoration: none; }
+.site-button:disabled { opacity: 0.5; cursor: default; }
+.site-button svg { width: 15px; height: 15px; color: var(--text-muted); }
+
+/* ---- What's new's live row: the version and who said go under its name, its buttons at the end --- */
+.whats-new-live > .site-row { padding: 16px 0 20px; }
+.site-row.is-whats-new > .site-head { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.site-row.is-whats-new .site-meta { font-size: 13.5px; }
+.site-row.is-waiting .site-emblem { --emblem-ink: var(--text-soft); }
+.site-actions { grid-area: end; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+/* ---- the change-password question -------------------------------------------------- */
+.sites-question h2 { margin: 0; font-size: 17px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.sites-question > p { margin: -4px 0 2px; color: var(--text-muted); font-size: 14px; line-height: 1.45; }
+.sites-question-input { width: 100%; min-height: 44px; padding: 0 14px; border-radius: 12px; }
+.sites-question-input:not(:placeholder-shown) { font-family: var(--font-mono); }
+.sites-question-problem { margin: -4px 0 0; color: var(--danger); font-size: 13.5px; }
+.sites-question-problem:empty { display: none; }
+.sites-question-random {
+	display: inline-flex; align-items: center; align-self: flex-start; gap: 7px; min-height: 30px; margin: -4px 0 2px -6px;
+	padding: 0 8px; border: 0; border-radius: var(--radius-pill); background: none; color: var(--text-muted); font: inherit;
+	font-size: 14px; cursor: pointer; transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.sites-question-random:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.sites-question-random:disabled { opacity: 0.5; cursor: default; }
+.sites-question-random svg { width: 15px; height: 15px; }
+
+/* ---- the toast, at the foot of the page's column ------------------------------------------ */
+.sites-toast-area {
+	position: absolute; left: 0; right: 0; bottom: 24px; z-index: 4; padding: 0 var(--site-gutter); pointer-events: none;
+}
+.sites-toast {
+	display: inline-flex; align-items: center; max-width: 100%; min-height: 46px; padding: 6px 18px; border-radius: 8px;
+	background: var(--primary); color: var(--on-primary); font-size: 14px; font-weight: 500; pointer-events: auto;
+	box-shadow: 0 3px 5px rgba(0, 0, 0, 0.16), 0 6px 14px rgba(0, 0, 0, 0.14);
+	animation: site-rise var(--motion-base) var(--ease-out) both;
+}
+.sites-toast.is-leaving { animation: site-sink var(--motion-fast) var(--ease-in) both; }
+
+/* ---- wide: the link and the password side by side, each pill as wide on every row ------------------ */
+@container site-rows (min-width: 48em) {
+	.site-share { grid-template-columns: minmax(0, 23em) minmax(0, 15em); gap: 10px; }
+}
+
+/* What's new's buttons go under its line when they would squeeze it (Danish buttons beside it at a 1440 window with the
+ * sidebar open broke the version line into four). */
+@container site-rows not (min-width: 56em) {
+	.site-row.is-whats-new { grid-template-areas: "emblem head head" ". end end"; }
+	.site-row.is-whats-new > .site-actions { justify-content: flex-start; }
+}
+
+/* ---- narrow: a phone, or a laptop with the sidebar open ------------------------------------- */
+@container site-rows not (min-width: 36em) {
+	.sites-column, .sites-toast-area { --site-gutter: 18px; }
+	.sites-column { padding-top: 24px; }
+	.sites-head h1 { font-size: 22px; }
+	.sites-empty { padding-top: 48px; }
+	/* The pills take the row's whole width under the globe; What's new's buttons too. */
+	.site-row { grid-template-areas: "emblem head end" "body body body"; }
+	.site-share { grid-template-columns: minmax(0, 1fr); }
+	.site-row.is-whats-new { grid-template-areas: "emblem head head" "end end end"; }
+	.sites-toast { width: 100%; }
+}
+
+/* ---- motion ------------------------------------------------------------------- */
+@keyframes site-up { from { opacity: 0; transform: translateY(6px); } }
+@keyframes site-rise { from { opacity: 0; transform: translateY(18px); } }
+@keyframes site-sink { to { opacity: 0; transform: translateY(10px); } }
+@keyframes site-breathe { 50% { opacity: 0.4; } }
+@keyframes site-out {
+	0% { max-height: 320px; opacity: 1; }
+	45% { opacity: 0; transform: translateX(24px); }
+	100% { max-height: 0; opacity: 0; transform: translateX(24px); padding-top: 0; padding-bottom: 0; border-bottom-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.site-row.is-new, .site-row.is-leaving, .sites-empty, .sites-toast, .sites-toast.is-leaving { animation: none; }
+	.site-state.is-publishing .site-dot, .site-pill.is-reading .site-secret-text { animation: none; }
+	.site-emblem, .site-pill-lead > svg { transition: none; }
+	.site-row:hover .site-emblem { transform: none; }
+}

@@ -1,0 +1,9 @@
+# On the primary's machine only, after docker-compose.yml in COMPOSE_FILE: the database's port on the machine's
+# private address, for the standby on the other machine. pg_hba.conf lets only the replication login in from there,
+# over TLS, from the address `standby.sh allow` names. The gateway's logins match no line for that address.
+#   DATA_DB_LISTEN   this machine's private address and port, for example 10.250.9.2:5432
+# The drill does not use this file: its two machines share a docker network instead (drill/drill.yml).
+services:
+  data-db:
+    ports:
+      - ${DATA_DB_LISTEN:?set DATA_DB_LISTEN}:5432

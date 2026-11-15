@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import { vi } from "vitest";
 import { CloudApi } from "../src/cloud/api.ts";
@@ -13,6 +15,37 @@ import type {
 	PendingSessionInput,
 } from "../src/cloud/types.ts";
 import * as figureMotion from "../src/ui/figure-motion.ts";
+
+/** One row of the one host list of SQL test 1252 (own code storage step 5.1's cross-check): a host, the slug and scope
+ * the one host rule reads in it, and its verdict (taken, name, shape, case, port, dot: 1252 says what each means). */
+export interface OneHostRow {
+	readonly host: string;
+	readonly slug: string;
+	readonly scope: "site" | "next" | "";
+	readonly verdict: "taken" | "name" | "shape" | "case" | "port" | "dot";
+}
+
+/** The one host list, read from SQL test 1252 between its two marker lines: every reader of a site host runs it. */
+export function oneHostList(): OneHostRow[] {
+	const lines = readFileSync(resolve("../../supabase/tests/1252_site_hosts.test.sql"), "utf8").split("\n");
+	const begin = lines.findIndex((line) => line.trim() === "-- the one host list: begin");
+	const end = lines.findIndex((line) => line.trim() === "-- the one host list: end");
+	if (begin < 0 || end < begin) throw new Error("SQL test 1252 has no one host list");
+	const list = lines.slice(begin + 1, end).map((line) => {
+		const entry = /^\s*\('([^']*)', '([^']*)', '(site|next|)', '(taken|name|shape|case|port|dot)'\),?$/.exec(line);
+		if (!entry) throw new Error(`Not a row of the one host list: ${line}`);
+		return {
+			host: entry[1] ?? "",
+			slug: entry[2] ?? "",
+			scope: (entry[3] ?? "") as OneHostRow["scope"],
+			verdict: (entry[4] ?? "") as OneHostRow["verdict"],
+		};
+	});
+	for (const verdict of ["taken", "name", "shape", "case", "port", "dot"])
+		if (list.length < 50 || !list.some((entry) => entry.verdict === verdict))
+			throw new Error(`The one host list is short of ${verdict}`);
+	return list;
+}
 
 export const id = (n: number): string => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
 export const timestamp = "2026-09-05T10:00:00Z";
@@ -132,7 +165,7 @@ export async function settle(): Promise<void> {
 export function stubFigureMotion(dispose: () => void = () => {}) {
 	vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
 	vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
-	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
+	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose, play: () => {} });
 }
 
 /** Scrolls `element` as a browser has it: one that has left the page says it is at its top, where jsdom keeps what
@@ -155,6 +188,10 @@ const HINT_TABLES: ReadonlyMap<string, string> = new Map([
 	["access", "qorpera_profile_access_state"],
 	["company-file", "qorpera_company_files"],
 	["sidebar", "qorpera_company_sidebar_revisions"],
+	// Member chats (20260930715000): pushed to the two members of the changed chat.
+	["member-chats", "qorpera_member_messages"],
+	// A company's machines (20260930712000): pushed to every member.
+	["machines", "qorpera_company_machines"],
 ]);
 
 export function fixture() {
@@ -254,6 +291,14 @@ export function fixture() {
 	// A cloud before 20260930568000: it lists no approval cards waiting for the member.
 	vi.spyOn(api, "listWaitingApprovals").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_waiting_approvals", { message: "missing", code: "PGRST202" }, 404),
+	);
+	// A cloud before 20260930723000: it does not say what each agent's work waits on the member for.
+	vi.spyOn(api, "listWaitingWork").mockRejectedValue(
+		new CloudRpcError("qorpera_list_member_waiting_work", { message: "missing", code: "PGRST202" }, 404),
+	);
+	// A cloud before 20260930742000: it does not say which agents use their computers.
+	vi.spyOn(api, "listScreensInUse").mockRejectedValue(
+		new CloudRpcError("qorpera_list_company_screens_in_use", { message: "missing", code: "PGRST202" }, 404),
 	);
 	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);

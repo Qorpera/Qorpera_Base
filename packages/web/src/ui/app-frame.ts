@@ -9,7 +9,13 @@ import { PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "./page-fr
  * - A frame that says it is ready a second time, or loads a second time, has left the document it was handed (it
  *   reloaded or went somewhere): its port is closed and `left` is called, and the panel shows a new frame only when the
  *   member asks (Reload). A document the frame shows later has no port.
- * - Escape in the page reaches the frame as Escape (page-frame.ts' rule), so the panel closes as it does elsewhere. */
+ * - Escape in the page reaches the frame as Escape (page-frame.ts' rule), so the panel closes as it does elsewhere.
+ * - The frame follows no link. A link the member clicks in the page comes over the port as one more call (`open`),
+ *   which the frame document alone sends, and the host opens what it allows (app/interface-apps.ts `appLink`).
+ * - A page changes nothing through its port: a call that asks for a change is answered only after the member allowed it
+ *   on a bar the app draws outside this frame (app/views/app-ask-bar.ts), which may take as long as the member takes.
+ * - A question of the company's databases the page watches gets its later answers over the port too
+ *   (`qorpera-app-data`, with the watch's id), until the page stops it or the frame ends. */
 
 /** One call from the page, as the host takes it. */
 export interface AppCall {
@@ -39,6 +45,9 @@ export class AppFrame {
 	#loads = 0;
 	/** Calls refused: a page that keeps asking for what it may not have is stopped. */
 	#refused = 0;
+	/** While true the page's Escape is not passed on: a request of the page's waits for the member's answer, and the
+	 * page may not close what it is shown in to dodge it (security review r1, L3). */
+	holdEscape = false;
 
 	constructor(page: string, title: string, className: string, handle: AppCallHandler, left: () => void) {
 		this.#page = page;
@@ -72,6 +81,16 @@ export class AppFrame {
 		this.#port?.postMessage({ type: "qorpera-app-change" });
 	}
 
+	/** Hands the page a watch's new answer (app/interface-apps.ts `CompanyData`). */
+	data(watch: number, value: unknown): void {
+		this.#port?.postMessage({ type: "qorpera-app-data", watch, value });
+	}
+
+	/** Ends when the frame does: disposed, or left by its page. What the page watches ends with it. */
+	get signal(): AbortSignal {
+		return this.#lifetime.signal;
+	}
+
 	dispose(): void {
 		this.#lifetime.abort();
 		this.#port?.close();
@@ -90,7 +109,8 @@ export class AppFrame {
 		const data = event.data as { type?: unknown } | null;
 		if (typeof data !== "object" || data === null) return;
 		if (data.type === PAGE_ESCAPE) {
-			this.frame.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+			if (!this.holdEscape)
+				this.frame.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 			return;
 		}
 		if (data.type !== PAGE_READY) return;

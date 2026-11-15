@@ -187,7 +187,7 @@ describe("an HTML page's frame", () => {
 			expect(script.indexOf(taken), taken).toBeLessThan(script.indexOf('addEventListener("message"'));
 		}
 		// Listened for after the page is written: opening the document drops the window's listeners.
-		const listened = script.indexOf("apply(listen, window, [");
+		const listened = script.indexOf('apply(listen, window, [\n\t\t\t"keydown",');
 		expect(listened).toBeGreaterThan(script.indexOf("apply(close, document, []);"));
 		expect(script.slice(listened)).toContain(
 			'if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, [])) return;',
@@ -198,6 +198,307 @@ describe("an HTML page's frame", () => {
 		expect(script.slice(after)).toContain(
 			`if (!apply(prevented, pressed, [])) app.postMessage({ type: "${PAGE_ESCAPE}" }, "*");`,
 		);
+	});
+
+	it("follows no link itself: a click on one is stopped, and only the member's own goes to the app, over the port", () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		// Taken, and put in place, before the page runs, so the page can't change them.
+		for (const taken of [
+			"const prevent = Event.prototype.preventDefault;",
+			"const composedPath = Event.prototype.composedPath;",
+			"const stop = Event.prototype.stopPropagation;",
+			"const stopNow = Event.prototype.stopImmediatePropagation;",
+			'const bubble = Object.getOwnPropertyDescriptor(Event.prototype, "cancelBubble");',
+			'const currentOf = getter(Event.prototype, "currentTarget");',
+			'const phaseOf = getter(Event.prototype, "eventPhase");',
+			'const modeOf = getter(ShadowRoot.prototype, "mode");',
+			"const unlisten = EventTarget.prototype.removeEventListener;",
+			"const soon = queueMicrotask;",
+			"const attribute = Element.prototype.getAttribute;",
+			"const codeAt = String.prototype.charCodeAt;",
+			"const clicked = new WeakMap();",
+			"const settled = new WeakSet();",
+			"const closed = new WeakSet();",
+			'const links = "a[*|href], area[href]";',
+			"Event.prototype.stopPropagation = function stopPropagation() {",
+			"Event.prototype.stopImmediatePropagation = function stopImmediatePropagation() {",
+			'Object.defineProperty(Event.prototype, "cancelBubble", {',
+		]) {
+			expect(script, taken).toContain(taken);
+			expect(script.indexOf(taken), taken).toBeLessThan(script.indexOf('addEventListener("message"'));
+		}
+		// What a page reads and says of a click's cancelling is the browser's own: nothing stands in for it.
+		expect(script).not.toMatch(/Event\.prototype\.preventDefault = |"defaultPrevented", \{|"returnValue"/);
+		// Only for a page handed a port: without one, nothing is noted, so nothing is stopped or sent.
+		expect(script).toContain("const noteLink = (click) => {\n\t\tif (!follow) return;");
+		expect(script).toContain('if (live) {\n\t\t\tdefine(window, "qorpera", live.page);');
+		// The link is noted on the click's way down, before any handler of the page: at the window, listened for once
+		// the document is opened (which drops the window's listeners) and before the page is written, and at each
+		// shadow tree's root. It is the innermost link on the click's whole path, a slot's surroundings included.
+		const heard = script.indexOf('apply(listen, window, ["click", hear, true]);');
+		expect(heard).toBeGreaterThan(script.indexOf("apply(open, document, []);"));
+		expect(heard).toBeLessThan(script.indexOf("apply(write, document, [data.html]);"));
+		expect(script).toContain(
+			'if (apply(modeOf, root, []) === "closed") apply(addTo, closed, [root]);\n\t\tapply(listen, root, ["click", noteLink, true]);',
+		);
+		expect(script).toContain(
+			"path = apply(composedPath, click, []);\n\t\t\tfor (let index = 0; index < path.length && !link; index++) if (isLink(path[index])) link = path[index];",
+		);
+		// The frame is heard behind the page's handlers, put last again at every click: at the window for a click that
+		// travels all the way, and on every node of the click's path, each way, for one a handler stops there. Not
+		// on the node that is hearing the note itself on the way down, where a listener put now is not heard.
+		expect(script).toContain(
+			'const last = (node, listener, down) => {\n\t\tapply(unlisten, node, ["click", listener, down]);\n\t\tapply(listen, node, ["click", listener, down]);',
+		);
+		expect(script).toContain("noteLink(click);\n\t\tif (click.isTrusted === true) last(window, settle, false);");
+		expect(script).toContain(
+			"if (path[index] !== here) last(path[index], settleStopped, true);\n\t\t\t\tlast(path[index], settleStopped, false);",
+		);
+		expect(script).toContain(
+			"if (apply(inSet, stops, [click]) || (bubble && apply(bubble.get, click, []) === true)) settle(click);",
+		);
+		const settle = script.slice(
+			script.indexOf("const settle = (click) => {"),
+			script.indexOf("const settleStopped = (click) => {"),
+		);
+		const steps = [
+			// Once for each click.
+			"if (!link || apply(inSet, settled, [click])) return;",
+			"apply(addTo, settled, [click]);",
+			// A click the page took, as the browser itself says, is the page's; so is a jump inside the page.
+			"const href = apply(prevented, click, []) ? null : placeOf(link);",
+			"if (href === null) return;",
+			// Every other click on a link is stopped, whoever made it: the frame never leaves its page.
+			"apply(prevent, click, []);",
+			// A click that a passive handler has cannot be stopped: then the link is kept from leading anywhere.
+			"if (!apply(prevented, click, [])) park(link);",
+			// Only a click the member made goes on, once the click is over, to where the link led when it was settled.
+			"if (click.isTrusted === true && href.length <= 2048) apply(later, window, [() => follow(href), 0]);",
+		];
+		for (const step of steps) expect(settle, step).toContain(step);
+		expect(steps.map((step) => settle.indexOf(step))).toEqual(
+			steps.map((step) => settle.indexOf(step)).sort((a, b) => a - b),
+		);
+		// Parked, a link has no address for as long as the click lasts: both spellings of it go, and each comes back
+		// once the click is over unless the page has written one meanwhile.
+		for (const part of [
+			'if (plain !== null) apply(removeAttribute, link, ["href"]);',
+			'if (drawn !== null) apply(removeAttributeNS, link, [older, "href"]);',
+			'if (plain !== null && apply(attribute, link, ["href"]) === null) apply(setAttribute, link, ["href", plain]);',
+			'if (drawn !== null && apply(attributeNS, link, [older, "href"]) === null)\n\t\t\t\t\tapply(setAttributeNS, link, [older, "xlink:href", drawn]);',
+		])
+			expect(script, part).toContain(part);
+		// A click a script made is stopped where it is noted, and no listener is moved for it.
+		expect(script).toContain(
+			"if (click.isTrusted !== true) {\n\t\t\tif (placeOf(link) !== null) apply(prevent, click, []);\n\t\t\treturn;\n\t\t}",
+		);
+		// A handler that stops a click at once, or in one of the two places where the frame is not behind the page's
+		// handlers in time (the window and a closed tree's root, on the way down), does not keep the click from
+		// being settled: it is settled when that handler returns, or at once for a click a script made.
+		expect(script).toContain(
+			"apply(phaseOf, event, []) === 1 &&\n\t\t(apply(currentOf, event, []) === window || apply(inSet, closed, [apply(currentOf, event, [])]));",
+		);
+		expect(script).toContain(
+			"apply(addTo, stops, [event]);\n\t\tif (!atOnce && !unheard(event)) return;\n\t\tif (event.isTrusted === true) apply(soon, window, [() => settle(event)]);\n\t\telse settle(event);",
+		);
+		for (const way of [
+			"stopping(this, false);\n\t\tapply(stop, this, []);",
+			"stopping(this, true);\n\t\tapply(stopNow, this, []);",
+			"if (value) stopping(this, false);\n\t\t\t\tapply(bubble.set, this, [value]);",
+		])
+			expect(script, way).toContain(way);
+		// It goes out as a call on the port this document keeps: never on a window message, and by no call of the
+		// page's `qorpera` object.
+		expect(script).toContain(
+			'apply(send, port, [{ type: "qorpera-app-call", id: ++next, method: "open", params: { href } }]);',
+		);
+		const api = script.slice(script.indexOf("const page = freeze({"), script.indexOf("// Sent as a call"));
+		expect(api).toContain('read: freeze((path) => call("read", { path: String(path) })),');
+		expect(api).not.toMatch(/open|follow|href/);
+		expect(script.match(/app\.postMessage\(/g)).toHaveLength(2);
+
+		// What stays the page's own, as the browser reads an address.
+		const source = /const ownLink = (\(href\) => \{[\s\S]*?\n\t\});/.exec(script)?.[1];
+		expect(source).toBeDefined();
+		const ownLink = new Function("apply", "codeAt", `return ${source};`)(
+			Reflect.apply,
+			String.prototype.charCodeAt,
+		) as (href: string) => boolean;
+		for (const own of ["#", "#top", "  #top", "\t\n#a", "javascript:void(0)", "JavaScript:show(2)", " javascript:x"])
+			expect(ownLink(own), own).toBe(true);
+		for (const place of [
+			"",
+			" ",
+			"app:sales",
+			"folder:plan.md",
+			"https://example.com/#top",
+			"other.html#top",
+			"javascript",
+			"javascripts:x",
+			"java\tscript:x",
+			"javascript\u001a",
+			"x#top",
+		])
+			expect(ownLink(place), JSON.stringify(place)).toBe(false);
+	});
+
+	it("asks the company's databases over the port, and hands each watch's answers to its own listener only", async () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		// The bridge as the document makes it, over a port that notes what is sent.
+		const body = script.slice(
+			script.indexOf("const send = MessagePort.prototype.postMessage;"),
+			script.indexOf('addEventListener("message", function take'),
+		);
+		const sent: Record<string, unknown>[] = [];
+		let hear: (event: { data: unknown }) => void = () => {};
+		const make = new Function(
+			"MessagePort",
+			"MessageEvent",
+			"getter",
+			"apply",
+			"listen",
+			`${body}\nreturn bridge;`,
+		) as (...parts: unknown[]) => (port: object) => { page: Record<string, (...args: unknown[]) => unknown> };
+		const { page } = make(
+			{ prototype: { postMessage: (message: Record<string, unknown>) => sent.push(message), start: () => {} } },
+			{ prototype: {} },
+			() =>
+				function data(this: { data: unknown }) {
+					return this.data;
+				},
+			Reflect.apply,
+			(_type: string, listener: typeof hear) => {
+				hear = listener;
+			},
+		)({});
+		const answer = (id: unknown, value: unknown) =>
+			hear({ data: { type: "qorpera-app-answer", id, ok: true, value } });
+		const data = (watch: unknown, value: unknown) => hear({ data: { type: "qorpera-app-data", watch, value } });
+		expect(Object.isFrozen(page)).toBe(true);
+		expect(Object.isFrozen(page.query)).toBe(true);
+		expect(Object.isFrozen(page.watch)).toBe(true);
+
+		const asked = page.query!("shop/sales", { since: "2026-11-01" }) as Promise<unknown>;
+		expect(sent.at(-1)).toEqual({
+			type: "qorpera-app-call",
+			id: 1,
+			method: "query",
+			params: { name: "shop/sales", params: { since: "2026-11-01" } },
+		});
+		answer(1, { columns: ["orders"], rows: [{ orders: 3 }], more: false, asOf: "x" });
+		expect(await asked).toEqual({ columns: ["orders"], rows: [{ orders: 3 }], more: false, asOf: "x" });
+		page.query!("shop/sales");
+		expect(sent.at(-1)?.params).toEqual({ name: "shop/sales", params: {} });
+
+		// A watch: its first answer, then each one sent for its id, and nothing sent for another.
+		const seen: unknown[] = [];
+		const stop = page.watch!("shop/sales", undefined, (value: unknown) => seen.push(value)) as () => void;
+		expect(Object.isFrozen(stop)).toBe(true);
+		expect(sent.at(-1)).toEqual({
+			type: "qorpera-app-call",
+			id: 3,
+			method: "watch",
+			params: { name: "shop/sales", params: {} },
+		});
+		answer(3, { watch: 7, answer: "first" });
+		data(7, "second");
+		data(8, "another's");
+		hear({ data: { type: "qorpera-app-data", watch: "7", value: "odd" } });
+		expect(seen).toEqual(["first", "second"]);
+		// A listener that throws is passed by, and the next answer still reaches it.
+		const thrown: unknown[] = [];
+		page.watch!("shop/by-status", { open: true }, (value: unknown) => {
+			thrown.push(value);
+			throw new Error("the page's own");
+		});
+		answer(4, { watch: 9, answer: "a" });
+		expect(() => data(9, "b")).not.toThrow();
+		expect(thrown).toEqual(["a", "b"]);
+		// Stopped: the app is told once, and nothing more reaches the listener.
+		stop();
+		expect(sent.at(-1)).toEqual({ type: "qorpera-app-call", id: 5, method: "unwatch", params: { watch: 7 } });
+		stop();
+		expect(sent).toHaveLength(5);
+		data(7, "late");
+		expect(seen).toEqual(["first", "second"]);
+		// Stopped before its first answer: the listener is never called, and the watch the app started is ended.
+		const never: unknown[] = [];
+		const early = page.watch!("shop/sales", {}, (value: unknown) => never.push(value)) as () => void;
+		early();
+		expect(sent).toHaveLength(6);
+		answer(6, { watch: 10, answer: "first" });
+		expect(sent.at(-1)).toEqual({ type: "qorpera-app-call", id: 7, method: "unwatch", params: { watch: 10 } });
+		data(10, "late");
+		expect(never).toEqual([]);
+		// No listener, no watch.
+		page.watch!("shop/sales", {});
+		expect(sent).toHaveLength(7);
+
+		// A watch the app refuses to start: `failed` is called once with the app's words, and its stop does nothing.
+		const refuse = (id: unknown, error: unknown) =>
+			hear({ data: { type: "qorpera-app-answer", id, ok: false, error } });
+		const failures: unknown[] = [];
+		const refused = page.watch!(
+			"shop/missing",
+			{},
+			() => failures.push("listener"),
+			(error: unknown) => failures.push(error),
+		) as () => void;
+		refuse(8, "No question shop/missing that you may read");
+		refuse(8, "again");
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toBeInstanceOf(Error);
+		expect((failures[0] as Error).message).toBe("No question shop/missing that you may read");
+		refused();
+		expect(sent).toHaveLength(8);
+		// A watch that started never calls it, also when it stops; one that throws is passed by.
+		const unfailed: unknown[] = [];
+		const fine = page.watch!(
+			"shop/sales",
+			{},
+			() => {},
+			(error: unknown) => unfailed.push(error),
+		) as () => void;
+		answer(9, { watch: 11, answer: "first" });
+		fine();
+		expect(unfailed).toEqual([]);
+		page.watch!(
+			"shop/sales",
+			{},
+			() => {},
+			() => {
+				throw new Error("the page's own");
+			},
+		);
+		expect(() => refuse(11, 'Add "data" to reads in app.toml to ask the company\'s databases')).not.toThrow();
+		// Without `failed`, a refusal is as before: nothing.
+		page.watch!("shop/sales", {}, () => {});
+		expect(() => refuse(12, "refused")).not.toThrow();
+	});
+
+	it("hands an app's page a note to its owner as one more call that only asks, its parts as plain values", () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		const api = script.slice(script.indexOf("const page = freeze({"), script.indexOf("// Sent as a call"));
+		const source = /\n\t\t\ttell: (freeze\(\(note\) => \{[\s\S]*?\n\t\t\t\}\)),\n/.exec(api)?.[1];
+		expect(source).toBeDefined();
+		const calls: [string, unknown][] = [];
+		const tell = new Function("freeze", "call", `return ${source};`)(
+			Object.freeze,
+			(method: string, params: unknown) => {
+				calls.push([method, params]);
+				return Promise.resolve();
+			},
+		) as (note?: unknown) => Promise<unknown>;
+		void tell({ about: "Lund, A", at: 1043, text: "Get a quote", to: "someone else" });
+		void tell({ about: "Lund" });
+		void tell("Lund");
+		void tell(null);
+		expect(calls).toEqual([
+			["tell", { about: "Lund, A", at: "1043", text: "Get a quote" }],
+			["tell", { about: "Lund", at: null, text: null }],
+			["tell", { about: "", at: null, text: null }],
+			["tell", { about: "", at: null, text: null }],
+		]);
 	});
 
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {

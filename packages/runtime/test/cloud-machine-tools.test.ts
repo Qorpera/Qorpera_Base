@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
+import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "../src/cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import {
@@ -11,11 +12,14 @@ import {
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
 	CloudMachineCommandUnanswered,
+	CloudMachineScreenRefusal,
 } from "../src/cloud-machine-command-http.ts";
 import {
 	CLOUD_MACHINE_DESKTOP_LEAST,
+	CLOUD_MACHINE_SCREEN_DESCRIPTION,
 	CLOUD_MACHINE_START_ANSWER_MS,
 	CLOUD_MACHINE_START_DESCRIPTION,
+	CLOUD_MACHINE_START_WORKER_DESCRIPTION,
 	type CloudMachineCodingValues,
 	cloudMachineTools,
 } from "../src/cloud-machine-tools.ts";
@@ -26,11 +30,17 @@ import {
 } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "../src/cloud-runtime-observability.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
+import { pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
+
+/** A desktop's screenshot as the machine's helper sends it: a small RGB PNG. */
+const SCREEN_PNG = pngFile(pngHeader(16, 10, 8, 2), pngRows(new Array(10).fill(new Array(16 * 3).fill(200))));
 
 function fixture(
 	machines: { name: string; state: string }[] = [{ name: "build-a", state: "running" }],
 	worker = false,
 	codingValues?: CloudMachineCodingValues,
+	/** The gateway runs machine_screen's helper (20260930708000). */
+	screens = false,
 	accountFills = false,
 ) {
 	const { authority, binding } = nativeToolAuthorityFixture();
@@ -57,12 +67,21 @@ function fixture(
 	/** What the kernel answers to a waiting worker's next status looks (then: the first machine, command running). */
 	const statuses: (Record<string, unknown> | Error)[] = [];
 	/** The state a start answers with. */
-	const started = { state: "waiting", queuePosition: 2 as number | null };
+	const started: { state: string; queuePosition: number | null; waitingFor?: string } = {
+		state: "waiting",
+		queuePosition: 2,
+	};
+	/** A kernel without the report of a wait (before 20260930755000) refuses it. */
+	const kernel = { refusesReports: false };
 	const control = {
 		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 			if (method === "qorpera_native_machine_manage") {
 				const request = args.p_request as { action: string; machine?: string };
 				if (request.action === "list") return { schema: "qorpera.machine-list/v1", machines: listed };
+				if (request.action === "waited") {
+					if (kernel.refusesReports) throw new Error("Invalid machine request");
+					return { schema: "qorpera.machine-wait/v1", recorded: true };
+				}
 				if (request.action === "status") {
 					const next = statuses.shift();
 					if (next instanceof Error) throw next;
@@ -120,6 +139,21 @@ function fixture(
 			filled: true,
 		})),
 	};
+	const screen = vi.fn<NonNullable<CloudMachineCommandGateway["screen"]>>(async (_scope, input) => ({
+		schema: "qorpera.machine-screen-answer/v1",
+		commandId: input.commandId,
+		header: {
+			schema: "qorpera.machine-screen/v1",
+			started: false,
+			action: input.commandId === null ? null : { type: "click", exitCode: 0 },
+			activeWindow: "Sign in - Chromium",
+			windows: ["Sign in - Chromium", "Terminal"],
+			moreWindows: 0,
+			png: SCREEN_PNG.length,
+		},
+		png: SCREEN_PNG.toString("base64"),
+	}));
+	if (screens) Object.assign(gateway, { screen });
 	const execute = vi.fn<CloudNativeToolOperations["execute"]>(async (options) => {
 		await options.authorize(options.operation, identity, options.signal);
 		return (
@@ -166,6 +200,14 @@ function fixture(
 			([method, args]) =>
 				method === "qorpera_native_machine_manage" && (args.p_request as { action: string }).action === "status",
 		);
+	/** The waits machine_start reported to the kernel (20260930755000). */
+	const reports = () =>
+		control.call.mock.calls
+			.filter(
+				([method, args]) =>
+					method === "qorpera_native_machine_manage" && (args.p_request as { action: string }).action === "waited",
+			)
+			.map(([, args]) => args.p_request as { machine: string; machineId: string; wait: Record<string, unknown> });
 	return {
 		identity,
 		binding,
@@ -181,8 +223,11 @@ function fixture(
 		run,
 		statuses,
 		started,
+		kernel,
 		status,
 		looks,
+		reports,
+		screen,
 	};
 }
 
@@ -220,15 +265,16 @@ describe("machine tools", () => {
 			for (const tools of [agent.tools, helper.tools]) {
 				const start = tools.find((tool) => tool.name === "machine_start")!;
 				const run = tools.find((tool) => tool.name === "machine_run")!;
-				expect(start.description).toContain(
-					"only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins",
+				// The lifetimes are said on the field, which Codex sends (track 3, T3-5).
+				const lifetime = JSON.stringify((start.inputSchema.properties as Record<string, unknown>).lifetime);
+				expect(lifetime).toContain(
+					"sleeps after an hour with no use and no busy program (over about 5% of one core, or moving data)",
 				);
+				expect(lifetime).toContain("to keep a server up");
+				expect(lifetime).toContain("its starter is asked once a week whether the work still needs it");
+				expect(start.description).toContain("a task machine's program busy for hours brings check-ins");
 				expect(start.description).toContain(
-					"a server that only waits stops when it sleeps, and your next run is told",
-				);
-				expect(start.description).toContain("use it to keep a server up");
-				expect(start.description).toContain(
-					"the agent that started it is asked once a week whether the work still needs it",
+					"a server on it that only waits stops when it sleeps (your next run is told)",
 				);
 				expect(run.description).toContain("keep a server up on an always-on machine");
 				// F3 6e-1: a session's work is in the company folder; no repository is attached.
@@ -258,23 +304,55 @@ describe("machine tools", () => {
 		}
 	});
 
-	it("offers waiting to workers only: an agent is woken instead", () => {
+	it("has machine_start wait for its machine by default, a minute in a conversation's run; only a worker waits for commands", () => {
 		const agent = fixture();
 		const helper = fixture(undefined, true);
 		try {
-			for (const tool of ["machine_start", "machine_read"]) {
-				const agentTool = agent.tools.find((entry) => entry.name === tool)!;
-				expect(agentTool.inputSchema.properties).not.toHaveProperty("waitSeconds");
-				expect(agentTool.description).not.toContain("waitSeconds");
-				expect(helper.tools.find((entry) => entry.name === tool)!.inputSchema.properties).toHaveProperty(
-					"waitSeconds",
-				);
-			}
-			const read = agent.tools.find((tool) => tool.name === "machine_read")!;
-			expect(() => read.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds: 5 })).toThrow();
+			// agent-box B1: machine_start waits in place by default; waitSeconds asks for less, 0 for none.
 			const start = agent.tools.find((tool) => tool.name === "machine_start")!;
-			expect(() => start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 5 })).toThrow();
+			expect(start.inputSchema.properties).toHaveProperty("waitSeconds", {
+				type: "integer",
+				minimum: 0,
+				maximum: 60,
+			});
+			expect(start.description).toContain(
+				"The call waits up to 60 s while it starts, with no model turn spent (waitSeconds: less, 0 for none); if it is not running yet, finish this run normally: you are woken when it runs.",
+			);
+			expect(JSON.stringify(start.inputSchema)).toContain("To wake a stopped machine: its name, and nothing else.");
+			expect(start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 60 })).toEqual({
+				operationKey: "k",
+				machine: "build-a",
+				waitSeconds: 60,
+			});
+			expect(start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 0 })).toEqual({
+				operationKey: "k",
+				machine: "build-a",
+				waitSeconds: 0,
+			});
+			for (const waitSeconds of [-1, 61, 1.5, "5"])
+				expect(() => start.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds })).toThrow();
+			const helperStart = helper.tools.find((tool) => tool.name === "machine_start")!;
+			expect(helperStart.inputSchema.properties).toHaveProperty("waitSeconds", {
+				type: "integer",
+				minimum: 0,
+				maximum: 300,
+			});
+			expect(helperStart.description).toContain(
+				"You are a worker: nothing wakes you. The call waits up to 60 s while it starts, with no model turn spent (waitSeconds: 0 to 300); to wait longer, call machine_start again with the same operationKey and arguments. If it still waits in line for room, use another running machine from machine_list, or say in your report that it is waiting so your agent can retry.",
+			);
+			expect(helperStart.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 300 })).toMatchObject({
+				waitSeconds: 300,
+			});
+			expect(() =>
+				helperStart.parseArguments({ operationKey: "k", machine: "build-a", waitSeconds: 301 }),
+			).toThrow();
+			// Its commands still wake it (notify): only a worker waits for a command in machine_read.
+			const read = agent.tools.find((tool) => tool.name === "machine_read")!;
+			expect(read.inputSchema.properties).not.toHaveProperty("waitSeconds");
+			expect(read.description).not.toContain("waitSeconds");
+			expect(() => read.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds: 5 })).toThrow();
 			const helperRead = helper.tools.find((tool) => tool.name === "machine_read")!;
+			expect(helperRead.inputSchema.properties).toHaveProperty("waitSeconds");
 			for (const waitSeconds of [0, 301, 1.5, "5"])
 				expect(() =>
 					helperRead.parseArguments({ machine: "build-a", commandId: randomUUID(), waitSeconds }),
@@ -282,6 +360,55 @@ describe("machine tools", () => {
 		} finally {
 			agent.boundary.close();
 			helper.boundary.close();
+		}
+	});
+
+	it("says in one sentence that a new task machine is the agent's own free one again, to agents and workers", () => {
+		const agent = fixture();
+		const helper = fixture(undefined, true);
+		try {
+			for (const tools of [agent.tools, helper.tools])
+				expect(tools.find((tool) => tool.name === "machine_start")!.description).toContain(
+					"A new task machine is one of your own again when one of that size is free (woken if asleep): the result says reused; use its name.",
+				);
+		} finally {
+			agent.boundary.close();
+			helper.boundary.close();
+		}
+	});
+
+	it("answers a start that got the agent's own machine again as the kernel says it, reused and its name", async () => {
+		const f = fixture([{ name: "web-tests", state: "stopped" }]);
+		try {
+			f.started.state = "starting";
+			f.started.queuePosition = null;
+			const reused =
+				"your own free machine web-tests of this size was given to you again instead of a new one: use the name web-tests";
+			f.control.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+				if (method !== "qorpera_native_machine_start") throw new Error(`unexpected ${method}`);
+				return args.p_action === "authorize"
+					? { state: "authorized" }
+					: { schema: "qorpera.machine-start/v1", machine: { ...f.listed[0], state: "starting" }, reused };
+			});
+			const result = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+				operationKey: "market",
+				name: "market-research",
+				purpose: "Read the market reports",
+				// Not waited on here: the waits are tested below.
+				waitSeconds: 0,
+			});
+			expect(result.success).toBe(true);
+			expect(f.content(result as never)).toMatchObject({
+				machine: { name: "web-tests", state: "starting" },
+				reused,
+			});
+			// The model asked for a new machine: the arguments are the ask's, the kernel chose.
+			expect(f.execute.mock.calls[0][0].operation.arguments).toMatchObject({
+				name: "market-research",
+				lifetime: "task",
+			});
+		} finally {
+			f.boundary.close();
 		}
 	});
 
@@ -790,17 +917,44 @@ describe("machine tools", () => {
 			}
 		});
 
-		it("a machine in line, or one already running, is not waited on", async () => {
+		it("waits for a machine in line until it runs; one waiting for computer hours, or already running, is not waited on", async () => {
 			const f = fixture(undefined, true);
 			try {
 				f.started.state = "waiting";
-				const lined = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+				f.statuses.push(
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "running" }),
+				);
+				const lined = f.boundary.invoke("s1", "qorpera", "machine_start", {
 					operationKey: "lined",
 					machine: f.listed[0].name,
 					waitSeconds: 120,
 				});
-				expect(f.content(lined as never).machine.state).toBe("waiting");
+				await vi.advanceTimersByTimeAsync(10_000);
+				expect(f.content((await lined) as never).machine.state).toBe("running");
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, true, expect.anything());
+				expect(f.looks()).toHaveLength(2);
+				expect(f.reports().map((report) => report.wait.outcome)).toEqual(["running"]);
+				// Only a member adds computer hours: that line is not waited on.
+				f.gateway.wake.mockClear();
+				f.started.waitingFor = "COMPUTER_HOURS_EXHAUSTED";
+				const hours = await f.boundary.invoke("s2", "qorpera", "machine_start", {
+					operationKey: "hours",
+					machine: f.listed[0].name,
+					waitSeconds: 120,
+				});
+				expect(f.content(hours as never).machine).toMatchObject({
+					state: "waiting",
+					waitingFor: "COMPUTER_HOURS_EXHAUSTED",
+				});
 				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, false, expect.anything());
+				expect(f.looks()).toHaveLength(2);
+				expect(f.reports().at(-1)!.wait).toMatchObject({
+					outcome: "hours",
+					waitedMs: 0,
+					waitingFor: "COMPUTER_HOURS_EXHAUSTED",
+				});
+				delete f.started.waitingFor;
 				f.gateway.wake.mockClear();
 				f.started.state = "running";
 				await f.boundary.invoke("s2", "qorpera", "machine_start", {
@@ -809,7 +963,8 @@ describe("machine tools", () => {
 					waitSeconds: 120,
 				});
 				expect(f.gateway.wake).not.toHaveBeenCalled();
-				expect(f.looks()).toEqual([]);
+				expect(f.looks()).toHaveLength(2);
+				expect(f.reports()).toHaveLength(2);
 			} finally {
 				f.boundary.close();
 			}
@@ -992,17 +1147,197 @@ describe("machine tools", () => {
 			}
 		});
 
-		it("answers at once when its machine waits in line for room", async () => {
+		it("waits for its machine in line for room as for one starting, by default too", async () => {
 			const f = fixture(undefined, true);
 			try {
+				// The first look finds it running (the kernel's answer after the executor's pass placed and booted it).
 				const result = await f.boundary.invoke("s1", "qorpera", "machine_start", {
 					operationKey: "wake",
 					machine: "build-a",
-					waitSeconds: 120,
 				});
-				expect(f.content(result as never).machine).toMatchObject({ state: "waiting", queuePosition: 2 });
-				expect(f.looks()).toHaveLength(0);
+				expect(f.content(result as never).machine).toMatchObject({ state: "running" });
+				expect(f.looks()).toHaveLength(1);
 				expect(f.execute.mock.calls[0][0].operation.arguments).toEqual({ machine: "build-a" });
+				expect(f.reports()[0].wait).toMatchObject({
+					asked: false,
+					limitSeconds: 60,
+					stateBefore: "waiting",
+					outcome: "running",
+					stateAfter: "running",
+				});
+			} finally {
+				f.boundary.close();
+			}
+		});
+	});
+
+	describe("a conversation's run waiting for its machine (agent-box B1)", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("waits in place while its machine starts, told at once by the executor's word, outside the receipt", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				let say = (_told: boolean) => {};
+				f.gateway.wake.mockImplementationOnce(
+					() =>
+						new Promise<boolean>((settle) => {
+							say = settle;
+						}),
+				);
+				f.statuses.push(
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "running" }),
+				);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "report",
+					name: "report-1",
+					purpose: "Build the report",
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(100);
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, true, expect.anything());
+				say(true);
+				await vi.advanceTimersByTimeAsync(0);
+				const result = await start;
+				expect(result.success).toBe(true);
+				expect(f.content(result as never).machine.state).toBe("running");
+				// Its last look saw it running: that look is what keeps the kernel's word for this run from waking it later.
+				expect(f.looks()).toHaveLength(2);
+				expect(f.execute.mock.calls[0][0].operation.arguments).not.toHaveProperty("waitSeconds");
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers starting at the minute's end, so the run ends and is woken when it runs, and reports the limit", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.statuses.push(...Array.from({ length: 20 }, () => f.status({ ...f.listed[0], state: "starting" })));
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "slow",
+					machine: "build-a",
+				});
+				await vi.advanceTimersByTimeAsync(60_000);
+				expect(f.content((await start) as never).machine.state).toBe("starting");
+				// Looks at 0, 5, ... 55 and at the deadline.
+				expect(f.looks()).toHaveLength(13);
+				expect(f.reports()).toEqual([
+					{
+						action: "waited",
+						machine: "build-a",
+						machineId: f.listed[0].machineId,
+						wait: {
+							asked: false,
+							limitSeconds: 60,
+							stateBefore: "starting",
+							waitingFor: null,
+							waitedMs: 60_000,
+							outcome: "limit",
+							stateAfter: "starting",
+						},
+					},
+				]);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("waits by default through a short line (placed, then booted), each step told by the executor's word", async () => {
+			// As on node 2 on 13 Nov: a new machine is first in line (NODE_CAPACITY_EXHAUSTED) until the executor's pass
+			// frees a sleeping machine's disk, about 2 s; then it boots.
+			const f = fixture();
+			try {
+				f.started.state = "waiting";
+				f.started.queuePosition = 1;
+				f.started.waitingFor = "NODE_CAPACITY_EXHAUSTED";
+				const word = (ms: number) => () => new Promise<boolean>((settle) => setTimeout(() => settle(true), ms));
+				f.gateway.wake.mockImplementationOnce(word(2_000)).mockImplementationOnce(word(8_000));
+				f.statuses.push(
+					f.status({ ...f.listed[0], state: "waiting" }),
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "starting" }),
+					f.status({ ...f.listed[0], state: "running" }),
+				);
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "count",
+					name: "research-word-count",
+					purpose: "Count the words",
+				});
+				await vi.advanceTimersByTimeAsync(9_000);
+				expect(f.looks()).toHaveLength(3);
+				await vi.advanceTimersByTimeAsync(1_100);
+				const result = await start;
+				expect(f.content(result as never).machine.state).toBe("running");
+				// Looks at 0 (in line), 2 (the first word: placed), 7 (its own time) and 10 (the second word: running).
+				expect(f.looks()).toHaveLength(4);
+				expect(f.gateway.wake.mock.calls.map(([, wait]) => wait)).toEqual([true, true, true]);
+				expect(f.reports()[0].wait).toMatchObject({
+					asked: false,
+					limitSeconds: 60,
+					stateBefore: "waiting",
+					waitingFor: "NODE_CAPACITY_EXHAUSTED",
+					waitedMs: 10_000,
+					outcome: "running",
+					stateAfter: "running",
+				});
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("does not wait when waitSeconds is 0, and says so; a kernel without the report changes no answer", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.kernel.refusesReports = true;
+				const result = await f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "now",
+					machine: "build-a",
+					waitSeconds: 0,
+				});
+				expect(result.success).toBe(true);
+				expect(f.content(result as never).machine.state).toBe("starting");
+				expect(f.looks()).toHaveLength(0);
+				expect(f.gateway.wake).toHaveBeenCalledWith({ machineId: f.listed[0].machineId }, false, expect.anything());
+				expect(f.reports()[0].wait).toMatchObject({
+					asked: true,
+					limitSeconds: 0,
+					waitedMs: 0,
+					outcome: "not_asked",
+				});
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("tells a run a member stopped that its work stopped, beside the machine it started", async () => {
+			const f = fixture();
+			try {
+				f.started.state = "starting";
+				f.started.queuePosition = null;
+				f.statuses.push({ schema: "qorpera.machine-status/v1", workStopped: true });
+				const start = f.boundary.invoke("s1", "qorpera", "machine_start", {
+					operationKey: "stopped",
+					machine: "build-a",
+					waitSeconds: 60,
+				});
+				await vi.advanceTimersByTimeAsync(0);
+				const answer = f.content((await start) as never);
+				expect(answer.machine.state).toBe("starting");
+				expect(answer.workStopped).toBe(
+					"your work was stopped (a member stopped it, or the company paused work); end your run",
+				);
+				expect(f.reports()[0].wait).toMatchObject({ outcome: "work_stopped", stateAfter: "starting" });
 			} finally {
 				f.boundary.close();
 			}
@@ -1113,21 +1448,71 @@ describe("machine tools", () => {
 					false,
 				);
 			// The agent is told how to ask, and that a smaller machine refuses its desktop.
-			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain(
-				"desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB",
+			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop true gives it a screen");
+			expect(JSON.stringify(f.boundary.specification)).toContain(
+				"A screen: at least 2 cpus and 4 GiB (a smaller machine refuses its desktop).",
 			);
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
-			// Every command the text says takes --shot is one the machine's desktop command takes it for; run is not.
-			const desktop = readFileSync(new URL("../../../deploy/machine/desktop", import.meta.url), "utf8");
-			const takesShot =
-				desktop
-					.match(/\n(open(?: \| [a-z]+)+)\)\n\tif \(\( \$# >= 3 \)\) && \[\[ \$\{\*: -2:1\} == --shot \]\]/)?.[1]
-					.split(" | ") ?? [];
-			const advertised =
-				CLOUD_MACHINE_START_DESCRIPTION.match(/end a ([a-z, ]+) with --shot /)?.[1].split(/, | or /) ?? [];
-			expect(advertised).toEqual(["click", "type", "key", "scroll", "open"]);
-			for (const command of advertised) expect(takesShot).toContain(command);
-			expect(takesShot).not.toContain("run");
+			// Programs start on the desktop with desktop run; the screen itself is machine_screen's.
+			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop run <program> starts a program");
+			// The size is chosen for the job (Jonas, 13 Nov 2026: custom machines are "built, just not used well
+			// enough"): what uses every cpu, what a larger machine costs, and that it is stopped after. Workers read it too.
+			for (const description of [CLOUD_MACHINE_START_DESCRIPTION, CLOUD_MACHINE_START_WORKER_DESCRIPTION]) {
+				expect(description).toContain(
+					"Size: cpus, memoryGiB and diskGiB, limited only by what one server holds. Rendering, encoding and big builds use every cpu: a frame that takes 22 minutes on 2 cpus takes 5 on 8, and hours count size times time awake, so it costs the same: start 8 cpus and 8 GiB, tell the program to use them all, and stop the machine with machine_stop when done.",
+				);
+				// The defaults are on the fields, which Codex sends (track 3, T3-5).
+				const sized = JSON.stringify(f.boundary.specification);
+				for (const said of ['"2 by default."', '"4 by default."', '"40 by default."'])
+					expect(sized).toContain(said);
+				expect(Buffer.byteLength(description)).toBeLessThanOrEqual(4096);
+				// What the image brings for renders (deploy/machine/README.md, "Renders"): Blender, and where its starter set
+				// and the guide to it are.
+				expect(description).toContain(
+					"a chromium command, ffmpeg and Blender (with real light, materials and furniture for renders: read /opt/qorpera-assets/README.md) are installed",
+				);
+			}
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("sizes a member's start of a computer for an agent as machine_start with desktop true and its defaults (20260930730000)", async () => {
+		const f = fixture();
+		try {
+			// What the agent's own start sends for desktop true and nothing else.
+			expect(
+				(
+					await f.boundary.invoke("m1", "qorpera", "machine_start", {
+						operationKey: "m1",
+						name: "agent-desktop",
+						purpose: "A desktop computer",
+						desktop: true,
+					})
+				).success,
+			).toBe(true);
+			const sent = f.execute.mock.calls[0][0].operation.arguments as {
+				cpus: number;
+				memoryGiB: number;
+				diskGiB: number;
+				lifetime: string;
+			};
+			// The member's start keeps its size in three constants of its own; this pins them to the runtime's, so the two
+			// never drift apart.
+			const migration = readFileSync(
+				new URL("../../../supabase/migrations/20260930730000_member_agent_computer.sql", import.meta.url),
+				"utf8",
+			);
+			const constant = (name: string) =>
+				Number(new RegExp(`${name} constant (?:integer|bigint) := (\\d+);`).exec(migration)?.[1]);
+			expect({
+				cpus: constant("c_cpus"),
+				memoryGiB: constant("c_memory_gib"),
+				diskGiB: constant("c_disk_gib"),
+			}).toEqual({ cpus: sent.cpus, memoryGiB: sent.memoryGiB, diskGiB: sent.diskGiB });
+			expect({ cpus: sent.cpus, memoryGiB: sent.memoryGiB }).toEqual(CLOUD_MACHINE_DESKTOP_LEAST);
+			expect(sent.lifetime).toBe("task");
+			expect(migration).toContain("c_cpus, c_memory_gib * 1073741824, c_disk_gib * 1073741824, 'standard', 'task',");
 		} finally {
 			f.boundary.close();
 		}
@@ -1223,6 +1608,8 @@ describe("machine tools", () => {
 				arguments: args,
 				target: { realm: "company_machine", machineId: f.listed[0].machineId },
 			});
+			// A start that shows a running command, with nothing held back, is not read again.
+			expect(f.gateway.read).not.toHaveBeenCalled();
 		} finally {
 			f.boundary.close();
 		}
@@ -1246,6 +1633,21 @@ describe("machine tools", () => {
 				command: "npm test",
 			});
 			expect(stopped.contentItems[0].text).toContain("MACHINE_NOT_RUNNING");
+			// A member holds the machine's desktop (20260930713000): nothing started, and the agent hears what to do.
+			f.gateway.start.mockRejectedValueOnce(new CloudMachineCommandRefusal("DESKTOP_MEMBER_IN_CONTROL"));
+			const held = await f.boundary.invoke("r2b", "qorpera", "machine_run", {
+				operationKey: "suite:2b",
+				machine: "build-a",
+				command: "npm test",
+			});
+			expect(held.success).toBe(true);
+			expect(JSON.parse(JSON.parse(held.contentItems[0].text).content.text)).toMatchObject({
+				refused: {
+					reason: "DESKTOP_MEMBER_IN_CONTROL",
+					message: expect.stringMatching(/did not start.*already running on it go on.*end your turn.*wakes you/),
+				},
+			});
+			expect(f.gateway.start).toHaveBeenCalledTimes(3);
 			// A command from before the machine moved: its log went with the old disk.
 			f.gateway.read.mockRejectedValueOnce(new Error("MACHINE_COMMAND_ENDED"));
 			const gone = await f.boundary.invoke("r3", "qorpera", "machine_read", {
@@ -1335,7 +1737,7 @@ describe("machine tools", () => {
 			).toBe(true);
 			expect(f.gateway.read).toHaveBeenCalledWith(
 				{ machineId: f.listed[0].machineId },
-				{ commandId, tail: true, limit: 4096 },
+				{ commandId, tail: true, limit: CLOUD_COMMAND_PAGE_ASK },
 				expect.any(AbortSignal),
 			);
 			expect(
@@ -1363,7 +1765,100 @@ describe("machine tools", () => {
 		}
 	});
 
-	it("shows what the company folder said, and keeps the paths not saved when a read asks again for a smaller page (F3 6e-2a)", async () => {
+	it("shows as much of a long log as one result holds in one read, and asks for less only when told (keyholes S1)", async () => {
+		const f = fixture();
+		try {
+			const machineId = f.listed[0].machineId;
+			const commandId = randomUUID();
+			let log = "";
+			for (let n = 0; log.length < 60_000; n++) log += `step ${n}: built "pkg-${n}" <ok>\n`;
+			log = log.slice(0, 60_000);
+			f.gateway.read.mockImplementation(async (_scope, input) => {
+				const offset = input.offset ?? 0;
+				const output = log.slice(offset, offset + (input.limit ?? 4096));
+				return {
+					...f.receipt(machineId, commandId, "succeeded"),
+					output,
+					truncated: offset + output.length < log.length,
+					log: {
+						offset,
+						nextOffset: offset + output.length,
+						totalBytes: log.length,
+						limitBytes: 67108864,
+						limitReached: false,
+					},
+				} as never;
+			});
+			const first = f.content(
+				(await f.boundary.invoke("a", "qorpera", "machine_read", { machine: "build-a", commandId })) as never,
+			);
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			expect(f.gateway.read.mock.calls[0][1]).toEqual({ commandId, offset: 0, limit: CLOUD_COMMAND_PAGE_ASK });
+			// More than the old 16,384 at most, though its quotes, < and > escape to several bytes each.
+			expect(first.output.length).toBeGreaterThan(16_384);
+			expect(log.startsWith(first.output)).toBe(true);
+			expect(first.log.nextOffset).toBe(first.output.length);
+			expect(first.truncated).toBe(true);
+			const next = f.content(
+				(await f.boundary.invoke("b", "qorpera", "machine_read", {
+					machine: "build-a",
+					commandId,
+					offset: first.log.nextOffset,
+					limit: 500,
+				})) as never,
+			);
+			expect(f.gateway.read.mock.calls[1][1]).toEqual({ commandId, offset: first.log.nextOffset, limit: 500 });
+			expect(next.output).toBe(log.slice(first.log.nextOffset, first.log.nextOffset + 500));
+			const tooLarge = await f.boundary.invoke("c", "qorpera", "machine_read", {
+				machine: "build-a",
+				commandId,
+				limit: 32769,
+			});
+			expect(tooLarge.success).toBe(false);
+			expect(f.gateway.read).toHaveBeenCalledTimes(2);
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("shows a command that already ended at its start with as much output as one result holds; a refused read keeps the start", async () => {
+		const f = fixture();
+		try {
+			const machineId = f.listed[0].machineId;
+			const ended = {
+				...f.receipt(machineId, f.receiptId, "succeeded"),
+				output: "x".repeat(4096),
+				truncated: true,
+				log: { offset: 0, nextOffset: 4096, totalBytes: 50_000, limitBytes: 67108864, limitReached: false },
+			};
+			f.gateway.start.mockResolvedValue(ended as never);
+			f.gateway.read.mockResolvedValueOnce({
+				...ended,
+				output: "x".repeat(20_000),
+				log: { ...ended.log, nextOffset: 20_000 },
+			} as never);
+			const run = { operationKey: "suite:1", machine: "build-a", command: "cat big.log" };
+			const shown = f.content((await f.boundary.invoke("r1", "qorpera", "machine_run", run)) as never);
+			expect(f.gateway.read.mock.calls[0][1]).toEqual({
+				commandId: f.receiptId,
+				offset: 0,
+				limit: CLOUD_COMMAND_PAGE_ASK,
+			});
+			expect(shown).toMatchObject({ machine: "build-a", commandId: f.receiptId, state: "succeeded" });
+			expect(shown.output).toBe("x".repeat(20_000));
+			// The machine stopped right after: the start's own answer stands, with its handle.
+			f.gateway.read.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING"));
+			const kept = f.content(
+				(await f.boundary.invoke("r2", "qorpera", "machine_run", { ...run, operationKey: "suite:2" })) as never,
+			);
+			expect(kept).toMatchObject({ commandId: f.receiptId, output: "x".repeat(4096) });
+			expect(f.gateway.read).toHaveBeenCalledTimes(2);
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("shows what the company folder said, and keeps the paths not saved when a read asks again for what fits (F3 6e-2a)", async () => {
 		const f = fixture();
 		try {
 			const machineId = f.listed[0].machineId;
@@ -1393,7 +1888,17 @@ describe("machine tools", () => {
 				machine: "build-a",
 				command: "npm test",
 			});
+			// A start that holds its output back is read once at once, from the log's start (keyholes S1); this read says
+			// nothing of the folder, so the start's report stays with its answer.
+			expect(f.gateway.read).toHaveBeenCalledTimes(1);
+			expect(f.gateway.read).toHaveBeenCalledWith(
+				{ machineId },
+				{ commandId: f.receiptId, offset: 0, limit: CLOUD_COMMAND_PAGE_ASK },
+				expect.any(AbortSignal),
+			);
+			expect(f.content(ran as never)).toMatchObject({ commandId: f.receiptId, state: "succeeded" });
 			expect(f.content(ran as never).companyFolder).toEqual(pending);
+			f.gateway.read.mockClear();
 			const none = {
 				company: "none",
 				why: "the company folder refused this machine's view",
@@ -1406,15 +1911,34 @@ describe("machine tools", () => {
 				commandId,
 			});
 			expect(f.content(cancelled as never).companyFolder).toEqual(none);
-			// Each page is as long as the read asks: the first is too large for the result, so the read asks again. The
-			// executor said its paths not saved on the first page only.
+			// Each page is as long as the read asks, and too large for the result (each < escapes to six bytes). A U+FFFD,
+			// which may stand for one byte of the log, on both sides of the cut leaves its cursor unknown from the page, so
+			// the read asks again for exactly the bytes that fit. The executor said its paths not saved on the first page
+			// only.
+			const unit = Array.from(`\uFFFD${"<".repeat(9)}`);
+			const text = (bytes: number) => {
+				let out = "";
+				for (let i = 0, used = 0; ; i++) {
+					used += Buffer.byteLength(unit[i % unit.length]);
+					if (used > bytes) return out;
+					out += unit[i % unit.length];
+				}
+			};
 			const folders: Record<string, unknown>[] = [];
 			// What a try after those reports: the paths still not saved, which every try says again.
 			let after: Record<string, unknown> = { company: "mounted" };
 			f.gateway.read.mockImplementation(
-				async (_scope, input) =>
-					page("succeeded", "x".repeat(input.limit ?? 4096), folders.shift() ?? after) as never,
+				async (_scope, input) => page("succeeded", text(input.limit ?? 4096), folders.shift() ?? after) as never,
 			);
+			/** The limits the reads asked for: the read's own, then exactly what fit, less again when a try's report grew;
+			 * the last one's. */
+			const asked = () => {
+				const limits = f.gateway.read.mock.calls.map(([, input]) => input.limit as number);
+				expect(limits[0]).toBe(8192);
+				expect(limits.length).toBeGreaterThanOrEqual(2);
+				for (let i = 1; i < limits.length; i++) expect(limits[i]).toBeLessThan(limits[i - 1]);
+				return limits.at(-1) as number;
+			};
 			const plan = { path: "notes/plan.md", outcome: "conflict", reason: "changed meanwhile" };
 			const pay = { path: "people/pay.md", outcome: "denied" };
 			folders.push({ company: "mounted", notSaved: [plan, pay] });
@@ -1427,8 +1951,8 @@ describe("machine tools", () => {
 					})) as never,
 				);
 			const shown = await read("a");
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit)).toEqual([8192, 4096]);
-			expect(shown.output).toBe("x".repeat(4096));
+			expect(shown.output).toBe(text(asked()));
+			expect(shown.log.nextOffset).toBe(Buffer.byteLength(shown.output));
 			expect(shown.companyFolder).toEqual({ company: "mounted", notSaved: [plan, pay] });
 			// Paths from every try, within the report's limits; the rest are counted.
 			f.gateway.read.mockClear();
@@ -1443,7 +1967,7 @@ describe("machine tools", () => {
 				{ company: "mounted", notSaved: many("b") },
 			);
 			const merged = (await read("b")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
+			asked();
 			const listed = merged.notSaved as { path: string }[];
 			expect(listed.length).toBeGreaterThan(5);
 			expect(listed.length).toBeLessThan(CLOUD_MACHINE_FOLDER_LIMITS.notSaved);
@@ -1459,7 +1983,7 @@ describe("machine tools", () => {
 			after = { company: "mounted", stillNotSaved: still, moreStillNotSaved: 3 };
 			folders.push({ ...after, notSaved: [plan] }, { ...after, notSaved: [pay] });
 			const again = (await read("e")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
+			asked();
 			expect(again).toEqual({
 				company: "mounted",
 				notSaved: [plan, pay],
@@ -1477,7 +2001,7 @@ describe("machine tools", () => {
 			after = { company: "mounted", stillNotSaved: long("s", 2) };
 			folders.push({ ...after, notSaved: long("a", 3) }, { ...after, notSaved: long("b", 3) });
 			const full = (await read("f")).companyFolder;
-			expect(f.gateway.read.mock.calls.map(([, input]) => input.limit).slice(0, 2)).toEqual([8192, 4096]);
+			asked();
 			expect(full.notSaved).toEqual([...long("a", 3), ...long("b", 3)]);
 			expect(full).not.toHaveProperty("moreNotSaved");
 			expect(full).not.toHaveProperty("stillNotSaved");
@@ -1531,8 +2055,8 @@ describe("machine tools", () => {
 					"press the site's own Copy button",
 					"You never pass the key",
 					"clears the clipboard",
-					"Never type, paste, print, echo or write a key anywhere",
-					"take no desktop shot while a key is on the screen: shots are kept in the company folder",
+					"A key is never typed, pasted, printed, echoed or written anywhere",
+					"no desktop shot is taken while one is on the screen: shots are kept in the company folder",
 					"ask_member with surface secret and connectorId environment",
 					"owner or an admin",
 				])
@@ -1647,6 +2171,8 @@ describe("machine tools", () => {
 				"CLIPBOARD_MORE_THAN_ONE_KEY",
 				"DESKTOP_NOT_RUNNING",
 				"MACHINE_IMAGE_WITHOUT_CODING_VALUES",
+				// A member holds the machine's desktop (20260930713000).
+				"DESKTOP_MEMBER_IN_CONTROL",
 			] as const) {
 				const values = vault();
 				const f = fixture(undefined, false, values);
@@ -1699,7 +2225,7 @@ describe("machine tools", () => {
 			}
 		});
 	});
-	// 20260930711000: fill_company_account, a company account's value typed by the vault into the machine's browser.
+	// 20260930781000: fill_company_account, a company account's value typed by the vault into the machine's browser.
 	describe("fill_company_account", () => {
 		const account = "6f1c2c1e-3a51-4b9e-9a3e-0d2f6f1b7a10";
 		const args = { operationKey: "npm-login-1", machine: "build-a", account, field: "password" };
@@ -1708,8 +2234,8 @@ describe("machine tools", () => {
 			"Take no screenshot of this tab until it is closed (desktop key ctrl+w) or has gone to another page: a page can copy a value the vault typed into it at any time, and screenshots are kept in the company folder.";
 
 		it("is offered to a company agent's run on a host with the vault's accounts, never to a worker or without them", () => {
-			const agent = fixture(undefined, false, undefined, true);
-			const helper = fixture(undefined, true, undefined, true);
+			const agent = fixture(undefined, false, undefined, false, true);
+			const helper = fixture(undefined, true, undefined, false, true);
 			const without = fixture();
 			try {
 				expect(agent.tools.map((tool) => tool.name).at(-1)).toBe("fill_company_account");
@@ -1751,7 +2277,7 @@ describe("machine tools", () => {
 		});
 
 		it("takes the machine, the account and the field, never a value", () => {
-			const f = fixture(undefined, false, undefined, true);
+			const f = fixture(undefined, false, undefined, false, true);
 			try {
 				const fill = f.tools.find((tool) => tool.name === "fill_company_account")!;
 				expect(fill.parseArguments(args)).toEqual(args);
@@ -1775,7 +2301,7 @@ describe("machine tools", () => {
 		});
 
 		it("types through one receipt: the machine's executor, bound to this call, answers filled and nothing else", async () => {
-			const f = fixture(undefined, false, undefined, true);
+			const f = fixture(undefined, false, undefined, false, true);
 			try {
 				const result = await f.boundary.invoke("f1", "qorpera", "fill_company_account", args);
 				expect(result.success).toBe(true);
@@ -1822,7 +2348,7 @@ describe("machine tools", () => {
 				"BROWSER_NOT_ANSWERING",
 				"FILL_LOST",
 			] as const) {
-				const f = fixture(undefined, false, undefined, true);
+				const f = fixture(undefined, false, undefined, false, true);
 				try {
 					f.gateway.accountFill.mockRejectedValueOnce(new CloudMachineAccountFillRefusal(code));
 					const result = await f.boundary.invoke("f2", "qorpera", "fill_company_account", args);
@@ -1848,7 +2374,7 @@ describe("machine tools", () => {
 				}
 			}
 			// A bot check: stop, never retry, needs_person.
-			const stopped = fixture(undefined, false, undefined, true);
+			const stopped = fixture(undefined, false, undefined, false, true);
 			try {
 				stopped.gateway.accountFill.mockRejectedValueOnce(new CloudMachineAccountFillRefusal("SITE_STOP_CAPTCHA"));
 				const result = await stopped.boundary.invoke("f3", "qorpera", "fill_company_account", args);
@@ -1862,7 +2388,7 @@ describe("machine tools", () => {
 				stopped.boundary.close();
 			}
 			// The vault's own words.
-			const vault = fixture(undefined, false, undefined, true);
+			const vault = fixture(undefined, false, undefined, false, true);
 			try {
 				vault.gateway.accountFill.mockRejectedValueOnce(
 					new CloudMachineAccountFillRefusal("VAULT_REFUSED", "The company has no such open account"),
@@ -1876,7 +2402,7 @@ describe("machine tools", () => {
 				vault.boundary.close();
 			}
 			// An answer that is no refusal fails the call: its outcome is unconfirmed, never "filled".
-			const lost = fixture(undefined, false, undefined, true);
+			const lost = fixture(undefined, false, undefined, false, true);
 			try {
 				lost.gateway.accountFill.mockRejectedValueOnce(new CloudMachineCommandUnanswered());
 				const result = await lost.boundary.invoke("f5", "qorpera", "fill_company_account", args);
@@ -1884,7 +2410,7 @@ describe("machine tools", () => {
 			} finally {
 				lost.boundary.close();
 			}
-			const asleep = fixture([{ name: "build-a", state: "stopped" }], false, undefined, true);
+			const asleep = fixture([{ name: "build-a", state: "stopped" }], false, undefined, false, true);
 			try {
 				const result = await asleep.boundary.invoke("f6", "qorpera", "fill_company_account", args);
 				expect(result.contentItems[0]!.text).toContain("MACHINE_NOT_RUNNING");
@@ -1894,5 +2420,373 @@ describe("machine tools", () => {
 				asleep.boundary.close();
 			}
 		});
+	});
+
+	describe("machine_screen (20260930708000)", () => {
+		const click = {
+			machine: "build-a",
+			operationKey: "click-1",
+			action: { type: "click", x: 812, y: 443 },
+			intent: "Open the sign-in form.",
+		};
+
+		it("is offered with a gateway that runs the screen helper, to agents and workers, and shows images", () => {
+			const agent = fixture(undefined, false, undefined, true);
+			const helper = fixture(undefined, true, undefined, true);
+			const without = fixture();
+			try {
+				expect(agent.tools.map((tool) => tool.name).at(-1)).toBe("machine_screen");
+				expect(helper.tools.map((tool) => tool.name)).toContain("machine_screen");
+				expect(without.tools.map((tool) => tool.name)).not.toContain("machine_screen");
+				expect(CLOUD_RUNTIME_TOOL_OPERATIONS).toContain("machine_screen");
+				const screen = agent.tools.find((tool) => tool.name === "machine_screen")!;
+				expect(screen.images).toBe(true);
+				expect(screen.description).toBe(CLOUD_MACHINE_SCREEN_DESCRIPTION);
+				expect(Buffer.byteLength(screen.description)).toBeLessThanOrEqual(4096);
+				for (const words of [
+					"look before you act again",
+					"An action on a stopped desktop is refused: look first",
+					"x and y are pixels of the screen",
+					"Nothing is saved in the company folder",
+				])
+					expect(screen.description).toContain(words);
+				// machine_start points at it, and keeps desktop start for putting files on the desktop.
+				expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("machine_screen sees and drives the screen");
+				expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
+				expect(CLOUD_MACHINE_START_DESCRIPTION).not.toContain("--shot");
+				expect(screen.inputSchema).toMatchObject({ additionalProperties: false, required: ["machine"] });
+			} finally {
+				for (const f of [agent, helper, without]) f.boundary.close();
+			}
+		});
+
+		it("takes a look or one action, as the database and the machine check them", () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				const screen = f.tools.find((tool) => tool.name === "machine_screen")!;
+				expect(screen.parseArguments({ machine: "build-a" })).toEqual({
+					machine: "build-a",
+					settleMs: 0,
+					look: true,
+				});
+				expect(screen.parseArguments(click)).toEqual({ ...click, settleMs: 500, look: true });
+				expect(
+					screen.parseArguments({
+						machine: "build-a",
+						operationKey: "o",
+						action: { type: "open", target: "https://example.test/" },
+						intent: "  Open\n the   site. ",
+						look: false,
+					}),
+				).toEqual({
+					machine: "build-a",
+					operationKey: "o",
+					action: { type: "open", target: "https://example.test/" },
+					settleMs: 2500,
+					look: false,
+					intent: "Open the site.",
+				});
+				// Moving and scrolling need no intent.
+				expect(
+					screen.parseArguments({ machine: "build-a", operationKey: "m", action: { type: "move", x: 1, y: 2 } }),
+				).toEqual({
+					machine: "build-a",
+					operationKey: "m",
+					action: { type: "move", x: 1, y: 2 },
+					settleMs: 500,
+					look: true,
+				});
+				for (const [bad, words] of [
+					[{ ...click, operationKey: undefined }, "needs an operationKey"],
+					[{ machine: "build-a", operationKey: "k" }, "A look takes no operationKey"],
+					[{ ...click, intent: undefined }, "needs an intent"],
+					[{ ...click, intent: " " }, "intent is one line"],
+					[{ ...click, intent: "x".repeat(201) }, "intent is one line"],
+					[{ ...click, action: { type: "click", x: 3840, y: 1 } }, "x is a whole number"],
+					[{ ...click, action: { type: "type", text: "" } }, "1 to 500 characters"],
+					[{ ...click, settleMs: 5001 }, "settleMs is 0 to 5000"],
+					[{ ...click, look: "yes" }, "look is true or false"],
+					[{ ...click, window: "Inbox" }, "Invalid machine request"],
+					[{ ...click, machine: "Build A" }, "Invalid machine name"],
+				] as const)
+					expect(() => screen.parseArguments(JSON.parse(JSON.stringify(bad))), JSON.stringify(bad)).toThrow(words);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("looks with no receipt and no review, and shows the screen as a picture with its answer", async () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				const result = await f.boundary.invoke("look-1", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(result.success).toBe(true);
+				const answer = f.content(result as never);
+				expect(answer).toMatchObject({
+					machine: "build-a",
+					kind: "screen",
+					imageSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+					screen: { width: 16, height: 10 },
+					shown: { width: 16, height: 10 },
+					activeWindow: "Sign in - Chromium",
+					windows: ["Sign in - Chromium", "Terminal"],
+				});
+				expect(answer).not.toHaveProperty("scaled");
+				expect(answer).not.toHaveProperty("action");
+				expect(result.contentItems).toHaveLength(2);
+				const image = (result.contentItems[1] as unknown as { imageUrl: string }).imageUrl;
+				expect(image.startsWith("data:image/png;base64,")).toBe(true);
+				// The picture is the one the answer names, made here from the machine's.
+				const shown = Buffer.from(image.slice("data:image/png;base64,".length), "base64");
+				expect(createHash("sha256").update(shown).digest("hex")).toBe(answer.imageSha256);
+				expect(f.screen).toHaveBeenCalledWith(
+					{ machineId: f.listed[0]!.machineId },
+					{ commandId: null, envelope: null, settleMs: 0, look: true },
+					expect.any(AbortSignal),
+				);
+				expect(f.execute).not.toHaveBeenCalled();
+				expect(f.gateway.start).not.toHaveBeenCalled();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("acts through one receipt, sends it once, and names the window it last saw on the card, never in the receipt", async () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				await f.boundary.invoke("look-1", "qorpera", "machine_screen", { machine: "build-a" });
+				const screen = f.tools.find((tool) => tool.name === "machine_screen")!;
+				// The card of the next action names the window the look saw.
+				expect(await screen.prepare!(screen.parseArguments(click), {} as never)).toEqual({
+					...click,
+					settleMs: 500,
+					look: true,
+					window: "Sign in - Chromium",
+				});
+				const result = await f.boundary.invoke("click-1", "qorpera", "machine_screen", click);
+				expect(result.success).toBe(true);
+				const answer = f.content(result as never);
+				expect(answer).toMatchObject({ kind: "screen", action: { type: "click", exitCode: 0 } });
+				expect(result.contentItems).toHaveLength(2);
+				const operation = f.execute.mock.calls[0]![0].operation;
+				expect(operation).toEqual({
+					tool: "machine_screen",
+					toolVersion: "qorpera.machine-tools/v1",
+					logicalOperationKey: "click-1",
+					arguments: { ...click, settleMs: 500, look: true },
+					target: { realm: "company_machine", machineId: f.listed[0]!.machineId },
+					requiresCompanyRevision: false,
+				});
+				expect(f.screen).toHaveBeenCalledTimes(2);
+				expect(f.screen).toHaveBeenLastCalledWith(
+					{ machineId: f.listed[0]!.machineId },
+					{
+						commandId: f.receiptId,
+						envelope: cloudNativeToolOperationEnvelope(f.identity, operation),
+						settleMs: 500,
+						look: true,
+					},
+					expect.any(AbortSignal),
+				);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("never runs a completed action again: its replay says so, with no picture", async () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				f.execute.mockImplementationOnce(async () => ({
+					kind: "json",
+					value: {
+						machine: "build-a",
+						kind: "screen",
+						imageSha256: "a".repeat(64),
+						screen: { width: 16, height: 10 },
+						shown: { width: 16, height: 10 },
+						action: { type: "click", exitCode: 0 },
+						activeWindow: "Sign in - Chromium",
+						windows: [],
+					},
+				}));
+				const result = await f.boundary.invoke("click-1", "qorpera", "machine_screen", click);
+				const answer = f.content(result as never);
+				expect(answer).toMatchObject({ kind: "screen", action: { type: "click", exitCode: 0 } });
+				expect(answer.replayed).toContain("never runs again");
+				expect(answer).not.toHaveProperty("imageSha256");
+				expect(result.contentItems).toHaveLength(1);
+				expect(f.screen).not.toHaveBeenCalled();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers the machine's refusals in words, a look unanswered as look again, and an action unanswered as unconfirmed", async () => {
+			for (const code of [
+				"DESKTOP_NOT_RUNNING",
+				"SCREEN_ACTION_TAKEN",
+				"MACHINE_IMAGE_WITHOUT_SCREEN",
+				"DESKTOP_BUSY",
+				"MACHINE_NEEDS_COMPANY_VIEW",
+				// A member holds the desktop (20260930713000).
+				"DESKTOP_MEMBER_IN_CONTROL",
+			] as const) {
+				const f = fixture(undefined, false, undefined, true);
+				try {
+					f.screen.mockRejectedValueOnce(new CloudMachineScreenRefusal(code));
+					const result = await f.boundary.invoke("click-1", "qorpera", "machine_screen", click);
+					expect(result.success).toBe(true);
+					const answer = f.content(result as never) as { refused: { reason: string; message: string } };
+					expect(answer.refused.reason).toBe(code);
+					expect(answer.refused.message.length).toBeGreaterThan(20);
+					expect(result.contentItems).toHaveLength(1);
+				} finally {
+					f.boundary.close();
+				}
+			}
+			// A look while a member holds the desktop: no picture, and the agent is told what it means and what to do.
+			const held = fixture(undefined, false, undefined, true);
+			try {
+				held.screen.mockRejectedValueOnce(new CloudMachineScreenRefusal("DESKTOP_MEMBER_IN_CONTROL"));
+				const result = await held.boundary.invoke("look-0", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f0(held, result).refused).toEqual({
+					reason: "DESKTOP_MEMBER_IN_CONTROL",
+					message: expect.stringContaining("a member is using this computer's screen"),
+				});
+				expect(f0(held, result).refused.message).toMatch(
+					/ask_member with surface takeover.*end your turn.*I'm done/,
+				);
+				expect(result.contentItems).toHaveLength(1);
+			} finally {
+				held.boundary.close();
+			}
+			const look = fixture(undefined, false, undefined, true);
+			try {
+				look.screen.mockRejectedValueOnce(new CloudMachineCommandUnanswered());
+				const result = await look.boundary.invoke("look-1", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f0(look, result).refused.reason).toBe("MACHINE_UNANSWERED");
+			} finally {
+				look.boundary.close();
+			}
+			const act = fixture(undefined, false, undefined, true);
+			try {
+				act.screen.mockRejectedValueOnce(new CloudMachineCommandUnanswered());
+				const result = await act.boundary.invoke("click-1", "qorpera", "machine_screen", click);
+				expect(JSON.parse(result.contentItems[0]!.text)).toMatchObject({ status: "unconfirmed" });
+				expect(act.screen).toHaveBeenCalledTimes(1);
+			} finally {
+				act.boundary.close();
+			}
+			// A machine that is not running: no receipt and no machine asked.
+			const asleep = fixture([{ name: "build-a", state: "stopped" }], false, undefined, true);
+			try {
+				const result = await asleep.boundary.invoke("click-1", "qorpera", "machine_screen", click);
+				expect(f0(asleep, result).refused.reason).toBe("MACHINE_NOT_RUNNING");
+				expect(asleep.execute).not.toHaveBeenCalled();
+				expect(asleep.screen).not.toHaveBeenCalled();
+			} finally {
+				asleep.boundary.close();
+			}
+		});
+
+		it("shows no picture or titles the company folder held back, and says when the picture is smaller than the screen", async () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				f.screen.mockResolvedValueOnce({
+					schema: "qorpera.machine-screen-answer/v1",
+					commandId: null,
+					header: {
+						schema: "qorpera.machine-screen/v1",
+						started: true,
+						action: null,
+						activeWindow: null,
+						windows: [],
+						moreWindows: 0,
+						png: 0,
+					},
+					png: null,
+					heldBack: "the company folder did not release what the machine read; read again",
+				});
+				const held = await f.boundary.invoke("look-1", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(held.contentItems).toHaveLength(1);
+				expect(f.content(held as never)).toMatchObject({
+					kind: "screen",
+					started: true,
+					heldBack: expect.stringContaining("the picture and the titles stay on the machine: look again"),
+				});
+				expect(f.content(held as never)).not.toHaveProperty("imageSha256");
+				const wide = pngFile(pngHeader(1921, 10, 8, 2), pngRows(new Array(10).fill(new Array(1921 * 3).fill(90))));
+				f.screen.mockResolvedValueOnce({
+					schema: "qorpera.machine-screen-answer/v1",
+					commandId: null,
+					header: {
+						schema: "qorpera.machine-screen/v1",
+						started: false,
+						action: null,
+						activeWindow: "Wide",
+						windows: ["Wide"],
+						moreWindows: 0,
+						png: wide.length,
+					},
+					png: wide.toString("base64"),
+				});
+				const scaled = await f.boundary.invoke("look-2", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f.content(scaled as never)).toMatchObject({
+					screen: { width: 1921, height: 10 },
+					shown: { width: 1920, height: 10 },
+					scaled: expect.stringContaining("x and y are always the screen's pixels"),
+				});
+				expect(scaled.contentItems).toHaveLength(2);
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("says in one line who of the members used the shared screen and when, never what (20260930734000)", async () => {
+			const f = fixture(undefined, false, undefined, true);
+			try {
+				const wide = pngFile(pngHeader(16, 10, 8, 2), pngRows(new Array(10).fill(new Array(16 * 3).fill(90))));
+				const screenAnswer = (png: Buffer | null) => ({
+					schema: "qorpera.machine-screen-answer/v1" as const,
+					commandId: null,
+					header: {
+						schema: "qorpera.machine-screen/v1" as const,
+						started: false,
+						action: null,
+						activeWindow: "Shop",
+						windows: ["Shop"],
+						moreWindows: 0,
+						png: png ? png.length : 0,
+					},
+					png: png ? png.toString("base64") : null,
+					memberTouched: { name: "Dora Danske", secondsAgo: 12 },
+				});
+				f.screen.mockResolvedValueOnce(screenAnswer(wide));
+				const shown = await f.boundary.invoke("look-1", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f.content(shown as never)).toMatchObject({
+					kind: "screen",
+					memberTouched:
+						"Dora Danske used this screen 12 seconds ago (members can use it with you): what you saw before may have changed, so go by this picture before you act",
+				});
+				expect(shown.contentItems).toHaveLength(2);
+				f.screen.mockResolvedValueOnce(screenAnswer(null));
+				const blind = await f.boundary.invoke("look-2", "qorpera", "machine_screen", {
+					machine: "build-a",
+				});
+				expect(f.content(blind as never)).toMatchObject({
+					memberTouched: expect.stringMatching(/12 seconds ago .*so look again before you act$/),
+				});
+				// An answer with no member's touch says nothing of it.
+				f.screen.mockResolvedValueOnce({ ...screenAnswer(wide), memberTouched: undefined });
+				const quiet = await f.boundary.invoke("look-3", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f.content(quiet as never)).not.toHaveProperty("memberTouched");
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		/** A refusal's answer. */
+		function f0(f: ReturnType<typeof fixture>, result: unknown) {
+			return f.content(result as never) as { refused: { reason: string; message: string } };
+		}
 	});
 });

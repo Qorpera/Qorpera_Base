@@ -1,6 +1,6 @@
 # Agent artwork and 2D motion
 
-`index.html` loads `motion-model.js` (the seven characters and their measured
+`index.html` loads `motion-model.js` (the twelve characters and their measured
 eye geometry), then `avatar-appearance.js` (the eleven-color palette and the
 painting: one grain-free light field per body and face plate, painted in the
 chosen color through an OKLab tone ramp; October 20, 2026). The light field
@@ -17,3 +17,29 @@ design prototypes; the product no longer loads them.
 
 The renderer defaults to Idle. Its optional activity is a local presentation
 input, with no runtime subscription, command, or activity-state binding.
+
+## Acting, and drawn eyes (November 13, 2026)
+
+`src/ui/figure-acts.ts` is what the figures do: hops with squash and stretch,
+leans, drawn eyes (wide while a figure looks for the member, an arch while it
+cheers), the symbol a figure becomes in its own colour when its work waits on
+the member (a "?" or a "!": it jumps, turns once round in the air and is
+swapped where it is edge on), and small effects (dust, stars). While a figure
+works, `figure-work.ts` draws its loop (since 15 Nov 2026): a thread passing
+round it, and for eight figures their own effect in turn, on two canvases
+behind and in front of it. It is arithmetic over time, tested on its own;
+`figure-motion.ts` writes the body's pose as a transform on the canvas, about
+the feet, so a jump costs no repaint, and repaints the eyes or the symbol only
+when they change.
+
+Every eye is now drawn. The product no longer reads the studio's recorded eye
+clips or the Working stripes (Jonas, 13 Nov 2026: the recording looked grainy
+and blurry stretched up, and Working was too close to another product's
+animation): Needs you, Working and Idle are acts of our own, and Writing keeps
+the studio's dots, which hop in turn. `status-2d-v1`'s `motion.mjs` is still
+the sampler for the symbolic states (the dots, the "!", the Done flourish).
+The recorded files (`recorded-motion.mjs`, `recorded-clips.mjs`, `eye-clips.mjs`,
+`working-frames.mjs`, `working-palette.mjs`, the `*-reference-*.webp` sheets) and
+`src/ui/working-sequence.ts` were removed with it: about 820 KB of script and
+1.2 MB of sheets that no figure reads any more. `motion.mjs` and its
+`eye-tracks.mjs` stay.

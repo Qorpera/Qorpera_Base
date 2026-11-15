@@ -14,6 +14,7 @@ import {
 	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	CloudToolRefusal,
+	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
@@ -23,10 +24,15 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  * folder service, with the view its run opened, so a folder shared with only some agents is searched exactly for them.
  *
  * The native host opens the run's view once (`qorpera_folder_run_view_open`) and keeps one connection to the node
- * through its slot's relay socket for the run; the node lists the view once and keeps it current. Each call is one
- * page of the search, with a cursor to go on. Before the model sees a page, everything it drew on (each folder looked
- * through, each file read) is released with the run actor under the hash of the exact text shown, and the answer
- * cites the release.
+ * through its slot's relay socket for the run; the node lists the view once and keeps it current. Each call asks the
+ * node for pages of the search, one after another, until it has about a result's worth to show, the search ends, or
+ * about 10 s passed, and gives a cursor to go on when there is more (keyholes S4). Before the model sees the answer,
+ * everything it drew on (each folder looked through, each file read) is released with the run actor under the hash of
+ * the exact text shown, and the answer cites the release.
+ *
+ * The node says in its hello's answer which search it speaks (`search`): version 2 (keyholes S4) takes a regular
+ * expression, context lines, files only and a find by glob alone, and answers larger pages; a node that says nothing
+ * speaks version 1, and is asked only what version 1 takes.
  */
 
 /** The node's folder protocol (packages/object-gateway/src/folder-service/protocol.ts): a u32 big-endian length of
@@ -36,10 +42,15 @@ const PROTOCOL = 4;
 const KIND = { hello: 0x48, helloOk: 0x68, search: 0x53, found: 0x73, error: 0x65 } as const;
 const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** How long the node may take to answer a hello (it lists the whole view the first time, which a large folder takes a
- * while for, and throws away if the caller leaves) and a page (about 2 s of work). The end of the run's tool session
- * cuts either short. */
+ * while for, and throws away if the caller leaves) and a page (about 2 s of work, after any wait for its turn on the
+ * node). The end of the run's tool session cuts either short. */
 const HELLO_MS = 600_000;
 const PAGE_MS = 60_000;
+/** One call asks for at most this many pages, and none once this long has passed since it began or once what it has
+ * shows this many bytes (a page of a version 2 node shows about 26 KiB, of a version 1 node about 4 KiB). */
+const CALL_PAGES = 6;
+const CALL_MS = 10_000;
+const CALL_FILL = 20 * 1024;
 /** Codes the node answers one request with, leaving the connection usable. */
 const REQUEST_ERRORS = ["NOT_FOUND", "BAD_REQUEST", "UNAVAILABLE", "DENIED"];
 /** What the core records in one release; more reads go in several, all with the answer's hash. */
@@ -52,6 +63,8 @@ const NO_RECEIPT: CloudCompanyFolderAuthority = {
 	grantRevision: null,
 };
 const MAX_QUERY = 256;
+/** Lines of context around a hit, at most (the node's MAX_SEARCH_CONTEXT). */
+const MAX_CONTEXT = 5;
 /** A link's target, in UTF-8 bytes (the core's limit). */
 const MAX_TARGET = 4095;
 
@@ -63,6 +76,25 @@ interface SearchCursor {
 	readonly line: number;
 }
 
+/** What the node's hello said of its search; version 1 when it said nothing. */
+interface SearchSupport {
+	readonly version: number;
+	readonly regex: boolean;
+}
+
+/** A search as the tool asks it; shaped for the node's version when sent. */
+interface SearchAsk {
+	readonly query: string | null;
+	readonly regex: boolean;
+	readonly path: string;
+	readonly glob: string | null;
+	readonly namesOnly: boolean;
+	readonly filesOnly: boolean;
+	readonly caseSensitive: boolean;
+	readonly context: number;
+	readonly after: SearchCursor | null;
+}
+
 interface SearchHit {
 	readonly path: string;
 	readonly kind: "file" | "folder" | "symlink";
@@ -72,14 +104,41 @@ interface SearchHit {
 	readonly offset: number;
 	/** A link's target, as written (a link is found by its name only). */
 	readonly target?: string;
+	/** Context (version 2): the lines just before and after the hit, and the byte the first line before starts at. */
+	readonly before?: readonly string[];
+	readonly after?: readonly string[];
+	readonly from?: number;
+}
+
+/** A file a files-only search counted: its matching lines, from where its page began in it; `partial` when the
+ * count goes on in the next page. A page that began inside the file ends its count, 0 when nothing more matched. */
+interface SearchFile {
+	readonly path: string;
+	readonly version: string;
+	readonly count: number;
+	readonly partial?: true;
 }
 
 interface SearchPage {
 	readonly hits: readonly SearchHit[];
+	readonly files?: readonly SearchFile[];
 	readonly searched: number;
 	readonly binary: number;
+	/** Lines over 1 MiB a regular expression did not search. */
+	readonly longLines?: number;
 	readonly reads: readonly CloudCompanyFolderRelease[];
 	readonly next: SearchCursor | null;
+	/** The runtime's, never the node's: files an earlier answer showed part of that this one could not go on in. */
+	readonly restarted?: readonly SearchRestart[];
+}
+
+/** A file an earlier answer ended inside, that the search could not go on in at the version that answer showed: it
+ * changed meanwhile (the node searched its new version from its start), or it is not there to search any more (gone,
+ * emptied, or no longer the run's to read). */
+interface SearchRestart {
+	readonly path: string;
+	/** The node read another version of it. */
+	readonly changed: boolean;
 }
 
 interface Frame {
@@ -87,13 +146,16 @@ interface Frame {
 	readonly body: Record<string, unknown>;
 }
 
-/** The node answered with one of its error codes. */
+/** The node answered with one of its error codes; `detail` is its own message when it is one of the search's coded
+ * ones (`REGEX_…: …`, `SEARCH_…: …`), which say what to change. */
 class FolderLinkError extends Error {
 	readonly code: string;
-	constructor(code: string, message: string) {
+	readonly detail: string | undefined;
+	constructor(code: string, message: string, detail?: string) {
 		super(message);
 		this.name = "FolderLinkError";
 		this.code = code;
+		this.detail = detail;
 	}
 }
 
@@ -104,6 +166,8 @@ class FolderLink {
 	readonly #frames: Frame[] = [];
 	#waiting: ((frame: Frame | undefined) => void) | undefined;
 	#closed = false;
+	/** Which search the node speaks, from its hello's answer. */
+	search: SearchSupport = { version: 1, regex: false };
 
 	private constructor(socket: Socket) {
 		this.#socket = socket;
@@ -162,7 +226,12 @@ class FolderLink {
 			role: "io",
 		});
 		const answer = await link.next(HELLO_MS, signal);
-		if (answer?.kind === KIND.helloOk) return link;
+		if (answer?.kind === KIND.helloOk) {
+			const said = answer.body.search as Record<string, unknown> | undefined;
+			if (said && typeof said === "object" && Number.isSafeInteger(said.version) && (said.version as number) >= 2)
+				link.search = { version: said.version as number, regex: said.regex === true };
+			return link;
+		}
 		link.close();
 		throw answerError(answer);
 	}
@@ -206,10 +275,57 @@ class FolderLink {
 	}
 }
 
+const CODED = /^(?:REGEX|SEARCH)_[A-Z_]{2,30}: [\x20-\x7e]{1,240}$/;
+
 function answerError(frame: Frame | undefined): FolderLinkError {
-	if (frame?.kind === KIND.error && typeof frame.body.code === "string")
-		return new FolderLinkError(frame.body.code.slice(0, 40), "The node refused");
+	if (frame?.kind === KIND.error && typeof frame.body.code === "string") {
+		const message = frame.body.message;
+		return new FolderLinkError(
+			frame.body.code.slice(0, 40),
+			"The node refused",
+			typeof message === "string" && CODED.test(message) ? message : undefined,
+		);
+	}
 	return new FolderLinkError("UNAVAILABLE", "The node did not answer");
+}
+
+/** A search shaped for the node: version 2's request when the node speaks it, else version 1's, which takes text or
+ * names only. */
+function shaped(ask: SearchAsk, support: SearchSupport): Record<string, unknown> {
+	if (support.version >= 2) {
+		if (ask.regex && !support.regex)
+			throw new FolderLinkError(
+				"BAD_REQUEST",
+				"No regular expressions here",
+				"REGEX_OFF: this node's folder search runs no regular expressions yet; search for text",
+			);
+		return {
+			version: 2,
+			query: ask.query,
+			regex: ask.regex,
+			path: ask.path,
+			glob: ask.glob,
+			namesOnly: ask.namesOnly,
+			filesOnly: ask.filesOnly,
+			caseSensitive: ask.caseSensitive,
+			context: ask.context,
+			after: ask.after,
+		};
+	}
+	if (ask.query === null || ask.regex || ask.filesOnly || ask.context > 0)
+		throw new FolderLinkError(
+			"BAD_REQUEST",
+			"An older node",
+			"SEARCH_NOT_HERE_YET: this node's folder search takes text and names_only only, until its update; search without regex, files_only, context or a glob alone",
+		);
+	return {
+		query: ask.query,
+		path: ask.path,
+		glob: ask.glob,
+		namesOnly: ask.namesOnly,
+		caseSensitive: ask.caseSensitive,
+		after: ask.after,
+	};
 }
 
 /** The run's search: its view and its connection, opened when first needed and again after either ended. */
@@ -217,39 +333,98 @@ export class CloudFolderSearch {
 	readonly #socketPath: string;
 	readonly #folder: CloudCompanyFolderClient;
 	readonly #environmentId: string;
+	readonly #now: () => number;
 	#view: CloudCompanyFolderRunView | undefined;
 	#link: FolderLink | undefined;
 	#closed = false;
-	/** Pages go one at a time: the node answers a connection's requests in turn, and one view serves the run. */
+	/** Calls go one at a time: the node answers a connection's requests in turn, and one view serves the run. */
 	#turn: Promise<unknown> = Promise.resolve();
-	/** Where each page said to go on, and the search it belongs to, kept here: the model holds only an opaque token, so
-	 * it never reads (or forges) a path the page did not show. Kept for the run. */
-	readonly #cursors = new Map<string, { readonly cursor: SearchCursor; readonly search: string }>();
+	/** Where each answer said to go on, the search it belongs to, a file count it showed as going on, and whether an
+	 * answer showed part of the file the cursor is inside (`shown`), kept here: the model holds only an opaque token, so
+	 * it never reads (or forges) a path the answer did not show. Kept for the run. */
+	readonly #cursors = new Map<
+		string,
+		{
+			readonly cursor: SearchCursor;
+			readonly search: string;
+			readonly carried?: SearchFile;
+			readonly shown?: true;
+		}
+	>();
 
-	constructor(options: { socketPath: string; folder: CloudCompanyFolderClient; environmentId: string }) {
+	constructor(options: {
+		socketPath: string;
+		folder: CloudCompanyFolderClient;
+		environmentId: string;
+		now?: () => number;
+	}) {
 		this.#socketPath = options.socketPath;
 		this.#folder = options.folder;
 		this.#environmentId = options.environmentId;
+		this.#now = options.now ?? Date.now;
 	}
 
-	/** One page, after any page asked for before it. */
-	page(request: Record<string, unknown>, signal: AbortSignal): Promise<SearchPage> {
-		const page = this.#turn.then(() => this.#page(request, signal));
-		this.#turn = page.catch(() => undefined);
-		return page;
+	/** One call's search, after any call asked for before it: its pages, one after another, as one answer. `shown`: an
+	 * earlier answer showed part of the file `ask.after` is inside. */
+	search(ask: SearchAsk, signal: AbortSignal, shown = false): Promise<SearchPage> {
+		const call = this.#turn.then(() => this.#search(ask, signal, shown));
+		this.#turn = call.catch(() => undefined);
+		return call;
+	}
+
+	/** Pages until the answer has about a result's worth (CALL_FILL), the search ends, CALL_PAGES were asked or CALL_MS
+	 * passed. A later page that fails ends the call with what came before it, and its cursor where that page began. */
+	async #search(ask: SearchAsk, signal: AbortSignal, shown: boolean): Promise<SearchPage> {
+		// A call cancelled while it waited its turn sends nothing.
+		signal.throwIfAborted();
+		const started = this.#now();
+		let answer = await this.#page(ask, signal);
+		// The file the call's cursor is inside, of which an earlier answer showed part: the node goes on in it only at
+		// that version, and says nothing when it did not, so the answer does. A cursor inside a file is no proof the model
+		// saw any of it (the search may have run out of time there before a hit, or the fitting left out its first hit):
+		// then there is nothing to take back, and nothing is said (release review r2 of #1731).
+		const earlier = shown && ask.after && (ask.after.offset > 0 || ask.after.line > 0) ? ask.after : undefined;
+		if (earlier && !wentOn(earlier, answer)) answer = { ...answer, restarted: [restartOf(earlier, answer)] };
+		for (
+			let pages = 1;
+			answer.next && pages < CALL_PAGES && shownBytes(answer) < CALL_FILL && this.#now() - started < CALL_MS;
+			pages++
+		) {
+			let page: SearchPage;
+			try {
+				page = await this.#page({ ...ask, after: answer.next }, signal);
+			} catch (error) {
+				if (signal.aborted || !(error instanceof FolderLinkError || error instanceof CloudCompanyFolderError))
+					throw error;
+				// The search's own path is gone (deleted, or no longer the run's to read) since the call's first page:
+				// everything the answer had is from under it, so none of it is shown or released, and the call answers as
+				// its first page would have (review r9 of #1698).
+				if (error instanceof FolderLinkError && error.code === "NOT_FOUND") throw error;
+				break;
+			}
+			// The file this answer ended inside changed or went away before the next page: what the answer showed of its
+			// old version is left out, and not released, so one answer never shows two versions of a file (the node
+			// searched the new one from its start). When an earlier answer showed part of it too, the answer says so.
+			const at = answer.next as SearchCursor;
+			if (!wentOn(at, page)) {
+				answer = without(answer, at);
+				if (earlier && earlier.path === at.path && earlier.version === at.version)
+					answer = { ...answer, restarted: [...(answer.restarted ?? []), restartOf(at, page)] };
+			}
+			answer = mergePages(answer, page);
+		}
+		return answer;
 	}
 
 	/** A view the node no longer serves (closed or superseded) is opened again once. A page that did not come back
 	 * ends the connection, so a late answer never reaches the next request. */
-	async #page(request: Record<string, unknown>, signal: AbortSignal): Promise<SearchPage> {
-		// A call cancelled while it waited its turn sends nothing.
-		signal.throwIfAborted();
+	async #page(ask: SearchAsk, signal: AbortSignal): Promise<SearchPage> {
 		for (let attempt = 0; ; attempt++) {
 			try {
 				const link = await this.#connect(signal);
-				link.send(KIND.search, request);
+				link.send(KIND.search, shaped(ask, link.search));
 				const answer = await link.next(PAGE_MS, signal);
-				if (answer?.kind === KIND.found) return parsePage(answer.body);
+				if (answer?.kind === KIND.found) return parsePage(answer.body, link.search.version >= 2);
 				const error = answerError(answer);
 				// Only the node's own answer to this request leaves the connection usable; anything else ends it.
 				if (answer?.kind !== KIND.error || !REQUEST_ERRORS.includes(error.code)) link.close();
@@ -278,18 +453,27 @@ export class CloudFolderSearch {
 		return this.#link;
 	}
 
-	/** A token for where a page of `search` said to go on. */
-	seal(cursor: SearchCursor, search: string): string {
+	/** A token for where an answer of `search` said to go on, with the count it showed as going on there, and whether
+	 * an answer showed part of the file it is inside. */
+	seal(cursor: SearchCursor, search: string, carried?: SearchFile, shown = false): string {
 		const token = randomBytes(12).toString("base64url");
-		this.#cursors.set(token, { cursor, search });
+		this.#cursors.set(token, { cursor, search, ...(carried ? { carried } : {}), ...(shown ? { shown } : {}) });
 		return token;
 	}
 
 	/** Where a token said to go on, if this run gave it for this same search. */
-	open(token: string, search: string): SearchCursor | "other" | undefined {
+	open(
+		token: string,
+		search: string,
+	): { readonly cursor: SearchCursor; readonly carried?: SearchFile; readonly shown?: true } | "other" | undefined {
 		const sealed = this.#cursors.get(token);
 		if (!sealed) return undefined;
-		return sealed.search === search ? sealed.cursor : "other";
+		if (sealed.search !== search) return "other";
+		return {
+			cursor: sealed.cursor,
+			...(sealed.carried ? { carried: sealed.carried } : {}),
+			...(sealed.shown ? { shown: sealed.shown } : {}),
+		};
 	}
 
 	close(): void {
@@ -298,7 +482,51 @@ export class CloudFolderSearch {
 	}
 }
 
-function parsePage(body: Record<string, unknown>): SearchPage {
+/** Whether a page went on in the file a cursor names at the cursor's version: a node reads (and so names among its
+ * reads) every file it searches, the one it goes on in too. */
+function wentOn(at: SearchCursor, page: SearchPage): boolean {
+	return page.reads.some((read) => read.path === at.path && read.version === at.version);
+}
+
+/** An answer without what it showed of one version of a file, and without its read of it. */
+function without(page: SearchPage, at: SearchCursor): SearchPage {
+	const other = (item: { readonly path: string; readonly version: string | null }) =>
+		item.path !== at.path || item.version !== at.version;
+	return {
+		...page,
+		hits: page.hits.filter(other),
+		files: (page.files ?? []).filter(other),
+		reads: page.reads.filter(other),
+	};
+}
+
+function restartOf(at: SearchCursor, page: SearchPage): SearchRestart {
+	return { path: at.path, changed: page.reads.some((read) => read.path === at.path) };
+}
+
+/** Two pages as one answer: a file the first page ended inside, counted on by the second, is one file. */
+function mergePages(a: SearchPage, b: SearchPage): SearchPage {
+	const files = [...(a.files ?? [])];
+	let rest = b.files ?? [];
+	const last = files.at(-1);
+	const first = rest[0];
+	if (last?.partial && first && first.path === last.path && first.version === last.version) {
+		files[files.length - 1] = { ...first, count: last.count + first.count };
+		rest = rest.slice(1);
+	}
+	return {
+		hits: [...a.hits, ...b.hits],
+		files: [...files, ...rest],
+		searched: a.searched + b.searched,
+		binary: a.binary + b.binary,
+		longLines: (a.longLines ?? 0) + (b.longLines ?? 0),
+		reads: [...a.reads, ...b.reads],
+		next: b.next,
+		...(a.restarted || b.restarted ? { restarted: [...(a.restarted ?? []), ...(b.restarted ?? [])] } : {}),
+	};
+}
+
+function parsePage(body: Record<string, unknown>, v2: boolean): SearchPage {
 	const bad = (): never => {
 		throw new FolderLinkError("UNAVAILABLE", "The node answered something else");
 	};
@@ -306,6 +534,8 @@ function parsePage(body: Record<string, unknown>): SearchPage {
 		typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : bad();
 	const text = (value: unknown, max: number): string =>
 		typeof value === "string" && value.length <= max ? value : bad();
+	const lines = (value: unknown): readonly string[] =>
+		Array.isArray(value) && value.length <= MAX_CONTEXT ? value.map((line) => text(line, 4096)) : bad();
 	if (!Array.isArray(body.hits) || !Array.isArray(body.reads)) bad();
 	const hits = (body.hits as unknown[]).map((item): SearchHit => {
 		const h = item as Record<string, unknown>;
@@ -319,6 +549,11 @@ function parsePage(body: Record<string, unknown>): SearchPage {
 			version: text(h.version, 64),
 			offset: count(h.offset),
 		};
+		// Context lines come only from a version 2 node, and only with a line.
+		if (h.before !== undefined || h.after !== undefined || h.from !== undefined) {
+			if (!v2 || found.line === 0 || found.kind !== "file") bad();
+			return { ...found, before: lines(h.before), after: lines(h.after), from: count(h.from) };
+		}
 		if (found.kind !== "symlink") return h.target === undefined ? found : bad();
 		// A link is a name hit, with its target as the core keeps it.
 		const target = h.target;
@@ -331,6 +566,14 @@ function parsePage(body: Record<string, unknown>): SearchPage {
 		)
 			bad();
 		return { ...found, target: target as string };
+	});
+	const files = (v2 && Array.isArray(body.files) ? (body.files as unknown[]) : []).map((item): SearchFile => {
+		const f = item as Record<string, unknown>;
+		// A count goes on only from a match; a count of 0 ends one a page before it gave.
+		if (!f || typeof f !== "object" || (f.partial !== undefined && (f.partial !== true || count(f.count) === 0)))
+			bad();
+		const file = { path: text(f.path, 4096), version: text(f.version, 64), count: count(f.count) };
+		return f.partial === true ? { ...file, partial: true } : file;
 	});
 	const reads = (body.reads as unknown[]).map((item): CloudCompanyFolderRelease => {
 		const r = item as Record<string, unknown>;
@@ -358,7 +601,15 @@ function parsePage(body: Record<string, unknown>): SearchPage {
 		return { path: r.path as string, version: r.version as string, authority: receipt };
 	});
 	const next = body.next === null ? null : (cursorOf(body.next) ?? bad());
-	return { hits, searched: count(body.searched), binary: count(body.binary), reads, next };
+	return {
+		hits,
+		files,
+		searched: count(body.searched),
+		binary: count(body.binary),
+		longLines: v2 && body.longLines !== undefined ? count(body.longLines) : 0,
+		reads,
+		next,
+	};
 }
 
 function cursorOf(value: unknown): SearchCursor | undefined {
@@ -380,60 +631,172 @@ function cursorOf(value: unknown): SearchCursor | undefined {
 	return { path: c.path, version: c.version, offset: c.offset as number, line: c.line as number };
 }
 
-/** Where to go on to show a hit that did not fit: from its line (or, for a name, the entry itself). */
+/** Where to go on to show a hit that did not fit: from its line, or with context from its first line before (or, for
+ * a name, the entry itself). */
 function resumeAt(hit: SearchHit): SearchCursor {
-	return hit.line === 0
-		? { path: hit.path, version: hit.version, offset: 0, line: 0 }
-		: { path: hit.path, version: hit.version, offset: hit.offset, line: hit.line - 1 };
+	if (hit.line === 0) return { path: hit.path, version: hit.version, offset: 0, line: 0 };
+	const before = hit.before?.length ?? 0;
+	return { path: hit.path, version: hit.version, offset: hit.from ?? hit.offset, line: hit.line - 1 - before };
 }
 
-/** The text the model is shown of one page, fitted to one tool result: hits that do not fit go to the next page, and
- * the first hit is always shown (its line cut, and at worst its path, if that is what fits). `seal` turns where to go
- * on into the token the model passes back. */
-export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) => string): string {
-	// A link shows what it names, quoted as JSON: its target is kept exactly, spaces and line breaks too.
-	const shownHit = (h: SearchHit, text = h.kind === "symlink" ? JSON.stringify(h.target) : h.text): string =>
-		h.kind === "symlink"
-			? `${h.path} -> ${text}`
-			: h.line === 0
-				? `${h.path}${h.kind === "folder" ? "/" : ""}`
-				: `${h.path}:${h.line}: ${text}`;
+/** One hit or one file of an answer, as its lines, and where to go on to show it when it is left out. */
+interface Unit {
+	readonly lines: readonly string[];
+	readonly resume: SearchCursor;
+	/** Its first and last line numbers in its file (a text hit with context), to join it to the next. */
+	readonly span?: readonly [string, number, number];
+}
+
+/** A link shows what it names, quoted as JSON: its target is kept exactly, spaces and line breaks too. */
+function hitLine(h: SearchHit, text = h.kind === "symlink" ? JSON.stringify(h.target) : h.text): string {
+	return h.kind === "symlink"
+		? `${h.path} -> ${text}`
+		: h.line === 0
+			? `${h.path}${h.kind === "folder" ? "/" : ""}`
+			: `${h.path}:${h.line}: ${text}`;
+}
+
+function hitUnit(h: SearchHit, withContext = true): Unit {
+	const before = (withContext && h.before) || [];
+	const after = (withContext && h.after) || [];
+	if (h.line === 0 || (before.length === 0 && after.length === 0 && h.before === undefined))
+		return { lines: [hitLine(h)], resume: resumeAt(h) };
+	// rg's form: a context line is path-line- text.
+	return {
+		lines: [
+			...before.map((text, i) => `${h.path}-${h.line - before.length + i}- ${text}`),
+			hitLine(h),
+			...after.map((text, i) => `${h.path}-${h.line + 1 + i}- ${text}`),
+		],
+		resume: resumeAt(h),
+		span: [h.path, h.line - before.length, h.line + after.length],
+	};
+}
+
+function fileUnit(f: SearchFile): Unit {
+	return {
+		lines: [`${f.path}: ${f.count}${f.partial ? " so far (the count goes on with the cursor)" : ""}`],
+		resume: { path: f.path, version: f.version, offset: 0, line: 0 },
+	};
+}
+
+/** The lines of units in order; with context, `--` between hits whose lines do not join (rg's form). */
+function joined(units: readonly Unit[]): string[] {
+	const out: string[] = [];
+	let last: readonly [string, number, number] | undefined;
+	for (const unit of units) {
+		if (unit.span && last && (unit.span[0] !== last[0] || unit.span[1] > last[2] + 1)) out.push("--");
+		out.push(...unit.lines);
+		last = unit.span;
+	}
+	return out;
+}
+
+function unitsOf(page: SearchPage): Unit[] {
+	// A count of 0 that closed nothing shown says nothing.
+	return [...page.hits.map((h) => hitUnit(h)), ...(page.files ?? []).filter((f) => f.count > 0).map(fileUnit)];
+}
+
+/** An answer that goes on inside the file a count was carried into (the cursor's): the count it showed before is the
+ * start of this one, which then shows the file's whole count, or that it still goes on. A file whose version changed
+ * since is counted from its start, so the count carried no longer holds. */
+function withCarried(page: SearchPage, carried: SearchFile | undefined): SearchPage {
+	if (!carried) return page;
+	const first = page.files?.[0];
+	const same = (f: { path: string; version: string } | null | undefined) =>
+		f?.path === carried.path && f.version === carried.version;
+	if (same(first) || (page.files?.length === 0 && same(page.next)))
+		return mergePages({ hits: [], files: [carried], searched: 0, binary: 0, reads: [], next: null }, page);
+	return page;
+}
+
+/** The bytes an answer's lines take as shown, before its fitting: what a call measures to ask for another page. */
+function shownBytes(page: SearchPage): number {
+	return joined(unitsOf(page)).reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+}
+
+/** Whether a cursor is inside this version of this file. */
+function inFile(file: { readonly path: string; readonly version: string }, cursor: SearchCursor): boolean {
+	return cursor.path === file.path && cursor.version === file.version;
+}
+
+/** The text the model is shown of one answer, fitted to one tool result: hits (or files) that do not fit go to the
+ * next call, and the first is always shown (without its context lines, its line cut, and at worst its path, if that
+ * is what fits). `seal` turns where to go on into the token the model passes back, with the file count the answer
+ * shows as going on there, and whether the answer shows anything of the file (at that version) the cursor is inside. */
+export function folderSearchText(
+	page: SearchPage,
+	seal: (cursor: SearchCursor, carried?: SearchFile, shown?: boolean) => string,
+): string {
+	const units = unitsOf(page);
+	const longLines = page.longLines ?? 0;
+	// A file an earlier answer showed part of that is not as that answer saw it: said before the counts, whatever is cut.
+	const restarted = (page.restarted ?? []).map((r) => {
+		const chars = Array.from(r.path);
+		const path = chars.length > 300 ? `${chars.slice(0, 300).join("")}…` : r.path;
+		return r.changed
+			? `${path} changed since the last answer: it is searched again from its start.`
+			: `${path} is not as the last answer saw it (changed, emptied, gone, or no longer yours to read): what that answer showed of it may not hold.`;
+	});
+	const notes = restarted.length > 0 ? `${restarted.join("\n")}\n\n` : "";
 	// Laid out with a stand-in token of a real token's length (16 characters, nothing to escape), and sealed once.
-	const lay = (shown: number, first?: string, token = "x".repeat(16)) => {
-		const lines = page.hits.slice(0, shown).map((h, i) => (i === 0 && first !== undefined ? first : shownHit(h)));
-		const cut = shown < page.hits.length;
-		const next = cut ? resumeAt(page.hits[shown]!) : page.next;
-		// A page cut short counts nothing: the next page searches its files again.
+	const lay = (shown: number, first?: Unit, token = "x".repeat(16)) => {
+		const lines = joined(units.slice(0, shown).map((u, i) => (i === 0 && first !== undefined ? first : u)));
+		const cut = shown < units.length;
+		const next = cut ? units[shown]!.resume : page.next;
+		// An answer cut short counts no files: the next call searches those after the cut again. Lines a pattern passed
+		// over are named either way: the next call goes on after the cut and would never name those before it (it may
+		// name again one after it).
+		const passed =
+			longLines > 0
+				? `; ${longLines} line${longLines === 1 ? "" : "s"} over 1 MiB not searched by the pattern (search them as text, or read them)`
+				: "";
 		const counts = cut
-			? "Part of a page"
+			? `Part of the answer${passed}`
 			: `${page.searched} file${page.searched === 1 ? "" : "s"} searched` +
-				(page.binary > 0 ? `, ${page.binary} binary passed over` : "");
+				(page.binary > 0 ? `, ${page.binary} binary passed over` : "") +
+				passed;
 		const more = next ? `. More: call again with cursor ${token}` : ". Nothing more.";
-		return { text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${counts}${more}`, next };
+		return {
+			text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${notes}${counts}${more}`,
+			next,
+		};
 	};
-	const sealed = (shown: number, first?: string): string => {
+	const last = page.files?.at(-1);
+	const sealed = (shown: number, first?: Unit): string => {
 		const { text, next } = lay(shown, first);
-		return next ? lay(shown, first, seal(next)).text : text;
+		if (!next) return text;
+		// A count shown as going on goes on with the cursor, when the answer showed it (nothing after it was cut).
+		const carried = shown === units.length && last?.partial ? last : undefined;
+		const showsFile = units.slice(0, shown).some((unit) => inFile(unit.resume, next));
+		return lay(shown, first, seal(next, carried, showsFile)).text;
 	};
-	let shown = page.hits.length;
+	let shown = units.length;
 	while (shown > 1 && !fitsOneResult(lay(shown).text)) shown--;
 	if (shown === 0 || fitsOneResult(lay(shown).text)) return sealed(shown);
-	// One hit that does not fit whole: its line (or a link's target) shorter and shorter, then its path.
-	const hit = page.hits[0]!;
-	const link = hit.kind === "symlink";
-	const chars = Array.from(link ? (hit.target ?? "") : hit.text);
-	for (let keep = chars.length; keep >= 0; keep = keep === 0 ? -1 : Math.floor(keep / 2)) {
-		const kept = chars.slice(0, keep).join("");
-		const cut = keep < chars.length;
-		const first = shownHit(
-			hit,
-			link ? `${JSON.stringify(kept)}${cut ? "… (target cut)" : ""}` : `${kept}${cut ? "…" : ""}`,
-		);
-		if (fitsOneResult(lay(1, first).text)) return sealed(1, first);
+	// One that does not fit whole: a hit without its context lines, then its line (or a link's target) shorter and
+	// shorter, then its path.
+	const hit = page.hits[0];
+	if (hit && (hit.before?.length || hit.after?.length)) {
+		const bare = hitUnit(hit, false);
+		if (fitsOneResult(lay(1, bare).text)) return sealed(1, bare);
 	}
-	const path = Array.from(hit.path);
+	const only = (line: string): Unit => ({ lines: [line], resume: units[0]!.resume });
+	if (hit) {
+		const link = hit.kind === "symlink";
+		const chars = Array.from(link ? (hit.target ?? "") : hit.text);
+		for (let keep = chars.length; keep >= 0; keep = keep === 0 ? -1 : Math.floor(keep / 2)) {
+			const kept = chars.slice(0, keep).join("");
+			const cut = keep < chars.length;
+			const first = only(
+				hitLine(hit, link ? `${JSON.stringify(kept)}${cut ? "… (target cut)" : ""}` : `${kept}${cut ? "…" : ""}`),
+			);
+			if (fitsOneResult(lay(1, first).text)) return sealed(1, first);
+		}
+	}
+	const path = Array.from(hit?.path ?? page.files?.[0]?.path ?? "");
 	for (let keep = path.length; keep > 0; keep = Math.floor(keep / 2)) {
-		const first = `${path.slice(0, keep).join("")}… (path cut)`;
+		const first = only(`${path.slice(0, keep).join("")}… (path cut)`);
 		if (fitsOneResult(lay(1, first).text)) return sealed(1, first);
 	}
 	return sealed(0);
@@ -448,7 +811,7 @@ function releaseId(runId: string, callId: string, outputSha256: string, part: nu
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-const ARGUMENTS = ["query", "path", "glob", "names_only", "case_sensitive", "cursor"];
+const ARGUMENTS = ["query", "path", "glob", "regex", "context", "files_only", "names_only", "case_sensitive", "cursor"];
 
 function closedArguments(value: JsonValue): Record<string, JsonValue> {
 	if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -471,6 +834,19 @@ function searchText(value: JsonValue | undefined, label: string): string {
 
 const CURSOR_TOKEN = /^[A-Za-z0-9_-]{16}$/;
 
+/** The arguments as parsed (a type, not an interface: it is the tool's JSON value). */
+type SearchInput = {
+	readonly query: string | null;
+	readonly path: string;
+	readonly glob: string | null;
+	readonly regex: boolean;
+	readonly context: number;
+	readonly files_only: boolean;
+	readonly names_only: boolean;
+	readonly case_sensitive: boolean;
+	readonly cursor: string | null;
+};
+
 /** `company_search`, for a folder-v2 run whose host has the node's folder search. */
 export function cloudFolderSearchTool(options: {
 	search: CloudFolderSearch;
@@ -481,18 +857,26 @@ export function cloudFolderSearchTool(options: {
 	return {
 		name: "company_search",
 		description:
-			"Search the company folder: the lines of its text files that contain your query, or with names_only the names of " +
-			"its files, folders and links. Only what you may read is searched. Literal text, not case-sensitive unless you " +
-			'say. Each call answers one page, path:line: text (a link as path -> "what it names"; a link is never searched ' +
-			"through); when there is more, it gives a cursor to call again with. " +
-			"Read a file with company_read; work on files (spreadsheets, documents, scripts) on the company's computer.",
+			"Search the company folder like rg: the lines of its text files that contain query, as path:line: text. Only " +
+			"what you may read is searched. Literal text, not case-sensitive unless you say; with regex, query is a " +
+			"regular expression (RE2: no back-references or lookaround, counts up to 16) if the folder's search runs " +
+			"them; REGEX_OFF means it does not, so search for text. context adds up to 5 lines " +
+			"before and after each hit (path-line- text); files_only lists just the matching files, path: matching lines. " +
+			'names_only searches the names of files, folders and links instead (a link as path -> "what it names"; a ' +
+			"link is never searched through); a glob with no query lists every path it matches. One call searches for " +
+			"up to about 10 s and shows up to about 30 KiB; when there is more, it gives a cursor to call again with. " +
+			"Read a file with company_read; work on files (spreadsheets, documents, scripts) on a machine.",
 		source: "company_file",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["query"],
 			properties: {
-				query: { type: "string", minLength: 1, maxLength: MAX_QUERY, description: "The text to find." },
+				query: {
+					type: "string",
+					minLength: 1,
+					maxLength: MAX_QUERY,
+					description: "The text (with regex, the pattern) to find. Leave it out to list paths by glob.",
+				},
 				path: {
 					type: "string",
 					description: "A folder (or one file) to search, company-relative; the whole folder by default.",
@@ -503,14 +887,22 @@ export function cloudFolderSearchTool(options: {
 					description:
 						"Only paths like this: * and ? within a name, ** across folders, e.g. *.md or docs/**/*.csv.",
 				},
+				regex: { type: "boolean", description: "query is a regular expression." },
+				context: {
+					type: "integer",
+					minimum: 0,
+					maximum: MAX_CONTEXT,
+					description: "Lines to show before and after each hit.",
+				},
+				files_only: { type: "boolean", description: "Only the matching files, with how many lines match in each." },
 				names_only: { type: "boolean", description: "Search names of files and folders instead of their text." },
 				case_sensitive: { type: "boolean" },
-				cursor: { type: "string", description: "Where the last page said to go on." },
+				cursor: { type: "string", description: "Where the last answer said to go on." },
 			},
 		},
-		parseArguments(value) {
+		parseArguments(value): SearchInput {
 			const input = closedArguments(value);
-			const query = searchText(input.query, "query");
+			const query = input.query === undefined ? null : searchText(input.query, "query");
 			let path = "";
 			if (input.path !== undefined && input.path !== "") {
 				try {
@@ -522,66 +914,111 @@ export function cloudFolderSearchTool(options: {
 				}
 			}
 			const glob = input.glob === undefined ? null : searchText(input.glob, "glob");
-			for (const flag of ["names_only", "case_sensitive"] as const)
+			for (const flag of ["regex", "files_only", "names_only", "case_sensitive"] as const)
 				if (input[flag] !== undefined && typeof input[flag] !== "boolean")
 					throw new CloudToolArgumentRefusal(`${flag} must be true or false`);
+			const context = input.context ?? 0;
+			if (typeof context !== "number" || !Number.isInteger(context) || context < 0 || context > MAX_CONTEXT)
+				throw new CloudToolArgumentRefusal(`context must be a whole number from 0 to ${MAX_CONTEXT}`);
+			const regex = input.regex === true;
+			const filesOnly = input.files_only === true;
+			const namesOnly = input.names_only === true;
+			if (query === null && glob === null)
+				throw new CloudToolArgumentRefusal("company_search needs a query, a glob, or both");
+			if (query === null && (regex || filesOnly || context > 0))
+				throw new CloudToolArgumentRefusal("regex, files_only and context need a query; a glob alone lists paths");
+			if (filesOnly && namesOnly) throw new CloudToolArgumentRefusal("files_only counts lines of text, not names");
+			if (context > 0 && (namesOnly || filesOnly))
+				throw new CloudToolArgumentRefusal(
+					"context shows lines around text hits, not with names_only or files_only",
+				);
 			if (input.cursor !== undefined && (typeof input.cursor !== "string" || !CURSOR_TOKEN.test(input.cursor)))
-				throw new CloudToolArgumentRefusal("cursor must be the token a page of this search gave");
-			const cursor = input.cursor === undefined ? null : input.cursor;
+				throw new CloudToolArgumentRefusal("cursor must be the token an answer of this search gave");
 			return {
 				query,
 				path,
 				glob,
-				names_only: input.names_only === true,
+				regex,
+				context,
+				files_only: filesOnly,
+				// A glob alone is a find: of names.
+				names_only: namesOnly || query === null,
 				case_sensitive: input.case_sensitive === true,
-				cursor,
+				cursor: input.cursor === undefined ? null : input.cursor,
 			};
 		},
 		async execute(value, context): Promise<CloudToolContent> {
-			const input = value as {
-				query: string;
-				path: string;
-				glob: string | null;
-				names_only: boolean;
-				case_sensitive: boolean;
-				cursor: string | null;
-			};
+			const input = value as SearchInput;
 			// A cursor goes on only with the search that gave it.
-			const asked = JSON.stringify([input.query, input.path, input.glob, input.names_only, input.case_sensitive]);
-			const after = input.cursor === null ? null : search.open(input.cursor, asked);
-			if (after === undefined)
+			const asked = JSON.stringify([
+				input.query,
+				input.path,
+				input.glob,
+				input.regex,
+				input.context,
+				input.files_only,
+				input.names_only,
+				input.case_sensitive,
+			]);
+			const opened = input.cursor === null ? null : search.open(input.cursor, asked);
+			if (opened === undefined)
 				throw new CloudToolRefusal(
 					"CURSOR_UNKNOWN: that cursor is not one this run's search gave (cursors last for the run); search again",
 				);
-			if (after === "other")
+			if (opened === "other")
 				throw new CloudToolRefusal(
 					"CURSOR_OTHER_SEARCH: that cursor belongs to another search; repeat that search's query, path, glob and flags with it, or search without a cursor",
 				);
 			let page: SearchPage;
 			try {
-				page = await search.page(
+				page = await search.search(
 					{
 						query: input.query,
+						regex: input.regex,
 						path: input.path,
 						glob: input.glob,
 						namesOnly: input.names_only,
+						filesOnly: input.files_only,
 						caseSensitive: input.case_sensitive,
-						after,
+						context: input.context,
+						after: opened?.cursor ?? null,
 					},
 					context.signal,
+					opened?.shown === true,
 				);
+				page = withCarried(page, opened?.carried);
 			} catch (error) {
 				if (!(error instanceof FolderLinkError) && !(error instanceof CloudCompanyFolderError)) throw error;
 				const code = error instanceof FolderLinkError ? error.code : "";
+				const detail = error instanceof FolderLinkError ? error.detail : undefined;
 				if (code === "NOT_FOUND") throw new CloudToolRefusal("NOT_FOUND: no such path in the folder you may read");
+				// The search's own words on a pattern it does not run, or on a node that does not take this yet.
+				if (code === "BAD_REQUEST" && detail) throw new CloudToolRefusal(detail);
 				if (code === "BAD_REQUEST")
 					throw new CloudToolRefusal("BAD_REQUEST: the folder search refused the request");
+				if (code === "UNAVAILABLE" && detail?.startsWith("SEARCH_"))
+					throw new CloudToolRefusal(
+						"COMPANY_FOLDER_BUSY: the node's folder search is full or busy now; try again in a minute, or read with company_read",
+					);
 				throw new CloudToolRefusal(
 					"COMPANY_FOLDER_UNAVAILABLE: the folder could not be searched now; try again, or read with company_read",
 				);
 			}
-			const text = folderSearchText(page, (cursor) => search.seal(cursor, asked));
-			// Released before the model sees the page, under the hash of exactly this text; cited by its first release.
+			// The text as the model is shown it: the boundary cuts a secret out of every answer (a line of a file may hold a
+			// token), so the release is under the hash of the text after that cut, which is what the context view cites.
+			// The cut only shortens, so the fitted text still fits. A cursor still inside the file an earlier answer showed
+			// part of (at the version it showed) keeps saying so, whether or not this answer shows more of it.
+			const text = redactCloudWebhookSecrets(
+				folderSearchText(page, (cursor, carried, shown) =>
+					search.seal(
+						cursor,
+						asked,
+						carried,
+						shown === true || (opened?.shown === true && inFile(opened.cursor, cursor)),
+					),
+				),
+			);
+			// Released before the model sees the answer, under the hash of exactly this text; cited by its first release.
 			let companyReadId: string | undefined;
 			const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
 			try {
@@ -598,11 +1035,11 @@ export function cloudFolderSearchTool(options: {
 			} catch (error) {
 				if (error instanceof CloudCompanyFolderError && error.failure === "read_revoked")
 					throw new CloudToolRefusal(
-						"READ_REVOKED: something this page drew on may no longer be read by you, so it is not shown; search again",
+						"READ_REVOKED: something this answer drew on may no longer be read by you, so it is not shown; search again",
 					);
 				if (error instanceof CloudCompanyFolderError)
 					throw new CloudToolRefusal(
-						`COMPANY_FOLDER_UNAVAILABLE: what this page read could not be recorded (${error.failure}), so it is not shown; try again`,
+						`COMPANY_FOLDER_UNAVAILABLE: what this answer read could not be recorded (${error.failure}), so it is not shown; try again`,
 					);
 				throw error;
 			}

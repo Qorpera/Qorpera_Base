@@ -58,6 +58,68 @@ describe("dedicated coding executor control", () => {
 			"https://project.supabase.co/rest/v1/rpc/qorpera_code_hosts_deleting",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
+		// Nightly care of the repositories kept in Qorpera (own code storage, step 2a): due, step and finish.
+		for (const method of ["qorpera_code_care_due", "qorpera_code_care_step", "qorpera_code_care_finish"]) {
+			await control.call(method, {}, new AbortController().signal);
+			expect(fetcher).toHaveBeenLastCalledWith(
+				`https://project.supabase.co/rest/v1/rpc/${method}`,
+				expect.objectContaining({ redirect: "error", method: "POST" }),
+			);
+		}
+		// The change record of the repositories kept in Qorpera (own code storage, step 2b): a landing's report, the
+		// record's files, the requests (undo, download, restore), a restore's record, the sessions a restore stranded
+		// (step 6's follow-ups), and an import's look and record (step 6).
+		for (const method of [
+			"qorpera_record_code_change",
+			"qorpera_code_change_files_due",
+			"qorpera_code_change_files",
+			"qorpera_code_change_files_written",
+			"qorpera_code_requests_claim",
+			"qorpera_code_request_step",
+			"qorpera_code_request_finish",
+			"qorpera_code_restore_record",
+			"qorpera_code_restore_strand",
+			"qorpera_code_import_looked",
+			"qorpera_code_import_record",
+		]) {
+			await control.call(method, {}, new AbortController().signal);
+			expect(fetcher).toHaveBeenLastCalledWith(
+				`https://project.supabase.co/rest/v1/rpc/${method}`,
+				expect.objectContaining({ redirect: "error", method: "POST" }),
+			);
+		}
+		// Whether a repository kept in Qorpera has its checks run before a landing (own code storage, step 3).
+		await control.call("qorpera_code_checks_switch", {}, new AbortController().signal);
+		expect(fetcher).toHaveBeenLastCalledWith(
+			"https://project.supabase.co/rest/v1/rpc/qorpera_code_checks_switch",
+			expect.objectContaining({ redirect: "error", method: "POST" }),
+		);
+		// A repository's site, read from its storage and uploaded as a version (own code storage, step 4).
+		for (const method of [
+			"qorpera_code_sites_due",
+			"qorpera_code_site_begin",
+			"qorpera_code_site_list",
+			"qorpera_code_site_missing",
+			"qorpera_code_site_put",
+			"qorpera_code_site_finish",
+			"qorpera_code_site_failed",
+		]) {
+			await control.call(method, {}, new AbortController().signal);
+			expect(fetcher).toHaveBeenLastCalledWith(
+				`https://project.supabase.co/rest/v1/rpc/${method}`,
+				expect.objectContaining({ redirect: "error", method: "POST" }),
+			);
+		}
+		// The agent's, the member's and the operator's calls of the same step are not the executor's.
+		for (const method of [
+			"qorpera_folder_request_code_undo",
+			"qorpera_request_code_download",
+			"qorpera_request_code_restore",
+		])
+			await expect(control.call(method, {}, new AbortController().signal)).rejects.toThrow("METHOD_INVALID");
+		// Putting a version live and going back are a member's, and the member's read is not the executor's either.
+		for (const method of ["qorpera_put_code_release_live", "qorpera_code_release_back", "qorpera_list_code_releases"])
+			await expect(control.call(method, {}, new AbortController().signal)).rejects.toThrow("METHOD_INVALID");
 		// The per-session VM authority is gone.
 		await expect(control.call("qorpera_describe_coding_cleanup", {}, new AbortController().signal)).rejects.toThrow(
 			"METHOD_INVALID",
@@ -199,6 +261,26 @@ describe("dedicated coding executor control", () => {
 			// Every other call's refusal stays unconfirmed.
 			["qorpera_folder_view_close", 403, body(), unconfirmed],
 			["qorpera_mark_company_machine_running", 403, body(), unconfirmed],
+			// A member's read check of a machine's reads (20260930712000): its refusal hides that member's picture.
+			[
+				"qorpera_folder_member_machine_reads",
+				403,
+				body({
+					details: "qorpera.test-machine/member-unreadable",
+					message: "A read is not readable to the member",
+				}),
+				refused,
+				"qorpera.test-machine/member-unreadable",
+			],
+			[
+				"qorpera_folder_member_machine_reads",
+				403,
+				body({ details: null, message: "Member is unavailable" }),
+				refused,
+				null,
+			],
+			// The executor's read of a member's look is a plain call: a refusal fails the look.
+			["qorpera_member_machine_screen_authority", 403, body({ details: null }), unconfirmed],
 		];
 		for (const [method, status, text, expected, detail] of cases) {
 			const fetcher = vi.fn<typeof fetch>(answer(status, text));

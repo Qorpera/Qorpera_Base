@@ -67,7 +67,8 @@ export interface WebRoutineDraft {
 	title: string;
 	prompt: string;
 	/** Every N minutes, or days at a time; no `replyPolicy` is `required`. An edit that keeps how its routine runs sends
-	 * the opened file's own trigger (`cloudRoutineTriggerOfFile`), its reply the only change. */
+	 * the opened file's own trigger (`cloudRoutineTriggerOfFile`), its reply the only change. A new routine may also
+	 * start on what arrives at one of the company's hooks or mailboxes (the Mailbox's "who answers it"). */
 	trigger: CloudRoutineTrigger;
 	/** A new routine's. An edit keeps the file's own (an agent may have chosen medium or high). */
 	effort: CompanyStateEffort;
@@ -294,6 +295,17 @@ export function canPayForRoutine(account: WebMemberConnection, listening = false
 	return !claudeLogin(account) && (!planLogin(account) || (account.allowAutonomous === true && !listening));
 }
 
+/** The cloud lists one row per connection version; a picker offers each account once, at its newest version (a consent
+ * raises the version, not the account). */
+export function latestVersions(accounts: readonly WebMemberConnection[]): WebMemberConnection[] {
+	const newest = new Map<string, WebMemberConnection>();
+	for (const account of accounts) {
+		const current = newest.get(account.connectionId);
+		if (!current || current.connectionVersion < account.connectionVersion) newest.set(account.connectionId, account);
+	}
+	return [...newest.values()];
+}
+
 function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud response");
 	return value as Record<string, unknown>;
@@ -344,6 +356,16 @@ function keptTrigger(trigger: CloudRoutineTrigger): string {
 function editOf(draft: WebRoutineDraft, file: RoutineFile | null): RoutineEdit {
 	const mapped = routineFileTrigger(draft.trigger);
 	if (!mapped) {
+		// A new routine that starts on what arrives at a hook or a mailbox: the Mailbox makes one for the agent who
+		// answers an address (views/mailbox.ts). The save's own rules check the hook and who pays.
+		if (!file && draft.trigger.kind === "listener" && draft.trigger.source === "event")
+			return {
+				title: draft.title.trim(),
+				trigger: { when: "event", hook: draft.trigger.hookId, only: draft.trigger.only ?? null },
+				timezone: draft.trigger.timeZone,
+				reply: draft.trigger.replyPolicy ?? "required",
+				instructions: draft.prompt.trim(),
+			};
 		// An edit that keeps how its routine runs (a window, a dynamic routine's next run, a webhook): the draft's trigger
 		// is the file's as `cloudRoutineTriggerOfFile` reads it, and the file's trigger and zone stay as they are; only
 		// the reply is the draft's. A new routine, or a trigger that is not the file's, is never written.

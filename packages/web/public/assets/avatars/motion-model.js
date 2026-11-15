@@ -6,6 +6,7 @@
 	const creation = Object.freeze({ playbackRate: .8, strokeScale: 1.725 });
 	// Measured from each approved 512 px source, in the shared 100-unit frame.
 	// Planet retains its approved rig; the others retain their own eye placement.
+	// Star to Puzzle (November 10, 2026) carry the eyes they were drawn with.
 	const faces = Object.freeze(Object.fromEntries(Object.entries({
 		planet: [[56.5, 39.7, 6.25, 14.75, -17], [69.2, 38.1, 6.25, 14.75, -17]],
 		acorn: [[54.32, 58.08, 6.21, 15.35, -16.36], [67.32, 56.55, 6.12, 15.29, -16.61]],
@@ -13,16 +14,21 @@
 		rocket: [[50.03, 44.68, 5.61, 13.64, -11], [61.96, 43.1, 5.6, 13.56, -11.11]],
 		crown: [[56.74, 55.25, 5.96, 14.79, -10.81], [69.44, 53.79, 5.92, 14.59, -10.85]],
 		heart: [[65.35, 45.45, 6.56, 16.86, -9.49], [78.89, 45.43, 6.41, 16.86, -9.99]],
-		ghost: [[59.75, 36.05, 6.79, 13.54, -2.98], [72.42, 35.96, 6.39, 13.39, -3.53]],
+		star: [[53, 54.5, 6, 14.7, -12], [65.61, 52.95, 6, 14.7, -12]],
+		cloud: [[55, 64, 6, 14.7, -12], [67.61, 62.45, 6, 14.7, -12]],
+		bolt: [[45.25, 48.71, 5.47, 13.4, -12], [56.75, 47.29, 5.47, 13.4, -12]],
+		mushroom: [[51.7, 69.77, 6, 14.7, -12], [64.3, 68.23, 6, 14.7, -12]],
+		moon: [[54.7, 67.27, 6, 14.7, -12], [67.3, 65.73, 6, 14.7, -12]],
+		puzzle: [[50.25, 49.71, 5.47, 13.4, -12], [61.75, 48.29, 5.47, 13.4, -12]],
 	}).map(([id, eyes]) => [id, Object.freeze(eyes.map(([x, y, width, height, rotation]) => Object.freeze({ x, y, width, height, rotation })))])));
 	const avatars = [
-		{ id: "planet", name: "Planet", color: "#5ec0b5", origin: "50% 50%", rhythm: "The eyes lead a glance. The body follows, then holds.", duration: 8400, poses: [
+		{ id: "planet", name: "Planet", color: "#3faff3", origin: "50% 50%", rhythm: "The eyes lead a glance. The body follows, then holds.", duration: 8400, poses: [
 			[0, 0, -.4, -.6, 1, 1], [.09, 0, -.4, -.6, 1, 1], [.16, -.6, -1.1, -2.4, 1.006, .996], [.36, -.6, -1.1, -2.4, 1.006, .996], [.45, .7, -1.4, 1.9, .997, 1.009], [.54, .2, -.4, .3, 1, 1], [.91, .2, -.4, .3, 1, 1], [1, 0, -.4, -.6, 1, 1],
 		] },
 		{ id: "acorn", name: "Acorn", color: "#87674c", origin: "50% 88%", rhythm: "A grounded, deliberate rock.", duration: 3600, poses: [
 			[0, 0, 0, 0, 1, 1], [.24, -.4, .4, -3, 1.018, .985], [.54, .5, -.6, 2.4, .993, 1.012], [.76, 0, .2, -.7, 1.006, .997], [1, 0, 0, 0, 1, 1],
 		] },
-		{ id: "flame", name: "Flame", color: "#fa752e", origin: "50% 86%", rhythm: "A soft, irregular flicker.", duration: 2600, poses: [
+		{ id: "flame", name: "Flame", color: "#f96e2d", origin: "50% 86%", rhythm: "A soft, irregular flicker.", duration: 2600, poses: [
 			[0, 0, 0, 0, 1, 1], [.22, .4, -1.3, 3.5, .98, 1.025], [.47, -.6, .5, -2.6, 1.02, .985], [.73, .2, -.7, 1.3, .992, 1.012], [1, 0, 0, 0, 1, 1],
 		] },
 		{ id: "rocket", name: "Rocket", color: "#f96e2d", origin: "50% 65%", rhythm: "A light lift with a steady hover.", duration: 3200, poses: [
@@ -31,11 +37,26 @@
 		{ id: "crown", name: "Crown", color: "#fcb51b", origin: "50% 85%", rhythm: "A small, measured nod.", duration: 4400, poses: [
 			[0, 0, 0, 0, 1, 1], [.2, .3, .6, 1.7, 1.012, .985], [.4, 0, -.8, -.8, .995, 1.009], [.6, 0, 0, .25, 1, 1], [1, 0, 0, 0, 1, 1],
 		] },
-		{ id: "heart", name: "Heart", color: "#fb672a", origin: "50% 55%", rhythm: "A quiet double heartbeat.", duration: 3000, poses: [
+		{ id: "heart", name: "Heart", color: "#e22538", origin: "50% 55%", rhythm: "A quiet double heartbeat.", duration: 3000, poses: [
 			[0, 0, 0, 0, 1, 1], [.08, 0, -.3, 0, 1.052, 1.045], [.16, 0, 0, 0, .997, .997], [.26, 0, -.2, .3, 1.036, 1.03], [.38, 0, 0, 0, 1, 1], [1, 0, 0, 0, 1, 1],
 		] },
-		{ id: "ghost", name: "Ghost", color: "#312f2d", colorOnDark: "#a29d97", origin: "50% 55%", rhythm: "An unhurried floating drift.", duration: 6400, poses: [
-			[0, -.6, -1.2, -1, 1, 1], [.3, 1.5, -4.7, 1.7, .996, 1.013], [.65, .7, -2.6, .6, 1.009, .995], [1, -.6, -1.2, -1, 1, 1],
+		{ id: "star", name: "Star", color: "#fcb51b", origin: "50% 55%", rhythm: "A small, bright twinkle.", duration: 4200, poses: [
+			[0, 0, 0, 0, 1, 1], [.22, 0, -.6, 2.2, 1.012, 1.012], [.48, 0, .3, -1.6, .994, .994], [.74, 0, -.2, .6, 1.004, 1.004], [1, 0, 0, 0, 1, 1],
+		] },
+		{ id: "cloud", name: "Cloud", color: "#3faff3", origin: "50% 60%", rhythm: "A slow sideways drift.", duration: 6800, poses: [
+			[0, -.5, 0, 0, 1, 1], [.34, 1.4, -.6, .6, 1.008, .994], [.68, .4, .2, -.4, .996, 1.006], [1, -.5, 0, 0, 1, 1],
+		] },
+		{ id: "bolt", name: "Bolt", color: "#a145f7", origin: "50% 60%", rhythm: "A quick, light crackle.", duration: 2400, poses: [
+			[0, 0, 0, 0, 1, 1], [.2, .3, -1, 2.6, .985, 1.02], [.46, -.4, .4, -2.2, 1.014, .988], [.72, .2, -.5, 1, .994, 1.008], [1, 0, 0, 0, 1, 1],
+		] },
+		{ id: "mushroom", name: "Mushroom", color: "#e22538", origin: "50% 90%", rhythm: "A soft, grounded bob.", duration: 3800, poses: [
+			[0, 0, 0, 0, 1, 1], [.26, 0, .5, -1.6, 1.02, .982], [.56, 0, -.7, 1.2, .99, 1.014], [.78, 0, .2, -.4, 1.004, .998], [1, 0, 0, 0, 1, 1],
+		] },
+		{ id: "moon", name: "Moon", color: "#2047bd", origin: "50% 55%", rhythm: "A calm, slow rock.", duration: 7200, poses: [
+			[0, 0, 0, -1.2, 1, 1], [.33, .3, -.8, 1.8, 1, 1], [.66, -.2, -.3, .4, 1, 1], [1, 0, 0, -1.2, 1, 1],
+		] },
+		{ id: "puzzle", name: "Puzzle", color: "#0fbd59", origin: "50% 60%", rhythm: "A small settle into place.", duration: 4000, poses: [
+			[0, 0, 0, 0, 1, 1], [.2, .4, -.4, 1.6, 1.01, .99], [.44, -.3, .3, -1, .996, 1.006], [.66, 0, 0, .3, 1, 1], [1, 0, 0, 0, 1, 1],
 		] },
 	];
 	const states = [

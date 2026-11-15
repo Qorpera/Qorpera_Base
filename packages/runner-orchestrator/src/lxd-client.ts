@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
+	CODING_GUEST_HELPER_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES,
@@ -27,6 +28,9 @@ import { NodeWebSocket } from "./node-websocket.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
+/** A coding guest helper, which the executor reads whole to compare it with its pin: within
+ * CODING_GUEST_HELPER_MAX_BYTES, the only file read past 64 KiB. */
+const CODING_GUEST_HELPER_PATH = /^\/opt\/qorpera-coding\/[a-z][a-z-]{0,62}\.mjs$/;
 /** The folder program is about 1.5 MiB. */
 const MAX_INSTANCE_PROGRAM_BYTES = 16 * 1024 * 1024;
 /** One file directly in the guest agent's or the folder program's folder (LxdInstanceProgramClient). */
@@ -260,8 +264,12 @@ export interface LxdInstanceExecStreamClient {
 }
 
 export interface LxdExecPipeRequest {
-	/** Run as root, at most 64 arguments. */
+	/** At most 64 arguments; run as root unless `user` says otherwise. */
 	readonly command: readonly string[];
+	/** The account inside the instance, by uid and gid. Root (0) unless given: an agent's home runs Codex's own
+	 * exec-server as the machine's unprivileged agent account (lanes/agent-box-20261113, slice 1). */
+	readonly user?: number;
+	readonly group?: number;
 	/** The command's environment, over LXD's defaults (`PATH`, `LANG`, `HOME` and `USER` where not given) and the
 	 * instance's `environment.*` keys. */
 	readonly environment: Readonly<Record<string, string>>;
@@ -271,12 +279,18 @@ export interface LxdExecPipeRequest {
 	 * logged. A source the call does not read to its end is closed (its `return()`) when the call ends, also while a
 	 * read is pending; an async generator runs its own close once that read settles. */
 	readonly stdin?: Uint8Array | AsyncIterable<Uint8Array>;
-	/** A command printing more than this on stdout is killed and the call fails. */
+	/** A command printing more than this on stdout is killed and the call fails. With `stdout`, the bound of each of
+	 * LXD's messages instead: nothing is kept. */
 	readonly maxStdoutBytes: number;
 	/** How much of the end of stderr to keep; the rest is dropped, never a failure. */
 	readonly stderrTailBytes: number;
+	/** Hands each of stdout's messages over as it comes, in order, keeping none of it (20260930745000: a desktop's live
+	 * picture, for as long as it is watched; an agent's home: Codex's exec-server channel, for as long as a turn, whose
+	 * consumer bounds what it has not read yet, machine-exec-server.ts); the result's stdout is then empty. Never
+	 * recorded or logged. A handler that throws ends the call, as an over-long message does. */
+	readonly stdout?: (chunk: Buffer) => void;
 	/** Each piece of stdout as it arrives, within the bound, for a caller that answers the command on its stdin while it
-	 * runs (fill_company_account's helper, 20260930711000). Never recorded or logged here; the result keeps it too. */
+	 * runs (fill_company_account's helper, 20260930781000). Never recorded or logged here; the result keeps it too. */
 	readonly onStdout?: (chunk: Buffer) => void;
 }
 
@@ -336,6 +350,20 @@ export interface LxdInstanceDeviceUpdateClient {
 		signal: AbortSignal,
 	): Promise<boolean>;
 	listCustomStorageVolumes(project: string, pool: string, signal: AbortSignal): Promise<LxdStorageVolumeRecord[]>;
+}
+
+/** A storage pool's own figures as LXD counts them (`lxc storage info`). */
+export interface LxdStoragePoolSpace {
+	totalBytes: number;
+	usedBytes: number;
+}
+/** The two reads of an executor's disk report (20260930757000): what one virtual machine's disk holds of its own
+ * (`lxc list -c D`; a thin clone holds only what was written to it), and the pool's own figures. The caller decides the
+ * order (the disks first, the pool last) and how many disks it reads. */
+export interface LxdStoragePoolUseClient {
+	/** The disk's own use, or undefined when LXD has no such disk (404) or gives no use for it. */
+	readStorageVolumeUse(pool: string, project: string, name: string, signal: AbortSignal): Promise<number | undefined>;
+	readStoragePoolSpace(pool: string, signal: AbortSignal): Promise<LxdStoragePoolSpace>;
 }
 
 /** Submission and observation are separate so an office provider can persist
@@ -1405,7 +1433,9 @@ function projectPath(path: string, project: string): string {
 /** At most 64 arguments and 256 environment variables, nothing with a NUL, each argument and value at most 64 KiB and
  * all of them together at most 256 KiB (well under the kernel's limit for a new program). */
 function validExecPipe(request: LxdExecPipeRequest): boolean {
-	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes } = request;
+	const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, user, group } = request;
+	for (const id of [user, group])
+		if (id !== undefined && (!Number.isSafeInteger(id) || id < 0 || id > 65535)) return false;
 	if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command[0]) return false;
 	if (typeof environment !== "object" || environment === null) return false;
 	const variables = Object.entries(environment);
@@ -1430,6 +1460,7 @@ function validExecPipe(request: LxdExecPipeRequest): boolean {
 		Number.isSafeInteger(maxStdoutBytes) &&
 		maxStdoutBytes >= 0 &&
 		maxStdoutBytes <= MAX_EXEC_PIPE_OUTPUT_BYTES &&
+		(request.stdout === undefined || typeof request.stdout === "function") &&
 		Number.isSafeInteger(stderrTailBytes) &&
 		stderrTailBytes >= 0 &&
 		stderrTailBytes <= MAX_EXEC_PIPE_STDERR_TAIL_BYTES &&
@@ -1525,7 +1556,8 @@ export class LxdUnixClient
 		LxdOfficeBootServiceRestartClient,
 		LxdOfficeResetServiceRestartClient,
 		LxdOfficeResetClient,
-		LxdOfficeResetSuccessorClient
+		LxdOfficeResetSuccessorClient,
+		LxdStoragePoolUseClient
 {
 	readonly #socketPath: string;
 	readonly #operationTimeoutSeconds: number;
@@ -1952,6 +1984,54 @@ export class LxdUnixClient
 		const volumes = envelopeMetadata(result);
 		if (!Array.isArray(volumes)) throw new Error("LXD storage volume listing is invalid");
 		return volumes.map(storageVolume);
+	}
+
+	/** One virtual machine disk volume's own use (`/state`), within 5 s: undefined when LXD has no such volume (404) or
+	 * gives no whole byte count for it. Measured on node 2 (LXD 6.9, 13 Nov 2026): 4.5 ms (median, 5.1 worst) for a
+	 * stopped machine's disk, 3.8 ms (4.0) for a running one's. */
+	async readStorageVolumeUse(
+		pool: string,
+		project: string,
+		name: string,
+		signal: AbortSignal,
+	): Promise<number | undefined> {
+		if (!INSTANCE_NAME.test(pool) || !INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name))
+			throw new Error("LXD storage scope is invalid");
+		const result = await this.#request(
+			"GET",
+			projectPath(
+				`/1.0/storage-pools/${encodeURIComponent(pool)}/volumes/virtual-machine/${encodeURIComponent(name)}/state`,
+				project,
+			),
+			undefined,
+			AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+		);
+		if (result.status < 200 || result.status >= 300) return undefined;
+		const state = envelopeMetadata(result);
+		const usage = state && typeof state === "object" ? (state as Record<string, unknown>).usage : undefined;
+		const used = usage && typeof usage === "object" ? (usage as Record<string, unknown>).used : undefined;
+		return typeof used === "number" && Number.isSafeInteger(used) && used >= 0 ? used : undefined;
+	}
+
+	/** The pool's own figures (`/resources`: LXD's space used and total, as `lxc storage info` gives them), within 5 s; a
+	 * pool whose figures are missing or not whole byte counts fails the read. Measured on node 2: 5.9 ms (7.0 worst). */
+	async readStoragePoolSpace(pool: string, signal: AbortSignal): Promise<LxdStoragePoolSpace> {
+		if (!INSTANCE_NAME.test(pool)) throw new Error("LXD storage scope is invalid");
+		const resources = await this.#officeMetadata(`/1.0/storage-pools/${encodeURIComponent(pool)}/resources`, signal);
+		const space = record(resources.space, "LXD storage pool space");
+		const totalBytes = space.total;
+		const usedBytes = space.used;
+		if (
+			typeof totalBytes !== "number" ||
+			typeof usedBytes !== "number" ||
+			!Number.isSafeInteger(totalBytes) ||
+			!Number.isSafeInteger(usedBytes) ||
+			totalBytes <= 0 ||
+			usedBytes < 0 ||
+			usedBytes > totalBytes
+		)
+			throw new Error("LXD storage pool use is invalid");
+		return { totalBytes, usedBytes };
 	}
 
 	async createStorageVolume(
@@ -2928,7 +3008,11 @@ export class LxdUnixClient
 		maximumBytes: number,
 		signal?: AbortSignal,
 	): Promise<LxdInstanceFile> {
-		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 65536)
+		if (
+			!Number.isSafeInteger(maximumBytes) ||
+			maximumBytes < 1 ||
+			maximumBytes > (CODING_GUEST_HELPER_PATH.test(path) ? CODING_GUEST_HELPER_MAX_BYTES : 65536)
+		)
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
 		const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
 		// LXD 6.9 serves procfs using its zero stat size. Preserve the real file
@@ -3676,7 +3760,7 @@ export class LxdUnixClient
 		request: LxdExecPipeRequest,
 		signal: AbortSignal,
 	): Promise<LxdExecPipeResult> {
-		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, onStdout } = request;
+		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, stdout: handOver, onStdout } = request;
 		if (!validExecPipe(request)) throw new Error("LXD instance command is invalid");
 		signal.throwIfAborted();
 		const result = await this.#request(
@@ -3687,8 +3771,8 @@ export class LxdUnixClient
 				interactive: false,
 				"wait-for-websocket": true,
 				"record-output": false,
-				user: 0,
-				group: 0,
+				user: request.user ?? 0,
+				group: request.group ?? 0,
 				cwd,
 				environment: { ...environment },
 			},
@@ -3756,7 +3840,17 @@ export class LxdUnixClient
 						},
 						binary: (payload) => {
 							if (failure) return;
-							if (stream.name === "stdout" && !stdoutEnded) {
+							if (stream.name === "stdout" && !stdoutEnded && handOver) {
+								// Handed over as it comes, nothing kept: the bound is each message's.
+								if (payload.byteLength > maxStdoutBytes)
+									fail(new Error("LXD exec pipe output exceeded its bound"));
+								else
+									try {
+										handOver(payload);
+									} catch (error) {
+										fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
+									}
+							} else if (stream.name === "stdout" && !stdoutEnded) {
 								stdoutBytes += payload.byteLength;
 								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
 								else {

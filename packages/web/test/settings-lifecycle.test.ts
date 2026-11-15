@@ -73,10 +73,9 @@ function rpcNames(f: { cloud: Cloud }): string[] {
 				name !== "qorpera_publish_company_logo",
 		);
 }
-/** The SDK RPCs Settings made, besides the Company tab's rules list (its only one until Company connections opens) and the
- * company's mail, offers, consents and pages reads, which run while it is open (Interfaces steps I5c, I9c, C6a and
- * C6d), Settings reading the pages too. The mail's read includes Digital Post's state, which Company connections'
- * Digital Post card reads too (test/digital-post.test.ts). */
+/** The SDK RPCs Settings made, besides the Company tab's rules list (its only one) and the company's mail, offers,
+ * consents and pages reads, which run while it is open (Interfaces steps I5c, I9c, C6a and C6d), Settings reading the
+ * pages too. The mail's read includes Digital Post's state (test/digital-post.test.ts). */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return rpcNames(f).filter(
 		(name) =>
@@ -88,8 +87,12 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			name !== "qorpera_member_interface_pages" &&
 			// Leaving reads how many agents work for the member, so the confirmation can say it.
 			name !== "qorpera_read_works_for" &&
-			// The apps drawer's Sites entry: the company's sites are read once it opens.
-			name !== "qorpera_list_company_sites",
+			// The apps drawer's Sites and What's new entries: the company's sites and its projects' releases are read once
+			// it opens.
+			name !== "qorpera_list_company_sites" &&
+			name !== "qorpera_list_code_releases" &&
+			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+			name !== "qorpera_list_cloud_routines",
 	);
 }
 function click(root: Element, selector: string) {
@@ -115,7 +118,7 @@ function selectedTab(root: Element): string | undefined {
 	return root.querySelector('.settings-nav [role="tab"][aria-selected="true"]')?.id.replace("settings-tab-", "");
 }
 const ACCOUNT_TABS = ["general", "leaderboard", "ai-subscriptions"];
-const ALL_TABS = ["general", "company", "leaderboard", "ai-subscriptions", "company-connections"];
+const ALL_TABS = ["general", "company", "leaderboard", "ai-subscriptions"];
 
 /** Read-only folder data for the real browser embedded in Settings. */
 function storageFixture() {
@@ -435,7 +438,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLElement>(".settings-modes")!.hidden).toBe(false);
 	});
 	it.each([
-		["company-connections", "general"],
+		["company", "general"],
 		["storage", "general"],
 		["my-connections", "ai-subscriptions"],
 	] as const)("opens %s with no company open on %s", async (asked, opened) => {
@@ -604,7 +607,7 @@ describe("settings session lifecycle", () => {
 			[...f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]')].map(
 				(tab) => tab.textContent,
 			),
-		).toEqual(["General", "Company", "Leaderboard", "AI subscriptions", "Company connections"]);
+		).toEqual(["General", "Company", "Leaderboard", "AI subscriptions"]);
 		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Appearance is part of General, under the account's settings; the agent rules are not.
@@ -1150,7 +1153,7 @@ describe("settings session lifecycle", () => {
 		expect(leaderboardCalls()).toHaveLength(1);
 		expect(content.querySelector('.leaderboard-visible [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
 	});
-	it("finds the member's own logins and the company's services on their own tabs", async () => {
+	it("finds the member's own logins on AI subscriptions, and no company services", async () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
@@ -1162,20 +1165,21 @@ describe("settings session lifecycle", () => {
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id);
 		};
-		expect(shown("connections")).toEqual(["settings-tab-ai-subscriptions", "settings-tab-company-connections"]);
-		// The Danish word finds both too: the labels are English, so the keywords carry it.
-		expect(shown("forbindelser")).toEqual(["settings-tab-ai-subscriptions", "settings-tab-company-connections"]);
+		expect(shown("connections")).toEqual(["settings-tab-ai-subscriptions"]);
+		// The Danish word finds it too: the labels are English, so the keywords carry it.
+		expect(shown("forbindelser")).toEqual(["settings-tab-ai-subscriptions"]);
 		expect(shown("chatgpt")).toEqual(["settings-tab-ai-subscriptions"]);
 		expect(shown("claude")).toEqual(["settings-tab-ai-subscriptions"]);
-		expect(shown("github")).toEqual(["settings-tab-company-connections"]);
-		expect(shown("gmail")).toEqual(["settings-tab-company-connections"]);
+		// Company connections left Settings (Jonas, 10 Nov 2026: companies are fully Qorpera-hosted).
+		expect(shown("github")).toEqual([]);
+		expect(shown("gmail")).toEqual([]);
 		// Webhooks live under an agent's routines, mailboxes and Digital Post in the Mailbox, and Sites in the apps
 		// drawer: Settings finds none of them.
 		expect(shown("webhooks")).toEqual([]);
 		expect(shown("postkasser")).toEqual([]);
 		expect(shown("sites")).toEqual([]);
 	});
-	it("brings a service sign-in back to Company connections", async () => {
+	it("stays on the company page when a service sign-in comes back", async () => {
 		sessionStorage.setItem(
 			"qorpera.connector-sign-in.v1",
 			JSON.stringify({
@@ -1190,11 +1194,9 @@ describe("settings session lifecycle", () => {
 		history.replaceState(null, "", `/#/c/${profileA.profileId}?connector=github&connection=failed&reason=declined`);
 		const f = await setup();
 		await draw();
-		expect(f.root.querySelector("#settings-tab-company-connections")?.getAttribute("aria-selected")).toBe("true");
-		expect(f.root.querySelector("#settings-content h1")?.textContent).toBe("Company connections");
-		expect(f.root.querySelector('#settings-content .service-card[data-connector="github"]')?.textContent).toContain(
-			"GitHub was not connected. The sign-in was cancelled before access was granted.",
-		);
+		// The return is taken off the address, and Settings, which no longer has Company connections, stays shut.
+		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 	});
 	it("accepts a company invitation from the Friends window and opens that company", async () => {
 		const fixtureState = fixture();
@@ -2229,17 +2231,14 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(sdkRpcs(f)).toEqual([]);
 	});
-	it.each([
-		["ai-subscriptions", ".connection-section-heading button", []],
-		["company-connections", ".service-card button:not(:disabled)", ["qorpera_list_cloud_secret_connections"]],
-	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector, rpcs) => {
+	it("keeps the focused AI subscriptions control through an unrelated company refresh", async () => {
 		const f = await setup();
 		open(f.root);
-		click(f.root, `#settings-tab-${tab}`);
+		click(f.root, "#settings-tab-ai-subscriptions");
 		await draw();
 		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
 		const panel = content.firstElementChild;
-		const control = content.querySelector<HTMLElement>(selector)!;
+		const control = content.querySelector<HTMLElement>(".connection-section-heading button")!;
 		control.focus();
 		const key = control.dataset.focusKey;
 		expect(key).toBeTruthy();
@@ -2249,10 +2248,10 @@ describe("settings session lifecycle", () => {
 		expect(content.firstElementChild).toBe(panel);
 		expect(content.contains(document.activeElement)).toBe(true);
 		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(key);
-		// Opened alone, each tab reads only its own lists: AI subscriptions never reads the services.
-		expect(sdkRpcs(f)).toEqual(rpcs);
+		// Opened alone, AI subscriptions reads only its own lists: never the company's services.
+		expect(sdkRpcs(f)).toEqual([]);
 	});
-	it("reads only the member's own accounts on AI subscriptions, and only the company's on Company connections", async () => {
+	it("reads only the member's own accounts on AI subscriptions", async () => {
 		// Isolate Settings reads from an open conversation's quota polling.
 		// The Team route keeps the same company authority without a composer.
 		history.replaceState(null, "", `/#/c/${profileA.profileId}/team`);
@@ -2268,25 +2267,6 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		const content = f.root.querySelector<HTMLElement>("#settings-content")!;
 
-		click(f.root, "#settings-tab-company-connections");
-		await draw();
-		expect(content.querySelector("h1")?.textContent).toBe("Company connections");
-		expect(content.querySelector(".settings-lead")?.textContent).toBe(
-			"The company's own accounts. Every agent can use them, and they stay when someone leaves.",
-		);
-		// The Services section lists the Step 7 connectors with their own Connect buttons. Digital Post, mailboxes and
-		// webhooks are no longer here.
-		expect(content.querySelectorAll(".service-card")).toHaveLength(3);
-		expect(content.querySelector(".digital-post, [data-hooks]")).toBeNull();
-		expect(content.querySelector(".connection-card, .connection-add")).toBeNull();
-		await vi.advanceTimersByTimeAsync(60_000);
-		// The services are this tab's only read; the member's own accounts are not read for it. Coding values are no
-		// longer drawn in Settings (Jonas, 9 Nov 2026), so neither tab reads them.
-		const companyReads = ["qorpera_list_cloud_secret_connections"];
-		expect(content.querySelector(".coding-environment")).toBeNull();
-		expect(sdkRpcs(f)).toEqual(companyReads);
-		expect(memberReads()).toEqual([]);
-
 		click(f.root, "#settings-tab-ai-subscriptions");
 		await draw();
 		expect(content.querySelector("h1")?.textContent).toBe("AI subscriptions");
@@ -2298,8 +2278,9 @@ describe("settings session lifecycle", () => {
 		expect(content.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
 		expect(content.querySelector(".service-card")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// Model accounts never go through the SDK RPC path, and the company's lists are not read again.
-		expect(sdkRpcs(f)).toEqual(companyReads);
+		// Model accounts never go through the SDK RPC path, and the company's services are not read. Coding values are no
+		// longer drawn in Settings (Jonas, 9 Nov 2026), so they are not read either.
+		expect(sdkRpcs(f)).toEqual([]);
 		expect(content.querySelector(".coding-environment")).toBeNull();
 		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 	});

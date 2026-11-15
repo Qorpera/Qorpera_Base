@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import { expect, it, vi } from "vitest";
 import { CloudNativeToolBoundary, type CloudToolContent } from "../src/cloud-native-tool-boundary.ts";
-import { pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
+import { pngChunk, pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
 
 // A folder image company_read shows (chat images PR3): the PNG it made goes to the model right after the envelope that
 // cites its read, and comes back only with exactly that envelope.
@@ -109,3 +109,112 @@ function oversized(): { png: Buffer; sha256: string } {
 	const large = Buffer.alloc(8 * 1024 * 1024 + 1);
 	return { png: large, sha256: createHash("sha256").update(large).digest("hex") };
 }
+
+// A runtime tool's image (machine_screen, 20260930708000): shown after the envelope whose JSON names its hash, fenced back
+// with exactly that envelope, and refused for its one call when it is not one the pinned fence takes.
+function screenFixture(content: Partial<CloudToolContent> = {}, image = { png, sha256 }) {
+	const execute = vi.fn(
+		async () =>
+			({
+				kind: "json",
+				value: { machine: "build-a", kind: "screen", imageSha256: image.sha256 },
+				image,
+				...content,
+			}) as CloudToolContent,
+	);
+	const boundary = new CloudNativeToolBoundary({
+		companyId: randomUUID(),
+		runId: randomUUID(),
+		signal: new AbortController().signal,
+		assertActive: async () => undefined,
+		tools: [
+			{
+				name: "machine_screen",
+				source: "runtime",
+				images: true,
+				description: "See and drive a machine's desktop.",
+				inputSchema: { type: "object", additionalProperties: false },
+				parseArguments: (value) => value,
+				execute,
+			},
+		],
+	});
+	return { boundary, execute, invoke: () => boundary.invoke("screen-1", "qorpera", "machine_screen", {}) };
+}
+const withImage = (file: Buffer) => ({ png: file, sha256: createHash("sha256").update(file).digest("hex") });
+
+it("shows a runtime tool's image after the envelope whose answer names its hash, and fences it back with it", async () => {
+	const f = screenFixture();
+	expect(f.boundary.captureImagesEnabled).toBe(true);
+	const result = await f.invoke();
+	expect(result.contentItems).toHaveLength(2);
+	expect(result.contentItems[1]).toEqual({
+		type: "inputImage",
+		imageUrl: `data:image/png;base64,${png.toString("base64")}`,
+	});
+	const text = result.contentItems[0].text;
+	expect(JSON.parse(text)).toMatchObject({ status: "ok", provenance: { tool: "machine_screen", source: "runtime" } });
+	expect(JSON.parse(text)).not.toHaveProperty("provenance.companyReadId");
+	const input = {
+		kind: "function_call_output" as const,
+		callId: "screen-1",
+		output: [
+			{ type: "input_text", text },
+			{ type: "input_image", sha256 },
+		] as JsonValue,
+	};
+	expect(await f.boundary.fenceNativeResults([input])).toEqual([
+		{ kind: "function_call_output", callId: "screen-1", output: text, imageSha256: sha256 },
+	]);
+	await expect(
+		f.boundary.fenceNativeResults([
+			{
+				...input,
+				output: [
+					{ type: "input_text", text },
+					{ type: "input_image", sha256: "a".repeat(64) },
+				] as JsonValue,
+			},
+		]),
+	).rejects.toThrow("Native image not issued");
+});
+
+const unshownScreens: [string, Partial<CloudToolContent>, { png: Buffer; sha256: string } | undefined][] = [
+	["an answer that names no image", { value: { machine: "build-a", kind: "screen" } }, undefined],
+	[
+		"an answer that names another image",
+		{ value: { machine: "build-a", kind: "screen", imageSha256: "a".repeat(64) } },
+		undefined,
+	],
+	["a text answer", { kind: "text", value: `{"imageSha256":"${sha256}"}` }, undefined],
+	["a read's citation from a runtime tool", { companyReadId: randomUUID() }, undefined],
+	[
+		"a picture wider than the fence takes",
+		{},
+		withImage(pngFile(pngHeader(1921, 1, 8, 2), pngRows([new Array(1921 * 3).fill(0)]))),
+	],
+	[
+		"a picture taller than the fence takes",
+		{},
+		withImage(pngFile(pngHeader(1, 1201, 8, 2), pngRows(new Array(1201).fill([0, 0, 0])))),
+	],
+	[
+		"bytes that are not a PNG",
+		{},
+		withImage(Buffer.concat([Buffer.alloc(8), pngHeader(1, 1, 8, 2), pngChunk("IEND")])),
+	],
+	["an image larger than the fence takes", {}, oversized()],
+];
+
+it.each(unshownScreens)("never shows a runtime tool's image from %s", async (_, content, image) => {
+	const named: Partial<CloudToolContent> = image
+		? { kind: "json", value: { machine: "build-a", kind: "screen", imageSha256: image.sha256 } }
+		: content;
+	const f = screenFixture(named, image);
+	const result = await f.invoke();
+	expect(result.contentItems).toHaveLength(1);
+	expect(JSON.parse(result.contentItems[0].text)).toMatchObject({
+		status: "unconfirmed",
+		content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+	});
+});

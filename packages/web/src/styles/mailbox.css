@@ -1,6 +1,7 @@
 /* The Mailbox page (app/views/mailbox.ts), set out as a mail app: Write and the folders at the side, the search field
- * across the top, one line per thread under it, and an opened thread in the list's place. The Write window docks at
- * the foot of the page. Nothing is boxed: the list has only hairlines between its lines.
+ * across the top, one line per thread under it, and an opened thread in the list's place, with Reply, Reply all and
+ * Forward under its messages. The Write window docks at the foot of the page. Nothing is boxed: the list has only
+ * hairlines between its lines.
  *
  * The page lays itself out by its own width, since the app's rail may take any share of the window: a drawer of
  * folders when wide, a rail of icons when narrower, a phone's mail app when narrow. Container widths are in em
@@ -138,6 +139,8 @@ span.mailbox-open { cursor: default; }
 	font-size: 14.5px;
 }
 .mailbox-who > span { overflow: hidden; text-overflow: ellipsis; }
+/* Who sent the newest message stays whole ("…, You"): the outside party gives way first, a long name second. */
+.mailbox-who > .mailbox-by { flex: none; max-width: 60%; }
 .mailbox-who svg { flex: none; width: 13px; height: 13px; margin-right: 6px; color: var(--text-muted); }
 .mailbox-who > .mailbox-to-label { flex: none; margin-right: 5px; color: var(--text-muted); }
 .mailbox-who > .mailbox-n { flex: none; margin-left: 6px; color: var(--text-soft); font-size: 12px; }
@@ -167,6 +170,8 @@ span.mailbox-open { cursor: default; }
 .mailbox-actions:empty { display: none; }
 .mailbox-handler { grid-column: 2; grid-row: 1; display: grid; place-items: center; width: 26px; height: 26px; }
 .mailbox-handler.is-new { opacity: 0.45; filter: grayscale(1); }
+/* The member who sent the email themself stands where an agent's figure does. */
+.mailbox-handler > .person-avatar { width: 26px; height: 26px; font-size: 10px; }
 .mailbox-post { color: var(--text-soft); }
 .mailbox-post svg { width: 18px; height: 18px; }
 .mailbox-time {
@@ -185,7 +190,10 @@ span.mailbox-open { cursor: default; }
 }
 .mailbox-empty h1 { margin: 8px 0 0; font-size: 22px; font-weight: 600; letter-spacing: 0; }
 .mailbox-empty p { margin: 0; max-width: 440px; color: var(--text-muted); font-size: 15px; line-height: 1.5; }
-.mailbox-empty .mailbox-manage { align-self: center; width: 100%; max-width: 640px; margin-top: 20px; padding: 0; text-align: left; }
+.mailbox-empty .mailbox-manage {
+	--manage-start: 0px; --manage-end: 0px;
+	align-self: center; width: 100%; max-width: 640px; margin-top: 8px; text-align: left;
+}
 
 /* ---- a thread ------------------------------------------------------------- */
 .mailbox-thread {
@@ -236,6 +244,7 @@ span.mailbox-open { cursor: default; }
 	color: var(--text); font-size: 15px; font-weight: 700;
 }
 .mailbox-initials svg { width: 18px; height: 18px; }
+.mailbox-message > .person-avatar, .mailbox-fold > .person-avatar { width: 40px; height: 40px; font-size: 15px; }
 .mailbox-message-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .mailbox-message-head {
 	display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; width: 100%; min-height: 40px;
@@ -274,7 +283,49 @@ span.mailbox-open { cursor: default; }
 .mailbox-draft-actions { display: flex; gap: 8px; margin-top: 2px; }
 .mailbox-draft .mailbox-error { margin: 0; }
 
-/* The line to the handling agent, at the foot of a thread. */
+/* Under a thread's messages: Reply, Reply all and Forward, as a mail app's buttons. */
+.mailbox-answers { display: flex; flex-wrap: wrap; gap: 10px; padding: 2px 0 12px var(--mailbox-indent); }
+.mailbox-answer {
+	display: inline-flex; align-items: center; gap: 9px; min-height: 38px; padding: 0 20px 0 15px;
+	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: none; color: var(--text);
+	font-size: 14.5px; font-weight: 600; cursor: pointer; transition: background var(--motion-fast) ease;
+}
+.mailbox-answer:hover { background: var(--hover); }
+.mailbox-answer svg { width: 17px; height: 17px; color: var(--text-muted); }
+/* Under a send that waits for an answer they keep a little more room. */
+.mailbox-draft + :is(.mailbox-answers, .mailbox-reply) { padding-top: 12px; }
+
+/* The answer one of them opened, in their place: a mail app's reply box, the writer's picture beside it. Its lines,
+   chips, text and foot are the Write window's. */
+.mailbox-reply {
+	display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 16px; padding: 2px 0 12px;
+	animation: mailbox-up var(--motion-slow) var(--ease-out) both;
+}
+.mailbox-reply > .person-avatar { width: 40px; height: 40px; font-size: 15px; }
+.mailbox-reply-box {
+	display: flex; flex-direction: column; min-width: 0; max-width: 760px; border: 1px solid var(--border-strong);
+	border-radius: 12px; background: var(--bg); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.06);
+	transition: box-shadow var(--motion-fast) ease;
+}
+.mailbox-reply-box:focus-within { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 6px 18px rgba(0, 0, 0, 0.1); }
+:root[data-theme="dark"] .mailbox-reply-box { background: color-mix(in srgb, var(--text) 5%, var(--bg)); box-shadow: none; }
+.mailbox-reply-head {
+	display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; margin: 0 18px;
+	padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.mailbox-reply-kind { display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 14px; font-weight: 600; }
+.mailbox-reply-kind svg { width: 17px; height: 17px; }
+/* Who it goes to is mostly there already: the field to type one more in shares their line while it has a little room. */
+.mailbox-reply-box .mailbox-write-to input { flex-basis: 5em; min-width: 5em; }
+/* Its text grows with what is written, where the browser can size a field by its content; elsewhere it keeps its six
+   lines and scrolls. */
+.mailbox-reply-box .mailbox-write-text textarea { field-sizing: content; min-height: 9.3em; max-height: 24em; }
+/* The bin that lets the answer go stands at the foot's end, on the button's line. */
+.mailbox-reply-box .mailbox-write-foot { flex-wrap: nowrap; }
+.mailbox-reply-discard { margin-left: auto; }
+.mailbox-reply-discard:disabled { opacity: 0.5; cursor: default; }
+
+/* The line to an agent about a Digital Post letter, at the foot of the letter. */
 .mailbox-composer {
 	flex: none; display: flex; align-items: center; gap: 10px; max-width: 836px; min-height: 52px;
 	margin: 8px var(--mailbox-gutter) 16px 16px; padding: 0 8px 0 10px; border: 1px solid var(--border-strong);
@@ -345,12 +396,151 @@ span.mailbox-open { cursor: default; }
 }
 .mailbox-pick:hover { background: var(--hover); }
 .mailbox-pick.is-current { border-color: transparent; background: var(--mailbox-tint-strong); font-weight: 650; }
-.mailbox-addresses .mailbox-manage { padding: 4px var(--mailbox-gutter) 0 28px; }
+.mailbox-pick > .person-avatar { width: 24px; height: 24px; font-size: 9.5px; }
+/* The Writer chip of the Write window: it opens the menu of who writes the email. */
+.mailbox-writer { min-width: 0; padding-right: 9px; }
+.mailbox-writer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mailbox-writer > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
+.mailbox-writer[aria-expanded="true"]:not(.is-current) { background: var(--hover); }
+/* The From chip under it: which of the company's addresses a member's own email goes from. It has no picture. */
+.mailbox-sender { min-width: 0; padding: 0 9px 0 13px; font-weight: 400; }
+.mailbox-sender-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mailbox-sender > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
+.mailbox-sender[aria-expanded="true"] { background: var(--hover); }
+
+/* Who answers an address, on its line (and in the form that adds one): a chip that opens the agents, as the Writer
+   chip does, and how much came to the address. Nobody yet: the chip asks, with a dashed edge. */
+.mailbox-answer-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; min-width: 0; }
+.mailbox-answer-line .mailbox-address-agent { flex-wrap: wrap; }
+.mailbox-answer-line .mailbox-error { flex-basis: 100%; margin: 0; }
+.mailbox-answerer { min-width: 0; padding-right: 9px; }
+.mailbox-answerer > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
+.mailbox-answerer:not(.is-current) { border-style: dashed; color: var(--mailbox-accent-text); font-weight: 600; }
+.mailbox-answerer[aria-expanded="true"]:not(.is-current) { background: var(--hover); }
+/* How an agent answers an address: a panel beside the chip's menu, the member's words in a soft field that grows with
+   them, and Save. It stands outside the page, so it takes the page's accent itself. */
+.mailbox-how-panel {
+	--mailbox-accent: var(--composer-accent);
+	--mailbox-on-accent: var(--composer-on-accent);
+	--mailbox-tint-strong: color-mix(in srgb, var(--mailbox-accent) 20%, var(--bg));
+}
+.context-panel:has(> .mailbox-how-panel) { width: 360px; padding: 8px; }
+.mailbox-how-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 4px 4px 2px; }
+.mailbox-how-title { color: var(--text-muted); font-size: 13px; font-weight: 600; }
+.mailbox-how-panel textarea {
+	box-sizing: border-box; width: 100%; min-width: 0; field-sizing: content; min-height: 6.2em; max-height: 16em;
+	padding: 10px 12px; border: 1px solid var(--border-strong);
+	border-radius: 10px; resize: none; background: var(--bg); color: var(--text); font: inherit; font-size: 14px;
+	font-weight: 400; line-height: 1.5; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.mailbox-how-panel textarea::placeholder { color: var(--text-muted); }
+.mailbox-how-panel textarea:focus-visible {
+	outline: none; border-color: var(--mailbox-accent); box-shadow: 0 0 0 3px var(--mailbox-tint-strong);
+}
+.mailbox-how-panel textarea:read-only { color: var(--text-muted); }
+:root[data-theme="dark"] .mailbox-how-panel textarea { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.mailbox-how-panel :is(.mailbox-how-note, .mailbox-error) { margin: 0; font-size: 13px; }
+.mailbox-how-note { color: var(--text-muted); }
+.mailbox-how-panel[hidden], .mailbox-how-panel [hidden] { display: none; }
+.mailbox-how-foot { display: flex; align-items: center; gap: 6px; }
+.mailbox-answerer:disabled { cursor: default; }
+.mailbox-answerer:disabled:not([aria-busy="true"]) { opacity: 0.5; }
+.mailbox-nobody {
+	flex: none; display: grid; place-items: center; width: 24px; height: 24px; border: 1px dashed var(--border-strong);
+	border-radius: 50%; color: var(--text-muted);
+}
+.mailbox-nobody svg { width: 12px; height: 12px; }
+
+/* ---- making addresses: the mailboxes, the form that adds one, Digital Post ------------ */
+/* Settings' cards (views/settings-hooks.ts, views/settings-digital-post.ts), drawn here as lines of the page like the
+   addresses over them: no box and no mark, a hairline under each, quiet buttons at the line's end, and fields like
+   the search field. `--manage-start` and `--manage-end` are the lines' side room, so the hairlines run full width. */
+.mailbox-manage { --manage-start: 28px; --manage-end: var(--mailbox-gutter); }
+.mailbox-manage .settings-group { margin: 0; }
+.mailbox-manage .connection-section-heading {
+	flex-wrap: wrap; align-items: baseline; justify-content: flex-start; gap: 2px 12px; margin: 0;
+	padding: 22px var(--manage-end) 6px var(--manage-start);
+}
+.mailbox-manage .connection-section-heading h2 { margin: 0; color: var(--text-muted); font-size: 12.5px; font-weight: 650; }
+.mailbox-manage .connection-section-heading small { color: var(--text-muted); font-size: 12.5px; }
+.mailbox-manage .connection-list { display: block; padding: 0; border-radius: 0; }
+.mailbox-manage .service-card {
+	grid-template-columns: minmax(0, 1fr) auto; gap: 10px 16px; min-height: 64px;
+	padding: 10px var(--manage-end) 10px var(--manage-start); border-top: 0; border-bottom: 1px solid var(--border);
+}
+.mailbox-manage :is(.hook-icon, .connection-logo) { display: none; }
+/* An address's line: the address, who answers it, its buttons. With less room who answers it has a line of its own. */
+.mailbox-manage .service-card:has(> .mailbox-answer-line) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) auto; }
+.mailbox-manage .hook-form .mailbox-answer-line { padding: 2px 16px; }
+.mailbox-manage :is(.hook-address, .service-outcome, .digital-post-steps, .service-token-form) { grid-column: 1 / -1; }
+.mailbox-manage .settings-copy { gap: 1px; }
+.mailbox-manage .settings-copy strong { font-size: 15px; font-weight: 650; }
+.mailbox-manage .settings-copy small { font-size: 13.5px; }
+.mailbox-manage .connection-actions {
+	grid-column: auto; flex-wrap: nowrap; justify-content: flex-end; gap: 0; margin-right: -12px;
+}
+.mailbox-manage .connection-actions:has(> .btn-primary) { margin-right: 0; }
+.mailbox-manage .btn {
+	min-height: 32px; padding: 0 12px; border: 0; border-radius: var(--radius-pill); font-size: 14px; font-weight: 600;
+}
+.mailbox-manage .hook-add { min-height: 36px; padding: 0 16px; box-shadow: inset 0 0 0 1px var(--border-strong); }
+.mailbox-manage .btn-primary { min-height: 38px; padding: 0 20px; color: var(--mailbox-on-accent); font-size: 14.5px; }
+.mailbox-manage .connection-empty {
+	margin: 0; padding: 14px var(--manage-end) 0 var(--manage-start); font-size: 14px;
+}
+.mailbox-manage .connection-add-area { gap: 14px; padding: 14px var(--manage-end) 4px var(--manage-start); }
+/* Add mailbox first, under the page's name, with Digital Post beside it; what they open comes under them. */
+.mailbox-manage .connection-add-area.is-top { padding: 6px var(--manage-end) 6px var(--manage-start); }
+.mailbox-manage .connection-add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mailbox-manage .connection-add-area.is-top > .digital-post { margin: 4px calc(0px - var(--manage-end)) 0 calc(0px - var(--manage-start)); }
+.mailbox-manage .hook-form { gap: 10px; width: 100%; max-width: 520px; }
+.mailbox-manage :is(.hook-form-row, .service-token) {
+	min-height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--hover); color: var(--text);
+	font-size: 15px; transition: background var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.mailbox-manage :is(.hook-form-row:focus-within, .service-token:focus-visible) {
+	outline: none; background: var(--bg); box-shadow: 0 0 0 1px var(--border-strong), 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.mailbox-manage .hook-form-row input {
+	min-height: 40px; padding: 0; border: 0; border-radius: 0; background: none; font-size: 15px;
+}
+.mailbox-manage .hook-form-row input:focus-visible { outline: none; }
+.mailbox-manage input::placeholder { color: var(--text-muted); }
+.mailbox-manage .hook-domain { flex: none; font-size: 15px; white-space: nowrap; }
+.mailbox-manage .hook-form > small { padding: 0 16px; font-size: 13px; line-height: 1.4; }
+.mailbox-manage .hook-form-actions { align-items: center; gap: 6px; margin-top: 4px; }
+.mailbox-manage .service-outcome { font-size: 13.5px; }
+.mailbox-manage .hook-form .service-outcome { padding: 0 16px; }
+.mailbox-manage .digital-post-steps { font-size: 14px; }
+.mailbox-manage .service-token-form { gap: 10px; max-width: 520px; }
+.mailbox-manage .service-token-row { align-items: center; gap: 10px; }
+/* The colours: dark.css sets these cards' under its theme prefix, so each one here is said under it too. */
+.mailbox-manage .connection-list, :root[data-theme="dark"] .mailbox-manage .connection-list { background: none; }
+:root[data-theme="dark"] .mailbox-manage .service-card { border-color: var(--border); }
+.mailbox-manage :is(.settings-copy small, .service-agents, .hook-state, .hook-form small, .hook-domain, .service-token-form small, .digital-post-note),
+:root[data-theme="dark"] .mailbox-manage :is(.settings-copy small, .service-agents, .hook-state, .hook-form small, .hook-domain, .service-token-form small, .digital-post-note) {
+	color: var(--text-muted);
+}
+.mailbox-manage .btn, :root[data-theme="dark"] .mailbox-manage .btn { background: none; }
+.mailbox-manage .btn:hover:not(:disabled), :root[data-theme="dark"] .mailbox-manage .btn:hover:not(:disabled) {
+	background: var(--hover);
+}
+.mailbox-manage .btn-danger:hover:not(:disabled), :root[data-theme="dark"] .mailbox-manage .btn-danger:hover:not(:disabled) {
+	background: var(--danger-soft);
+}
+/* "Add mailbox" with its form open, as a folder that is selected. */
+.mailbox-manage .btn.hook-add[aria-expanded="true"], :root[data-theme="dark"] .mailbox-manage .btn.hook-add[aria-expanded="true"] {
+	background: var(--mailbox-tint-strong); box-shadow: none;
+}
+.mailbox-manage .btn-primary, :root[data-theme="dark"] .mailbox-manage .btn-primary { background: var(--mailbox-accent); }
+.mailbox-manage .btn-primary:hover:not(:disabled), :root[data-theme="dark"] .mailbox-manage .btn-primary:hover:not(:disabled) {
+	background: var(--composer-accent-hover);
+}
 
 /* ---- Write: a mail app's new-message window, docked at the foot ------------------ */
 .mailbox-write-panel {
 	position: absolute; right: 24px; bottom: 0; z-index: 3; display: flex; flex-direction: column;
-	width: min(500px, calc(100% - 32px)); max-height: calc(100% - 16px); overflow: hidden auto;
+	width: min(560px, calc(100% - 32px)); max-height: calc(100% - 16px); overflow: hidden auto;
 	overscroll-behavior: contain; border-radius: 12px 12px 0 0; background: var(--bg);
 	box-shadow: 0 0 0 1px var(--border), 0 8px 30px rgba(0, 0, 0, 0.2), 0 2px 6px rgba(0, 0, 0, 0.1);
 	animation: mailbox-rise var(--motion-base) var(--ease-out) both;
@@ -375,6 +565,24 @@ span.mailbox-open { cursor: default; }
 	color: var(--text); font-size: 15px;
 }
 .mailbox-write-row input:focus-visible { outline: none; }
+/* Who a member's own email goes to: a chip for each address, as a mail app has them, and the next one typed after
+   them. The field keeps room to type in and goes to a line of its own when the chips leave it less. */
+.mailbox-write-to { cursor: text; }
+.mailbox-write-to input { flex: 1 1 9em; min-width: 9em; }
+.mailbox-chip {
+	display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%; min-height: 28px;
+	padding: 0 3px 0 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); font-size: 14px;
+	cursor: default;
+}
+/* One that is no email address: it holds the send until it is taken away. */
+.mailbox-chip.is-invalid { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.mailbox-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mailbox-chip-remove {
+	flex: none; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+	background: none; color: inherit; cursor: pointer; transition: background var(--motion-fast) ease;
+}
+.mailbox-chip-remove:hover { background: var(--hover); }
+.mailbox-chip-remove svg { width: 12px; height: 12px; }
 /* On a short page (a phone with its keyboard up) the text gives way first, down to two lines, and scrolls inside
    itself; shorter than that and the whole window scrolls. The text never runs over the foot. */
 .mailbox-write-text { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 76px; }
@@ -383,6 +591,12 @@ span.mailbox-open { cursor: default; }
 	background: none; color: var(--text); font-size: 15px; font-weight: 400; line-height: 1.55;
 }
 .mailbox-write-text textarea:focus-visible { outline: none; }
+/* While the email is on its way, or its words are on their way to an agent, nothing in the window can be changed: its
+   fields and chips stand back, as its button does. */
+:is(.mailbox-write-panel, .mailbox-reply-box) :is(input, textarea):disabled { opacity: 1; color: var(--text-muted); }
+:is(.mailbox-write-panel, .mailbox-reply-box) :is(.mailbox-pick, .mailbox-chip-remove):disabled { opacity: 0.5; pointer-events: none; }
+/* Why the member's email did not go, said above Send. */
+.mailbox-write-error { flex: none; margin: 0; padding: 2px 18px 0; color: var(--danger); font-size: 13.5px; overflow-wrap: anywhere; }
 .mailbox-write-foot { flex: none; display: flex; align-items: center; gap: 14px; padding: 8px 18px 16px; }
 .mailbox-write-foot .mailbox-muted { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
 
@@ -395,7 +609,8 @@ span.mailbox-open { cursor: default; }
 	animation: mailbox-rise var(--motion-base) var(--ease-out) both;
 }
 .mailbox-toast > span:only-child { padding-left: 8px; }
-.mailbox.is-reading .mailbox-toast { bottom: 92px; }
+/* Over the line to an agent, where a letter has one at its foot. */
+.mailbox:has(.mailbox-composer) .mailbox-toast { bottom: 92px; }
 
 /* ---- motion ------------------------------------------------------------------- */
 @keyframes mailbox-up { from { opacity: 0; transform: translateY(6px); } }
@@ -409,10 +624,10 @@ span.mailbox-open { cursor: default; }
 /* Only what is new on screen moves in: a redraw of the page already shown (`is-settled`) sets it in place. */
 .mailbox.is-settled .mailbox-row:not(.is-leaving), .mailbox.is-settled .mailbox-empty, .mailbox.is-settled .mailbox-thread,
 .mailbox.is-settled .mailbox-draft:not(.is-leaving), .mailbox.is-settled .mailbox-address, .mailbox-write-panel.is-settled,
-.mailbox-toast.is-settled { animation: none; }
+.mailbox-reply.is-settled, .mailbox-toast.is-settled { animation: none; }
 @media (prefers-reduced-motion: reduce) {
 	.mailbox-row, .mailbox-empty, .mailbox-thread, .mailbox-draft, .mailbox-address, .mailbox-picks, .mailbox-write-panel,
-	.mailbox-toast { animation: none; }
+	.mailbox-reply, .mailbox-toast { animation: none; }
 	.mailbox-row.is-leaving, .mailbox-draft.is-leaving { animation: none; display: none; }
 	.mailbox-write, .mailbox-write:active { transition: none; transform: none; }
 }
@@ -426,6 +641,13 @@ span.mailbox-open { cursor: default; }
 		grid-area: auto;
 	}
 	.mailbox-address-row > :nth-child(3) { justify-self: start; }
+}
+
+/* ---- less room: who answers an address goes under it ---------------------------------- */
+@container mailbox not (min-width: 58em) {
+	.mailbox-manage .service-card:has(> .mailbox-answer-line) { grid-template-columns: minmax(0, 1fr) auto; }
+	.mailbox-manage .service-card > .mailbox-answer-line { grid-area: 2 / 1 / auto / -1; }
+	.mailbox-manage .service-card:has(> .mailbox-answer-line) > .connection-actions { grid-area: 1 / 2; }
 }
 
 /* ---- narrower: the drawer folds to a rail of icons, so the lines keep their room ----- */
@@ -534,15 +756,23 @@ span.mailbox-open { cursor: default; }
 	.mailbox-toolbar .mailbox-icon { margin-left: -8px; }
 	.mailbox-thread-head h1 { font-size: 20px; }
 	.mailbox-message, .mailbox-draft, .mailbox-letter-from { column-gap: 12px; }
+	/* The answer has the page's whole width; its Writer chip says who writes it. */
+	.mailbox-reply { display: block; }
+	.mailbox-reply > :first-child { display: none; }
 	.mailbox-fold { grid-template-columns: 40px minmax(0, 1fr) auto; column-gap: 12px; }
 	.mailbox-fold .mailbox-snippet { display: none; }
 	.mailbox-draft > .mailbox-message-body { padding: 12px 14px 10px; }
 	.mailbox-thread.is-letter > p.mailbox-folder { padding-left: 0; margin-left: -12px; }
 
 	.mailbox-address-row, .mailbox-picks { padding-left: var(--mailbox-gutter); }
-	.mailbox-addresses .mailbox-manage { padding-left: var(--mailbox-gutter); }
+	.mailbox-manage { --manage-start: var(--mailbox-gutter); }
+	.mailbox-manage .service-card, .mailbox-manage .service-card:has(> .mailbox-answer-line) { grid-template-columns: minmax(0, 1fr); }
+	.mailbox-manage .service-card > .mailbox-answer-line,
+	.mailbox-manage .service-card:has(> .mailbox-answer-line) > .connection-actions { grid-area: auto; }
+	.mailbox-manage .connection-actions { justify-content: flex-start; margin: 0 0 0 -12px; }
+	.mailbox-manage .connection-actions:has(> .btn-primary) { margin: 0; }
 
 	.mailbox-write-panel { left: 0; right: 0; width: auto; max-height: 100%; border-radius: 16px 16px 0 0; }
 	.mailbox-write-foot { flex-wrap: wrap; }
-	.mailbox-toast, .mailbox.is-reading .mailbox-toast { left: 16px; right: 16px; bottom: 88px; max-width: none; }
+	.mailbox-toast, .mailbox:has(.mailbox-composer) .mailbox-toast { left: 16px; right: 16px; bottom: 88px; max-width: none; }
 }

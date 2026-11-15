@@ -140,10 +140,15 @@ export const CONVERSATION: Record<string, string> = {
 	// Agent states (ui/agent-activity.ts)
 	Working: "Arbejder",
 	Writing: "Skriver",
+	"Using its computer": "Bruger sin computer",
 	"Needs you": "Venter på dig",
+	// The rail when an agent's work waits on the member (app/views/shell.ts)
+	"Stopped: {what}": "Stoppet: {what}",
+	"Waiting for you: {what}": "Venter på dig: {what}",
 	"A run did not finish": "En kørsel blev ikke færdig",
 	"{name} is working": "{name} arbejder",
 	"{name} is writing": "{name} skriver",
+	"{name} is using its computer": "{name} bruger sin computer",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
 	"No progress": "Ingen fremgang",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
@@ -287,19 +292,52 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} asks you": "{name} spørger dig",
 	"Sending to {name}…": "Sender til {name}…",
 	"Sent to {name}": "Sendt til {name}",
-	"Open the chat": "Åbn chatten",
 	"Previous question": "Forrige spørgsmål",
 	"Next question": "Næste spørgsmål",
 	"Hide the question": "Skjul spørgsmålet",
 	"{count} questions for you": "{count} spørgsmål til dig",
 	"Your answer could not be sent. Try again.": "Dit svar kunne ikke sendes. Prøv igen.",
-	"App · opens on its own page": "App · åbner på sin egen side",
+
+	// What an app asks the member to change, on the bar above its page (app/views/app-ask-bar.ts, app/app-actions.ts)
+	"This app wants to send your answer to {name}": "Appen vil sende dit svar til {name}",
+	"This app wants to add a row to a company table": "Appen vil tilføje en række i en af virksomhedens tabeller",
+	"This app wants to change a row in a company table": "Appen vil ændre en række i en af virksomhedens tabeller",
+	// A web page a link in the app leads to, shown before it opens (Jonas, 13 November 2026: "Show the address first").
+	"This app wants to open a web page": "Appen vil åbne en webside",
+	Site: "Websted",
+	"Your answer": "Dit svar",
+	Table: "Tabel",
+	Row: "Række",
+	empty: "tom",
+	becomes: "bliver til",
+	"Send answer": "Send svar",
+	"Add row": "Tilføj række",
+	"Change row": "Ændr række",
+	"This app asked three times. It can ask again after you reload it.":
+		"Appen har spurgt tre gange. Den kan spørge igen, når du har genindlæst den.",
+	"That could not be saved. Try again.": "Det kunne ikke gemmes. Prøv igen.",
+	"The row could not be saved.": "Rækken kunne ikke gemmes.",
+	"That table is no longer in the company.": "Tabellen er ikke i virksomheden længere.",
+	"The row changed while you were deciding. Nothing was saved.":
+		"Rækken blev ændret, mens du tog stilling. Intet blev gemt.",
+	"You may not change this table. Nothing was saved.": "Du må ikke ændre denne tabel. Intet blev gemt.",
+	// A note to the app's owner, written on the same bar (app/views/app-ask-bar.ts, app/app-actions.ts)
+	"This app wants to send your note to {name}": "Appen vil sende din besked til {name}",
+	"Your note": "Din besked",
+	"Write your note": "Skriv din besked",
+	"Send note": "Send besked",
+	"Your note waits in {name}'s thread": "Din besked venter i tråden med {name}",
+	"Write your note first.": "Skriv din besked først.",
+	"Leave the app out": "Udelad appen",
+	"Your note could not be sent. Try again.": "Din besked kunne ikke sendes. Prøv igen.",
+	"{name}'s thread has a message started. Send or clear it there, then send this note.":
+		"Der er en besked i gang i tråden med {name}. Send eller ryd den dér, og send så denne besked.",
 	App: "App",
 
 	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer
 	Concepts: "Koncepter",
-	"Show the concepts": "Vis koncepterne",
-	"Hide the concepts": "Skjul koncepterne",
+	"Show sidebar": "Vis sidepanelet",
+	"Hide sidebar": "Skjul sidepanelet",
 	"This concept isn't in the company anymore.": "Konceptet er ikke i virksomheden længere.",
 	"The company has no concepts yet.": "Virksomheden har ingen koncepter endnu.",
 	"Open the newest concept": "Åbn det nyeste koncept",
@@ -431,8 +469,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Waiting for you": "Venter på dig",
 	Answered: "Besvaret",
 	Answering: "Svarer på",
-	"Answer again": "Svar igen",
-	"{n} answered": "{n} besvaret",
 	"Stop answering": "Stop med at svare",
 	"Your answer…": "Dit svar…",
 	Declined: "Afvist",
@@ -460,8 +496,11 @@ export const CONVERSATION: Record<string, string> = {
 	"Something else…": "Noget andet…",
 	"Your own answer": "Dit eget svar",
 	Skip: "Spring over",
-	"Take over": "Overtag",
+	// The take-over card's way to the agent's computer (review r1 F1 of #1812).
+	"Open computer": "Åbn computer",
 	"I'm done": "Jeg er færdig",
+	"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.":
+		"Computeren kunne ikke gives tilbage endnu. Tryk på Jeg er færdig for at prøve igen. Den går tilbage af sig selv inden for 5 minutter.",
 	"Paste your {label}": "Indsæt {label}",
 	"Save securely": "Gem sikkert",
 	"Encrypted in the company vault. The agent never sees the value, only that it was saved.":
@@ -613,13 +652,21 @@ export const CONVERSATION: Record<string, string> = {
 	"Undone in part. {reason}": "Delvist fortrudt. {reason}",
 	"Not undone. {reason}": "Ikke fortrudt. {reason}",
 	"Could not undo. Try again.": "Kunne ikke fortryde. Prøv igen.",
-	// An agent's wall above its composer (ui/agent-wall-poster.ts)
-	"{name}'s wall": "{name}s opslagstavle",
-	"{n} waits on you": "{n} venter på dig",
-	"{n} wait on you": "{n} venter på dig",
-	"Waits on you": "Venter på dig",
-	// The agent's card brings the wall back (app/views/agent-details.ts).
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",
 	"Show less": "Vis mindre",
+	// A member's chat with another member (app/views/member-chat.ts, app/member-chats.ts) and its row in the rail.
+	"Unread: {count}": "Ulæste: {count}",
+	"This member is no longer in the company.": "Dette medlem er ikke længere i virksomheden.",
+	"Write the first message to {name}.": "Skriv den første besked til {name}.",
+	"Message deleted": "Besked slettet",
+	Seen: "Set",
+	"Delete message": "Slet besked",
+	"Delete this message? It is deleted for both of you.": "Slet denne besked? Den slettes for jer begge.",
+	"You can no longer write to this member.": "Du kan ikke længere skrive til dette medlem.",
+	"Not sent. Check your connection and try again.": "Ikke sendt. Tjek din forbindelse, og prøv igen.",
+	"This chat is not available.": "Denne chat er ikke tilgængelig.",
+	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
+	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
+	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
 };

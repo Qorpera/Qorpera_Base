@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { CODE_HOST_INSTANCE, type CodeHostLease, codeHostProject } from "../src/code-host.ts";
 import type { CodeHostGcBlock, CodeHostJob } from "../src/code-host-jobs.ts";
+import { CodeHostRequests } from "../src/code-host-requests.ts";
 import type { CodeAreaBroker } from "../src/code-host-seed.ts";
 import {
 	CODE_HOST_FOLDER_CLEAN,
@@ -56,6 +57,8 @@ class FakeHost {
 	/** A command whose exec never ends: it stays pending until its signal aborts. */
 	stall: string | undefined;
 	publishes: ({ status: number; stdout?: string } | "lost")[] = [];
+	/** A publish answers only once this has. */
+	publishGate: Promise<void> | undefined;
 	/** A job's own command. */
 	job: (argv: readonly string[], signal: AbortSignal) => Promise<LxdExecPipeResult> = async () => output(0, "ok");
 }
@@ -138,6 +141,7 @@ class FakeLxd implements LxdInstanceExecPipeClient {
 				);
 			}
 			case "publish": {
+				await host.publishGate;
 				const next = host.publishes.shift() ?? { status: 0, stdout: saved() };
 				if (next === "lost") throw new Error("LXD_EXEC_LOST");
 				return output(next.status, next.stdout ?? "");
@@ -685,6 +689,368 @@ describe("CodeHostJobs", () => {
 		await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
 	});
 
+	it("cancels a job that yields as soon as another job of its company joins the line: it publishes nothing, its view closes, and the other runs", async () => {
+		const { lxd, control, jobs, host } = setup();
+		// The yielding job's command ends only with its signal, and then with an error of the exec's own.
+		let commands = 0;
+		host.job = (_argv, signal) =>
+			commands++ > 0
+				? Promise.resolve(output(0, "ok"))
+				: new Promise((_resolve, reject) =>
+						signal.addEventListener("abort", () => reject(new Error("LXD_EXEC_LOST")), { once: true }),
+					);
+		const care = jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand, { yields: true });
+		await until(() => lxd.labels().includes("/usr/local/bin/git --version"));
+		// Another company's job is not in its line.
+		await expect(jobs.run(OTHER, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
+		expect(lxd.labels()).toEqual(["clean", "view", "start", "state", "/usr/local/bin/git --version"]);
+		const turn = jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+		const error = await care.catch((error: unknown) => error);
+		expect(error).toMatchObject({
+			name: "CodeHostJobFailure",
+			code: "CODE_HOST_JOB_YIELDED",
+			detail: "another job of the company joined the line",
+		});
+		await expect(turn).resolves.toBe("ok");
+		expect(lxd.labels()).toEqual([
+			...["clean", "view", "start", "state", "/usr/local/bin/git --version", "clean"],
+			...["clean", "view", "start", "state", "/usr/local/bin/git --version", "publish", "clean"],
+		]);
+		// The yielding job's view closed before the other job's opened (the other company's came and went meanwhile).
+		expect(control.methods()).toEqual([
+			"qorpera_folder_view_open",
+			"qorpera_folder_view_open",
+			"qorpera_folder_view_close",
+			"qorpera_folder_view_close",
+			"qorpera_folder_view_open",
+			"qorpera_folder_view_close",
+		]);
+		// Alone in the line, a job that yields runs like any other.
+		await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand, { yields: true })).resolves.toBe("ok");
+		expect(lxd.labels().slice(-7)).toEqual([
+			"clean",
+			"view",
+			"start",
+			"state",
+			"/usr/local/bin/git --version",
+			"publish",
+			"clean",
+		]);
+	});
+
+	it("cancels a job that yields while it waits or mounts too, and no job that does not yield", async () => {
+		const { lxd, control, jobs, host } = setup();
+		const order: string[] = [];
+		const first = deferred();
+		const a1 = jobs.run(COMPANY, ENVIRONMENT, signal(), async () => {
+			order.push("a1");
+			await first.promise;
+		});
+		await until(() => order.includes("a1"));
+		// It waits behind a job that came first, which it does not cancel.
+		let settled = false;
+		const care = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("care");
+			},
+			{ yields: true },
+		);
+		care.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		// A job cancelled before it came joins no line, and cancels nothing.
+		const aborted = new AbortController();
+		const reason = new Error("cancelled");
+		aborted.abort(reason);
+		await expect(jobs.run(COMPANY, ENVIRONMENT, aborted.signal, oneCommand)).rejects.toBe(reason);
+		await delay(20);
+		expect(settled).toBe(false);
+		const a3 = jobs.run(COMPANY, ENVIRONMENT, signal(), async () => {
+			order.push("a3");
+		});
+		await expect(care).rejects.toMatchObject({ code: "CODE_HOST_JOB_YIELDED" });
+		await delay(20);
+		expect(order).toEqual(["a1"]);
+		first.resolve();
+		await Promise.all([a1, a3]);
+		expect(order).toEqual(["a1", "a3"]);
+		// The job that yielded opened no view.
+		expect(control.views).toHaveLength(2);
+
+		// While its view mounts: the mount is taken down, the view closed, and the job never runs.
+		const before = lxd.labels().length;
+		host.stall = "state";
+		let ran = false;
+		const mounting = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				ran = true;
+			},
+			{ yields: true },
+		);
+		await until(() => lxd.labels().slice(before).includes("state"));
+		const next = jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+		host.stall = undefined;
+		await expect(mounting).rejects.toMatchObject({ code: "CODE_HOST_JOB_YIELDED" });
+		await expect(next).resolves.toBe("ok");
+		expect(ran).toBe(false);
+		expect(lxd.labels().slice(before)).toEqual([
+			...["clean", "view", "start", "state", "clean"],
+			...["clean", "view", "start", "state", "/usr/local/bin/git --version", "publish", "clean"],
+		]);
+		expect(control.methods().slice(-4)).toEqual([
+			"qorpera_folder_view_open",
+			"qorpera_folder_view_close",
+			"qorpera_folder_view_open",
+			"qorpera_folder_view_close",
+		]);
+	});
+
+	it("lets jobs that yield wait in line among themselves: only a job that does not yield takes the line from them", async () => {
+		const { lxd, jobs } = setup();
+		const order: string[] = [];
+		// A download that runs for minutes.
+		const long = deferred();
+		let firstSettled = false;
+		const first = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("first");
+				await long.promise;
+				return "first";
+			},
+			{ yields: true },
+		);
+		first.then(
+			() => {
+				firstSettled = true;
+			},
+			() => {
+				firstSettled = true;
+			},
+		);
+		await until(() => order.includes("first"));
+		// Another job that yields joins meanwhile (a second download of the company, the record files' pass, nightly
+		// care): it cancels nothing and waits its turn.
+		const second = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("second");
+				return "second";
+			},
+			{ yields: true },
+		);
+		await delay(30);
+		expect(firstSettled).toBe(false);
+		expect(order).toEqual(["first"]);
+		long.resolve();
+		await expect(first).resolves.toBe("first");
+		await expect(second).resolves.toBe("second");
+		expect(order).toEqual(["first", "second"]);
+		expect(lxd.labels().filter((label) => label === "publish")).toHaveLength(2);
+
+		// A job that does not yield still takes the line from every job that yields: the one that runs and the one that
+		// waits behind it.
+		const held = deferred();
+		const running = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("running");
+				await held.promise;
+			},
+			{ yields: true },
+		);
+		await until(() => order.includes("running"));
+		const waiting = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("waiting");
+			},
+			{ yields: true },
+		);
+		const turn = jobs.run(COMPANY, ENVIRONMENT, signal(), async () => {
+			order.push("turn");
+			return "turn";
+		});
+		held.resolve();
+		await expect(running).rejects.toMatchObject({ code: "CODE_HOST_JOB_YIELDED" });
+		await expect(waiting).rejects.toMatchObject({ code: "CODE_HOST_JOB_YIELDED" });
+		await expect(turn).resolves.toBe("turn");
+		expect(order).toEqual(["first", "second", "running", "turn"]);
+		expect(lxd.labels().filter((label) => label === "publish")).toHaveLength(3);
+	});
+
+	it("makes two downloads of one company one after the other on the real line: the second ends neither the first nor itself", async () => {
+		const { jobs } = setup();
+		const finished: { requestId: string; state: unknown; result: unknown }[] = [];
+		const download = (requestId: string, token: string, fileName: string) => ({
+			requestId,
+			token,
+			leaseUntil: "2026-11-10T12:30:00+00:00",
+			companyId: COMPANY,
+			environmentId: ENVIRONMENT,
+			owner: "qorpera",
+			name: "shop",
+			kind: "download",
+			work: "make",
+			file: fileName.endsWith(".zip") ? "files" : "history",
+			fileName,
+			path: `code/qorpera/shop/downloads/${fileName}`,
+		});
+		const first = "44444444-4444-4444-8444-444444444441",
+			second = "44444444-4444-4444-8444-444444444442";
+		// One download a claim: the second is claimed while the first is still being made.
+		const claims = [
+			[download(first, "55555555-5555-4555-8555-555555555551", "shop-2026-11-10.zip")],
+			[download(second, "55555555-5555-4555-8555-555555555552", "shop-2026-11-10.bundle")],
+		];
+		const long = deferred();
+		const made: string[] = [];
+		const requests = new CodeHostRequests({
+			control: {
+				async call(method: string, args: Record<string, unknown>) {
+					if (method === "qorpera_code_requests_claim")
+						return { schema: "qorpera.code-requests/v1", requests: claims.shift() ?? [] };
+					if (method === "qorpera_code_request_step")
+						return {
+							schema: "qorpera.code-request-step/v1",
+							state: "go",
+							leaseUntil: "2026-11-10T12:35:00+00:00",
+						};
+					if (method === "qorpera_code_request_finish") {
+						const outcome = args.p_outcome as { state: unknown; result?: unknown };
+						finished.push({
+							requestId: args.p_request_id as string,
+							state: outcome.state,
+							result: outcome.result,
+						});
+						return { schema: "qorpera.code-request-finish/v1", state: "recorded", change: null };
+					}
+					throw new Error(`not a request call: ${method}`);
+				},
+			},
+			hosts: jobs,
+			jobs: {
+				undo: async () => {
+					throw new Error("no undo here");
+				},
+				// The first download takes minutes; the second is made at once.
+				archive: async (_job, value) => {
+					made.push(value.fileName);
+					if (value.fileName.endsWith(".zip")) await long.promise;
+					return {
+						path: `code/qorpera/shop/downloads/${value.fileName}`,
+						bytes: 5_242_880,
+						sha256: "f".repeat(64),
+						mainSha: "a".repeat(40),
+					};
+				},
+				removeDownloads: async (_job, value) => ({ removed: [...value.fileNames] }),
+			},
+			records: { inJob: async () => async () => undefined },
+			owner: "coding-node-01",
+			machineIdSha256: "5".repeat(64),
+		});
+		await requests.pass(signal());
+		await until(() => made.includes("shop-2026-11-10.zip"));
+		await requests.pass(signal());
+		// The second download's job is in the line behind the first: nothing is cancelled, nothing is put off.
+		await delay(30);
+		expect(finished).toEqual([]);
+		expect(made).toEqual(["shop-2026-11-10.zip"]);
+		long.resolve();
+		await requests.settled();
+		expect(made).toEqual(["shop-2026-11-10.zip", "shop-2026-11-10.bundle"]);
+		expect(finished).toEqual([
+			{ requestId: first, state: "done", result: "made" },
+			{ requestId: second, state: "done", result: "made" },
+		]);
+	});
+
+	it("lets a job that yields publish once its steps are done, whoever joins then; one cancelled by its caller fails with the caller's reason", async () => {
+		const { lxd, jobs, host } = setup();
+		const gate = deferred();
+		host.publishGate = gate.promise;
+		const care = jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand, { yields: true });
+		await until(() => lxd.labels().includes("publish"));
+		const turn = jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+		await delay(20);
+		expect(lxd.labels()).toEqual(["clean", "view", "start", "state", "/usr/local/bin/git --version", "publish"]);
+		host.publishGate = undefined;
+		gate.resolve();
+		await expect(care).resolves.toBe("ok");
+		await expect(turn).resolves.toBe("ok");
+		expect(lxd.labels()).toEqual(
+			Array.from({ length: 2 }, () => [
+				"clean",
+				"view",
+				"start",
+				"state",
+				"/usr/local/bin/git --version",
+				"publish",
+				"clean",
+			]).flat(),
+		);
+
+		// A job whose steps ended after it was cancelled publishes nothing, even when they ended well.
+		const steps = deferred();
+		const ignoring = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				await steps.promise;
+				return "done";
+			},
+			{ yields: true },
+		);
+		await until(() => lxd.labels().length === 14 + 4);
+		const after = jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+		steps.resolve();
+		await expect(ignoring).rejects.toMatchObject({ code: "CODE_HOST_JOB_YIELDED" });
+		await expect(after).resolves.toBe("ok");
+		expect(lxd.labels().slice(14, 14 + 5)).toEqual(["clean", "view", "start", "state", "clean"]);
+
+		// Its caller's own cancel is the caller's, as for any job.
+		host.job = (_argv, signal) =>
+			new Promise((_resolve, reject) =>
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+			);
+		const controller = new AbortController();
+		const stopped = jobs.run(COMPANY, ENVIRONMENT, controller.signal, oneCommand, { yields: true });
+		const count = lxd.labels().length;
+		await until(() => lxd.labels().length === count + 5);
+		const reason = new Error("the pass stopped");
+		controller.abort(reason);
+		await expect(stopped).rejects.toBe(reason);
+		expect(lxd.labels().slice(count)).toEqual([
+			"clean",
+			"view",
+			"start",
+			"state",
+			"/usr/local/bin/git --version",
+			"clean",
+		]);
+	});
+
 	it("logs a clean or a close that fails after the job, without the pass, and keeps the job's answer", async () => {
 		const { lxd, control, events, jobs, host } = setup();
 		host.job = async () => {
@@ -721,6 +1087,10 @@ describe("CodeHostJobs", () => {
 			[COMPANY, "BBBBBBBB-3333-4333-8333-333333333333"],
 		] as const)
 			await expect(jobs.run(company, environment, signal(), oneCommand)).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		for (const yields of ["yes", 1, null])
+			await expect(
+				jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand, { yields: yields as unknown as boolean }),
+			).rejects.toThrow("INVALID_CODE_HOST_JOB");
 		for (const option of ["mountWaitMs", "publishWaitMs", "cleanMs", "callMs", "pollMs"] as const)
 			for (const value of [0, -1, 1.5, 3_600_001, Number.NaN]) {
 				const options: Partial<CodeHostJobsOptions> = {};

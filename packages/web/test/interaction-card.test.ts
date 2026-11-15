@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { answersInteraction } from "../src/app/company.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
-import { renderInteractionCard } from "../src/ui/interaction-card.ts";
+import { fmtTime } from "../src/ui/dom.ts";
+import { type InteractionCardApp, refreshAppPreviews, renderInteractionCard } from "../src/ui/interaction-card.ts";
 import { session, userA, userB } from "./fixtures.ts";
 
 const ID = "44444444-4444-4444-8444-000000000593";
@@ -98,9 +99,9 @@ describe("interaction cards", () => {
 		expect(card.querySelector("button")).toBeNull();
 	});
 
-	it("shows a takeover with Take over, I'm done and Skip, and hands back or dismisses", () => {
-		const takeOver = vi.fn();
-		const ctx = context({ takeOver });
+	it("shows a takeover with Open computer, I'm done and Skip, no Take over (Jonas, 14 Nov 2026), and opens, hands back or dismisses", () => {
+		const openComputer = vi.fn();
+		const ctx = context({ openComputer });
 		const card = renderInteractionCard(
 			item({
 				surface: "takeover",
@@ -110,9 +111,9 @@ describe("interaction cards", () => {
 			ctx,
 		);
 		const labels = [...card.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
-		expect(labels.map((pill) => pill.textContent)).toEqual(["Take over", "I'm done", "Skip"]);
+		expect(labels.map((pill) => pill.textContent)).toEqual(["Open computer", "I'm done", "Skip"]);
 		labels[0]?.click();
-		expect(takeOver).toHaveBeenCalledTimes(1);
+		expect(openComputer).toHaveBeenCalledTimes(1);
 		expect(ctx.answer).not.toHaveBeenCalled();
 		labels[1]?.click();
 		expect(ctx.answer).toHaveBeenCalledWith("handed_back", {});
@@ -203,7 +204,8 @@ describe("interaction cards", () => {
 		expect(readOnly.querySelector("button, input")).toBeNull();
 		const declined = renderInteractionCard(item(request, { outcome: "declined", answer: {} }), context());
 		expect(declined.dataset.state).toBe("declined");
-		expect(declined.querySelector(".interaction-result")?.textContent).toBe("Declined");
+		// Skip was pressed: the card says so, not "Declined".
+		expect(declined.querySelector(".interaction-result")?.textContent).toBe("Skipped");
 		expect(declined.querySelector("button, input")).toBeNull();
 	});
 
@@ -273,6 +275,228 @@ describe("interaction cards", () => {
 	});
 });
 
+describe("a card with its answer, in a thread", () => {
+	const VIEWER = MEMBER;
+	const OTHER = "33333333-3333-4333-8333-333333333333";
+	const thread = (overrides: Partial<Parameters<typeof renderInteractionCard>[1]> = {}) =>
+		context({
+			inThread: true,
+			viewerId: VIEWER,
+			memberName: (userId) => (userId === VIEWER ? "You" : "Sofie"),
+			...overrides,
+		});
+	const answered = {
+		outcome: "answered" as const,
+		answer: { values: ["finance"] },
+		answeredAt: "2026-09-22T20:05:00Z",
+	};
+	const classes = (element: Element | null | undefined) => [...(element?.classList ?? [])];
+
+	it("is the exchange it was: the agent's bubble, then the member's own answer as their bubble", () => {
+		const card = renderInteractionCard(
+			item({ ...question, body: "It goes out every Monday." }, { ...answered, answeredBy: VIEWER }),
+			thread(),
+		);
+		expect(classes(card)).toContain("is-exchange");
+		expect([...card.children].map((part) => classes(part)[0])).toEqual(["interaction-ask", "interaction-result"]);
+		// What the agent asked: one bubble with the title and the body, which tells its time on a hover as a message does.
+		const ask = card.querySelector<HTMLElement>(":scope > .interaction-ask");
+		expect(classes(ask)).toContain("bubble");
+		expect(ask?.dataset.sentAt).toBe("2026-09-22T20:00:00Z");
+		expect(ask?.querySelector(".interaction-title")?.textContent).toBe("Which channel should the digest go to?");
+		expect(ask?.querySelector(".interaction-body")?.textContent).toBe("It goes out every Monday.");
+		// The label row stays for a screen reader only.
+		const heading = ask?.querySelector(".interaction-heading");
+		expect(classes(heading)).toContain("visually-hidden");
+		expect(heading?.textContent).toContain("Answered");
+		// The answer: the member's own bubble on their side, with its own time; who and when stay for a screen reader.
+		const result = card.querySelector<HTMLElement>(":scope > .interaction-result");
+		expect(classes(result)).toEqual(["interaction-result", "is-said", "mine"]);
+		expect(result?.dataset.sentAt).toBe("2026-09-22T20:05:00Z");
+		const chosen = result?.querySelector(".interaction-chosen");
+		expect([chosen?.textContent, classes(chosen).includes("bubble")]).toEqual(["#finance", true]);
+		// Nothing shows beside it; a screen reader still hears who answered and when.
+		const attribution = result?.querySelector(".interaction-attribution");
+		expect(attribution?.querySelector(".interaction-beside")?.textContent).toBe("");
+		expect(attribution?.querySelector(".visually-hidden")?.textContent).toBe(
+			`You · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
+		expect(result?.querySelector(".review-mark")).toBeNull();
+		expect(card.querySelector("button, input")).toBeNull();
+	});
+
+	it("says under the answer whose it is when it is another member's, and that it is on its way", () => {
+		const others = renderInteractionCard(item(question, { ...answered, answeredBy: OTHER }), thread());
+		const result = others.querySelector(".interaction-result");
+		expect(classes(result)).toEqual(["interaction-result", "is-said"]);
+		// The eye gets the name; a screen reader hears the name and the time, once (review r1 F1 on #1727).
+		const beside = result?.querySelector(".interaction-attribution > .interaction-beside");
+		expect([beside?.textContent, beside?.getAttribute("aria-hidden")]).toEqual(["Sofie", "true"]);
+		expect(result?.querySelector(".interaction-attribution > .visually-hidden")?.textContent).toBe(
+			`Sofie · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
+		// The member's own answer, not yet with the agent: no member is named on it yet, and it is theirs.
+		const { answeredAt: _sent, ...unsent } = answered;
+		const sending = renderInteractionCard(item(question, { ...unsent, pending: true }), thread());
+		const pending = sending.querySelector<HTMLElement>(".interaction-result");
+		expect(classes(pending)).toEqual(["interaction-result", "is-said", "mine"]);
+		expect(pending?.dataset.sentAt).toBeUndefined();
+		expect(pending?.querySelector(".interaction-beside")?.textContent).toBe("Sending");
+		expect(pending?.querySelector(".interaction-attribution > .visually-hidden")?.textContent).toBe("You · Sending");
+		// A line, too: another member's save names them beside it, with its time for a screen reader.
+		const saved = renderInteractionCard(
+			item(
+				{ surface: "secret", title: "Stripe key", payload: {} },
+				{ outcome: "provided", answer: {}, answeredBy: OTHER, answeredAt: answered.answeredAt },
+			),
+			thread(),
+		);
+		expect(saved.querySelector(".is-done .interaction-beside")?.textContent).toBe("Sofie");
+		expect(saved.querySelector(".is-done .interaction-attribution > .visually-hidden")?.textContent).toBe(
+			`Sofie · ${fmtTime("2026-09-22T20:05:00Z")}`,
+		);
+	});
+
+	it("says anything else done with the card in one line under the question, marked as a decided approval is", () => {
+		const secret: InteractionRequest = {
+			surface: "secret",
+			title: "Stripe key",
+			payload: { purpose: "I need the Stripe key to set up payments.", label: "Stripe secret key" },
+		};
+		const saved = renderInteractionCard(
+			item(secret, { outcome: "provided", answer: {}, answeredBy: VIEWER, answeredAt: answered.answeredAt }),
+			thread(),
+		);
+		// The purpose is in the agent's bubble, with the title.
+		expect(saved.querySelector(".interaction-ask.bubble .interaction-text")?.textContent).toBe(
+			"I need the Stripe key to set up payments.",
+		);
+		const done = saved.querySelector(".interaction-result");
+		expect(classes(done)).toEqual(["interaction-result", "is-done"]);
+		expect(classes(done?.querySelector(".review-mark"))).toEqual(["review-mark", "is-approved"]);
+		const line = done?.querySelector(".interaction-chosen");
+		expect([line?.textContent, classes(line).includes("bubble")]).toEqual(["Saved to the company vault", false]);
+		// A skipped question: a line, never a bubble of the member's.
+		const skipped = renderInteractionCard(
+			item(question, { outcome: "declined", answer: {}, answeredBy: VIEWER, answeredAt: answered.answeredAt }),
+			thread(),
+		);
+		const passed = skipped.querySelector<HTMLElement>(".interaction-result");
+		expect(classes(passed)).toEqual(["interaction-result", "is-done"]);
+		expect(classes(passed?.querySelector(".review-mark"))).toEqual(["review-mark", "is-declined"]);
+		expect(passed?.textContent).toBe("Skipped");
+		expect(passed?.dataset.sentAt).toBe(answered.answeredAt);
+		expect(skipped.querySelector(".bubble .interaction-title")).not.toBeNull();
+		// Past its time: the line, with no mark.
+		const expired = renderInteractionCard(
+			item({ ...question, expiresAt: "2026-09-22T20:10:00Z" }),
+			thread({ now: Date.parse("2026-09-22T20:11:00Z") }),
+		);
+		expect(classes(expired)).toContain("is-exchange");
+		const late = expired.querySelector(".interaction-result");
+		expect(classes(late)).toEqual(["interaction-result", "is-done"]);
+		expect(late?.querySelector(".review-mark")).toBeNull();
+		expect(late?.textContent).toContain("past its time");
+	});
+
+	it("keeps its frame wherever it is not in a thread, answered or waiting", () => {
+		// The questions dock draws the same card with no thread around it.
+		const docked = renderInteractionCard(item(question, { ...answered, answeredBy: VIEWER }), context());
+		expect(classes(docked)).not.toContain("is-exchange");
+		expect(
+			docked.querySelector(".bubble, .visually-hidden, .interaction-beside, .review-mark, [data-sent-at]"),
+		).toBeNull();
+		expect(classes(docked.querySelector(".interaction-result"))).toEqual(["interaction-result"]);
+		expect(docked.querySelector(".interaction-attribution")?.textContent).toMatch(/^Jonas · /);
+		const waiting = renderInteractionCard(
+			item({ ...question, payload: { ...question.payload, allowCustom: true } }),
+			context(),
+		);
+		expect(classes(waiting)).toEqual(["interaction-card", "surface-question", "state-waiting"]);
+		expect(
+			waiting.querySelector(".interaction-call, .interaction-own, .interaction-send, .visually-hidden"),
+		).toBeNull();
+		expect(waiting.dataset.sentAt).toBeUndefined();
+		expect(waiting.querySelector(".interaction-heading")?.textContent).toContain("Waiting for you");
+	});
+});
+
+describe("a card that waits for the member, in a thread", () => {
+	const thread = (overrides: Partial<Parameters<typeof renderInteractionCard>[1]> = {}) =>
+		context({ inThread: true, viewerId: MEMBER, ...overrides });
+	const classes = (element: Element | null | undefined) => [...(element?.classList ?? [])];
+	const own: InteractionRequest = { ...question, payload: { ...question.payload, allowCustom: true } };
+
+	it("says who asks at its head, with the agent's figure, and keeps the label row for a screen reader", () => {
+		const figure = document.createElement("span");
+		figure.className = "figure";
+		const card = renderInteractionCard(item(question), thread({ figure: () => figure }));
+		expect(classes(card)).toEqual(["interaction-card", "surface-question", "state-waiting", "is-asking"]);
+		// Its time shows on a hover, as a message's does.
+		expect(card.dataset.sentAt).toBe("2026-09-22T20:00:00Z");
+		const call = card.querySelector(".interaction-ask > .interaction-call");
+		expect(call?.querySelector(".interaction-figure")?.firstElementChild).toBe(figure);
+		expect(call?.querySelector(".interaction-dot")).toBeNull();
+		expect(call?.querySelector("strong")?.textContent).toBe("Yang Tang asks you");
+		const heading = card.querySelector(".interaction-heading");
+		expect(classes(heading)).toContain("visually-hidden");
+		expect(heading?.textContent).toContain("Question");
+		expect(heading?.textContent).toContain("Waiting for you");
+		// The proposed answers and the way out are the card's own, as anywhere.
+		expect([...card.querySelectorAll(".interaction-options .btn")].map((pill) => pill.textContent)).toEqual([
+			"#general",
+			"#finance",
+		]);
+		expect(card.querySelector(".interaction-actions .interaction-quiet")?.textContent).toBe("Skip");
+		// With no figure to draw, a dot in the accent stands where it would.
+		const plain = renderInteractionCard(item(question), thread());
+		expect(plain.querySelector(".interaction-call > .interaction-dot")).not.toBeNull();
+		expect(plain.querySelector(".interaction-figure")).toBeNull();
+	});
+
+	it("says the agent needs the member on a card that is no question", () => {
+		const secret: InteractionRequest = { surface: "secret", title: "Stripe key", payload: { label: "Stripe key" } };
+		const card = renderInteractionCard(item(secret), thread({ provideSecret: async () => {} }));
+		expect(classes(card)).toContain("is-asking");
+		expect(card.querySelector(".interaction-call strong")?.textContent).toBe("Yang Tang needs you");
+	});
+
+	it("sends an answer of the member's own from a Send in its field, live once something is typed", () => {
+		const ctx = thread();
+		const card = renderInteractionCard(item(own), ctx);
+		const field = card.querySelector<HTMLInputElement>(".interaction-own > .interaction-field")!;
+		const send = card.querySelector<HTMLButtonElement>(".interaction-own > .interaction-send")!;
+		expect([send.getAttribute("aria-label"), send.disabled]).toEqual(["Send", true]);
+		field.value = "   ";
+		field.dispatchEvent(new Event("input"));
+		expect(send.disabled).toBe(true);
+		send.click();
+		expect(ctx.answer).not.toHaveBeenCalled();
+		field.value = " #ops ";
+		field.dispatchEvent(new Event("input"));
+		expect(send.disabled).toBe(false);
+		send.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["#ops"] });
+		// Enter still sends, as it always did.
+		const again = thread();
+		const typed = renderInteractionCard(item(own), again).querySelector<HTMLInputElement>(".interaction-field")!;
+		typed.value = "#ops";
+		typed.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true }));
+		expect(again.answer).toHaveBeenCalledWith("answered", { values: ["#ops"] });
+		// A question that takes several answers has its own Send beside the field: no second one in it.
+		const several = renderInteractionCard(item({ ...own, payload: { ...own.payload, multiSelect: true } }), thread());
+		expect(several.querySelector(".interaction-own, .interaction-send")).toBeNull();
+		expect(several.querySelector(".interaction-actions > .interaction-field")).not.toBeNull();
+	});
+
+	it("stays the plain card for a member who cannot answer it", () => {
+		const card = renderInteractionCard(item(own), thread({ canAnswer: false }));
+		expect(classes(card)).toEqual(["interaction-card", "surface-question", "state-waiting"]);
+		expect(card.querySelector(".interaction-call, .visually-hidden, button, input")).toBeNull();
+		expect(card.dataset.sentAt).toBeUndefined();
+	});
+});
+
 describe("a visual choice", () => {
 	const visual: InteractionRequest = {
 		surface: "question",
@@ -285,11 +509,18 @@ describe("a visual choice", () => {
 			],
 		},
 	};
+	/** The company's apps as the card reads them: one with a cover, one with only its emblem. */
+	const app = (name: string) =>
+		name === "bundle-demo"
+			? { title: "The bundle demo", emblem: "star" as const, cover: null }
+			: name === "saml-concepts"
+				? { title: "Entirely you", emblem: "page" as const, cover: "apps/saml-concepts/cover.png" }
+				: undefined;
 
 	it("shows options with pictures as big boxes; a click picks one", async () => {
 		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/svg+xml" }));
 		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:shown");
-		const ctx = context({ image });
+		const ctx = context({ image, app });
 		const card = renderInteractionCard(item(visual), ctx);
 		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
 		expect(boxes.map((box) => box.querySelector(".choice-label")?.textContent)).toEqual([
@@ -302,11 +533,202 @@ describe("a visual choice", () => {
 		expect(card.querySelector(".interaction-options")).toBeNull();
 		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture img")).toHaveLength(2));
 		expect(image.mock.calls.map(([path]) => path)).toEqual(["sketches/duo.svg", "sketches/pair.svg"]);
-		// An app's option shows its name, and its link opens the app's own page.
-		expect(boxes[2]?.querySelector(".choice-app-name")?.textContent).toBe("bundle-demo");
+		// An app with no cover of its own stands for itself: its title, never its folder name. Its link opens its page.
+		expect(boxes[2]?.querySelector(".choice-app-name")?.textContent).toBe("The bundle demo");
+		expect(boxes[2]?.querySelector(".choice-picture .interface-emblem")).not.toBeNull();
 		expect(card.querySelector(".choice-apps .app-card")).not.toBeNull();
 		boxes[1]?.click();
 		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["pair"] });
+		created.mockRestore();
+	});
+
+	it("shows an app's own cover for an option that names it", async () => {
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Which headline?",
+				payload: { options: [{ label: "Entirely you", preview: "app:saml-concepts" }] },
+			}),
+			context({ image, app }),
+		);
+		await vi.waitFor(() => expect(card.querySelector(".choice-picture img")).not.toBeNull());
+		expect(image.mock.calls.map(([path]) => path)).toEqual(["apps/saml-concepts/cover.png"]);
+		expect(card.querySelector(".choice-app-name")).toBeNull();
+		created.mockRestore();
+	});
+
+	it("draws no preview box for an option that has none, or whose preview cannot be shown", async () => {
+		const image = vi.fn(async () => null);
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				payload: {
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Noget skal ændres", value: "nej" },
+						{ label: "Vis en anden", value: "anden", preview: "app:not-in-this-company" },
+					],
+				},
+			}),
+			context({ image, app }),
+		);
+		// The option with no preview is a pill under the boxes, never an empty box beside a picture.
+		expect(card.querySelectorAll(".choice-box")).toHaveLength(2);
+		expect(
+			[...card.querySelectorAll(".interaction-choices > .choice-others > button")].map((pill) => pill.textContent),
+		).toEqual(["Noget skal ændres"]);
+		// The cover could not be read: the frame goes rather than stand empty.
+		await vi.waitFor(() => expect(card.querySelectorAll(".choice-picture")).toHaveLength(0));
+	});
+
+	it("picks an option without a picture from its pill, and keeps a lone picture box to a column", () => {
+		const ctx = context({ image: async () => null, app });
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				payload: {
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Noget skal ændres", value: "nej" },
+					],
+				},
+			}),
+			ctx,
+		);
+		expect((card.querySelector(".interaction-choices") as HTMLElement).style.getPropertyValue("--choices")).toBe("2");
+		card.querySelector<HTMLButtonElement>(".choice-others > button")?.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["nej"] });
+	});
+
+	it("shows an app the question's words link once: its cover on that card, the option that previews it a pill", async () => {
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const ctx = context({ image, app, inThread: true });
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				body: "[Prøv de seks scener](app:saml-concepts), især det gradvise morgenlys.",
+				payload: {
+					allowCustom: true,
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Noget skal ændres", value: "nej" },
+					],
+				},
+			}),
+			ctx,
+		);
+		// One card for the app, the words' own; no boxes, no second link under the options.
+		expect([...card.querySelectorAll<HTMLElement>(".app-card")].map((link) => link.dataset.appName)).toEqual([
+			"saml-concepts",
+		]);
+		expect(card.querySelector(".interaction-choices, .choice-box")).toBeNull();
+		expect([...card.querySelectorAll(".interaction-options > button")].map((pill) => pill.textContent)).toEqual([
+			"Ja, sådan",
+			"Noget skal ændres",
+		]);
+		const linkCard = card.querySelector<HTMLElement>(".interaction-body .app-card");
+		await vi.waitFor(() => expect(linkCard?.querySelector(":scope > .choice-picture img")).not.toBeNull());
+		expect(image.mock.calls.map(([path]) => path)).toEqual(["apps/saml-concepts/cover.png"]);
+		card.querySelector<HTMLButtonElement>(".interaction-options > button")?.click();
+		expect(ctx.answer).toHaveBeenCalledWith("answered", { values: ["ja"] });
+		created.mockRestore();
+	});
+
+	it("puts an app's cover on the words' card once the apps are read, and none for an app without one", async () => {
+		let known: Record<string, InteractionCardApp> = {};
+		const apps = (name: string) => known[name];
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe?",
+				body: "[Prøv de seks scener](app:saml-concepts) og [demoen](app:bundle-demo).",
+				payload: {
+					options: [
+						{ label: "Ja", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Demoen", value: "demo", preview: "app:bundle-demo" },
+					],
+				},
+			}),
+			context({ image, app: apps, inThread: true }),
+		);
+		expect(card.querySelector(".choice-picture")).toBeNull();
+		known = {
+			"saml-concepts": { title: "Entirely you", emblem: "page", cover: "apps/saml-concepts/cover.png" },
+			"bundle-demo": { title: "The bundle demo", emblem: "star", cover: null },
+		};
+		refreshAppPreviews(card, apps, image);
+		const [first, second] = card.querySelectorAll<HTMLElement>(".interaction-body .app-card");
+		await vi.waitFor(() => expect(first?.querySelector(":scope > .choice-picture img")).not.toBeNull());
+		// The demo has no cover: its card stays as it is, never an emblem drawn twice.
+		expect(second?.querySelector(".choice-picture")).toBeNull();
+		created.mockRestore();
+	});
+
+	it("brings an app's preview in once the company's apps are read, keeping the answer being given", async () => {
+		// The card is drawn before the company's apps are read (review r1 of #1763, F1).
+		let known: Record<string, InteractionCardApp> = {};
+		const apps = (name: string) => known[name];
+		const image = vi.fn(async (path: string) => new Blob([path], { type: "image/png" }));
+		const created = vi.spyOn(URL, "createObjectURL").mockImplementation(() => "blob:cover");
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Viser scenerne den lampe, du forestiller dig?",
+				payload: {
+					multiSelect: true,
+					allowCustom: true,
+					options: [
+						{ label: "Ja, sådan", value: "ja", preview: "app:saml-concepts" },
+						{ label: "Den anden", value: "anden", preview: "app:bundle-demo" },
+						{ label: "Noget skal ændres", value: "nej" },
+					],
+				},
+			}),
+			context({ image, app: apps, inThread: true }),
+		);
+		const titles = () => [...card.querySelectorAll(".choice-apps .app-card-title")].map((title) => title.textContent);
+		expect(card.querySelectorAll(".choice-picture")).toHaveLength(0);
+		expect(titles()).toEqual(["saml-concepts", "bundle-demo"]);
+		// The member picks an option and starts on an answer of their own.
+		const boxes = [...card.querySelectorAll<HTMLButtonElement>(".choice-box")];
+		expect(boxes).toHaveLength(2);
+		boxes[1]?.click();
+		const field = card.querySelector<HTMLInputElement>(".interaction-field");
+		if (!field) throw new Error("no field");
+		field.value = "Lidt varmere lys";
+		// Then the apps are read.
+		known = {
+			"saml-concepts": { title: "Entirely you", emblem: "page", cover: "apps/saml-concepts/cover.png" },
+			"bundle-demo": { title: "The bundle demo", emblem: "star", cover: null },
+		};
+		refreshAppPreviews(card, apps, image);
+		await vi.waitFor(() => expect(boxes[0]?.querySelector(".choice-picture img")).not.toBeNull());
+		expect(image.mock.calls.map(([path]) => path)).toEqual(["apps/saml-concepts/cover.png"]);
+		expect(boxes[1]?.querySelector(".choice-app-name")?.textContent).toBe("The bundle demo");
+		expect(card.querySelector(".choice-others")?.textContent).toBe("Noget skal ændres");
+		expect(titles()).toEqual(["Entirely you", "The bundle demo"]);
+		// In place: the same boxes, the pick and the words as they were.
+		expect([...card.querySelectorAll(".choice-box")]).toEqual(boxes);
+		expect(boxes.map((box) => box.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+		expect(card.querySelector(".interaction-field")).toBe(field);
+		expect(field.value).toBe("Lidt varmere lys");
+		// Nothing is drawn again while the apps stay as they are; a change to one is followed.
+		const cover = boxes[0]?.querySelector(".choice-picture");
+		refreshAppPreviews(card, apps, image);
+		expect(boxes[0]?.querySelector(".choice-picture")).toBe(cover);
+		known = { ...known, "saml-concepts": { title: "Entirely you", emblem: "page", cover: null } };
+		refreshAppPreviews(card, apps, image);
+		expect(boxes[0]?.querySelectorAll(".choice-picture")).toHaveLength(1);
+		expect(boxes[0]?.querySelector(".choice-app-name")?.textContent).toBe("Entirely you");
+		expect(field.value).toBe("Lidt varmere lys");
 		created.mockRestore();
 	});
 
@@ -323,7 +745,7 @@ describe("a visual choice", () => {
 					],
 				},
 			}),
-			context({ image: async () => null }),
+			context({ image: async () => null, app }),
 		);
 		expect(
 			[...card.querySelectorAll<HTMLElement>(".choice-apps .app-card")].map((link) => link.dataset.appName),

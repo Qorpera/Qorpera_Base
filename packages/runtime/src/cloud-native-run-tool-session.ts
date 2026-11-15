@@ -1,9 +1,12 @@
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
+import type { CloudCodexHome, CloudCodexHomeReview } from "./cloud-codex-home.ts";
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
+	type CloudCodexLightAsk,
 	type CloudCodexOpening,
+	type CloudCodexToolSessionResult,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -32,15 +35,19 @@ import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
+import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 import type { CloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
+import type { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
 
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
+	/** Tools among `tools` that the run opens through more_tools instead of its catalog (T3-6, cloudToolsOnDemand). */
+	deferred?: ReadonlySet<string>;
 	captures?: CloudNativeCaptureImages;
 	/** The run's desktop folder reports (F3 4f-2b): its tool results show them. */
 	folderReports?: CloudNativeFolderReports;
@@ -106,14 +113,30 @@ export async function runCloudNativeRunToolSession(options: {
 	opening?: (signal: AbortSignal) => Promise<CloudCodexOpening>;
 	/** The memory compactor and closing (§7.1), as runCloudCodexToolSession takes them. */
 	compactor?: MemoryCompactChannel;
+	/** A voice call's lane, as runCloudCodexToolSession takes it. */
+	voice?: CloudVoiceChannel;
+	/** The picture lane, as runCloudCodexToolSession takes it. */
+	pictures?: CloudPictureChannel;
 	closing?: (signal: AbortSignal) => Promise<void>;
 	/** What the agent is told in one more turn when its turn left undone what the run has to end with, as
 	 * runCloudCodexToolSession takes it. */
 	turnCorrection?: (signal: AbortSignal) => Promise<string | undefined>;
+	/** A light ask's run, as runCloudCodexToolSession takes it: in place of the agent's thread. */
+	light?: (ask: CloudCodexLightAsk, signal: AbortSignal) => Promise<void>;
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
 	isolation?: NativeIsolationConfiguration;
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1), for a run whose company has the switch on: the channel
+	 * from this run's sealed slot to its own machine, where Codex's own shell and file tools run. It is given the
+	 * run's review (slice 4) and its work log (slice 2) here, where both are built. Absent: the run is as today.
+	 */
+	home?: (input: {
+		readonly review: CloudCodexHomeReview;
+		readonly log: CloudRunLog | undefined;
+		readonly signal: AbortSignal;
+	}) => CloudCodexHome | undefined;
 	/** How a ChatGPT plan run's Codex gets the plan's token (the host's setting). */
 	chatGptPlanAuth?: CloudChatGptPlanAuth;
 	signal: AbortSignal;
@@ -121,7 +144,7 @@ export async function runCloudNativeRunToolSession(options: {
 	observability?: CloudRuntimeObservability;
 	/** Auto-review (v130): the review step for acting calls, given the reviewer this run's Codex session answers. */
 	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
-}): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
+}): Promise<CloudCodexToolSessionResult> {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
 	try {
@@ -143,6 +166,7 @@ export async function runCloudNativeRunToolSession(options: {
 		throw error;
 	}
 	let boundary: CloudNativeToolBoundary | undefined;
+	let home: CloudCodexHome | undefined;
 	let adapters: CloudNativeRunToolAdapters | undefined;
 	let executionFailed = false;
 	let closingStarted = false;
@@ -231,18 +255,55 @@ export async function runCloudNativeRunToolSession(options: {
 		};
 		await assertActive(run.signal);
 		const reviewer = options.actionReview ? new CloudActionReviewChannel() : undefined;
+		// The run's home, if its company has one: every command and change on it is reviewed by the same gate as a
+		// machine command (slice 4), and what it did becomes the run's own steps (slice 2).
+		const review = reviewer && options.actionReview ? options.actionReview(reviewer) : undefined;
+		home = options.home?.({
+			review: {
+				check: async (action, signal) =>
+					review
+						? await review.check(
+								{
+									// Work on a company machine, under its own names (`home_command`, `home_change`), by the
+									// same rule and cards as `machine_run` (cloud-action-review.ts). The identity is what the
+									// model chose for this action; a lone file write also shows the reviewer its text, as a
+									// folder tool's write does.
+									tool: {
+										name: action.tool,
+										source: "runtime",
+										...(action.contents === undefined
+											? {}
+											: { reviewContents: () => action.contents as JsonValue }),
+									},
+									parsed: JSON.parse(action.argumentsText) as JsonValue,
+									argumentsText: action.argumentsText,
+									argumentSha256: action.argumentSha256,
+									callId: action.callId,
+									// A parked card of a home action is answered by doing the thing again on the machine, not
+									// by calling a tool the model does not have (review round 1, F8).
+									repeat: action.repeat,
+								},
+								signal,
+							)
+						: { run: true },
+			},
+			log: adapters.runLog?.log,
+			signal: run.signal,
+		});
 		boundary = new CloudNativeToolBoundary({
 			observability: options.observability,
 			companyId: run.identity.companyId,
 			runId: run.identity.runId,
 			identity: run.identity,
 			tools: adapters.tools,
+			...(adapters.deferred ? { deferred: adapters.deferred } : {}),
 			captures: adapters.captures,
 			...(adapters.folderReports ? { folderReports: adapters.folderReports } : {}),
 			assertActive,
 			signal: run.signal,
-			...(reviewer && options.actionReview ? { review: options.actionReview(reviewer) } : {}),
+			...(review ? { review } : {}),
 			...(adapters.runLog ? { runLog: adapters.runLog.log } : {}),
+			...(home ? { home } : {}),
 		});
 		const runLog = adapters.runLog;
 		result = await runCloudCodexToolSession({
@@ -259,7 +320,10 @@ export async function runCloudNativeRunToolSession(options: {
 			// The bind rechecks the run's lease, and the first request's fence its authority.
 			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
+			...(options.voice ? { voice: options.voice } : {}),
+			...(options.pictures ? { pictures: options.pictures } : {}),
 			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
+			...(options.light ? { light: options.light } : {}),
 			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
 			// conversation lines close (§7.1).
 			...(runLog || options.closing
@@ -279,6 +343,7 @@ export async function runCloudNativeRunToolSession(options: {
 						},
 					}
 				: {}),
+			...(home ? { home } : {}),
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,
@@ -319,14 +384,22 @@ export async function runCloudNativeRunToolSession(options: {
 				await assertActive(signal);
 			},
 		});
-		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5).
+		// The log's folder was deleted: the run's acting calls since could not run, and it ends with that error (§4.5). A
+		// usage limit the provider met after the run's answer stays the login's to record (the 2026-11-13 amendment).
 		if (runLog?.log.gone)
-			throw tagNativeRuntimeFailure(new CloudRunLogGone(), "codex-turn-completion", "authority_unavailable");
+			throw tagNativeRuntimeFailure(
+				new CloudRunLogGone(),
+				"codex-turn-completion",
+				"authority_unavailable",
+				result.usageSignal ?? null,
+			);
 	} catch (error) {
 		executionFailed = true;
 		throw error;
 	} finally {
 		boundary?.close();
+		// The home's socket and its session go with the run, whatever ended it (review round 1, F10).
+		if (home) await home.close(run.signal.aborted ? "stopped" : "ended").catch(() => undefined);
 		// A run that failed on its own commits the steps it finished, as closing would have, within 10 s: a timed batch
 		// still running stops then too. A stopped run does not: its authority is gone, and a later attempt may already be
 		// writing the log.
@@ -343,6 +416,11 @@ export async function runCloudNativeRunToolSession(options: {
 			}
 		}
 	}
-	if (cleanupError) throw cleanupError;
+	// A usage limit the provider met after the run's answer stays the login's to record, also when cleanup failed after
+	// it (the 2026-11-13 amendment).
+	if (cleanupError)
+		throw result?.usageSignal
+			? tagNativeRuntimeFailure(cleanupError, "native-tools", "unknown", result.usageSignal)
+			: cleanupError;
 	return result;
 }

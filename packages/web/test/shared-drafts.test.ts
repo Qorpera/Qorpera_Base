@@ -2,11 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { DraftSync } from "../src/app/room-drafts.ts";
+import { tellAgent } from "../src/app/tell-agent.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { RoomDraft, RoomDraftWrite } from "../src/cloud/room-drafts.ts";
 import type { HostedProfileMember, HostedSession } from "../src/cloud/types.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
+import { accountsFake } from "./mail-fixtures.ts";
 
 const roomId = id(79);
 const members: HostedProfileMember[] = [
@@ -616,5 +618,111 @@ describe("one draft kept in step with the cloud", () => {
 		expect(s.text()).toBe("hi é all");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.writes.at(-1)).toMatchObject({ base: 2, body: "hi é all" });
+	});
+});
+
+/* A note from an app's page that waits in the member's own draft (app/tell-agent.ts): the line it answers is the
+ * shared draft's first line, so a reload, another tab or another member's client has it with the words; the composer
+ * shows it as the app above the field, never as written. */
+describe("an app's note waiting in the member's own shared draft", () => {
+	const LINE = "app:shop#1042 · Order 1042 · Hansen";
+	const answered = (s: Awaited<ReturnType<typeof setup>>) => s.company.conversation(session.sessionId).get().answering;
+	const strip = (s: Awaited<ReturnType<typeof setup>>) => s.view.el.querySelector<HTMLElement>(".composer-answer")!;
+	const written = (s: Awaited<ReturnType<typeof setup>>) => s.put.mock.calls.at(-1)?.[3];
+	const echo = (s: Awaited<ReturnType<typeof setup>>) =>
+		s.put.mockImplementation(async (_room, owner, base, body) => ({
+			status: "ok" as const,
+			draft: draft(owner, body, base + 1),
+		}));
+
+	it("comes back from the room with its line, shows the app above the field, and shares the line with each change", async () => {
+		// As a reloaded tab finds it.
+		const s = await setup([draft(userA.id, `> ${LINE}\n\nAlso, the Hansen order.`, 2)]);
+		echo(s);
+		await settle();
+		expect(s.composer().value).toBe("Also, the Hansen order.");
+		expect(answered(s)).toBe(LINE);
+		expect(strip(s).hidden).toBe(false);
+		expect(strip(s).querySelector(".composer-answer-label")?.textContent).toBe("shop");
+		expect(strip(s).querySelector(".composer-answer-question")?.textContent).toBe("Order 1042 · Hansen");
+		expect(s.view.el.textContent).not.toContain("app:shop");
+		// The member's change goes to the room under the line; the caret is counted in their words.
+		type(s.composer(), "Also, the Hansen order. And Lund.");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(written(s)).toBe(`> ${LINE}\n\nAlso, the Hansen order. And Lund.`);
+		// Leaving the app out takes the line out of the shared draft too.
+		strip(s).querySelector<HTMLButtonElement>("button")!.click();
+		await vi.advanceTimersByTimeAsync(310);
+		expect(written(s)).toBe("Also, the Hansen order. And Lund.");
+		expect(answered(s)).toBeUndefined();
+		expect(strip(s).hidden).toBe(true);
+	});
+
+	it("follows another tab: a line put there shows here, and a line taken away there goes here", async () => {
+		const s = await setup([draft(userA.id, "Earlier words", 2)]);
+		await settle();
+		expect(answered(s)).toBeUndefined();
+		s.live(draft(userA.id, `> ${LINE}\n\nEarlier words\n\nGet a quote.`, 3));
+		await settle();
+		expect([answered(s), s.composer().value]).toEqual([LINE, "Earlier words\n\nGet a quote."]);
+		s.live(draft(userA.id, "Earlier words\n\nGet a quote.", 4));
+		await settle();
+		expect([answered(s), s.composer().value]).toEqual([undefined, "Earlier words\n\nGet a quote."]);
+		// A line that names no app is this browser's own: the room's text does not take it away.
+		s.company.conversation(session.sessionId).set({ answering: "Who first?" });
+		s.live(draft(userA.id, "Earlier words", 5));
+		await settle();
+		expect(answered(s)).toBe("Who first?");
+	});
+
+	it("is found before another note is added, whichever tab put it there: one message answers one line", async () => {
+		const f = fixture();
+		vi.mocked(f.api.listRoomDrafts)
+			.mockReset()
+			.mockResolvedValue([draft(userA.id, `> ${LINE}\n\nWords`, 2)]);
+		vi.spyOn(f.api, "subscribeRoomDrafts").mockImplementation((_room, _onDraft, onHealth) => {
+			onHealth("connected");
+			return { stop: async () => {} };
+		});
+		const put = vi.spyOn(f.api, "putRoomDraft");
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team: { ...team, members }, staff: [staff], sessions: [group], loading: false });
+		dispose = () => company.stop();
+		vi.spyOn(company, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(company, "sendPrompt").mockResolvedValue(true);
+		// No view of the thread is open here: the store knew nothing of the room's draft before the note.
+		const note = { text: "Get a quote.", quotes: [], header: "app:orders#1043 · Lund" };
+		expect(await tellAgent(company, accountsFake(), staff.id, note)).toMatchObject({ sent: false, held: true });
+		expect(send).not.toHaveBeenCalled();
+		expect(put).not.toHaveBeenCalled();
+		const state = company.conversation(session.sessionId).get();
+		expect([state.answering, state.draft]).toEqual([LINE, "Words"]);
+	});
+
+	it("joins a plain draft from the room under its own line, one message under one card", async () => {
+		const f = fixture();
+		vi.mocked(f.api.listRoomDrafts)
+			.mockReset()
+			.mockResolvedValue([draft(userA.id, "Earlier words", 2)]);
+		vi.spyOn(f.api, "subscribeRoomDrafts").mockImplementation((_room, _onDraft, onHealth) => {
+			onHealth("connected");
+			return { stop: async () => {} };
+		});
+		const put = vi.spyOn(f.api, "putRoomDraft").mockImplementation(async (_room, owner, base, body) => ({
+			status: "ok" as const,
+			draft: draft(owner, body, base + 1),
+		}));
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team: { ...team, members }, staff: [staff], sessions: [group], loading: false });
+		dispose = () => company.stop();
+		vi.spyOn(company, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(company, "sendPrompt").mockResolvedValue(true);
+		const note = { text: "Get a quote.", quotes: [], header: "app:orders#1043 · Lund" };
+		expect(await tellAgent(company, accountsFake(), staff.id, note)).toMatchObject({ sent: false });
+		expect(send).not.toHaveBeenCalled();
+		const state = company.conversation(session.sessionId).get();
+		expect([state.answering, state.draft]).toEqual(["app:orders#1043 · Lund", "Earlier words\n\nGet a quote."]);
+		await vi.advanceTimersByTimeAsync(310);
+		expect(put.mock.calls.at(-1)?.[3]).toBe("> app:orders#1043 · Lund\n\nEarlier words\n\nGet a quote.");
 	});
 });

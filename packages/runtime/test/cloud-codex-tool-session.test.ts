@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -31,9 +33,25 @@ import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CLOUD_PICTURE_MAKER_RULE,
+	CloudPictureChannel,
+	CloudPictureFailure,
+	CloudPictureUnavailable,
+} from "@qorpera/runtime/cloud-picture-channel";
 import { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
-import { MemoryCompactChannel, MemoryCompactStop } from "@qorpera/runtime/memory-tree/compact";
+import {
+	CLOUD_VOICE_READER_RULE,
+	CloudVoiceChannel,
+	CloudVoiceUnavailable,
+} from "@qorpera/runtime/cloud-voice-channel";
+import {
+	COMPACT_EFFORT,
+	COMPACT_MODEL,
+	MemoryCompactChannel,
+	MemoryCompactStop,
+} from "@qorpera/runtime/memory-tree/compact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -69,9 +87,13 @@ function run(
 		composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"];
 		runLog?: CloudRunLog;
 		compactor?: MemoryCompactChannel;
+		voice?: CloudVoiceChannel;
+		pictures?: CloudPictureChannel;
 		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
 		opening?: Parameters<typeof runCloudCodexToolSession>[0]["opening"];
 		turnCorrection?: Parameters<typeof runCloudCodexToolSession>[0]["turnCorrection"];
+		light?: Parameters<typeof runCloudCodexToolSession>[0]["light"];
+		prompt?: string;
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -99,7 +121,8 @@ function run(
 		binarySha256,
 		boundary,
 		model: "offline-probe",
-		...(options.opening ? {} : { prompt: "Private test input" }),
+		// A run with an opening or a light ask's run has no prompt of its own.
+		...(options.opening || options.light ? {} : { prompt: "Private test input" }),
 		...options,
 		signal,
 	});
@@ -278,6 +301,115 @@ it("cuts webhook signing secrets out of the compactor's instructions and windows
 	expect(recorded.compactTurns[0].input[0].text).toBe("PRIVATE_WINDOW_1 member: whsec_[REDACTED]");
 });
 
+describe("a light ask's run (deploy/first-node/RUNTIME-LIGHT-ASK.md §3)", () => {
+	it("asks once on a tool-less side thread with the compactor's model and effort, and never starts the agent's thread", async () => {
+		const order: string[] = [];
+		let reply: string | undefined;
+		const { result, evidence, execute } = run("compact", {
+			tools: [],
+			beforeModelStart: async () => {
+				order.push("admitted");
+			},
+			light: async (ask, signal) => {
+				order.push("asking");
+				reply = await ask("PRIVATE_LIGHT_SYSTEM", "PRIVATE_LIGHT_TEXT", signal);
+				order.push("answered");
+			},
+		});
+		const session = await result;
+		expect(order).toEqual(["admitted", "asking", "answered"]);
+		expect(reply).toBe("LINE 1");
+		// The run's provider session is the thread it asked in.
+		expect(session.providerSessionId).toBe("thread_compact");
+		expect(session.toolCalls).toBe(0);
+		expect(execute).not.toHaveBeenCalled();
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(recorded.compactThreads).toHaveLength(1);
+		expect(recorded.compactThreads[0]).toMatchObject({
+			model: COMPACT_MODEL,
+			developerInstructions: "PRIVATE_LIGHT_SYSTEM",
+			dynamicTools: [],
+			ephemeral: true,
+			sandbox: "read-only",
+			approvalPolicy: "never",
+		});
+		expect(recorded.compactTurns).toHaveLength(1);
+		expect(recorded.compactTurns[0]).toMatchObject({
+			threadId: "thread_compact",
+			effort: COMPACT_EFFORT,
+			input: [{ type: "text", text: "PRIVATE_LIGHT_TEXT" }],
+			sandboxPolicy: { type: "readOnly", networkAccess: false },
+		});
+		// The agent's thread and turn never started.
+		expect(recorded.mainThread ?? null).toBeNull();
+		expect(recorded.mainTurn ?? null).toBeNull();
+		expect(recorded.order).toEqual(["compact-thread"]);
+	});
+
+	it("cuts a webhook signing secret out of what it sends Codex, as every other lane does", async () => {
+		const { result, evidence } = run("compact", {
+			tools: [],
+			light: async (ask, signal) => {
+				await ask(`PRIVATE_LIGHT_SYSTEM ${FAKE_WEBHOOK_SECRET}`, `<name>${FAKE_WEBHOOK_SECRET}</name>`, signal);
+			},
+		});
+		await result;
+		const raw = await readFile(evidence, "utf8");
+		expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	});
+
+	it("names the payer's usage limit to the ask, which may end the run without an answer", async () => {
+		let stop: unknown;
+		const { result } = run("compact-usage-limit", {
+			tools: [],
+			light: async (ask, signal) => {
+				stop = await ask("PRIVATE_LIGHT_SYSTEM", "PRIVATE_LIGHT_TEXT", signal).catch((error: unknown) => error);
+			},
+		});
+		const session = await result;
+		expect(stop).toBeInstanceOf(MemoryCompactStop);
+		expect((stop as MemoryCompactStop).reason).toBe("usage-limit");
+		expect(session.providerSessionId).toBe("thread_compact");
+	});
+
+	it("gives a run that asked nothing a provider session of its own", async () => {
+		const light = vi.fn(async () => undefined);
+		const { result, evidence } = run("compact", { tools: [], light });
+		expect((await result).providerSessionId).toMatch(/^light:[0-9a-f-]{36}$/);
+		expect(light).toHaveBeenCalledOnce();
+		await expect(readFile(evidence, "utf8")).rejects.toThrow();
+	});
+
+	it("fails the run with what the light ask throws, and with an empty question", async () => {
+		const failed = run("compact", {
+			tools: [],
+			light: async () => {
+				throw new Error("The answer was not stored");
+			},
+		});
+		await expect(failed.result).rejects.toThrow("The answer was not stored");
+		const empty = run("compact", {
+			tools: [],
+			light: async (ask, signal) => {
+				await ask("PRIVATE_LIGHT_SYSTEM", "   ", signal);
+			},
+		});
+		await expect(empty.result).rejects.toThrow("Invalid native boundary input");
+	});
+
+	it.each<[string, Parameters<typeof run>[1]]>([
+		["a prompt", { prompt: "Private test input" }],
+		["instructions of its own", { runtimeInstructions: "HOST_OWNED_CONSTITUTION" }],
+		["an opening", { opening: async () => ({ prompt: "Private test input" }) }],
+	])("refuses a light ask's run with %s", async (_label, extra) => {
+		const light = vi.fn(async () => undefined);
+		await expect(run("compact", { tools: [], light, ...extra }).result).rejects.toThrow(
+			"Invalid native boundary input",
+		);
+		expect(light).not.toHaveBeenCalled();
+	});
+});
+
 it("ends the run when its composition is not one Codex can send", async () => {
 	// A position past the request's items: refused here, before Codex sees it.
 	const composeContext = vi.fn(async () => ({ input: [{ keep: 2 }] }));
@@ -309,6 +441,21 @@ it("cuts webhook signing secrets out of the instructions file and the thread's i
 	// The file and the thread's instructions stay the same bytes.
 	expect(recorded.bootstrap).toBe(recorded.threadParameters.developerInstructions);
 	expect(recorded.bootstrap).toContain("HOST_LAW whsec_[REDACTED] END");
+});
+
+// Track 3, T3-3: a company run's instructions carry the tool-result rules at their own place, after the company's purpose
+// and files; the session then puts no second copy before them.
+it("puts no second copy of the tool-result rules before instructions that carry them", async () => {
+	const { result, evidence } = run("model-selection", {
+		opening: async () => ({
+			prompt: "Private test input",
+			runtimeInstructions: `# Your company\n\n${CLOUD_TOOL_RESULT_INSTRUCTIONS}`,
+			resultRulesInside: true,
+		}),
+	});
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.threadParameters.developerInstructions).toBe(`# Your company\n\n${CLOUD_TOOL_RESULT_INSTRUCTIONS}`);
 });
 
 it("cuts webhook signing secrets out of every turn input it sends Codex, whatever composed it", async () => {
@@ -963,9 +1110,9 @@ function publicSendTool(): CloudNativeTool {
 		}),
 	};
 }
-it("ends the turn after the fence that follows a confirmed final send", async () => {
+it("leaves the turn open after a confirmed final send: the model ends it, and the marker stays with the host", async () => {
 	const { rows, observability } = observationCollector();
-	const { result, evidence } = run("final-send-ends-turn", { observability, tools: [publicSendTool()] });
+	const { result, evidence } = run("final-send-natural", { observability, tools: [publicSendTool()] });
 	await expect(result).resolves.toEqual({
 		providerSessionId: "thread_fixture",
 		toolCalls: 1,
@@ -974,35 +1121,90 @@ it("ends the turn after the fence that follows a confirmed final send", async ()
 	});
 	await observability.close();
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
-	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
-	// The host-only marker never reaches the provider.
+	// The answer no longer ends the turn (the 2026-11-13 amendment): no interrupt is asked for.
+	expect(recorded.interrupt).toBeNull();
+	// The host-only markers never reach the provider.
 	expect(Object.keys(recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
-	// The fence reply for the final send arrived before the interrupted completion.
 	expect(recorded.fenced).toBeTypeOf("object");
 	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
 		status: "succeeded",
 		errorCategory: null,
 	});
 });
-it("ends the turn after a final send even when its response held another call (contract 7.1)", async () => {
+/** A bookkeeping tool of the run's (CLOUD_AFTER_ANSWER_TOOLS), as the fixture calls it. */
+function todoTool(execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_TODO" }))): CloudNativeTool {
+	return {
+		name: "manage_todo",
+		source: "company_file",
+		description: "Synthetic todo.",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		parseArguments: () => ({}),
+		execute,
+	};
+}
+it("runs the run's bookkeeping after the answer, and the turn goes on until the model ends it", async () => {
+	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_TODO" }));
+	const { result, evidence } = run("final-send-then-tail", { tools: [publicSendTool(), todoTool(execute)] });
+	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toBeNull();
+	expect(execute).toHaveBeenCalledOnce();
+	const todo = JSON.parse(recorded.outputs[1].output);
+	expect(todo).toMatchObject({ status: "ok", content: { text: "PUBLIC_TODO" } });
+});
+it("lets the answer's own call again after it: its key replays it, and the turn goes on", async () => {
+	const send = publicSendTool();
+	const execute = vi.spyOn(send, "execute");
+	const { result, evidence } = run("final-send-replay", { tools: [send] });
+	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toBeNull();
+	expect(execute).toHaveBeenCalledTimes(2);
+	expect(recorded.outputs.map((output: { output: string }) => JSON.parse(output.output).status)).toEqual(["ok", "ok"]);
+});
+it("after the answer, runs no call that is not bookkeeping, and ends the turn at the next request", async () => {
+	const execute = vi.fn(async () => ({ kind: "text" as const, value: "PUBLIC_NOTE" }));
 	const note: CloudNativeTool = {
 		name: "read_note",
 		source: "company_file",
 		description: "Synthetic note.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 		parseArguments: () => ({}),
-		execute: async () => ({ kind: "text", value: "PUBLIC_NOTE" }),
+		execute,
 	};
 	const { result, evidence } = run("final-send-then-note", { tools: [publicSendTool(), note] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 2, fencedRequests: 2 });
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+	expect(execute).not.toHaveBeenCalled();
+	const refused = JSON.parse(recorded.outputs[1].output);
+	expect(refused.status).toBe("denied");
+	expect(refused.content.text).toMatch(/^TOOL_UNAVAILABLE: the final send is made/);
 });
-it("still accepts a natural completion after requesting the turn end", async () => {
-	const { result, evidence } = run("final-send-natural", { tools: [publicSendTool()] });
+it("keeps the run delivered when the provider fails after its answer, and records the turn as failed", async () => {
+	const { rows, observability } = observationCollector();
+	const { result, evidence } = run("final-send-then-failed", { observability, tools: [publicSendTool()] });
 	await expect(result).resolves.toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+	await observability.close();
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
-	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+	expect(recorded.interrupt).toBeNull();
+	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+		status: "failed",
+		errorCategory: "transport_unavailable",
+	});
+	expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+});
+it("gives its caller the usage limit a provider failure after the answer met; a delivered run has none", async () => {
+	const limited = run("final-send-then-limit", { tools: [publicSendTool()] });
+	await expect(limited.result).resolves.toEqual({
+		providerSessionId: "thread_fixture",
+		toolCalls: 1,
+		codexVersion: "0.155.1",
+		fencedRequests: 2,
+		usageSignal: "usage_limit",
+	});
+	const delivered = await run("final-send-natural", { tools: [publicSendTool()] }).result;
+	expect(delivered).not.toHaveProperty("usageSignal");
 });
 it("does not end the turn after a progress send", async () => {
 	const { result, evidence } = run("progress-send-no-end", { tools: [publicSendTool()] });
@@ -1011,7 +1213,7 @@ it("does not end the turn after a progress send", async () => {
 	expect(recorded.interrupt).toBeNull();
 });
 describe("a turn that ended with the run's closing act undone", () => {
-	it("gives the model one more turn in the same thread, told what is missing, and ends on its final send", async () => {
+	it("gives the model one more turn in the same thread, told what is missing, and takes its final send", async () => {
 		const { rows, observability } = observationCollector();
 		const turnCorrection = vi.fn(async () => "You sent no final message. Send it now.");
 		const { result, evidence } = run("correct-final", { observability, tools: [publicSendTool()], turnCorrection });
@@ -1030,8 +1232,8 @@ describe("a turn that ended with the run's closing act undone", () => {
 			threadId: "thread_fixture",
 			input: [{ type: "text", text: "You sent no final message. Send it now.", text_elements: [] }],
 		});
-		// The final send ends the added turn as it ends any turn, and its marker stays with the host.
-		expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture_2" });
+		// The final send leaves the added turn open as any turn, and the model ends it; its marker stays with the host.
+		expect(recorded.interrupt).toBeNull();
 		expect(Object.keys(recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
 		// Each turn is observed by itself: the second counts what the thread used since it began, not the thread.
 		const turns = rows.filter((row) => row.operation === "model_turn" && row.phase === "finish");
@@ -1879,6 +2081,571 @@ it("keeps the agent's turn when closing fails, and stops the compactor once the 
 	// With no process to answer, a call stops the lane as an outage does; the next run builds what is missing.
 	await expect(compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal)).rejects.toMatchObject({
 		reason: "outage",
+	});
+});
+
+// A voice call (VOICE-TOOL-DESIGN-20261110): a side thread of the run's own app-server that can do nothing, with a
+// realtime session whose voice reads one line at a time. Whatever the voice does, the agent's run stands.
+const VOICE_OFFER = "v=0\r\nPRIVATE_OFFER_SDP\r\n";
+
+/** A run whose agent's turn waits, once it is under way, until the test lets it end. */
+async function voiceRun(mode: string, options: Parameters<typeof run>[1] = {}) {
+	const voice = options.voice ?? new CloudVoiceChannel();
+	const contextViews: string[] = [];
+	const started = run(mode, {
+		voice,
+		recordContextView: async (frame) => {
+			contextViews.push(frame.threadId);
+		},
+		...options,
+	});
+	await vi.waitFor(() => stat(`${started.evidence}.voice-ready`), { timeout: 10_000 });
+	return {
+		...started,
+		voice,
+		contextViews,
+		recorded: async () => JSON.parse(await readFile(started.evidence, "utf8")),
+		endTurn: () => writeFile(`${started.evidence}.continue`, ""),
+	};
+}
+
+it("places a voice call on a side thread that can do nothing, and reads its lines one at a time", async () => {
+	const f = await voiceRun("voice");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER, voice: "cove" }, signal);
+	expect(call.answerSdp).toBe("v=0\r\nPRIVATE_ANSWER_SDP\r\n");
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toThrow("Native voice call already open");
+	await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+	// This transcript comes without its thread, and past the bound: its head is kept, never a cut character.
+	await expect(call.speak("LONG", signal)).resolves.toEqual({ transcript: "é".repeat(2048) });
+	await call.close();
+	await expect(call.speak('"Three."', signal)).rejects.toThrow("Native voice call ended");
+	await f.endTurn();
+	// The voice's prewarm is not the agent's request, nor its context.
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	expect(f.contextViews.every((threadId) => threadId === "thread_fixture")).toBe(true);
+	const recorded = await f.recorded();
+	expect(recorded.thread).toMatchObject({
+		ephemeral: true,
+		approvalPolicy: "never",
+		sandbox: "read-only",
+		developerInstructions: CLOUD_VOICE_READER_RULE,
+		dynamicTools: [],
+	});
+	expect(recorded.thread.cwd).toBe(recorded.mainThread.cwd);
+	expect(recorded.prewarm).toMatchObject({ threadId: "thread_voice", outputs: [] });
+	expect(recorded.start).toEqual({
+		threadId: "thread_voice",
+		outputModality: "audio",
+		transport: { type: "webrtc", sdp: VOICE_OFFER },
+		version: "v3",
+		voice: "cove",
+		clientManagedHandoffs: true,
+		includeStartupContext: false,
+		initialItems: [{ role: "developer", text: CLOUD_VOICE_READER_RULE }],
+	});
+	expect(recorded.appended).toEqual([
+		{ threadId: "thread_voice", text: '"One."' },
+		{ threadId: "thread_voice", text: "LONG" },
+	]);
+	expect(recorded.stops).toEqual([{ threadId: "thread_voice" }]);
+	expect(recorded.interrupts).toEqual([]);
+});
+
+it("interrupts a turn the voice starts, ends the call, and the agent's turn stands", async () => {
+	const f = await voiceRun("voice-delegates");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	await expect(call.speak('"One."', signal)).rejects.toThrow("Native voice tried to act");
+	await vi.waitFor(async () => expect((await f.recorded()).delegatedFence).not.toBeNull(), { timeout: 10_000 });
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	const recorded = await f.recorded();
+	expect(recorded.start).not.toHaveProperty("voice");
+	expect(recorded.interrupts).toContainEqual({ threadId: "thread_voice", turnId: "turn_voice" });
+	expect(recorded.stops).toEqual([{ threadId: "thread_voice" }]);
+	// The turn's request gets nothing of the agent's, and is not its context.
+	expect(recorded.delegatedFence.outputs).toEqual([
+		{ kind: "function_call_output", callId: "voice_call", output: '{"available":false}' },
+	]);
+	expect(f.contextViews).not.toContain("thread_voice");
+});
+
+it("refuses every request of the voice's thread", async () => {
+	const f = await voiceRun("voice-request");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+	await call.close();
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 0 });
+	expect((await f.recorded()).refused.error).toMatchObject({ code: -32601 });
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("ends the call on a realtime error without the provider's words, and the run stands", async () => {
+	const f = await voiceRun("voice-error");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	const failure = await call.speak('"One."', signal).catch((error: unknown) => error);
+	expect((failure as Error).message).toBe("Native voice call failed");
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]);
+});
+
+it("rejects the call when Codex refuses its realtime start, and leaves the run's failure category as it was", async () => {
+	const f = await voiceRun("voice-start-error", {
+		// The run fails afterwards for a reason of its own: the category it reports is not the voice's.
+		turnCorrection: async () => {
+			throw new Error("PRIVATE_CORRECTION_FAILURE");
+		},
+	});
+	const signal = new AbortController().signal;
+	const failure = await f.voice.open({ offerSdp: VOICE_OFFER }, signal).catch((error: unknown) => error);
+	expect((failure as Error).message).toBe("Native voice request rejected");
+	await vi.waitFor(async () => expect((await f.recorded()).stops).toHaveLength(1), { timeout: 10_000 });
+	await f.endTurn();
+	const ended = await f.result.catch((error: unknown) => error);
+	expect(nativeRuntimeFailureMetadata(ended)).toMatchObject({ category: "unknown" });
+});
+
+it("closes the call when the signal it was opened with aborts", async () => {
+	const f = await voiceRun("voice");
+	const opened = new AbortController();
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, opened.signal);
+	opened.abort();
+	await vi.waitFor(async () => expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]), {
+		timeout: 10_000,
+	});
+	await expect(call.speak('"One."', new AbortController().signal)).rejects.toThrow("Native voice cancelled");
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+});
+
+it("rejects a line still being spoken when the run ends, and detaches the voice", async () => {
+	const f = await voiceRun("voice-silent");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	const speaking = call.speak('"One."', signal).catch((error: unknown) => error);
+	await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect(await speaking).toBeInstanceOf(CloudVoiceUnavailable);
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
+});
+
+it.each(["voice-reopen", "voice-reopen-refused"])(
+	"keeps the slot of a call being stopped until its stop is confirmed, and gives its late words to no other call: %s",
+	async (mode) => {
+		const f = await voiceRun(mode);
+		const signal = new AbortController().signal;
+		const first = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const line = new AbortController();
+		const speaking = first.speak('"One."', line.signal).catch((error: unknown) => error);
+		await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+		line.abort();
+		// The line is rejected at once; the next call waits for the stop, and does not fail.
+		expect(((await speaking) as Error).message).toBe("Native voice cancelled");
+		const second = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await expect(second.speak('"Two."', signal)).resolves.toEqual({ transcript: 'SAID "Two."' });
+		await second.close();
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		const recorded = await f.recorded();
+		// The second thread started only after the first call's late transcript and close, which went to neither call.
+		expect(recorded.events).toEqual(["thread-start:thread_voice", "stop", "late", "thread-start:thread_voice_2"]);
+		expect(recorded.stops).toEqual([{ threadId: "thread_voice" }, { threadId: "thread_voice_2" }]);
+	},
+);
+
+it.each(["voice-stop-silent", "voice-stop-refused"])(
+	"places no more calls in a run once a stop went unconfirmed, and the run stands: %s",
+	async (mode) => {
+		const f = await voiceRun(mode, { voice: new CloudVoiceChannel({ stopMs: 200 }) });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await call.close();
+		await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
+		expect((await f.recorded()).events).toEqual(["thread-start:thread_voice"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	},
+);
+
+it("gives a run on a member's ChatGPT plan no voice", async () => {
+	const f = await voiceRun("voice", { identityRoot: await planRoot() });
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, new AbortController().signal)).rejects.toBeInstanceOf(
+		CloudVoiceUnavailable,
+	);
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	await expect(stat(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+/** Runs the fixture as the isolated launcher would, with a relay whose voice call window the test watches: each event
+ * names what the fixture had seen when the window opened or closed. */
+function voiceRelay(): string[] {
+	const events: string[] = [];
+	const seen = (): string => {
+		try {
+			const recorded = JSON.parse(readFileSync(join(root, "evidence.json"), "utf8"));
+			return `start=${recorded.start ? "sent" : "none"},stops=${recorded.stops.length}`;
+		} catch {
+			return "unread";
+		}
+	};
+	vi.spyOn(nativeIsolation, "launchIsolatedNativeProcess").mockImplementation(async (options) => {
+		const child = spawn(options.command, [...options.args], {
+			cwd: join(options.scratchRoot, "workspace"),
+			env: {
+				HOME: join(options.scratchRoot, "home"),
+				CODEX_HOME: options.codexHome,
+				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				NO_COLOR: "1",
+				...(options.fenceSocket ? { QORPERA_NATIVE_RESULT_FENCE_SOCKET: options.fenceSocket } : {}),
+			},
+			stdio: ["pipe", "pipe", "pipe"],
+			detached: true,
+		});
+		return {
+			child,
+			async close() {
+				if (child.exitCode !== null || child.signalCode !== null) return;
+				const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+				child.kill("SIGKILL");
+				await exited;
+			},
+			allowRealtime: () => {
+				events.push(`open:${seen()}`);
+				let ran = false;
+				return () => {
+					events.push(ran ? "closed again" : `close:${seen()}`);
+					ran = true;
+				};
+			},
+		};
+	});
+	return events;
+}
+const isolation = { entryPoint: "/unused-synthetic-isolation.mjs" };
+
+describe("a voice call's relay window", () => {
+	it("opens before the call's realtime start is sent, and closes once its stop is confirmed", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice", { isolation });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await call.close();
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(events).toHaveLength(2);
+	});
+
+	it("closes when the stop is given up on", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-stop-silent", { isolation, voice: new CloudVoiceChannel({ stopMs: 300 }) });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const closing = call.close();
+		await vi.waitFor(async () => expect((await f.recorded()).stops).toHaveLength(1), { timeout: 10_000 });
+		// The stop is sent and not confirmed: the call may still be up, so its host still passes.
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await closing;
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(events).toHaveLength(2);
+	});
+
+	it("closes when the run ends with a call open", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-silent", { isolation });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const speaking = call.speak('"One."', signal).catch((error: unknown) => error);
+		await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await speaking).toBeInstanceOf(CloudVoiceUnavailable);
+		expect(events).toHaveLength(2);
+		expect(events[1]).toMatch(/^close:start=sent,/);
+	});
+
+	it("closes when the call fails to start", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-start-error", { isolation });
+		const signal = new AbortController().signal;
+		const failure = await f.voice.open({ offerSdp: VOICE_OFFER }, signal).catch((error: unknown) => error);
+		expect((failure as Error).message).toBe("Native voice request rejected");
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await f.result.catch(() => undefined);
+		expect(events).toHaveLength(2);
+	});
+});
+
+// A picture call (cloud-picture-channel.ts): a side thread of the run's own app-server, the one thread of the run with
+// Codex's image tool on, whose one turn makes one picture. Whatever the picture does, the agent's run stands.
+const TINY_PNG = Buffer.from(
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+	"base64",
+);
+
+/** A run whose agent's turn waits, once it is under way, until the test lets it end. */
+async function pictureRun(mode: string, options: Parameters<typeof run>[1] = {}) {
+	const pictures = options.pictures ?? new CloudPictureChannel();
+	const contextViews: string[] = [];
+	const started = run(mode, {
+		pictures,
+		recordContextView: async (frame) => {
+			contextViews.push(frame.threadId);
+		},
+		...options,
+	});
+	await vi.waitFor(() => stat(`${started.evidence}.picture-ready`), { timeout: 10_000 });
+	return {
+		...started,
+		pictures,
+		contextViews,
+		recorded: async () => JSON.parse(await readFile(started.evidence, "utf8")),
+		endTurn: () => writeFile(`${started.evidence}.continue`, ""),
+	};
+}
+const apple = { prompt: "a red apple" };
+const failureOf = async (made: Promise<unknown>): Promise<unknown> =>
+	made.then(
+		() => null,
+		(error: unknown) => error,
+	);
+
+describe("a picture call", () => {
+	it("makes the picture on a side thread with the image tool on, and the agent's thread never has it", async () => {
+		const f = await pictureRun("picture");
+		const made = await f.pictures.make(apple, new AbortController().signal);
+		expect(made).toEqual({ png: TINY_PNG, revisedPrompt: "a red apple", transparent: true });
+		const recorded = await f.recorded();
+		// The file Codex saved is read once and gone, with its folders.
+		expect(recorded.savedPath).toMatch(/\/generated_images\/thread_picture\/ig_1\.png$/);
+		expect(existsSync(recorded.savedPath)).toBe(false);
+		expect(existsSync(dirname(dirname(recorded.savedPath)))).toBe(false);
+		await f.endTurn();
+		// The picture's requests are not the agent's, nor its context.
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+		expect(f.contextViews.every((threadId) => threadId === "thread_fixture")).toBe(true);
+		expect(recorded.threads).toEqual([
+			{
+				model: "offline-probe",
+				cwd: recorded.mainThread.cwd,
+				runtimeWorkspaceRoots: [],
+				environments: [],
+				ephemeral: true,
+				approvalPolicy: "never",
+				approvalsReviewer: "user",
+				sandbox: "read-only",
+				developerInstructions: CLOUD_PICTURE_MAKER_RULE,
+				dynamicTools: [],
+				config: { "features.image_generation": true, "features.omit_app_server_notification_media": true },
+			},
+		]);
+		// The agent's thread starts with the process's configuration alone, where the feature is off.
+		expect(recorded.mainThread).not.toHaveProperty("config");
+		expect(recorded.configuration.features.image_generation).toBe(false);
+		expect(recorded.configuration.features).not.toHaveProperty("omit_app_server_notification_media");
+		expect(recorded.turn).toEqual({
+			threadId: "thread_picture",
+			input: [{ type: "text", text: "a red apple", text_elements: [] }],
+			effort: "low",
+			environments: [],
+			runtimeWorkspaceRoots: [],
+			sandboxPolicy: { type: "readOnly", networkAccess: false },
+		});
+		expect(recorded.prewarm).toMatchObject({ threadId: "thread_picture", outputs: [] });
+		// Composed as Codex built it, never from the agent's run.
+		expect(recorded.composed).toMatchObject({ threadId: "thread_picture", input: [{ keep: 0 }, { keep: 1 }] });
+		// Once the picture is in, its turn is stopped.
+		expect(recorded.interrupts).toEqual([{ threadId: "thread_picture", turnId: "turn_picture" }]);
+	});
+
+	it.each([
+		["picture-limit", "picture_limit"],
+		["picture-refused", "refused"],
+		// The image tool was never called (a Free plan has none), and called but its turn ended without the picture.
+		["picture-silent", "no_picture"],
+		["picture-started", "refused"],
+		// Codex named the member's plan: Free makes none, and another plan says nothing of why.
+		["picture-free", "free_plan"],
+		["picture-free-limits", "free_plan"],
+		["picture-pro", "no_picture"],
+		["picture-usage-limit", "usage_limit"],
+		["picture-not-png", "invalid"],
+		["picture-outside", "invalid"],
+		["picture-large", "too_large"],
+		["picture-turn-refused", "failed"],
+		["picture-thread-refused", "failed"],
+	])("ends the call, never the run, when %s: %s", async (mode, reason) => {
+		const f = await pictureRun(mode);
+		const failure = await failureOf(f.pictures.make(apple, new AbortController().signal));
+		expect(failure).toBeInstanceOf(CloudPictureFailure);
+		expect((failure as CloudPictureFailure).reason).toBe(reason);
+		// A failed generation's text goes back to the model: the fence answers it after the call has its answer.
+		if (mode === "picture-limit" || mode === "picture-refused")
+			await vi.waitFor(async () => expect((await f.recorded()).followUp).not.toBeNull(), { timeout: 10_000 });
+		const recorded = await f.recorded();
+		// The member's picture limit says when it ends.
+		expect((failure as CloudPictureFailure).resetsAt).toBe(mode === "picture-limit" ? 1763049600 : undefined);
+		// It gets nothing of the agent's.
+		if (mode === "picture-limit" || mode === "picture-refused")
+			expect(recorded.followUp.outputs).toEqual([
+				{ kind: "function_call_output", callId: "imagegen_call", output: '{"available":false}' },
+			]);
+		// A file where Codex keeps a picture is removed, whatever it is; one elsewhere is never read or touched.
+		if (["picture-not-png", "picture-large"].includes(mode)) expect(existsSync(recorded.savedPath)).toBe(false);
+		if (mode === "picture-outside") expect(readFileSync(recorded.savedPath)).toEqual(TINY_PNG);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("gives up on a picture that does not come in time, and removes one Codex saves after", async () => {
+		// Time enough to start the thread and its turn on a busy test machine, which the picture never ends.
+		const f = await pictureRun("picture-late", { pictures: new CloudPictureChannel({ timeoutMs: 3000 }) });
+		const failure = await failureOf(f.pictures.make(apple, new AbortController().signal));
+		expect((failure as CloudPictureFailure).reason).toBe("timeout");
+		await vi.waitFor(async () => expect((await f.recorded()).savedPath).toEqual(expect.any(String)), {
+			timeout: 10_000,
+		});
+		const recorded = await f.recorded();
+		expect(recorded.interrupts).toEqual([{ threadId: "thread_picture", turnId: "turn_picture" }]);
+		await vi.waitFor(() => expect(existsSync(recorded.savedPath)).toBe(false), { timeout: 10_000 });
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("makes one picture at a time, and ends the one being made with the run", async () => {
+		const f = await pictureRun("picture-slow", { pictures: new CloudPictureChannel({ timeoutMs: 60_000 }) });
+		const signal = new AbortController().signal;
+		const first = failureOf(f.pictures.make(apple, signal));
+		await vi.waitFor(async () => expect((await f.recorded()).turn).not.toBeNull(), { timeout: 10_000 });
+		const second = await failureOf(f.pictures.make(apple, signal));
+		expect((second as CloudPictureFailure).reason).toBe("busy");
+		expect((await f.recorded()).threads).toHaveLength(1);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await first).toBeInstanceOf(CloudPictureUnavailable);
+		await expect(f.pictures.make(apple, signal)).rejects.toBeInstanceOf(CloudPictureUnavailable);
+	});
+
+	it("stops the call when the signal it was made with aborts", async () => {
+		const f = await pictureRun("picture-slow");
+		const made = new AbortController();
+		const failure = failureOf(f.pictures.make(apple, made.signal));
+		await vi.waitFor(async () => expect((await f.recorded()).turn).not.toBeNull(), { timeout: 10_000 });
+		made.abort();
+		expect(((await failure) as Error).message).toBe("Native picture cancelled");
+		await vi.waitFor(async () => expect((await f.recorded()).interrupts).toHaveLength(1), { timeout: 10_000 });
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("holds the picture model's own prompt to a description's bound, cut at a character's end", async () => {
+		const f = await pictureRun("picture-long-revised");
+		const made = await f.pictures.make(apple, new AbortController().signal);
+		expect(made.revisedPromptCut).toBe(true);
+		expect(made.revisedPrompt).toBe("é".repeat(2048));
+		expect(Buffer.byteLength(made.revisedPrompt ?? "")).toBe(4096);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("takes the first picture of a turn, and removes a second the model makes", async () => {
+		const f = await pictureRun("picture-twice");
+		await expect(f.pictures.make(apple, new AbortController().signal)).resolves.toMatchObject({ png: TINY_PNG });
+		await vi.waitFor(async () => expect((await f.recorded()).secondPath).toEqual(expect.any(String)), {
+			timeout: 10_000,
+		});
+		const recorded = await f.recorded();
+		await vi.waitFor(() => expect(existsSync(recorded.secondPath)).toBe(false), { timeout: 10_000 });
+		expect(existsSync(recorded.savedPath)).toBe(false);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("refuses every request of the picture's thread", async () => {
+		const f = await pictureRun("picture-request");
+		await expect(f.pictures.make(apple, new AbortController().signal)).resolves.toMatchObject({ png: TINY_PNG });
+		await vi.waitFor(async () => expect((await f.recorded()).refused).not.toBeNull(), { timeout: 10_000 });
+		expect((await f.recorded()).refused.error).toMatchObject({ code: -32601 });
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 0 });
+		expect(f.execute).not.toHaveBeenCalled();
+	});
+
+	it("refuses a description that is empty, too long or holds control characters, before any thread", async () => {
+		const f = await pictureRun("picture");
+		const signal = new AbortController().signal;
+		for (const prompt of ["", " \n", "x".repeat(4097), "a\u0000b", 7 as never])
+			await expect(f.pictures.make({ prompt }, signal)).rejects.toThrow(/^Invalid picture prompt$/);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect((await f.recorded()).threads).toEqual([]);
+	});
+
+	it("gives a run on a member's ChatGPT plan no pictures", async () => {
+		const f = await pictureRun("picture", { identityRoot: await planRoot() });
+		await expect(f.pictures.make(apple, new AbortController().signal)).rejects.toBeInstanceOf(
+			CloudPictureUnavailable,
+		);
+		expect((await f.recorded()).threads).toEqual([]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	});
+
+	it("lets the relay's connections wait for the picture from before its turn starts until the call ends", async () => {
+		const events: string[] = [];
+		const seen = (): string => {
+			try {
+				return `turn=${JSON.parse(readFileSync(join(root, "evidence.json"), "utf8")).turn ? "sent" : "none"}`;
+			} catch {
+				return "unread";
+			}
+		};
+		vi.spyOn(nativeIsolation, "launchIsolatedNativeProcess").mockImplementation(async (options) => {
+			const child = spawn(options.command, [...options.args], {
+				cwd: join(options.scratchRoot, "workspace"),
+				env: {
+					HOME: join(options.scratchRoot, "home"),
+					CODEX_HOME: options.codexHome,
+					PATH: process.env.PATH ?? "/usr/bin:/bin",
+					NO_COLOR: "1",
+					...(options.fenceSocket ? { QORPERA_NATIVE_RESULT_FENCE_SOCKET: options.fenceSocket } : {}),
+				},
+				stdio: ["pipe", "pipe", "pipe"],
+				detached: true,
+			});
+			return {
+				child,
+				async close() {
+					if (child.exitCode !== null || child.signalCode !== null) return;
+					const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+					child.kill("SIGKILL");
+					await exited;
+				},
+				allowLongWaits: () => {
+					events.push(`open:${seen()}`);
+					return () => events.push(`close:${seen()}`);
+				},
+			};
+		});
+		const f = await pictureRun("picture", { isolation });
+		await expect(f.pictures.make(apple, new AbortController().signal)).resolves.toMatchObject({ png: TINY_PNG });
+		expect(events).toEqual(["open:turn=none", "close:turn=sent"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(events).toHaveLength(2);
 	});
 });
 

@@ -1,5 +1,11 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
+/** The most bytes one of the coding guest's helpers may have: the four programs in /opt/qorpera-coding (storage,
+ * command, Git, watchdog; scripts/package-coding-guest.mjs). The packager refuses a larger one, and the executor reads
+ * each from the machine within it before it compares the helper with its pin (the LXD client allows a read this large
+ * only of a helper). Twice the 64 KiB it was until 12 Nov 2026: the helpers bundle contracts, and the command guest was
+ * 64,835 bytes then. */
+export const CODING_GUEST_HELPER_MAX_BYTES = 131_072;
 export interface CloudCodingCommandScope {
 	readonly workerId: string;
 	readonly vmId: string;
@@ -29,6 +35,15 @@ export interface CloudCodingCommandReceipt {
 	};
 }
 
+/** The most output one log page holds, in bytes of UTF-8 (keyholes S1, 12 Nov 2026; it was 16,384): a read's `limit`
+ * and a receipt's `output`. The guest pages also stay within 60,000 bytes of JSON escaping (readCodingCommandLog), so a
+ * page fits LXD's 64 KiB file answer. The two parsers below write it as a number of the old one's length, which a test
+ * pins to this: the coding command guest bundles them, and its program has a few hundred bytes left to the 64 KiB its
+ * packager and the coding executor's check allow (12 Nov 2026). */
+export const CLOUD_CODING_COMMAND_PAGE_BYTES = 65_536;
+/** The most an executor or a guest takes for a page when it does not say what it takes: the bound before
+ * CLOUD_CODING_COMMAND_PAGE_BYTES, which older ones refuse to go past. */
+export const CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES = 16_384;
 export interface CloudCodingCommandRead {
 	readonly commandId: string;
 	readonly offset?: number;
@@ -44,7 +59,7 @@ export function parseCloudCodingCommandRead(value: unknown): CloudCodingCommandR
 		!UUID.test(input.commandId) ||
 		(input.offset !== undefined && (!Number.isSafeInteger(input.offset) || Number(input.offset) < 0)) ||
 		(input.limit !== undefined &&
-			(!Number.isSafeInteger(input.limit) || Number(input.limit) < 4 || Number(input.limit) > 16384)) ||
+			(!Number.isSafeInteger(input.limit) || Number(input.limit) < 4 || Number(input.limit) > 65536)) ||
 		(input.tail !== undefined && typeof input.tail !== "boolean") ||
 		(input.tail === true && input.offset !== undefined)
 	)
@@ -73,7 +88,7 @@ export function parseCloudCodingCommandReceipt(value: unknown): CloudCodingComma
 			String(input.state),
 		) ||
 		typeof input.output !== "string" ||
-		Buffer.byteLength(input.output) > 16384 ||
+		Buffer.byteLength(input.output) > 65536 ||
 		Buffer.from(input.output).toString("utf8") !== input.output ||
 		typeof input.truncated !== "boolean" ||
 		(input.state === "succeeded"

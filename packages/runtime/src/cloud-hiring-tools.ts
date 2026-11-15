@@ -1,14 +1,13 @@
 import { osPath } from "@qorpera/cloud-client/company-state-files";
+import { isStaffCharacterId, STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { CloudFolderGroupChat, CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
-import type { CloudFolderHire, CloudFolderHiring } from "./cloud-folder-hiring.ts";
+import type { CloudFolderHire, CloudFolderHiring, CloudFolderRoleEnd } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, CloudToolArgumentRefusal, type CloudToolContext } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-/** The figures a client can draw (cloud-client staff-characters). The colour follows the figure. */
-const FIGURES = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
 const FIELDS = ["operationKey", "name", "role", "jobDescription", "firstAssignment", "figure"] as const;
 
 function text(value: unknown, maxBytes: number, singleLine: boolean): string {
@@ -47,22 +46,32 @@ function chatRequest(chat: {
 }
 
 /** A folder-v2 company's group chat (thin writers W4b): its folder under QorperaOS/agents/groups, with group.md. */
-export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER =
-	`Open a group chat with coworkers when work needs several of you in one place; for a question to one coworker use send_coworker_message instead. The chat is saved as its own folder, ${osPath("agents/groups")}/<name>/group.md, which lists its agents and people and holds its purpose. ` +
-	"coworkerIds are the ids of coworkers listed in your context; you are always a member, and the member who asked is included unless you set includeRequestingMember to false. Give it a short name people will recognise and a one-sentence purpose. " +
-	"When the result's outcome is saved the chat exists: tell the member its name. Keep operationKey stable for one intended chat and reuse it only with identical arguments: an unconfirmed result needs the same key and arguments again. A conflict or a refusal needs a new key.";
+export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER = [
+	"Open a group chat with coworkers when work needs several of you in one place; a question to one coworker goes by send_coworker_message.",
+	`The chat is its own folder, ${osPath("agents/groups")}/<name>/group.md, which lists its agents and people and holds its purpose. You are always a member, and the member who asked is included unless includeRequestingMember is false. When the answer's outcome is saved the chat exists: tell the member its name. A conflict or a refusal needs a new operationKey.`,
+].join("\n");
 
 /** A folder-v2 company's hire (thin writers W4a): the agent's folder, with the first assignment as a todo. */
-export const CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER =
-	`Hire a new coworker for this company. The hire is saved as the agent's own folder: ${osPath("agents")}/<name>/agent.md holds its job description, the instructions it works by, and its first assignment becomes an open todo in its todos folder. When the result's outcome is saved, the platform starts the agent on its first assignment by itself, usually within a minute: tell the member who you hired and why; send a coworker message only if it has not begun after a few minutes. If your own access to the company's files is limited, the hire waits for an owner or admin to approve it on a card. ` +
-	`Hire for a continuing responsibility that nobody owns, not for a one-off task. First see who already owns what: each coworker's agent.md under ${osPath("agents")}/ says what it does. An existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment (at most 4000 bytes) as the first concrete piece of work it should start on. figure picks its avatar. ` +
-	"Keep operationKey stable for one intended hire and reuse it only with identical arguments: an unconfirmed result needs the same key and arguments again, never a new key. A conflict or a refusal needs a new key.";
+export const CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER = [
+	`Hire a new coworker for a continuing responsibility that nobody owns, not for a one-off task (give that to a worker). First see who owns what: each coworker's agent.md under ${osPath("agents")}/ says what it does. Give it to an existing coworker only when it is the same kind of work and that coworker has room; otherwise hire.`,
+	`The hire is the agent's own folder: ${osPath("agents")}/<name>/agent.md holds its job description, the instructions it works by, and its first assignment becomes an open todo in its todos folder. When the answer's outcome is saved, the platform starts the agent on its first assignment by itself, usually within a minute: tell the member who you hired and why, and send it a coworker message only if it has not begun after a few minutes. When your own access to the company's files is limited, the hire waits for an owner or admin to approve it on a card.`,
+	"A conflict or a refusal needs a new operationKey.",
+].join("\n");
+/** The end of an agent's role (the company's reading of itself, 20260930766000): its agent.md set to archived. */
+export const CLOUD_END_ROLE_TOOL_DESCRIPTION = [
+	`End an agent's role when its work is over: its ${osPath("agents")}/<name>/agent.md is set to archived, through the automatic review, which may ask a member on a card.`,
+	`agent is its folder name under ${osPath("agents")}/; reason is one sentence a founder reads on why its work is over, at most 280 characters. The Co-Founder's role, your own and one already ended are refused.`,
+	"When the answer's outcome is saved, the platform pauses its routines and closes its threads by itself; its files stay, and a member can bring it back: tell the founders who and why. A conflict or a refusal needs a new operationKey.",
+].join("\n");
+/** One sentence of why a role ends, in characters. */
+const END_ROLE_REASON_CHARS = 280;
+
 /** The todo a folder-v2 hire's first assignment becomes holds at most this much (§2 "todo"). */
 const FOLDER_ASSIGNMENT_BYTES = 4000;
 
-/** A company's hire and group chat on the company folder (thin writers W4a, W4b): each is saved by its folder writer
- * as the agent's or the chat's own folder, under the call's receipt and its review. The model never supplies an
- * identity, a grant or a path.
+/** A company's hire, group chat and end of a role on the company folder (thin writers W4a, W4b; 20260930766000): each is
+ * saved by its folder writer as the agent's or the chat's own folder, or the agent's agent.md, under the call's receipt
+ * and its review. The model never supplies an identity, a grant or a path.
  */
 export function cloudHiringTools(
 	identity: CloudNativeToolIdentity,
@@ -73,20 +82,23 @@ export function cloudHiringTools(
 	// One request per operation key in this run: a key is bound to the first request that ran under it.
 	const hires = new Map<string, string>();
 	const chats = new Map<string, string>();
+	const ends = new Map<string, string>();
 	// The earlier request may already have taken effect (an unconfirmed result), so the refusal
 	// points at where it would be rather than inviting a second one under a new key.
 	const refuseRebinding = (
 		bound: Map<string, string>,
 		operationKey: string,
 		request: string,
-		kind: "hire" | "chat",
+		kind: "hire" | "chat" | "end",
 	) => {
 		const previous = bound.get(operationKey);
 		if (previous !== undefined && previous !== request)
 			throw new CloudToolArgumentRefusal(
 				kind === "hire"
 					? `operationKey is already used in this run for a different hire, which may already exist: check ${osPath("agents")}/ before hiring again, and repeat this operationKey only with identical arguments`
-					: `operationKey is already used in this run for a different group chat, which may already exist: check ${osPath("agents/groups")}/ before opening another, and repeat this operationKey only with identical arguments`,
+					: kind === "chat"
+						? `operationKey is already used in this run for a different group chat, which may already exist: check ${osPath("agents/groups")}/ before opening another, and repeat this operationKey only with identical arguments`
+						: "operationKey is already used in this run for ending another role, which may already have ended: repeat this operationKey only with identical arguments",
 			);
 	};
 	const assertContext = (context: CloudToolContext) => {
@@ -111,11 +123,29 @@ export function cloudHiringTools(
 			required: ["operationKey", "name", "role", "jobDescription", "firstAssignment"],
 			properties: {
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				name: { type: "string", minLength: 1, maxLength: 160 },
+				name: {
+					type: "string",
+					minLength: 1,
+					maxLength: 160,
+					description:
+						"How everyone finds it in the app, so name it by its work: one to three plain words for what it owns, in the founders' language (such as Customer research, Market, Brand or Bookkeeping). Never a person's name, and never a name a coworker already has.",
+				},
 				role: { type: "string", minLength: 1, maxLength: 320 },
-				jobDescription: { type: "string", minLength: 1, maxLength: 16384 },
-				firstAssignment: { type: "string", minLength: 1, maxLength: FOLDER_ASSIGNMENT_BYTES },
-				figure: { type: "string", enum: [...FIGURES] },
+				jobDescription: {
+					type: "string",
+					minLength: 1,
+					maxLength: 16384,
+					description:
+						"Its thin job specification: mission, the outcomes it owns, its voice, and when to escalate and to whom.",
+				},
+				firstAssignment: {
+					type: "string",
+					minLength: 1,
+					maxLength: FOLDER_ASSIGNMENT_BYTES,
+					description: `The first concrete piece of work it starts on, at most ${FOLDER_ASSIGNMENT_BYTES} bytes.`,
+				},
+				// The figures a client can draw; the colour follows the figure.
+				figure: { type: "string", enum: [...STAFF_CHARACTER_IDS], description: "Its avatar." },
 			},
 		},
 		parseArguments(value) {
@@ -137,8 +167,7 @@ export function cloudHiringTools(
 				throw new CloudToolArgumentRefusal(
 					`firstAssignment holds at most ${FOLDER_ASSIGNMENT_BYTES} bytes in this company: shorten it`,
 				);
-			if (a.figure !== undefined && !FIGURES.includes(a.figure as (typeof FIGURES)[number]))
-				throw new Error("Invalid hire figure");
+			if (a.figure !== undefined && !isStaffCharacterId(a.figure)) throw new Error("Invalid hire figure");
 			const hire = {
 				operationKey: a.operationKey,
 				name: text(a.name, 160, true),
@@ -174,14 +203,15 @@ export function cloudHiringTools(
 			required: ["operationKey", "name", "purpose", "coworkerIds"],
 			properties: {
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				name: { type: "string", minLength: 1, maxLength: 256 },
-				purpose: { type: "string", minLength: 1, maxLength: 2048 },
+				name: { type: "string", minLength: 1, maxLength: 256, description: "A short name people will recognise." },
+				purpose: { type: "string", minLength: 1, maxLength: 2048, description: "One sentence." },
 				coworkerIds: {
 					type: "array",
 					minItems: 1,
 					maxItems: 16,
 					uniqueItems: true,
 					items: { type: "string", pattern: UUID.source },
+					description: "The ids of coworkers listed in your context, up to 16.",
 				},
 				includeRequestingMember: { type: "boolean" },
 			},
@@ -236,5 +266,58 @@ export function cloudHiringTools(
 			return folderGroupChats.create(chat satisfies CloudFolderGroupChat, context);
 		},
 	};
-	return [tool, roomTool];
+	const endFields = ["operationKey", "agent", "reason"] as const;
+	const endRequest = (end: CloudFolderRoleEnd) => JSON.stringify([end.operationKey, end.agent, end.reason]);
+	const endTool: CloudNativeTool = {
+		name: "end_role" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: CLOUD_END_ROLE_TOOL_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["operationKey", "agent", "reason"],
+			properties: {
+				operationKey: { type: "string", pattern: OPERATION_KEY.source },
+				agent: { type: "string" },
+				reason: { type: "string" },
+			},
+		},
+		parseArguments(value) {
+			if (
+				!value ||
+				typeof value !== "object" ||
+				Array.isArray(value) ||
+				Object.keys(value).some((key) => !endFields.includes(key as (typeof endFields)[number]))
+			)
+				throw new Error("Invalid end of a role");
+			const a = value as Record<string, unknown>;
+			if (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey))
+				throw new Error("Invalid end of a role key");
+			const reason = typeof a.reason === "string" ? a.reason.trim() : "";
+			if (!reason || /[\r\n\0]/.test(reason) || [...reason].length > END_ROLE_REASON_CHARS)
+				throw new CloudToolArgumentRefusal(
+					`reason is one sentence of at most ${END_ROLE_REASON_CHARS} characters on why the work is over`,
+				);
+			if (typeof a.agent !== "string" || !a.agent.trim())
+				throw new CloudToolArgumentRefusal(`agent is the agent's folder name under ${osPath("agents")}/`);
+			const end = { operationKey: a.operationKey, agent: a.agent.trim(), reason };
+			refuseRebinding(ends, end.operationKey, endRequest(end), "end");
+			return end;
+		},
+		// The agent is read before the review: the card names it, and what cannot end is refused before any card.
+		async prepare(value, context) {
+			assertContext(context);
+			return (await folderHiring.prepareEndRole(value as unknown as CloudFolderRoleEnd, context.signal)) as never;
+		},
+		async execute(value, context) {
+			assertContext(context);
+			const end = value as unknown as CloudFolderRoleEnd;
+			const request = endRequest(end);
+			refuseRebinding(ends, end.operationKey, request, "end");
+			// Bound before it runs, so reusing the key with other arguments is refused, not retried.
+			if (!ends.has(end.operationKey)) ends.set(end.operationKey, request);
+			return folderHiring.endRole(end, context);
+		},
+	};
+	return [tool, roomTool, endTool];
 }

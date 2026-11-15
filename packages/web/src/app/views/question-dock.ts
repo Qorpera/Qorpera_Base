@@ -11,20 +11,25 @@ import type { Store } from "../state.ts";
 
 /* The questions dock on an app's page and in the Concepts viewer (app/open-questions.ts; Jonas, 10 November 2026:
  * agents engage the founder in their decisions where the work is, and it should be fun). Qorpera draws it, outside the
- * app's frame, over the stage's corner: the agent who asks (its figure waiting), the card itself as the thread draws
- * it (ui/interaction-card.ts), and a way to the chat. One tap answers; the card shows the answer at once, the figure
- * cheers, "Sent to Bob" pops, and after a moment the card flies off and the next one comes up. The member can fold the
- * dock to a pill and look at the app first. Nothing in the app can reach it: the frame reads only. */
+ * app's frame, over the stage's corner: the agent who asks (its figure waiting) and the card itself as the thread
+ * draws it (ui/interaction-card.ts). One tap answers; the card shows the answer at once, the figure cheers, "Sent to
+ * Bob" pops, and after a moment the card flies off and the next one comes up. The member can fold the dock to a pill
+ * and look at the app first. Nothing in the app can reach it: the frame reads only.
+ *
+ * The dock's head is the card's only head (Jonas, 13 November 2026: "In the question box I would also simplify and
+ * remove 'Open the chat, QUESTION, Co-Founder · 02:45 PM, Waiting for you'"): the figure, who asks, the way between
+ * several questions and the fold. The card below is the question itself — title, body, links, options and Skip — with
+ * its own label row kept for a screen reader (`inDock`). */
 
 export interface QuestionDockHost {
 	readonly questions: OpenQuestions;
 	readonly agent: (agentId: string) => HostedStaffAgent | undefined;
 	readonly memberName: (userId: string | undefined) => string;
 	readonly image?: InteractionCardContext["image"];
+	/** An app of the company by its name, for an option whose preview names one. */
+	readonly app?: InteractionCardContext["app"];
 	/** The thread's conversation, where an answer sent shows at once; never read in full for this. */
 	readonly conversation: (sessionId: string) => Store<ConversationState>;
-	/** Where the agent's chat is. */
-	readonly chatHref: (sessionId: string) => string;
 }
 
 /** Which cards a dock shows, by the apps a card points at. */
@@ -102,15 +107,16 @@ export class QuestionDock {
 		this.el.remove();
 	}
 
-	/** The cards this dock shows, newest first: the open ones that point here and those answered here, still held. */
+	/** The cards this dock shows, newest first: the open ones that point here and those answered here, still held. A
+	 * held card points here too, or it is not shown: the Concepts viewer's dock follows the concept that is open, and a
+	 * card answered on another concept's page stays off this one while it is held (review r1 of #1763, F3). */
 	#cards(): OpenQuestion[] {
-		const listed = this.#host.questions.store
-			.get()
-			.questions.filter((question) => this.#match(questionApps(question.request)));
+		const here = (question: OpenQuestion) => this.#match(questionApps(question.request));
+		const listed = this.#host.questions.store.get().questions.filter(here);
 		const ids = new Set(listed.map((question) => question.interactionId));
 		const held = [...this.#held.values()]
 			.map((entry) => entry.question)
-			.filter((question) => !ids.has(question.interactionId));
+			.filter((question) => !ids.has(question.interactionId) && here(question));
 		return [...listed, ...held].sort((a, b) =>
 			a.createdAt === b.createdAt
 				? a.interactionId.localeCompare(b.interactionId)
@@ -158,6 +164,8 @@ export class QuestionDock {
 			this.el.hidden || this.#shownKey === "" || !this.#shownKey.startsWith(`["${current.interactionId}"`);
 		this.#shownKey = key;
 		this.el.hidden = false;
+		// Another card comes up while the last one flies off (the member went to another concept): it does not fly.
+		if (fresh) this.el.classList.remove("is-flying");
 		this.el.classList.toggle("is-folded", this.#folded);
 		this.el.classList.toggle("is-answered", Boolean(answer));
 		replace(
@@ -199,7 +207,7 @@ export class QuestionDock {
 			h(
 				"span",
 				{ class: "question-dock-figure" },
-				agentFigure(agent, name, { size: 34, activity: answered ? "Done" : "Waiting" }),
+				agentFigure(agent, name, { size: 34, activity: answered ? "Done" : "Waiting", ask: "question" }),
 			),
 			h(
 				"span",
@@ -215,13 +223,8 @@ export class QuestionDock {
 								? t("Sent to {name}", { name })
 								: t("Sending to {name}…", { name }),
 				),
-				h(
-					"small",
-					{ class: "question-dock-note" },
-					sent && !declined
-						? t("{name} is on it", { name })
-						: h("a", { href: this.#host.chatHref(current.sessionId) }, t("Open the chat")),
-				),
+				// Nothing stands under who asks while the question waits: the question itself is right below it.
+				sent && !declined ? h("small", { class: "question-dock-note" }, t("{name} is on it", { name })) : null,
 			),
 			cards.length > 1
 				? h(
@@ -250,7 +253,9 @@ export class QuestionDock {
 				agentName: name,
 				memberName: (userId) => this.#host.memberName(userId),
 				canAnswer: !answered,
+				inDock: true,
 				...(this.#host.image ? { image: this.#host.image } : {}),
+				...(this.#host.app ? { app: this.#host.app } : {}),
 				answer: (outcome, value) => this.#answer(current, outcome, value),
 			},
 		);
@@ -276,7 +281,11 @@ export class QuestionDock {
 				"aria-expanded": "false",
 				onclick: () => this.#setFolded(false),
 			},
-			h("span", { class: "question-dock-figure" }, agentFigure(agent, name, { size: 26, activity: "Waiting" })),
+			h(
+				"span",
+				{ class: "question-dock-figure" },
+				agentFigure(agent, name, { size: 26, activity: "Waiting", ask: "question" }),
+			),
 			h("span", { class: "question-dock-pill-label" }, label),
 			count > 1 ? h("span", { class: "question-dock-badge" }, String(count)) : null,
 		);
@@ -310,7 +319,8 @@ export class QuestionDock {
 		this.#draw();
 	}
 
-	/** A card answered here stays answered on screen a moment, then flies off and the next comes up. */
+	/** A card answered here stays answered on screen a moment, then flies off and the next comes up. Only the card on
+	 * screen flies: one held while the member went to another concept just goes, and the card there stays put. */
 	#hold(question: OpenQuestion, answer: InteractionAnswer): void {
 		this.#held.set(question.interactionId, { question, answer });
 		this.#timers.set(
@@ -324,7 +334,7 @@ export class QuestionDock {
 					this.#shownKey = "";
 					this.#draw();
 				};
-				if (reducedMotion() || this.el.hidden) return go();
+				if (reducedMotion() || this.el.hidden || this.#current !== question.interactionId) return go();
 				this.el.classList.add("is-flying");
 				setTimeout(() => {
 					this.el.classList.remove("is-flying");

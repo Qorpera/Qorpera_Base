@@ -48,6 +48,8 @@ review (`20260928429982_runtime_company_mail_find_and_tags`), and so are attachm
 | M2c-2 | Threads and sent mail as files in the folder | registered when started |
 | I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260928439980` |
 | I5a+ | A waiting send names its card's conversation (`sessionId`) for a member who may answer it | `20260930002660` |
+| M2e | Members send mail: a member's own email from a mailbox, with no agent (founder decision, 10 November) | `20260930716000` |
+| M2e+ | A member's email answers a message and joins its thread (`replyTo`; founder, 12 November) | `20260930740000` |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -187,6 +189,18 @@ Table `qorpera_event_deliveries`:
   removed over 30 days ago, and deletes hourly usage older than a day, at most `limit` rows of each
   kind a call. The coordinator schedules it every 5 minutes (pg_cron), which keeps ahead of dozens of
   companies at their budget. Events saved in the company folder stay there (below).
+- **Orders (20260930776000).** When a delivery of a Stripe hook turns `verified`, the trigger
+  `qorpera_orders_from_stripe` reads the body's checkout session, refund and dispute events into
+  `qorpera_orders`: a counts-only row a payment (when, amount, currency, refunded, dispute, state), keyed
+  by a hash of the company and the payment's id, with no buyer's data and no Stripe id. The company's
+  numbers answer them as `qorpera/orders-*` (supabase/CLIENT-CONTRACT.md, "The company's numbers").
+  The trigger never fails the verification: a body it cannot read is left as it is, and an order row
+  locked for more than 100 ms puts the delivery in `qorpera_order_retries` for the upkeep
+  (`qorpera_order_upkeep`, pg_cron job `qorpera-orders`, every 10 minutes), which retries it while its
+  body is kept. Deleting a hook keeps its orders (their hook id is cleared).
+  What only the company knows (packed, on its way, delivered, cancelled) and orders outside Stripe it says
+  with the changes `qorpera/order-state` and `qorpera/order-add` (20260930777000), which never touch
+  Stripe's facts.
 
 **Answers.**
 
@@ -466,7 +480,20 @@ switched off or something failed, so the provider retries; a message the databas
 logged and settled with 200, since a retry would send the same message.
 
 **Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
-`only: ["mail.received"]`. The wake shows the message (cut to fit the wake), `read_event` reads it
+`only: ["mail.received"]`. An agent makes one with `manage_routine`; an owner or admin gives a mailbox to an agent
+in the Mailbox's Addresses (Jonas, 12 November 2026: giving an agent an email "should be more intuitive"), which
+writes that routine's file for the agent as the member's own save (`when: event`, the mailbox's hook,
+`only: [mail.received]`, reply `optional`, effort `low`), on the member's own model account that works while they
+are away. A mailbox may have several agents, as several routines may listen to a hook: the page gives a mailbox to
+one agent or takes it from one, and no other agent's routine changes with it, so there is no handover in steps that
+could stop half way. Giving takes up the routine the agent had last, and writes a new one when that stays paused
+(who pays for a routine is never switched there); taking pauses the agent's routines on the mailbox. What the routine
+list holds after decides what the page says, whatever it heard back. When two members give one mailbox to the same
+agent at the same moment, each page keeps, of the routines begun then, the one the cloud saved last (`updatedAt`)
+and pauses the others, so the agent wakes once for an email; a pause that fails is tried once more and the routines
+are read again, and the page says so when the agent still has two at work. The save's own rules check the hook and who pays, as
+for an agent's (a ChatGPT plan pays for no event routine). No SQL: the member's commit route and the routine rules
+already take such a file. The wake shows the message (cut to fit the wake), `read_event` reads it
 whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
 says so and names the authentication results.
 
@@ -557,9 +584,10 @@ October, for accounts the company owns).
   magic-link sign-ups included, so the first code is already account mail); an agent then signs a test company up
   on a site with `agents+<site>@`, waits with `find_mail` for the confirmation and reads it with `read_event`.
 
-**Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email.
-`Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop
-them. No email looks like it comes from Qorpera (above).
+**Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email an
+agent writes. `Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks
+do not drop them. No email looks like it comes from Qorpera (above). Amended 10 November 2026: a member also sends,
+as themself, and a member's own email carries no AI line ("Members send mail", below).
 
 **Attachments (M2c-1)** (migration `20260928429984_runtime_company_mail_attachments`; Jonas, 2 October: agents send
 and receive files by mail, and a received attachment is fetched when an agent saves it, not when the mail arrives).
@@ -617,14 +645,16 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
     and body, which the deliveries' purge clears after 7: its thread, Message-ID, sender, subject, recipients,
     `delivered-to`, the sender's authentication, `automated`, its attachments' descriptions and its account mark. The
     delivery's headers are unchanged.
-  - An agent's reply joins the received email's thread. An email an agent starts begins one (`mail:<id>`).
+  - An agent's reply joins the received email's thread. An email an agent starts begins one (`mail:<id>`), and so
+    does an email a member sends (M2e), unless it answers a message: then it is in that message's thread (M2e+).
     `mail-outbox` reads back the provider's Message-ID of what it sent (Resend's sent-email API, best effort; those
     never asked first, the newest first, each asked again after five minutes for a day), so an answer to that email
     arriving at the same mailbox joins its thread.
   - Mail without ids, and mail received before the migration, is a thread of its own (`delivery:<id>`).
   - `qorpera_mail_threads` indexes them: the newest message's subject, the outside party (the newest received
-    message's sender, else the first recipient of an email an agent started), the last message and its direction,
-    who last replied, the number of messages. The mail door and `send_mail` keep it; the outbox's claim deletes threads
+    message's sender, else the first recipient of an email an agent or a member started), the last message and its
+    direction, the agent who last replied, the number of messages. The mail door, `send_mail` and the members' send
+    keep it; the outbox's claim deletes threads
     quiet for 30 days, with the members' read marks (`qorpera_mail_thread_reads`).
 - **The members' calls** (authenticated; any member of the company; membership checked with a plain read before
   anything else; no lock; empty while mail is off):
@@ -633,8 +663,9 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
   - `qorpera_member_mail_threads(environment, {address?, state?, direction?, before?, limit ≤ 50})`: threads newest first with
     `thread, address, fromName, fromAddress, subject, lastAt, state, handledBy, direction, unread, messages`.
     `state` is `waiting` (an open send_mail review card answers it), `handled` (a reply that has not failed or been
-    cancelled followed the newest received message, or nothing was received) or `new`. `handledBy` is the last replier, else the agent whose
-    routine woke on the newest received message. `nextBefore` is `{lastAt, thread}`. An address filter takes a
+    cancelled followed the newest received message, or nothing was received) or `new`. `handledBy` is the agent who replied last, else the agent whose
+    routine woke on the newest received message. `sentBy` (`{userId, name?}`, 20260930716000) is the member whose own
+    email is the thread's newest message. `nextBefore` is `{lastAt, thread}`. An address filter takes a
     mailbox's address, a +tag included; a state filter looks at the newest 2000 threads a page. A direction filter
     (`received` or `sent`, 20260930512000) keeps the threads whose newest message went that way, the `direction` each
     row shows, before the page is cut: the Mailbox's Sent view pages through every sent thread.
@@ -642,8 +673,9 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
     names `nextBefore` (`{at, kind, id}`, 20260930512000: its oldest message); given back as `before`, the answer is the
     50 messages before that one, in the same order and drawn the same way. Received ones have the
     sender, `to`, `cc`, subject, text (cut to 16,000 characters while kept, `textCleared` after), the SPF, DKIM and
-    DMARC results, `automated` and the attachments' descriptions. Sent ones have the agent, status, text while kept
-    and the attached files. `waiting` lists the open send_mail cards that answer the thread, with their arguments;
+    DMARC results, `automated` and the attachments' descriptions. Sent ones have the agent (`staffAgent`) or, for an
+    email a member sent themself, the member (`member`: `{userId, name?}`, the name theirs in the company now and
+    absent once they have left; 20260930716000), status, text while kept and the attached files. `waiting` lists the open send_mail cards that answer the thread, with their arguments;
     the Mailbox's Send answers the card through the existing review answer.
   - `qorpera_member_mail_waiting(environment)`: every open send_mail card, a new email without a thread too.
   - In both, a card the member may answer carries `sessionId` (20260930002660): its conversation
@@ -658,6 +690,69 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
   with the mailbox's own company and environment once it exists) shows `account` (who used it and when), never its
   subject, text, recipients or attachments. It is decided when the mail arrives (its subject is not kept, and its
   thread stays marked) and asked again when it is read. A company being deleted has no members to read its mail.
+
+**Members send mail (M2e)** (migration `20260930716000_member_mail_send`; founder decision, 10 November 2026: "Let a
+member send an email with no agent"). Until then company email left only through an agent (contract section 19,
+"events wake agents", item 9, and the decisions of 1 October above); this amends both.
+- **The call.** `qorpera_send_member_mail(environment, {sendId, from, to, cc?, subject, text})`, for a signed-in
+  member who may write in the company (owner, admin, contributor; a viewer reads the mail and sends none, 42501).
+  `from` is a mailbox's address or its name alone. The request is checked as `send_mail`'s: plain addresses, at most
+  10 in `to` and `cc` together, a one-line subject of at most 200 characters, plain text of at most 20,000 (22023);
+  a live mailbox of that company and environment (42501) that is not paused (0A000); the sending switch (0A000);
+  never to the company's own mailboxes, tagged or not, and never as if from Qorpera (42501); and the company's
+  hourly and daily limits (54000), counted together with the agents' email under the same lock per company.
+- **Whose email it is.** It goes out from `<member> at <company>` at the mailbox's address. The member's name is
+  theirs in the company, cleaned as an agent's is; a name that is an address goes out as "A member", so it never
+  reads as the sender's address. The text is the member's as written: no AI line, since no agent wrote it. It is a
+  new email, so it carries no `Auto-Submitted`, and it passes no automatic review: it is the member's own act. No
+  attachments yet. It may answer a message ("A member answers in a thread", below).
+- **The same send again.** `sendId` is the client's own id for the send (a UUID). The same member's same id again
+  answers with the email it already queued, whatever has changed since, so a request repeated after a lost answer
+  sends nothing twice. The answer is `{mailId, thread, status}`.
+- **The outbox.** The email waits in `qorpera_company_mail_outbox` beside the agents'. A row is an agent's (run,
+  tool call and agent) or a member's (`member_user_id`, `member_send_id`), never both and never neither. The
+  member is kept by id with no reference to the account: the email stays the company's when the member leaves.
+  `mail-outbox` claims, sends, retries and reads back the Message-ID as for any queued email; the claim's JSON is
+  unchanged.
+- **Company-first.** No mail is private to a member. The email begins a thread (`mail:<id>`) that every member
+  reads, in Sent and in the thread, with who sent it (`sentBy`, `member`). An outside answer joins the thread and
+  wakes the mailbox's routines as any received email does. Agents read received mail only, as before: no agent
+  tool reads sent mail, an agent's or a member's.
+- A paused company's agents send nothing; its members still send, since the pause stops agents' work.
+
+**A member answers in a thread (M2e+)** (migration `20260930740000_member_mail_reply`; Jonas, 12 November 2026: the
+Mailbox gets Reply, Reply all and Forward "as in the real gmail/outlook app, not the chatcomposer to tell other agents
+what to reply").
+- **The call.** The request of `qorpera_send_member_mail` takes `replyTo`, `{kind, id}`: the message the email
+  answers, as `qorpera_member_mail_thread` names it. `received` with a received email's `deliveryId`, or `sent` with a
+  sent email's `mailId` (a follow-up to an email of the company's own, an agent's or a member's). Any other shape is
+  22023. The message must be this company's and environment's, and no account mail (42501, "The email this answers is
+  not one the company can answer"). Everything else is M2e's: who may send, the mailbox (`from` is any live mailbox of
+  the company; the Mailbox gives the thread's own), the recipients (the caller's own choice: the Mailbox fills in the
+  sender for Reply and everyone else for Reply all), the sending switch and the company's limits.
+- **The thread.** The email joins the answered message's thread, so every member reads it there, and the thread
+  counts as handled. It carries `In-Reply-To` (the answered message's Message-ID) and `References` (the ids of that
+  message's own References, each once, then its id; the first and the newest that fit one header line of 980
+  characters, as an agent's reply), so the other side's mail program threads it too and the answer to it joins the
+  same thread. A received email's earlier ids are read from its stored message while that is kept (seven days); after
+  that the reply names the answered email alone. A message with no usable id (a sent email whose Message-ID is not
+  read back yet, a received one without one) is answered in its thread without those headers.
+- **The answer comes back to the thread.** A received email finds its thread through a message its mailbox knows
+  (`qorpera_mail_received_note`): the message it answers (`In-Reply-To`), else the first it references, looked up
+  among the emails sent from that mailbox (by the Message-ID read back) and, from this migration, among the emails
+  received in it (`qorpera_mail_received.message_id`, indexed by mailbox). Before, only the first reference was
+  looked up, and only among sent email, so the answer to a reply that named a received email alone began a thread of
+  its own. An email that answers nothing its mailbox knows is in the thread of its first reference, as before.
+- **Reply-To.** `qorpera_member_mail_thread` gives a received message's `replyTo`: the addresses its Reply-To header
+  names (at most 10), read from the stored message while that is kept, never for account mail. The Mailbox's Reply
+  goes there, and to the sender when the email names nowhere else, so an email from an address nobody reads is not
+  answered to it.
+- **The member's own act.** No AI line and no automatic review, as any email of a member's. Unlike an agent's reply
+  it also answers an email the mail door marked `automated` (a person replying starts no mail loop), and it never
+  carries `Auto-Submitted`: `in_reply_to_delivery_id`, which marks an agent's automatic reply for the sender, stays
+  empty on a member's email, and `qorpera_claim_company_mail` is unchanged.
+- **Forward** is the Mailbox's own: a new email (no `replyTo`) whose text holds the forwarded message under the
+  member's words.
 
 **Next (M2c-2).** Threads and sent mail as files in the folder (`mail/<address>/`, sent mail beside the received;
 Jonas, 2 October, Interfaces decision 3), once the folder's platform writer lands. A connected Gmail read once a
@@ -714,6 +809,26 @@ backfills the last 30 days' mail through the same rules as live mail (about 4 s 
 `qorpera_company_mail_message_ids_due`, and an older one simply leaves them unknown. Acceptance: a member opens the
 Mailbox and sees a received email, the agent's reply in its thread, a waiting send, and an account email without its
 code. The follow-up 20260930002660 (`sessionId` on waiting sends) is a migration alone, after I5a's.
+
+## Deploy (M2e)
+
+A migration alone: no runtime change, no bundle, and `mail-outbox` sends a member's email as it is (the claim's JSON
+is unchanged). It relaxes the outbox's run, call and agent columns (an email is now an agent's or a member's), adds
+`qorpera_send_member_mail` and patches `qorpera_member_mail_thread` and `qorpera_member_mail_threads` by exact text.
+The web client that sends follows it; an older client simply has no Send. Acceptance: a member opens Write in the
+Mailbox, keeps "You" as the writer, sends to an outside address, and the email arrives from "<member> at <company>"
+with no AI line; it shows in Sent and in its thread as theirs, and the answer to it joins that thread.
+
+## Deploy (M2e+)
+
+A migration alone: no runtime change, no bundle, no edge function. It adds `qorpera_mail_reply_references` and an
+index on received Message-IDs, and patches `qorpera_send_member_mail`, `qorpera_mail_received_note` (which thread a
+received email joins) and `qorpera_member_mail_thread` (`replyTo`) by exact text; the outbox's claim, the mail door's
+own function and `qorpera_send_agent_mail` are untouched. The web
+client that answers in a thread follows it (an older cloud refuses `replyTo` with 22023, so the web waits for the
+migration). Acceptance: a member opens a received email in the Mailbox, presses Reply, writes and sends; the email
+stands in the thread as theirs, arrives at the sender threaded under the email it answers, with no AI line, and the
+sender's answer to it joins the same thread.
 
 ## Deploy (M2a)
 

@@ -104,20 +104,34 @@ describe("coding executor service configuration", () => {
 			previousHelperSha256s: [],
 			folder: false,
 		});
-		// The helpers of earlier images whose machines still run on this node.
-		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64)] };
-		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual({
-			...upgraded,
-			folder: false,
-		});
+		// The helpers of earlier images whose machines this node still runs or wakes; without a list of those that take
+		// the company folder, none is named (every one of them does).
+		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64), "d".repeat(64)] };
+		const parsed = parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines;
+		expect(parsed).toEqual({ ...upgraded, folder: false });
+		expect(parsed).not.toHaveProperty("folderHelperSha256s");
 		// Each boot's company folder through the node's folder service (F3 6d): switched on only by true.
 		expect(
 			parseCodingExecutorConfiguration({ ...fixture(), machines: { ...upgraded, folder: true } }).machines,
 		).toEqual({ ...upgraded, folder: true });
+		// A list names exactly the earlier helpers that take the folder: none, or some of them, kept as given.
+		for (const folderHelperSha256s of [[], ["d".repeat(64)], ["c".repeat(64), "d".repeat(64)]]) {
+			const listed = { ...upgraded, folderHelperSha256s, folder: true };
+			expect(parseCodingExecutorConfiguration({ ...fixture(), machines: listed }).machines).toEqual(listed);
+		}
+		expect(
+			parseCodingExecutorConfiguration({ ...fixture(), machines: { ...machines, folderHelperSha256s: [] } })
+				.machines,
+		).toEqual({ ...machines, previousHelperSha256s: [], folderHelperSha256s: [], folder: false });
 		for (const bad of [
 			{ ...machines, helperSha256: "x" },
 			{ ...machines, previousHelperSha256s: ["b".repeat(64)] },
 			{ ...machines, previousHelperSha256s: "c".repeat(64) },
+			{ ...machines, folderHelperSha256s: ["c".repeat(64)] },
+			{ ...upgraded, folderHelperSha256s: ["b".repeat(64)] },
+			{ ...upgraded, folderHelperSha256s: ["e".repeat(64)] },
+			{ ...upgraded, folderHelperSha256s: ["c".repeat(64), "c".repeat(64)] },
+			{ ...upgraded, folderHelperSha256s: "c".repeat(64) },
 			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },
 			{ ...machines, policy: { ...machines.policy, cpus: 4 } },
 			{ ...machines, extra: true },
@@ -154,6 +168,34 @@ describe("coding executor service configuration", () => {
 			{ ...folder, controlSocket: `/run/${"s".repeat(110)}` },
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), folder: bad })).toThrow("CONFIG_INVALID");
+	});
+	it("takes members' looks only on a loopback port of its own, with a publishable key (20260930712000)", () => {
+		const memberScreens = { port: 8791, publishableKey: "sb_publishable_xn-Yy0QJ5iGEFmsiJGmw7w_JMsDTo8N" };
+		expect(parseCodingExecutorConfiguration(fixture()).memberScreens).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), memberScreens }).memberScreens).toEqual(memberScreens);
+		// A legacy anon key, a JWT, is publishable too.
+		expect(
+			parseCodingExecutorConfiguration({
+				...fixture(),
+				memberScreens: { ...memberScreens, publishableKey: "eyJh.eyJy.c2ln" },
+			}).memberScreens,
+		).toMatchObject({ publishableKey: "eyJh.eyJy.c2ln" });
+		for (const bad of [
+			null,
+			{ port: 8791 },
+			{ ...memberScreens, extra: true },
+			{ ...memberScreens, port: 8789 },
+			{ ...memberScreens, port: 8790 },
+			{ ...memberScreens, port: 80 },
+			{ ...memberScreens, port: "8791" },
+			{ ...memberScreens, publishableKey: "" },
+			{ ...memberScreens, publishableKey: "sb publishable" },
+			{ ...memberScreens, publishableKey: "sb_publishable_x\n" },
+		])
+			expect(
+				() => parseCodingExecutorConfiguration({ ...fixture(), memberScreens: bad }),
+				JSON.stringify(bad),
+			).toThrow("CONFIG_INVALID");
 	});
 	it("makes code hosts only with the node inventory policy's code host block", () => {
 		const codeHost = {

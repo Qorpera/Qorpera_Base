@@ -8,12 +8,20 @@
 .thread-header { display: flex; align-items: center; gap: 10px; height: var(--titlebar-height); flex: none; min-width: 0; padding: 0 14px; background: var(--header-surface); border-bottom: 1px solid var(--sidebar-divider); }
 /* An agent's own chat and a group chat have no header on a wide screen: the rail names them and right-clicking opens their card.
  * A phone keeps the header for its navigation button and the card. */
-@media (min-width: 761px) { .thread-header:is(.is-agent, .is-group) { display: none; } }
+@media (min-width: 761px) { .thread-header:is(.is-agent, .is-group, .is-member) { display: none; } }
 .thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: calc(100% - 42px); padding: 3px 5px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer; }
 .thread-identity:hover:not(:disabled), .thread-identity[aria-expanded=true] { background: var(--hover); }
 .thread-identity:disabled { cursor: default; }
 .thread-identity h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; letter-spacing: 0; }
 .thread-identity .figure { width: 28px; height: 28px; }
+/* A member's chat (Jonas, 10 Nov 2026): the person's face and name where an agent's chat has its figure, and under the
+ * name whether they are online. Nothing opens from it. */
+.member-identity { cursor: default; }
+.member-identity:hover { background: transparent; }
+.member-identity .person-avatar { width: 28px; height: 28px; font-size: 11px; }
+.member-identity .person-online-dot { width: 9px; height: 9px; box-shadow: 0 0 0 2px var(--header-surface); }
+.member-identity-copy { display: grid; min-width: 0; }
+.member-identity-copy small { overflow: hidden; color: var(--text-muted); font-size: 11px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .thread-identity > .icon { width: 11px; height: 11px; color: var(--text-soft); }
 .thread-identity:disabled > .icon { display: none; }
 /* Who is here: the other members with this conversation open, as overlapping faces at the end of the header. */
@@ -43,12 +51,12 @@
 /* The live log (what a screen reader hears as new) and, above it, the older items "Show earlier"
    read: each lays its rows out as the thread did before it had two parts. The log fills the
    rest of the thread, so the empty line stays centred. */
-/* The thread's foot (notices, the wall, the coding pill, the composer) stands over the messages' last stretch with no
+/* The thread's foot (notices, the coding pill, the composer) stands over the messages' last stretch with no
  * background of its own: the messages scroll on behind it, and only its controls are drawn, as frosted glass (Jonas,
  * 9 Nov 2026: "it should be transparant, with the widgets possibly being more glassy a-la apple style"). The view sets
  * --thread-foot to the foot's height, which the messages keep free under their last line. Only what the foot's bands
  * hold takes the pointer, so a wheel or a click between the controls reaches the messages: the bands themselves and the
- * few full-width rows with nothing drawn (the wall's bar, the drafts' rows) pass it through. */
+ * few full-width rows with nothing drawn (the drafts' rows) pass it through. */
 .thread-foot {
 	--glass-bg: color-mix(in srgb, var(--bg) 72%, transparent);
 	--glass-edge: color-mix(in srgb, var(--text) 10%, transparent);
@@ -58,12 +66,11 @@
 }
 .thread-foot > * { pointer-events: none; }
 .thread-foot > * > * { pointer-events: auto; }
-.thread-foot :is(.agent-wall-bar, .composer-drafts, .draft-notches) { pointer-events: none; }
-.thread-foot :is(.agent-wall-toggle, .draft-notches > *, .composer-drafts > :not(.draft-notches)),
-.thread-foot .agent-wall:not(.is-folded) { pointer-events: auto; }
+.thread-foot :is(.composer-drafts, .draft-notches) { pointer-events: none; }
+.thread-foot :is(.draft-notches > *, .composer-drafts > :not(.draft-notches)) { pointer-events: auto; }
 /* The composer stands above the coding pill's dock, so its menus (models, skills, names) open over the pill. The shell's
  * glass is a layer behind its contents, not a filter on the shell: a filter would make the shell a stacking context and
- * hold its menus under whatever stands beside it in the composer (a draft's button on the wall's line). */
+ * hold its menus under whatever stands beside it in the composer (a draft's button). */
 .thread-foot .composer { position: relative; z-index: 7; }
 .thread-foot .composer-shell { border-color: var(--glass-edge); background: transparent; box-shadow: var(--glass-shadow); }
 .thread-foot .composer-more { border: 1px solid var(--glass-edge); background: var(--glass-bg); box-shadow: var(--glass-shadow); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
@@ -73,16 +80,12 @@
 	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
 }
 .thread-foot :is(.notice, .company-notice, .run-failure-card, .draft-notch, .draft-panel),
-.thread-foot .agent-wall.is-folded .agent-wall-toggle,
 .thread-foot .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) {
 	border-color: var(--glass-edge); background: var(--glass-bg); box-shadow: var(--glass-shadow);
 	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
 }
 .thread-foot .coding-pill { -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .thread-foot .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { box-shadow: var(--glass-shadow), 0 0 0 1px var(--glass-edge); }
-.thread-foot .agent-wall.is-folded .agent-wall-toggle:hover { background: color-mix(in srgb, var(--text) 6%, var(--glass-bg)); }
-/* Open, the wall is a frosted sheet over the messages, its rows on the glass. */
-.thread-foot .agent-wall:not(.is-folded) { border-radius: 20px 20px 0 0; background: var(--glass-bg); box-shadow: 0 -1px 0 var(--glass-edge), 0 -8px 28px rgb(18 18 17 / 8%); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 /* A line of words alone (a note under the field, the drafts' helpers) gets a glass chip of its own to be read on, and the
  * run's execution line (its login picker, a send to start again) a glass card. The Answering strip is inside the
  * composer's own glass. */
@@ -99,6 +102,15 @@
 .messages-log { flex: 1 0 auto; }
 .thread-older { flex: none; }
 .messages-log > .empty { margin: auto; text-align: center; font-size: 16px; }
+/* A member's chat before its first message: their face and name, and one line. */
+.member-chat-empty { display: grid; justify-items: center; gap: 6px; margin: auto; color: var(--text-muted); text-align: center; }
+.member-chat-empty .person-avatar { width: 84px; height: 84px; margin-bottom: 8px; font-size: 28px; }
+.member-chat-empty strong { color: var(--text); font-size: 18px; font-weight: 650; }
+.member-chat-empty p { margin: 0; font-size: 14px; }
+/* A web address in a member's words: the bubble's own colour, underlined. */
+.member-thread .bubble a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+/* A message that was not sent: why, and the two ways on, under its bubble. */
+.member-chat-failed { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 0; padding-right: 0; color: var(--danger); }
 /* A part that does not start the thread keeps the spacing of a row in the middle of it. */
 :is(.messages-log, .thread-older):not(:first-child) > .conversation-timestamp:first-child { margin-top: 20px; }
 :is(.messages-log, .thread-older):not(:first-child) > .message.mine:first-child { margin-top: 8px; }
@@ -240,7 +252,7 @@
 /* A quote of outside content (an email's words) lies in the same copy: one piece in its «» marks, tinted as quoted.
  * Only colours change, never the font or spacing, so the copy keeps the field's wrapping. */
 .composer-quote { color: var(--text-muted); background: var(--hover); border-radius: 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-/* The wall's question being answered, at the top of the composer. */
+/* What the draft answers, at the top of the composer. */
 .composer-answer { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
 .composer-answer[hidden] { display: none; }
 .composer-answer-words { flex: 1; min-width: 0; display: grid; gap: 1px; padding: 1px 0 1px 9px; border-left: 3px solid var(--composer-accent); }
@@ -248,6 +260,13 @@
 .composer-answer-question { overflow: hidden; color: var(--text-muted); font-size: 13px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
 .composer-answer-stop { flex: none; width: 26px; height: 26px; color: var(--text-muted); }
 .composer-answer-stop svg { width: 14px; height: 14px; }
+/* A note from an app's page that waits here (app/tell-agent.ts): the app's emblem and name, and what the note is about,
+ * in place of a question. The message opens with them once it is sent, where the thread draws them as the app's card. */
+.composer-answer-emblem { display: grid; flex: none; place-items: center; }
+.composer-answer-emblem[hidden] { display: none; }
+.composer-answer-emblem .interface-emblem { width: 26px; height: 26px; --emblem-ink: var(--app-colour, var(--text)); }
+.composer-answer.is-note .composer-answer-words { padding-left: 0; border-left: 0; }
+.composer-answer.is-note .composer-answer-label { color: var(--text); }
 .message-reply { display: block; margin-bottom: 6px; padding-left: 8px; border-left: 2px solid currentColor; font-size: 13px; line-height: 17px; opacity: .78; }
 .composer-quote-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .composer-quote-note[hidden] { display: none; }
@@ -576,8 +595,9 @@
  * content's bottom padding, so the box keeps its size when it comes and goes. */
 .agent-details-status { position: absolute; left: 24px; right: 24px; bottom: 0; display: flex; align-items: center; gap: 10px; height: 28px; margin: 0; color: var(--text-muted); font-size: 12px; }
 /* The agent's card, beside its row in the rail: figure and names, the description, then the computer and routines
- * as plain lines and Hide and Delete as two squares. It sizes to its content. */
-.agent-card { width: min(340px, calc(100vw - 24px)); transition: width 220ms cubic-bezier(.2, .9, .3, 1); }
+ * as plain lines and Hide and Delete as two squares. It sizes to its content. A tenth wider than it was, and about a
+ * tenth taller by the description's two more lines (Jonas, 10 November 2026). */
+.agent-card { width: min(374px, calc(100vw - 24px)); transition: width 220ms cubic-bezier(.2, .9, .3, 1); }
 /* The routines page widens the card for its rows and composer. */
 .agent-card[data-page="routines"] { width: min(460px, calc(100vw - 24px)); }
 /* Its own way back stands where the card's close would; Escape and a click outside still close the card. */
@@ -596,17 +616,37 @@
 .agent-card .agent-inline-description { margin-top: 8px; padding-right: 10px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
 /* The text runs the card's full width; the pencil sits over its corner on hover, on a chip of the field's own colour. */
 .agent-card .agent-inline-description > .icon { top: 6px; right: 6px; box-sizing: content-box; padding: 3px; border-radius: 6px; background: #f2f2ef; }
-/* The description grows with its text, from one line up to five, then scrolls. */
-.agent-card .agent-inline-description > .agent-inline-size::after { min-height: 1.5em; max-height: calc(5 * 1.5em); }
+/* The description grows with its text, from one line up to seven, then scrolls. */
+.agent-card .agent-inline-description > .agent-inline-size::after { min-height: 1.5em; max-height: calc(7 * 1.5em); }
 /* The field's own rows must not size the box; the sizer's mirror of the text does. */
 .agent-card .agent-inline-description textarea { height: 0; min-height: 100%; }
+/* An agent's responsibilities read as the Markdown they are written in (agent-details.ts): the drawing stands in the
+ * field's place, as tall as the field may be, until the field has the focus. Each steps out of the way without leaving
+ * the page: the field stays in the tab order, and the drawing keeps where it was scrolled to. It is the field's own
+ * focus that swaps them, not the label's: a press on the drawing gives the drawing the focus first. The drawing shows
+ * the thin scrollbar the field shows. */
+.agent-inline-reading { min-height: 1.5em; max-height: calc(7 * 1.5em); overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; scrollbar-width: thin; }
+.agent-inline-description.has-reading > .agent-inline-size:not(:focus-within) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
+.agent-inline-description.has-reading > .agent-inline-size:focus-within ~ .agent-inline-reading { position: absolute; inset: 8px 10px auto; visibility: hidden; pointer-events: none; }
+/* The chat's Markdown at the card's size: its line height, tighter blocks, headings and bold in the full text colour. */
+.agent-inline-reading .message-prose { line-height: inherit; }
+.agent-inline-reading .message-prose > * + * { margin-top: 6px; }
+.agent-inline-reading .message-prose :is(p, ul, ol, pre, blockquote, .message-table) { margin-bottom: 0; }
+.agent-inline-reading .message-prose :is(ul, ol) { margin-left: 0; padding-left: 18px; }
+.agent-inline-reading .message-prose li + li { margin-top: 2px; }
+.agent-inline-reading .message-prose :is(h2, h3) { margin-bottom: 0; color: var(--text); font-size: 13px; line-height: 1.4; }
+.agent-inline-reading .message-prose > :is(h2, h3):not(:first-child) { margin-top: 12px; }
+.agent-inline-reading .message-prose [data-heading-level="1"] { font-size: 14px; }
+.agent-inline-reading .message-prose strong { color: var(--text); font-weight: 600; }
+.agent-inline-reading .message-prose code { font-size: 11.5px; }
+.agent-inline-reading .message-prose pre { padding: 8px 10px; border-radius: 8px; }
+.agent-inline-reading .message-prose hr { margin: 10px 0; }
 .agent-card-links { display: grid; margin: 8px -6px 0; }
 .agent-card-link { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
 .agent-card-link:hover, .agent-card-link:focus-visible { background: var(--hover); outline: none; }
 .agent-card-link > .icon { flex: none; width: 16px; height: 16px; }
 .agent-card-link > .icon:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--text-soft); }
 .agent-card-link[hidden] { display: none; }
-/* How many of the agent's latest notes are new while the member has its wall hidden. */
 /* Copy, Hide and Delete: plain icons at the card's right edge, named by their tooltips. */
 .agent-card-squares { display: flex; justify-content: flex-end; gap: 2px; margin: 8px -6px 0 0; }
 .agent-card-square { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
@@ -662,37 +702,34 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 }
 .file-preview-placeholder .icon { width: 48px; height: 48px; color: var(--text-soft); }
 
-.computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
+/* The agent's computer is a row of its thread, beside the agent's figure (Jonas, 14 Nov 2026; conversation.ts #computerRow): the window takes the thread's width, up to a size where the desktop reads well, and a line under it says what the agent does there. */
+.thread-computer { display: flex; flex: none; align-items: flex-start; gap: 12px; width: 100%; max-width: 980px; margin-block: 6px; }
+.thread-computer-figure { flex: none; display: grid; place-items: center; width: 52px; height: 52px; }
+.thread-computer-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.thread-computer-window { position: relative; }
+.thread-computer-caption { margin: 0; padding: 0 2px; color: var(--text-muted); font-size: 13px; line-height: 1.4; }
+.thread-computer-caption[hidden] { display: none; }
+.computer-panel { position: relative; width: 100%; aspect-ratio: 16 / 10; min-height: 0; overflow: hidden; border: 1px solid var(--sidebar-divider); border-radius: 12px; background: #24262a; box-shadow: 0 1px 2px rgb(0 0 0 / 6%); user-select: none; }
 /* The hover controls of the preview: the shade along its edges and the ink of the buttons over it, light on the light theme and dark on the dark one (dark.css). */
 .computer-panel { --computer-hover-shade: rgb(255 255 255 / 84%); --computer-hover-ink: #2b2b29; --computer-hover-ink-strong: #131312; --computer-hover-ink-shadow: drop-shadow(0 1px 2px rgb(255 255 255 / 85%)) drop-shadow(0 0 1px rgb(255 255 255 / 70%)); --computer-hover-button-bg: rgb(0 0 0 / 9%); }
 /* The minimized preview keeps the size it had before the app was drawn larger (tokens.css --ui-scale): its pixels stay screen pixels (tokens.css), and so does the body text size it used to inherit. */
-.computer-panel:not(.is-entered) { --px: 1px; font-size: 14px; cursor: grab; touch-action: none; }
-.computer-panel.is-dragging { cursor: grabbing; user-select: none; }
-/* An 8px band inside each edge resizes the preview; the cursor names the edge under the pointer. */
-.computer-panel:not(.is-entered):is([data-resize=n], [data-resize=s]) { cursor: ns-resize; }
-.computer-panel:not(.is-entered):is([data-resize=e], [data-resize=w]) { cursor: ew-resize; }
-.computer-panel:not(.is-entered):is([data-resize=nw], [data-resize=se]) { cursor: nwse-resize; }
-.computer-panel:not(.is-entered):is([data-resize=ne], [data-resize=sw]) { cursor: nesw-resize; }
-.computer-panel.is-resizing { user-select: none; }
-/* The enter slide is never switched off by a class: removing it would replay the slide (see settle() in computer-drag.ts). */
-/* Entered, the browser goes full screen and the guest screen sits in a thin bezel: a computer inside a computer. The shared screens.css frame (grid, titlebar, heading, bordered buttons, centered 8:5 stage) applies as on the desktop; only the shade, row height, icon buttons and bezel are set here. The same frame stays inside the thread when the browser refuses full screen. */
-.computer-panel.is-entered { --computer-frame-bg: #121316; top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; border-color: rgb(255 255 255 / 8%); }
+.computer-panel:not(.is-entered) { --px: 1px; font-size: 14px; }
+/* Entered, the frame takes up the page over the thread and the guest screen sits in a thin bezel: a computer inside a computer (the browser is never asked for full screen: Jonas, 14 Nov 2026). The shared screens.css frame (grid, titlebar, heading, bordered buttons, centered 8:5 stage) applies as on the desktop; only the shade, row height, icon buttons and bezel are set here. */
+/* The thread's edge fade (app.css .scroll-quiet) is a mask, which would hold the large view under the thread's foot and fade its top: off while the computer is entered. */
+.messages:has(.computer-panel.is-entered) { -webkit-mask-image: none; mask-image: none; }
+/* The large view ends where the foot begins (computer-place.ts); what the composer opens upwards (a mention's list, the drafts) goes over the view, not under it. */
+.thread-conversation:has(.computer-panel.is-entered) > .thread-foot { z-index: 21; }
+/* The row scrolls with the thread, so the large view is fixed over the box of the thread it stands in (computer-place.ts sets it). */
+.computer-panel.is-entered { --computer-frame-bg: #121316; position: fixed; z-index: 20; top: var(--computer-box-top, 0px); left: calc(var(--computer-box-left, 0px) + 8px); right: calc(var(--computer-box-right, 0px) + 8px); bottom: var(--computer-box-bottom, 0px); width: auto; height: auto; max-height: none; aspect-ratio: auto; border-radius: 8px; border-color: rgb(255 255 255 / 8%); box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); }
 .computer-panel.is-entered .computer-panel-body, .computer-panel.is-entered .screen-viewer-embedded { background: var(--computer-frame-bg); }
 .computer-panel.is-entered .screen-viewer-embedded { container-type: size; }
-.computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px minmax(0, 1fr); }
+.computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px auto minmax(0, 1fr); }
 .computer-panel.is-entered .screen-viewer-titlebar { padding: 0 2px; }
-.computer-panel.is-entered .screen-viewer-note { color: #f0c27a; }
-/* Empty, the note stays rendered (a live region must exist before its text changes); only the heading's 6px gap is cancelled. */
-.computer-panel .screen-viewer-note:empty { margin-left: -6px; }
 /* Square icon buttons in the frame; the exit is the compress glyph, named "Back to thread" for the tooltip and screen readers. */
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 30px; height: 30px; color: #fff; }
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(255 255 255 / 18%); }
 /* The 8:5 screen fits whichever side is tighter: the frame's width, or its height minus the titlebar row and bottom padding. The vh line is the fallback where container units are unsupported. */
-.computer-panel.is-entered .screen-viewer-stage { width: min(100%, calc(160vh - 196px)); width: min(100%, calc((100cqh - 56px) * 1.6)); border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
-.computer-panel .screen-viewer-embedded:fullscreen { --computer-frame-bg: #0b0c0e; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-frame { grid-template-rows: 48px minmax(0, 1fr); padding: 0 16px 16px; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-titlebar { padding: 0 4px; font-size: 13px; }
-.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-stage { width: min(100%, calc(160vh - 103px)); width: min(100%, calc((100cqh - 64px) * 1.6)); }
+.computer-panel.is-entered .screen-viewer-stage { width: min(100%, calc(160vh - 196px)); width: min(100%, calc((100cqh - 56px - var(--computer-bar-h, 0px)) * 1.6)); border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
@@ -715,12 +752,10 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .computer-close::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center / contain no-repeat; }
 .computer-panel .computer-close:hover { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
 .computer-panel:hover .computer-close, .computer-panel:focus-within:not(.is-pointer-focus) .computer-close { opacity: 1; pointer-events: auto; }
-.computer-panel:is(.is-dragging, .is-resizing) .computer-close { opacity: 0; pointer-events: none; }
 .computer-panel.is-entered .computer-close { display: none; }
 .computer-panel .screen-viewer-enter[hidden] { display: none; }
 /* Hover shows the controls, and so does keyboard focus. A click or a drag focuses the panel as well (is-pointer-focus, set in computer.ts); that focus must not keep the controls up once the pointer has left. */
 .computer-panel:hover .screen-viewer-enter, .computer-panel:focus-within:not(.is-pointer-focus) .screen-viewer-enter { opacity: 1; pointer-events: auto; }
-.computer-panel:is(.is-dragging, .is-resizing) .screen-viewer-enter { opacity: 0; pointer-events: none; }
 .computer-panel:not(.is-entered) .screen-viewer-titlebar { position: absolute; top: 6px; left: 6px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .computer-panel:not(.is-entered) .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
 .computer-panel:not(.is-entered) .screen-viewer-controls { gap: 2px; padding: 0; border: 0; background: transparent; box-shadow: none; }
@@ -751,6 +786,77 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 @media (prefers-reduced-motion: reduce) {
 	.computer-loading-spinner, .computer-panel .screen-viewer-progress { animation: none; }
 	.computer-panel .screen-viewer-titlebar, .computer-panel .screen-viewer-enter, .computer-panel .computer-close, .computer-panel .screen-viewer-embedded::after { transition: none; }
+}
+/* The picture of an agent's desktop (20260930712000): the same frame, a canvas instead of the remote screen. The picture keeps its proportions inside the stage; its mark says Live, or Updating… while the last picture is held. */
+.computer-panel .machine-screen[hidden] { display: none; }
+.computer-panel .machine-screen-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+/* There are two canvases in the stage (20260930745000, review r6 of #1746): the window's own pictures and the live picture, one shown at a time. The one that is not shown is away entirely — the display above would otherwise keep it over the other, since it outranks the browser's own rule for a hidden element. */
+.computer-panel .machine-screen-canvas[hidden] { display: none; }
+.computer-panel .machine-screen-mark { position: absolute; left: 8px; top: 8px; z-index: 2; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 7px; border-radius: 999px; color: #fff; background: rgb(0 0 0 / 58%); font-size: 11px; font-weight: 500; line-height: 16px; pointer-events: none; }
+.computer-panel .machine-screen-mark::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #34c759; }
+.computer-panel .machine-screen-mark.is-updating::before { background: #f0c27a; }
+.computer-panel .machine-screen-mark[hidden] { display: none; }
+/* A member's take-over (20260930713000; nothing in the web begins one since 14 Nov 2026): while they hold the desktop,
+   what that means and Done across the foot of the picture. */
+.computer-panel .machine-screen-control-slot { position: absolute; inset: auto 8px 8px; z-index: 5; display: flex; justify-content: flex-end; pointer-events: none; }
+/* In the large view nothing of ours sits on the desktop's picture (its dock and its clock; v239 real test, 13 Nov 2026):
+   the controls stand in a slim row of the frame between the titlebar and the picture, and the Live mark is the title's.
+   The picture's 8:5 fit takes the row's height off what it may use. */
+.computer-panel .machine-screen-bar-slot { display: none; }
+.computer-panel.is-entered .machine-screen:has(.machine-screen-bar-slot > .machine-screen-control:not([hidden])) { --computer-bar-h: 42px; }
+.computer-panel.is-entered .machine-screen-bar-slot { display: flex; align-items: center; justify-content: flex-end; height: var(--computer-bar-h, 0px); min-width: 0; padding: 0 2px 6px; }
+.computer-panel.is-entered .machine-screen-bar-slot .machine-screen-control { max-width: 100%; padding: 0; border-radius: 0; background: transparent; }
+.computer-panel.is-entered .machine-screen-bar-slot .machine-screen-control-words { flex: 0 1 auto; min-width: 0; }
+.computer-panel.is-entered .machine-screen-bar-slot .machine-screen-control-words > span:not(:empty) { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.computer-panel.is-entered .machine-screen-bar-slot :is(.machine-screen-control-text, .machine-screen-control-who) { color: rgb(255 255 255 / 72%); }
+.computer-panel.is-entered .machine-screen-mark { display: none; }
+.computer-panel .machine-screen-control { display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; padding: 3px; border-radius: 14px; color: #fff; background: rgb(0 0 0 / 62%); font-size: 11px; line-height: 15px; pointer-events: auto; }
+.computer-panel .machine-screen-control[hidden] { display: none; }
+.computer-panel .machine-screen-control.is-holding { padding-left: 10px; }
+.computer-panel .machine-screen-control-words { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.computer-panel .machine-screen-control-text:empty, .computer-panel .machine-screen-control-note:empty { display: none; }
+.computer-panel .machine-screen-control-note { color: #f0c27a; }
+.computer-panel .machine-screen-control-button { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #1d1d1f; background: #fff; box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.computer-panel .machine-screen-control-button:hover { background: #e9e9ec; }
+.computer-panel .machine-screen-control-button:disabled { opacity: 0.6; cursor: default; }
+/* The member holds the desktop in another window (review r14): what that means, and Done. */
+.computer-panel .machine-screen-control.is-elsewhere { padding-left: 10px; }
+.computer-panel .machine-screen-control-hand-back { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #fff; background: rgb(255 255 255 / 16%); box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.computer-panel .machine-screen-control-hand-back[hidden] { display: none; }
+.computer-panel .machine-screen-control-hand-back:hover { background: rgb(255 255 255 / 26%); }
+/* Shared control (20260930734000): who else uses the computer, in a quieter line; a private hold keeps the white Done. */
+.computer-panel .machine-screen-control-who { color: rgb(255 255 255 / 72%); }
+.computer-panel .machine-screen-control-who:empty { display: none; }
+.computer-panel .machine-screen-control-button[hidden] { display: none; }
+.computer-panel .machine-screen-control-button { display: inline-flex; align-items: center; gap: 5px; }
+.computer-panel .machine-screen.is-controlling .machine-screen-mark { display: none; }
+.computer-panel .machine-screen.is-controlling .machine-screen-canvas { cursor: default; outline: none; touch-action: none; }
+/* The preview takes the member's clicks while they hold the desktop (otherwise a press there moves the panel), and its
+   Enter button moves from the middle of the picture to the top. */
+.computer-panel:not(.is-entered) .machine-screen.is-controlling .screen-viewer-stage { pointer-events: auto; }
+.computer-panel:not(.is-entered) .machine-screen.is-controlling .screen-viewer-enter { top: 8px; transform: translateX(-50%); min-width: 0; min-height: 24px; padding: 2px 12px; font-size: 12px; }
+.computer-loading p.computer-loading-detail { margin-top: -6px; color: #8e9097; }
+.computer-loading p.computer-loading-detail[hidden] { display: none; }
+/* Open (20260930758000): on the preview top right before the close, shown with the other hover controls; entered,
+   beside the title. It opens a menu of the company's apps. */
+.computer-panel .computer-opener { display: inline-flex; align-items: center; gap: 2px; height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.computer-panel .computer-opener[hidden] { display: none; }
+.computer-panel .computer-opener:hover, .computer-panel .computer-opener.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
+.computer-panel .computer-opener .icon { flex: none; width: 14px; height: 14px; }
+.computer-panel > .computer-opener { position: absolute; top: 6px; right: 34px; z-index: 3; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel:hover > .computer-opener, .computer-panel:focus-within:not(.is-pointer-focus) > .computer-opener, .computer-panel > .computer-opener.menu-open { opacity: 1; pointer-events: auto; }
+.computer-panel.is-entered > .computer-opener { display: none; }
+.computer-panel:not(.is-entered) .machine-screen-opener-slot { display: none; }
+.computer-panel.is-entered .machine-screen-opener-slot { display: flex; flex: 0 1 auto; min-width: 0; margin-right: auto; }
+.computer-panel.is-entered .machine-screen .computer-opener { color: rgb(255 255 255 / 82%); filter: none; }
+.computer-panel.is-entered .machine-screen .computer-opener:hover, .computer-panel.is-entered .machine-screen .computer-opener.menu-open { color: #fff; background: rgb(255 255 255 / 14%); }
+@media (hover: none) {
+	.computer-panel:not(.is-entered) > .computer-opener { opacity: 1; pointer-events: auto; }
+	/* The close is 36px wide for a finger (above): Open keeps clear of it (review r5 of #1781). */
+	.computer-panel > .computer-opener { right: 46px; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.computer-panel > .computer-opener { transition: none; }
 }
 
 /* New conversation: a "To:" field with one short list hanging from it. */
@@ -999,17 +1105,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .coding-pill-action { display: inline-flex; flex: none; align-items: center; gap: 1px; margin-left: auto; color: var(--text-muted); font-size: 12px; }
 .coding-pill-row[data-tone="attention"] .coding-pill-action, .coding-pill-note[data-tone="attention"] ~ .coding-pill-action { color: var(--blue); font-weight: 600; }
 .coding-pill-action .icon { width: 11px; height: 11px; }
-/* Under an agent's wall, the pill takes the wall's line instead of one of its own: it sits at the line's left, level
- * with the wall's centred button (Jonas, 9 Nov 2026). The wall's bar is the wall's last 32px, so a dock of no height
- * right under it puts the pill's foot on the bar's. Each keeps to its own half: the folded pill ends 160px short of
- * the middle and the button is at most 300px wide; unfolded, the pill takes its usual width over the button. A single
- * draft then keeps its own place above the composer (agent-wall.css). On a narrow thread the two stack, the pill on its
- * own line. */
-@container thread-conversation (min-width: 48.6em) {
-	.agent-wall:not([hidden]) + .coding-dock { height: 0; margin-top: 0; }
-	.agent-wall:not([hidden]) + .coding-dock .coding-pill:not(:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"])) { width: min(300px, calc(50% - 160px)); }
-	.agent-wall:has(+ .coding-dock:not([hidden])) .agent-wall-toggle { max-width: 300px; }
-}
 @media (forced-colors: active) { .coding-pill { border: 1px solid CanvasText; } }
 @media (prefers-reduced-motion: reduce) { .coding-pill, .coding-pill-row, .coding-pill-summary > .icon { transition: none; } }
 /* The session as its own thread: over the conversation with its own header, as a message to a coworker opens. */
@@ -1090,126 +1185,185 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .side-panel-frame { flex: 1; width: 100%; height: 100%; border: 0; background: #fff; }
 .side-panel-status { margin: auto; max-width: 34ch; padding: 24px; color: var(--text-muted); font-size: 13px; text-align: center; }
 .side-panel-status.is-over { position: absolute; inset: 0; display: grid; place-content: center; max-width: none; margin: 0; background: #fff; }
+/* An app's page in the dark scheme (app/interface-app-style.ts): what stands behind it until it has drawn is its own
+ * dark, not white. */
+.side-panel-body.is-dark, .side-panel-body.is-dark > .side-panel-frame, .side-panel-body.is-dark > .side-panel-status.is-over { background: #1f2120; }
+.side-panel-body.is-dark > .side-panel-status.is-over { color: #b8b7b2; }
+/* A web link in an app's page that the browser would not open by itself, offered by Qorpera under the header. */
+.side-panel-link { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; padding: 4px 10px 4px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.side-panel-link > a { min-width: 0; overflow: hidden; border-radius: 4px; text-overflow: ellipsis; white-space: nowrap; }
+.side-panel-link > .side-panel-button { margin-left: auto; }
 @media (max-width: 760px) { .side-panel { position: absolute; inset: 0; z-index: 25; flex-basis: auto; border-left: 0; } }
 /* Where the chat and the panel don't both fit, the panel covers the chat and has Close, as at phone width. */
 @container thread-body (max-width: 42em) { .side-panel { position: absolute; inset: 0; z-index: 25; flex-basis: auto; border-left: 0; } }
 @media (prefers-reduced-motion: reduce) { .side-panel { animation: none; } }
-/* An app's own page fills the main area, at full width and height, with no sheet's edge, shadow or slide. */
+/* An app's own page fills the main area, at full width and height, with no sheet's edge, shadow or slide, and no
+ * header (Jonas, 10 November 2026): the app is the whole page. When it can't be shown, the line that says why has the
+ * ways on under it: Reload, its folder in Storage, the way back. */
 .side-panel.is-page { z-index: auto; flex: 1 1 auto; width: 100%; height: 100%; border-left: 0; box-shadow: none; animation: none; }
-.side-panel.is-page .side-panel-header { padding-left: 8px; }
-.side-panel.is-page .side-panel-title { margin: 0; font-size: 14px; line-height: inherit; }
-a.side-panel-button { color: var(--text-muted); text-decoration: none; }
-a.side-panel-button:hover { text-decoration: none; }
+.side-panel-state { display: grid; justify-items: center; gap: 2px; margin: auto; }
+.side-panel-state .side-panel-status { margin: 0; padding-bottom: 10px; }
+.side-panel-ways { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 0 24px 24px; }
+.side-panel-way {
+	display: inline-flex; align-items: center; min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+	background: var(--bg); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer;
+}
+.side-panel-way:hover { background: var(--hover); text-decoration: none; }
+.side-panel-way:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 @media (max-width: 760px) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
 @container thread-body (max-width: 42em) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
-/* The Concepts viewer (views/concepts.ts; Jonas, 8 November 2026): full screen, no rail and no top bar. A slim side
- * panel in Qorpera's light look lists the concepts; the open one's frame fills the rest, with nothing over it. The panel
- * folds to a thin strip; at phone width it is a top bar whose menu drops the list over the concept. */
+/* The Concepts viewer (views/concepts.ts; Jonas, 8 November 2026): full screen, no rail and no top bar. The side panel
+ * stands where the company rail stands and is the rail — its width (views/concepts.ts reads the member's own, into
+ * --concepts-width), its surface, its rows, its hover and its selection (Jonas, 13 November 2026: "polish it to match
+ * the style and width of the regular sidepanel"); its tokens come from the rail's own (styles/app.css). The open
+ * concept's frame fills the rest, edge to edge: nothing of Qorpera's frames it — no header, no border, no inset, no
+ * band (Jonas, 13 November 2026: "minimize the borders/framing around the visual we are just trying to show"). The
+ * panel ends with its list: Reload and Show in Storage are in a row's menu, and the strip under them is gone (Jonas,
+ * 13 November 2026: "get rid of this at the bottom of the concepts sidepanel"). It folds to the compact rail's strip;
+ * at phone width it is a top bar whose menu drops the list over the concept. */
 .frame.has-concepts .topbar { display: none; }
 .concepts { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; }
+/* Its edge is the rail's line, drawn inside it (an inset shadow) rather than as a border, so the line takes no width
+ * and the buttons centred in the folded strip land on whole pixels. */
 .concepts-side {
-	display: flex; flex: none; flex-direction: column; width: 264px; min-height: 0;
-	border-right: 1px solid var(--border); background: var(--sidebar-surface); color: var(--text);
+	display: flex; flex: none; flex-direction: column; width: var(--concepts-width, 406px); min-height: 0;
+	padding: 0 10px 11px; box-shadow: inset -1px 0 0 var(--rail-line); background: var(--rail); color: var(--text);
 	transition: width var(--motion-base) var(--ease-spring);
 }
-.concepts-top { display: flex; flex: none; align-items: center; gap: 4px; min-height: var(--titlebar-height); padding: 10px 10px 4px 12px; }
-.concepts-back {
-	display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; height: 32px; margin-left: -4px; padding: 0 8px;
-	border-radius: 9px; color: var(--text); font-size: 14px; font-weight: 650; text-decoration: none;
+/* The rail's top row: the way back where the company's name stands there, then the buttons. Its top, the buttons and
+ * their icons are rounded to whole pixels at any scale (`round()`, a fallback before it), so the sidebar toggle's
+ * glyph, drawn for a 20 px box (ui/dom.ts ICON_GRIDS), stands on the pixel grid it was drawn for: at the default scale
+ * a 46 px button, a 20 px icon 13 px in, 18 px down (Jonas, 13 November 2026: the toggle read thin and soft). */
+.concepts-top {
+	display: flex; flex: none; align-items: center; gap: 2px; min-height: var(--titlebar-height);
+	padding-top: 14px; padding-top: round(nearest, 14px, 1px);
 }
-.concepts-back:hover { background: var(--sidebar-hover); text-decoration: none; }
-.concepts-back .icon { flex: none; width: 16px; height: 16px; color: var(--text-muted); }
+.concepts-back {
+	display: flex; flex: 1; align-items: center; gap: 3px; min-width: 0; height: 32px; margin-left: -6px;
+	padding: 0 7px 0 6px; border-radius: 9px; color: var(--text); font-size: 15px; font-weight: 700;
+	letter-spacing: -0.01em; text-decoration: none;
+}
+.concepts-back:hover { background: var(--rail-hover); text-decoration: none; }
+.concepts-back .icon { flex: none; width: 16px; height: 16px; color: var(--rail-small); }
 .concepts-back-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .concepts-current { display: none; }
+/* The rail's own icon button: its 36 px control (a hit area well over 28 px), its hover and its focus ring. */
 .concepts-button {
-	display: grid; flex: none; place-items: center; width: 30px; height: 30px; padding: 0;
-	border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); cursor: pointer;
+	display: grid; flex: none; place-items: center; padding: 0;
+	width: 36px; height: 36px; width: round(down, 36px, calc(1px + 1px)); height: round(down, 36px, calc(1px + 1px));
+	border: 0; border-radius: 10px; background: transparent; color: var(--rail-small); cursor: pointer;
 }
-.concepts-button .icon { width: 16px; height: 16px; }
-.concepts-button:hover { background: var(--sidebar-hover); color: var(--text); }
-:is(.concepts-button, .concepts-back, .concepts-item):focus-visible { outline: 2px solid var(--composer-accent); outline-offset: -2px; }
+.concepts-button .icon { width: 16px; height: 16px; width: round(down, 16px, 1px); height: round(down, 16px, 1px); }
+.concepts-button:hover { background: var(--rail-hover); color: var(--text); }
+:is(.concepts-button, .concepts-back, .concepts-item):focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .concepts-menu { display: none; }
 .concepts-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
-.concepts-heading { margin: 10px 16px 6px; color: var(--text-muted); font-size: 11.5px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
-.concepts-panel > nav { flex: 1; min-height: 0; padding: 0 8px 8px; overflow-y: auto; overscroll-behavior: contain; }
+/* As quiet as a rail section's title over its agents. */
+.concepts-heading { margin: 0; padding: 12px 8px 5px; color: var(--rail-small); font-size: 12px; font-weight: 600; line-height: 16px; }
+.concepts-panel > nav { flex: 1; min-height: 0; padding-bottom: 8px; overflow-y: auto; overscroll-behavior: contain; }
 .concepts-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+/* A rail row, with the concept's cover where an agent has its figure. */
 .concepts-item {
-	display: grid; grid-template-columns: 56px minmax(0, 1fr); align-items: center; gap: 10px; padding: 7px;
-	border-radius: 10px; color: var(--text); text-decoration: none;
-	transition: background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+	display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: center; gap: 8px;
+	min-height: 63.75px; padding: 3px 8px 3px 10px; border-radius: 6px; color: var(--text); text-decoration: none;
+	transition: background-color var(--motion-fast) ease;
 }
-.concepts-item:hover { background: var(--sidebar-hover); text-decoration: none; }
-.concepts-item[aria-current] { background: var(--overlay); box-shadow: 0 0 0 1px var(--border), 0 1px 3px rgb(18 18 17 / 6%); }
-.concepts-thumb {
-	display: grid; place-items: center; width: 56px; height: 42px; overflow: hidden;
-	border: 1px solid var(--border); border-radius: 7px; background: var(--bg);
-}
-.concepts-thumb.has-cover { border-color: transparent; }
+.concepts-item:hover { background: var(--rail-hover); text-decoration: none; }
+.concepts-item[aria-current], .concepts-item[aria-current]:hover { background: var(--rail-selection); color: #fff; }
+.concepts-thumb { display: grid; place-items: center; width: 68px; height: 51px; overflow: hidden; border-radius: 7px; background: var(--bg); }
 .concepts-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
-.concepts-item-copy { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
-.concepts-item-copy > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.concepts-item-title { font-size: 13px; font-weight: 600; }
-.concepts-item-about { color: var(--text-muted); font-size: 12px; }
-.concepts-item-by { color: var(--text-soft); font-size: 11px; }
-.concepts-foot { flex: none; padding: 8px 12px 12px; border-top: 1px solid var(--border); }
-.concepts-foot:empty { display: none; }
-.concepts-actions { display: flex; gap: 2px; margin-left: -4px; }
-/* Whose the open concept is and that Qorpera never asks for passwords in it (security review r1, H2): a strip outside
- * the list, never folded away, in every layout. Only an empty viewer, with no concept open, has none. */
-.concepts-guard {
-	flex: none; margin: 0; padding: 8px 14px 10px; border-top: 1px solid var(--border);
-	color: var(--text-muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere;
-}
-.concepts-guard[hidden] { display: none; }
+/* The name and the lines under it are a rail row's, down to its text smoothing (styles/app.css). */
+.concepts-item-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
 .concepts-stage { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; background: var(--bg); }
 .side-panel.is-concept { z-index: auto; flex: 1 1 auto; width: 100%; height: 100%; border: 0; box-shadow: none; animation: none; }
 .concepts-status { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: auto; max-width: 36ch; padding: 24px; color: var(--text-muted); font-size: 13px; text-align: center; }
 .concepts-status p { margin: 0; }
-/* Folded: a thin strip with the way back and the button that unfolds the list. */
-.concepts.is-collapsed .concepts-side { width: 48px; }
-.concepts.is-collapsed .concepts-top { flex-direction: column; gap: 6px; padding: 10px 0; }
-.concepts.is-collapsed .concepts-back { flex: none; justify-content: center; width: 32px; margin: 0; padding: 0; }
-.concepts.is-collapsed :is(.concepts-back-name, .concepts-panel) { display: none; }
-/* Along the folded strip, read upward, under the way back. */
-.concepts.is-collapsed .concepts-guard {
-	flex: 1 1 auto; min-height: 0; margin-top: auto; padding: 12px 0; border-top: 0;
-	overflow: hidden; writing-mode: vertical-rl; transform: rotate(180deg); align-self: center;
+/* Folded: the compact rail's strip, with the way back and the button that unfolds the list. */
+.concepts.is-collapsed .concepts-side { width: 80px; padding-inline: 7px; }
+/* Its way back is a button's size, and the gap under it whole pixels, so the toggle under them stays on the grid. */
+.concepts.is-collapsed .concepts-top { flex-direction: column; gap: 6px; gap: round(nearest, 6px, 1px); }
+.concepts.is-collapsed .concepts-back {
+	flex: none; justify-content: center; margin: 0; padding: 0;
+	width: 36px; height: 36px; width: round(down, 36px, calc(1px + 1px)); height: round(down, 36px, calc(1px + 1px));
 }
+.concepts.is-collapsed :is(.concepts-back-name, .concepts-panel) { display: none; }
 @media (max-width: 760px) {
 	.concepts { flex-direction: column; }
-	.concepts-side, .concepts.is-collapsed .concepts-side { position: relative; z-index: 6; width: auto; border-right: 0; border-bottom: 1px solid var(--border); }
-	.concepts-top, .concepts.is-collapsed .concepts-top { flex-direction: row; gap: 4px; min-height: 48px; padding: 6px 8px; }
+	.concepts-side, .concepts.is-collapsed .concepts-side { position: relative; z-index: 6; width: auto; padding: 0 8px; box-shadow: none; border-bottom: 1px solid var(--rail-line); }
+	.concepts-top, .concepts.is-collapsed .concepts-top { flex-direction: row; gap: 4px; min-height: 48px; padding: 6px 0; }
 	.concepts-back, .concepts.is-collapsed .concepts-back { flex: none; justify-content: center; width: 36px; margin: 0; padding: 0; }
 	.concepts-back-name, .concepts-collapse { display: none; }
-	.concepts-current { display: block; flex: 1; min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+	.concepts-current { display: block; flex: 1; min-width: 0; overflow: hidden; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
 	.concepts-menu { display: grid; width: 36px; height: 36px; }
 	.concepts-panel, .concepts.is-collapsed .concepts-panel {
 		display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: min(70dvh, 560px);
-		border-bottom: 1px solid var(--border); background: var(--sidebar-surface); box-shadow: 0 18px 40px rgb(18 18 17 / 14%);
+		padding: 0 8px 8px; background: var(--rail); box-shadow: 0 18px 40px rgb(18 18 17 / 14%);
 	}
 	.concepts.is-menu-open .concepts-panel { display: flex; }
 	/* The concept stays in the stage, under the menu, not over the page as a side panel is at this width. */
 	.side-panel.is-concept { position: relative; inset: auto; z-index: auto; }
-	/* Under the top bar, across it, folded or not. */
-	.concepts-guard, .concepts.is-collapsed .concepts-guard {
-		flex: none; margin: 0; padding: 4px 12px 6px; border-top: 1px solid var(--border);
-		writing-mode: horizontal-tb; transform: none; align-self: stretch;
-	}
 }
-@media (prefers-reduced-motion: reduce) { .concepts-side { transition: none; } }
-/* An app linked in a message (`app:<name>`): a card in the bubble that opens the app's own page. */
+@media (prefers-reduced-motion: reduce) { .concepts-side, .concepts-item { transition: none; } }
+/* An app linked in a message (`app:<name>`): a card that opens the app's own page. It shows the app as the drawer
+ * does, its emblem in its colour, here on a tile of that colour, with its name and one line about it (the whole line
+ * on a hover). In a thread the cards stand in a row of their own under the words, on the thread itself and never in a
+ * bubble's grey (Jonas, 13 Nov 2026: a white box in a grey box, with a small icon and three lines of small print, was
+ * no visual). The row's holder stays a bubble, so it arrives, waits and tells its time as the message's other parts
+ * do; it only gives up the bubble's paint. */
+.app-cards { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; }
+.message-prose .app-cards { margin: 8px 0; }
+.bubble:has(> .app-cards) { padding: 0; border-radius: 0; background: none; box-shadow: none; }
 .app-card {
-	display: flex; align-items: center; gap: 12px; width: min(100%, 360px); margin: 6px 0; padding: 10px 14px 10px 10px;
-	border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
-	transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease;
+	display: flex; align-items: center; gap: 12px; width: 360px; min-width: 0; max-width: 100%; padding: 11px 12px 11px 13px;
+	border: 1px solid var(--border); border-radius: 18px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	transition: border-color var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
-.app-card:hover { border-color: color-mix(in srgb, var(--text) 24%, transparent); box-shadow: 0 4px 14px rgb(18 18 17 / 8%); transform: translateY(-1px); }
+/* A card where no row holds it: in a list's item or a table's cell. */
+.message-prose :not(.app-cards) > .app-card { margin: 6px 0; }
+.app-card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 3%, var(--bg)); }
 .app-card:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .app-card-emblem { display: grid; flex: none; place-items: center; }
-.app-card-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.app-card-title { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.app-card-note { color: var(--text-muted); font-size: 12px; }
-@media (prefers-reduced-motion: reduce) { .app-card { transition: none; } .app-card:hover { transform: none; } }
+.app-card-emblem .interface-emblem {
+	width: 34px; height: 34px; --emblem-ink: var(--app-colour, var(--text));
+	transition: transform var(--motion-base) var(--ease-spring);
+}
+.app-card:hover .app-card-emblem .interface-emblem { transform: scale(1.1); }
+.app-card-copy { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.app-card-title, .app-card-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-card-title { font-size: 14px; font-weight: 600; line-height: 19px; }
+.app-card-note { color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.app-card-go { display: grid; flex: none; place-items: center; color: var(--text-muted); opacity: 0.5; transition: opacity var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring); }
+.app-card-go .icon { width: 15px; height: 15px; }
+.app-card:hover .app-card-go { opacity: 1; transform: translateX(2px); }
+/* The app's name among the words: the words' own colour, a little heavier, as its card stands right under them. */
+.message-prose .folder-link.app-link { color: inherit; font-weight: 600; }
+/* A site of the company among the words: a link still, in the words' own colour and as heavy as an app's name, as the
+ * site's card stands right under them (app/views/thread-sites.ts). */
+.message-prose a.site-link-word { color: inherit; font-weight: 600; text-decoration: none; }
+.message-prose a.site-link-word:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* The site's card: an app's card (above), one row: the Sites globe in the Sites app's blue (styles/sites.css), its title
+ * and state, its address on the line under it, then an owner's key and the arrow. The whole row is the way to the site
+ * (a link stretched over the card); the key stands above it. A site Qorpera took down is grey, its line the reason. */
+.site-card { position: relative; --site-ink: #2047bd; --app-colour: var(--site-ink); }
+:root[data-theme="dark"] .site-card { --site-ink: #7193f2; }
+.site-card.is-down { --app-colour: var(--text-soft); }
+.site-card-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; color: inherit; text-decoration: none; }
+.site-card-open:hover { color: inherit; text-decoration: none; }
+.site-card-open::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.site-card-open:focus-visible { outline: none; }
+.site-card:has(> .site-card-open:focus-visible) { outline: 2px solid var(--text); outline-offset: 2px; }
+.site-card .app-card-emblem .site-emblem { margin: 0; }
+.site-card-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.site-card-head > .app-card-title { flex: 0 1 auto; min-width: 0; }
+.site-card-head > .site-state { flex: none; font-size: 12px; }
+.site-card .app-card-note.is-said { color: var(--text); }
+.site-card .app-card-note.is-error { color: var(--danger); }
+.site-card-key { position: relative; z-index: 1; margin: -4px -6px -4px 0; }
+.site-card-key svg { width: 15px; height: 15px; }
+@media (prefers-reduced-motion: reduce) {
+	.app-card, .app-card-emblem .interface-emblem, .app-card-go { transition: none; }
+	.app-card:hover .app-card-emblem .interface-emblem, .app-card:hover .app-card-go { transform: none; }
+}
 
 /* Two agents' transcript: a sheet that slides in from the right over the thread, which waits dimmed behind it
  * (Jonas, 5 Nov 2026). A press on the dim area closes it, as Close and Escape do. */
@@ -1282,18 +1436,22 @@ a.side-panel-button:hover { text-decoration: none; }
 .interaction-note { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
 .interaction-note .icon { width: 13px; height: 13px; flex: none; }
 .interaction-result { margin: 4px 0 6px; font-size: 13px; }
-.interaction-chosen { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--border); font-weight: 500; }
+.interaction-card:not(.is-exchange) .interaction-chosen { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--border); font-weight: 500; }
 .interaction-attribution { font-size: 11px; color: var(--text-muted); }
 .interaction-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
 .interaction-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
 .interaction-actions .btn, .interaction-options .btn { border-radius: 999px; }
+/* An answer's words wrap inside the card, never past it at phone width (review r1 of #1777, F1). */
+.interaction-options .btn { max-width: 100%; padding-block: 6px; border-radius: 16px; line-height: 1.3; text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .interaction-secondary { background: var(--border); }
 .interaction-quiet { margin-left: auto; border-color: transparent; background: transparent; color: var(--text-muted); }
 .interaction-field { flex: 1 1 160px; min-width: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 999px; font: inherit; font-size: 13px; background: var(--bg); color: var(--text); }
 .interaction-card [aria-disabled="true"] { opacity: .6; cursor: default; }
 .interaction-options .btn[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* A visual choice: each option a big box with the picture the agent made, its name and a short line; a click picks it. */
-.interaction-choices { display: grid; grid-template-columns: repeat(var(--choices, 2), minmax(0, 1fr)); gap: 10px; margin: 8px 0 10px; }
+/* `align-items: start`: an option with no preview is as tall as its own words, never a tall empty card beside one
+ * that has a picture (Jonas, 13 Nov 2026 on the option previews). */
+.interaction-choices { display: grid; grid-template-columns: repeat(var(--choices, 2), minmax(0, 1fr)); align-items: start; gap: 10px; margin: 8px 0 10px; }
 .choice-box {
 	display: grid; grid-template-rows: auto auto auto; gap: 4px; align-content: start; min-width: 0; padding: 8px 8px 10px;
 	border: 1px solid var(--border); border-radius: 14px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
@@ -1311,10 +1469,131 @@ a.side-panel-button:hover { text-decoration: none; }
 .choice-label { padding: 2px 2px 0; font-size: 14px; font-weight: 600; line-height: 1.3; }
 .choice-description { padding: 0 2px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
 .choice-apps { grid-column: 1 / -1; }
+/* An app a question's words link, whose cover an option previews: the cover stands on the app's own card, over its
+ * emblem and title, so the app is shown once (Jonas, 14 Nov 2026: "the interface reference is there twice"). */
+.app-card:has(> .choice-picture) { flex-wrap: wrap; row-gap: 10px; padding-top: 8px; padding-inline: 8px 12px; border-radius: 18px; }
+.app-card > .choice-picture { flex: 1 0 100%; aspect-ratio: 16 / 9; border-radius: 12px; }
+.app-card > .choice-picture img { object-fit: cover; }
+.app-card:has(> .choice-picture) > .app-card-emblem { margin-left: 5px; }
+/* The options without a picture, as pills under the boxes (Jonas, 14 Nov 2026: "the selections are unfitted"). */
+.interaction-choices > .interaction-options.choice-others { grid-column: 1 / -1; margin: 2px 0 0; }
 @media (max-width: 520px) { .interaction-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (prefers-reduced-motion: reduce) { .choice-box { transition: none; } .choice-box:hover:not(:disabled) { transform: none; } .choice-picture.is-loading { animation: none; } }
 .interaction-card.state-answered, .interaction-card.state-declined, .interaction-card.state-expired { color: var(--text-muted); }
 .interaction-card.state-answered .interaction-title, .interaction-card.state-declined .interaction-title { color: var(--text-muted); }
+/* A card that waits for the member, in a thread (ui/interaction-card.ts; Jonas, 13 Nov 2026: "some form of widget with
+ * proposed answers and a clear visual that indicates something to do"). It is the thread's one framed thing to act on:
+ * a white card that stands off the thread on a soft shadow, the agent's figure waiting at its head beside who asks, and
+ * the proposed answers large. Its frame is the cards' own quiet line (Jonas, 14 Nov 2026: "the border is red and
+ * ugly"): the head says it waits, not a coloured ring. */
+.interaction-card.is-asking {
+	position: relative; margin-block: 10px; padding: 16px 18px 14px; border-color: var(--border); border-radius: 20px;
+	background: var(--bg); box-shadow: 0 1px 2px rgb(18 18 17 / 4%), 0 10px 28px rgb(18 18 17 / 7%);
+}
+/* The accent, nearer the text's own colour so small words in it read in either theme. */
+.interaction-call { display: flex; align-items: center; gap: 8px; min-width: 0; color: color-mix(in srgb, var(--accent) 78%, var(--text)); font-size: 13px; line-height: 1.3; }
+.interaction-call strong { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.interaction-figure { display: grid; flex: none; place-items: center; }
+.interaction-dot { flex: none; width: 8px; height: 8px; margin: 0 2px; border-radius: 50%; background: var(--accent); }
+.is-asking .interaction-title { margin: 10px 0 4px; font-size: 17px; font-weight: 650; }
+.is-asking .interaction-ask > :is(.interaction-body, .interaction-text), .is-asking .card-fold-wrap > .interaction-body { font-size: 14px; }
+.is-asking .interaction-options { margin: 12px 0; }
+.is-asking .interaction-options .btn { min-height: 38px; padding: 8px 16px; border-radius: 19px; font-size: 14px; font-weight: 550; }
+.is-asking .interaction-options .btn:not(.btn-primary) { border-color: var(--border-strong); background: var(--bg); }
+.is-asking .interaction-options .btn:not(.btn-primary):hover:not([aria-disabled="true"]) { border-color: var(--accent); background: var(--accent-soft); }
+.is-asking .interaction-actions { margin-top: 6px; }
+/* The way out (Skip, Decline, Discard) stands in the widget's top corner, across from who asks: the answers have the
+ * rest to themselves. It stays last in the page, so the keyboard reaches the answers first. */
+.is-asking .interaction-call { padding-right: 72px; }
+.interaction-card.is-asking .interaction-actions .interaction-quiet { position: absolute; top: 11px; right: 10px; min-height: 30px; margin: 0; border-color: transparent; background: none; font-size: 13px; }
+.interaction-card.is-asking .interaction-actions .interaction-quiet:hover:not([aria-disabled="true"]) { background: var(--hover); color: var(--text); }
+.is-asking .interaction-secret-row .interaction-field, .is-asking .interaction-secret-row .btn { min-height: 38px; }
+.is-asking .interaction-secret-row .btn { padding: 0 16px; border-radius: 999px; font-size: 14px; }
+.is-asking .interaction-field { min-height: 38px; font-size: 14px; }
+/* An answer of the member's own: the field with its Send at its end, as the composer has it. */
+.interaction-own { position: relative; display: flex; flex: 1 1 160px; min-width: 0; }
+.interaction-own > .interaction-field { flex: 1; padding-right: 42px; }
+.interaction-send {
+	position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
+	border: 0; border-radius: 50%; background: var(--composer-accent); color: var(--composer-on-accent); cursor: pointer; transform: translateY(-50%);
+}
+.interaction-send .icon { width: 16px; height: 16px; stroke-width: 2.2; }
+.interaction-send:disabled { background: var(--pane-strong); color: var(--text-muted); cursor: default; }
+.interaction-send:not(:disabled):hover { background: var(--composer-accent-hover); }
+.interaction-send:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* A card with its answer, in a thread, is the exchange it was (ui/interaction-card.ts; Jonas, 13 Nov 2026): no frame.
+ * What the agent asked is the agent's bubble and a question's answer the member's own (`.bubble`, `.mine .bubble`:
+ * the messages' own rules draw both, in every theme); anything else done with the card is one quiet line under the
+ * question with a decided approval's mark. The widths are a message's. */
+.interaction-card.is-exchange {
+	display: flex; flex-direction: column; align-items: flex-start; gap: 8px; align-self: stretch; width: auto;
+	margin-block: 6px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--text);
+}
+.is-exchange > .interaction-ask { max-width: min(72%, 720px); }
+/* Child by child: the card it was lies in this one for a moment as it folds (ui/motion.ts foldFrom), and keeps its look. */
+.interaction-card.is-exchange > .interaction-ask > .interaction-title { margin: 0; font-size: inherit; line-height: inherit; color: inherit; }
+.is-exchange > .interaction-ask > :is(.interaction-body, .interaction-text, .interaction-note, .interaction-draft),
+.is-exchange > .interaction-ask > .card-fold-wrap > .interaction-body { margin: 3px 0 0; font-size: inherit; line-height: inherit; color: inherit; }
+.is-exchange > .interaction-ask > .card-fold-wrap { margin: 0; }
+.is-exchange > .interaction-ask > .interaction-draft { padding: 0; border: 0; border-radius: 0; max-height: none; }
+.is-exchange > .interaction-choices { width: min(560px, 100%); margin: 0; }
+.is-exchange > .interaction-result { display: flex; align-items: center; gap: 7px; margin: -2px 0 0; padding: 0 4px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.is-exchange > .interaction-result .interaction-attribution { font-size: inherit; }
+.is-exchange > .is-done .interaction-beside::before { content: "· "; }
+.is-exchange > .interaction-result.is-said { flex-direction: column; align-items: flex-start; gap: 0; max-width: min(72%, 720px); margin: 0; padding: 0; color: inherit; font-size: inherit; line-height: inherit; }
+.is-exchange > .interaction-result.is-said.mine { align-self: flex-end; align-items: flex-end; max-width: min(68%, 720px); }
+/* Under the answer, as a message's caption. */
+.is-exchange > .is-said .interaction-beside { display: block; margin-top: 4px; padding: 0 12px; color: var(--text-muted); font-size: 11px; font-weight: 500; line-height: 1.4; }
+/* Beside the outcome, for the eye: whose it is when it is not the member's own, and "Sending"; nothing when neither. */
+.is-exchange > .interaction-result .interaction-beside:empty { display: none; }
+@media (max-width: 900px) {
+	.is-exchange > .interaction-ask, .is-exchange > .interaction-result.is-said:not(.mine) { max-width: 82%; }
+}
+/* A change of the agent's that is ready to go live, below the thread (app/views/thread-ready.ts): the widget that
+ * waits for the member, a question's width and never wider than a bubble, with What's new's picture large, its one
+ * line and What's new's buttons. Once put live it is the exchange it was, as an answered question, its last line the
+ * version live and the site's address. A site Qorpera took down is one quiet line instead. */
+.thread-ready { display: flex; flex-direction: column; align-self: stretch; gap: 10px; }
+.thread-ready-card.is-asking { max-width: min(72%, 720px); }
+.thread-ready-project { overflow: hidden; color: var(--text-muted); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.interaction-call > .thread-ready-project { flex: 0 1 auto; min-width: 0; }
+.interaction-call > .thread-ready-project::before { content: "· "; }
+.interaction-ask > .thread-ready-project { display: block; font-size: 12.5px; line-height: 1.4; }
+.thread-ready-card .whats-new-change.is-thread { gap: 8px; margin-top: 12px; padding: 0; border: 0; border-radius: 0; background: none; }
+.whats-new-change.is-thread > .choice-picture { aspect-ratio: 16 / 10; border-radius: 12px; }
+.whats-new-change.is-thread > .choice-picture img { object-fit: cover; object-position: top; }
+.whats-new-change.is-thread > .whats-new-line { padding: 0; font-size: 15px; line-height: 1.35; }
+.whats-new-change.is-thread.is-plain > .whats-new-line { display: block; aspect-ratio: auto; padding: 0; border-radius: 0; background: none; text-align: left; }
+.thread-ready-card > .whats-new-line { margin: 12px 0 0; padding: 0; font-size: 15px; }
+.thread-ready-more { display: inline-block; margin-top: 4px; color: var(--text-muted); font-size: 13.5px; text-decoration: none; }
+.thread-ready-more:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.thread-ready-card > .whats-new-managers { margin: 8px 0 0; font-size: 13.5px; }
+.thread-ready-card > .whats-new-actions { margin-top: 14px; }
+.thread-ready-card .whats-new-actions .btn { min-height: 36px; padding-inline: 16px; }
+.thread-ready-card > .service-outcome { margin: 10px 0 0; font-size: 13px; }
+.thread-ready-live { flex-wrap: wrap; row-gap: 4px; }
+.thread-ready-address { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: inherit; text-decoration: none; }
+.thread-ready-address:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.thread-ready-address svg { flex: none; width: 13px; height: 13px; }
+.thread-ready-down a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+/* What the card says to do is never cut: the project's name gives way first, and only when the row is full. The card
+ * has no way out in its corner (a question's Skip), so its head keeps no room for one. */
+.thread-ready-card.is-asking .interaction-call { padding-right: 0; }
+.thread-ready-card .interaction-call > strong { flex: none; }
+@media (max-width: 900px) { .thread-ready-card.is-asking { max-width: 82%; } }
+/* The three buttons keep one row down to the narrowest card a 360 px phone draws: their row is the measure, not the
+ * window (beside the rail a thread, and so the card, is as narrow in a window of 1000 px as on a phone: "Not yet" fell
+ * to a row of its own there). The card's buttons always say the same short words (views/release-desk.ts, `here`), so
+ * the measure holds for a first version and while a press is on its way. */
+.thread-ready-card > .whats-new-actions { container-type: inline-size; }
+@container (max-width: 19em) {
+	.thread-ready-card .whats-new-actions .btn { min-height: 34px; padding-inline: 11px; font-size: 13.5px; }
+}
+/* On a phone the card and the gaps between its buttons are tighter too. */
+@media (max-width: 520px) {
+	.thread-ready-card.is-asking { padding-inline: 14px; }
+	.thread-ready-card .whats-new-actions { gap: 6px; }
+}
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
 .interaction-secret { flex: 1 1 200px; }
 
@@ -1368,9 +1647,104 @@ a.side-panel-button:hover { text-decoration: none; }
 	.email-draft-actions .btn { font-size: 14px; }
 	.email-draft-actions .email-draft-save { font-size: 12px; }
 }
+/* What an app asks the member to change (views/app-ask-bar.ts; RUNTIME-INTERFACE-APPS.md §5): Qorpera's own bar, above
+ * the app's frame and never over it, so it pushes the page down and nothing of the page sits under its buttons. It says
+ * what will be saved, or the field a note to the app's owner is written in; Not now (or that field) has the focus, and
+ * the yes button wakes a second after the bar is on screen. */
+.app-ask {
+	flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+	padding: 12px 14px; border-bottom: 1px solid var(--border-strong); background: var(--chrome); color: var(--text);
+	font-size: 13px; line-height: 1.4; animation: app-ask-in var(--motion-base) var(--ease-out) both;
+}
+.app-ask[hidden] { display: none; }
+.app-ask-figure { display: grid; flex: none; place-items: center; align-self: flex-start; min-width: 30px; }
+.app-ask-copy { display: flex; flex: 1 1 260px; flex-direction: column; gap: 6px; min-width: 0; }
+.app-ask-title { font-weight: 600; overflow-wrap: anywhere; }
+/* The lines are shown in full, however long: they scroll inside the bar, so the bar never grows past the screen and
+ * both buttons stay within reach (review r1 of #1633, F3: twelve cells of 500 characters on a phone). */
+.app-ask-lines {
+	display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 0;
+	max-height: min(40vh, 18rem); overflow-y: auto; overscroll-behavior: contain;
+}
+.app-ask-lines:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.app-ask-lines dt { color: var(--text-muted); overflow-wrap: anywhere; }
+/* A value is the company's text, not Qorpera's: it wraps where it stands and never turns the line's direction. */
+.app-ask-lines dd { margin: 0; overflow-wrap: anywhere; unicode-bidi: isolate; }
+.app-ask-value { unicode-bidi: isolate; }
+.app-ask-was { color: var(--text-muted); text-decoration: line-through; }
+/* The word for an empty cell is Qorpera's, not a value: it is never struck through (an inline-block takes no line from its parent). */
+.app-ask-empty { display: inline-block; color: var(--text-soft); font-style: italic; text-decoration: none; }
+.app-ask-arrow { margin: 0 6px; color: var(--text-muted); }
+.app-ask-dot { color: var(--text-muted); }
+/* A note to the app's owner (`tell`): the member's own words, in a plain field of Qorpera's on the same lines, which
+ * starts with the page's draft and grows with what is written up to a few lines, then scrolls. Its label sits on the
+ * field's first line. A phone's keyboard does not zoom into it. */
+.app-ask-lines dt > label { display: block; padding-top: 7px; font-weight: inherit; }
+.app-ask-field {
+	display: block; width: 100%; min-height: 0; max-height: 8.6em; margin: 0; padding: 6px 10px; resize: none;
+	line-height: 1.4; overflow-y: auto; overflow-wrap: anywhere;
+}
+.app-ask-field::placeholder { color: var(--text-soft); }
+/* Why a note stays on the bar (its thread's draft answers something else), with the way there. */
+.app-ask-held { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.app-ask-held[hidden] { display: none; }
+.app-ask-held[role="alert"] { color: var(--danger); }
+.app-ask-link { color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.app-ask-field:read-only { color: var(--text-muted); }
+/* A web page a link in the app leads to (Jonas, 13 Nov 2026: "Show the address first"). The site first, a size up, its
+ * registered part in the bar's ink and any labels before it quieter; then the whole address in the house monospace (0
+ * and O, l and 1 apart), wrapping anywhere, selectable, and scrolled inside its own line past six lines, so a long one
+ * is all there to see and never cut. Nothing of it is the page's: the bar writes it as plain text. */
+.app-ask-lines.is-link { align-items: baseline; }
+.app-ask-site { font-size: 15px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; unicode-bidi: isolate; }
+.app-ask-site-lead, .app-ask-site-port { color: var(--text-muted); font-weight: 500; }
+.app-ask-address {
+	display: block; max-height: calc(6 * 1.45em); overflow-y: auto; overscroll-behavior: contain;
+	font-family: var(--font-mono); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; word-break: break-all;
+	user-select: text; -webkit-user-select: text; unicode-bidi: isolate;
+}
+.app-ask-address:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 3px; }
+.app-ask-buttons { display: flex; flex: none; gap: 8px; margin-left: auto; }
+.app-ask-button {
+	min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+	background: var(--bg); color: var(--text); font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer;
+}
+.app-ask-button:hover:not(:disabled) { background: var(--hover); }
+.app-ask-button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.app-ask-button:disabled { cursor: default; opacity: 0.45; }
+/* The yes button is faint until it wakes, then filled: the one strong mark on the bar, and only once it can be pressed. */
+.app-ask-button.is-yes { transition: background-color var(--motion-fast), color var(--motion-fast); }
+.app-ask-button.is-yes.is-awake { border-color: transparent; background: var(--text); color: var(--bg); }
+.app-ask-button.is-yes.is-awake:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 86%, var(--bg)); }
+/* The way to where a note waits: a link drawn as the bar's strong button. */
+.app-ask-button.is-go {
+	display: inline-flex; align-items: center; justify-content: center; border-color: transparent;
+	background: var(--text); color: var(--bg); text-decoration: none;
+}
+.app-ask-button.is-go:hover { background: color-mix(in srgb, var(--text) 86%, var(--bg)); }
+.app-ask-note {
+	display: flex; flex: 1 1 260px; align-items: center; gap: 8px; min-width: 0; margin: 0; overflow-wrap: anywhere;
+	max-height: min(40vh, 18rem); overflow-y: auto;
+}
+.app-ask-note .icon { flex: none; width: 16px; height: 16px; }
+.app-ask-note.is-saved .icon { color: var(--ok); }
+.app-ask-note.is-failed { color: var(--danger); }
+.app-ask-note.is-waiting .icon { color: var(--text-muted); }
+@keyframes app-ask-in { from { opacity: 0; transform: translateY(-6px); } }
+@media (max-width: 560px) {
+	.app-ask-buttons { width: 100%; }
+	.app-ask-button { flex: 1; }
+	/* On a phone the field takes the bar's whole width, under its label. */
+	.app-ask-lines dd:has(> .app-ask-field) { grid-column: 1 / -1; }
+	.app-ask-lines dt > label { padding-top: 4px; }
+	.app-ask-field { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .app-ask { animation: none; } .app-ask-button.is-yes { transition: none; } }
+
 /* The questions dock (views/question-dock.ts; Jonas, 10 November 2026): an agent's open questions about the app on
  * screen, drawn by Qorpera over the corner of an app's page or the Concepts viewer's stage, never inside the frame. The
- * agent's figure waits beside its question; one tap answers; folded, it is a pill with the count. */
+ * agent's figure waits beside its question; one tap answers; folded, it is a pill with the count. The dock's head is
+ * the card's only head: the card's own label row is a screen reader's here (ui/interaction-card.ts `inDock`). */
 .question-dock {
 	position: absolute; right: 20px; bottom: 20px; z-index: 8;
 	display: flex; flex-direction: column; gap: 8px;
@@ -1385,9 +1759,8 @@ a.side-panel-button:hover { text-decoration: none; }
 .question-dock-figure { position: relative; display: grid; flex: none; place-items: center; }
 .question-dock-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; line-height: 1.25; }
 .question-dock-title { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+/* Only once the answer is on its way: nothing stands under who asks while the question waits (Jonas, 13 Nov 2026). */
 .question-dock-note { color: var(--text-muted); font-size: 12px; }
-.question-dock-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-.question-dock-note a:hover { color: var(--text); }
 .question-dock-steps { display: flex; flex: none; align-items: center; gap: 2px; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .question-dock-button {
 	display: grid; flex: none; place-items: center; width: 28px; height: 28px; padding: 0;

@@ -5,6 +5,9 @@ import {
 	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 	CLOUD_ACTION_REVIEW_MODEL,
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CLOUD_DATA_DESTROY_REASON,
+	CLOUD_MACHINE_SCREEN_WORK_ASK_REASON,
+	CLOUD_MACHINE_SCREEN_WORK_REASON,
 	CLOUD_MACHINE_WORK_REASON,
 	CLOUD_WORKER_WORK_ASK_REASON,
 	type CloudActionGuards,
@@ -16,6 +19,7 @@ import {
 	cloudActionReviewMandate,
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
+	dataDestroyCheck,
 	describeCloudAction,
 	machineWorkCheck,
 	parseCloudActionVerdict,
@@ -101,6 +105,42 @@ describe("which calls are reviewed", () => {
 		["machine_delete", { operationKey: "k", machine: "build-a" }, "internal"],
 		["machine_read", { machine: "build-a", commandId: RULE }, "read"],
 		["machine_list", {}, "read"],
+		// machine_screen (20260930708000): a look changes nothing; moving the pointer and scrolling change only what shows;
+		// a click, a drag, typed text, keys or an opened page acts on what runs there, as machine_run's commands do.
+		["machine_screen", { machine: "build-a", settleMs: 0, look: true }, "read"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "move", x: 1, y: 2 } }, "internal"],
+		[
+			"machine_screen",
+			{ machine: "build-a", operationKey: "k", action: { type: "scroll", direction: "down" } },
+			"internal",
+		],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "click" }, intent: "i" }, "external"],
+		[
+			"machine_screen",
+			{ machine: "build-a", operationKey: "k", action: { type: "double" }, intent: "i" },
+			"external",
+		],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "drag" }, intent: "i" }, "external"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "type" }, intent: "i" }, "external"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "key" }, intent: "i" }, "external"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "open" }, intent: "i" }, "external"],
+		// manage_code (20260930720000): an undo puts main back to a state it had and can itself be undone, and a
+		// description changes only the record's words. Neither waits for a review; without its case it would.
+		[
+			"manage_code",
+			{ action: "undo", operationKey: "k", owner: "acme", name: "shop", change: 12, andLater: false, reason: "r" },
+			"internal",
+		],
+		[
+			"manage_code",
+			{ action: "undo", operationKey: "k", owner: "acme", name: "shop", change: 12, andLater: true, reason: "r" },
+			"internal",
+		],
+		[
+			"manage_code",
+			{ action: "describe", operationKey: "k", owner: "acme", name: "shop", change: 12, notice: "n" },
+			"internal",
+		],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[
@@ -114,6 +154,9 @@ describe("which calls are reviewed", () => {
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
+		// How a part of an interface app is made: the runtime's own text (20260930762000).
+		["app_guide", { about: "model" }, "read"],
+		["record_reflection", { operationKey: "k", update: "map-kit", decision: "use", line: "l" }, "internal"],
 		// Summary trees (M1b-3): zoom reads a conversation.
 		["zoom", { conversation: "thread:ada", line: "0+8" }, "read"],
 		// The node's folder search (F3): a read with the run's own view.
@@ -155,6 +198,13 @@ describe("which calls are reviewed", () => {
 		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
+		// The company's reading of itself (20260930766000): saving it is bookkeeping; ending a role changes who works here.
+		["update_reading", { operationKey: "k", attention: "product" }, "internal"],
+		[
+			"end_role",
+			{ operationKey: "k", agent: "research", reason: "The interviews are done.", name: "Research" },
+			"delegation",
+		],
 		["manage_routine", { action: "list" }, "read"],
 		["manage_routine", { action: "upsert" }, "delegation"],
 		["manage_routine", { action: "conclude" }, "delegation"],
@@ -175,6 +225,25 @@ describe("which calls are reviewed", () => {
 		["good_will_list", { month: "2026-11" }, "read"],
 		["good_will_mark", { marks: [] }, "internal"],
 		["organize_sidebar", { action: "list" }, "internal"],
+		["organize_apps", { action: "move", item: "app:sales", group: null }, "internal"],
+		["data_describe", {}, "read"],
+		["data_query", { database: "shop", sql: "select 1" }, "read"],
+		["data_apply", { database: "shop" }, "internal"],
+		// With a held step's allow it asks for data to be destroyed (slice 7).
+		["data_apply", { database: "shop", allow: `003-clear.${"a".repeat(64)}.${"b".repeat(64)}` }, "destructive"],
+		// A named change writes the company's own rows, as company_write writes a file (slice 7).
+		["data_change", { database: "shop", change: "mark-shipped", params: { id: 7 } }, "internal"],
+		// A picture is written as company_write writes a file; one in another agent's app changes that app (20260930746000).
+		[
+			"make_picture",
+			{ operationKey: "k", path: "pictures/mug.png", prompt: "A mug", expectedVersion: null },
+			"internal",
+		],
+		[
+			"make_picture",
+			{ operationKey: "k", path: "apps/sales/mug.png", prompt: "A mug", expectedVersion: null, foreignOwner: true },
+			"delegation",
+		],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them
@@ -637,6 +706,113 @@ describe("what the card shows", () => {
 			title: "Run a command on a company machine",
 			target: "build-a",
 			details: { command: "cd /company/sales\n  npm test" },
+		});
+	});
+
+	it("has a card's words for an undo and a description of a change in the company's code (20260930720000)", () => {
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "undo",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				change: 12,
+				andLater: false,
+				reason: "The price line broke the checkout.",
+				notice: "The free returns line is gone again.",
+			}),
+		).toEqual({
+			title: "Undo a change in the company's code",
+			target: "acme/shop, change 12",
+			details: {
+				reason: "The price line broke the checkout.",
+				"customers will notice": "The free returns line is gone again.",
+			},
+		});
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "undo",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				change: 12,
+				andLater: true,
+				reason: "r",
+			}).title,
+		).toBe("Undo a change in the company's code, and every change after it");
+		// The picture's path stays off the card, as every company path does.
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "describe",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				change: 12,
+				notice: "Each price now says free returns.",
+				picture: "product/screens/price.png",
+			}),
+		).toEqual({
+			title: "Describe a change in the company's code",
+			target: "acme/shop, change 12",
+			details: { "customers will notice": "Each price now says free returns." },
+		});
+	});
+
+	it("shows an action on a company machine's screen with where it lands, the window and what it is for (20260930708000)", () => {
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				operationKey: "k",
+				action: { type: "click", x: 812, y: 443 },
+				settleMs: 500,
+				look: true,
+				intent: "Open the sign-in form.",
+				window: "Acme - Chromium",
+			}),
+		).toEqual({
+			title: "Click on a company machine's screen",
+			target: "build-a: x 812, y 443",
+			details: { intent: "Open the sign-in form.", window: "Acme - Chromium" },
+		});
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "type", text: "anna@example.com\nsecond line" },
+				intent: "Fill in the email.",
+			}),
+		).toEqual({
+			title: "Type on a company machine's screen",
+			target: "build-a",
+			details: { intent: "Fill in the email.", text: "anna@example.com\nsecond line" },
+		});
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "key", keys: ["ctrl+l", "Return"] },
+				intent: "Go to the address bar.",
+			}).details,
+		).toEqual({ intent: "Go to the address bar.", keys: "ctrl+l Return" });
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "open", target: "https://example.test/sign-in" },
+				intent: "Open the sign-in page.",
+			}),
+		).toEqual({
+			title: "Open a page on a company machine's screen",
+			target: "build-a",
+			details: { intent: "Open the sign-in page.", open: "https://example.test/sign-in" },
+		});
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "drag", x: 1, y: 2, toX: 30, toY: 40 },
+				intent: "Move the card.",
+			}),
+		).toMatchObject({
+			title: "Drag on a company machine's screen",
+			target: "build-a: x 1, y 2",
+			details: { to: "x 30, y 40" },
 		});
 	});
 
@@ -2946,6 +3122,32 @@ describe("company sites (20260930550000)", () => {
 			title: "Publish a website from another folder",
 			details: { from: "Webshop v2", "until now from": "Webshop" },
 		});
+		// Ending a role (20260930766000): its prepared arguments name the agent as its agent.md has it, and the reason.
+		expect(
+			describeCloudAction(tool("end_role"), {
+				operationKey: "k",
+				agent: "research",
+				reason: "The customer interviews are done.",
+				name: "Research",
+			}),
+		).toEqual({
+			title: "End an agent's role",
+			target: "Research",
+			details: {
+				reason: "The customer interviews are done.",
+				effect: "Its routines pause and its threads close; its files stay, and a member can bring it back",
+			},
+		});
+		// One already ended says so on its card (review r1 of #1819: it is answered after its receipt, not refused).
+		expect(
+			describeCloudAction(tool("end_role"), {
+				operationKey: "k",
+				agent: "research",
+				reason: "The customer interviews are done.",
+				name: "Research",
+				ended: true,
+			}).details.effect,
+		).toBe("Its role has already ended: nothing changes");
 		// The call names only the slug: the card is true for a website and an app link alike (v195).
 		expect(describeCloudAction(tool("unpublish_site"), { slug: "wristband-shop" })).toEqual({
 			title: "Take a website or app link offline",
@@ -3515,6 +3717,29 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		});
 	});
 
+	it("allows an action on a machine's screen by the same rule, with its own words (20260930708000)", () => {
+		const screen = { name: "machine_screen", source: "runtime" } as const;
+		const refused = { ...verdict("deny", "not_requested"), reason: "The click is not clearly authorized." };
+		expect(machineWorkCheck({ tool: screen }, refused, new Set())).toEqual({
+			...refused,
+			decision: "allow",
+			builtIn: "none",
+			reason: `${CLOUD_MACHINE_SCREEN_WORK_REASON} The review said deny: The click is not clearly authorized.`,
+		});
+		expect(machineWorkCheck({ tool: screen }, refused, new Set([RULE]))).toMatchObject({
+			decision: "ask",
+			reason: expect.stringContaining(CLOUD_MACHINE_SCREEN_WORK_ASK_REASON),
+		});
+		// Typed company data sent off the machine, outside instructions, money: the reviewer's verdict stands.
+		for (const guard of Object.keys(NONE) as Array<keyof CloudActionGuards>) {
+			const held = verdict("deny", "not_requested", { [guard]: true });
+			expect(machineWorkCheck({ tool: screen }, held, new Set()), guard).toEqual(held);
+		}
+		expect(machineWorkCheck({ tool: { name: "machine_screen", source: "connector" } }, refused, new Set())).toEqual(
+			refused,
+		);
+	});
+
 	it("allows an agent's own worker briefs by the same rule, and keeps every other manage_worker action as reviewed", () => {
 		// 7 November 2026: Rumlig's Product Lead was refused handing the founder's combined demo app to its own worker.
 		const worker = { name: "manage_worker", source: "runtime" } as const;
@@ -3623,7 +3848,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 			.tools;
 		expect(tools[0].inputSchema.required).toContain("guards");
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"A command on a company machine (machine_run), or starting or steering one of the agent's own workers (manage_worker), for which all five are false runs by a fixed platform rule",
+			"A command on a company machine (machine_run), an action on a company machine's screen (machine_screen: a click, a drag, typed text, keys or an opened page, which you judge by what it is for, the window it lands in, the text it types and the page it opens), or starting or steering one of the agent's own workers (manage_worker), for which all five are false runs by a fixed platform rule",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"never from whether the request or the mandate names its exact step, package or page.",
@@ -3656,5 +3881,83 @@ describe("normal work on a company machine (4 November 2026)", () => {
 					guards,
 				}),
 			).not.toHaveProperty("guards");
+	});
+});
+
+describe("a database step that destroys data (company databases, slice 7)", () => {
+	const ALLOW = `003-clear.${"a".repeat(64)}.${"b".repeat(64)}`;
+	const ALLOW_RULE = "81000000-0000-4000-8000-000000000001";
+	const ASK_RULE = "81000000-0000-4000-8000-000000000002";
+	// The call as the tool's prepare made it: what the data gateway said the step would destroy.
+	const held: Record<string, JsonValue> = {
+		database: "shop",
+		allow: ALLOW,
+		step: "003-clear",
+		destroys: [
+			{ what: "deleted rows", object: "shop.orders", rows: 40 },
+			{ what: "dropped table column", object: "shop.orders.note" },
+		],
+	};
+	const call = (parsed: JsonValue = held, name = "data_apply", source: CloudNativeTool["source"] = "runtime") => ({
+		tool: { name, source },
+		parsed,
+	});
+	const verdict = (decision: "allow" | "ask" | "deny", builtIn = "none", ruleIds: string[] = []) =>
+		parseCloudActionVerdict({
+			decision,
+			ruleIds,
+			builtIn,
+			reason: "Requested.",
+			proposedRule: "apply database steps",
+		});
+
+	it("is always asked on a card: never allowed by the reviewer or a company rule, and never offered Always allow", () => {
+		expect(dataDestroyCheck(call(), verdict("allow", "none", [ALLOW_RULE, ASK_RULE]), new Set([ASK_RULE]))).toEqual({
+			decision: "ask",
+			// The Allow rule is dropped; the Ask first rule stays, and with it who answers.
+			ruleIds: [ASK_RULE],
+			builtIn: "none",
+			reason: `${CLOUD_DATA_DESTROY_REASON} The review said allow: Requested.`,
+			proposedRule: null,
+		});
+		expect(dataDestroyCheck(call(), verdict("ask", "money"), new Set())).toMatchObject({
+			decision: "ask",
+			builtIn: "money",
+			proposedRule: null,
+		});
+		// A denial stays one.
+		expect(dataDestroyCheck(call(), verdict("deny", "not_requested"), new Set())).toEqual(
+			verdict("deny", "not_requested"),
+		);
+		// A plain apply, a connector of the same name and another tool are as the reviewer says.
+		expect(dataDestroyCheck(call({ database: "shop" }), verdict("allow"), new Set())).toEqual(verdict("allow"));
+		expect(dataDestroyCheck(call(held, "data_apply", "connector"), verdict("allow"), new Set())).toEqual(
+			verdict("allow"),
+		);
+		expect(dataDestroyCheck(call(held, "data_change"), verdict("allow"), new Set())).toEqual(verdict("allow"));
+	});
+
+	it("names the database, the step and what it destroys in plain words", () => {
+		expect(describeCloudAction(tool("data_apply"), held)).toEqual({
+			title: "Apply a database step that destroys data",
+			target: "shop: 003-clear",
+			details: {
+				destroys: "It deletes 40 rows of shop.orders and drops the column shop.orders.note with its values.",
+				undo: "Cannot be undone: what it removes is gone.",
+			},
+		});
+		expect(
+			describeCloudAction(tool("data_apply"), {
+				...held,
+				destroys: [
+					{ what: "deleted rows", object: "shop.log", rows: 1 },
+					{ what: "emptied table", object: "shop.carts" },
+					{ what: "dropped table", object: "shop.old_orders" },
+					{ what: "dropped schema", object: "shop" },
+				],
+			}).details.destroys,
+		).toBe(
+			"It deletes 1 row of shop.log, empties the table shop.carts, drops the table shop.old_orders with all its rows and drops the whole database shop.",
+		);
 	});
 });

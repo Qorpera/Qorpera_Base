@@ -64,7 +64,10 @@ begin
 			'public.qorpera_coding_session_turn_guard()'::regprocedure,
 			'public.qorpera_guard_office_delete_disposition()'::regprocedure,
 			-- The live hint (20260930653000) is deferred and absorbs every error: it never refuses a delete.
-			'public.qorpera_live_hint_internal()'::regprocedure);
+			'public.qorpera_live_hint_internal()'::regprocedure,
+			-- A site Qorpera took down (20260930756000) keeps its row but in a purge, which a takedown keeps from
+			-- running (qorpera_finish_company_deletion waits); SQL test 1252 shows it lets a purge through.
+			'public.qorpera_site_takedown_sticks()'::regprocedure);
 	if v_unexpected is not null then
 		raise exception 'Delete triggers the company purge does not know: %', v_unexpected;
 	end if;
@@ -165,6 +168,44 @@ begin
 end
 $$;
 select pg_temp.base_claims('service_role');
+
+-- A repository kept in Qorpera, with a change in its record and a request for its code: all three go with the company
+-- (20260930710000, 20260930720000).
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values ('92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', 'company', 'shop');
+insert into public.qorpera_code_changes(environment_id, owner, name, n, profile_id, kind, state, main_after, title)
+values ('92400000-0000-4000-8000-000000000020', 'company', 'shop', 1, '92400000-0000-4000-8000-000000000010', 'found', 'landed',
+	repeat('a', 40), 'A change');
+insert into public.qorpera_code_requests(environment_id, owner, name, profile_id, kind, input, by_kind)
+values ('92400000-0000-4000-8000-000000000020', 'company', 'shop', '92400000-0000-4000-8000-000000000010', 'download',
+	'{"file":"files","fileName":"shop-2026-11-10.zip"}', 'member');
+-- Its site, a version of it with a file and a part of that file's bytes, and a release: all five go with the company
+-- too (20260930729000).
+insert into public.qorpera_company_sites(id, profile_id, environment_id, slug, source_path, code_owner, code_name)
+values ('71500000-0000-4000-8000-000000000170', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	'shop-715', 'code/company/shop', 'company', 'shop');
+insert into public.qorpera_company_site_versions(id, site_id, first_publish, source_path, manifest_sha256, file_count, total_bytes,
+	tree, change, main_sha, listed)
+values ('71500000-0000-4000-8000-000000000171', '71500000-0000-4000-8000-000000000170', true, 'code/company/shop', repeat('b', 64), 1,
+	2, repeat('c', 40), 1, repeat('a', 40), true);
+insert into public.qorpera_company_site_files(version_id, path, bytes, sha256, content_type)
+values ('71500000-0000-4000-8000-000000000171', 'index.html', 2, repeat('d', 64), 'text/html; charset=utf-8');
+insert into public.qorpera_company_site_file_parts(version_id, path, part, of, content)
+values ('71500000-0000-4000-8000-000000000171', 'index.html', 0, 2, '\x68'::bytea);
+insert into public.qorpera_code_releases(environment_id, owner, name, n, profile_id, kind, version, change, main_sha, tree,
+	version_id, changes, shown_sha256, by_user_id)
+values ('92400000-0000-4000-8000-000000000020', 'company', 'shop', 1, '92400000-0000-4000-8000-000000000010', 'release', 1, 1,
+	repeat('a', 40), repeat('c', 40), '71500000-0000-4000-8000-000000000171', '{1}', repeat('e', 64),
+	'92400000-0000-4000-8000-000000000001');
+update public.qorpera_code_repositories set site_id = '71500000-0000-4000-8000-000000000170', last_release = 1
+where environment_id = '92400000-0000-4000-8000-000000000020' and owner = 'company' and name = 'shop';
+-- Look first's ticket for that version and a member's next session of it (20260930756000): both go with the company too.
+insert into public.qorpera_company_site_tickets(ticket_sha256, site_id, version_id, user_id, expires_at)
+values (repeat('f', 64), '71500000-0000-4000-8000-000000000170', '71500000-0000-4000-8000-000000000171',
+	'92400000-0000-4000-8000-000000000001', clock_timestamp() + interval '2 minutes');
+insert into public.qorpera_company_site_sessions(token_sha256, site_id, password_version, expires_at, scope, version_id)
+values (repeat('9', 64), '71500000-0000-4000-8000-000000000170', 1, clock_timestamp() + interval '12 hours', 'next',
+	'71500000-0000-4000-8000-000000000171');
 
 -- Another folder-v2 company (made as the base makes its own), untouched by all of this: its rows are counted now and
 -- after the delete.
@@ -424,7 +465,15 @@ begin
 	where counted.before_rows - counted.after_rows <> coalesce(found.value::bigint, 0);
 	if v_wrong is not null or (select count(*) from jsonb_each_text(v_found)) < 40
 		or (select value from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_profiles'::regclass) <> '1'
-		or (select value::bigint from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_folder_commits'::regclass) < 1 then
+		or (select value::bigint from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_folder_commits'::regclass) < 1
+		-- The repository kept in Qorpera, its change and its request (20260930720000); its site, the site's version, file
+		-- and part, and its release (20260930729000); its Look first ticket and next session (20260930756000).
+		or (select count(*) from jsonb_each_text(v_found) where value = '1' and key::regclass in (
+			'public.qorpera_code_repositories'::regclass, 'public.qorpera_code_changes'::regclass,
+			'public.qorpera_code_requests'::regclass, 'public.qorpera_company_sites'::regclass,
+			'public.qorpera_company_site_versions'::regclass, 'public.qorpera_company_site_files'::regclass,
+			'public.qorpera_company_site_file_parts'::regclass, 'public.qorpera_code_releases'::regclass,
+			'public.qorpera_company_site_tickets'::regclass, 'public.qorpera_company_site_sessions'::regclass)) <> 10 then
 		raise exception 'The purge removed other rows than it found (removed/found): %', v_wrong;
 	end if;
 end

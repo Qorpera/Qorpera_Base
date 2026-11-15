@@ -18,7 +18,18 @@ Slice=qorpera-control.slice
 # caches (node_modules, build output) are on the machine's disk, root's and closed (the image and the helper make the
 # folder; the program makes none of it), so they outlive the program's starts and the machine's boots: one for the
 # machine, as its commands all run as root (deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md).
-ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/view.json --mountpoint /company --state-dir /run/qorpera-folder/state --cache-dir /var/lib/qorpera-folder/cache/machine --allow-other yes
+#
+# 20260930754000 (the agent's home, slice 3): the model's own file tools run as the machine's agent account, never as
+# root (P2), and the mount is checked by the kernel (default_permissions), so a root-owned mount would let that
+# account read /company and write nothing. The virtual files therefore belong to that account, as a computer's mount
+# gives them to qorpera-office (RUNTIME-FOLDER-COMPANY-MACHINES.md). It changes nothing for root: root writes through
+# default_permissions either way, so every command that runs as root works as before, and nothing else on the machine
+# gains anything (allow_other was already on). On an image without the account the files show uid 2000 with no name,
+# and root works on them as before.
+# The ids are the image's own (build-machine-image.sh: useradd --uid 2000 --gid 2000 qorpera-agent), as a computer's
+# mount takes qorpera-office's; this unit ships inside that image, so the two never come apart. No Environment line
+# here: the view's pass is only in the view file (the guest test holds this unit to that).
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/view.json --mountpoint /company --state-dir /run/qorpera-folder/state --cache-dir /var/lib/qorpera-folder/cache/machine --allow-other yes --owner-uid 2000 --owner-gid 2000
 # A program killed hard leaves its mount behind; take it away.
 ExecStopPost=-/usr/bin/umount -l /company
 # Any exit (a crash, a kill, root's unmount) starts it again, with the version map and read log its state folder
@@ -44,3 +55,5 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 MemoryMax=512M
 MemorySwapMax=0
+# When memory runs out, the company folder is not what is ended (deploy/machine/machine-memory).
+OOMScoreAdjust=-900

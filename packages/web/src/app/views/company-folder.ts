@@ -11,6 +11,7 @@ import {
 	type CloudMemberFolderVersion,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
+import type { CodeDownloadCalls } from "../../cloud/code-downloads.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
@@ -19,16 +20,18 @@ import { reducedMotion } from "../../ui/motion.ts";
 import { framePage, PageFrames } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
+import { CodeDownload } from "./code-download.ts";
+import { CodeImport } from "./code-import.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
  * (inside Settings, in its own window over Settings, the way a picture is viewed) with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
  * the company's recent changes on the clock button. The folder's hint (P30) nudges a sync from the feed, and a slow
- * poll backs it up. */
+ * poll backs it up; a place under code/ whose import moves a step is read again at once (code-import.ts). */
 
 type Client = Pick<
 	CloudMemberFolderClient,
-	"list" | "read" | "readFile" | "pathHistory" | "history" | "changes" | "commit"
+	"list" | "read" | "readFile" | "readFilePieces" | "pathHistory" | "history" | "changes" | "commit"
 >;
 
 /** What the page needs from the product: the folder, its hint, and the company's lifetime. */
@@ -37,6 +40,9 @@ export interface CompanyFolderSource {
 	current(): void;
 	folder(): Client;
 	folderHints(onHint: (seq: number) => void): { close(): Promise<void> };
+	/** The calls behind "Download the code" on a repository's folder (code-download.ts); without them it is not
+	 * offered. */
+	codeDownloads?(): CodeDownloadCalls;
 }
 
 /** The names a change's author is shown by. */
@@ -51,6 +57,17 @@ export interface CompanyFolderBrowserOptions {
 	readonly search?: HTMLInputElement;
 	readonly embedded?: boolean;
 	readonly onSectionChange?: (section: "documents" | "recents") => void;
+	/** Choose mode (Open's "A file…" on an agent's computer, 20260930758000): the same rows, where a file's row picks it
+	 * (again: unpicks it) and a folder's still opens it; the folder open is the pick while no file is. Nothing that
+	 * changes the folder is reachable: no preview (so no history, Restore or download), no Recents, no code download or
+	 * import, and a link is shown but not picked. Told every pick, null at the top with nothing picked. */
+	readonly choose?: (pick: CompanyFolderPick | null) => void;
+}
+
+/** What choose mode picked: a file, or the folder open. */
+export interface CompanyFolderPick {
+	readonly path: string;
+	readonly kind: "file" | "folder";
 }
 
 type FileCategory = "folder" | "document" | "spreadsheet" | "image" | "pdf" | "link" | "other";
@@ -152,8 +169,9 @@ const HISTORY_PAGE = 50;
 /** Text larger than this only downloads. */
 const MAX_PREVIEW_TEXT_BYTES = 1024 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
-/** The browser hands out at most this much in one download (member-web's WebFileDownloads). */
-const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+/** The browser hands out at most this much in one download (member-web's WebFileDownloads): a folder file's most,
+ * read piece by piece. */
+const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
 /** How many newest Recents pages a refresh reads to reach the changes already shown. */
@@ -243,6 +261,10 @@ export class CompanyFolderBrowser {
 	#large: SurfaceDialog | undefined;
 	#client?: Client;
 	#downloads?: WebFileDownloads;
+	/** "Download the code", on a repository's folder; absent where the product has no calls for it. */
+	#code?: CodeDownload;
+	/** "Bring code in", in the code's folders, and what a folder under code/ is (code-import.ts); beside #code. */
+	#import?: CodeImport;
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#syncTimer?: ReturnType<typeof setTimeout>;
@@ -255,11 +277,16 @@ export class CompanyFolderBrowser {
 	#pendingSection: "documents" | "recents" | null = null;
 	/** A folder link's path, opened once the folder is open and no other action runs (reveal). */
 	#pendingPath: string | null = null;
+	/** Places under code/ whose import came, moved a step or ended (code-import.ts): the open folder is read again once
+	 * no other action runs, when it is one of them or below one. */
+	readonly #changed = new Set<string>();
 	#items: CloudMemberFolderEntry[] = [];
 	#next: string | null = null;
 	/** Where the feed is followed from: everything up to it is on screen. */
 	#position: CloudMemberFolderFeedPosition | null = null;
 	#opened: Opened | null = null;
+	/** Choose mode: the file picked in the open folder, or null when the folder itself is the pick. */
+	#picked: string | null = null;
 	/** A restore whose answer was lost, by path, until it or another restore there has an answer. */
 	readonly #lost = new Map<string, { key: string; unit: CloudMemberFolderUnit; version: string }>();
 	#busy = false;
@@ -384,9 +411,11 @@ export class CompanyFolderBrowser {
 		this.#preview.hidden = true;
 		host.classList.add("files-page", "folder-page", "storage-browser");
 		host.classList.toggle("is-embedded", options.embedded === true);
+		host.classList.toggle("is-choosing", options.choose !== undefined);
 		replace(
 			host,
-			options.embedded
+			// Choose mode sits in its owner's dialog, which names it: no page heading, no Recents.
+			options.embedded || options.choose
 				? null
 				: h(
 						"header",
@@ -434,6 +463,30 @@ export class CompanyFolderBrowser {
 		replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 		this.#client = this.#source.folder();
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
+		const downloads = this.#downloads;
+		const client = this.#client;
+		// Choose mode offers no code download or import: it picks, nothing more.
+		const calls = this.#options.choose ? undefined : this.#source.codeDownloads?.bind(this.#source);
+		if (calls)
+			this.#code ??= new CodeDownload({
+				signal: this.#signal(),
+				live: () => this.#live(),
+				calls,
+				folder: () => client,
+				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
+			});
+		if (calls && this.#code)
+			this.#import ??= new CodeImport({
+				signal: this.#signal(),
+				live: () => this.#live(),
+				calls,
+				code: this.#code,
+				open: (path) => this.reveal(path),
+				changed: (path) => {
+					this.#changed.add(path);
+					this.#navigate();
+				},
+			});
 		replace(
 			this.#documents,
 			this.#crumbs,
@@ -441,8 +494,13 @@ export class CompanyFolderBrowser {
 				"div",
 				{ class: "storage-toolbar" },
 				this.#title,
+				this.#code?.button ?? null,
+				this.#import?.button ?? null,
 				h("div", { class: "storage-controls" }, this.#filter, this.#sort, this.#views),
 			),
+			// What the folder is or how an import stands, then what a download did.
+			this.#import?.line ?? null,
+			this.#code?.line ?? null,
 			h(
 				"div",
 				{ class: "files-body" },
@@ -507,7 +565,17 @@ export class CompanyFolderBrowser {
 			);
 			return;
 		}
-		if (!this.#pendingSection) return;
+		if (!this.#pendingSection) {
+			// What the place holds changed while the member is in it: the folder's hint may come late or not at all. Not while
+			// Recents shows: the list is not on screen, a read there would forget Recents (#load), and every way back to
+			// Documents reads a folder or ends here.
+			if (this.#section === "recents") return;
+			const places = [...this.#changed];
+			this.#changed.clear();
+			if (places.some((place) => this.#dir === place || this.#dir.startsWith(`${place}/`)))
+				void this.#run(() => this.#reloadFolder(true));
+			return;
+		}
 		const section = this.#pendingSection;
 		this.#pendingSection = null;
 		void this.#run(
@@ -626,12 +694,23 @@ export class CompanyFolderBrowser {
 
 	// ---- the folder -------------------------------------------------------------
 
-	async #load(dir: string, append = false): Promise<void> {
+	/** `quiet`: the open folder read again for an import (code-import.ts); when it holds what is shown, nothing is drawn
+	 * again, so no row fades in twice and focus stays where it is. */
+	async #load(dir: string, append = false, quiet = false): Promise<void> {
 		const page = await this.#client!.list(dir || null, append ? this.#next : null, PAGE, this.#signal());
 		this.#live();
+		// A place's mark is left out while its import runs (code-import.ts), so the count says what is shown.
+		const entries = page.entries.filter((entry) => !this.#import?.hidden(entry.path));
+		if (
+			quiet &&
+			dir === this.#dir &&
+			page.next === this.#next &&
+			JSON.stringify(entries) === JSON.stringify(this.#items)
+		)
+			return;
 		const moved = dir !== this.#dir;
 		this.#dir = dir;
-		this.#items = append ? [...this.#items, ...page.entries] : [...page.entries];
+		this.#items = append ? [...this.#items, ...entries] : entries;
 		this.#next = page.next;
 		// The listing is current as of asOfSeq: the feed is followed from there. Changes in between are not examined,
 		// so an open file is read again when the position moves.
@@ -643,10 +722,36 @@ export class CompanyFolderBrowser {
 		if (!append && (this.#position === null || page.asOfSeq > this.#position.afterSeq))
 			this.#position = { afterSeq: page.asOfSeq, cursor: null };
 		if (moved) this.#search.value = "";
+		// A pick is of the folder shown: another folder, or a file no longer in it, leaves the folder as the pick.
+		if (moved || !this.#items.some((item) => item.path === this.#picked)) this.#picked = null;
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
+		this.#code?.enter(dir);
+		this.#import?.enter(dir);
 		this.#drawList(!append);
+		this.#tellPick();
 		if (jumped) await this.#refreshOpened();
+	}
+
+	/** Choose mode: a file's row picks it, or unpicks it when it is the pick; the rows are marked where they stand. */
+	#pick(path: string): void {
+		this.#picked = this.#picked === path ? null : path;
+		for (const main of this.#list.querySelectorAll<HTMLElement>("button.files-row-main[aria-pressed]")) {
+			const picked = main.dataset.path === this.#picked;
+			main.setAttribute("aria-pressed", String(picked));
+			main.closest(".files-row")?.classList.toggle("is-open", picked);
+		}
+		this.#tellPick();
+	}
+
+	#tellPick(): void {
+		this.#options.choose?.(
+			this.#picked !== null
+				? { path: this.#picked, kind: "file" }
+				: this.#dir
+					? { path: this.#dir, kind: "folder" }
+					: null,
+		);
 	}
 
 	async #enter(dir: string): Promise<void> {
@@ -680,7 +785,8 @@ export class CompanyFolderBrowser {
 	#drawCrumbs(): void {
 		const parts = this.#dir ? this.#dir.split("/") : [];
 		// The title already names the top folder, so the trail is drawn only below it.
-		this.#crumbs.hidden = this.#options.embedded === true && parts.length === 0;
+		this.#crumbs.hidden =
+			(this.#options.embedded === true || this.#options.choose !== undefined) && parts.length === 0;
 		const steps: HTMLElement[] = [
 			parts.length
 				? h(
@@ -736,9 +842,11 @@ export class CompanyFolderBrowser {
 		this.#count.textContent =
 			this.#next !== null
 				? t("{shown} of {count} loaded items", { shown: items.length, count: this.#items.length })
-				: items.length === this.#items.length
-					? t("{count} items", { count: items.length })
-					: t("{shown} of {count} items", { shown: items.length, count: this.#items.length });
+				: items.length !== this.#items.length
+					? t("{shown} of {count} items", { shown: items.length, count: this.#items.length })
+					: items.length === 1
+						? t("1 item")
+						: t("{count} items", { count: items.length });
 	}
 
 	/** A folder's row opens it in the list; a file's or a link's opens it in the preview. A link names its target and
@@ -756,10 +864,13 @@ export class CompanyFolderBrowser {
 						? "table"
 						: "file";
 		const label = fileKind(item);
+		// Choose mode: a folder opens as everywhere; a file picks; a link is shown and not picked.
+		const choosing = this.#options.choose !== undefined;
+		const picked = choosing && this.#picked === item.path;
 		return h(
 			"li",
 			{
-				class: `files-row${item.target !== null ? " is-link" : ""}${this.#opened?.path === item.path ? " is-open" : ""}`,
+				class: `files-row${item.target !== null ? " is-link" : ""}${(choosing ? picked : this.#opened?.path === item.path) ? " is-open" : ""}`,
 			},
 			h(
 				"button",
@@ -767,7 +878,12 @@ export class CompanyFolderBrowser {
 					type: "button",
 					class: "files-row-main",
 					"data-path": item.path,
-					onclick: () => void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item))),
+					...(choosing && !folder ? { "aria-pressed": String(picked) } : {}),
+					disabled: choosing && item.target !== null,
+					onclick: () =>
+						folder || !choosing
+							? void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item)))
+							: this.#pick(item.path),
 				},
 				h(
 					"span",
@@ -888,7 +1004,7 @@ export class CompanyFolderBrowser {
 	}
 
 	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
-	async #reloadFolder(): Promise<void> {
+	async #reloadFolder(quiet = false): Promise<void> {
 		let dir = this.#dir;
 		while (dir) {
 			const read = await this.#client!.read(dir, this.#signal());
@@ -897,7 +1013,7 @@ export class CompanyFolderBrowser {
 			dir = parentOf(dir);
 		}
 		if (dir !== this.#dir) this.#close();
-		await this.#load(dir);
+		await this.#load(dir, false, quiet);
 	}
 
 	/** The open file or link at its latest version, when it changed; an earlier version on screen stays. */
@@ -1261,11 +1377,21 @@ export class CompanyFolderBrowser {
 		await this.#show({ path, file: entry.file, target: entry.target });
 	}
 
+	/** Reads the file piece by piece and hands it to the browser as one file. A large one says how far it is. Then it is
+	 * ready: the page cannot know when the browser has saved it. */
 	async #download(path: string, file: CloudMemberFolderFile): Promise<void> {
-		const bytes = await this.#client!.readFile(file, this.#signal(), MAX_DOWNLOAD_BYTES);
+		const name = baseName(path);
+		const far = h("span", { "aria-hidden": "true" });
+		const pieces: Blob[] = [];
+		await this.#client!.readFilePieces(file, this.#signal(), (piece, index, count) => {
+			pieces.push(new Blob([piece as BlobPart]));
+			if (count <= 2) return;
+			if (!far.isConnected) this.#say(t("Getting {name}…", { name }), far);
+			far.textContent = t("{percent}%", { percent: Math.round(((index + 1) / count) * 100) });
+		});
 		this.#live();
-		this.#downloads!.offer(path, bytes);
-		this.#say(t("Downloading {name}.", { name: baseName(path) }));
+		this.#downloads!.offerPieces(path, pieces, file.bytes);
+		this.#say(t("{name} is ready: your browser saves it in your downloads.", { name }));
 	}
 
 	// ---- history ----------------------------------------------------------------

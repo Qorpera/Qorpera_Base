@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
+import { CloudCommandPages } from "./cloud-command-pages.ts";
 import {
 	createHttpCompanyComputerSessionFactory,
 	parseCompanyComputerNativeRoute,
@@ -16,6 +17,8 @@ import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-regis
 import { HttpCloudCompanyFolderBytes } from "./cloud-company-folder-bytes.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
 import { CloudNativeCompanyPresence } from "./cloud-company-path-presence.ts";
+import { httpsCompanyDataDoor } from "./cloud-data-tools.ts";
+import { createCloudHomeChannel } from "./cloud-home-channel-client.ts";
 import { recoveryBase64, recoveryDigest, recoveryRecord } from "./cloud-identity-recovery-crypto.ts";
 import {
 	backupNativeIdentityKey,
@@ -218,6 +221,31 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
 }
 
+/** The data gateway's run door (company databases, slice 5): its HTTPS origin and the CA file its certificate is pinned
+ * to. Without the URL this host offers no data tool; a URL without its CA, or one that is not a plain HTTPS origin,
+ * stops the host. The door takes a credential of its own (the systemd credential `qorpera-company-data`), as every
+ * other service this host calls does: the store's machine then holds nothing that opens another service. */
+export function nativeCompanyDataConfiguration(
+	environment: NodeJS.ProcessEnv,
+): { url: string; caFile: string } | undefined {
+	if (environment.QORPERA_COMPANY_DATA_URL === undefined) return undefined;
+	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
+		throw new Error("Company databases require the cloud-native runtime");
+	const url = new URL(required(environment, "QORPERA_COMPANY_DATA_URL"));
+	const caFile = required(environment, "QORPERA_COMPANY_DATA_CA_FILE");
+	if (
+		url.protocol !== "https:" ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash ||
+		url.pathname !== "/" ||
+		!isAbsolute(caFile)
+	)
+		throw new Error("Invalid company data configuration");
+	return { url: url.origin, caFile };
+}
+
 /** The slot's relay to the node's folder search (F3, "Light threads"), which the shared execution service names while
  * the search is on. */
 export function nativeFolderSearchConfiguration(environment: NodeJS.ProcessEnv): { socketPath: string } | undefined {
@@ -271,6 +299,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
 	const codingConfiguration = nativeCodingConfiguration(environment);
 	const folderSearch = nativeFolderSearchConfiguration(environment);
+	const dataConfiguration = nativeCompanyDataConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	// G2-5: a native host holds no service key. One delivered anyway (a credential or the environment) stops it.
 	if (
@@ -422,9 +451,37 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			serviceRoleKey: publishableKey,
 			fetch: dispatch.fetch,
 		});
+		// The data gateway's run door, its CA pinned, on a credential of its own ("a host of ours").
+		const dataToken = dataConfiguration ? await systemdCredential(environment, "qorpera-company-data") : undefined;
+		if (
+			dataConfiguration &&
+			(!dataToken ||
+				!TOKEN_PATTERN.test(dataToken) ||
+				[
+					masterKey,
+					bridgeToken,
+					identity.credential,
+					objectToken,
+					secretBrokerToken,
+					computerToken,
+					codingToken,
+				].includes(dataToken))
+		)
+			throw new Error("Company databases require a distinct private systemd credential");
+		const companyData =
+			dataConfiguration && dataToken
+				? httpsCompanyDataDoor({
+						url: dataConfiguration.url,
+						ca: await readFile(dataConfiguration.caFile, "utf8"),
+						token: dataToken,
+					})
+				: undefined;
 		const codingControl = codingConfiguration
 			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: publishableKey, fetch: dispatch.fetch })
 			: undefined;
+		// What the executor said it takes for a page of a command's log (keyholes S1), learned from each of its answers
+		// to this host's coding and machine commands alike.
+		const commandPages = new CloudCommandPages();
 		const coding =
 			codingConfiguration && codingToken && codingControl
 				? new CloudNativeCodingRuntime({
@@ -445,6 +502,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								// The executor re-authorizes every command against the turn in SQL; the
 								// runner's own check is the continuous turn authority.
 								authorize: async () => {},
+								pages: commandPages,
 							}),
 						command: runtimeConfiguration.command,
 						binarySha256: runtimeConfiguration.binarySha256,
@@ -483,6 +541,20 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								token: codingToken,
 								binding,
 								holder,
+								pages: commandPages,
+							}),
+					}
+				: {}),
+			// The agent's home (lanes/agent-box-20261113, slice 1) rides the same ingress and the same credential as a
+			// machine command, on its own route. A run gets one only where its company's switch is on.
+			...(codingConfiguration && codingToken
+				? {
+						homeChannel: (binding: CloudNativeToolBinding) =>
+							createCloudHomeChannel({
+								url: codingConfiguration.url,
+								token: codingToken,
+								binding,
+								holder,
 							}),
 					}
 				: {}),
@@ -514,6 +586,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					}
 				: {}),
 			...(folderSearch ? { folderSearch } : {}),
+			...(companyData ? { companyData } : {}),
 			// A folder-v2 run's file bytes: the object gateway's folder route, on the same native credential.
 			folderBytes: (binding, identity) =>
 				new HttpCloudCompanyFolderBytes({

@@ -258,7 +258,7 @@ accounts are switched off (the read answers "switched off"). `cloud-company-acco
   hardening) must be in the office image before agents get `vault_fill`, and accounts stay switched off until an
   office image with A1-4c is live: until then the stop at a block page is only the agent's words.
 
-## Machines: signing in from a company machine (migration `20260930711000`, SQL test 1201)
+## Machines: signing in from a company machine (migration `20260930781000`, SQL test 1279)
 
 Jonas, 10 November 2026: "Build machine sign-ins", "they should be able to use the vault too". Production has no offices
 since 3 October, so `vault_fill` types nothing; agents work on their own company machines, whose desktop runs Chromium
@@ -288,7 +288,7 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
   or block page: stop, never retry, `company_account state needs_person`, tell a member. As on the office (A1-4c), the
   agent marks the account: the helper's refusal (`SITE_STOP_*`) carries A1-4c's message, which says to.
 - Opening on a machine needs nothing new: `company_account open` has served folder-v2 companies since A1-7 and never
-  needed an office (test 1201 opens one on a company with a machine and no computer). Agents asked to sign up today got
+  needed an office (test 1279 opens one on a company with a machine and no computer). Agents asked to sign up today got
   "Company accounts are switched off": the switch is the only refusal. Every A1 rule stays (one tagged login
   `<mailbox>+<site>@<mail domain>` per site, an open todo of the agent's own, the refused sites, reuse first). The agent
   opens the account first, then fills its login and password into the sign-up form with the tool.

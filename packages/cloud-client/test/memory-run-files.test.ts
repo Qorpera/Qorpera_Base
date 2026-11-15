@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { CLOUD_TOOL_RESULT_MAX_BYTES } from "../src/cloud-tool-result.ts";
 import { companyStatePath, companyStatePathProblems, parseCompanyStateFile } from "../src/company-state-files.ts";
-import { parseMemoryRunToml, parseMemoryTreeToml } from "../src/memory-run-files.ts";
+import {
+	MEMORY_RUN_STEP_LINE_BYTES,
+	MEMORY_RUN_STEP_RESULT_BYTES,
+	parseMemoryRunToml,
+	parseMemoryTreeToml,
+} from "../src/memory-run-files.ts";
 
 const RUN = "00000000-0000-0000-0000-000000000000";
 const CONVERSATION = "ffffffff-ffff-ffff-ffff-ffffffffffff";
@@ -223,8 +229,12 @@ describe("memory step blocks", () => {
 		accepts(LOG, lines(ordinary({ text: "é".repeat(4095) })), "memory-steps");
 		refuses(LOG, lines(ordinary({ text: "é".repeat(4096) })));
 		const raw = JSON.stringify(ordinary({ result: {} }));
+		// A step keeps the envelope the model got whole: up to one tool result, 32 KiB (20260930733000), as SQL does.
+		accepts(LOG, `${raw.replace('"result":{}', `"result":{${" ".repeat(32766)}}`)}\n`, "memory-steps");
+		refuses(LOG, `${raw.replace('"result":{}', `"result":{${" ".repeat(32767)}}`)}\n`);
+		// What 8 KiB refused before parses now; a result within 8 KiB, as every older log has, parses as before.
+		accepts(LOG, `${raw.replace('"result":{}', `"result":{${" ".repeat(8191)}}`)}\n`, "memory-steps");
 		accepts(LOG, `${raw.replace('"result":{}', `"result":{${" ".repeat(8190)}}`)}\n`, "memory-steps");
-		refuses(LOG, `${raw.replace('"result":{}', `"result":{${" ".repeat(8191)}}`)}\n`);
 		accepts(LOG, `${raw.replace('"reads":[]', `"reads":[${" ".repeat(16382)}]`)}\n`, "memory-steps");
 		refuses(LOG, `${raw.replace('"reads":[]', `"reads":[${" ".repeat(16383)}]`)}\n`);
 		const paths = '"paths":["projects/research.md"]';
@@ -241,6 +251,19 @@ describe("memory step blocks", () => {
 			LOG,
 			`${raw.replace('"args":"{\\"path\\":\\"projects/research.md\\"}"', `"args":"${"\\u0061".repeat(1366)}"`)}\n`,
 		);
+	});
+
+	it("bounds a step's result by the one tool result constant, and a full result still fits a step line", () => {
+		expect(CLOUD_TOOL_RESULT_MAX_BYTES).toBe(32 * 1024);
+		expect(MEMORY_RUN_STEP_RESULT_BYTES).toBe(CLOUD_TOOL_RESULT_MAX_BYTES);
+		const raw = JSON.stringify(ordinary({ result: {} }));
+		// A whole 32 KiB result with paths at their own bound: the line is past 40 KiB and within the step line's bound.
+		const full = `${raw
+			.replace('"result":{}', `"result":{${" ".repeat(32766)}}`)
+			.replace('"paths":["projects/research.md"]', `"paths":[${" ".repeat(8190)}]`)}\n`;
+		expect(Buffer.byteLength(full)).toBeGreaterThan(40 * 1024);
+		expect(Buffer.byteLength(full) - 1).toBeLessThanOrEqual(MEMORY_RUN_STEP_LINE_BYTES);
+		accepts(LOG, full, "memory-steps");
 	});
 
 	it("checks newline, contiguous block numbers, line count and exact byte ceilings", () => {

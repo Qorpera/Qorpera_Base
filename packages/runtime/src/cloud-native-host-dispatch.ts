@@ -18,7 +18,11 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * M4), 20260930231000 (run logs, W1b), 20260930300000 (tree writer, M1b-4b-2), 20260930300100 (the admission split,
  * M1b-4b-3), 20260930340000 (resumed attempts, W5b-2), 20260930341000 (worker memory, W4b), 20260930539000 (a
  * resumed attempt's receipts in Agent notebooks), 20260930550000 (company sites), 20260930566000 (good will),
- * 20260930618000 (the run's check around a tool call) and 20260930702000 (the Co-Founder's offers of agents) list them, without the two
+ * 20260930618000 (the run's check around a tool call), 20260930702000 (the Co-Founder's offers of agents),
+ * 20260930720000 (an agent's undo and description of a change in the company's code), 20260930736000 (an agent's
+ * import of existing code into it), 20260930750000 (a run's data pass for the company data gateway), 20260930752000
+ * (the agent's home: the run's offer and its session's close) and 20260930761000 (a light ask's answer) list them,
+ * without the two
  * identity calls, which the host makes between jobs (G2-3), and without the agents' old todo, worker, routine and
  * sidebar writers, which legacy sweep D6 (20260930335000) took out. The long budget is the lease validator's and, since 20260930109500, the model request's
  * fence's. */
@@ -40,14 +44,17 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_bind_native_company_context", "standard"],
 	["qorpera_check_company_path_mutation", "standard"],
 	["qorpera_check_native_run", "standard"],
+	["qorpera_close_home_session", "standard"],
 	["qorpera_cofounder_crew", "standard"],
 	["qorpera_commit_company_path_mutation", "standard"],
+	["qorpera_company_home_available", "standard"],
 	["qorpera_company_machines_available", "standard"],
 	["qorpera_company_presence_scope", "standard"],
 	["qorpera_complete_native_tool_operation", "standard"],
 	["qorpera_confirm_company_path_read", "standard"],
 	["qorpera_describe_agent_open_work", "standard"],
 	["qorpera_describe_company_run_context", "standard"],
+	["qorpera_describe_company_senses", "standard"],
 	["qorpera_describe_native_tool_authority", "standard"],
 	["qorpera_fence_native_context", "long"],
 	["qorpera_find_agent_mail", "standard"],
@@ -60,8 +67,11 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_archive_coding_worker", "standard"],
 	["qorpera_folder_cancel_agent_worker", "standard"],
 	["qorpera_folder_close_proposal", "standard"],
+	["qorpera_folder_code_import", "standard"],
+	["qorpera_folder_code_request", "standard"],
 	["qorpera_folder_commit", "standard"],
 	["qorpera_folder_complete_run_receipt", "standard"],
+	["qorpera_folder_describe_code_change", "standard"],
 	["qorpera_folder_list", "standard"],
 	["qorpera_folder_manage_hook", "standard"],
 	["qorpera_folder_memory_commit", "standard"],
@@ -69,9 +79,12 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_open_upload", "standard"],
 	["qorpera_folder_read", "standard"],
 	["qorpera_folder_record_release", "standard"],
+	["qorpera_folder_run_receipt_exists", "standard"],
 	["qorpera_folder_run_view_open", "standard"],
 	["qorpera_folder_record_review", "standard"],
 	["qorpera_folder_renew_upload", "standard"],
+	["qorpera_folder_request_code_import", "standard"],
+	["qorpera_folder_request_code_undo", "standard"],
 	["qorpera_folder_seal_upload", "standard"],
 	["qorpera_folder_worker_commit", "standard"],
 	["qorpera_folder_worker_parent_run", "standard"],
@@ -97,6 +110,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_memory_zoom", "standard"],
 	["qorpera_native_company_file_write", "standard"],
 	["qorpera_native_company_file_write_source", "standard"],
+	["qorpera_native_light_ask_answer", "standard"],
 	["qorpera_native_machine_manage", "standard"],
 	["qorpera_native_machine_start", "standard"],
 	["qorpera_native_office_capture", "standard"],
@@ -125,6 +139,8 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_record_native_context_view", "standard"],
 	["qorpera_record_provider_usage_signal", "standard"],
 	["qorpera_record_runtime_observation_batch", "standard"],
+	["qorpera_run_data_pass", "standard"],
+	["qorpera_run_data_pass_approved", "standard"],
 	["qorpera_self_approve_organization_proposal", "standard"],
 	["qorpera_send_agent_mail", "standard"],
 	["qorpera_send_coworker_message", "standard"],
@@ -156,6 +172,16 @@ export const NATIVE_HOST_IDENTITY_CALLS: ReadonlySet<string> = new Set([
 	"qorpera_list_native_provider_account_refreshes",
 	"qorpera_record_native_provider_account_metadata",
 ]);
+
+/** A database call no list of this host's names (neither NATIVE_HOST_CALLS nor NATIVE_HOST_IDENTITY_CALLS): a fault
+ * of the host's own lists, never a lost answer, so asking again changes nothing. Its words are the ones it always had;
+ * its class lets a client keep it apart from a transport failure. */
+export class NativeHostCallUnknown extends Error {
+	constructor() {
+		super("Not a native host call");
+		this.name = "NativeHostCallUnknown";
+	}
+}
 
 /** Why the host refused an execution's credential: a fixed code for the runner's failure (no token or key, or a
  * previous job still holding the host). */
@@ -265,7 +291,7 @@ export class NativeHostDispatch {
 		const identityCall = name !== undefined && NATIVE_HOST_IDENTITY_CALLS.has(name);
 		const budget = name === undefined || identityCall ? undefined : NATIVE_HOST_CALLS.get(name);
 		// Any other database call is a listed call through an entry point, or refused: never the service key.
-		if (name === undefined || (!identityCall && budget === undefined)) throw new Error("Not a native host call");
+		if (name === undefined || (!identityCall && budget === undefined)) throw new NativeHostCallUnknown();
 		if (
 			input instanceof Request ||
 			init?.method !== "POST" ||

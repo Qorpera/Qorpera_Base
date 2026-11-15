@@ -2,7 +2,7 @@
 @import "../../../member-web/ui/screens.css";
 @import "./settings.css";
 @import "./conversation.css";
-@import "./agent-wall.css";
+@import "./computer-scene.css";
 @import "./feedback.css";
 @import "./company-folder.css";
 @import "./founding.css";
@@ -10,6 +10,7 @@
 @import "./bank.css";
 @import "./members.css";
 @import "./mailbox.css";
+@import "./sites.css";
 @import "./agent-routines.css";
 @import "./social.css";
 @import "./dark.css";
@@ -240,6 +241,16 @@ label > input, label > select { font-weight: 400; }
 	max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
 .context-menu:focus { outline: none; }
+/* When a message was sent, beside it on a hover (ui/sent-time-hover.ts): plain small text, at once.
+ * Over the thread (no room beside the message), on the thread's own colour so it reads. */
+.sent-time-tip {
+	position: fixed; z-index: 650; left: 0; top: 0; padding: 0 4px; pointer-events: none; border-radius: 4px;
+	color: var(--text-muted); font-family: var(--font-sans); -webkit-font-smoothing: antialiased;
+	font-size: 12px; font-weight: 400; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums;
+	visibility: hidden;
+}
+.sent-time-tip.is-shown { visibility: visible; }
+.sent-time-tip.is-over { background: var(--bg); }
 .context-menu-item {
 	display: flex; flex: none; align-items: center; gap: 10px; width: 100%; padding: 7px 12px;
 	border: 0; border-radius: 8px; background: transparent; color: var(--text);
@@ -251,6 +262,10 @@ label > input, label > select { font-weight: 400; }
 .context-menu-chevron { display: grid; margin-right: -3px; color: var(--text-muted); }
 .context-menu-chevron .icon { width: 14px; height: 14px; }
 .context-menu-item.danger, .context-menu-item.danger .icon { color: var(--danger); }
+.context-menu-item:disabled, .context-menu-item:disabled .icon { color: var(--text-muted); }
+.context-menu-item:disabled:hover { background: transparent; }
+/* What a confirmation changes, listed under its question. */
+.modal-list { margin: -4px 0 0; padding-left: 20px; display: grid; gap: 2px; color: var(--text-muted); }
 .context-menu-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
 /* A line of plain text among the rows, a row's second line, a face in the icon's place. */
 .context-menu-caption { flex: none; padding: 6px 12px 5px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
@@ -264,18 +279,24 @@ label > input, label > select { font-weight: 400; }
 /* The V24 company rail. RailLayout sets its width on the rail and its edge, the only two
  * readers; not inheriting, a change never restyles what is inside the rail. */
 @property --rail-width { syntax: "*"; inherits: false; }
-.rail {
+/* The rail's own colours and type, shared with the Concepts viewer's side panel, which is the rail in that view
+ * (styles/conversation.css; Jonas, 13 Nov 2026: it should match the regular sidepanel's style and width). */
+:is(.rail, .concepts-side) {
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--composer-accent); --rail-small: #71716b; --rail-status: var(--agent-active);
 	--rail-status-failed: #ff3b30;
+	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px). */
+	--rail-waiting: #8f5000;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+.rail {
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
 	/* Messages' sidebar: 10px insets, a darker edge line than the other dividers (Jonas, 9 Nov 2026). */
 	padding: 0 10px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	/* One figure size and one lift; every card measure below derives from them. */
 	--figure: 82px; --lift: 37px;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
 /* One top row (Jonas, 5 Nov 2026): the company's name, which opens the member's companies, then
@@ -412,7 +433,8 @@ label > input, label > select { font-weight: 400; }
 .rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .rail-section-list { display: grid; gap: 0; }
 /* Grok Bot's "Hidden Bots": a quiet row at the foot of the list, the count on the right;
- * open, it lists the hidden agents, and a chevron takes the count's place. */
+ * open, it lists the hidden agents and contacts, and a chevron takes the count's place. A
+ * hidden contact can still write: how many of their messages wait stands before the count. */
 .rail-hidden { margin-top: 10px; }
 .rail-hidden-toggle {
 	display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 8px; border: 0; border-radius: 8px;
@@ -422,34 +444,42 @@ label > input, label > select { font-weight: 400; }
 .rail-hidden-toggle:hover { background: var(--rail-hover); }
 .rail-hidden-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-hidden-count { font-weight: 500; font-variant-numeric: tabular-nums; }
+.rail-hidden-unread {
+	min-width: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--sidebar-selection); color: #fff;
+	font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
+}
 .rail-hidden-chevron { display: grid; }
 .rail-hidden-chevron .icon { width: 14px; height: 14px; }
-:is(.rail-hidden-count, .rail-hidden-chevron, .rail-hidden-list)[hidden] { display: none; }
+:is(.rail-hidden-count, .rail-hidden-unread, .rail-hidden-chevron, .rail-hidden-list)[hidden] { display: none; }
 .rail-scroll > :is(.rail-section, .rail-pinned):first-child { margin-top: 14px; }
 .rail-row, .rail-pin, .cofounder-home { -webkit-touch-callout: none; }
 .rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open { background: var(--rail-hover); }
 .rail-row.active.menu-open, .rail-pin.active.menu-open, .cofounder-home.active.menu-open { background: var(--rail-selection); }
-/* Dragging an agent: every place it can land is an invisible container; the one under
- * the pointer lights up (no border) and a thin line shows where the agent lands. */
+/* Dragging an agent: the rows make way for it, as the apps drawer's icons do (ui/rail-drag.ts). The row
+ * lifts off as an image under the pointer, an empty space of its shape stands where it would land, and
+ * the row itself is out of the list until it is let go (then unseen until the image reaches it). */
 .rail-scroll { position: relative; }
-.rail-dragging :is(.rail-section, .rail-pinned) { transition: background-color 120ms ease; }
-.rail-dragging [data-drop-zone].is-drop-target { background: var(--rail-hover); }
-.rail-dragging .rail-pinned.is-empty { display: flex; margin-bottom: 6px; padding: 0; }
-.rail-dragging .rail-pinned.is-empty .rail-drop-slot {
+/* A pinned row with no card (empty, or its only card lifted) opens to take one when the pointer comes up to
+ * it (rail-pin-open), so lifting a row never pushes the list down under the pointer. */
+.rail-dragging .rail-pinned.is-empty:has(> .rail-drop-gap), .rail-dragging.rail-pin-open .rail-pinned.is-empty { display: flex; }
+.rail-dragging.rail-pin-open .rail-pinned:not(:has(> :is(.rail-pin:not(.is-drag-source), .rail-drop-gap))) { margin-bottom: 6px; padding: 0; }
+.rail-dragging.rail-pin-open .rail-pinned:not(:has(> :is(.rail-pin:not(.is-drag-source), .rail-drop-gap))) .rail-drop-slot {
 	display: grid; flex: 1; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
 }
-.rail-dragging .rail-section-list:empty { min-height: 44px; }
+.rail-dragging .rail-section-list:not(:has(> :not(.is-drag-source))) { min-height: 44px; }
 .rail-dragging :is(.rail-row, .rail-pin):hover:not(.active) { background: transparent; }
-.is-drag-source { opacity: 0.28; }
+.rail-scroll .is-drag-source { display: none !important; }
+.rail-scroll .is-drag-landing { visibility: hidden; }
+.rail-drop-gap { flex: none; height: 63.75px; pointer-events: none; }
+.rail-drop-gap.is-pin { width: 86px; height: 86px; }
 .rail-drag-ghost {
 	--rail: var(--sidebar-surface); --rail-hover: var(--sidebar-hover); --rail-selection: var(--composer-accent);
 	--rail-status: var(--agent-active); --rail-status-failed: #ff3b30;
+	--rail-waiting: #8f5000;
 	position: fixed; left: 0; top: 0; z-index: 600; margin: 0; pointer-events: none;
 	background: var(--rail); border-radius: 12px; opacity: 0.96;
 	box-shadow: 0 14px 32px rgba(11, 11, 11, 0.18), 0 2px 8px rgba(11, 11, 11, 0.08);
 }
-.rail-drop-marker { position: absolute; z-index: 5; height: 2px; border-radius: 1px; background: var(--rail-selection); pointer-events: none; }
-.rail-drop-marker.vertical { width: 2px; }
 /* Dragged from the collapsed rail, the image is the figure alone, as the row shows it there. */
 .rail-drag-ghost.compact :is(.rail-row-copy, .rail-pin-name) { display: none; }
 .rail-drag-ghost.compact.rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; }
@@ -461,13 +491,50 @@ label > input, label > select { font-weight: 400; }
 	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 6px; color: var(--text);
 }
 .rail-row-agent, .rail-row-group { --rail-row-figure: 50px; min-height: 63.75px; }
+/* The company's other members, each a contact (Jonas, 10 Nov 2026): their face where an agent has a figure, a green
+ * dot while they are online and the count of their unread messages. A contact is a row like an agent's wherever its
+ * member puts it (a card in the pinned row); until then it stands in the Members group at the foot of the list. That
+ * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
+ * back (ui/rail-drag.ts says what is dragged). */
+.rail-members.is-empty { display: none; }
+.rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
+.rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
+.rail-row-member .person-avatar { width: 44px; height: 44px; font-size: 15px; }
+:is(.rail-row-member, .rail-pin-member) .person-online-dot { right: 0; bottom: 0; width: 13px; height: 13px; box-shadow: 0 0 0 2px var(--rail); }
+:is(.rail-row-member, .rail-pin-member):hover .person-online-dot { box-shadow: 0 0 0 2px var(--rail-hover); }
+:is(.rail-row-member, .rail-pin-member).active .person-online-dot { box-shadow: 0 0 0 2px var(--rail-selection); }
+:is(.rail-row-member, .rail-pin-member) .rail-mention { top: 0; right: 0; }
+:is(.rail-row-member, .rail-pin-member).active .rail-mention { background: #fff; color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection); }
+.rail-pin-member .person-avatar { width: 48px; height: 48px; font-size: 16px; }
 /* A page hidden from the rail, in Hidden: a button that opens its menu. */
 .rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
-/* The Sites page (#/c/<id>/sites): its globe beside the title and lead. */
+/* What's new's heading (#/c/<id>/whats-new): its spark beside the title. */
 .sites-page-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .sites-page-heading > svg { flex: none; }
 .sites-page-heading h1 { margin: 0; }
-.sites-page-heading p { margin: 4px 0 0; color: var(--text-muted); }
+/* What's new: per project, what is live (a row of the Sites page, styles/sites.css), the changes ready to go live as a
+ * picture with one line each (the look of a question's visual choices), and the buttons. */
+.whats-new-site { margin: 0 0 40px; }
+.whats-new-site > h2 { margin: 0 0 4px; overflow-wrap: anywhere; }
+.whats-new-site > h3 { margin: 22px 0 10px; }
+.whats-new-actions .btn { border-radius: var(--radius-pill); }
+.whats-new-changes { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+/* Two to a row on a phone, so the buttons are near (as a question's visual choices are). */
+@media (max-width: 520px) { .whats-new-changes { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } }
+.whats-new-change {
+	display: grid; gap: 6px; align-content: start; min-width: 0; padding: 8px 8px 10px;
+	border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+}
+.whats-new-line { margin: 0; padding: 2px 2px 0; font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+/* A change without a picture: its line alone, on a plain tile where the picture would be. */
+.whats-new-change.is-plain .whats-new-line {
+	display: grid; place-items: center; aspect-ratio: 4 / 3; padding: 14px; border-radius: 10px;
+	background: var(--pane-strong); font-size: 15px; text-align: center;
+}
+.whats-new-was { padding: 0 2px; color: var(--text-muted); font-size: 12.5px; }
+.whats-new-behind, .whats-new-waiting, .whats-new-managers, .whats-new-empty { margin: 10px 0 0; color: var(--text-muted); }
+.whats-new-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.whats-new-site > .service-outcome { margin: 12px 0 0; font-size: 13px; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
@@ -503,15 +570,19 @@ label > input, label > select { font-weight: 400; }
 /* As in a Messages contact row: the name sits at the top of the row, 10px under the
  * selection's edge, in bold; the figure stays centered (Jonas, 9 Nov 2026). */
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; align-self: start; padding-top: 3px; }
-.rail-row-copy strong { font-size: 13px; font-weight: 700; line-height: 16px; }
-.rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
+:is(.rail-row-copy, .concepts-item-copy) strong { font-size: 13px; font-weight: 700; line-height: 16px; }
+:is(.rail-row-copy, .concepts-item-copy) small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
 /* The rail's names and lines draw with macOS's own text smoothing, as Messages' sidebar does:
  * body's "antialiased" draws them about a fifth lighter than the native row beside them
  * (Jonas, 9 Nov 2026). */
-.rail-row-copy, .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
+:is(.rail-row-copy, .concepts-item-copy), .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
-.cofounder-home strong, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
+.cofounder-home strong, :is(.rail-row-copy, .concepts-item-copy) :is(strong, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.rail-row.active, .concepts-item[aria-current]) :is(.rail-row-copy, .concepts-item-copy) small { color: rgba(255, 255, 255, 0.92); }
+/* A run that did not finish says so in red under the name; the selected row keeps its white. */
+.rail-row:not(.active) .rail-row-copy small.is-failed { color: #c4161c; }
+/* Stopped at the member ("Stopped: …", or "Needs you"): in the warning colour; the selected row keeps its white. */
+.rail-row:not(.active) .rail-row-copy small.is-waiting { color: var(--rail-waiting); }
 /* The ink wave over a live state ("Working", "Writing"): the rail card and the
  * thread caption share one clock (agent-activity.ts), so they move together;
  * the caption rebuilds its letters when shown (conversation.css pauses it while hidden). */
@@ -542,7 +613,8 @@ label > input, label > select { font-weight: 400; }
 /* Collapsed, hidden agents stay out of the figure column; widen the rail to reach them. */
 .rail-compact .rail-hidden { display: none; }
 .rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
-.rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-dragging .rail-pinned .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-drop-gap.is-pin { width: 60px; height: 60px; }
 .rail-compact .rail-divided::before { content: ""; display: block; height: 1px; margin: 4px 8px; background: var(--border-strong); }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; z-index: 50; }
@@ -583,6 +655,18 @@ label > input, label > select { font-weight: 400; }
 .figure { position: relative; display: inline-block; width: var(--figure-size, 32px); height: var(--figure-size, 32px); flex: none; vertical-align: middle; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
+/* A figure whose artwork was still loading fades into its empty place, in its own colour (ui/figure-motion.ts). */
+.figure-canvas[data-arrive] { animation: figure-arrive var(--motion-base) var(--ease-out) both; }
+@keyframes figure-arrive { from { opacity: 0; } }
+.figure-canvas { transform-origin: 50% 90%; }
+.figure { isolation: isolate; }
+.figure-fx { position: absolute; inset: 0; pointer-events: none; }
+.figure-bit { position: absolute; z-index: 3; display: block; pointer-events: none; }
+.figure-dust { border-radius: 50%; background: rgb(70 60 50 / 26%); }
+.figure-sparkle::before { content: ""; position: absolute; inset: 0; background: var(--bit); clip-path: polygon(50% 0, 65% 35%, 100% 50%, 65% 65%, 50% 100%, 35% 65%, 0 50%, 35% 35%); }
+.figure-sparkle { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bit) 55%, transparent)); }
+.figure-air { position: absolute; inset: -34%; z-index: 2; display: block; width: 168%; height: 168%; pointer-events: none; }
+.figure-air.is-behind { z-index: -1; }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
@@ -802,11 +886,11 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .meet-name { font-size: 19px; font-weight: 600; letter-spacing: 0; }
 .meet .notice { width: min(420px, 100%); text-align: left; margin: 14px 0 0; }
 
-/* The approved selector: seven figures in one row, then eleven colours in
- * centred rows of six and five. */
+/* The approved selector: twelve figures in two rows of six, then eleven
+ * colours in centred rows of six and five. */
 .figure-grid {
-	display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); justify-items: center; align-items: center;
-	gap: 4px; width: min(100%, 324px); margin: 24px auto 0;
+	display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); justify-items: center; align-items: center;
+	gap: 6px 4px; width: min(100%, 284px); margin: 24px auto 0;
 }
 .figure-choice {
 	position: relative; display: grid; place-items: center; width: min(100%, 40px); aspect-ratio: 1; padding: 3px;

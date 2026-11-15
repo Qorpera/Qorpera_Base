@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { MEMORY_RUN_STEP_RESULT_BYTES } from "@qorpera/cloud-client/memory-run-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import {
 	type CloudCompanyFolderBytes,
@@ -9,6 +10,7 @@ import {
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
+import { MAX_CLOUD_TOOL_RESULT_BYTES } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CloudRunLog,
 	CloudRunLogGone,
@@ -310,6 +312,20 @@ function step(log: CloudRunLog, call = randomUUID()) {
 function finish(log: CloudRunLog, j: number) {
 	log.finish(j, '{"status":"ok","content":{"text":"answer"}}', []);
 }
+/** A result envelope of exactly `bytes` bytes, in the fence's shape, its text padded with plain characters. */
+function resultEnvelope(bytes: number): string {
+	const shaped = (text: string) =>
+		JSON.stringify({
+			schema: "qorpera.cloud-tool-result/v1",
+			trust: "untrusted_data",
+			provenance: { callId: "call-1", namespace: "qorpera", tool: "company_read" },
+			status: "ok",
+			content: { kind: "text", text },
+		});
+	const envelope = shaped("x".repeat(bytes - Buffer.byteLength(shaped(""))));
+	expect(Buffer.byteLength(envelope)).toBe(bytes);
+	return envelope;
+}
 
 describe("run log persistence through the ordinary folder client", () => {
 	it.each([false, true])(
@@ -505,6 +521,50 @@ describe("run log persistence through the ordinary folder client", () => {
 			expect(f.commits).toHaveLength(1);
 		},
 	);
+
+	it("keeps a step whose result is a whole 32 KiB envelope: staged with its parse, read back and resumed whole", async () => {
+		expect(MAX_CLOUD_TOOL_RESULT_BYTES).toBe(MEMORY_RUN_STEP_RESULT_BYTES);
+		const f = fixture();
+		const envelope = resultEnvelope(MAX_CLOUD_TOOL_RESULT_BYTES);
+		const j = step(f.log);
+		f.log.finish(j, envelope, []);
+		await f.log.flush(signal);
+		const block = `${f.root}/log/00000000.jsonl`;
+		// The shared parser ran on the staged bytes and took the block: its parse goes with the unit, no problems.
+		expect(f.commits.at(-1)!.units.find((unit) => unit.path === block)?.structured).toEqual([
+			{
+				path: block,
+				kind: "memory-steps",
+				parserVersion: 1,
+				text: expect.any(String),
+				parse: { kind: "memory-steps" },
+			},
+		]);
+		// Read back through the same parser, the line keeps the envelope as the fence issued it, byte for byte.
+		const stored = await f.folder.read(block, signal);
+		expect(stored?.text).toContain(`"result":${envelope},`);
+		expect(Buffer.byteLength(stored!.text)).toBeGreaterThan(MAX_CLOUD_TOOL_RESULT_BYTES);
+		// A resumed attempt reads it from the log whole.
+		const resumed = new CloudRunLog({
+			runId: f.runId,
+			conversationId: f.origin.conversation,
+			folder: f.folder,
+			protection: f.protection,
+			signal,
+			firstStep: 1,
+		});
+		logs.push(resumed);
+		const [earlier] = await resumed.earlier(signal);
+		expect(earlier).toMatchObject({ j, tool: "company_read" });
+		expect(JSON.parse(earlier!.result!)).toEqual(JSON.parse(envelope));
+		// One byte past one result's bound is no step line: the adapter refuses such a block on read.
+		const over = stored!.text.replace(
+			`"result":${envelope},`,
+			`"result":${resultEnvelope(MAX_CLOUD_TOOL_RESULT_BYTES + 1)},`,
+		);
+		f.putFile(block, over);
+		await expect(f.folder.read(block, signal)).rejects.toThrow("folder_response_invalid");
+	});
 
 	it("cancels before staging or committing an effect", async () => {
 		const f = fixture();

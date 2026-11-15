@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type CloudCodingRepository, folderKey, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
+import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "./code-folder-names.ts";
 
 /** The code host's jobs (5e, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"): every git command that must not run as
  * a member's root. Each job runs in the company's code host VM, through its `code_host` view of `/company` (code/
@@ -58,6 +59,16 @@ export class CodeHostRefusal extends Error {
 		this.paths = Object.freeze([...paths]);
 	}
 }
+/** A session's worktree refused for the names of what it would hold (`addCodeWorktree`): the refusal of the names'
+ * rules (`Run.checkNames`, and the company folder's, `CODE_HOST_NAMES_FOLDER_REFUSES`), saying whose names they are.
+ * `branch`: the session's own branch, whose worktree was to be made again; `base`: the base a new worktree starts at. */
+export class CodeWorktreeNamesRefused extends CodeHostRefusal {
+	readonly of: "branch" | "base";
+	constructor(code: string, paths: readonly string[], of: "branch" | "base") {
+		super(code, paths);
+		this.of = of;
+	}
+}
 /** A command that failed, with the end of what it said. */
 export class CodeHostJobFailure extends Error {
 	readonly code: string;
@@ -70,20 +81,32 @@ export class CodeHostJobFailure extends Error {
 	}
 }
 
-const SHA = /^[0-9a-f]{40}$/;
-const ZERO = "0".repeat(40);
-const MiB = 1024 ** 2;
+// What follows without a doc comment of its own surface is exported for the code host's other job files (a second
+// file of jobs builds on the same run, the same guarded move of main and the same limits). It is not the executor's
+// surface: the executor calls the job functions.
+export const SHA = /^[0-9a-f]{40}$/;
+export const SHA256 = /^[0-9a-f]{64}$/;
+export const ZERO = "0".repeat(40);
+export const MiB = 1024 ** 2;
+export const GiB = 1024 ** 3;
 /** Q13: single files over 256 MiB are refused until large files; the folder refuses a pack of 256 MiB or more. */
-const MAX_BLOB = 256 * MiB;
-const MAX_PACK = 256 * MiB;
-const MAX_LISTING = 256 * MiB;
+export const MAX_BLOB = 256 * MiB;
+export const MAX_PACK = 256 * MiB;
+export const MAX_LISTING = 256 * MiB;
 /** A commit file read (5h reads at most 1 MiB). */
-const MAX_READ = 16 * MiB;
-const MAX_TEXT = 64 * 1024;
+export const MAX_READ = 16 * MiB;
+export const MAX_TEXT = 64 * 1024;
+/** Every ref of a code area in one listing: a session may keep branches and tags of its own beside its branch. */
+export const MAX_REFS = 64 * MiB;
+/** One exec's output is held in memory, and LXD's pipe carries at most this (lxd-client.ts). */
+export const MAX_PIECE = 256 * MiB;
 /** The platform's repository config, byte for byte: no include, extension, filter, hook or worktree setting. */
 export const CODE_AREA_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n";
-const MAIN_LOCK = "qorpera: the default branch, platform-only";
-const WORKTREE_LOCK = "qorpera: a coding session's worktree";
+export const MAIN_LOCK = "qorpera: the default branch, platform-only";
+export const WORKTREE_LOCK = "qorpera: a coding session's worktree";
+/** The mark of a restore under way, `code/<owner>/<name>/restoring.json` (own code storage, step 2b): the platform's
+ * alone, there from the job that set the damaged place aside until the job that built the repository again. */
+export const CODE_AREA_RESTORING = "restoring.json";
 
 /** Every command's settings, command scope, so they beat the repository's. §6's table for the shared directory, and
  * for gc: worker branches never packed (packed-refs is shared and the folder can't read its lines; gc packs refs
@@ -156,7 +179,7 @@ function workerIdOf(value: unknown): string {
 	if (!isUuid(value)) throw new Error("INVALID_CODE_HOST_JOB");
 	return value;
 }
-function closed<T extends string>(value: unknown, keys: readonly T[]): Record<T, unknown> {
+export function closed<T extends string>(value: unknown, keys: readonly T[]): Record<T, unknown> {
 	if (
 		!value ||
 		typeof value !== "object" ||
@@ -184,7 +207,7 @@ export function codeAreaPath(repository: CloudCodingRepository): string {
 	const { owner, name } = parseCloudCodingRepository(repository);
 	return `code/${owner.toLowerCase()}/${name.toLowerCase()}`;
 }
-function tail(text: string): string {
+export function tail(text: string): string {
 	return text.length > 2000 ? text.slice(-2000) : text;
 }
 
@@ -192,7 +215,7 @@ type PathType = "none" | "link" | "directory" | "file" | "other";
 const PATH_TYPES = new Set<string>(["none", "link", "directory", "file", "other"]);
 
 /** One job: its scratch directory, its environment, and the code area's paths. */
-class Run {
+export class Run {
 	readonly job: CodeHostJob;
 	readonly layout: CodeHostLayout;
 	readonly repository: CloudCodingRepository;
@@ -202,6 +225,8 @@ class Run {
 	readonly main: string;
 	readonly area: string;
 	readonly restored: string[] = [];
+	/** How often the job moved the base (`moveBase`). */
+	moves = 0;
 	readonly #env: Record<string, string>;
 	constructor(job: CodeHostJob, layout: CodeHostLayout, repository: CloudCodingRepository, directory: string) {
 		this.job = job;
@@ -331,10 +356,13 @@ class Run {
 	}
 
 	/** Before every job: no link on the way to or inside the code area's parts, the platform's config, no file that
-	 * points git elsewhere, and main/'s admin files as the platform made them. */
-	async prepare(workerId?: string) {
+	 * points git elsewhere, and main/'s admin files as the platform made them. A place a restore is working on (it
+	 * holds `restoring.json`, own code storage step 2b) is refused before anything is repaired there
+	 * (`CODE_HOST_RESTORE_IN_PROGRESS`): only a restore's own jobs pass `restoring`. */
+	async prepare(workerId?: string, options: { restoring?: boolean } = {}) {
 		const worktree = workerId ? `${this.code}/worktrees/${workerId}` : undefined,
-			admin = workerId ? `${this.repo}/worktrees/${workerId}` : undefined;
+			admin = workerId ? `${this.repo}/worktrees/${workerId}` : undefined,
+			mark = `${this.code}/${CODE_AREA_RESTORING}`;
 		const directories = [
 			`${this.layout.companyRoot}/code`,
 			posix.dirname(this.code),
@@ -355,11 +383,15 @@ class Run {
 			`${this.repo}/worktrees/main/gitdir`,
 			`${this.repo}/worktrees/main/locked`,
 			`${this.main}/.git`,
+			mark,
 		];
 		const types = await this.types([...directories, ...files]);
 		const type = new Map([...directories, ...files].map((path, index) => [path, types[index]]));
 		const links = [...type].filter(([, t]) => t === "link").map(([path]) => this.relative(path));
 		if (links.length) throw new CodeHostRefusal("CODE_HOST_LINK", links);
+		// Whatever has the mark's name closes the place to every job but a restore's own.
+		if (options.restoring !== true && type.get(mark) !== "none")
+			throw new CodeHostRefusal("CODE_HOST_RESTORE_IN_PROGRESS", [this.area]);
 		const wrong = [
 			...directories.filter((path) => !["none", "directory"].includes(type.get(path) as PathType)),
 			...files.filter((path) => !["none", "file"].includes(type.get(path) as PathType)),
@@ -403,6 +435,7 @@ class Run {
 		return {
 			made,
 			seeded,
+			restoring: type.get(mark) === "file",
 			main:
 				mainAdmin && mainTree
 					? ("present" as const)
@@ -434,14 +467,49 @@ class Run {
 		return objectName;
 	}
 
+	/** Every ref of a git directory in one read, in git's order (by name), each with the object it names: for a
+	 * symbolic ref, the one it leads to. */
+	async refs(gitDir: string): Promise<{ name: string; sha: string; type: string; symref: string }[]> {
+		const out = await this.gitOk(
+			gitDir,
+			["for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)"],
+			"CODE_HOST_REF_UNREADABLE",
+			{ maximumOutputBytes: MAX_REFS },
+		);
+		return out
+			.toString("utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => {
+				const [name, objectName, type, symref] = line.split("\0");
+				if (!name || !objectName || !SHA.test(objectName) || !type || symref === undefined)
+					throw new CodeHostJobFailure("CODE_HOST_REF_UNREADABLE", "a ref line is not git's");
+				return { name, sha: objectName, type, symref };
+			});
+	}
+
+	/** Whether a worktree holds exactly what its HEAD and index say, by git's own status (given whole, with its git
+	 * directory and work tree): it printed nothing. Its output stays in the scratch, so a worktree full of changes
+	 * fails no command; a status that failed proves nothing, and counts as not clean. */
+	async clean(status: readonly string[]): Promise<boolean> {
+		const result = await this.sh('out=$1; shift; "$@" >"$out" || exit 2; [ ! -s "$out" ]', [
+			`${this.directory}/status.out`,
+			this.layout.git,
+			"--no-replace-objects",
+			...status,
+		]);
+		return result.status === 0;
+	}
+
 	async isCommit(gitDir: string, commit: string): Promise<boolean> {
 		const result = await this.git(gitDir, ["cat-file", "-t", commit]);
 		return result.status === 0 && result.stdout.toString("utf8") === "commit\n";
 	}
 
 	/** §6 "Names": every name in the commit's tree in NFC, no two names in one folder that differ only by case, and no
-	 * file over 256 MiB. Refused naming the paths, before anything reaches the folder. */
-	async checkNames(gitDir: string, commit: string): Promise<void> {
+	 * file over 256 MiB. Refused naming the paths, before anything reaches the folder. Answers the tree's records, its
+	 * folders among them. */
+	async checkNames(gitDir: string, commit: string): Promise<ReturnType<typeof treeRecords>> {
 		const listing = await this.gitOk(
 			gitDir,
 			["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", commit],
@@ -449,12 +517,13 @@ class Run {
 			{ maximumOutputBytes: MAX_LISTING },
 		);
 		const decoder = new TextDecoder("utf-8", { fatal: true });
-		const notUtf8: string[] = [],
+		const records = treeRecords(listing),
+			notUtf8: string[] = [],
 			notNfc: string[] = [],
 			large: string[] = [],
 			names = new Map<string, string>(),
 			siblings = new Set<string>();
-		for (const { type, size, path: raw } of treeRecords(listing)) {
+		for (const { type, size, path: raw } of records) {
 			let path: string;
 			try {
 				path = decoder.decode(raw);
@@ -474,12 +543,15 @@ class Run {
 		if (notNfc.length) throw new CodeHostRefusal("CODE_HOST_NAMES_NOT_NFC", notNfc);
 		if (siblings.size) throw new CodeHostRefusal("CODE_HOST_NAMES_DIFFER_BY_CASE", [...siblings]);
 		if (large.length) throw new CodeHostRefusal("CODE_HOST_FILE_TOO_LARGE", large);
+		return records;
 	}
 }
 
 /** The records of `ls-tree -l -z`, `<mode> <type> <object> <size>\t<path>\0`, with the path as raw bytes. Only this
  * form leaves the path unquoted: `--format` C-quotes `%(path)` even with -z. */
-function treeRecords(listing: Buffer): { mode: string; type: string; name: string; size: string; path: Buffer }[] {
+export function treeRecords(
+	listing: Buffer,
+): { mode: string; type: string; name: string; size: string; path: Buffer }[] {
 	const records: ReturnType<typeof treeRecords> = [];
 	let start = 0;
 	while (start < listing.length) {
@@ -496,7 +568,7 @@ function treeRecords(listing: Buffer): { mode: string; type: string; name: strin
 	return records;
 }
 
-async function withJob<T>(job: CodeHostJob, repository: CloudCodingRepository, use: (run: Run) => Promise<T>) {
+export async function withJob<T>(job: CodeHostJob, repository: CloudCodingRepository, use: (run: Run) => Promise<T>) {
 	const layout = checkLayout(job.layout);
 	job.signal.throwIfAborted();
 	const run = new Run(job, layout, repository, `${layout.scratchRoot}/${randomUUID()}`);
@@ -579,7 +651,13 @@ export async function seedCodeArea(job: CodeHostJob, value: CodeAreaSeed): Promi
 			) !== `${baseSha}\n`
 		)
 			throw new CodeHostRefusal("CODE_HOST_SEED_HEADS", [base]);
-		await run.checkNames(scratch, baseSha);
+		const records = await run.checkNames(scratch, baseSha);
+		// And the company folder's rule for each path where a session's worktree holds it (the longest place a commit of
+		// the place is checked out at, so main/ takes it too): git takes a name such as `bad.` that the folder refuses, and
+		// the folder would refuse the checkout's whole change set once main/ or the worktree was written. Before the
+		// repack: nothing of the seed enters repo.git.
+		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
+		if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 		// Only what the code area does not hold yet, in self-contained packs under the limit.
 		await run.gitOk(scratch, ["repack", "-a", "-d", "-l", "-q"], "CODE_HOST_SEED_FAILED");
 		const listed = await run.command([
@@ -670,7 +748,26 @@ esac || { printf 'abort\\n' >&3; answer abort; finish 11; }
 printf 'commit\\n' >&3; answer commit || finish 10
 finish 0`;
 
-async function moveBase(run: Run, state: "present" | "partial" | "none", base: string, commit: string, old: string) {
+export async function moveBase(
+	run: Run,
+	state: "present" | "partial" | "none",
+	base: string,
+	commit: string,
+	old: string,
+) {
+	// The script makes its two pipes in the job's scratch. A job that moves a second time (nightly care's check: main/'s
+	// HEAD, then its files) removes them first.
+	if (run.moves > 0) {
+		const cleared = await run.command([
+			"/usr/bin/rm",
+			"-f",
+			"--",
+			`${run.directory}/base.in`,
+			`${run.directory}/base.out`,
+		]);
+		if (cleared.status !== 0) throw new CodeHostJobFailure("CODE_HOST_SEED_FAILED", tail(cleared.stderr));
+	}
+	run.moves += 1;
 	const moved = await run.sh(MOVE_BASE, [
 		run.layout.git,
 		run.repo,
@@ -748,7 +845,11 @@ export interface CodeWorktreeAdded {
 
 /** A session's worktree, `worktrees/<workerId>/` on `qorpera/coding/<workerId>`, added and locked. The branch starts at
  * baseSha, or keeps its commits when it is already there. A worktree is never unlocked when its session detaches
- * (retain-workspace). */
+ * (retain-workspace). A worktree whose files are gone while git's own folder for it is left (nightly care retired it,
+ * or a removal stopped halfway) is added again from its branch: that folder holds nothing the missing files do not
+ * make moot, so it is removed first and named in `restored`. Files without git's folder stay a refusal. A worktree
+ * whose names the code host's rules or the company folder's refuse where it stands is not added (`CodeWorktreeNamesRefused`,
+ * with the paths), and nothing is written for it. */
 export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Promise<CodeWorktreeAdded> {
 	const input = closed(value, ["repository", "workerId", "baseSha"]);
 	const repository = repositoryOf(input.repository),
@@ -770,14 +871,30 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 			if ((await run.types([`${admin}/locked`]))[0] === "none") await run.keep(`${admin}/locked`, WORKTREE_LOCK);
 			return { state: "present", headSha: head, restored: run.restored };
 		}
-		if (treeType !== "none" || adminType !== "none")
+		const adminLeft = treeType === "none" && adminType === "directory";
+		if (!adminLeft && (treeType !== "none" || adminType !== "none"))
 			throw new CodeHostRefusal("CODE_HOST_WORKTREE_INCOMPLETE", [
 				...(treeType === "none" ? [] : [run.relative(tree)]),
 				...(adminType === "none" ? [] : [run.relative(admin)]),
 			]);
 		if (!head && !(await run.isCommit(run.repo, baseSha)))
 			throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
-		await run.checkNames(run.repo, head ?? baseSha);
+		// The names of what the worktree would hold, by the code host's rules and then the company folder's where this
+		// worktree holds them, before anything is written: the folder would refuse the checkout's whole change set (or
+		// the mount a name over 255 bytes) once it was written, the same at every follow-up. The refusal says whose names
+		// they are: the session's branch, or the base a new worktree starts at.
+		const of = head ? "branch" : "base";
+		const records = await run.checkNames(run.repo, head ?? baseSha).catch((error: unknown) => {
+			throw error instanceof CodeHostRefusal ? new CodeWorktreeNamesRefused(error.code, error.paths, of) : error;
+		});
+		const refused = codeFolderRefuses(run.area, records, `worktrees/${workerId}`);
+		if (refused.length) throw new CodeWorktreeNamesRefused("CODE_HOST_NAMES_FOLDER_REFUSES", refused, of);
+		if (adminLeft) {
+			// With git's folder there, git would call the branch checked out and refuse the add.
+			const removed = await run.command(["/usr/bin/rm", "-rf", "--", admin]);
+			if (removed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_WORKTREE_FAILED", tail(removed.stderr));
+			run.restored.push(run.relative(admin));
+		}
 		await run.gitOk(
 			run.repo,
 			head
@@ -865,7 +982,7 @@ export async function exportCodeBranch(
  * never holds both a copy of a GitHub repository and a repository kept here. */
 export const CODE_AREA_IN_QORPERA_REF = "refs/qorpera/kept-here";
 /** Who makes the platform's own commits in a repository kept in Qorpera: its first commit and its merges. */
-const PLATFORM_COMMITTER = ["-c", "user.name=Qorpera", "-c", "user.email=code@qorpera.com"] as const;
+export const PLATFORM_COMMITTER = ["-c", "user.name=Qorpera", "-c", "user.email=code@qorpera.com"] as const;
 
 export interface CodeAreaStarted {
 	/** `started`: the repository was made by this job, with one empty commit. `present`: it was already there. */
@@ -943,11 +1060,185 @@ export async function startCodeArea(
 	});
 }
 
+/** `closed`, with keys that may be left out. */
+function closedWith<T extends string, O extends string>(
+	value: unknown,
+	keys: readonly T[],
+	optional: readonly O[],
+): Record<T, unknown> & Partial<Record<O, unknown>> {
+	const given =
+		value && typeof value === "object" && !Array.isArray(value) ? optional.filter((key) => key in value) : [];
+	return closed(value, [...keys, ...given]) as Record<T, unknown> & Partial<Record<O, unknown>>;
+}
+
+/** One path that differs between two commits. A file whose kind changed (a file to a link) is `changed`. */
+export interface CodeChangePath {
+	path: string;
+	change: "added" | "changed" | "removed";
+}
+/** What a movement of the default branch changed (own code storage, step 2b): how many paths differ between the two
+ * commits, and the first of them in git's order, at most 50 and at most 8 KiB of path bytes together. `pathsMore`
+ * counts the rest, so `filesChanged` is always `paths.length + pathsMore`. */
+export interface CodeChangeDiff {
+	filesChanged: number;
+	paths: CodeChangePath[];
+	pathsMore: number;
+}
+const MAX_DIFF_PATHS = 50;
+const MAX_DIFF_PATH_BYTES = 8 * 1024;
+const DIFF_CHANGES: ReadonlyMap<string, CodeChangePath["change"]> = new Map([
+	["A", "added"],
+	["M", "changed"],
+	["T", "changed"],
+	["D", "removed"],
+]);
+
+/** The paths that differ between two commits, by `git diff-tree -r -z --no-renames --name-status`: every file, link
+ * and submodule entry counts once, a rename as one path removed and one added. A path that is not UTF-8 is shown with
+ * the replacement character, and counts as the bytes it is shown with. */
+async function changeDiff(run: Run, before: string, after: string, failure: string): Promise<CodeChangeDiff> {
+	const out = await run.gitOk(
+		run.repo,
+		["diff-tree", "-r", "-z", "--no-renames", "--name-status", before, after],
+		failure,
+		{ maximumOutputBytes: MAX_LISTING },
+	);
+	const paths: CodeChangePath[] = [];
+	let filesChanged = 0,
+		bytes = 0,
+		listing = true;
+	// `<status>\0<path>\0` for each path.
+	for (let start = 0; start < out.length; ) {
+		const statusEnd = out.indexOf(0, start),
+			pathEnd = statusEnd < 0 ? -1 : out.indexOf(0, statusEnd + 1),
+			change = DIFF_CHANGES.get(out.subarray(start, Math.max(statusEnd, start)).toString("latin1"));
+		if (pathEnd < 0 || !change) throw new CodeHostJobFailure(failure, "diff-tree's lines are not git's");
+		const raw = out.subarray(statusEnd + 1, pathEnd);
+		start = pathEnd + 1;
+		filesChanged += 1;
+		if (!listing) continue;
+		// The first path that does not fit ends the list, so what is named is always the first of them. No path is
+		// decoded that could not fit.
+		const path = paths.length < MAX_DIFF_PATHS && raw.length <= MAX_DIFF_PATH_BYTES ? raw.toString("utf8") : null,
+			size = path === null ? 0 : Buffer.byteLength(path);
+		if (path !== null && bytes + size <= MAX_DIFF_PATH_BYTES) {
+			bytes += size;
+			paths.push({ path, change });
+		} else listing = false;
+	}
+	return { filesChanged, paths, pathsMore: filesChanged - paths.length };
+}
+
+/** What the landing found at the path a session gave as its picture (`coding_finish.picture`), in the commit that
+ * became the default branch. `ok` names the file version by its git id: exactly those bytes are the picture. */
+export type CodePictureChecked =
+	| { state: "ok"; blob: string; bytes: number; type: "png" | "jpeg" | "webp" }
+	| { state: "missing" | "not_a_file" | "too_large" | "not_a_picture" };
+/** A change's picture is at most 4 MiB. */
+const MAX_PICTURE = 4 * MiB;
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** The session's picture, checked in git and never in the folder, so the session cannot swap the file afterwards: the
+ * path must name a regular file of the commit (`records` is its tree, as `checkNames` read it) of at most 4 MiB whose
+ * first bytes are a PNG's, a JPEG's or a WebP's. The four checks are made in that order, and the first that fails is
+ * the answer. A string that can be no path in a repository names nothing: it is `missing`. */
+async function checkPicture(
+	run: Run,
+	records: ReturnType<typeof treeRecords>,
+	path: string,
+): Promise<CodePictureChecked> {
+	if (!path || path.length > 4096 || /[\0\n\r]/.test(path)) return { state: "missing" };
+	if (path.split("/").some((part) => !part || part === "." || part === "..")) return { state: "missing" };
+	const wanted = Buffer.from(path, "utf8"),
+		entry = records.find((record) => record.path.equals(wanted));
+	if (!entry) return { state: "missing" };
+	if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) return { state: "not_a_file" };
+	const bytes = Number(entry.size);
+	if (!SHA.test(entry.name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
+	if (bytes > MAX_PICTURE) return { state: "too_large" };
+	// A WebP says what it is in its first twelve bytes, the others sooner.
+	const length = Math.min(bytes, 12);
+	const read = await run.sh(
+		'n=$1; shift; "$@" | exec /usr/bin/head -c "$n"',
+		[String(length), run.layout.git, "--no-replace-objects", `--git-dir=${run.repo}`, "cat-file", "blob", entry.name],
+		{ maximumOutputBytes: length },
+	);
+	if (read.status !== 0 || read.stdout.length !== length)
+		throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(read.stderr));
+	const head = read.stdout;
+	const type = head.subarray(0, 8).equals(PNG)
+		? ("png" as const)
+		: head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff
+			? ("jpeg" as const)
+			: head.length === 12 && head.toString("latin1", 0, 4) === "RIFF" && head.toString("latin1", 8, 12) === "WEBP"
+				? ("webp" as const)
+				: null;
+	return type ? { state: "ok", blob: entry.name, bytes, type } : { state: "not_a_picture" };
+}
+
+/** The commit of the default branch that first held `head`, which `main` reaches: `main` itself when it is `head`;
+ * `head` when the branch stood at it once (it is on main's line of first parents); otherwise the oldest commit on that
+ * line that reaches it, which is the merge that brought it in. Read from the commits between the two with their
+ * parents (`rev-list --ancestry-path --parents`), since `--first-parent --ancestry-path` prints nothing for a head that
+ * lies more than one step behind a merge's second parent. */
+async function firstHeldAt(run: Run, head: string, main: string): Promise<string> {
+	if (head === main) return main;
+	const out = await run.gitOk(
+		run.repo,
+		["rev-list", "--ancestry-path", "--parents", `${head}..${main}`],
+		"CODE_HOST_LAND_FAILED",
+		{ maximumOutputBytes: MAX_LISTING },
+	);
+	// Each commit that both reaches `head` and is reached by `main`, with its first parent.
+	const firstParent = new Map<string, string | undefined>();
+	for (const line of out.toString("latin1").split("\n")) {
+		const [commit, parent] = line.split(" ");
+		if (commit) firstParent.set(commit, parent);
+	}
+	let at = main;
+	for (;;) {
+		const parent = firstParent.get(at);
+		if (parent === head) return head;
+		if (parent === undefined || !firstParent.has(parent)) return at;
+		at = parent;
+	}
+}
+
+/** The repository's checks file (own code storage, step 3): read from git at the commit that would become the default
+ * branch and at the default branch, never from a worktree. */
+export const CODE_CHECKS_FILE = ".qorpera/checks.json";
+/** The checks file is read up to this size; a larger one comes back cut one byte after it. */
+const CODE_CHECKS_READ_BYTES = 16 * 1024;
+
 export interface CodeBranchLanding {
 	repository: CloudCodingRepository;
 	workerId: string;
 	/** The commit the session submitted: its branch's head, or a commit the branch still reaches. */
 	headSha: string;
+	/** The picture the session gave with its hand-in: a file's path in the repository. Checked at the commit that
+	 * becomes the default branch (`CodeBranchLanded.picture`); it never stops a landing. */
+	picture?: string;
+	/** Read .qorpera/checks.json at the commit that would become the default branch and at the default branch. When
+	 * either has anything at that path, answer `to-check`, having moved nothing. */
+	checks?: true;
+	/** Land exactly this candidate, made by an earlier job's `to-check`. When the default branch is not at `mainBefore`
+	 * any more, or the session's branch no longer holds `headSha`, or (merged) `mainAfter`'s parents are not
+	 * `[mainBefore, headSha]`, refuse with CodeHostJobFailure CODE_HOST_LAND_STALE before any write. */
+	expect?: { how: "fast-forward" | "merged"; mainBefore: string; mainAfter: string };
+}
+/** A landing that waits for its checks (own code storage, step 3): the commit that would become the default branch, and
+ * the checks file at it and at the default branch. Nothing moved; for a merge, the merge commit is written. */
+export interface CodeBranchToCheck {
+	state: "to-check";
+	how: "fast-forward" | "merged";
+	/** The default branch now. */
+	mainBefore: string;
+	/** The candidate: headSha, or the merge commit this job wrote (no ref names it; it stays an object). */
+	mainAfter: string;
+	/** .qorpera/checks.json at mainAfter and at mainBefore, read with maxBytes 16 KiB. */
+	checks: CodeCommitFile;
+	mainChecks: CodeCommitFile;
+	restored: string[];
 }
 export interface CodeBranchLanded {
 	/** `fast-forward`: the default branch moved to the submitted commit. `merged`: to a merge of it with the default
@@ -955,6 +1246,14 @@ export interface CodeBranchLanded {
 	state: "fast-forward" | "merged" | "unchanged";
 	/** The default branch's commit after the landing. */
 	mainSha: string;
+	/** The default branch's commit before the landing; `mainSha` itself when unchanged. */
+	mainBefore: string;
+	/** Unchanged only: the commit of the default branch that first held the submitted commit (`firstHeldAt`). */
+	containedAt: string | null;
+	/** What the landing changed in the default branch's files; nothing when unchanged. */
+	diff: CodeChangeDiff;
+	/** The picture as it was found; null when none was given, or when unchanged. */
+	picture: CodePictureChecked | null;
 	restored: string[];
 }
 
@@ -962,23 +1261,57 @@ export interface CodeBranchLanded {
  * in the same step as the branch (`moveBase`'s compare-and-swap: a landing racing another fails, and is asked again).
  * When the default branch moved on since the session's base, the two are merged by git's own merge (`merge-tree`, no
  * worktree); a conflict lands nothing and is refused naming its paths (`CODE_HOST_LAND_CONFLICT`), for the session to
- * merge itself. The landed tree passes the same name checks as a seed. */
-export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding): Promise<CodeBranchLanded> {
-	const input = closed(value, ["repository", "workerId", "headSha"]);
+ * merge itself. The landed tree passes the same name checks as a seed. For the change's record (step 2b) the answer
+ * says where the default branch was before, what the landing changed in its files and what the session's picture
+ * is; all of that is read before the branch moves, so the move is the landing's last step. The names checks are
+ * `Run.checkNames`, then the company folder's rule for each path where a session's worktree will hold it, which also
+ * holds where main/ will (`codeFolderRefuses`, `CODE_HOST_NAMES_FOLDER_REFUSES` naming the paths).
+ *
+ * A landing whose checks run between two jobs (own code storage, step 3): with `checks`, after the names of the
+ * commit that would become the default branch passed, the checks file is read there and at the default branch, and
+ * when either has anything at its path the job answers `to-check` without the picture, the diff or the move (a merge
+ * commit is written all the same). With `expect`, the next job lands exactly that candidate, as a landing does, or is
+ * refused as stale before any write; it merges nothing and reads no checks file. A commit the default branch already
+ * holds is `unchanged` in every case. */
+export function landCodeBranch(
+	job: CodeHostJob,
+	value: CodeBranchLanding & { checks?: undefined },
+): Promise<CodeBranchLanded>;
+export function landCodeBranch(
+	job: CodeHostJob,
+	value: CodeBranchLanding,
+): Promise<CodeBranchLanded | CodeBranchToCheck>;
+export async function landCodeBranch(
+	job: CodeHostJob,
+	value: CodeBranchLanding,
+): Promise<CodeBranchLanded | CodeBranchToCheck> {
+	const input = closedWith(value, ["repository", "workerId", "headSha"], ["picture", "checks", "expect"]);
 	const repository = repositoryOf(input.repository),
 		workerId = workerIdOf(input.workerId),
-		headSha = sha(input.headSha);
-	if (repository.host !== "qorpera") throw new Error("INVALID_CODE_HOST_JOB");
+		headSha = sha(input.headSha),
+		picture = input.picture,
+		checks = input.checks === true;
+	let expected: CodeBranchLanding["expect"];
+	if (input.expect !== undefined) {
+		const given = closed(input.expect, ["how", "mainBefore", "mainAfter"]);
+		if (given.how !== "fast-forward" && given.how !== "merged") throw new Error("INVALID_CODE_HOST_JOB");
+		expected = { how: given.how, mainBefore: sha(given.mainBefore), mainAfter: sha(given.mainAfter) };
+	}
+	if (
+		repository.host !== "qorpera" ||
+		(picture !== undefined && typeof picture !== "string") ||
+		(input.checks !== undefined && !checks) ||
+		(checks && expected)
+	)
+		throw new Error("INVALID_CODE_HOST_JOB");
 	const ref = `refs/heads/qorpera/coding/${workerId}`,
 		base = `refs/heads/${repository.baseBranch}`;
-	return withJob(job, repository, async (run) => {
+	const stale = (detail: string) => new CodeHostJobFailure("CODE_HOST_LAND_STALE", detail);
+	return withJob(job, repository, async (run): Promise<CodeBranchLanded | CodeBranchToCheck> => {
 		const area = await run.prepare();
 		if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
 		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
 			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
-		const branch = await run.ref(ref);
-		if (!branch) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
-		if (!(await run.isCommit(run.repo, headSha))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
 		const ancestor = async (older: string, newer: string): Promise<boolean> => {
 			const result = await run.git(run.repo, ["merge-base", "--is-ancestor", older, newer]);
 			if (result.status !== 0 && result.status !== 1)
@@ -986,19 +1319,49 @@ export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding)
 			return result.status === 0;
 		};
 		// The branch may have moved on since the session submitted; it must still hold what was submitted.
-		if (!(await ancestor(headSha, branch))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const branch = await run.ref(ref);
+		if (!branch || !(await run.isCommit(run.repo, headSha)) || !(await ancestor(headSha, branch))) {
+			if (expected) throw stale("the session's branch no longer holds the commit");
+			throw new CodeHostRefusal(branch ? "CODE_HOST_EXPORT_MOVED" : "CODE_HOST_EXPORT_NO_BRANCH", [ref]);
+		}
 		const current = await run.ref(base);
 		if (!current) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
 		if (await ancestor(headSha, current)) {
 			const at =
 				area.main === "present" &&
 				(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${current}\n`)) === true;
+			const containedAt = await firstHeldAt(run, headSha, current);
 			if (!at) await moveBase(run, area.main, base, current, current);
-			return { state: "unchanged", mainSha: current, restored: run.restored };
+			return {
+				state: "unchanged",
+				mainSha: current,
+				mainBefore: current,
+				containedAt,
+				diff: { filesChanged: 0, paths: [], pathsMore: 0 },
+				picture: null,
+				restored: run.restored,
+			};
 		}
-		let next = headSha,
-			state: CodeBranchLanded["state"] = "fast-forward";
-		if (!(await ancestor(current, headSha))) {
+		if (expected && current !== expected.mainBefore) throw stale("the default branch moved");
+		const state = (await ancestor(current, headSha)) ? ("fast-forward" as const) : ("merged" as const);
+		let next = headSha;
+		if (expected) {
+			// Exactly the candidate that was checked: the session's commit, or the merge of the two in that order.
+			const same =
+				expected.how === state &&
+				(state === "fast-forward"
+					? expected.mainAfter === headSha
+					: (await run.isCommit(run.repo, expected.mainAfter)) &&
+						(
+							await run.gitOk(
+								run.repo,
+								["rev-list", "--max-count=1", "--parents", expected.mainAfter],
+								"CODE_HOST_LAND_FAILED",
+							)
+						).toString("latin1") === `${expected.mainAfter} ${current} ${headSha}\n`);
+			if (!same) throw stale("not the candidate that was checked");
+			next = expected.mainAfter;
+		} else if (state === "merged") {
 			const merged = await run.git(run.repo, [
 				"merge-tree",
 				"--write-tree",
@@ -1036,11 +1399,40 @@ export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding)
 				.toString("utf8")
 				.trim();
 			if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", "no merge commit");
-			state = "merged";
 		}
-		await run.checkNames(run.repo, next);
+		const records = await run.checkNames(run.repo, next);
+		// Every path where a session's worktree will hold it, by the company folder's own rule, as the import's look asks:
+		// git takes a name such as `bad.` that the folder refuses, and it would refuse main/'s whole change set at the
+		// publish, with no word to the session. A worktree is 42 bytes deeper than main/, so nothing goes into main that a
+		// session could not check out. Before the checks, so none runs on a commit that cannot land.
+		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
+		if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+		if (checks) {
+			const found = await commitFile(run, next, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES),
+				mainFound = await commitFile(run, current, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES);
+			if (found.entry.kind !== "missing" || mainFound.entry.kind !== "missing")
+				return {
+					state: "to-check",
+					how: state,
+					mainBefore: current,
+					mainAfter: next,
+					checks: found,
+					mainChecks: mainFound,
+					restored: run.restored,
+				};
+		}
+		const diff = await changeDiff(run, current, next, "CODE_HOST_LAND_FAILED"),
+			checked = picture === undefined ? null : await checkPicture(run, records, picture);
 		await moveBase(run, area.main, base, next, current);
-		return { state, mainSha: next, restored: run.restored };
+		return {
+			state,
+			mainSha: next,
+			mainBefore: current,
+			containedAt: null,
+			diff,
+			picture: checked,
+			restored: run.restored,
+		};
 	});
 }
 
@@ -1056,6 +1448,13 @@ export interface CodeGarbageOptions {
 	maximumWaitMs?: number;
 	sleep?(ms: number, signal: AbortSignal): Promise<void>;
 	now?(): number;
+	/** Pack every ref but the sessions' branches before the gc (the default). Nightly care passes false: a session
+	 * deletes a tag or a branch of its own only while it is a loose file, since packed-refs' lock is the platform's. */
+	packRefs?: boolean;
+	/** Drop the unreachable objects git calls old (the default). Nightly care passes false (`gc --no-prune`): no object
+	 * goes, the unreachable ones are kept in a pack of their own. The folder cannot refresh an old object's time, so
+	 * its age does not say that no session is about to use it. */
+	prune?: boolean;
 }
 export type CodeGarbageCollected =
 	| { state: "collected"; restored: string[] }
@@ -1065,7 +1464,8 @@ export type CodeGarbageCollected =
 	| { state: "held"; held: number };
 
 /** gc with the lease block: new leases in repo.git wait while it runs (worktrees and everything outside repo.git do
- * not), and it starts once none is held. Worker branches stay loose. */
+ * not), and it starts once none is held. Worker branches stay loose; with `packRefs` false every ref does, and with
+ * `prune` false no object is dropped. */
 export async function collectCodeGarbage(
 	job: CodeHostJob,
 	value: { repository: CloudCodingRepository },
@@ -1077,7 +1477,9 @@ export async function collectCodeGarbage(
 	const pollMs = options.pollMs ?? 1000,
 		maximumWaitMs = options.maximumWaitMs ?? 300_000,
 		sleep = options.sleep ?? ((ms: number, signal: AbortSignal) => delay(ms, undefined, { signal })),
-		now = options.now ?? Date.now;
+		now = options.now ?? Date.now,
+		packRefs = options.packRefs ?? true,
+		prune = options.prune ?? true;
 	return withJob(job, repository, async (run) => {
 		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
 		const started = now();
@@ -1095,12 +1497,13 @@ export async function collectCodeGarbage(
 			// A shallow line would make prune drop the history behind it, and sessions can write repo.git/shallow.
 			if ((await run.types([`${run.repo}/shallow`]))[0] !== "none")
 				throw new CodeHostRefusal("CODE_HOST_GC_SHALLOW", [`${run.area}/repo.git/shallow`]);
-			await run.gitOk(
-				run.repo,
-				["pack-refs", "--all", "--exclude", "refs/heads/qorpera/coding/*"],
-				"CODE_HOST_GC_FAILED",
-			);
-			await run.gitOk(run.repo, ["gc", "--quiet"], "CODE_HOST_GC_FAILED");
+			if (packRefs)
+				await run.gitOk(
+					run.repo,
+					["pack-refs", "--all", "--exclude", "refs/heads/qorpera/coding/*"],
+					"CODE_HOST_GC_FAILED",
+				);
+			await run.gitOk(run.repo, prune ? ["gc", "--quiet"] : ["gc", "--quiet", "--no-prune"], "CODE_HOST_GC_FAILED");
 			return { state: "collected", restored: run.restored };
 		};
 		const end = () => block.end(run.area, AbortSignal.timeout(30_000));
@@ -1117,9 +1520,1018 @@ export async function collectCodeGarbage(
 	});
 }
 
+// Nightly care of a repository kept in Qorpera (own code storage, step 2): a check that repairs main/, an fsck, a bundle
+// that leaves the code host, `collectCodeGarbage` with `packRefs` and `prune` off, and the retiring of archived
+// sessions' worktrees. Each is a job of its own, and none of them makes a repository or touches a ref.
+
+/** One ref: `refs/heads/main`, a session's branch, the mark. */
+export interface CodeAreaRef {
+	name: string;
+	sha: string;
+}
+
+/** The refs' fingerprint: sha256 (hex) of the refs as lines `<sha> <name>\n`, sorted by name (by its bytes, as git
+ * lists them), in UTF-8. */
+export function codeRefsSha256(refs: readonly CodeAreaRef[]): string {
+	if (!Array.isArray(refs)) throw new Error("INVALID_CODE_HOST_JOB");
+	const lines = refs.map((ref: CodeAreaRef) => {
+		if (typeof ref?.name !== "string" || !ref.name || /[\0\n]/.test(ref.name) || !SHA.test(ref.sha))
+			throw new Error("INVALID_CODE_HOST_JOB");
+		return { name: Buffer.from(ref.name, "utf8"), line: `${ref.sha} ${ref.name}\n` };
+	});
+	lines.sort((a, b) => Buffer.compare(a.name, b.name));
+	const hash = createHash("sha256");
+	for (const { line } of lines) hash.update(line, "utf8");
+	return hash.digest("hex");
+}
+
+/** Every ref of a repository kept in Qorpera, and its default branch's commit. The mark and the default branch are
+ * read as `Run.ref` reads them: never symbolic, always a commit. A seeded area without the mark is a copy of a GitHub
+ * repository, and one without its default branch a start that stopped before it: both are refused. */
+export async function keptRefs(run: Run): Promise<{ refs: CodeAreaRef[]; mainSha: string }> {
+	const base = `refs/heads/${run.repository.baseBranch}`,
+		listed = await run.refs(run.repo);
+	const commit = (ref: string): string | null => {
+		const found = listed.find((entry) => entry.name === ref);
+		if (!found) return null;
+		if (found.symref) throw new CodeHostRefusal("CODE_HOST_REF_IS_SYMBOLIC", [ref]);
+		if (found.type !== "commit") throw new CodeHostRefusal("CODE_HOST_REF_NOT_A_COMMIT", [ref]);
+		return found.sha;
+	};
+	if (commit(CODE_AREA_IN_QORPERA_REF) === null) throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+	const mainSha = commit(base);
+	if (mainSha === null) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+	return { refs: listed.map(({ name, sha: objectName }) => ({ name, sha: objectName })), mainSha };
+}
+
+/** A care job's repository: one kept in Qorpera, as a landing's. */
+export function keptRepositoryOf(value: unknown): CloudCodingRepository {
+	const repository = repositoryOf(value);
+	if (repository.host !== "qorpera") throw new Error("INVALID_CODE_HOST_JOB");
+	return repository;
+}
+
+export type CodeAreaChecked =
+	/** Nothing is seeded at the repository's place: its first session has not started it yet. */
+	| { state: "absent" }
+	| {
+			state: "present";
+			/** The default branch's commit. */
+			mainSha: string;
+			refs: CodeAreaRef[];
+			refsSha256: string;
+			/** `repo.git/shallow` exists: history may be cut, and gc refuses. */
+			shallow: boolean;
+			/** The session ids that have a worktree folder under worktrees/. */
+			worktrees: string[];
+			/** `git count-objects -v`: loose objects, packs, and what both take on disk. */
+			objects: { loose: number; packs: number; sizeKiB: number };
+			/** What the check repaired: main/'s HEAD, or main/'s files (removed and added again). */
+			repaired: "none" | "head" | "files";
+			restored: string[];
+	  };
+
+/** Whether main/ holds exactly the commit's files: every path of its tree and no other (but a submodule's empty
+ * folder), each of its kind (a file, a link, a folder) and, for a file or a link, of its size. No file's content is
+ * read for that. Sizes alone also differ where the repository's own attributes convert a file at checkout (its line
+ * endings), so a difference in sizes only is settled by git's status, which compares content; `deep` asks it always. */
+async function mainHolds(run: Run, commit: string, deep: boolean): Promise<boolean> {
+	const listing = await run.gitOk(
+		run.repo,
+		["ls-tree", "-r", "-l", "-z", "--full-tree", commit],
+		"CODE_HOST_TREE_UNREADABLE",
+		{ maximumOutputBytes: MAX_LISTING },
+	);
+	// Paths as their bytes, one character each: names are compared, never shown.
+	const wanted = new Map<string, string>(),
+		submodules = new Set<string>();
+	for (const { mode, type, size, path } of treeRecords(listing)) {
+		const name = path.toString("latin1");
+		// A submodule's commit is never checked out: its place is an empty folder, or none, as git itself takes it, and
+		// so are the folders that lead to nothing else.
+		if (type === "commit") submodules.add(name);
+		else wanted.set(name, `${mode === "120000" ? "l" : "f"} ${size}`);
+		for (let slash = name.indexOf("/"); slash >= 0; slash = name.indexOf("/", slash + 1))
+			if (type === "commit") submodules.add(name.slice(0, slash));
+			else wanted.set(name.slice(0, slash), "d");
+	}
+	const found = await run.command(["/usr/bin/find", run.main, "-mindepth", "1", "-printf", "%y\\0%s\\0%P\\0"], {
+		maximumOutputBytes: MAX_LISTING,
+	});
+	if (found.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(found.stderr));
+	const fields = found.stdout.toString("latin1").split("\0");
+	if (fields.pop() !== "" || fields.length % 3 !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED");
+	let seen = 0,
+		sizes = false;
+	for (let index = 0; index < fields.length; index += 3) {
+		const kind = fields[index],
+			name = fields[index + 2];
+		// main/'s own link to git's folder for it, which `prepare` keeps.
+		if (name === ".git" && kind === "f") continue;
+		const want = wanted.get(name);
+		if (want === undefined) {
+			if (kind === "d" && submodules.has(name)) continue;
+			return false;
+		}
+		seen += 1;
+		if (want === "d" || kind === "d") {
+			if (want !== kind) return false;
+		} else if (!want.startsWith(`${kind} `)) return false;
+		else if (want !== `${kind} ${fields[index + 1]}`) sizes = true;
+	}
+	if (seen !== wanted.size) return false;
+	if (!sizes && !deep) return true;
+	return await run.clean([
+		`--git-dir=${run.repo}/worktrees/main`,
+		`--work-tree=${run.main}`,
+		"status",
+		"--porcelain",
+		"--untracked-files=no",
+		"--ignore-submodules=all",
+	]);
+}
+
+/** Nightly care's first job: what a repository kept in Qorpera holds, with main/ repaired when it is not at the
+ * default branch. This is `startCodeArea`'s repair alone, without its power to make a repository: a place where
+ * nothing is seeded answers `absent`, and nothing is written there. main/'s HEAD at another commit is moved by
+ * `moveBase`'s checkout; a main/ that is missing or half there, or whose files are not the default branch's
+ * (`mainHolds`), is removed and added again. `deep` also compares every file's content. */
+export async function checkCodeArea(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository },
+	options: { deep?: boolean } = {},
+): Promise<CodeAreaChecked> {
+	const input = closed(value, ["repository"]);
+	const repository = keptRepositoryOf(input.repository),
+		deep = options.deep === true;
+	const base = `refs/heads/${repository.baseBranch}`;
+	return withJob(job, repository, async (run) => {
+		const area = await run.prepare();
+		if (!area.seeded) return { state: "absent" };
+		const { refs, mainSha } = await keptRefs(run);
+		let repaired: "none" | "head" | "files" = "none";
+		if (area.main !== "present") {
+			await moveBase(run, area.main, base, mainSha, mainSha);
+			repaired = "files";
+		} else {
+			if (!(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${mainSha}\n`))) {
+				await moveBase(run, "present", base, mainSha, mainSha);
+				repaired = "head";
+			}
+			// A checkout leaves a file git does not know in its place, so the files are looked at after it too.
+			if (!(await mainHolds(run, mainSha, deep))) {
+				await moveBase(run, "partial", base, mainSha, mainSha);
+				repaired = "files";
+			}
+		}
+		const listed = await run.sh(
+			'[ -d "$1" ] || exit 0; exec find "$1" -mindepth 1 -maxdepth 1 -type d -printf "%f\\0"',
+			[`${run.code}/worktrees`],
+			{ maximumOutputBytes: MAX_READ },
+		);
+		if (listed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(listed.stderr));
+		const counted = (await run.gitOk(run.repo, ["count-objects", "-v"], "CODE_HOST_INSPECT_FAILED")).toString("utf8");
+		const count = (key: string): number => {
+			const number = Number(new RegExp(`^${key}: (\\d+)$`, "m").exec(counted)?.[1]);
+			if (!Number.isSafeInteger(number)) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", "count-objects");
+			return number;
+		};
+		return {
+			state: "present",
+			mainSha,
+			refs,
+			refsSha256: codeRefsSha256(refs),
+			shallow: (await run.types([`${run.repo}/shallow`]))[0] !== "none",
+			worktrees: listed.stdout.toString("utf8").split("\0").filter(isUuid).sort(),
+			objects: { loose: count("count"), packs: count("packs"), sizeKiB: count("size") + count("size-pack") },
+			repaired,
+			restored: run.restored,
+		};
+	});
+}
+
+/** fsck's own exit status in the first line, or `timeout` when it was stopped (TERM, and KILL 10 s later), then the
+ * start of what it said. The status goes through a file, since `timeout`'s own could be fsck's: without the file,
+ * `timeout` must say that it stopped the command (124, or 137 after the KILL), or the command never ran. */
+const FSCK = `out=$1 status=$2 seconds=$3; shift 3
+timeout -k 10 "$seconds" /bin/sh -c '"$@"; echo "$?" >"$0"' "$status" "$@" >"$out" 2>&1
+stopped=$?
+if [ -f "$status" ]; then cat -- "$status" || exit 1
+elif [ "$stopped" -eq 124 ] || [ "$stopped" -eq 137 ]; then echo timeout
+else cat -- "$out" >&2; exit 1; fi
+exec head -c 61440 -- "$out"`;
+
+/** Nightly care's second job: `git fsck --connectivity-only`, which finds a missing or unreadable commit, tree or
+ * file version behind any ref, diary line or worktree, and reads no file's content (the bundle's proof does that, on
+ * the code host's own disk). It is stopped after `maximumMs` (default 30 minutes). `detail` is the first 2,000
+ * characters of what fsck said. */
+export async function fsckCodeArea(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository },
+	options: { maximumMs?: number } = {},
+): Promise<{ state: "ok" | "problems" | "timeout"; exitCode: number | null; detail: string }> {
+	const input = closed(value, ["repository"]);
+	const repository = keptRepositoryOf(input.repository),
+		maximumMs = options.maximumMs ?? 1_800_000;
+	if (!Number.isSafeInteger(maximumMs) || maximumMs < 1 || maximumMs > 86_400_000)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	return withJob(job, repository, async (run) => {
+		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		const ran = await run.sh(FSCK, [
+			`${run.directory}/fsck.out`,
+			`${run.directory}/fsck.status`,
+			String(maximumMs / 1000),
+			run.layout.git,
+			"--no-replace-objects",
+			`--git-dir=${run.repo}`,
+			"fsck",
+			"--connectivity-only",
+			"--no-dangling",
+			"--no-progress",
+		]);
+		const end = ran.stdout.indexOf(0x0a),
+			first = ran.stdout.subarray(0, Math.max(end, 0)).toString("latin1");
+		if (ran.status !== 0 || !/^(timeout|\d{1,3})$/.test(first))
+			throw new CodeHostJobFailure("CODE_HOST_FSCK_FAILED", tail(ran.stderr));
+		const detail = ran.stdout
+			.subarray(end + 1)
+			.toString("utf8")
+			.replaceAll("\0", "")
+			.slice(0, 2000);
+		if (first === "timeout") return { state: "timeout", exitCode: null, detail };
+		const exitCode = Number(first);
+		return { state: exitCode === 0 ? "ok" : "problems", exitCode, detail };
+	});
+}
+
+/** Where a bundle's pieces go as they leave the code host, in order. */
+export interface CodeBundleSink {
+	write(chunk: Uint8Array): Promise<void>;
+}
+
+/** Nightly care's copy out: every ref of a repository kept in Qorpera in one bundle (`git bundle create --all`),
+ * made in the scratch and proven to restore before a byte leaves: `bundle verify`, then a fetch of every ref into a
+ * new scratch repository that borrows nothing, whose refs must be the code area's (the fetch reads and checks every
+ * object, on the code host's own disk). The bundle's sha256 and size are taken in the code host, and it is read out
+ * in pieces of `chunkBytes` (default 16 MiB), one exec each, handed to `sink` in order; what was handed over has that
+ * sha256, or the job fails. Refuses (CodeHostRefusal) with CODE_HOST_BUNDLE_REFS_MOVED when the refs are not
+ * `refsSha256` any more, and with CODE_HOST_BUNDLE_TOO_LARGE over `maximumBytes` (default 2 GiB). A session's
+ * uncommitted files are in no bundle. */
+export async function bundleCodeArea(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; refsSha256: string },
+	sink: CodeBundleSink,
+	options: { maximumBytes?: number; chunkBytes?: number } = {},
+): Promise<{ sha256: string; bytes: number; gitVersion: string; refs: CodeAreaRef[]; refsSha256: string }> {
+	const input = closed(value, ["repository", "refsSha256"]);
+	const repository = keptRepositoryOf(input.repository),
+		refsSha256 = input.refsSha256,
+		maximumBytes = options.maximumBytes ?? 2 * GiB,
+		chunkBytes = options.chunkBytes ?? 16 * MiB;
+	if (
+		typeof refsSha256 !== "string" ||
+		!SHA256.test(refsSha256) ||
+		typeof sink?.write !== "function" ||
+		!Number.isSafeInteger(maximumBytes) ||
+		maximumBytes < 1 ||
+		!Number.isSafeInteger(chunkBytes) ||
+		chunkBytes < 1 ||
+		chunkBytes > MAX_PIECE
+	)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	return withJob(job, repository, async (run) => {
+		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		const { refs } = await keptRefs(run);
+		if (codeRefsSha256(refs) !== refsSha256) throw new CodeHostRefusal("CODE_HOST_BUNDLE_REFS_MOVED", [run.area]);
+		const file = `${run.directory}/all.bundle`,
+			proof = `${run.directory}/proof.git`;
+		await run.gitOk(run.repo, ["bundle", "create", "--quiet", file, "--all"], "CODE_HOST_BUNDLE_FAILED");
+		const measured = await run.sh('sha256sum <"$1" && exec wc -c <"$1"', [file]),
+			[, sha256, counted] = /^([0-9a-f]{64}) [ *]-\n *(\d+)\n$/.exec(measured.stdout.toString("latin1")) ?? [],
+			bytes = Number(counted);
+		if (measured.status !== 0 || !sha256 || !Number.isSafeInteger(bytes) || bytes < 1)
+			throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", tail(measured.stderr));
+		if (bytes > maximumBytes) throw new CodeHostRefusal("CODE_HOST_BUNDLE_TOO_LARGE", [`${bytes} bytes`]);
+		await run.gitOk(
+			proof,
+			["init", "--quiet", "--bare", "--template=", "--ref-format=files", proof],
+			"CODE_HOST_BUNDLE_FAILED",
+		);
+		await run.gitOk(proof, ["bundle", "verify", "--quiet", file], "CODE_HOST_BUNDLE_FAILED");
+		// The bundle also names each worktree's HEAD, outside refs/: a restore makes no worktree, so those stay behind.
+		await run.gitOk(
+			proof,
+			["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", file, "+refs/*:refs/*"],
+			"CODE_HOST_BUNDLE_FAILED",
+		);
+		const restored = (await run.refs(proof)).map(({ name, sha: objectName }) => ({ name, sha: objectName }));
+		if (codeRefsSha256(restored) !== refsSha256) {
+			// A ref that moved while the bundle was made is no fault of the bundle's: the caller starts again.
+			if (codeRefsSha256((await keptRefs(run)).refs) !== refsSha256)
+				throw new CodeHostRefusal("CODE_HOST_BUNDLE_REFS_MOVED", [run.area]);
+			throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", "the bundle does not restore every ref");
+		}
+		const gitVersion = (await run.gitOk(run.repo, ["version"], "CODE_HOST_BUNDLE_FAILED"))
+			.toString("utf8")
+			.trim()
+			.replace(/^git version /, "");
+		if (!gitVersion || gitVersion.length > 100)
+			throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", "git version");
+		const read = createHash("sha256");
+		for (let index = 0; index * chunkBytes < bytes; index += 1) {
+			const length = Math.min(chunkBytes, bytes - index * chunkBytes);
+			const piece = await run.command(
+				[
+					"/usr/bin/dd",
+					`if=${file}`,
+					`bs=${chunkBytes}`,
+					`skip=${index}`,
+					"count=1",
+					"iflag=fullblock",
+					"status=none",
+				],
+				{ maximumOutputBytes: length },
+			);
+			if (piece.status !== 0 || piece.stdout.length !== length)
+				throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", tail(piece.stderr) || "a piece was cut short");
+			read.update(piece.stdout);
+			await sink.write(piece.stdout);
+			job.signal.throwIfAborted();
+		}
+		if (read.digest("hex") !== sha256)
+			throw new CodeHostJobFailure("CODE_HOST_BUNDLE_FAILED", "the bundle read out is not the one made");
+		return { sha256, bytes, gitVersion, refs, refsSha256 };
+	});
+}
+
+/** What git keeps in its folder for a worktree while a merge, a pick, a revert, a bisect or a rebase is under way. */
+const WORKTREE_IN_PROGRESS = [
+	"MERGE_HEAD",
+	"CHERRY_PICK_HEAD",
+	"REVERT_HEAD",
+	"BISECT_LOG",
+	"rebase-merge",
+	"rebase-apply",
+	"sequencer",
+] as const;
+
+/** Retire's first job for one session: its worktree's files are removed only when the folder's copy is exactly its
+ * branch's head, so the branch gives every file back. Answers why the worktree stays, or null when its files went. */
+async function retireFiles(run: Run, workerId: string): Promise<string | null> {
+	const tree = `${run.code}/worktrees/${workerId}`,
+		admin = `${run.repo}/worktrees/${workerId}`,
+		ref = `refs/heads/qorpera/coding/${workerId}`;
+	const [treeType, adminType, linkType, backType, commonType, headType, refsType, ...progress] = await run.types([
+		tree,
+		admin,
+		`${tree}/.git`,
+		`${admin}/gitdir`,
+		`${admin}/commondir`,
+		`${admin}/HEAD`,
+		`${admin}/refs`,
+		...WORKTREE_IN_PROGRESS.map((name) => `${admin}/${name}`),
+	]);
+	if (treeType !== "directory" || adminType !== "directory") return "NOT_THERE";
+	// The two link files as `addCodeWorktree` reads them, and commondir, which says whose objects, refs and config git
+	// takes for this worktree: every git command below runs on this folder.
+	if (
+		linkType !== "file" ||
+		backType !== "file" ||
+		commonType !== "file" ||
+		!(await run.read(`${tree}/.git`))?.equals(Buffer.from(`gitdir: ${admin}\n`)) ||
+		!(await run.read(`${admin}/gitdir`))?.equals(Buffer.from(`${tree}/.git\n`)) ||
+		!(await run.read(`${admin}/commondir`))?.equals(Buffer.from("../..\n"))
+	)
+		return "LINKS_DIFFER";
+	if (headType !== "file" || !(await run.read(`${admin}/HEAD`))?.equals(Buffer.from(`ref: ${ref}\n`)))
+		return "HEAD_NOT_ITS_BRANCH";
+	const head = await run.ref(ref).catch((error: unknown) => {
+		if (error instanceof CodeHostRefusal) return null;
+		throw error;
+	});
+	if (!head) return "NO_BRANCH";
+	if (progress.some((type) => type !== "none")) return "IN_PROGRESS";
+	// git makes an empty refs/ in its folder for every worktree. A ref in it is the worktree's own (a bisect's, a
+	// rebase's), and no branch keeps what it names.
+	if (refsType !== "none") {
+		if (refsType !== "directory") return "IN_PROGRESS";
+		const own = await run.command([
+			"/usr/bin/find",
+			`${admin}/refs`,
+			"-mindepth",
+			"1",
+			"!",
+			"-type",
+			"d",
+			"-print",
+			"-quit",
+		]);
+		if (own.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(own.stderr));
+		if (own.stdout.length) return "IN_PROGRESS";
+	}
+	// The names first: a head `addCodeWorktree` would refuse could never be given back. Its rules: the code host's, then
+	// the company folder's where this worktree holds them.
+	const records = await run.checkNames(run.repo, head).catch((error: unknown) => {
+		if (error instanceof CodeHostRefusal) return null;
+		throw error;
+	});
+	if (!records || codeFolderRefuses(run.area, records, `worktrees/${workerId}`).length) return "NAMES_REFUSED";
+	// And no repository inside this one, in the head or in the folder, before git's status walks the folder.
+	if (records.some((record) => record.type === "commit")) return "SUBMODULE";
+	const nested = await run.command(["/usr/bin/find", tree, "-mindepth", "2", "-iname", ".git", "-print", "-quit"]);
+	if (nested.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(nested.stderr));
+	if (nested.stdout.length) return "SUBMODULE";
+	// A file the index tells git not to look at (assume-unchanged, skip-worktree) could differ from the head unseen by
+	// status: every entry must be a plain one, which `ls-files -v` marks `H`.
+	const plain = await run.sh(
+		'out=$1; shift; "$@" >"$out" || exit 2; grep -q -v "^H " "$out"; case $? in 1) exit 0 ;; 0) exit 1 ;; *) exit 2 ;; esac',
+		[
+			`${run.directory}/index.out`,
+			run.layout.git,
+			"--no-replace-objects",
+			`--git-dir=${admin}`,
+			`--work-tree=${tree}`,
+			"ls-files",
+			"-v",
+		],
+	);
+	if (plain.status !== 0) return "NOT_CLEAN";
+	// Nothing changed, staged, untracked or ignored: the folder holds the head's files and no other.
+	const clean = await run.clean([
+		`--git-dir=${admin}`,
+		`--work-tree=${tree}`,
+		"status",
+		"--porcelain",
+		"-z",
+		"--untracked-files=all",
+		"--ignored=matching",
+		"--ignore-submodules=all",
+	]);
+	if (!clean) return "NOT_CLEAN";
+	// Not `git worktree remove`: its own status enters submodules, in a tree the session controls.
+	const removed = await run.command(["/usr/bin/rm", "-rf", "--", tree]);
+	if (removed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RETIRE_FAILED", tail(removed.stderr));
+	return null;
+}
+
+/** Retire's second job for one session, in a job that sees what the first one's save left: with the files gone,
+ * git's folder for the worktree goes too. Files that are still there mean the folder dropped their removal because
+ * something changed meanwhile: everything stays. */
+async function retireGitFolder(run: Run, workerId: string): Promise<string | null> {
+	const tree = `${run.code}/worktrees/${workerId}`,
+		admin = `${run.repo}/worktrees/${workerId}`;
+	const [treeType, adminType] = await run.types([tree, admin]);
+	if (treeType !== "none") return "FILES_STILL_THERE";
+	if (adminType !== "directory") return "NOT_THERE";
+	if (!(await run.read(`${admin}/gitdir`))?.equals(Buffer.from(`${tree}/.git\n`))) return "LINKS_DIFFER";
+	const removed = await run.command(["/usr/bin/rm", "-rf", "--", admin]);
+	if (removed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RETIRE_FAILED", tail(removed.stderr));
+	return null;
+}
+
+/** Nightly care's retiring of archived sessions' worktrees (at most 20 a job), in two jobs. `files` removes a
+ * worktree's files when all of this holds, and says which did not (`reason`) when it leaves them:
+ * both folders are there (NOT_THERE) with their link files as git made them (LINKS_DIFFER); the worktree's HEAD is its
+ * session's branch (HEAD_NOT_ITS_BRANCH), which is a commit (NO_BRANCH); no merge, pick, revert, bisect or rebase is
+ * under way and the worktree has no refs of its own (IN_PROGRESS); the head's names pass `addCodeWorktree`'s check
+ * (NAMES_REFUSED); neither the head nor the folder holds a repository inside (SUBMODULE); and git's status of the
+ * folder, untracked and ignored files included, prints nothing (NOT_CLEAN). `git-folder`, in a later job, removes
+ * git's own folder for a worktree whose files are gone, and leaves one whose files are still there
+ * (FILES_STILL_THERE). The branch always stays: `addCodeWorktree` gives a follow-up its worktree back from it.
+ * Whether a session may be retired at all (archived, not attached, no turn waiting) is the caller's to know. */
+export async function retireCodeWorktrees(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; workerIds: readonly string[] },
+	options: { phase: "files" | "git-folder" },
+): Promise<{ retired: string[]; kept: { workerId: string; reason: string }[] }> {
+	const input = closed(value, ["repository", "workerIds"]);
+	const repository = keptRepositoryOf(input.repository),
+		phase = options?.phase,
+		given = input.workerIds;
+	if (
+		(phase !== "files" && phase !== "git-folder") ||
+		!Array.isArray(given) ||
+		given.length > 20 ||
+		new Set(given).size !== given.length
+	)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const workerIds = given.map(workerIdOf);
+	return withJob(job, repository, async (run) => {
+		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		const retired: string[] = [],
+			kept: { workerId: string; reason: string }[] = [];
+		for (const workerId of workerIds) {
+			const reason = await (phase === "files" ? retireFiles(run, workerId) : retireGitFolder(run, workerId));
+			if (reason === null) retired.push(workerId);
+			else kept.push({ workerId, reason });
+		}
+		return { retired, kept };
+	});
+}
+
+// The change record, the undo and the download of a repository kept in Qorpera (own code storage, step 2b). Each is a
+// job of its own on a kept repository whose default branch is there. Only the undo moves a ref, through `moveBase` as a
+// landing does, and as its last step: a job that fails or is cancelled before it leaves nothing behind.
+
+/** A step 2b job's place: a seeded repository kept in Qorpera (a copy of a GitHub repository is refused, as nightly
+ * care refuses it), with its default branch and that branch's commit. */
+async function keptArea(run: Run) {
+	const area = await run.prepare();
+	if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+	if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+		throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+	const base = `refs/heads/${run.repository.baseBranch}`,
+		mainSha = await run.ref(base);
+	if (!mainSha) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
+	return { area, base, mainSha };
+}
+
+/** What stands at each of the platform's own paths in a code area, asked for as many as one command carries: a folder
+ * (`folders`) or a file is there, or nothing; a link is refused, and so is anything else. */
+async function ownPaths(
+	run: Run,
+	folders: readonly string[],
+	files: readonly string[],
+): Promise<Map<string, PathType>> {
+	const paths = [...folders, ...files],
+		type = new Map<string, PathType>();
+	for (let index = 0; index < paths.length; index += 60) {
+		const part = paths.slice(index, index + 60),
+			types = await run.types(part);
+		part.forEach((path, at) => {
+			type.set(path, types[at] as PathType);
+		});
+	}
+	const links = paths.filter((path) => type.get(path) === "link");
+	if (links.length)
+		throw new CodeHostRefusal(
+			"CODE_HOST_LINK",
+			links.map((path) => run.relative(path)),
+		);
+	const wrong = [
+		...folders.filter((path) => !["none", "directory"].includes(type.get(path) as PathType)),
+		...files.filter((path) => !["none", "file"].includes(type.get(path) as PathType)),
+	];
+	if (wrong.length)
+		throw new CodeHostRefusal(
+			"CODE_HOST_UNEXPECTED_FILE",
+			wrong.map((path) => run.relative(path)),
+		);
+	return type;
+}
+
+/** One change's record file, as the executor rendered it. */
+export interface CodeChangeRecordFile {
+	n: number;
+	/** The file's text; with `diff`, a function of what the job found between the two commits. */
+	text: string | ((diff: CodeChangeDiff) => string);
+	diff?: { before: string; after: string };
+	/** The picture's git blob and the folder path it is copied to (`code/<owner>/<name>/changes/<n>.<ext>`). */
+	picture?: { blob: string; to: string };
+}
+/** One job writes at most this many records. */
+const MAX_RECORDS = 100;
+/** A record or the list is text of at most this many bytes. */
+const MAX_RECORD_TEXT = 256 * 1024;
+
+function recordText(value: unknown): string {
+	if (typeof value !== "string" || !value || value.includes("\0") || Buffer.byteLength(value) > MAX_RECORD_TEXT)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	return value;
+}
+
+/** Each file's bytes from stdin, one after the other, each under git's own lock name and then renamed over its place.
+ * The arguments are the files' paths and sizes in turn. */
+const WRITE_RECORDS = `umask 022
+while [ "$#" -gt 0 ]; do
+	rm -f -- "$1.lock" || exit 1
+	/usr/bin/head -c "$2" >"$1.lock" || exit 1
+	[ "$(wc -c <"$1.lock")" -eq "$2" ] || exit 1
+	mv -fT -- "$1.lock" "$1" || exit 1
+	shift 2
+done`;
+/** One file version from git's objects, written the same way. */
+const WRITE_PICTURE = `to=$1; shift; umask 022
+rm -f -- "$to.lock" || exit 1
+"$@" >"$to.lock" || exit 1
+exec mv -fT -- "$to.lock" "$to"`;
+
+/** The change record's files of a repository kept in Qorpera (step 2b): `changes/<n>.md` for each record, with the
+ * session's picture copied out of git beside it (`changes/<n>.png`, `.jpg` or `.webp`, the bytes of exactly that git
+ * blob), and, when given, the list `changes/index.md`. A file that already holds its bytes is left. A record with
+ * `diff` is rendered with what differs between its two commits, and that is answered in `diffs`. `written` names the
+ * records whose file now holds their text. What a restore took out of the repository cannot fail the job, or no file
+ * of the repository would be written again: a record whose `diff` names a commit that is not here is left unwritten
+ * and out of `written`, and a picture whose blob is not here (or is no file version of at most 4 MiB) is not copied
+ * while its record is written. The job never touches a ref, and the folder saves what it wrote when it ends. */
+export async function writeCodeChangeRecords(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; records: readonly CodeChangeRecordFile[]; index: string | null },
+): Promise<{ written: number[]; diffs: ({ n: number } & CodeChangeDiff)[]; restored: string[] }> {
+	const input = closed(value, ["repository", "records", "index"]);
+	const repository = keptRepositoryOf(input.repository),
+		index = input.index === null ? null : recordText(input.index),
+		given = input.records,
+		changes = `${codeAreaPath(repository)}/changes`;
+	if (!Array.isArray(given) || given.length > MAX_RECORDS) throw new Error("INVALID_CODE_HOST_JOB");
+	const records = given.map((entry: unknown) => {
+		const record = closedWith(entry, ["n", "text"], ["diff", "picture"]),
+			n = record.n,
+			text = record.text;
+		if (!Number.isSafeInteger(n) || (n as number) < 1) throw new Error("INVALID_CODE_HOST_JOB");
+		const ends = record.diff === undefined ? undefined : closed(record.diff, ["before", "after"]),
+			diff = ends && { before: sha(ends.before), after: sha(ends.after) },
+			copy = record.picture === undefined ? undefined : closed(record.picture, ["blob", "to"]),
+			picture = copy && { blob: sha(copy.blob), to: copy.to as string };
+		// A text still to be rendered needs the two commits it is rendered from.
+		if (typeof text !== "function") recordText(text);
+		else if (!diff) throw new Error("INVALID_CODE_HOST_JOB");
+		if (picture && !["png", "jpg", "webp"].some((ext) => picture.to === `${changes}/${n}.${ext}`))
+			throw new Error("INVALID_CODE_HOST_JOB");
+		return { n: n as number, text: text as CodeChangeRecordFile["text"], diff, picture };
+	});
+	if (new Set(records.map((record) => record.n)).size !== records.length) throw new Error("INVALID_CODE_HOST_JOB");
+	return withJob(job, repository, async (run) => {
+		await keptArea(run);
+		const folder = `${run.code}/changes`,
+			diffs: ({ n: number } & CodeChangeDiff)[] = [],
+			texts: { n: number | null; path: string; bytes: Buffer }[] = [],
+			pictures: { blob: string; path: string }[] = [],
+			here = new Map<string, boolean>();
+		const held = async (commit: string): Promise<boolean> => {
+			if (!here.has(commit)) here.set(commit, await run.isCommit(run.repo, commit));
+			return here.get(commit) === true;
+		};
+		for (const { n, text, diff, picture } of records) {
+			let found: CodeChangeDiff | undefined;
+			if (diff) {
+				if (!(await held(diff.before)) || !(await held(diff.after))) continue;
+				found = await changeDiff(run, diff.before, diff.after, "CODE_HOST_RECORD_FAILED");
+				diffs.push({ n, ...found });
+			}
+			const rendered = typeof text === "function" ? recordText(text(found as CodeChangeDiff)) : text;
+			texts.push({ n, path: `${folder}/${n}.md`, bytes: Buffer.from(rendered, "utf8") });
+			if (picture) pictures.push({ blob: picture.blob, path: `${run.layout.companyRoot}/${picture.to}` });
+		}
+		if (index !== null) texts.push({ n: null, path: `${folder}/index.md`, bytes: Buffer.from(index, "utf8") });
+		// Only the pictures whose file version is still in the repository, and small enough to be one.
+		if (pictures.length) {
+			const sized = await run.gitOk(run.repo, ["cat-file", "--batch-check"], "CODE_HOST_RECORD_FAILED", {
+				stdin: Buffer.from(pictures.map((picture) => `${picture.blob}\n`).join("")),
+			});
+			const lines = sized.toString("latin1").split("\n");
+			if (lines.pop() !== "" || lines.length !== pictures.length)
+				throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", "cat-file's lines are not git's");
+			for (let at = pictures.length - 1; at >= 0; at -= 1) {
+				const [name, type, size] = (lines[at] as string).split(" ");
+				if (name !== pictures[at]?.blob) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", "cat-file");
+				if (type !== "blob" || !(Number(size) <= MAX_PICTURE)) pictures.splice(at, 1);
+			}
+		}
+		const type = await ownPaths(
+			run,
+			[folder],
+			[...texts, ...pictures].map((file) => file.path),
+		);
+		// What is there already, by its hash: a text's sha256, a picture's git id.
+		const hashes = async (script: string, lead: readonly string[], paths: readonly string[], pattern: RegExp) => {
+			const found = new Map<string, string>();
+			for (let at = 0; at < paths.length; at += 50) {
+				const part = paths.slice(at, at + 50);
+				const hashed = await run.sh(script, [...lead, ...part]),
+					lines = hashed.stdout.toString("latin1").split("\n");
+				if (hashed.status !== 0 || lines.pop() !== "" || lines.length !== part.length)
+					throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(hashed.stderr));
+				part.forEach((path, line) => {
+					const hash = pattern.exec(lines[line] as string)?.[1];
+					if (!hash) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", "a hash line is not the tool's");
+					found.set(path, hash);
+				});
+			}
+			return found;
+		};
+		const there = (file: { path: string }) => type.get(file.path) === "file";
+		const textHashes = await hashes(
+				'for p do sha256sum <"$p" || exit 1; done',
+				[],
+				texts.filter(there).map((file) => file.path),
+				/^([0-9a-f]{64}) [ *]-$/,
+			),
+			pictureHashes = await hashes(
+				'exec "$@"',
+				[run.layout.git, "--no-replace-objects", `--git-dir=${run.repo}`, "hash-object", "--no-filters", "--"],
+				pictures.filter(there).map((file) => file.path),
+				/^([0-9a-f]{40})$/,
+			);
+		const newTexts = texts.filter(
+				(file) => textHashes.get(file.path) !== createHash("sha256").update(file.bytes).digest("hex"),
+			),
+			newPictures = pictures.filter((file) => pictureHashes.get(file.path) !== file.blob);
+		if (newTexts.length + newPictures.length && type.get(folder) === "none") {
+			const made = await run.command(["/usr/bin/mkdir", "-m", "0755", "--", folder]);
+			if (made.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(made.stderr));
+		}
+		for (let at = 0; at < newTexts.length; at += 25) {
+			const part = newTexts.slice(at, at + 25);
+			const wrote = await run.sh(
+				WRITE_RECORDS,
+				part.flatMap((file) => [file.path, String(file.bytes.length)]),
+				{ stdin: Buffer.concat(part.map((file) => file.bytes)) },
+			);
+			if (wrote.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(wrote.stderr));
+		}
+		for (const picture of newPictures) {
+			const wrote = await run.sh(WRITE_PICTURE, [
+				picture.path,
+				run.layout.git,
+				"--no-replace-objects",
+				`--git-dir=${run.repo}`,
+				"cat-file",
+				"blob",
+				picture.blob,
+			]);
+			if (wrote.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(wrote.stderr));
+		}
+		return {
+			written: texts.flatMap((file) => (file.n === null ? [] : [file.n])),
+			diffs,
+			restored: run.restored,
+		};
+	});
+}
+
+/** An undo's answer. `undone`: the default branch moved from `mainBefore` to the undo's commit `mainAfter`, which
+ * changed `diff`; `replayed` when an earlier run of the same request had made it. `nothing`: the default branch no
+ * longer holds what the change did, and stays where it is. */
+export type CodeChangeUndone =
+	| { state: "undone"; mainBefore: string; mainAfter: string; diff: CodeChangeDiff; replayed: boolean }
+	| { state: "nothing"; mainSha: string };
+
+/** A change taken out of the default branch of a repository kept in Qorpera, as one new commit on it by the platform's
+ * committer, moved with `moveBase`'s compare-and-swap as a landing is (a move that lost the branch to another fails
+ * with `CODE_HOST_BASE_MOVED`, having written nothing, and is asked again). The change is given by the record's two
+ * ends of the default branch, `mainBefore` and `mainAfter`, never by a commit's parents, so a fast-forward of many
+ * commits and a merge are undone alike. The new files are git's three-way merge of the default branch with
+ * `mainBefore`, from `mainAfter` as the base (`merge-tree`, no worktree): what the change put in goes, everything
+ * since stays. When later changes built on it that merge conflicts: nothing is written, and the refusal names the
+ * paths (`CODE_HOST_UNDO_CONFLICT`). `andLater` takes no merge: the new commit's files are exactly `mainBefore`'s.
+ * The commit's message is `message`, then the line `Qorpera-Request: <requestId>`; a run finds an earlier run's commit
+ * by that line and answers it again (`replayed`), with main/ put right. Refused as well: a commit that is not here
+ * (`CODE_HOST_UNDO_UNKNOWN_COMMIT`), a change the default branch does not hold (`CODE_HOST_UNDO_NOT_IN_MAIN`), names a
+ * landing would refuse, and a place that is not a seeded repository kept in Qorpera. */
+export async function undoCodeChange(
+	job: CodeHostJob,
+	value: {
+		repository: CloudCodingRepository;
+		requestId: string;
+		change: { n: number; mainBefore: string; mainAfter: string };
+		andLater: boolean;
+		message: string;
+	},
+): Promise<CodeChangeUndone> {
+	const input = closed(value, ["repository", "requestId", "change", "andLater", "message"]);
+	const repository = keptRepositoryOf(input.repository),
+		change = closed(input.change, ["n", "mainBefore", "mainAfter"]),
+		before = sha(change.mainBefore),
+		after = sha(change.mainAfter),
+		{ requestId, andLater, message } = input;
+	if (
+		!isUuid(requestId) ||
+		!Number.isSafeInteger(change.n) ||
+		(change.n as number) < 1 ||
+		typeof andLater !== "boolean" ||
+		typeof message !== "string" ||
+		!message.trim() ||
+		message.includes("\0") ||
+		Buffer.byteLength(message) > 4096
+	)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const line = `Qorpera-Request: ${requestId}`;
+	return withJob(job, repository, async (run) => {
+		const { area, base, mainSha } = await keptArea(run);
+		const unknown: string[] = [];
+		for (const commit of new Set([after, before])) if (!(await run.isCommit(run.repo, commit))) unknown.push(commit);
+		if (unknown.length) throw new CodeHostRefusal("CODE_HOST_UNDO_UNKNOWN_COMMIT", unknown);
+		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", after, mainSha]);
+		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_UNDO_NOT_IN_MAIN", [after]);
+		if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", tail(held.stderr));
+		// Done already? An earlier run of this request moved the branch, and its answer was lost.
+		const [earlier, parent] = (
+			await run.gitOk(
+				run.repo,
+				[
+					"rev-list",
+					"--first-parent",
+					"--fixed-strings",
+					`--grep=${line}`,
+					"--max-count=1",
+					"--no-commit-header",
+					"--format=%H %P",
+					`${after}..${mainSha}`,
+				],
+				"CODE_HOST_UNDO_FAILED",
+			)
+		)
+			.toString("latin1")
+			.trim()
+			.split(" ");
+		if (earlier) {
+			if (!SHA.test(earlier) || !SHA.test(parent ?? ""))
+				throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", "the request's commit is not an undo's");
+			const diff = await changeDiff(run, parent as string, earlier, "CODE_HOST_UNDO_FAILED");
+			// That run's job saved the branch and not main/'s files.
+			const at =
+				area.main === "present" &&
+				(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${mainSha}\n`)) === true;
+			if (!at) await moveBase(run, area.main, base, mainSha, mainSha);
+			return { state: "undone", mainBefore: parent as string, mainAfter: earlier, diff, replayed: true };
+		}
+		const treeOf = async (commit: string): Promise<string> => {
+			const tree = (
+				await run.gitOk(run.repo, ["rev-parse", "--verify", `${commit}^{tree}`], "CODE_HOST_UNDO_FAILED")
+			)
+				.toString("latin1")
+				.trim();
+			if (!SHA.test(tree)) throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", "no tree");
+			return tree;
+		};
+		let tree: string;
+		if (andLater) tree = await treeOf(before);
+		else {
+			const merged = await run.git(
+				run.repo,
+				[
+					"merge-tree",
+					"--write-tree",
+					"-z",
+					"--name-only",
+					"--no-messages",
+					`--merge-base=${after}`,
+					mainSha,
+					before,
+				],
+				{ maximumOutputBytes: MAX_READ },
+			);
+			const fields = merged.stdout.toString("utf8").split("\0");
+			// As a landing's conflict: the tree, then each conflicted path (one per conflicting stage).
+			if (merged.status === 1)
+				throw new CodeHostRefusal("CODE_HOST_UNDO_CONFLICT", [...new Set(fields.slice(1).filter(Boolean))]);
+			if (merged.status !== 0 || !SHA.test(fields[0] ?? ""))
+				throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", tail(merged.stderr));
+			tree = fields[0] as string;
+		}
+		if (tree === (await treeOf(mainSha))) return { state: "nothing", mainSha };
+		const next = (
+			await run.gitOk(
+				run.repo,
+				[...PLATFORM_COMMITTER, "commit-tree", tree, "-p", mainSha, "-m", message, "-m", line],
+				"CODE_HOST_UNDO_FAILED",
+			)
+		)
+			.toString("latin1")
+			.trim();
+		if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", "no undo commit");
+		// A file put back may differ from a newer one only by case.
+		await run.checkNames(run.repo, next);
+		const diff = await changeDiff(run, mainSha, next, "CODE_HOST_UNDO_FAILED");
+		await moveBase(run, area.main, base, next, mainSha);
+		return { state: "undone", mainBefore: mainSha, mainAfter: next, diff, replayed: false };
+	});
+}
+
+/** A download's file name: one plain name ending in what its kind is, `.zip` or `.bundle`. */
+function downloadName(value: unknown): string {
+	if (typeof value !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,190}\.(zip|bundle)$/.test(value))
+		throw new Error("INVALID_CODE_HOST_JOB");
+	return value;
+}
+
+/** The made file into downloads/, after the files of its kind that stood there (their lock names too): one zip and
+ * one bundle stay at most. */
+const PUBLISH_DOWNLOAD = `dir=$1 made=$2 name=$3 kind=$4; umask 022
+mkdir -p -- "$dir" || exit 1
+find "$dir" -mindepth 1 -maxdepth 1 ! -type d \\( -name "*.$kind" -o -name "*.$kind.lock" \\) -exec rm -f -- {} + || exit 1
+cat -- "$made" >"$dir/$name.lock" || exit 1
+exec mv -fT -- "$dir/$name.lock" "$dir/$name"`;
+
+/** The code of a repository kept in Qorpera as one file a member downloads (step 2b), made in the scratch and then
+ * put at `code/<owner>/<name>/downloads/<fileName>`. `files` is the default branch's files as a zip
+ * (`git archive --format=zip`, every path under `<name>/`; what the repository's own `.gitattributes` marks
+ * `export-ignore` is left out, as git does). `history` is the default branch with its history as a git bundle of
+ * `HEAD` and that branch, for a developer: it is verified and cloned in the scratch, and that clone's `HEAD` must be
+ * the branch at its commit, so a plain `git clone` of the file checks the code out. The sessions' branches and the
+ * mark are in neither. Over `maximumBytes` (default 200 MiB, which keeps clear of a folder file's 256 MiB) it is
+ * refused with `CODE_HOST_DOWNLOAD_TOO_LARGE` and nothing is written. The file replaces whatever of its kind stood in
+ * downloads/. Answers its folder path, its size and SHA-256, and the commit it was made from. */
+export async function archiveCodeArea(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; file: "files" | "history"; fileName: string },
+	options: { maximumBytes?: number } = {},
+): Promise<{ path: string; bytes: number; sha256: string; mainSha: string }> {
+	const input = closed(value, ["repository", "file", "fileName"]);
+	const repository = keptRepositoryOf(input.repository),
+		kind = input.file === "files" ? "zip" : "bundle",
+		fileName = downloadName(input.fileName),
+		maximumBytes = options.maximumBytes ?? 200 * MiB;
+	if (
+		(input.file !== "files" && input.file !== "history") ||
+		!fileName.endsWith(`.${kind}`) ||
+		!Number.isSafeInteger(maximumBytes) ||
+		maximumBytes < 1 ||
+		maximumBytes > MAX_BLOB
+	)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	return withJob(job, repository, async (run) => {
+		const { base, mainSha } = await keptArea(run);
+		const folder = `${run.code}/downloads`,
+			made = `${run.directory}/${fileName}`;
+		await ownPaths(run, [folder], []);
+		if (kind === "zip")
+			await run.gitOk(
+				run.repo,
+				["archive", "--format=zip", `--prefix=${repository.name}/`, "-o", made, mainSha],
+				"CODE_HOST_DOWNLOAD_FAILED",
+			);
+		else {
+			const proof = `${run.directory}/proof`;
+			await run.gitOk(run.repo, ["bundle", "create", "--quiet", made, "HEAD", base], "CODE_HOST_DOWNLOAD_FAILED");
+			await run.gitOk(run.repo, ["bundle", "verify", "--quiet", made], "CODE_HOST_DOWNLOAD_FAILED");
+			// What a developer does with the file. Without its files: the clone's HEAD says what would be checked out.
+			const cloned = await run.command([
+				run.layout.git,
+				"--no-replace-objects",
+				"clone",
+				"--quiet",
+				"--no-checkout",
+				"--template=",
+				made,
+				proof,
+			]);
+			if (cloned.status !== 0) throw new CodeHostJobFailure("CODE_HOST_DOWNLOAD_FAILED", tail(cloned.stderr));
+			const head = await run.gitOk(`${proof}/.git`, ["symbolic-ref", "HEAD"], "CODE_HOST_DOWNLOAD_FAILED"),
+				at = await run.gitOk(
+					`${proof}/.git`,
+					["rev-parse", "--verify", "HEAD^{commit}"],
+					"CODE_HOST_DOWNLOAD_FAILED",
+				);
+			if (head.toString("utf8") !== `${base}\n` || at.toString("utf8") !== `${mainSha}\n`)
+				throw new CodeHostJobFailure(
+					"CODE_HOST_DOWNLOAD_FAILED",
+					"a clone of the bundle is not at the default branch",
+				);
+		}
+		const measured = await run.sh('sha256sum <"$1" && exec wc -c <"$1"', [made]),
+			[, sha256, counted] = /^([0-9a-f]{64}) [ *]-\n *(\d+)\n$/.exec(measured.stdout.toString("latin1")) ?? [],
+			bytes = Number(counted);
+		if (measured.status !== 0 || !sha256 || !Number.isSafeInteger(bytes) || bytes < 1)
+			throw new CodeHostJobFailure("CODE_HOST_DOWNLOAD_FAILED", tail(measured.stderr));
+		if (bytes > maximumBytes) throw new CodeHostRefusal("CODE_HOST_DOWNLOAD_TOO_LARGE", [`${bytes} bytes`]);
+		const published = await run.sh(PUBLISH_DOWNLOAD, [folder, made, fileName, kind]);
+		if (published.status !== 0) throw new CodeHostJobFailure("CODE_HOST_DOWNLOAD_FAILED", tail(published.stderr));
+		return { path: `${run.area}/downloads/${fileName}`, bytes, sha256, mainSha };
+	});
+}
+
+/** Downloads removed from `code/<owner>/<name>/downloads/` by their file names (at most 20; an expired request's
+ * file). A name that is not there, or is a folder, is left out of `removed`; the folder itself goes when the last
+ * file went. */
+export async function removeCodeDownloads(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; fileNames: readonly string[] },
+): Promise<{ removed: string[] }> {
+	const input = closed(value, ["repository", "fileNames"]);
+	const repository = keptRepositoryOf(input.repository),
+		given = input.fileNames;
+	if (!Array.isArray(given) || given.length > 20 || new Set(given).size !== given.length)
+		throw new Error("INVALID_CODE_HOST_JOB");
+	const fileNames = given.map(downloadName);
+	return withJob(job, repository, async (run) => {
+		await keptArea(run);
+		const folder = `${run.code}/downloads`;
+		if ((await ownPaths(run, [folder], [])).get(folder) === "none" || !fileNames.length) return { removed: [] };
+		// A link by a download's name goes as a file does: `rm` takes the link away, never what it points at.
+		const removed = await run.sh(
+			'dir=$1; shift; for n do if [ -L "$dir/$n" ] || [ -f "$dir/$n" ]; then rm -f -- "$dir/$n" || exit 1; printf "%s\\n" "$n"; fi; done; rmdir -- "$dir" 2>/dev/null; exit 0',
+			[folder, ...fileNames],
+		);
+		if (removed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_DOWNLOAD_FAILED", tail(removed.stderr));
+		return { removed: removed.stdout.toString("utf8").split("\n").filter(Boolean) };
+	});
+}
+
 /** One path of a commit: a regular file (mode 100644 or 100755) with its bytes, something else (a folder, a link or a
  * submodule), or nothing. The shape of 5h's `CodingSetupSource`. */
 export type CodeCommitEntry = { kind: "missing" } | { kind: "file"; bytes: Uint8Array } | { kind: "other" };
+/** A path of one commit, as git holds it: its entry (a file's bytes cut after maxBytes + 1), and its blob's id when it
+ * is a regular file. */
+export interface CodeCommitFile {
+	entry: CodeCommitEntry;
+	blob: string | null;
+}
 export interface CodeCommitSource {
 	/** `path` is repository-relative, without `.` or `..` parts. A file over maxBytes comes back cut after maxBytes + 1
 	 * bytes. A failed read throws; it is never `missing`. */
@@ -1136,6 +2548,44 @@ function repositoryPath(value: unknown): string {
 	)
 		throw new Error("INVALID_CODE_HOST_PATH");
 	return value;
+}
+
+/** One path of a commit of the code area, read by git (`ls-tree`, then `cat-file`) and never from a worktree. `path`
+ * and `maxBytes` are the caller's to check. */
+async function commitFile(run: Run, commit: string, path: string, maxBytes: number): Promise<CodeCommitFile> {
+	// Without -r, ls-tree walks down to the path and shows its own entry.
+	const listing = await run.gitOk(
+		run.repo,
+		["ls-tree", "-l", "-z", "--full-tree", commit, "--", path],
+		"CODE_HOST_TREE_UNREADABLE",
+	);
+	const wantedPath = Buffer.from(path, "utf8");
+	const entry = treeRecords(listing).find((record) => record.path.equals(wantedPath));
+	if (!entry) return { entry: { kind: "missing" }, blob: null };
+	const { mode, type, name, size } = entry;
+	if (type !== "blob" || (mode !== "100644" && mode !== "100755")) return { entry: { kind: "other" }, blob: null };
+	const bytes = Number(size);
+	if (!SHA.test(name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
+	const wanted = Math.min(bytes, maxBytes + 1);
+	const result =
+		bytes <= maxBytes
+			? await run.git(run.repo, ["cat-file", "blob", name], { maximumOutputBytes: wanted })
+			: await run.sh(
+					'n=$1; shift; "$@" | exec /usr/bin/head -c "$n"',
+					[
+						String(wanted),
+						run.layout.git,
+						"--no-replace-objects",
+						`--git-dir=${run.repo}`,
+						"cat-file",
+						"blob",
+						name,
+					],
+					{ maximumOutputBytes: wanted },
+				);
+	if (result.status !== 0 || result.stdout.length !== wanted)
+		throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(result.stderr));
+	return { entry: { kind: "file", bytes: new Uint8Array(result.stdout) }, blob: name };
 }
 
 /** Files of one commit, read by git from the code area's objects and never from a worktree, for the setup file and
@@ -1157,39 +2607,7 @@ export async function withCodeCommit<T>(
 			const path = repositoryPath(pathValue);
 			if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes >= MAX_READ)
 				throw new Error("INVALID_CODE_HOST_JOB");
-			// Without -r, ls-tree walks down to the path and shows its own entry.
-			const listing = await run.gitOk(
-				run.repo,
-				["ls-tree", "-l", "-z", "--full-tree", commit, "--", path],
-				"CODE_HOST_TREE_UNREADABLE",
-			);
-			const wantedPath = Buffer.from(path, "utf8");
-			const entry = treeRecords(listing).find((record) => record.path.equals(wantedPath));
-			if (!entry) return { kind: "missing" };
-			const { mode, type, name, size } = entry;
-			if (type !== "blob" || (mode !== "100644" && mode !== "100755")) return { kind: "other" };
-			const bytes = Number(size);
-			if (!SHA.test(name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
-			const wanted = Math.min(bytes, maxBytes + 1);
-			const result =
-				bytes <= maxBytes
-					? await run.git(run.repo, ["cat-file", "blob", name], { maximumOutputBytes: wanted })
-					: await run.sh(
-							'n=$1; shift; "$@" | exec /usr/bin/head -c "$n"',
-							[
-								String(wanted),
-								run.layout.git,
-								"--no-replace-objects",
-								`--git-dir=${run.repo}`,
-								"cat-file",
-								"blob",
-								name,
-							],
-							{ maximumOutputBytes: wanted },
-						);
-			if (result.status !== 0 || result.stdout.length !== wanted)
-				throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(result.stderr));
-			return { kind: "file", bytes: new Uint8Array(result.stdout) };
+			return (await commitFile(run, commit, path, maxBytes)).entry;
 		};
 		try {
 			return await use({ read });

@@ -172,6 +172,17 @@ export interface CodeHostSession {
 	baseSha: string;
 }
 
+/** How a job takes its place in its company's line. `yields`: the job is background work that gives way to the
+ * company's coding (nightly care, the record files' pass, a download, a restore before it holds the place). It is
+ * cancelled with `CODE_HOST_JOB_YIELDED` as soon as a job of its company that does not yield joins the line (a turn's
+ * job, an undo), while it waits and until its own steps are done; it then ends as a failed job does, with nothing
+ * published. Once its steps are done it publishes like any other job, so a job that yielded published nothing. Jobs
+ * that yield do not cancel each other: among themselves they wait in line in the order they came, or two long ones
+ * (two downloads of one company) would end each other for ever. */
+export interface CodeHostJobOptions {
+	yields?: boolean;
+}
+
 /** The jobs of the executor's code hosts: `run` gives a job its company's code host, with the company folder mounted
  * through a view of its own, and the core's gc block on that view. What a job that ends well wrote is published (all
  * saved, or the job fails) before it answers; a job that fails or is cancelled publishes nothing. The mount and view
@@ -188,6 +199,8 @@ export class CodeHostJobs {
 	readonly #pollMs: number;
 	/** Each company's last job in line. */
 	readonly #tails = new Map<string, Promise<void>>();
+	/** Each company's jobs in line that yield, by what cancels them. */
+	readonly #yielding = new Map<string, Set<AbortController>>();
 
 	constructor(options: CodeHostJobsOptions) {
 		this.#hosts = options.hosts;
@@ -212,13 +225,26 @@ export class CodeHostJobs {
 		environmentId: string,
 		signal: AbortSignal,
 		job: (job: CodeHostJob, gc: CodeHostGcBlock) => Promise<T>,
+		options: CodeHostJobOptions = {},
 	): Promise<T> {
-		if (!isUuid(companyId) || !isUuid(environmentId)) throw new Error("INVALID_CODE_HOST_JOB");
-		const done = await this.#turn(companyId, signal);
+		if (!isUuid(companyId) || !isUuid(environmentId) || ![undefined, false, true].includes(options?.yields))
+			throw new Error("INVALID_CODE_HOST_JOB");
+		// A job that yields waits and runs under what cancels it as well, until its steps are done.
+		const yielding = options?.yields ? new AbortController() : undefined;
+		const until = yielding ? AbortSignal.any([signal, yielding.signal]) : signal;
 		try {
-			return await this.#hosts.use(companyId, signal, (host) => this.#run(host, environmentId, signal, job));
-		} finally {
-			done();
+			const done = await this.#turn(companyId, until, yielding);
+			try {
+				return await this.#hosts.use(companyId, until, (host) =>
+					this.#run(host, environmentId, until, job, yielding && { yielding, caller: signal }),
+				);
+			} finally {
+				done();
+			}
+		} catch (error) {
+			// Whatever a cancelled step threw, the job yielded: nothing cancels it once it publishes.
+			if (yielding?.signal.aborted && !signal.aborted) throw yielding.signal.reason;
+			throw error;
 		}
 	}
 
@@ -243,13 +269,26 @@ export class CodeHostJobs {
 		);
 	}
 
-	/** A company's jobs, one at a time, in the order they came. One that stops waiting leaves its place. */
-	async #turn(companyId: string, signal: AbortSignal): Promise<() => void> {
+	/** A company's jobs, one at a time, in the order they came. One that stops waiting leaves its place. A job that joins
+	 * and does not yield itself cancels the company's jobs in line that yield; `yielding` is what cancels this one,
+	 * until its place is given back or its steps are done. */
+	async #turn(companyId: string, signal: AbortSignal, yielding?: AbortController): Promise<() => void> {
 		const before = this.#tails.get(companyId) ?? Promise.resolve();
-		let done!: () => void;
+		// A job cancelled before it came takes no place, and cancels nothing. Nor does a job that yields: it waits its
+		// turn behind the other background work.
+		if (!signal.aborted && !yielding)
+			for (const other of this.#yielding.get(companyId) ?? [])
+				other.abort(new CodeHostJobFailure("CODE_HOST_JOB_YIELDED", "another job of the company joined the line"));
+		let leave!: () => void;
 		const mine = new Promise<void>((resolve) => {
-			done = resolve;
+			leave = resolve;
 		});
+		if (yielding)
+			this.#yielding.set(companyId, (this.#yielding.get(companyId) ?? new Set<AbortController>()).add(yielding));
+		const done = () => {
+			if (yielding) this.#yielded(companyId, yielding);
+			leave();
+		};
 		const tail = before.then(() => mine);
 		this.#tails.set(companyId, tail);
 		void tail.then(() => {
@@ -264,11 +303,19 @@ export class CodeHostJobs {
 		return done;
 	}
 
+	/** A job that yields is past being cancelled: its steps are done, or it gave its place back. */
+	#yielded(companyId: string, yielding: AbortController): void {
+		const yields = this.#yielding.get(companyId);
+		if (yields?.delete(yielding) && yields.size === 0) this.#yielding.delete(companyId);
+	}
+
+	/** For a job that yields, `signal` is its caller's and what cancels it together; `yields` names both apart. */
 	async #run<T>(
 		host: CodeHostLease,
 		environmentId: string,
 		signal: AbortSignal,
 		job: (job: CodeHostJob, gc: CodeHostGcBlock) => Promise<T>,
+		yields?: { yielding: AbortController; caller: AbortSignal },
 	): Promise<T> {
 		const shell = lxdCodeHostShell(this.#client, host);
 		await this.#clean(shell, AbortSignal.any([signal, AbortSignal.timeout(this.#cleanMs)])).catch(
@@ -282,7 +329,13 @@ export class CodeHostJobs {
 		try {
 			await this.#mount(shell, view, signal);
 			result = await job({ shell, layout: CODE_HOST_LAYOUT, signal }, this.#gcBlock(view));
-			const published = await this.#publish(shell, signal);
+			if (yields) {
+				// Cancelled by now, it publishes nothing. Past here it publishes like any other job, under its caller's signal
+				// alone: a job that yielded never published a part of what it wrote.
+				yields.yielding.signal.throwIfAborted();
+				this.#yielded(host.companyId, yields.yielding);
+			}
+			const published = await this.#publish(shell, yields?.caller ?? signal);
 			if (published.answer === "closed") throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the view closed");
 			if (published.answer === "refused")
 				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);

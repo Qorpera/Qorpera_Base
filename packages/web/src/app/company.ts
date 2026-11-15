@@ -1,5 +1,6 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
+import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import {
@@ -22,6 +23,8 @@ import {
 } from "../cloud/email-drafts.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
+import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
+import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import type { PageCursor } from "../cloud/pagination.ts";
@@ -64,18 +67,23 @@ import type {
 	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
-import { withReply } from "../cloud/wall-reply.ts";
+import type { WaitingKind, WaitingWork } from "../cloud/waiting-work.ts";
+import { appNoteHeader, appNoteLead, splitAppNote, withReply } from "../cloud/wall-reply.ts";
 import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import type { AgentNotesState } from "./agent-notes.ts";
+import { type AgentAtComputer, type AgentsAtComputers, AtComputerWatch } from "./agents-at-computers.ts";
 import type { MailState } from "./company-mail.ts";
-import type { CompanyApp } from "./interface-apps.ts";
+import { memberTimeZone, rememberTimeZoneRefused, timeZoneRefused } from "./company-time-zone.ts";
+import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
+import { MemberChats } from "./member-chats.ts";
 import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
 import {
 	appendQuoted,
@@ -97,7 +105,13 @@ import { debounce, Store, throttle } from "./state.ts";
 export type Deployment = "loading" | "ready" | "not-deployed" | "not-seeded" | "error";
 
 /** What a member sees of an agent's execution: see CompanyController.agentState. */
-export type AgentState = "idle" | "working" | "writing" | "decision" | "failed";
+/** `computer`: working, and using its desktop computer now (20260930742000). */
+export type AgentState = "idle" | "working" | "writing" | "computer" | "decision" | "failed";
+
+/** The states in which an agent's run works: working, writing, or working at its computer. */
+export function agentWorks(state: AgentState): boolean {
+	return state === "working" || state === "writing" || state === "computer";
+}
 
 /** A run the server holds against the agent until someone dismisses it. */
 export interface FailedRun {
@@ -213,6 +227,10 @@ export interface CompanyState {
 	sidebarUnavailable?: boolean;
 	/** A rail action (a sidebar change, a rename, a delete) that did not happen, in the member's words. */
 	railError?: string;
+	/** The member just reset their sidebar: the rail offers Undo until they dismiss it or change the sidebar again.
+	 * `appsOrder` is the apps drawer's order this device kept before, put back by Undo; `undoing` while Undo is on its
+	 * way, so it is sent once. */
+	sidebarReset?: { appsOrder: readonly string[]; undoing?: boolean };
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	/** Mentions of this member not seen yet, by conversation (session id → count). */
@@ -225,8 +243,22 @@ export interface CompanyState {
 	approvals?: Readonly<Record<string, number>>;
 	/** The cloud does not list waiting approval cards yet (before 20260930568000). */
 	approvalsUnavailable?: boolean;
+	/** What each agent's work waits on this member for (its cards for them and the approval cards they answer), by
+	 * agent (staff agent id → the newest item and the count; 20260930723000). Unset until the first read lands. */
+	waitingOnMe?: Readonly<Record<string, WaitingWork>>;
+	/** The cloud does not list what waits on the member yet (before 20260930723000): the approval cards alone are read,
+	 * as before. */
+	waitingWorkUnavailable?: boolean;
 	/** The other members' open browser tabs and the conversation each shows (presence). */
 	here?: readonly PresenceMember[];
+	/** This member's chats with the company's other members, by the other member (app/member-chats.ts). Unset until
+	 * the first read lands, and in a company with nobody else. */
+	memberChats?: Readonly<Record<string, MemberChatSummary>>;
+	/** The cloud has no member chats yet (before 20260930715000): the rail shows no members. */
+	memberChatsUnavailable?: boolean;
+	/** The cloud keeps where each member puts their contacts in the rail (20260930717000): they drag, pin and hide.
+	 * Without it they stand in the Members group, as the cloud lists them. */
+	memberContactPlacing?: boolean;
 	/** The company is out of computer hours: new work waits until hours are added (the zero rule). */
 	waitingForHours?: boolean;
 	/** The deployed cloud cannot say yet whether the company waits for computer hours. */
@@ -244,9 +276,37 @@ export interface CompanyState {
 	/** The agents' interface apps in the company's folder (apps/, app/interface-apps.ts), as last read. Unset until the
 	 * first read lands. */
 	apps?: readonly CompanyApp[];
+	/** The company's groups of apps, as its apps/groups.md says (cloud/app-groups.ts); unset until read, and while the
+	 * company has none. */
+	appGroups?: readonly AppTreeNode[];
+	/** The member's own arrangement of the drawer over them (20260930728000), as last read or written. */
+	appLayout?: MemberAppLayoutRead;
+	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
+	appLayoutUnavailable?: boolean;
+	/** Each app's own icons (`apps/<name>/icons/`, app/interface-apps.ts), by the app's name, for the apps whose icons
+	 * were asked for: the member opened its Icon and colour panel, or picked one of them. Newest first. */
+	appIcons?: Readonly<Record<string, readonly CompanyAppIcon[]>>;
+	/** The apps whose agent was asked to draw new icons, by name: since when, and the icons it had then. The drawer shows
+	 * the app drawing until a new one is read, or for ten minutes. */
+	appIconsDrawing?: Readonly<Record<string, { readonly since: number; readonly known: readonly string[] }>>;
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
+	/** What's new (app/views/whats-new.ts): set while one of the company's projects makes a website, with how many of its
+	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
+	 * is set. Unset until read, and on a cloud without it. */
+	whatsNew?: { readonly ready: number };
+	/** The version What's new has live of each site made from a project's code, by the site's name in its link: the
+	 * Sites page names it on the site's row. Read with What's new. */
+	siteVersions?: Readonly<Record<string, number>>;
+	/** What the rail says of each agent between runs: its next planned run (app/agent-notes.ts). Unset until the first
+	 * read lands; an agent with nothing has no entry. */
+	agentNotes?: AgentNotesState;
+	/** The agents using their desktop computers now, by agent (20260930742000; app/agents-at-computers.ts). Unset until
+	 * the first read lands. */
+	atComputers?: AgentsAtComputers;
+	/** The cloud does not say which agents use their computers (before 20260930742000): no agent shows at one. */
+	atComputersUnavailable?: boolean;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;
 	loading: boolean;
@@ -256,7 +316,8 @@ export interface CompanyState {
 
 export interface ConversationState {
 	sessionId: string;
-	/** The wall's question the member is answering: the next message opens with it (cloud/wall-reply.ts). */
+	/** The line the draft answers, an app's note's (app/tell-agent.ts): the next message opens with it
+	 * (cloud/wall-reply.ts). */
 	answering?: string;
 	events: HostedSessionEvent[];
 	pending: PendingSessionInput[];
@@ -542,6 +603,15 @@ export class CompanyController {
 	#sidebarWrites: Promise<unknown> = Promise.resolve();
 	/** The member's client for the company's folder, where the sections are QorperaOS/agents/sections.md. */
 	#sectionsFolder: ((signal: AbortSignal) => WebMemberFolder) | undefined;
+	/** The member's apps layout: reads (a newer one wins), writes on their way, one after the other, and the time the
+	 * last one answered, which the next one names. */
+	#appLayoutReads = 0;
+	#appLayoutPending = 0;
+	/** Resets (or Undos) on their way: the drawer makes no move meanwhile, nor after one until the layout it left
+	 * is read (`#appLayoutStale`). */
+	#resetting = 0;
+	#appLayoutStale = false;
+	#appLayoutWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
 	#poll: ReturnType<typeof setInterval> | undefined;
 	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
 	#skippedWhileHidden = false;
@@ -570,6 +640,8 @@ export class CompanyController {
 	#openFullTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Realtime was connected once: a return to connected catches up on what it may have missed. */
 	#connectedBefore = false;
+	/** This member's time zone was handed in for the company, which had none (#offerTimeZone): once, whatever came of it. */
+	#timeZoneOffered = false;
 	/** The cloud has no newest-first transcript read (before 20260928279410): threads read forward. */
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
@@ -584,6 +656,10 @@ export class CompanyController {
 	#recoveriesMissing = false;
 	/** Members' unsent messages in the conversations they share (20260928000500). */
 	readonly roomDrafts: RoomDrafts;
+	/** This member's chats with the company's other members (20260930715000). */
+	readonly memberChats: MemberChats;
+	/** Which agents use their desktop computers now (20260930742000). */
+	readonly #atComputers: AtComputerWatch;
 	#mentionReads = 0;
 	#approvalReads = 0;
 	#hoursWaitReads = 0;
@@ -597,19 +673,47 @@ export class CompanyController {
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
 		this.#userId = userId;
+		// A note from an app that waits in a thread (app/tell-agent.ts) answers its app's line, which the composer shows
+		// above the field and never in it (`answering`). Wherever the draft is saved and shared, the line is its text's
+		// first line (cloud/wall-reply.ts `appNoteLead`), so a reload, another tab and another member's client have it
+		// with the words: it is put in front of the draft for the room, and taken out of the room's text again here.
+		const lead = (sessionId: string) => {
+			const answering = this.conversation(sessionId, false).get().answering;
+			return answering !== undefined && appNoteHeader(answering) ? appNoteLead(answering) : "";
+		};
+		const shift = (quotes: readonly MessageQuote[], by: number) =>
+			quotes.map((quote) => ({ ...quote, start: quote.start + by, end: quote.end + by }));
 		this.roomDrafts = new RoomDrafts(api, userId, this.#abort.signal, {
 			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
-			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
-			quotes: (sessionId) => this.draftQuotes(sessionId),
+			draft: (sessionId) => lead(sessionId) + (this.conversation(sessionId).get().draft ?? ""),
+			quotes: (sessionId) => shift(this.draftQuotes(sessionId), [...lead(sessionId)].length),
 			broken: (sessionId) => this.draftBroken(sessionId),
+			lead: (text) => splitAppNote(text)?.lead.length ?? 0,
 			// The merged draft's quotes take their words over: a record kept here never outlives the email its
 			// words now come from (another tab removed one quote and quoted the same words from another email).
 			setDraft: (sessionId, text, quotes) =>
-				this.conversation(sessionId).set((state) => ({
-					draft: text,
-					quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], text, quotes),
-					...draftReplaced(state),
-				})),
+				this.conversation(sessionId).set((state) => {
+					const note = splitAppNote(text);
+					const draft = note ? note.rest : text;
+					const by = note ? [...note.lead].length : 0;
+					const own = shift(
+						quotes.filter((quote) => quote.start >= by),
+						-by,
+					);
+					// The room's text says what the draft answers now: an app's line it opens with, or none any more
+					// (another tab sent the note, or left the app out). A line that names no app is this browser's alone.
+					const answering = note
+						? { answering: note.line }
+						: state.answering !== undefined && appNoteHeader(state.answering)
+							? { answering: undefined }
+							: {};
+					return {
+						draft,
+						quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], draft, own),
+						...answering,
+						...draftReplaced(state),
+					};
+				}),
 		});
 		this.#writeInput =
 			writeInput ??
@@ -626,6 +730,44 @@ export class CompanyController {
 			recoveries: {},
 			realtime: "connecting",
 			loading: true,
+		});
+		const chatCalls = memberChatCalls(api.cloud, profile.profileId);
+		this.memberChats = new MemberChats({
+			userId,
+			calls: () => chatCalls,
+			available: () => {
+				const state = this.store.get();
+				return (
+					!this.#stopped &&
+					!state.accessLost &&
+					!state.memberChatsUnavailable &&
+					state.team?.capabilities.read === true &&
+					state.team.members.some((member) => member.userId !== userId)
+				);
+			},
+			visible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
+			summaries: () => this.store.get().memberChats,
+			setSummaries: (memberChats, placing) =>
+				this.store.set(placing === undefined ? { memberChats } : { memberChats, memberContactPlacing: placing }),
+			setUnavailable: () => this.store.set({ memberChatsUnavailable: true, memberChats: undefined }),
+			placeFailed: () => this.reportRailError(t("The sidebar could not be changed. Try again.")),
+			// Reset sidebar counts placed contacts among the member's changes (20260930727000).
+			placed: () => {
+				if (!this.ownSidebar()) return;
+				// A newer place is never undone by an older reset's Undo.
+				this.store.set({ sidebarReset: undefined });
+				void this.refreshSidebar();
+			},
+		});
+		this.#atComputers = new AtComputerWatch({
+			read: () => this.#api.listScreensInUse(this.profile.profileId),
+			onChange: (atComputers) => {
+				if (!this.#stopped) this.store.set({ atComputers });
+			},
+			onUnavailable: () => {
+				if (!this.#stopped) this.store.set({ atComputers: undefined, atComputersUnavailable: true });
+			},
+			resting: () => this.#restsWhileHidden(),
 		});
 	}
 
@@ -662,6 +804,7 @@ export class CompanyController {
 			},
 		);
 		await this.refreshAll();
+		if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
 		if (!this.#stopped && typeof document !== "undefined") {
 			if (document.visibilityState === "hidden") this.#hiddenAt = Date.now();
@@ -669,10 +812,12 @@ export class CompanyController {
 				"visibilitychange",
 				() => {
 					this.#seeMentions();
+					this.memberChats.seen();
 					if (document.visibilityState === "hidden") {
 						this.#hiddenAt ??= Date.now();
 						return;
 					}
+					this.#atComputers.returned();
 					// Away a whole clock period: a frozen tab's timers never fired, so no skip was noted.
 					const away = this.#hiddenAt !== undefined && Date.now() - this.#hiddenAt >= HEARTBEAT_MS;
 					this.#hiddenAt = undefined;
@@ -704,6 +849,7 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
+		this.#atComputers.dispose();
 		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
 			store.set((state) => ({
@@ -714,10 +860,12 @@ export class CompanyController {
 				retrySend: undefined,
 				executionSponsor: undefined,
 			}));
+		clearInterval(this.#iconWatch);
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
 		void this.#presence?.stop().catch(() => {});
 		this.#presence = undefined;
+		this.memberChats.stop();
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
 		clearTimeout(this.#openFullTimer);
@@ -749,6 +897,7 @@ export class CompanyController {
 		this.store.set({ loading: false });
 		void this.refreshMentions();
 		void this.refreshHoursWait();
+		void this.memberChats.refresh();
 	}
 
 	/** Re-read whether the company waits for computer hours. */
@@ -787,9 +936,30 @@ export class CompanyController {
 		}
 	}
 
-	/** Re-read which agents have an approval card waiting for this member's answer. */
+	/** Re-read what each agent's work waits on this member for: its open cards for them and the approval cards they
+	 * answer (20260930723000), in one read. A cloud before that reads the approval cards alone, as before. */
 	async refreshApprovals(): Promise<void> {
-		if (this.#stopped || this.store.get().approvalsUnavailable || !this.store.get().team?.capabilities.read) return;
+		if (this.#stopped || !this.store.get().team?.capabilities.read) return;
+		if (!this.store.get().waitingWorkUnavailable) {
+			const version = ++this.#approvalReads;
+			try {
+				const work = await this.#api.listWaitingWork(this.profile.profileId);
+				if (this.#stopped || version !== this.#approvalReads) return;
+				const waitingOnMe: Record<string, WaitingWork> = {};
+				const approvals: Record<string, number> = {};
+				for (const item of work) {
+					waitingOnMe[item.staffAgentId] = item;
+					if (item.approvals) approvals[item.staffAgentId] = item.approvals;
+				}
+				this.store.set({ waitingOnMe, approvals });
+				return;
+			} catch (error) {
+				if (this.#stopped || version !== this.#approvalReads) return;
+				if (!(error instanceof CloudRpcError && error.missing)) return;
+				this.store.set({ waitingWorkUnavailable: true, waitingOnMe: undefined });
+			}
+		}
+		if (this.store.get().approvalsUnavailable) return;
 		const version = ++this.#approvalReads;
 		try {
 			const waiting = await this.#api.listWaitingApprovals(this.profile.profileId);
@@ -858,8 +1028,16 @@ export class CompanyController {
 		try {
 			const team = await this.#api.getTeam(this.profile.profileId);
 			if (this.#stopped || version !== this.#versions.team) return;
+			const before = this.store
+				.get()
+				.team?.members.map((member) => member.userId)
+				.join(" ");
 			this.store.set({ team, accessLost: false });
+			void this.#offerTimeZone(team);
 			this.#joinPresence();
+			// Someone joined or left: the member chats are theirs too. (The first read comes with refreshAll.)
+			if (before !== undefined && before !== team.members.map((member) => member.userId).join(" "))
+				void this.memberChats.refresh();
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.team) return;
 			if (error instanceof CloudRpcError && error.denied) {
@@ -890,6 +1068,28 @@ export class CompanyController {
 					}));
 				this.stop();
 			} else this.store.set({ error: describeError(error) });
+		}
+	}
+
+	/** A company without a time zone takes the one this member's app shows times in (company-time-zone.ts; migration
+	 * 20260930739000): when the team read says the company has none (null; a cloud before the migration says nothing
+	 * and is asked nothing) and this member may act for it (never a viewer). Once: the cloud takes it only while the
+	 * company has none and answers the company's, which the team then says. Nothing shows, whatever comes of it: a call
+	 * that failed is not made again by this company's open, and a zone the cloud refused is not handed in again by this
+	 * browser. */
+	async #offerTimeZone(team: HostedProfileTeam): Promise<void> {
+		if (this.#timeZoneOffered || team.timeZone !== null || !team.capabilities.write) return;
+		const profileId = this.profile.profileId;
+		const zone = memberTimeZone();
+		if (!zone || timeZoneRefused(profileId, zone)) return;
+		this.#timeZoneOffered = true;
+		try {
+			const timeZone = await this.#api.ensureCompanyTimeZone(profileId, zone);
+			const current = this.store.get().team;
+			if (!this.#stopped && current?.timeZone === null) this.store.set({ team: { ...current, timeZone } });
+		} catch (error) {
+			// 22023: the cloud does not know this zone's name. Anything else (offline, a cloud without the call) is left.
+			if (error instanceof CloudRpcError && error.code === "22023") rememberTimeZoneRefused(profileId, zone);
 		}
 	}
 
@@ -1033,6 +1233,8 @@ export class CompanyController {
 			// A change in flight answers with a newer sidebar than this read.
 			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
 			this.store.set({ sidebar });
+			// The member's apps layout is part of their own sidebar: a hint for one is a hint for the other.
+			if (sidebar.own) void this.refreshAppLayout();
 			// Hints from now on: on the company's topic, or by postgres_changes on a channel of their own, so a cloud without
 			// the sidebar tables must not degrade the company's hints.
 			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
@@ -1109,8 +1311,8 @@ export class CompanyController {
 		);
 	}
 
-	/** Makes section changes and moves edits of QorperaOS/agents/sections.md through the member's folder client
-	 * (folder-v2, where the sidebar RPC refuses them); pins and hidden items stay with the RPC. */
+	/** Makes section changes and moves edits of QorperaOS/agents/sections.md through the member's folder client, on a
+	 * cloud from before each member's own sidebar (20260930727000) only; pins and hidden items stay with the RPC. */
 	useSectionsFile(folder: (signal: AbortSignal) => WebMemberFolder): void {
 		this.#sectionsFolder = folder;
 	}
@@ -1118,7 +1320,265 @@ export class CompanyController {
 	/** Whether a reorder in Unassigned cannot be saved: the sections are QorperaOS/agents/sections.md and the cloud
 	 * predates its order of what is in no section (20260930519000). */
 	unassignedOrderLost(): boolean {
-		return this.#sectionsFolder !== undefined && this.store.get().sidebar?.unassignedOrder !== true;
+		const sidebar = this.store.get().sidebar;
+		return this.#sectionsFolder !== undefined && sidebar?.own === undefined && sidebar?.unassignedOrder !== true;
+	}
+
+	/** Whether the sidebar is the member's own over the company's (20260930727000): what they change is theirs alone,
+	 * and Reset sidebar brings back the company's. */
+	ownSidebar(): boolean {
+		const state = this.store.get();
+		return Boolean(state.sidebar?.own && !state.sidebarUnavailable);
+	}
+
+	/** Takes away everything the member changed in this company's sidebar, or with `undo` puts back what the last
+	 * reset took. Contacts' places and the apps layout come back with their next read, which this starts. */
+	async resetSidebar(undo = false): Promise<boolean> {
+		if (!this.ownSidebar()) return false;
+		// One after the other with the apps layout's writes: a move on its way lands first. Until the reset and the apps
+		// layout's read after it are done, the drawer makes no move, so none is built on what the reset took away.
+		this.#resetting++;
+		const reset = this.#appLayoutWrites
+			.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }))
+			.then(async (done) => {
+				// A cloud without each member's apps layout (before 20260930728000) has none to read again.
+				if (!done || this.store.get().appLayoutUnavailable) return done;
+				// The layout as the reset left it, read here and taken whatever other read is on its way; until one is
+				// taken, moves stay held (a failed read leaves them held until a later read works).
+				this.#appLayoutStale = true;
+				++this.#appLayoutReads;
+				try {
+					const read = await this.#api.readMemberAppLayout(this.profile.profileId);
+					// Reads sent before this one are dropped when they land (their version is older); this one is always taken.
+					if (!this.#stopped) this.store.set({ appLayout: read });
+					this.#appLayoutStale = false;
+				} catch (error) {
+					// No such read on this cloud: nothing to wait for. Otherwise moves wait for the next read that works.
+					if (error instanceof CloudRpcError && error.missing) {
+						this.#appLayoutStale = false;
+						this.store.set({ appLayoutUnavailable: true });
+					}
+				}
+				return done;
+			})
+			.finally(() => {
+				this.#resetting--;
+			});
+		// What the next write names as last written is read again after a reset: nothing is carried over it.
+		this.#appLayoutWrites = reset.then(
+			() => undefined,
+			() => undefined,
+		);
+		const done = await reset;
+		if (done) void this.memberChats.refresh();
+		return done;
+	}
+
+	/** Reads an app's own icons; the application sets it to the apps' reader. */
+	appIconReader?: (app: string) => Promise<CompanyAppIcon[]>;
+	/** The member's model accounts, for Generate icon's message: the thread's own account, chosen as its thread chooses
+	 * it (as Mailbox's note does, app/company-mail.ts). The application sets it. */
+	appIconAccounts?: Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
+	readonly #iconReads = new Map<string, Promise<void>>();
+	#iconWatch?: ReturnType<typeof setInterval>;
+
+	/** Reads an app's own icons into `appIcons`, one read at a time for each app. A read that fails keeps what was read
+	 * before. A new icon ends the app's drawing. */
+	loadAppIcons(app: string): Promise<void> {
+		const running = this.#iconReads.get(app);
+		if (running || this.#stopped || !this.appIconReader) return running ?? Promise.resolve();
+		const read = this.appIconReader(app)
+			.then((icons) => {
+				if (this.#stopped) return;
+				const state = this.store.get();
+				const drawing = state.appIconsDrawing?.[app];
+				// A new icon, or an old id drawn again (an app at its 12 replaces one), ends the drawing.
+				const done = drawing && icons.some((icon) => !drawing.known.includes(iconVersion(icon)));
+				this.store.set({
+					appIcons: { ...state.appIcons, [app]: icons },
+					...(done ? { appIconsDrawing: withoutKey(state.appIconsDrawing, app) } : {}),
+				});
+			})
+			.catch(() => undefined)
+			.finally(() => this.#iconReads.delete(app));
+		this.#iconReads.set(app, read);
+		return read;
+	}
+
+	/** Reads again the icons of every app whose icons were read: the apps' folder changed. */
+	refreshAppIcons(): void {
+		for (const app of Object.keys(this.store.get().appIcons ?? {})) void this.loadAppIcons(app);
+	}
+
+	/** Generate icon (Jonas, 12 Nov 2026): asks the agent who made the app, or the Co-Founder when none did or it left, to
+	 * draw three new icons, as a message in its thread the member can see and answer. The drawer shows the app drawing
+	 * until a new icon is read (every ten seconds), or for ten minutes. Says why when it could not ask. */
+	async requestAppIcons(app: CompanyApp): Promise<{ ok: true; agent: string } | { ok: false; reason: string }> {
+		if (this.#stopped || !app.manifest) return { ok: false, reason: t("This company is no longer open.") };
+		const state = this.store.get();
+		const owner = app.manifest.owner
+			? state.staff.find((agent) => agent.id === app.manifest?.owner && agent.employmentStatus === "active")
+			: undefined;
+		let sessionId: string | undefined;
+		let name: string;
+		try {
+			if (owner) {
+				sessionId = await this.openStaffConversation(owner);
+				name = owner.displayName;
+			} else {
+				const opened = await this.openCofounderConversation();
+				if (!opened.sessionId)
+					return { ok: false, reason: opened.reason ?? t("The Co-Founder could not be reached.") };
+				sessionId = opened.sessionId;
+				name = this.staffById(this.cofounderId() ?? "")?.displayName ?? t("The Co-Founder");
+			}
+		} catch (error) {
+			return { ok: false, reason: describeError(error) };
+		}
+		const text = t("Please draw 3 new icons for {name} (apps/{app}), from its name and what it shows.", {
+			name: app.manifest.name,
+			app: app.name,
+		});
+		// The ask goes only into an empty composer, as Mailbox's note does (app/company-mail.ts): a draft the member (or
+		// another member, in a shared draft) is writing to this agent, its images and a message on its way stay as they
+		// are, and the member is told why nothing was sent.
+		const room = this.roomDrafts.room(sessionId);
+		if (room) await room.refresh();
+		const busy = () => {
+			const now = this.conversation(sessionId, false).get();
+			return (
+				(room !== undefined && !room.usable()) ||
+				Boolean((room?.draft(this.#userId)?.body ?? "").trim()) ||
+				Boolean((now.draft ?? "").trim()) ||
+				Boolean(now.attachments?.length) ||
+				// An answer the member chose to a question of the agent's: the send would prefix it (review F1 on #1696, r2).
+				now.answering !== undefined ||
+				Boolean(now.sending) ||
+				Boolean(now.retrySend)
+			);
+		};
+		const started = t("You have a message started to {agent}. Send or clear it, then press Generate icon again.", {
+			agent: name,
+		});
+		if (this.#stopped) return { ok: false, reason: t("This company is no longer open.") };
+		if (busy()) return { ok: false, reason: started };
+		await this.#chooseThreadAccount(sessionId);
+		if (busy()) return { ok: false, reason: started };
+		// What the icons were before the ask, by id and version: a new one, or one drawn again, ends the drawing.
+		const known = (this.store.get().appIcons?.[app.name] ?? []).map(iconVersion);
+		// Pressed in the apps drawer, over whatever page is open: the member's press stands for the thread on screen.
+		if (!(await this.sendNote(sessionId, text)))
+			return {
+				ok: false,
+				reason: this.conversation(sessionId, false).get().sendError ?? t("The message could not be sent."),
+			};
+		this.store.set((now) => ({
+			appIconsDrawing: { ...now.appIconsDrawing, [app.name]: { since: Date.now(), known } },
+		}));
+		this.#watchIcons();
+		return { ok: true, agent: name };
+	}
+
+	/** Gives a thread the model account the cloud chooses for it now, as its view does when it opens: the conversation's
+	 * own account, never another; a message on its way keeps the one it carries. Without accounts, nothing changes. */
+	async #chooseThreadAccount(sessionId: string): Promise<void> {
+		const accounts = this.appIconAccounts;
+		const conversation = this.conversation(sessionId, false).get();
+		if (!accounts?.selectSessionAccount || conversation.sending || conversation.retrySend) return;
+		try {
+			const connectionId = await accounts.selectSessionAccount(sessionId, this.signal);
+			if (!connectionId) return;
+			const observed = await accounts.listConnections(this.signal);
+			const now = this.conversation(sessionId, false).get();
+			if (now.sending || now.retrySend) return;
+			this.setExecutionSponsor(sessionId, observed, connectionId);
+		} catch {
+			// The send says what is missing.
+		}
+	}
+
+	/** While an app is drawing: its icons are read every ten seconds, and a drawing older than ten minutes ends. */
+	#watchIcons(): void {
+		if (this.#iconWatch) return;
+		this.#iconWatch = setInterval(() => {
+			const drawing = this.store.get().appIconsDrawing ?? {};
+			const names = Object.keys(drawing);
+			if (this.#stopped || !names.length) {
+				clearInterval(this.#iconWatch);
+				this.#iconWatch = undefined;
+				return;
+			}
+			const now = Date.now();
+			const stale = names.filter((name) => now - drawing[name]!.since > APP_ICONS_DRAWING_MS);
+			if (stale.length)
+				this.store.set((state) => ({
+					appIconsDrawing: stale.reduce((all, name) => withoutKey(all, name), state.appIconsDrawing),
+				}));
+			for (const name of names) if (!stale.includes(name)) void this.loadAppIcons(name);
+		}, APP_ICONS_WATCH_MS);
+	}
+
+	/** Whether a Reset sidebar (or its Undo) is on its way: the drawer waits for it to move anything. */
+	resettingSidebar(): boolean {
+		return this.#resetting > 0 || this.#appLayoutStale;
+	}
+
+	/** Reads the member's own arrangement of the apps drawer. A cloud without it (before 20260930728000) says so once. */
+	async refreshAppLayout(): Promise<void> {
+		if (this.#stopped || this.store.get().appLayoutUnavailable) return;
+		const version = ++this.#appLayoutReads;
+		try {
+			const read = await this.#api.readMemberAppLayout(this.profile.profileId);
+			if (this.#stopped || version !== this.#appLayoutReads || this.#appLayoutPending) return;
+			this.#appLayoutStale = false;
+			this.store.set({ appLayout: read });
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) this.store.set({ appLayoutUnavailable: true });
+		}
+	}
+
+	/** Changes the member's own arrangement of the drawer: drawn at once, then written whole, one write at a time. A
+	 * write another tab overtook is read again and said in the rail. */
+	async changeAppLayout(next: MemberAppLayout): Promise<boolean> {
+		const current = this.store.get().appLayout;
+		if (this.#stopped || !current || this.#resetting || this.#appLayoutStale) return false;
+		this.store.set({ appLayout: { ...current, layout: next }, railError: undefined, sidebarReset: undefined });
+		// With nothing on its way, the time last read is the one to name; behind another write, the time it answered.
+		const behind = this.#appLayoutPending > 0;
+		this.#appLayoutPending++;
+		const write = this.#appLayoutWrites.then((last) =>
+			this.#api.setMemberAppLayout(
+				this.profile.profileId,
+				next,
+				behind && last !== undefined ? last : current.updatedAt,
+			),
+		);
+		this.#appLayoutWrites = write.then(
+			(read) => read.updatedAt,
+			() => undefined,
+		);
+		try {
+			const read = await write;
+			this.#appLayoutPending--;
+			if (this.#stopped) return false;
+			++this.#appLayoutReads;
+			if (!this.#appLayoutPending) this.store.set({ appLayout: read });
+			// Reset sidebar's count of the member's changes moves with it.
+			void this.refreshSidebar();
+			return true;
+		} catch (error) {
+			this.#appLayoutPending--;
+			if (this.#stopped) return false;
+			this.store.set({
+				railError:
+					error instanceof CloudRpcError && error.code === "QAL01"
+						? t("Your apps changed in another tab. Try again.")
+						: t("The apps could not be arranged. Try again."),
+			});
+			if (!this.#appLayoutPending) await this.refreshAppLayout();
+			return false;
+		}
 	}
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
@@ -1136,7 +1596,8 @@ export class CompanyController {
 		let send: () => Promise<CompanySidebar>;
 		const roster = this.sidebarRoster();
 		let drawn = applySidebarRequest(current.sidebar, request, roster);
-		if (folder && isSectionsRequest(request)) {
+		// Since 20260930727000 a section change is the member's own, through the RPC; the file is the company's.
+		if (folder && current.sidebar.own === undefined && isSectionsRequest(request)) {
 			const keeps = current.sidebar.unassignedOrder === true;
 			let named: ReturnType<typeof sectionsChange>;
 			try {
@@ -1159,7 +1620,13 @@ export class CompanyController {
 				};
 			send = () => this.#writeSections(folder, named, "unpin" in request && request.unpin === true);
 		} else send = () => this.#api.manageCompanySidebar(this.profile.profileId, request);
-		this.store.set({ sidebar: drawn, railError: undefined });
+		// The offer to undo a reset goes with any other change; Undo itself keeps it until it worked, so a failed one can
+		// be tried again.
+		this.store.set({
+			sidebar: drawn,
+			railError: undefined,
+			sidebarReset: request.action === "undo_reset" ? current.sidebarReset : undefined,
+		});
 		this.#sidebarPending++;
 		const write = this.#sidebarWrites.then(send);
 		this.#sidebarWrites = write.catch(() => {});
@@ -1503,19 +1970,58 @@ export class CompanyController {
 	 * cancelled job is one) is never "failed": the server lists it only while its
 	 * proposal waits, below all of the agent's work. An agent with no work of its own
 	 * and an approval card waiting for this member's answer (its own or a worker's, in
-	 * its thread) needs them too. */
+	 * its thread) needs them too.
+	 * An agent whose work waits on this member (waitingFor: a card it raised for them, or an approval card they
+	 * answer) needs them whatever else it lists, except while a run of its own works: then it reads as working, and the
+	 * rail marks it with a raised hand (Jonas, 11 Nov 2026: "it's really stopped at you"). */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
-		if (!row) return staffAgentId && this.store.get().approvals?.[staffAgentId] ? "decision" : "idle";
+		const waiting = this.waitingFor(staffAgentId) !== undefined;
+		if (!row) return waiting ? "decision" : "idle";
 		// A run waiting at its login's usage limit is no work in progress: the agent rests until the reset
 		// (20260930703000), and its thread says why.
-		if (pausedNow(row)) return this.store.get().approvals?.[row.staffAgentId] ? "decision" : "idle";
-		if (row.activity !== "needs_attention")
-			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
-		if (!isFailedRun(row)) return "decision";
+		if (pausedNow(row)) return waiting ? "decision" : "idle";
+		if (row.activity !== "needs_attention") {
+			if (row.jobStatus === "leased" && row.phase === "writing") return "writing";
+			// Working, and using its desktop computer now (20260930742000): only while its run works.
+			return this.atComputer(staffAgentId) ? "computer" : "working";
+		}
+		if (waiting || !isFailedRun(row)) return "decision";
 		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
 			? "decision"
 			: "failed";
+	}
+
+	/** The desktop computer this agent uses now, by the database's word (20260930742000), whether its run works or not;
+	 * undefined when it uses none. The rail and the thread show it only while the agent works (agentState). */
+	atComputer(staffAgentId: string | undefined): AgentAtComputer | undefined {
+		if (!staffAgentId) return undefined;
+		const entry = this.store.get().atComputers?.[staffAgentId];
+		return entry && entry.until > Date.now() ? entry : undefined;
+	}
+
+	/** What the agent's work waits on this member for: the newest item in a few words (`what`, when the cloud says),
+	 * its kind (a question, or something else), and how many wait. A cloud before 20260930723000 says only how many approval cards wait, with no words. */
+	waitingFor(staffAgentId: string | undefined): { count: number; what?: string; kind?: WaitingKind } | undefined {
+		if (!staffAgentId) return undefined;
+		const state = this.store.get();
+		const work = state.waitingOnMe?.[staffAgentId];
+		if (work)
+			return {
+				count: work.count,
+				...(work.what ? { what: work.what } : {}),
+				...(work.kind ? { kind: work.kind } : {}),
+			};
+		const approvals = state.approvals?.[staffAgentId];
+		return approvals ? { count: approvals } : undefined;
+	}
+
+	/** How many of the company's agents wait on this member: the tab's title counts them. */
+	agentsWaitingOnMe(): number {
+		return this.store
+			.get()
+			.staff.filter((agent) => agent.employmentStatus === "active" && this.waitingFor(agent.id) !== undefined)
+			.length;
 	}
 
 	/** When a working agent's running run last made progress, if that is the cloud's stall minutes ago or more
@@ -2351,8 +2857,9 @@ export class CompanyController {
 			throw error;
 		}
 		void this.loadConversation(sessionId);
-		// The answer wakes the agent, as a message does; watch for its run.
+		// The answer wakes the agent, as a message does; watch for its run. The card no longer waits on the member.
 		void this.refreshActivity();
+		void this.refreshApprovals();
 		this.#watchWork(20_000);
 	}
 
@@ -2424,6 +2931,7 @@ export class CompanyController {
 		}
 		void this.loadConversation(sessionId);
 		void this.refreshActivity();
+		void this.refreshApprovals();
 		this.#watchWork(20_000);
 	}
 
@@ -2583,6 +3091,14 @@ export class CompanyController {
 			throw new Error(t("That message already quotes as much as one message can. Send it or remove a quote first."));
 		store.set((now) => ({ draft: next.text, quoteRecords: next.records, ...draftReplaced(now) }));
 		// A shared draft shares it at once, as if the member had typed it.
+		this.roomDrafts.input(sessionId);
+	}
+
+	/** What the conversation's draft answers: an app's line (a note from an app's page, app/tell-agent.ts), or
+	 * nothing. An app's line is part of the draft where it is shared, so it is shared at once, as the draft's text
+	 * would be. */
+	setAnswering(sessionId: string, answering: string | undefined): void {
+		this.conversation(sessionId, false).set({ answering });
 		this.roomDrafts.input(sessionId);
 	}
 
@@ -2754,6 +3270,31 @@ export class CompanyController {
 		}
 	}
 
+	/** Notes on their way, by conversation (`sendNote`). */
+	readonly #notes = new Map<string, number>();
+
+	/** Sends a note the member wrote and sent somewhere other than the conversation's own thread (a note from an app's
+	 * page or from the Mailbox, app/tell-agent.ts; Generate icon in the apps drawer, `requestAppIcons`), as `sendPrompt`
+	 * sends the thread's own message. A send goes only
+	 * while the conversation is on screen (the app's input writer checks the route, app/application.ts); for a note
+	 * the member's own press, on the bar that named the agent, stands for that, for as long as the note is on its way
+	 * (`noteOnItsWay`). Every other check of a send holds. */
+	async sendNote(sessionId: string, text: string): Promise<boolean> {
+		this.#notes.set(sessionId, (this.#notes.get(sessionId) ?? 0) + 1);
+		try {
+			return await this.sendPrompt(sessionId, text);
+		} finally {
+			const left = (this.#notes.get(sessionId) ?? 1) - 1;
+			if (left > 0) this.#notes.set(sessionId, left);
+			else this.#notes.delete(sessionId);
+		}
+	}
+
+	/** Whether a note to the conversation is on its way (`sendNote`). */
+	noteOnItsWay(sessionId: string): boolean {
+		return this.#notes.has(sessionId);
+	}
+
 	/** While an agent works, the member watches it happen: activity and the open
 	 * conversation are re-read every couple of seconds, easing off after two
 	 * minutes. The watch ends by itself a few seconds after the work does. */
@@ -2823,6 +3364,8 @@ export class CompanyController {
 		void this.#sessionsChanged();
 		void this.refreshActivity();
 		void this.refreshMentions();
+		this.memberChats.hinted();
+		this.#atComputers.read();
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 	}
 
@@ -2848,6 +3391,11 @@ export class CompanyController {
 			void this.refreshTeam();
 		} else if (resource === "sidebar") {
 			this.#refreshSidebarSoon();
+		} else if (resource === "member-chats") {
+			this.memberChats.hinted();
+		} else if (resource === "machines") {
+			// An agent may have begun a stretch at its computer (20260930742000).
+			this.#atComputers.hinted();
 		} else if (resource === "company-file") {
 			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
@@ -2870,6 +3418,8 @@ export class CompanyController {
 					for (const listener of this.#invalidations) {
 						listener("sessions");
 					}
+				// The `machines` hint comes by push only: without it, an agent's new stretch at its computer is read here.
+				if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 			} else if (Date.now() - this.#sessionsReadAt > SESSIONS_FULL_MS)
 				await (this.#sessionsFullRead ?? this.refreshSessions());
 			// Proposal comments/rejections do not all touch the Company File head.
@@ -2881,9 +3431,23 @@ export class CompanyController {
 				this.refreshSidebar(),
 				this.refreshMentions(),
 				this.refreshHoursWait(),
+				// The member chats and the open one, whole: what a missed hint would have brought.
+				this.memberChats.poll(),
 			]);
 		} finally {
 			this.#polling = false;
 		}
 	}
+}
+
+/** How long the drawer shows an app drawing new icons at most, and how often their folder is read meanwhile. */
+const APP_ICONS_DRAWING_MS = 10 * 60_000;
+const APP_ICONS_WATCH_MS = 10_000;
+
+/** An icon by its id and the version of its file: the same id drawn again is a new version. */
+const iconVersion = (icon: CompanyAppIcon) => `${icon.id}@${icon.seq}`;
+
+function withoutKey<T>(record: Readonly<Record<string, T>> | undefined, key: string): Record<string, T> {
+	const { [key]: _gone, ...rest } = record ?? {};
+	return rest;
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	CODING_GUEST,
+	CODING_GUEST_MOUNT_V2,
 	CODING_GUEST_VERBS,
 	type CodingGuestOutputRequest,
 	type CodingGuestRunRequest,
@@ -234,6 +235,39 @@ describe("coding guest answers", () => {
 			{ ...status, usage: { ...usage, pids: 3 } },
 		])
 			expect(() => parseCodingGuestAnswer("status", session, value)).toThrow("Invalid coding guest answer");
+	});
+	it("reads the package caches' word only in the answer to a v2 mount, as a boolean, and reads its absence too (own code storage, step 6)", () => {
+		const v1 = parseCodingGuestRequest("mount", mount);
+		const v2 = parseCodingGuestRequest("mount", { ...mount, schema: CODING_GUEST_MOUNT_V2 });
+		expect(v2.schema).toBe("qorpera.coding-guest-mount/v2");
+		const answer = {
+			schema: "qorpera.coding-guest-mounted/v1",
+			workerId,
+			viewId: "view-1",
+			mount: "mounted",
+		} as const;
+		for (const packageCaches of [true, false])
+			expect(parseCodingGuestAnswer("mount", v2, { ...answer, packageCaches })).toEqual({
+				...answer,
+				packageCaches,
+			});
+		// An agent from before never answers v2; a v2 answer without the word reads as it is.
+		expect(parseCodingGuestAnswer("mount", v2, answer)).toEqual(answer);
+		for (const packageCaches of ["true", 1, null])
+			expect(() => parseCodingGuestAnswer("mount", v2, { ...answer, packageCaches })).toThrow(
+				"Invalid coding guest answer",
+			);
+		// The v1 answer stays closed, as an executor from before reads it: the word there is refused.
+		expect(parseCodingGuestAnswer("mount", v1, answer)).toEqual(answer);
+		expect(() => parseCodingGuestAnswer("mount", v1, { ...answer, packageCaches: true })).toThrow(
+			"Invalid coding guest answer",
+		);
+		expect(() => parseCodingGuestRequest("mount", { ...mount, schema: "qorpera.coding-guest-mount/v3" })).toThrow(
+			"Invalid coding guest request",
+		);
+		expect(() => parseCodingGuestRequest("status", { schema: CODING_GUEST_MOUNT_V2, workerId })).toThrow(
+			"Invalid coding guest request",
+		);
 	});
 	it("reads a refusal's code and nothing else", () => {
 		expect(parseCodingGuestRefusal({ schema: "qorpera.coding-guest-refusal/v1", code: "COMMAND_CONFLICT" })).toEqual({

@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
@@ -9,8 +11,22 @@ import {
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
-import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
+import {
+	cloudVisionAgreed,
+	composeCloudAgentHead,
+	readCloudAgentHeadReading,
+	readCloudAgentHeadVision,
+} from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
+import { cloudCodeTools } from "./cloud-code-tools.ts";
+import {
+	CLOUD_HOME_CLOSE_MS,
+	CloudCodexHome,
+	type CloudCodexHomeChannel,
+	type CloudCodexHomeReview,
+	CloudCodexHomeSteps,
+	parseCloudCompanyHome,
+} from "./cloud-codex-home.ts";
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
@@ -32,7 +48,10 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { CloudControlRpcEnded, cloudControlRetryable, cloudControlTransientCode } from "./cloud-control-errors.ts";
+import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
 import { cloudAppTools } from "./cloud-folder-app-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
@@ -40,16 +59,23 @@ import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
 import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
+import { cloudPictureTool } from "./cloud-folder-picture-tool.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
+import {
+	CloudFolderReading,
+	cloudCompanyMembers,
+	cloudReadingTool,
+	describeCloudCompanySenses,
+} from "./cloud-folder-reading.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
-import { cloudWallTools } from "./cloud-folder-wall.ts";
 import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
+import { composeCloudLightAsk } from "./cloud-light-ask.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { type CloudMachineCodingValues, cloudMachineTools } from "./cloud-machine-tools.ts";
 import { cloudMemberOfferTools } from "./cloud-member-offer-tools.ts";
@@ -69,11 +95,12 @@ import {
 } from "./cloud-native-company-context.ts";
 import { cloudNativeContextIdentity } from "./cloud-native-context-composition.ts";
 import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
-import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeCloudExecutionDriver,
 	type NativeCompanyExecutionRequest,
 	type NativeProviderControlPlane,
+	type NativeProviderUsageSignal,
 	nativeProviderUsageSignal,
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
@@ -96,9 +123,12 @@ import {
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { cloudToolsOnDemand } from "./cloud-native-tools-on-demand.ts";
+import { CloudPictureChannel } from "./cloud-picture-channel.ts";
+import { cloudRecordReflectionTool, readCloudPlatformUpdates } from "./cloud-platform-updates.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
-import { CloudRunLogGone } from "./cloud-run-log.ts";
+import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { CloudRunLogCompanyFolder } from "./cloud-run-log-folder.ts";
 import { openCloudRunLog } from "./cloud-run-log-open.ts";
 import { CloudRunLogRpcProtection } from "./cloud-run-log-protection.ts";
@@ -120,23 +150,22 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
-	CLOUD_ASK_MEMBER_BODY_MAX_BYTES,
-	CLOUD_ASK_MEMBER_INSTRUCTIONS,
-	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-	CLOUD_ASK_MEMBER_SURFACES,
+	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
+	cloudAskMemberInstructions,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
 import {
 	type CloudWakeControl,
+	type CloudWakeEnvelope,
 	cloudCoworkerMessageTool,
 	cloudWakeIsConversationPost,
 	cloudWakeIsOwnThread,
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
-import { MemoryCompactChannel, MemoryCompactLane } from "./memory-tree/compact.ts";
+import { MemoryCompactChannel, MemoryCompactLane, MemoryCompactStop } from "./memory-tree/compact.ts";
 import { memoryCacheKeyComposer, memoryCommitView, memoryComposeView } from "./memory-tree/compose.ts";
 import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/conversation-lines.ts";
 import { memoryPromptCacheKey } from "./memory-tree/view.ts";
@@ -160,6 +189,17 @@ function confirmNativeAdmission(answer: unknown, expected: Readonly<Record<strin
 		throw new Error("Native execution admission was not confirmed");
 }
 
+/** Whether an identity root is a ChatGPT plan run's: its host wrote the plan's token directory there. Anything but a
+ * clear absence counts as one, so a run is never offered pictures it cannot make. */
+async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
+	try {
+		await lstat(join(identityRoot, CHATGPT_PLAN_DIRECTORY));
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ENOENT";
+	}
+}
+
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
  * Object transport and cloud authority stay in this trusted host. No model tool
  * receives a service key, raw object capability, recipient or canonical mount.
@@ -179,8 +219,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
+	readonly #homeChannel: ((binding: CloudNativeToolBinding) => CloudCodexHomeChannel) | undefined;
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
+	readonly #companyData: CloudCompanyDataDoor | undefined;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
@@ -209,6 +251,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
 		 * Without it no run is offered the machine tools. */
 		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+		/**
+		 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
+		 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
+		 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
+		 */
+		homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
 		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
 		 * save_coding_value. */
 		codingValues?: CloudMachineCodingValues;
@@ -218,6 +266,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
 		 * company_search over it. */
 		folderSearch?: { readonly socketPath: string };
+		/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
+		 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
+		companyData?: CloudCompanyDataDoor;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -233,11 +284,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#companyAccounts = options.companyAccounts;
 		this.#eventHooks = options.eventHooks;
 		this.#computerSession = options.computerSession;
+		this.#homeChannel = options.homeChannel;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#codingValues = options.codingValues;
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
+		this.#companyData = options.companyData;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -340,6 +393,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						() => false,
 					)
 				: Promise.resolve(false);
+			// The agent's home, by the company's switch (20260930752000). SQL's "no home" leaves this run exactly as it is
+			// today: no environment, no channel, the same tools and the same provider request. An ask that cannot work (a
+			// call this host's lists or the entry point do not know, a refusal, an answer of another shape) fails the run in
+			// the home's own stage: every run would meet it alike, and taken for "no home" it would switch the home off for
+			// every company unseen. Only a lost answer leaves this attempt without a home, said in the host's journal: no
+			// answer or a late one, a 5xx that is not PostgREST's, or PostgREST's word that the statement ended on a
+			// transient SQLSTATE (a lock or statement timeout, a serialization failure, a lost connection, its pool wait).
+			// Any other SQLSTATE PostgREST answers (an internal error, a missing function or relation, a violated key) fails
+			// the run like a refusal: asking again changes nothing. The switch is off for most companies, so failing their
+			// runs for a lost answer buys nothing, and the next attempt asks again.
+			const homeRequest = this.#homeChannel
+				? cloudToolRequest(
+						(requestSignal) =>
+							this.#paths.call("qorpera_company_home_available", { p_binding: binding }, requestSignal),
+						signal,
+					).then(parseCloudCompanyHome, (error: unknown) => {
+						const lost =
+							error instanceof CloudControlRpcEnded
+								? error.sqlstate !== undefined && cloudControlTransientCode(error.sqlstate)
+								: cloudControlRetryable(error);
+						if (signal.aborted || !lost) throw error;
+						console.error(`The agent's home was not asked (${cloudRuntimeErrorCategory(error, signal)})`);
+						return undefined;
+					})
+				: Promise.resolve(undefined);
+			homeRequest.catch(() => undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			// Where the agent's folder is: its folder name.
 			const agentFolders = cloudAgentFolderPlace(context);
@@ -368,6 +447,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					observability,
 				});
 			}
+			// A light ask is its own composition too (deploy/first-node/RUNTIME-LIGHT-ASK.md §3): no tools, nothing of the
+			// company read, one call to the small model, the answer stored, nothing said.
+			if (wake.kind === "agent" && wake.source.kind === "light-ask") {
+				stage = "native-tools";
+				composition.finish("succeeded", { outputBytes: 0 });
+				return await this.#lightAsk(identityRoot, signal, {
+					binding,
+					identity: context.identity,
+					wake,
+					observability,
+					serviceTier,
+				});
+			}
 			// A post in a conversation is the run's request (21 October 2026, item 3): the post the wake names, or a card
 			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
 			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
@@ -378,6 +470,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			continuationShown.catch(() => undefined);
 			let requestSources: readonly CloudCompanyContextSource[] = [];
 			const machinesAvailable = await machinesRequest;
+			stage = "codex-home";
+			const home = await homeRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
@@ -469,6 +563,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
 						? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
 						: Promise.resolve(undefined);
+				// The platform's facts about the whole company (the company's reading of itself, 20260930765000): the
+				// Co-Founder's company runs only, asked beside its open work. A failed read is null and the run goes on.
+				const sensesRequest =
+					context.identity.audienceKind === "company" &&
+					context.agentKind === "cofounder" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? describeCloudCompanySenses(binding, this.#paths, signal).catch((error) => {
+								if (!signal.aborted)
+									console.error(
+										`The company's senses were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return null;
+							})
+						: Promise.resolve(undefined);
 				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
 				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
 				const proposalsRequest =
@@ -478,12 +586,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
 						? CloudFolderProposals.list(folder.client, signal)
 						: Promise.resolve(undefined);
+				const updatesRequest =
+					context.identity.audienceKind === "company" &&
+					context.agentKind === "cofounder" &&
+					wake.kind === "routine" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? readCloudPlatformUpdates(folder.client, new Date(), signal).catch((error: unknown) => {
+								if (!signal.aborted)
+									console.error(
+										`Platform updates were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return undefined;
+							})
+						: Promise.resolve(undefined);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
 				// precondition of company work. The vision, for the head (RUNTIME-AGENT-MEMORY-TREE.md
-				// §5.6), is read beside them; a failed read fails the composition, as the head is never cut.
-				const [memory, skills, vision] = await Promise.all([
+				// §5.6), is read beside them, and so is the company's reading of itself, the head's fourth part; a failed read
+				// fails the composition, as the head is never cut.
+				const [memory, skills, vision, reading] = await Promise.all([
 					Promise.resolve()
 						.then(() =>
 							composeCloudAgentMemory(
@@ -502,6 +624,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 					}),
 					readCloudAgentHeadVision(notebooks.composition, signal),
+					readCloudAgentHeadReading(notebooks.composition, signal),
 				]);
 				return {
 					initialPresence,
@@ -509,16 +632,28 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					memory,
 					skills,
 					vision,
+					reading,
 					openWork: await openWorkRequest,
+					senses: await sensesRequest,
 					proposals: await proposalsRequest,
+					platformUpdates: await updatesRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
-				async (error) => {
-					await connectorTools();
-					throw error;
-				},
-			);
+			const {
+				initialPresence,
+				gateway,
+				memory,
+				skills,
+				vision,
+				reading,
+				openWork,
+				senses,
+				proposals,
+				platformUpdates,
+			} = await composeContext().catch(async (error) => {
+				await connectorTools();
+				throw error;
+			});
 			const connectorDescriptors = await connectorTools();
 			const viewed = await viewedRequest;
 			signal.throwIfAborted();
@@ -536,6 +671,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// The run's opening (§5.4), once it is admitted and before the agent's thread starts. The settle builds the lines
 			// `[0, T)` is missing; the primary view and branches are then composed from the tree as stored. The context is
 			// hashed, released and bound to the admission, and becomes the agent's input and developer instructions.
+			// The run's tools by name, once its catalog is made (below), before its opening: its instructions fit them.
+			let offeredTools: ReadonlySet<string> | undefined;
 			const opening = async (openingSignal: AbortSignal): Promise<CloudCodexOpening> => {
 				stage = "prompt-composition";
 				let composed: CloudCodexOpening & { contextSha256: string; contextBytes: number };
@@ -556,7 +693,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					// webhook signing secret is cut out of them before they are hashed, recorded or shown, as the tool boundary
 					// cuts one out of every tool result and the composer out of the context message (E3c-2). The session cuts
 					// all it sends Codex again, for any source added later.
-					const composedHead = composeCloudAgentHead(context, vision, memory);
+					const composedHead = composeCloudAgentHead(context, vision, memory, reading);
 					const head = { ...composedHead, text: redactCloudWebhookSecrets(composedHead.text) };
 					const request = await roomRequest;
 					// read_context admits the request's sources the context did not list.
@@ -565,6 +702,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const continuation = await continuationShown;
 					// The primary view (§5.3) goes after the head; the context message keeps the history after it.
 					const views = redactCloudWebhookSecrets(view?.views ?? "");
+					// What the instructions are composed for: the run's tools and whether the vision is agreed (T3-2).
+					if (!offeredTools) throw new Error("The run's tools were not made before its opening");
+					const parts = { head: head.text, views, tools: offeredTools, visionAgreed: cloudVisionAgreed(vision) };
+					const updates = offeredTools.has("record_reflection") ? platformUpdates?.context : undefined;
 					const prompt = composeCloudNativeCompanyPrompt(
 						{ ...context, continuation },
 						wake,
@@ -576,6 +717,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						head,
 						view?.tree,
 						request,
+						updates,
+						senses,
 					);
 					// The run's context is its head and views (in the developer instructions) and its context message, hashed
 					// together.
@@ -585,7 +728,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const contextSha256 = createHash("sha256").update(text).digest("hex");
 					// What composition read from the folder is released under the composed context before any model request,
 					// with the paths of the proposals it shows (P40b).
-					await notebooks.releaseComposition(contextSha256, openingSignal, proposals?.reads);
+					await notebooks.releaseComposition(contextSha256, openingSignal, [
+						...(proposals?.reads ?? []),
+						...(updates ? (platformUpdates?.reads ?? []) : []),
+					]);
 					// So are the summary lines the view and the branches show, and the run's first request is recorded with
 					// the settle's wait (§13). A failed release fails the run. A failed record leaves it without the answer,
 					// the view reference (W4a-1), which is for the workers the run dispatches (W4b).
@@ -598,7 +744,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								contextSha256,
 								headBytes: Buffer.byteLength(head.text),
 								stablePrefixSha256: createHash("sha256")
-									.update(cloudNativeStableInstructions(context, { head: head.text, views }))
+									.update(cloudNativeStableInstructions(context, parts, cloudWorkerToolFilter(wake).isWorker))
 									.digest("hex"),
 							},
 							wait,
@@ -606,7 +752,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						);
 					composed = {
 						prompt,
-						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
+						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, parts),
+						// The tool-result rules stand inside them, after the company's files (track 3, T3-3).
+						resultRulesInside: true,
 						// Every request of a run with the view shares its conversation's cache key (§6.2).
 						composeContext:
 							view && context.identity.sessionId !== null
@@ -718,7 +866,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.observation?.finish(replayed ? "replayed" : "succeeded", {
 						outputBytes: Buffer.byteLength(text),
 					});
-					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
+					// Contract 7.1: the final send is the member's answer. Nothing after it reaches them; only the run's
+					// bookkeeping still runs (the tool boundary, the 2026-11-13 amendment).
 					return { kind: "text", value: text, completesTurn: input.phase === "final" };
 				},
 			};
@@ -729,21 +878,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const ask: CloudNativeTool = {
 				name: "ask_member" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
-				description: CLOUD_ASK_MEMBER_INSTRUCTIONS,
-				inputSchema: {
-					type: "object",
-					properties: {
-						idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-						text: { type: "string", minLength: 1, maxLength: 4096 },
-						surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
-						title: { type: "string", minLength: 1, maxLength: 200 },
-						body: { type: "string", maxLength: CLOUD_ASK_MEMBER_BODY_MAX_BYTES },
-						expiresAt: { type: "string" },
-						payload: CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-					},
-					required: ["idempotencyKey", "text", "surface", "title", "payload"],
-					additionalProperties: false,
-				},
+				// The Gmail draft's steps only where the run has Gmail's tools (a connection made before 10 November 2026).
+				description: cloudAskMemberInstructions(
+					connectorDescriptors.some((descriptor) => descriptor.toolName === "gmail_get_profile"),
+				),
+				inputSchema: CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 				parseArguments(value) {
 					const input = parseCloudAskMemberInput(value);
 					// A card ends with its final sentence, so it waits for the decision too.
@@ -792,6 +931,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const offlineShells = new Set<string>();
 				// A worker's report, once the folder saved it: its run's closing act (turnCorrection, below).
 				let workerReported = false;
+				// Pictures are made on the run's own Codex sign-in (cloud-picture-channel.ts), which a run on a member's
+				// ChatGPT plan has not: it gets no picture lane and is not offered make_picture. Its identity root says so, as
+				// the session reads it.
+				const pictures = (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -831,6 +974,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					opening,
 					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
 					compactor,
+					...(pictures ? { pictures } : {}),
 					...(lines && viewed ? { closing: (closingSignal) => lines.close(closingSignal) } : {}),
 					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
 					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
@@ -856,6 +1000,44 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identityRoot,
 					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
+					// The agent's home (slice 1): built only when this company's switch is on AND this agent has a
+					// machine running. The review and the work log are handed to it where they are built, below.
+					...(home && this.#homeChannel
+						? {
+								home: (input: {
+									review: CloudCodexHomeReview;
+									log: CloudRunLog | undefined;
+									signal: AbortSignal;
+								}) =>
+									new CloudCodexHome({
+										channel: this.#homeChannel!(binding),
+										sessionId: randomUUID(),
+										machine: { id: home.machineId, name: home.machine },
+										review: input.review,
+										...(input.log ? { steps: new CloudCodexHomeSteps(input.log) } : {}),
+										// The run's session is ended in SQL when the run ends, however it ended, so its
+										// next attempt opens its own instead of meeting this one (review round 1, F10).
+										// A close that fails does not fail the run, whose work is done (F10), but it is said
+										// in the host's journal, so a close no call reaches is never silent.
+										endSession: async (sessionId, reason) => {
+											const closing = AbortSignal.timeout(CLOUD_HOME_CLOSE_MS);
+											try {
+												await this.#paths.call(
+													"qorpera_close_home_session",
+													{ p_binding: binding, p_session_id: sessionId, p_reason: reason },
+													closing,
+												);
+											} catch (error) {
+												console.error(
+													`The agent's home session was not closed (${cloudRuntimeErrorCategory(error, closing)})`,
+												);
+												throw error;
+											}
+										},
+										signal: input.signal,
+									}),
+							}
+						: {}),
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					signal,
 					timeoutMs: this.#timeoutMs,
@@ -943,250 +1125,284 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							this.#machines && machinesAvailable && identity.audienceKind === "company"
 								? this.#machines(binding)
 								: undefined;
-						return {
-							captures: computer?.captures,
-							folderReports: computer?.folderReports,
-							tools: [
-								...(computer?.tools ?? []),
-								// A run's file tools act through the folder core with its own authority (P19), and so do the
-								// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
-								...[
-									...cloudFolderFileTools({ folder: folder.client, operations, identity }),
-									...cloudInterfaceTools({
-										folder: folder.client,
-										identity,
-										timeZone: wake.time.timeZone,
-									}),
-									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
-									// Interface apps: pages the agent makes to show members its work (5 November 2026).
-									...cloudAppTools({ folder: folder.client, operations, identity }),
-									// The agent's wall above its thread (5 November 2026): its own report, kept by a company
-									// run of the agent; a worker reports to its agent instead.
-									...(identity.audienceKind === "company" && !work.isWorker
-										? cloudWallTools({
-												folder: folder.client,
-												operations,
-												identity,
-												handle: folder.handle,
-												timeZone: wake.time.timeZone,
-											})
-										: []),
-								].filter(work.companyFile),
-								...(folderSearch
-									? [
-											cloudFolderSearchTool({
-												search: folderSearch,
-												folder: folder.client,
-												runId: identity.runId,
-											}),
-										]
+						const runTools: CloudNativeTool[] = [
+							...(computer?.tools ?? []),
+							// A run's file tools act through the folder core with its own authority (P19), and so do the
+							// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
+							...[
+								...cloudFolderFileTools({ folder: folder.client, operations, identity }),
+								...cloudInterfaceTools({
+									folder: folder.client,
+									identity,
+									timeZone: wake.time.timeZone,
+								}),
+								...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
+								// Interface apps: pages the agent makes to show members its work (5 November 2026).
+								...cloudAppTools({ folder: folder.client, operations, identity }),
+								// A picture the agent makes, saved in the folder as a write is (20260930746000).
+								...(pictures
+									? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
 									: []),
-								cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
-								...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
-								// A worker has no outbound effects: no mouth, no connectors.
-								...(this.#secretBroker && !work.isWorker
-									? cloudSecretTools({
-											descriptors: connectorDescriptors,
-											binding,
-											control: this.#paths,
-											operations,
-											broker: this.#secretBroker,
-										})
-									: []),
-								// The company's own website accounts (A1-4): not a worker's. They serve companies on the
-								// company folder (A1-7, migration 20260930072000), whose vault writes their connection files.
-								...(this.#companyAccounts && !work.isWorker
-									? [
-											cloudCompanyAccountTool({
-												binding,
-												identity,
-												control: this.#paths,
-												operations,
-												accounts: this.#companyAccounts,
-											}),
-										]
-									: []),
-								...(work.isWorker
-									? []
-									: [
-											cloudCoworkerMessageTool(binding, identity, wakeControl),
-											...cloudRoutineTools(
-												binding,
-												identity,
-												dynamicRoutine && wake.routine?.routineKey
-													? {
-															routineKey: wake.routine.routineKey,
-															decisionOwed: () => routineDecisionOwed,
-															settled: () => {
-																routineDecisionOwed = false;
-															},
-														}
-													: undefined,
-												new CloudFolderRoutines({
-													folder: folder.client,
-													operations,
-													identity,
-													handle: folder.handle,
-													// The routine that woke this run, which it may not pause or remove.
-													...(wake.kind === "routine" && wake.routine
-														? { ownRoutineId: wake.routine.id }
-														: {}),
-												}),
-											),
-											// The wake bus gives a routine its key exactly when it is dynamic, so every dynamic
-											// routine's run is offered the decision.
-											...(dynamicRoutine && wake.routine?.routineKey
-												? [
-														cloudRoutineDecisionTool(binding, identity, {
-															decisionOwed: () => routineDecisionOwed,
-															decided: () => {
-																routineDecisionOwed = false;
-															},
-															folderDecision: new CloudFolderRoutineDecision({
-																folder: folder.client,
-																operations,
-																identity,
-																handle: folder.handle,
-																routineKey: wake.routine.routineKey,
-																routineId: wake.routine.id,
-															}),
-														}),
-													]
-												: []),
-											...cloudSidebarTools(binding, identity, {
-												folderSidebar: new CloudFolderSidebar({
-													folder: folder.client,
-													operations,
-													identity,
-													// The Co-Founder stays on top, outside the sections.
-													people: new Map(
-														[
-															...(context.agentKind === "cofounder" ? [] : [context.agent]),
-															...context.coworkers,
-														].map((agent) => [agent.id, agent.name]),
-													),
-													peopleComplete: !context.coworkersTruncated,
-												}),
-											}),
-											...cloudReviewRuleTools(binding, identity, this.#paths),
-											// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
-											// an agent owns the company's money.
-											...cloudGoodWillTools(binding, identity, this.#paths),
-											// The Co-Founder deals the team out between the members (20260930702000).
-											...(context.agentKind === "cofounder"
-												? cloudMemberOfferTools(binding, identity, this.#paths)
-												: []),
-											// The agent changes the company's hooks through its folder client (E3a).
-											...cloudEventTools(binding, identity, this.#paths, folder.client),
-											// Company sites (20260930550000): a static website from the company folder at a
-											// private, password-protected link, and taking one offline; private app links (v195): one
-											// port of an always-on machine at such a link (share_app).
-											...cloudSiteTools({
-												binding,
-												identity,
-												control: this.#paths,
-												folder: folder.client,
-												...(machineGateway ? { machines: { gateway: machineGateway, operations } } : {}),
-											}),
-										]),
-								// Machines are the company's: any agent run in a company conversation may start and
-								// use them and hears about them in that conversation; a worker uses them like its agent
-								// but waits for its own commands in its run (Jonas, 2026-09-28).
-								...(machineGateway
-									? cloudMachineTools({
+								// No wall (the founder, 14 November 2026: "rather drop the wall - it's the wrong medium for
+								// activity"): update_wall is offered to no run; a member learns work has started from the
+								// run's short first message, and what waits on a member is a card.
+							].filter(work.companyFile),
+							...(folderSearch
+								? [
+										cloudFolderSearchTool({
+											search: folderSearch,
+											folder: folder.client,
+											runId: identity.runId,
+										}),
+									]
+								: []),
+							// The company's databases (slice 5), on a host that names the data gateway's run door: every
+							// run describes and asks them; a worker does not apply steps.
+							...(this.#companyData
+								? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
+								: []),
+							cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
+							...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
+							// A worker has no outbound effects: no mouth, no connectors.
+							...(this.#secretBroker && !work.isWorker
+								? cloudSecretTools({
+										descriptors: connectorDescriptors,
+										binding,
+										control: this.#paths,
+										operations,
+										broker: this.#secretBroker,
+									})
+								: []),
+							// The company's own website accounts (A1-4): not a worker's. They serve companies on the
+							// company folder (A1-7, migration 20260930072000), whose vault writes their connection files.
+							...(this.#companyAccounts && !work.isWorker
+								? [
+										cloudCompanyAccountTool({
 											binding,
 											identity,
 											control: this.#paths,
 											operations,
-											gateway: machineGateway,
-											worker: work.isWorker,
-											...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
-											// A company account's values typed into a machine's browser (20260930711000): the
-											// machine's executor asks the vault, for a host that has the vault's accounts.
-											...(this.#companyAccounts ? { accountFills: true } : {}),
-										})
-									: []),
-								// The notebook is the agent's own: a worker of the same agent recalls it,
-								// and writes to it only when its dispatch allows Company File writes.
-								...notebooks
-									.tools((files) => cloudMemoryTools(files, identity, agentFolders), operations)
-									.filter(
-										(tool) =>
-											tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
-									),
-								// Skills the same way: every run reads and searches them. Only a company run saves one
-								// (a member's private conversation never feeds a shared library), and a worker only
-								// when its dispatch allows Company File writes.
-								...notebooks
-									.tools((files) => cloudSkillTools(files, identity, agentFolders), operations)
-									.filter(
-										(tool) =>
-											tool.name !== "update_skill" ||
-											(identity.audienceKind === "company" &&
-												work.companyFile({ ...tool, name: "company_write" })),
-									),
-								...(identity.audienceKind === "company"
-									? [
-											...(work.isWorker
-												? []
-												: cloudHiringTools(identity, {
-														folderHiring: new CloudFolderHiring({
+											accounts: this.#companyAccounts,
+										}),
+									]
+								: []),
+							...(work.isWorker
+								? []
+								: [
+										cloudCoworkerMessageTool(binding, identity, wakeControl),
+										...cloudRoutineTools(
+											binding,
+											identity,
+											dynamicRoutine && wake.routine?.routineKey
+												? {
+														routineKey: wake.routine.routineKey,
+														decisionOwed: () => routineDecisionOwed,
+														settled: () => {
+															routineDecisionOwed = false;
+														},
+													}
+												: undefined,
+											new CloudFolderRoutines({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+												// The routine that woke this run, which it may not pause or remove.
+												...(wake.kind === "routine" && wake.routine
+													? { ownRoutineId: wake.routine.id }
+													: {}),
+											}),
+										),
+										// The wake bus gives a routine its key exactly when it is dynamic, so every dynamic
+										// routine's run is offered the decision.
+										...(dynamicRoutine && wake.routine?.routineKey
+											? [
+													cloudRoutineDecisionTool(binding, identity, {
+														decisionOwed: () => routineDecisionOwed,
+														decided: () => {
+															routineDecisionOwed = false;
+														},
+														folderDecision: new CloudFolderRoutineDecision({
 															folder: folder.client,
 															operations,
 															identity,
+															handle: folder.handle,
+															routineKey: wake.routine.routineKey,
+															routineId: wake.routine.id,
 														}),
-														folderGroupChats: new CloudFolderGroupChats({
+													}),
+												]
+											: []),
+										...cloudSidebarTools(binding, identity, {
+											folderSidebar: new CloudFolderSidebar({
+												folder: folder.client,
+												operations,
+												identity,
+												// The Co-Founder stays on top, outside the sections.
+												people: new Map(
+													[
+														...(context.agentKind === "cofounder" ? [] : [context.agent]),
+														...context.coworkers,
+													].map((agent) => [agent.id, agent.name]),
+												),
+												peopleComplete: !context.coworkersTruncated,
+											}),
+										}),
+										// The apps drawer's groups, the twin of the sidebar's sections (APP-GROUPS-SPEC §3).
+										cloudAppGroupsTool({ folder: folder.client, operations, identity }),
+										...cloudReviewRuleTools(binding, identity, this.#paths),
+										// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
+										// an agent owns the company's money.
+										...cloudGoodWillTools(binding, identity, this.#paths),
+										// The Co-Founder deals the team out between the members (20260930702000).
+										...(context.agentKind === "cofounder"
+											? cloudMemberOfferTools(binding, identity, this.#paths)
+											: []),
+										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
+											? [cloudRecordReflectionTool({ folder: folder.client, operations, identity })]
+											: []),
+										// The company's reading of itself (20260930766000): the Co-Founder keeps it, in its company runs.
+										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
+											? [
+													cloudReadingTool(
+														identity,
+														new CloudFolderReading({
 															folder: folder.client,
 															operations,
 															identity,
+															members: cloudCompanyMembers(binding, this.#paths),
 														}),
-													})),
-											...cloudWorkerTools(binding, identity, wake, {
-												machines: Boolean(this.#machines) && machinesAvailable,
-												folderTodos: new CloudFolderTodos({
-													folder: folder.client,
-													operations,
-													identity,
-													handle: folder.handle,
-												}),
-												folderWorkers: new CloudFolderWorkers({
-													folder: folder.client,
-													operations,
-													identity,
-													handle: folder.handle,
-													// A worker run's own folder, where it reports.
-													...(work.isWorker && typeof wake.payload.outputFolder === "string"
-														? { outputFolder: wake.payload.outputFolder }
-														: {}),
-												}),
-											}).map(
-												(tool): CloudNativeTool =>
-													tool.source === "worker" && tool.name === "report_work"
-														? {
-																...tool,
-																// The worker's saved report is noted: a turn that ends without one is asked for it.
-																execute: async (value, toolContext) => {
-																	const content = await tool.execute(value, toolContext);
-																	if (content.completesTurn === true) workerReported = true;
-																	return content;
-																},
-															}
-														: tool,
-											),
-										]
-									: []),
-								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
-								// Cards belong to a member's own conversation or the agent's own thread:
-								// never a group chat, never a worker. The kernel refuses the rest too.
-								...(identity.sessionId &&
-								wake.policy.final !== "forbidden" &&
-								(wake.kind !== "room" || cloudWakeIsOwnThread(wake)) &&
-								!work.isWorker
-									? [ask]
-									: []),
-								// Listed only for a run that may raise their cards (composeContext).
-								...(proposals ? proposals.tools(operations) : []),
-							],
+													),
+												]
+											: []),
+										// The agent changes the company's hooks through its folder client (E3a).
+										...cloudEventTools(binding, identity, this.#paths, folder.client),
+										// Company sites (20260930550000): a static website from the company folder at a
+										// private, password-protected link, and taking one offline; private app links (v195): one
+										// port of an always-on machine at such a link (share_app).
+										...cloudSiteTools({
+											binding,
+											identity,
+											control: this.#paths,
+											folder: folder.client,
+											...(machineGateway ? { machines: { gateway: machineGateway, operations } } : {}),
+										}),
+									]),
+							// Machines are the company's: any agent run in a company conversation may start and
+							// use them and hears about them in that conversation; a worker uses them like its agent
+							// but waits for its own commands in its run (Jonas, 2026-09-28).
+							...(machineGateway
+								? cloudMachineTools({
+										binding,
+										identity,
+										control: this.#paths,
+										operations,
+										gateway: machineGateway,
+										worker: work.isWorker,
+										...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
+										// A company account's values typed into a machine's browser (20260930781000): the
+										// machine's executor asks the vault, for a host that has the vault's accounts.
+										...(this.#companyAccounts ? { accountFills: true } : {}),
+									})
+								: []),
+							// The notebook is the agent's own: a worker of the same agent recalls it,
+							// and writes to it only when its dispatch allows Company File writes.
+							...notebooks
+								.tools((files) => cloudMemoryTools(files, identity, agentFolders), operations)
+								.filter(
+									(tool) =>
+										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
+								),
+							// Skills the same way: every run reads and searches them. Only a company run saves one
+							// (a member's private conversation never feeds a shared library), and a worker only
+							// when its dispatch allows Company File writes.
+							...notebooks
+								.tools((files) => cloudSkillTools(files, identity, agentFolders), operations)
+								.filter(
+									(tool) =>
+										tool.name !== "update_skill" ||
+										(identity.audienceKind === "company" &&
+											work.companyFile({ ...tool, name: "company_write" })),
+								),
+							...(identity.audienceKind === "company"
+								? [
+										...(work.isWorker
+											? []
+											: cloudHiringTools(identity, {
+													folderHiring: new CloudFolderHiring({
+														folder: folder.client,
+														operations,
+														identity,
+													}),
+													folderGroupChats: new CloudFolderGroupChats({
+														folder: folder.client,
+														operations,
+														identity,
+													}),
+												})),
+										...cloudWorkerTools(binding, identity, wake, {
+											machines: Boolean(this.#machines) && machinesAvailable,
+											folderTodos: new CloudFolderTodos({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+											}),
+											folderWorkers: new CloudFolderWorkers({
+												folder: folder.client,
+												operations,
+												identity,
+												handle: folder.handle,
+												// A worker run's own folder, where it reports.
+												...(work.isWorker && typeof wake.payload.outputFolder === "string"
+													? { outputFolder: wake.payload.outputFolder }
+													: {}),
+											}),
+										}).map(
+											(tool): CloudNativeTool =>
+												tool.source === "worker" && tool.name === "report_work"
+													? {
+															...tool,
+															// The worker's saved report is noted: a turn that ends without one is asked for it.
+															execute: async (value, toolContext) => {
+																const content = await tool.execute(value, toolContext);
+																if (content.completesTurn === true) workerReported = true;
+																return content;
+															},
+														}
+													: tool,
+										),
+										// The company's code kept in Qorpera (20260930720000): an agent's own run takes a change
+										// out of main again and describes one; a worker reports to its agent instead.
+										...(work.isWorker ? [] : cloudCodeTools({ folder: folder.client, identity })),
+									]
+								: []),
+							...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
+							// Cards belong to a member's own conversation or the agent's own thread:
+							// never a group chat, never a worker. The kernel refuses the rest too.
+							...(identity.sessionId &&
+							wake.policy.final !== "forbidden" &&
+							(wake.kind !== "room" || cloudWakeIsOwnThread(wake)) &&
+							!work.isWorker
+								? [ask]
+								: []),
+							// Listed only for a run that may raise their cards (composeContext).
+							...(proposals ? proposals.tools(operations) : []),
+						];
+						// Every tool stays the run's; its catalog describes in full those its kind uses most, and more_tools
+						// lists and opens the rest (T3-6).
+						const offered = cloudToolsOnDemand(
+							runTools,
+							work.isWorker ? "worker" : context.agentKind === "cofounder" ? "cofounder" : "employee",
+						);
+						// Its instructions say only what fits these tools (track 3, T3-2): every one it has, also those it opens
+						// on demand, and more_tools, which tells it where those are.
+						offeredTools = new Set(offered.tools.map((tool) => tool.name));
+						return {
+							captures: computer?.captures,
+							folderReports: computer?.folderReports,
+							tools: offered.tools,
+							deferred: offered.deferred,
 							assertContext: (requestSignal, timeoutMs) =>
 								gateway.assertReadableContext(requestSignal, timeoutMs),
 							checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
@@ -1217,6 +1433,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							);
 						});
 				});
+				// The provider failed the turn after the run's answer: the run is delivered, and what it met is still the
+				// login's to know, as for a failed run (contract 17; the 2026-11-13 amendment). Recorded first, so nothing
+				// after it can lose it.
+				if (result.usageSignal) await this.#recordUsageSignalKind(binding, result.usageSignal);
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
 				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
@@ -1235,6 +1455,145 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	}
 
 	/**
+	 * A light ask's run (deploy/first-node/RUNTIME-LIGHT-ASK.md §3; migration 20260930761000). The wake carries a kind
+	 * and that kind's input. The run is admitted with an empty tool catalog (the cloud takes no other for it), binds its
+	 * one question as its context, asks the small model once on a tool-less side thread, and stores the answer. It reads
+	 * nothing of the company and sends nothing: the wake's policy forbids a send, and the run has no conversation.
+	 * - No answer is stored as none, and the run still ends: a kind or an input this bundle does not answer, an ask past
+	 *   its time, a reply that is no answer, or no reply. The run never asks twice.
+	 * - The payer's usage limit or a rate limit, met by the one call, is the login's to know (contract 17), recorded
+	 *   after the answer is stored. What stops the run itself (its lease, its authority, a stop) fails it as any run.
+	 */
+	async #lightAsk(
+		identityRoot: string,
+		signal: AbortSignal,
+		run: {
+			binding: CloudNativeToolBinding;
+			identity: CloudNativeToolIdentity;
+			wake: CloudWakeEnvelope;
+			observability: CloudRuntimeObservability;
+			serviceTier: CloudRuntimeServiceTier;
+		},
+	): Promise<{ providerSessionId: string; delivery: { messageCount: number; finalMessageId: string | null } }> {
+		const { binding, identity, wake, observability, serviceTier } = run;
+		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		const call = composeCloudLightAsk(wake.payload.kind, wake.payload.input);
+		const expiresAt = typeof wake.payload.expiresAt === "string" ? Date.parse(wake.payload.expiresAt) : Number.NaN;
+		// The run's context is its one question, or the fact that there is none to ask.
+		const question = call ? `${call.instructions}\n${call.text}` : "A light ask this runtime does not answer.";
+		const contextSha256 = createHash("sha256").update(question).digest("hex");
+		const contextBytes = Buffer.byteLength(question);
+		let admitted: Record<string, unknown> | undefined;
+		let usageSignal: NativeProviderUsageSignal | undefined;
+		let toolRun: CloudNativeToolRun | undefined;
+		const result = await runCloudNativeRunToolSession({
+			observability,
+			binding,
+			serviceTier,
+			controlPlane: this.#control,
+			beginExecution: async (specification, requestSignal) => {
+				const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
+				const answer = await this.#paths.call(
+					"qorpera_begin_native_company_execution_v3",
+					{
+						p_binding: binding,
+						p_binary_sha256: this.#sha256,
+						p_runtime_bundle_sha256: identity.runtimeBundleSha256,
+						p_reasoning_policy_sha256: identity.reasoningPolicySha256,
+						p_tool_catalog_text: toolCatalogText,
+					},
+					requestSignal,
+					CLOUD_RUN_ROW_READ_MS,
+				);
+				const admission = {
+					runId: binding.runId,
+					jobId: binding.jobId,
+					leaseId: binding.leaseId,
+					binarySha256: this.#sha256,
+					runtimeBundleSha256: identity.runtimeBundleSha256,
+					reasoningEffort: identity.reasoningEffort,
+					reasoningPolicySha256: identity.reasoningPolicySha256,
+					toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
+				};
+				confirmNativeAdmission(answer, { schema: "qorpera.native-company-execution-admission/v1", ...admission });
+				admitted = admission;
+			},
+			// No tool: a light ask acts on nothing.
+			tools: (_identity, _operations, opened) => {
+				toolRun = opened;
+				return {
+					tools: [],
+					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
+					checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
+					recordContextView: (frame, outputs, requestSignal) =>
+						gateway.recordContextView(frame, outputs, requestSignal),
+					fenceContextView: (frame, outputs, requestSignal) =>
+						gateway.fenceContextView(frame, outputs, requestSignal),
+				};
+			},
+			light: async (ask, lightSignal) => {
+				// The context is bound once, and the call writes the run's start: a lost answer is not asked again.
+				const admission = admitted;
+				if (!admission) throw new Error("Native execution admission was not confirmed");
+				const started = await cloudToolRequest(
+					(requestSignal) =>
+						this.#paths.call(
+							"qorpera_bind_native_company_context",
+							{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
+							requestSignal,
+							CLOUD_RUN_ROW_READ_MS,
+						),
+					lightSignal,
+					CLOUD_RUN_ROW_READ_MS,
+				);
+				confirmNativeAdmission(started, {
+					...admission,
+					schema: "qorpera.native-company-execution-start/v1",
+					contextSha256,
+					contextBytes,
+				});
+				let answer: string | null = null;
+				// Past its time nothing is asked: the member no longer waits for it.
+				if (call && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+					try {
+						answer = call.answer(await ask(call.instructions, call.text, lightSignal));
+					} catch (error) {
+						// The run was stopped, or its process is gone: that is the run's failure, not the ask's.
+						if (lightSignal.aborted) throw error;
+						if (error instanceof MemoryCompactStop) {
+							if (error.reason === "usage-limit") usageSignal = "usage_limit";
+							else if (error.reason === "rate-limit") usageSignal = "rate_limited";
+						}
+					}
+				}
+				// Stored once (the first call decides, a repeat answers what stands), so a lost answer is asked again while
+				// the run's authority holds.
+				await cloudRunRowWrite(
+					toolRun,
+					(requestSignal) =>
+						this.#paths.call(
+							"qorpera_native_light_ask_answer",
+							{ p_binding: binding, p_answer: answer },
+							requestSignal,
+						),
+					lightSignal,
+				);
+			},
+			command: this.#command,
+			binarySha256: this.#sha256,
+			identityRoot,
+			...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
+			isolation: this.#isolation,
+			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
+			signal,
+			timeoutMs: this.#timeoutMs,
+		});
+		if (usageSignal) await this.#recordUsageSignalKind(binding, usageSignal);
+		this.#spareEfforts.set(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
+	}
+
+	/**
 	 * Contract section 17: quota exhaustion, rate limiting and provider outage
 	 * are typed signals recorded against the run's exact sponsor and connection
 	 * version before the job fails. Recording never retries the provider, never
@@ -1242,7 +1601,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	 */
 	async #recordUsageSignal(binding: CloudNativeToolBinding, error: unknown): Promise<void> {
 		const kind = nativeProviderUsageSignal(error);
-		if (!kind) return;
+		if (kind) await this.#recordUsageSignalKind(binding, kind);
+	}
+
+	async #recordUsageSignalKind(binding: CloudNativeToolBinding, kind: NativeProviderUsageSignal): Promise<void> {
 		try {
 			// The 10 s is the call's own budget, so the transport waits that long too.
 			await this.#paths.call(

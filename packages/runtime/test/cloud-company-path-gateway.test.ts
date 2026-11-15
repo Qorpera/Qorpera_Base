@@ -540,6 +540,124 @@ describe("cloud Company File path gateway", () => {
 		},
 	);
 
+	it.each(["valid", "hash", "kind", "tool", "source", "run", "company", "read", "status"])(
+		"records a screen machine_screen showed only when this run's own answer names it (20260930708000): %s",
+		async (fault) => {
+			const f = fixture();
+			const image = "d".repeat(64);
+			const text = JSON.stringify({
+				machine: "build-a",
+				kind: fault === "kind" ? "image" : "screen",
+				imageSha256: image,
+				screen: { width: 1600, height: 1000 },
+			});
+			const output = JSON.stringify({
+				status: fault === "status" ? "unconfirmed" : "ok",
+				provenance: {
+					companyId: fault === "company" ? randomUUID() : f.identity.companyId,
+					runId: fault === "run" ? randomUUID() : f.identity.runId,
+					tool: fault === "tool" ? "machine_run" : "machine_screen",
+					source: fault === "source" ? "company_file" : "runtime",
+					...(fault === "read" ? { companyReadId: randomUUID() } : {}),
+				},
+				content: {
+					sha256: createHash("sha256").update(text).digest("hex"),
+					text,
+					includedBytes: Buffer.byteLength(text),
+				},
+			});
+			const request = f.gateway.recordContextView(
+				{
+					schema: "qorpera.native-result-fence/v1",
+					requestId: "screen-context",
+					threadId: "thread",
+					turnId: "turn",
+					purpose: "turn",
+					outputs: [],
+				},
+				[
+					{
+						kind: "function_call_output",
+						callId: "screen-call",
+						output,
+						imageSha256: fault === "hash" ? "a".repeat(64) : image,
+					},
+				],
+				f.signal,
+			);
+			if (fault !== "valid") await expect(request).rejects.toThrow("Native capture provenance changed");
+			else {
+				await request;
+				const views = f.call.mock.calls.filter(([method]) => method === "qorpera_record_native_context_view");
+				expect(views).toHaveLength(1);
+				expect(views[0][1].p_view).toMatchObject({
+					outputs: [{ sha256: createHash("sha256").update(output).digest("hex"), readId: null }],
+				});
+				// The view carries the answer's digest, never the picture.
+				expect(JSON.stringify(views)).not.toContain("data:image");
+				expect(views[0][1].p_view).not.toHaveProperty("outputs.0.capture");
+			}
+		},
+	);
+
+	it.each(["valid", "hash", "kind", "tool", "source", "run", "company", "read", "status"])(
+		"records a picture make_picture made only when this run's own answer names it (20260930746000): %s",
+		async (fault) => {
+			const f = fixture();
+			const image = "f".repeat(64);
+			const text = JSON.stringify({
+				path: "apps/sales/pictures/mug.png",
+				state: "applied",
+				kind: fault === "kind" ? "screen" : "picture",
+				imageSha256: image,
+			});
+			const output = JSON.stringify({
+				status: fault === "status" ? "denied" : "ok",
+				provenance: {
+					companyId: fault === "company" ? randomUUID() : f.identity.companyId,
+					runId: fault === "run" ? randomUUID() : f.identity.runId,
+					tool: fault === "tool" ? "company_write" : "make_picture",
+					source: fault === "source" ? "company_file" : "runtime",
+					...(fault === "read" ? { companyReadId: randomUUID() } : {}),
+				},
+				content: {
+					sha256: createHash("sha256").update(text).digest("hex"),
+					text,
+					includedBytes: Buffer.byteLength(text),
+				},
+			});
+			const request = f.gateway.recordContextView(
+				{
+					schema: "qorpera.native-result-fence/v1",
+					requestId: "picture-context",
+					threadId: "thread",
+					turnId: "turn",
+					purpose: "turn",
+					outputs: [],
+				},
+				[
+					{
+						kind: "function_call_output",
+						callId: "picture-call",
+						output,
+						imageSha256: fault === "hash" ? "a".repeat(64) : image,
+					},
+				],
+				f.signal,
+			);
+			if (fault !== "valid") await expect(request).rejects.toThrow("Native capture provenance changed");
+			else {
+				await request;
+				const views = f.call.mock.calls.filter(([method]) => method === "qorpera_record_native_context_view");
+				expect(views).toHaveLength(1);
+				expect(views[0][1].p_view).toMatchObject({
+					outputs: [{ sha256: createHash("sha256").update(output).digest("hex"), readId: null }],
+				});
+				expect(JSON.stringify(views)).not.toContain("data:image");
+			}
+		},
+	);
+
 	it("records any number of model requests", async () => {
 		// Runtime v92: a run used to fail past 256 model requests.
 		const f = fixture();

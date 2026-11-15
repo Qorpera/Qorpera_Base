@@ -32,7 +32,6 @@ interface KindText {
 	add: string;
 	name: string;
 	example: string;
-	purpose: string;
 	hint: string;
 	nameRule: string;
 	taken: string;
@@ -53,7 +52,6 @@ const KIND_TEXT: Record<Kind, KindText> = {
 		add: phrase("Add webhook"),
 		name: phrase("Webhook name"),
 		example: phrase("e.g. new-orders"),
-		purpose: phrase("What it is for, e.g. new orders from the shop"),
 		hint: phrase(
 			"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.",
 		),
@@ -71,7 +69,6 @@ const KIND_TEXT: Record<Kind, KindText> = {
 		add: phrase("Add mailbox"),
 		name: phrase("Mailbox name"),
 		example: phrase("e.g. invoices"),
-		purpose: phrase("What it is for, e.g. invoices from suppliers"),
 		hint: phrase("The part before the @: lowercase letters, digits, dots, hyphens and underscores."),
 		nameRule: phrase(
 			"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.",
@@ -117,6 +114,12 @@ function addError(kind: Kind, error: unknown): string {
 	return t(KIND_TEXT[kind].failed);
 }
 
+/** More beside the way to add a hook, and under it, where it stands above the list (`top`). */
+export interface HooksTop {
+	readonly beside?: () => HTMLElement | null;
+	readonly below?: () => HTMLElement | null;
+}
+
 export class HooksView {
 	readonly el = h("div", { class: "hooks" });
 	readonly #client: HooksClient;
@@ -126,6 +129,11 @@ export class HooksView {
 	readonly #kinds: readonly Kind[];
 	/** Told after a hook was added, paused, resumed or removed. */
 	readonly #changed: () => void;
+	readonly #card: ((hook: EventHook) => HTMLElement | null) | undefined;
+	readonly #stateOf: ((hook: EventHook, text: string) => string | null) | undefined;
+	readonly #top: HooksTop | undefined;
+	readonly #formExtra: ((kind: HookKind) => HTMLElement | null) | undefined;
+	readonly #added: ((hook: EventHook) => void) | undefined;
 	#drawnManage: boolean | undefined;
 	#hooks: EventHook[] | undefined;
 	#loading = true;
@@ -146,11 +154,33 @@ export class HooksView {
 	constructor(
 		client: HooksClient,
 		signal: AbortSignal,
-		options: { access?: HooksAccess; kinds?: readonly HookKind[]; changed?: () => void } = {},
+		options: {
+			access?: HooksAccess;
+			kinds?: readonly HookKind[];
+			changed?: () => void;
+			/** More of a hook, drawn in its card between its words and its buttons (the Mailbox: who answers a
+			 * mailbox). The page that gives it calls `redraw` when what it shows changed. */
+			card?: (hook: EventHook) => HTMLElement | null;
+			/** What a hook's state line says, from what it says here (`text`); none for no line (the Mailbox: a paused
+			 * mailbox only). */
+			state?: (hook: EventHook, text: string) => string | null;
+			/** The way to add a hook first, above its list rather than under it, with more beside its button and under it
+			 * (the Mailbox: Digital Post's pill, and its card). The same `redraw` draws them again. */
+			top?: HooksTop;
+			/** More of the form that adds one, drawn under its fields (the Mailbox: who answers the new mailbox). */
+			form?: (kind: HookKind) => HTMLElement | null;
+			/** Told the hook the form made. */
+			added?: (hook: EventHook) => void;
+		} = {},
 	) {
 		this.#client = client;
 		this.#access = options.access ?? FULL_ACCESS;
 		this.#changed = options.changed ?? (() => {});
+		this.#card = options.card;
+		this.#stateOf = options.state;
+		this.#top = options.top;
+		this.#formExtra = options.form;
+		this.#added = options.added;
 		this.#kinds = options.kinds ?? ["webhook", "mailbox"];
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
@@ -167,6 +197,11 @@ export class HooksView {
 		// The kernel sends a webhook's address only to an owner or admin: a member who just became one reads it.
 		if (this.#access.canManage() && this.#hooks?.some((hook) => kindOf(hook) === "webhook" && !hook.url))
 			void this.#refresh();
+	}
+
+	/** Draws again what the page's own parts of the cards and the form show (`card`, `form`). */
+	redraw(): void {
+		this.#draw();
 	}
 
 	dispose(): void {
@@ -259,7 +294,8 @@ export class HooksView {
 		const text = KIND_TEXT[kind];
 		const draft = this.#drafts[kind];
 		const name = draft.name.trim().toLowerCase();
-		const purpose = draft.purpose.trim();
+		// A mailbox's form asks for its name alone: the name says what it is for, and is the purpose the kernel wants.
+		const purpose = kind === "mailbox" ? name : draft.purpose.trim();
 		const nameProblem =
 			kind === "webhook" && name.startsWith("mail-")
 				? t("Names beginning with mail- belong to mailboxes.")
@@ -292,6 +328,7 @@ export class HooksView {
 			// The new one shows at once, with its address to copy; the next read sorts it in.
 			this.#hooks = [...(this.#hooks ?? []).filter((item) => item.id !== hook.id), hook];
 			this.#changed();
+			this.#added?.(hook);
 			const focus = hook.url ? `hook-copy:${hook.id}` : `hook-add:${kind}`;
 			this.#draw(focus);
 			await this.#refresh(focus);
@@ -319,6 +356,13 @@ export class HooksView {
 	}
 
 	/** The hook's state: whether it is on, when something last arrived, and who signs it. */
+	/** The hook's state line, as the page that shows it wants it. */
+	#stateLine(hook: EventHook): HTMLElement | null {
+		const text = this.#state(hook);
+		const shown = this.#stateOf ? this.#stateOf(hook, text) : text;
+		return shown ? h("small", { class: "hook-state" }, shown) : null;
+	}
+
 	#state(hook: EventHook): string {
 		const text = KIND_TEXT[kindOf(hook)];
 		return [
@@ -350,7 +394,7 @@ export class HooksView {
 		);
 	}
 
-	#card(hook: EventHook): HTMLElement {
+	#cardOf(hook: EventHook): HTMLElement {
 		const kind = kindOf(hook);
 		const manage = this.#access.canManage();
 		const busy = this.#working === hook.id;
@@ -396,9 +440,11 @@ export class HooksView {
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, title(hook)),
-				hook.purpose ? h("small", null, hook.purpose) : null,
-				h("small", { class: "hook-state" }, this.#state(hook)),
+				// A mailbox added here has its name for a purpose (#add): the line is for one that says more.
+				hook.purpose && hook.purpose !== hook.email?.split("@")[0] ? h("small", null, hook.purpose) : null,
+				this.#stateLine(hook),
 			),
+			this.#card?.(hook) ?? null,
 			h("div", { class: "connection-actions" }, ...actions),
 			address,
 			this.#outcomeLine(hook.id),
@@ -422,18 +468,23 @@ export class HooksView {
 			},
 		});
 		name.dataset.focusKey = `hook-name:${kind}`;
-		const purpose = h("input", {
-			type: "text",
-			value: draft.purpose,
-			maxlength: "512",
-			autocomplete: "off",
-			placeholder: t(text.purpose),
-			"aria-label": t("What it is for"),
-			oninput: () => {
-				draft.purpose = purpose.value;
-			},
-		});
-		purpose.dataset.focusKey = `hook-purpose:${kind}`;
+		// Only a webhook says what it is for: a mailbox's name does.
+		let purpose: HTMLInputElement | null = null;
+		if (kind === "webhook") {
+			const field = h("input", {
+				type: "text",
+				value: draft.purpose,
+				maxlength: "512",
+				autocomplete: "off",
+				placeholder: t("What it is for, e.g. new orders from the shop"),
+				"aria-label": t("What it is for"),
+				oninput: () => {
+					draft.purpose = field.value;
+				},
+			});
+			field.dataset.focusKey = "hook-purpose:webhook";
+			purpose = field;
+		}
 		// A mailbox's domain is the company mail's, known once the company has one mailbox.
 		const domain = kind === "mailbox" ? this.#hooks?.find((hook) => hook.email)?.email?.split("@")[1] : undefined;
 		const add = h(
@@ -460,6 +511,7 @@ export class HooksView {
 			h("div", { class: "hook-form-row" }, name, domain ? h("span", { class: "hook-domain" }, `@${domain}`) : null),
 			h("small", null, t(text.hint)),
 			purpose,
+			this.#formExtra?.(kind) ?? null,
 			this.#outcomeLine(kind),
 			h("div", { class: "hook-form-actions" }, add, cancel),
 		);
@@ -485,11 +537,20 @@ export class HooksView {
 			add.dataset.focusKey = `hook-add:${kind}`;
 			add.setAttribute("aria-expanded", String(open));
 			add.setAttribute("aria-controls", `hook-form-${kind}`);
-			addArea = h("div", { class: "connection-add-area" }, add, open ? this.#form(kind) : null);
+			addArea = this.#top
+				? h(
+						"div",
+						{ class: "connection-add-area is-top" },
+						h("div", { class: "connection-add-row" }, add, this.#top.beside?.() ?? null),
+						open ? this.#form(kind) : null,
+						this.#top.below?.() ?? null,
+					)
+				: h("div", { class: "connection-add-area" }, add, open ? this.#form(kind) : null);
 		}
 		return h(
 			"section",
 			{ class: "settings-group", dataset: { hooks: kind } },
+			this.#top ? addArea : null,
 			h(
 				"div",
 				{ class: "connection-section-heading" },
@@ -499,13 +560,13 @@ export class HooksView {
 			h(
 				"div",
 				{ class: "connection-list" },
-				...hooks.map((hook) => this.#card(hook)),
+				...hooks.map((hook) => this.#cardOf(hook)),
 				this.#loading
 					? h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"))
 					: hooks.length
 						? null
 						: h("p", { class: "connection-empty muted" }, t(text.empty)),
-				addArea,
+				this.#top ? null : addArea,
 			),
 		);
 	}

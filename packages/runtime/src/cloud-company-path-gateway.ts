@@ -20,10 +20,15 @@ export type CloudCompanyPathRpc =
 	| "qorpera_describe_agent_open_work"
 	| "qorpera_record_runtime_observation_batch"
 	| "qorpera_record_provider_usage_signal"
+	// A light ask's run stores its answer (20260930761000).
+	| "qorpera_native_light_ask_answer"
 	| "qorpera_begin_native_company_execution_v2"
 	// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
 	| "qorpera_begin_native_company_execution_v3"
 	| "qorpera_bind_native_company_context"
+	// The agent's home: whether this run has one, and which machine it is (20260930752000).
+	| "qorpera_company_home_available"
+	| "qorpera_close_home_session"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"
@@ -55,6 +60,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_good_will_agent_mark"
 	| "qorpera_cofounder_crew"
 	| "qorpera_offer_agents_to_member"
+	// The Co-Founder's senses: plain facts about the whole company for its company runs (20260930765000).
+	| "qorpera_describe_company_senses"
+	// Whether the run has a receipt under a key: end_role tells a repeat from a new call on an ended role (20260930766000).
+	| "qorpera_folder_run_receipt_exists"
 	// Machines agents start (2026-09-28).
 	| "qorpera_native_machine_start"
 	| "qorpera_native_machine_manage"
@@ -72,6 +81,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_memory_step_hashes"
 	| "qorpera_folder_record_release"
 	| "qorpera_folder_run_view_open"
+	// A run's data pass for the company data gateway (company databases, slice 5, 20260930750000), and one that carries
+	// a member's yes to a step that destroys data (slice 7, 20260930764000).
+	| "qorpera_run_data_pass"
+	| "qorpera_run_data_pass_approved"
 	// Staging a folder-v2 file's bytes (core C1d).
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"
@@ -93,6 +106,14 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_close_proposal"
 	// A coding session's archive (C3b).
 	| "qorpera_folder_archive_coding_worker"
+	// The company's code kept in Qorpera (20260930720000): an agent's undo of a change, how that request stands, and
+	// what a customer will notice of a change, with a picture of it.
+	| "qorpera_folder_request_code_undo"
+	| "qorpera_folder_code_request"
+	| "qorpera_folder_describe_code_change"
+	// Existing code brought in as a repository kept in Qorpera (20260930736000): an agent's ask, and how it stands.
+	| "qorpera_folder_request_code_import"
+	| "qorpera_folder_code_import"
 	// An agent's page and table changes in its conversation, with Undo (I10).
 	| "qorpera_folder_note_interface_changes"
 	// Event wakes (W2): the company's hooks and one event's body.
@@ -180,8 +201,9 @@ function closed(value: unknown, keys: readonly string[], optional: readonly stri
 	return value as Record<string, unknown>;
 }
 
-/** The hash of the image a company_read answer showed, as its text names it (`kind: "image"`), or undefined. */
-function shownImageSha256(text: unknown): string | undefined {
+/** The hash of the image an answer showed, as its text names it: company_read's `kind: "image"`, machine_screen's
+ * `kind: "screen"` (20260930708000), make_picture's `kind: "picture"` (20260930746000); or undefined. */
+function shownImageSha256(text: unknown, shownKind: "image" | "screen" | "picture"): string | undefined {
 	if (typeof text !== "string") return undefined;
 	let answer: unknown;
 	try {
@@ -191,7 +213,7 @@ function shownImageSha256(text: unknown): string | undefined {
 	}
 	if (!answer || typeof answer !== "object" || Array.isArray(answer)) return undefined;
 	const { kind, imageSha256 } = answer as { kind?: unknown; imageSha256?: unknown };
-	return kind === "image" && typeof imageSha256 === "string" && SHA.test(imageSha256) ? imageSha256 : undefined;
+	return kind === shownKind && typeof imageSha256 === "string" && SHA.test(imageSha256) ? imageSha256 : undefined;
 }
 
 function version(value: unknown, nullable = false): string | null {
@@ -366,18 +388,38 @@ export class CloudCompanyPathGateway {
 			outputs: outputs.map((output) => {
 				const envelope = JSON.parse(output.output) as {
 					status?: string;
-					provenance?: { companyReadId?: string; companyId?: string; runId?: string; tool?: string };
+					provenance?: {
+						companyReadId?: string;
+						companyId?: string;
+						runId?: string;
+						tool?: string;
+						source?: string;
+					};
 					content?: { sha256?: string; text?: string; includedBytes?: number };
 				};
 				const capture = output.capture ? parseCompanyComputerScreenshotAsset(output.capture) : undefined;
-				// A folder image company_read showed is bound to its read: the released text names the image's hash.
+				// A folder image company_read showed is bound to its read: the released text names the image's hash. A screen
+				// machine_screen showed (20260930708000), and a picture make_picture made (20260930746000), are bound to this
+				// run's own answer, which names its hash the same way.
+				const ownKind =
+					envelope.provenance?.tool === "machine_screen"
+						? "screen"
+						: envelope.provenance?.tool === "make_picture"
+							? "picture"
+							: undefined;
 				const shown =
 					!capture &&
 					output.imageSha256 !== undefined &&
 					envelope.status === "ok" &&
-					envelope.provenance?.tool === "company_read" &&
-					typeof envelope.provenance.companyReadId === "string" &&
-					shownImageSha256(envelope.content?.text) === output.imageSha256;
+					((envelope.provenance?.tool === "company_read" &&
+						typeof envelope.provenance.companyReadId === "string" &&
+						shownImageSha256(envelope.content?.text, "image") === output.imageSha256) ||
+						(ownKind !== undefined &&
+							envelope.provenance?.source === "runtime" &&
+							envelope.provenance.companyReadId === undefined &&
+							envelope.provenance.companyId === this.#identity.companyId &&
+							envelope.provenance.runId === this.#identity.runId &&
+							shownImageSha256(envelope.content?.text, ownKind) === output.imageSha256));
 				if (
 					(output.imageSha256 !== capture?.sha256 && !shown) ||
 					(capture &&

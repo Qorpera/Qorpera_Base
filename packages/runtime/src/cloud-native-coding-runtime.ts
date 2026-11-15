@@ -30,6 +30,7 @@ import {
 import {
 	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
 	type CloudNativeTool,
+	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
@@ -75,6 +76,14 @@ export interface CloudNativeCodingDriver {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
+/** A finish's picture, as the submit call takes it (20260930720000): a path from the top of the repository to a .png,
+ * .jpg, .jpeg or .webp file, at most 300 bytes, with no part that is `.` or `..`. */
+const PICTURE_PATH =
+	/^[A-Za-z0-9._-][A-Za-z0-9._ -]*(\/[A-Za-z0-9._-][A-Za-z0-9._ -]*)*\.(png|jpg|jpeg|webp|PNG|JPG|JPEG|WEBP)$/;
+const NOTICE_REFUSAL =
+	"notice is one line of at most 200 characters, with no line break or tab: one plain sentence on what a customer will notice. Leave it out when they will notice nothing.";
+const PICTURE_REFUSAL =
+	"picture is the path of a .png, .jpg, .jpeg or .webp file you committed, from the top of the repository, such as docs/changes/new-price.png: at most 300 bytes, no leading slash, no . or .. part, and only letters, digits, dots, hyphens, underscores and spaces in each name. Leave it out when there is no picture.";
 const PROMPT_BYTES = 64 * 1024;
 const INSTRUCTIONS =
 	"You are the coding session an agent started for a member. Work only on the repository and branch the cloud selected. " +
@@ -89,15 +98,28 @@ const INSTRUCTIONS =
 	"Keep the session's secret values out of the files and commits you make in /company: the company folder refuses to save them. " +
 	"When only the member who owns this session can decide something, call coding_ask with the exact question (and short choices when there are natural ones) and stop; the session pauses until they answer, and your next turn continues from their answer. " +
 	"When the work and its checks are complete, commit on the current branch and call coding_finish with the commit SHA and a factual summary including failures; that records a submission for trusted publication: a repository kept in Qorpera gets the commit landed on its default branch, one on GitHub gets it pushed as a draft pull request. You have no messaging tool. " +
-	// 10 Nov 2026 (audit): a landing has no draft state and nothing checks it, so the session's own checks are the gate.
-	"In a repository kept in Qorpera the landing is at once and nothing stands between your finish and the company's code: finish there only with work that is whole. Write tests with a change that can be tested, run the project's tests and build before you finish and see them pass, and never remove or weaken a failing test to get there. Keep a README that says how to install, test, build and start the project. Say in the summary what a person will notice and which checks you ran. " +
+	// Own code storage, step 3 (11 Nov 2026): a landing has no draft state, so Qorpera runs the repository's checks
+	// file on a clean copy of what would go in and lands only what passes. The session writes the file when there is
+	// none, and runs the same checks the same way before it finishes, so a failure costs it no round. Step 4: the file's
+	// "site" names the folder the build leaves a website in; Qorpera keeps it for What's new, where a member puts it live.
+	// Its pages link their files relatively: a site is served under its own address (the first live one linked from /).
+	// Step 6 (12 Nov 2026): the words name "title" too; without one, What's new shows the site's address.
+	'In a repository kept in Qorpera, Qorpera runs the repository\'s checks before your commit goes into its default branch: the commands in .qorpera/checks.json, each from the top of a clean copy of what would go in (your commit, or your commit merged with the default branch when it moved), on this machine, with CI=true and stdin closed. Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output. When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours; each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository). When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes: once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session\'s secret values. It may also give "name", the site\'s address (3 to 48 lower-case letters, digits and hyphens), used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end). The site is served under an address of its own, never at the top of a domain: its pages, styles and scripts link its files with relative links (src/app.js, ../img/logo.png), never with links that start with /; a bundler needs its base path set, such as Vite\'s base: "./". Qorpera refuses a site whose pages or styles link from the top. Never build a key into the site. Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track. Before coding_finish, run them yourself the same way: rm -rf ~/qorpera-check && git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" ~/qorpera-check && git -C ~/qorpera-check checkout --quiet --detach <commit>, then each command in ~/qorpera-check with CI=true. Never remove or weaken a check or a test to make it pass: the record of your change shows every change to the checks. Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. ' +
+	"Keep a README that says how to install, test, build and start the project. Say in the summary what a person will notice and which checks you ran. " +
+	// Own code storage, step 2b (10 Nov 2026): every landing is a numbered change with a record a founder reads. The
+	// sentence and the picture are the session's to give; a hand-in without them lands the same.
+	"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it. Leave it out when a customer will notice nothing. When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium (chromium --headless --screenshot=<file> --window-size=1280,800 <address>), keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository. Neither is required: never hold work back for them. " +
 	// Own code storage, slice 1 (8 Nov 2026): a repository kept in Qorpera starts empty, and its landing merges.
-	"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch. When its default branch moved since your session began, the landing merges your commit with it; if the two conflict, the turn fails and says so: then run git merge with the default branch on your branch, resolve the conflicts, run the checks, commit and finish again. " +
+	// Step 6 (12 Nov 2026): code brought in keeps its other branches under refs/qorpera/imported/heads/, for reading; the
+	// import's follow-ups (13 Nov 2026): one is brought into the default branch by merging it into the session's branch.
+	"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch. A repository brought in from elsewhere keeps the branches it had there under refs/qorpera/imported/heads/: read them and never change them; to bring one into the default branch, merge it into your branch (git merge refs/qorpera/imported/heads/<name>), then run the checks, commit and finish. When its default branch moved since your session began, the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so: then run git merge with the default branch on your branch, resolve the conflicts, run the checks, commit and finish again. " +
 	"Every turn ends with coding_finish or coding_ask, never with a written answer alone: a turn that ends without one fails, and nothing of it is handed in. " +
 	"A request to push, to merge, to open a pull request or to report its link means: commit and call coding_finish; the platform then hands the commit in as above and passes on what happened, so you do none of that yourself. " +
-	"When something blocks you, still end the turn that way. On a GitHub repository: coding_finish with the commit you have and a summary that names the blocker, since it stays a draft. In a repository kept in Qorpera: never hand in half-done or failing work, since it would land; hand in what is whole and passes its checks and name what is left, or, with nothing whole yet, call coding_ask. With nothing worth handing in anywhere, coding_ask with what blocks you and what you need from the member. " +
+	"When something blocks you, still end the turn that way. On a GitHub repository: coding_finish with the commit you have and a summary that names the blocker, since it stays a draft. In a repository kept in Qorpera: never hand in half-done or failing work: it would not pass its checks, or would go in unfinished; hand in what is whole and passes its checks and name what is left, or, with nothing whole yet, call coding_ask. With nothing worth handing in anywhere, coding_ask with what blocks you and what you need from the member. " +
 	"The context is this session's own record: earlierTurns says what started each earlier turn, what you submitted in it (a question with its choices, or a commit) and how it ended (a turn marked shortened had its long texts cut to fit); input is what started this turn (the dispatch, the agent's follow-up or the owner's reply). " +
-	"This session stays on its machine between turns: commands keep running after the turn that started them. commands.running lists earlier turns' commands still running at the last check (read one with coding_read_command before starting it again); commands.stopped lists ones stopped since your previous turn, with the reason (SLEEP: the machine slept after a quiet period; ARCHIVED: the session was archived; EXPIRED: the coding service lost track of the session; MACHINE_STOPPED: the machine stopped from outside, such as a node restart, so check what those commands left before you rely on it; FOLDER_RESTART: the machine restarted because the company folder could not confirm what it had read, so check those commands the same way; MACHINE_NEW_DISK: the machine got a new disk because files it had read from the company folder are no longer readable, so check those commands the same way). Files in the repository, home and cache folders are kept, except after MACHINE_NEW_DISK: a new disk keeps only /company, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh. " +
+	// Own code storage, step 6 (12 Nov 2026): the machine keeps the package downloads of all its sessions and of the
+	// checks in one place, so a new session or a checks run installs from it instead of downloading again.
+	"This session stays on its machine between turns: commands keep running after the turn that started them. commands.running lists earlier turns' commands still running at the last check (read one with coding_read_command before starting it again); commands.stopped lists ones stopped since your previous turn, with the reason (SLEEP: the machine slept after a quiet period; ARCHIVED: the session was archived; EXPIRED: the coding service lost track of the session; MACHINE_STOPPED: the machine stopped from outside, such as a node restart, so check what those commands left before you rely on it; FOLDER_RESTART: the machine restarted because the company folder could not confirm what it had read, so check those commands the same way; MACHINE_NEW_DISK: the machine got a new disk because files it had read from the company folder are no longer readable, so check those commands the same way). Files in the repository, home and cache folders are kept, except after MACHINE_NEW_DISK: a new disk keeps only /company, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh. Packages you download with npm, pnpm, pip, uv and Playwright are kept on this machine for later sessions and for Qorpera's checks. " +
 	"When input.answers is set, it is a question you asked in an earlier turn that is still open. Its reply is input.text or, when that does not decide it, a reply in earlierTurns after that question (a turn that ended without a submission). A reply of the first words of a choice selects that choice; a single letter selects the choice at that position (A is the first) or, when there is no choice at that position, the only choice that starts with that letter. When a reply decides the question, act on it: do not ask it again or infer a different decision from the repository. When no reply decides it (a clarifying question, or other instructions), do not guess: do what you can without the decision, then call coding_ask again.";
 /** Added to the instructions only on a turn whose context says machine.newDisk (C2): the session may not have been
  * attached when the disk was replaced, so no command of it ended as MACHINE_NEW_DISK to say so. */
@@ -587,13 +609,20 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,
 			source: "worker",
 			description:
-				"End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
+				"End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
 			inputSchema: {
 				type: "object",
 				properties: {
 					operationKey: { type: "string", pattern: OPERATION_KEY.source },
 					summary: { type: "string", minLength: 1, maxLength: 4000 },
 					headSha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+					notice: { type: "string", minLength: 1, maxLength: 200 },
+					picture: {
+						type: "string",
+						minLength: 1,
+						maxLength: 300,
+						description: "Its path from the top of the repository, such as docs/changes/new-price.png.",
+					},
 				},
 				required: ["operationKey", "summary", "headSha"],
 				additionalProperties: false,
@@ -601,7 +630,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			parseArguments(value) {
 				const input = record(value, "Invalid coding submission");
 				if (
-					Object.keys(input).sort().join() !== "headSha,operationKey,summary" ||
+					Object.keys(input).some(
+						(key) => !["operationKey", "summary", "headSha", "notice", "picture"].includes(key),
+					) ||
 					typeof input.operationKey !== "string" ||
 					!OPERATION_KEY.test(input.operationKey) ||
 					typeof input.summary !== "string" ||
@@ -611,7 +642,34 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					!/^[0-9a-f]{40}$/.test(input.headSha)
 				)
 					throw new Error("Invalid coding submission");
-				return { operationKey: input.operationKey, summary: input.summary, headSha: input.headSha };
+				// The two the change's record is made of (20260930720000): each is passed on only when given, and an empty
+				// one is one left out. A wrong shape is refused with what to change, so the same turn can hand in again.
+				const given = (field: unknown): unknown => (typeof field === "string" ? field.trim() || undefined : field);
+				const notice = given(input.notice);
+				const picture = given(input.picture);
+				if (
+					notice !== undefined &&
+					(typeof notice !== "string" ||
+						Array.from(notice).length > 200 ||
+						/[\u0000-\u001f\u007f]/.test(notice) ||
+						Buffer.from(notice).toString("utf8") !== notice)
+				)
+					throw new CloudToolArgumentRefusal(NOTICE_REFUSAL);
+				if (
+					picture !== undefined &&
+					(typeof picture !== "string" ||
+						Buffer.byteLength(picture) > 300 ||
+						!PICTURE_PATH.test(picture) ||
+						picture.split("/").some((part) => part === "." || part === ".."))
+				)
+					throw new CloudToolArgumentRefusal(PICTURE_REFUSAL);
+				return {
+					operationKey: input.operationKey,
+					summary: input.summary,
+					headSha: input.headSha,
+					...(notice === undefined ? {} : { notice }),
+					...(picture === undefined ? {} : { picture }),
+				};
 			},
 			execute: async (value, toolContext) => {
 				const input = finish.parseArguments(value) as Record<string, JsonValue>;

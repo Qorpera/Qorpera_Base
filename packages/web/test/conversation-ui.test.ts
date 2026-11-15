@@ -208,7 +208,10 @@ describe("conversation UI boundaries", () => {
 		expect(messages[0]?.dataset.messageId).toBe(agent.id);
 		expect(messages[0]?.querySelectorAll(".bubble")).toHaveLength(2);
 		expect(messages[0]?.getAttribute("aria-label")).toContain(staff.displayName);
-		expect(messages[0]?.title).toContain(fmtTime(timestamp));
+		expect(messages[0]?.getAttribute("aria-label")).toContain(fmtTime(timestamp));
+		// Its time shows on a hover (ui/sent-time-hover.ts), not as the browser's slow tooltip.
+		expect(messages[0]?.dataset.sentAt).toBe(timestamp);
+		expect(messages[0]?.hasAttribute("title")).toBe(false);
 		// A progress message is not labelled: its text is the whole message.
 		expect(messages[0]?.classList.contains("message-progress")).toBe(true);
 		expect(messages[0]?.querySelector(".message-caption")).toBeNull();
@@ -228,6 +231,43 @@ describe("conversation UI boundaries", () => {
 			expect(f.view.el.querySelector(".message-caption")?.textContent?.toLowerCase()).toBe(pending);
 		}
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("draws a note sent from an app's page as the app's card, with what it is about, above the member's words", () => {
+		const f = setup();
+		const note: TranscriptMessage = {
+			kind: "member",
+			id: id(85),
+			sequence: 1,
+			text: "> app:orders-board#1043 · Lund, A\n\nGet a quote from this one.\nBy Friday.",
+			attachmentCount: 0,
+			authorUserId: userA.id,
+			createdAt: timestamp,
+		};
+		const quoted: TranscriptMessage = { ...note, id: id(86), sequence: 2, text: "> Who first?\n\nYoung couples." };
+		f.company
+			.conversation(session.sessionId)
+			.set({ projection: { items: [note, quoted], hiddenCount: 0, lastSequence: 2 } });
+		f.view.update();
+		const [sent, answer] = f.view.el.querySelectorAll<HTMLElement>(".message.mine");
+		// The card stands on the thread as a part of its own, above the bubble with the member's words.
+		const parts = [...(sent?.querySelectorAll(":scope > .bubble") ?? [])];
+		expect(parts.map((part) => part.firstElementChild?.className)).toEqual(["app-cards", "text"]);
+		const card = parts[0]?.querySelector<HTMLButtonElement>(".app-cards > button.app-card.is-note");
+		expect(card?.dataset.appName).toBe("orders-board");
+		expect(card?.title).toBe("Open orders-board");
+		expect(card?.querySelector(".app-card-title")?.textContent).toBe("orders-board");
+		expect(card?.querySelector(".app-card-note")?.textContent).toBe("Lund, A");
+		expect(parts[1]?.textContent).toBe("Get a quote from this one.\nBy Friday.");
+		expect(sent?.querySelector(".message-reply")).toBeNull();
+		// A press on it opens the app's own page, as any app's card does (test/application-lifecycle.test.ts).
+		// A message that opens with a quoted line (an answer to a question on the agent's wall, as members wrote them
+		// until the wall went on 14 Nov 2026) still shows the line above the member's words, in one bubble.
+		expect(answer?.querySelectorAll(":scope > .bubble")).toHaveLength(1);
+		const text = answer?.querySelector(".bubble > .text");
+		expect(text?.firstElementChild?.className).toBe("message-reply");
+		expect(answer?.querySelector(".message-reply")?.textContent).toBe("Who first?");
+		expect(text?.textContent).toBe("Who first?Young couples.");
+		expect(answer?.querySelector(".app-card")).toBeNull();
 	});
 	it("draws an erased message as (erased), also in place of one already drawn", () => {
 		const f = setup();
@@ -1073,8 +1113,11 @@ describe("conversation UI boundaries", () => {
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
 			name === "qorpera_member_interface_pages" ||
-			// The apps drawer's Sites entry.
+			// The apps drawer's Sites and What's new entries.
 			name === "qorpera_list_company_sites" ||
+			name === "qorpera_list_code_releases" ||
+			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+			name === "qorpera_list_cloud_routines" ||
 			// The account marks itself online for its friends (online-mark.ts).
 			name === "qorpera_mark_online" ||
 			// Company figures ask for the company's logo (app/company-logos.ts).
@@ -1244,6 +1287,31 @@ describe("conversation UI boundaries", () => {
 		expect(document.activeElement).toBe(panel);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("opens the computer as the member's ask for their own click, and as the page's own when it shows it again (COMPUTER-OPEN-BRIEF)", () => {
+		const panels = new ComputerPanels(),
+			open = vi.spyOn(panels, "open"),
+			f = setup({ computerPanels: panels });
+		// The agent details' Computer: the member's own click.
+		button(f.view.el, "Open agent details").click();
+		button(document, "Computer").click();
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: true });
+		// The card's Computer again while the window stands open: asked again, still one window.
+		expect(f.view.show(staff.id, "computer", true)).toBe(true);
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: true });
+		expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
+		// Back in the agent's thread the window shows again by itself: not asked.
+		f.view.dispose();
+		const restored = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		document.body.append(restored.el);
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: false });
+		// An open without the flag (the page's own, as the window that appears by itself will call it): not asked.
+		restored.el.querySelector<HTMLButtonElement>("button.computer-close")!.click();
+		open.mockClear();
+		expect(restored.show(staff.id, "computer")).toBe(true);
+		expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ id: staff.id }), { asked: false });
+		restored.dispose();
+		panels.dispose();
+	});
 	it("opens nothing for another agent, or before the thread knows its agent", () => {
 		const f = setup();
 		expect(f.view.show(id(97), "computer")).toBe(false);
@@ -1369,14 +1437,15 @@ describe("conversation UI boundaries", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });
 		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
-		// The failed-run line shares the band: notices first, then the run, the wall, the coding dock, then the composer.
+		// The failed-run line shares the band: notices first, then the run, the coding dock, then the composer. No wall
+		// stands between them any more (Jonas, 14 Nov 2026).
 		const slot = host.nextElementSibling;
 		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
-		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
-		const dock = slot?.nextElementSibling?.nextElementSibling as HTMLElement | null | undefined;
+		const dock = slot?.nextElementSibling as HTMLElement | null | undefined;
 		expect(dock?.classList.contains("coding-dock")).toBe(true);
 		expect(dock?.hidden).toBe(true);
-		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
+		expect(f.view.el.querySelector(".agent-wall")).toBeNull();
 	});
 
 	it("places the failed-run line above the coding dock without a notification host", () => {
@@ -1384,8 +1453,8 @@ describe("conversation UI boundaries", () => {
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation > .thread-foot"));
 		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
-		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
-		expect(f.view.el.querySelector(".agent-wall + .coding-dock + footer.composer")).not.toBeNull();
+		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
+		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
 	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
@@ -1452,14 +1521,14 @@ describe("conversation UI boundaries", () => {
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// Unsettled operations: nothing may be repeated yet.
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
-		// The card sits above the composer (only the wall and the coding dock between), below the notices, never in the thread.
+		// The card sits above the composer (only the coding dock between), below the notices, never in the thread.
 		expect(f.view.el.querySelector(".messages")?.contains(card())).toBe(false);
 		expect(host.querySelector(".run-failure")).toBeNull();
 		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
 		expect(slot?.contains(card())).toBe(true);
 		expect(slot?.previousElementSibling).toBe(host);
-		expect(slot?.nextElementSibling?.classList.contains("agent-wall")).toBe(true);
-		expect(f.view.el.querySelector(".agent-wall + .coding-dock + .composer")).not.toBeNull();
+		expect(slot?.nextElementSibling?.classList.contains("coding-dock")).toBe(true);
+		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + .composer")).not.toBeNull();
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
 		const close = button(f.view.el, "Dismiss");
 		close.focus();
@@ -2659,10 +2728,16 @@ describe("messages between two agents (contract 14.6)", () => {
 		});
 		f.view.update();
 		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
-		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
-			"Besked fra",
-			"Helper",
-		]);
+		expect(
+			[...chip.querySelectorAll(":scope > span:not(.figure, .visually-hidden)")].map((span) => span.textContent),
+		).toEqual(["Besked fra", "Helper"]);
+		// Its time, for a screen reader, as the chip's description (review of #1651 round 1, F3).
+		const described = document.getElementById(chip.getAttribute("aria-describedby") ?? "");
+		expect(chip.contains(described)).toBe(true);
+		expect(described?.classList.contains("visually-hidden")).toBe(true);
+		expect(described?.textContent).toMatch(/\d/);
+		// No time on a hover: a status line, not a message (Jonas, 14 Nov 2026).
+		expect(chip.hasAttribute("data-sent-at")).toBe(false);
 		expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Helper");
 		expect(chip.getAttribute("aria-label")).toBe("Besked fra Helper. Åbn samtalen");
 	});
@@ -2713,10 +2788,9 @@ describe("messages between two agents (contract 14.6)", () => {
 		const chips = f.view.el.querySelectorAll<HTMLButtonElement>(".peer-chip");
 		const chip = chips[0]!;
 		// Verb, the coworker's figure, then the name: the figure sits between the two spans.
-		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
-			"Message from",
-			"Helper",
-		]);
+		expect(
+			[...chip.querySelectorAll(":scope > span:not(.figure, .visually-hidden)")].map((span) => span.textContent),
+		).toEqual(["Message from", "Helper"]);
 		expect(chip.querySelector(".figure")?.previousElementSibling?.textContent).toBe("Message from");
 		expect(chip.getAttribute("aria-label")).toBe("Message from Helper. Open the conversation");
 		expect(chips[1]?.getAttribute("aria-label")).toBe("Left a note for Helper. Open the conversation");
@@ -2868,7 +2942,13 @@ describe("messages between two agents (contract 14.6)", () => {
 			expect(line!.getAttribute("aria-label")).toBe("Messaged Helper and Nova");
 			const chip = line!.querySelectorAll<HTMLButtonElement>(".peer-chip")[1]!;
 			expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Nova");
-			expect(chip.title).toBe(`Nova · ${fmtTime(timestamp)}`);
+			// The chip shows the name and no time on a hover: a status line, not a message (Jonas, 14 Nov 2026).
+			expect(chip.hasAttribute("data-sent-at")).toBe(false);
+			expect(chip.hasAttribute("title")).toBe(false);
+			// Review of #1651 round 1, F3: a screen reader hears the time as the chip's description.
+			const described = document.getElementById(chip.getAttribute("aria-describedby") ?? "");
+			expect(chip.contains(described)).toBe(true);
+			expect(described?.textContent).toBe(fmtTime(timestamp));
 			chip.click();
 			await settle();
 			const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
@@ -2916,7 +2996,10 @@ describe("messages between two agents (contract 14.6)", () => {
 			expect(line.getAttribute("aria-label")).toBe("Talked with Helper, Nova, and Ada · 4 messages");
 			for (const chip of line.querySelectorAll(".peer-chip")) {
 				expect(chip.classList.contains("figure-only")).toBe(true);
-				expect(chip.querySelector(":scope > span:not(.figure)")).toBeNull();
+				expect(chip.querySelector(":scope > span:not(.figure, .visually-hidden)")).toBeNull();
+				expect(document.getElementById(chip.getAttribute("aria-describedby") ?? "")?.textContent).toBeTruthy();
+				// A face alone, with no time on a hover either.
+				expect(chip.hasAttribute("data-sent-at")).toBe(false);
 			}
 		});
 

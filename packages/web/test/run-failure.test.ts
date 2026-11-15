@@ -496,3 +496,242 @@ describe("a coding session's failed turn, by its code (20260930560000)", () => {
 		);
 	});
 });
+
+describe("a change to code kept in Qorpera that did not go in for its checks (own code storage, step 3)", () => {
+	const NOT_PASSED = "Not saved yet: the change did not pass its tests, so the code is as it was.";
+	const NOT_TESTED = "Not saved yet: Qorpera could not test the change just now. Nothing was lost.";
+	// The executor's words as the cloud keeps them (runner-orchestrator code-checks.ts, with the round sentence the cloud
+	// adds): the check, its command and the end of its output, which may say anything, a code included.
+	const FAILED = [
+		'Nothing went into main: the check "test" failed on this change merged with main as it is now. It ran `npm test` and ended with exit code 124 after 600 s, at its time limit of 600 s. The end of its output:',
+		"",
+		"    Error: Provider credential is invalid; you have hit your usage limit. Request timed out.",
+		"    Native provider bridge request failed (422) [code=COMPUTER_HOURS_EXHAUSTED]",
+		"",
+		"Its whole output is in ~/.qorpera-checks/out/2-test.log on the session's machine. Checks that passed before it: install. Fix the cause in the code, never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and finish again. The checks failed for this session 2 times in a row.",
+	].join("\n");
+	const REFUSED =
+		"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again.";
+	const DID_NOT_RUN =
+		"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine did not answer). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again.";
+	const MAIN_MOVED =
+		"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more.";
+	// Step 4: every check passed, but the site they built cannot go out (runner-orchestrator code-site.ts).
+	const SITE_REFUSED =
+		'Nothing went into main: every check passed, but the site in "dist" holds the value of STRIPE_KEY in assets/app.js. A key must never be built into the site. Fix it in the code or in the checks file\'s "site", and finish again.';
+	// The cloud's plain words for a failed run, whose code travels apart (20260930560000).
+	const STOPPED = "The coding turn stopped. The files the turn wrote stay in the session's workspace as it left them.";
+	// What a cloud without step 3's failure words makes of any code it has no case for.
+	const QORPERA_WORDS =
+		"The coding turn stopped because of a problem on Qorpera's side. The files the turn wrote stay in the session's workspace as it left them; a follow-up turn continues from them.";
+
+	it.each([
+		["CODING_CHECKS_FAILED", FAILED, NOT_PASSED],
+		["CODING_CHECKS_REFUSED", REFUSED, NOT_PASSED],
+		["CODING_CHECKS_DID_NOT_RUN", DID_NOT_RUN, NOT_TESTED],
+		["CODING_CHECKS_MAIN_MOVED", MAIN_MOVED, NOT_TESTED],
+		["CODING_CHECKS_SITE_REFUSED", SITE_REFUSED, NOT_PASSED],
+	] as const)("%s", (code, summary, expected) => {
+		// The failed event's code decides, for the owner and for anyone else, whatever the output says.
+		for (const said of [
+			codingFailureReason(summary, {}, code),
+			codingFailureReason(summary, { mine: true }, code),
+			codingFailureReason(summary, { mine: false }, code),
+			// A summary that still ends with its code, and no code beside it, reads the same, as the cloud reads it.
+			codingFailureReason(`${summary} [code=${code}]`),
+			codingFailureReason(`${summary}\n[code=${code}]\n`),
+			// A cloud whose failure words do not know the code yet: the code still decides.
+			codingFailureReason(QORPERA_WORDS, {}, code),
+		]) {
+			expect(said).toBe(expected);
+			// A founder never reads a check's name, its command or output, a branch, a commit, a pull request or "CI".
+			expect(said).not.toMatch(/\[|code=|check|npm|main\b|branch|commit|pull request|\bCI\b|git|\.json|\d/i);
+		}
+	});
+
+	it("leaves a usage limit first, as the cloud does", () => {
+		expect(codingFailureReason(FAILED, { usageLimit: true }, "CODING_CHECKS_FAILED")).toBe(
+			"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+		);
+	});
+
+	it("reads every other code as before, so a cloud that sends none of these works as it did", () => {
+		// Only a whole code decides.
+		for (const code of [
+			"CODING_CHECKS",
+			"CODING_CHECKS_FAILED_AGAIN",
+			"CODING_CHECKS_FAILED:UNKNOWN",
+			"CODING_CHECK_FAILED",
+		])
+			expect(codingFailureReason(STOPPED, {}, code)).toBe(
+				"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+			);
+		// Lower-case reasons name no code.
+		expect(codingFailureReason(STOPPED, {}, "coding_checks_failed")).toBe(
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
+		);
+		// A code in a summary decides only at its end: one inside the run's error reads as before.
+		expect(
+			codingFailureReason(
+				"The coding turn did not finish: Runner model socket request timed out [code=CODING_CHECKS_FAILED]; durable attempt output requires review",
+			),
+		).toBe("One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.");
+		// Without a code anywhere, the executor's words are never shown as they are.
+		expect(codingFailureReason(MAIN_MOVED)).toBe(
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
+		);
+	});
+});
+
+describe("a session whose workspace was refused for its files (own code storage, the import's follow-ups, part N)", () => {
+	const NAMES =
+		"The session could not start: the code holds file names that Qorpera cannot keep. Trying again will not help. The agent knows what to do next.";
+	const LARGE =
+		"The session could not start: the code holds a file that is too large for Qorpera to keep. Trying again will not help. The agent knows what to do next.";
+	const INTERNAL =
+		"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.";
+	const BRIDGE =
+		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.";
+	// The executor's words for the agent as the cloud keeps them (runner-orchestrator code-host-repositories.ts): the
+	// refused paths, the session's branch and git, then the code. A path may be named like anything, a login's or a
+	// limit's words among them.
+	const refused = (paths: string, code: string) =>
+		`The session's workspace could not be made again: its branch holds file or folder names the company folder does not take (${paths}), so a follow-up will not help. Archive this session with manage_worker, action archive, and start a new one on the repository: the work stays on branch qorpera/coding/11111111-1111-4111-8111-111111111111, where the new session reads each file with git show qorpera/coding/11111111-1111-4111-8111-111111111111:<path> and saves it under a name the folder takes. [code=${code}]`;
+	const PATHS = [
+		'"bad."',
+		'"src/signin.tsx."',
+		'"quota.txt "',
+		'"usage limit reached/token expired."',
+		'"lease expired/timed out."',
+		'"deadline expired."',
+	];
+
+	it.each([
+		["CODE_HOST_NAMES_FOLDER_REFUSES", NAMES],
+		["CODE_HOST_NAMES_NOT_UTF8", NAMES],
+		["CODE_HOST_NAMES_NOT_NFC", NAMES],
+		["CODE_HOST_NAMES_DIFFER_BY_CASE", NAMES],
+		["CODE_HOST_FILE_TOO_LARGE", LARGE],
+	] as const)("%s", (code, expected) => {
+		for (const paths of PATHS) {
+			const summary = refused(paths, code);
+			// The failed event's code decides, for the owner and for anyone else; and the summary's own code at its end,
+			// with no code beside it, the same; a path's words never pick another sentence.
+			for (const said of [
+				codingFailureReason(summary, {}, code),
+				codingFailureReason(summary, { mine: true }, code),
+				codingFailureReason(summary, { mine: false }, code),
+				codingFailureReason(INTERNAL, {}, code),
+				codingFailureReason(summary),
+				codingFailureReason(`${summary}\n`),
+			]) {
+				expect(said, `${code} ${paths}`).toBe(expected);
+				// A member never reads a path, a branch, git, a ref, a command or a code.
+				expect(said).not.toMatch(/\[|code=|branch|git|ref|commit|merge|manage_worker|archive|"|\d/i);
+			}
+		}
+	});
+
+	it("leaves a usage limit first, and reads every other failure as before", () => {
+		expect(codingFailureReason(refused('"bad."', "CODE_HOST_NAMES_FOLDER_REFUSES"), { usageLimit: true })).toBe(
+			"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+		);
+		// Only a whole code of these five decides: another code of the code host's is a step refused, as before.
+		for (const code of [
+			"CODE_HOST_NAMES",
+			"CODE_HOST_NAMES_FOLDER_REFUSES_AGAIN",
+			"CODE_HOST_FILE_TOO_LARGE:X",
+			"CODE_HOST_UNEXPECTED_FILE",
+		])
+			expect(codingFailureReason(INTERNAL, {}, code), code).toBe(BRIDGE);
+		expect(codingFailureReason(refused('"bad."', "CODE_HOST_UNEXPECTED_FILE"))).toBe(INTERNAL);
+		// Lower-case reasons name no code.
+		expect(codingFailureReason(INTERNAL, {}, "code_host_names_folder_refuses")).toBe(INTERNAL);
+		// A code inside a summary, not at its end, decides nothing.
+		expect(codingFailureReason(`${refused('"bad."', "CODE_HOST_NAMES_FOLDER_REFUSES")} Then it stopped.`)).toBe(
+			INTERNAL,
+		);
+		// A landing refused for names from an executor before 20260930743000 carries no code (the kernel's is lower case):
+		// as before, not these words, and not the landing's either.
+		const landing =
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "bad.". Rename them, commit and finish again.';
+		expect(codingFailureReason(landing, {}, "ended_without_submission")).toBe(INTERNAL);
+	});
+});
+
+describe("a landing refused for its files (migration 20260930743000)", () => {
+	const NAMES =
+		"The change was not saved: it holds file names that Qorpera cannot keep. The agent has been told to rename them and try again.";
+	const LARGE =
+		"The change was not saved: it holds a file that is too large for Qorpera to keep. The agent has been told to take it out and try again.";
+	const INTERNAL =
+		"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.";
+	const BRIDGE =
+		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.";
+	// The executor's words for the agent (runner-orchestrator coding-executor.ts landRefusal), as the kernel keeps them
+	// (the code taken off and kept as the reason) and as an older kernel keeps them (the code still at the end). The
+	// paths in them may be named like a login, a limit or another code.
+	const names = (paths: string) =>
+		`The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session's workspace holds it): ${paths}. Rename them, commit and finish again.`;
+	const large = (paths: string) =>
+		`The change was not landed, and nothing changed on main: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take: ${paths}. Take them out, commit and finish again.`;
+	const PATHS = [
+		'"bad."',
+		'"src/signin.tsx."',
+		'"quota.txt "',
+		'"usage limit reached/token expired."',
+		'"lease expired/timed out."',
+		'"x [code=CODE_HOST_NAMES_FOLDER_REFUSES]."',
+	];
+
+	it.each([
+		["CODING_LAND_NAMES_REFUSED", names, NAMES],
+		["CODING_LAND_FILE_TOO_LARGE", large, LARGE],
+	] as const)("%s", (code, words, expected) => {
+		for (const paths of PATHS) {
+			const summary = words(paths);
+			for (const said of [
+				// As the kernel keeps it: the words, and the code as the failed event's.
+				codingFailureReason(summary, {}, code),
+				codingFailureReason(summary, { mine: true }, code),
+				codingFailureReason(summary, { mine: false }, code),
+				// As a kernel from before keeps it: its own words, and the code as the event's.
+				codingFailureReason(
+					"The coding turn stopped because of a problem on Qorpera's side. The files the turn wrote stay in the session's workspace as it left them; a follow-up turn continues from them.",
+					{},
+					code,
+				),
+				// The summary's own code at its end, and no code beside it.
+				codingFailureReason(`${summary} [code=${code}]`),
+				codingFailureReason(`${summary} [code=${code}]\n`),
+			]) {
+				expect(said, `${code} ${paths}`).toBe(expected);
+				// A member never reads a path, a branch, git, a ref, a command or a code, and is never told it could not start.
+				expect(said).not.toMatch(/\[|code=|branch|git|ref|commit|merge|manage_worker|"|\d|could not start/i);
+			}
+		}
+	});
+
+	it("is told apart from a workspace refused for the same files, and leaves every other failure as before", () => {
+		expect(codingFailureReason(names('"bad."'), {}, "CODE_HOST_NAMES_FOLDER_REFUSES")).toMatch(
+			/^The session could not start: /,
+		);
+		expect(codingFailureReason(names('"bad."'), {}, "CODING_LAND_NAMES_REFUSED")).toBe(NAMES);
+		// A usage limit first.
+		expect(codingFailureReason(names('"bad."'), { usageLimit: true }, "CODING_LAND_NAMES_REFUSED")).toBe(
+			"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+		);
+		// Only a whole code of the two: another landing code is a step refused, as any code no class names.
+		for (const code of [
+			"CODING_LAND",
+			"CODING_LAND_NAMES_REFUSED_AGAIN",
+			"CODING_LAND_FILE_TOO_LARGE:X",
+			"CODING_LAND_OTHER",
+		])
+			expect(codingFailureReason(INTERNAL, {}, code), code).toBe(BRIDGE);
+		// A code inside the words, not at their end, decides nothing.
+		expect(codingFailureReason(`${names('"bad."')} [code=CODING_LAND_NAMES_REFUSED] Then it stopped.`)).toBe(
+			INTERNAL,
+		);
+	});
+});

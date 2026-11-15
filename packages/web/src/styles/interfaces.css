@@ -28,24 +28,23 @@
 .rail-apps-drawer[hidden] { display: none; }
 .rail-apps-drawer.is-open { grid-template-rows: 1fr; }
 .rail-apps-drawer > div { min-height: 0; overflow: hidden; }
-.rail-apps-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 2px; padding: 10px 0 8px; }
+.rail-apps-grid { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 2px; padding: 10px 0 8px; }
 .rail-app {
 	display: grid; justify-items: center; gap: 5px; min-width: 0; padding: 6px 2px 5px; border-radius: 12px;
 	color: var(--text); text-decoration: none; opacity: 0; transform: translateY(-6px) scale(0.4);
 	transition: transform var(--motion-base) var(--ease-spring), opacity var(--motion-fast) ease, background-color var(--motion-fast) ease;
+	/* A press that drags never selects the names it passes over (Jonas, 12 Nov 2026: "dragging is not fully working"). */
+	user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .rail-apps-drawer.is-open .rail-app {
 	opacity: 1; transform: none;
 	transition-delay: calc(var(--i, 0) * 40ms + 80ms), calc(var(--i, 0) * 40ms + 80ms), 0s;
 }
 .rail-app:hover { text-decoration: none; background: var(--rail-hover); }
-/* The open page: its tile in the selection colour with white text, as an agent's card is when open (Jonas, 8 Nov
- * 2026). The emblem turns white; the selection shows through its cuts. */
-.rail-app.active, .rail-app.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-app.active .interface-emblem { --emblem-ink: #fff; }
-.rail-app.active .rail-mention { box-shadow: 0 0 0 2px var(--rail-selection); }
+/* The open page: its tile in a soft wash of its own colour, its emblem kept in that colour (Jonas, 12 Nov 2026: "the
+ * icons shouldn't turn white when selected"; before, the tile was the selection colour with a white emblem). */
+.rail-app.active, .rail-app.active:hover { background: color-mix(in srgb, var(--app-colour, var(--text)) 16%, transparent); }
 .rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
-.rail-app.active:focus-visible { outline-color: #fff; }
 /* Reordering by dragging (ui/app-grid-drag.ts): the lifted icon rides above the others, a little larger, and the rest
  * make way. Its tile shows no hover while it moves. */
 .rail-apps-grid.is-sorting { cursor: grabbing; }
@@ -62,10 +61,72 @@
 .rail-search { transition: width var(--motion-slow) var(--ease-spring), background-color var(--motion-base) ease, box-shadow var(--motion-base) ease; }
 .rail-search input { transition: opacity var(--motion-base) ease 80ms, visibility 0s; }
 .rail-toolbar:not(.is-searching) .rail-search input { transition: opacity var(--motion-fast) ease, visibility 0s var(--motion-fast); }
+/* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"), the
+ * open page's too; an app in a group is drawn in the group's (12 Nov 2026). */
+.rail-app-stand .interface-emblem { --emblem-ink: var(--app-colour, var(--text)); }
+/* A group: two stacked cards in its first app's colour; open, they fan apart, and its apps follow it in the grid. */
+.group-emblem rect { transform-box: fill-box; transform-origin: center; transition: transform 440ms var(--ease-out); }
+.group-emblem .group-card-back { fill: none; stroke: var(--emblem-ink); stroke-width: 2; }
+.group-emblem .group-card-front { fill: var(--emblem-ink); }
+.rail-app-group.is-open .group-card-front { transform: translate(-2.2px, -2.5px) rotate(-12deg) scaleX(0.786); }
+.rail-app-group.is-open .group-card-back { transform: translate(2.2px, 2.5px) rotate(12deg) scaleX(0.786); }
+.rail-app-group { border: 0; background: none; font: inherit; cursor: pointer; }
+.rail-app-group.is-open .rail-mention { display: none; }
+/* Tiles a group brings grow in after it; tiles it takes away fade where they stood, out of the grid's flow. */
+.rail-apps-drawer.is-open .rail-app.is-entering {
+	animation: rail-app-enter 360ms var(--ease-out) both; animation-delay: calc(60ms + var(--enter-i, 0) * 22ms);
+}
+@keyframes rail-app-enter { from { opacity: 0; transform: scale(0.82); } }
+.rail-app.is-leaving { position: absolute; pointer-events: none; animation: rail-app-leave 220ms ease-in both; }
+@keyframes rail-app-leave { to { opacity: 0; transform: scale(0.82); } }
+/* Folding a group: its apps go back into its tile (shell.ts placeTiles), behind it, so the tile stays on top. */
+.rail-app.is-leaving.is-folding { z-index: 0; animation: none; }
+/* A group going into its outer group keeps the absolute place it leaves from (review F2 on #1729), and a held one
+ * rides above the rest (F4). */
+.rail-apps-grid > .rail-app-group:not(.is-leaving, .is-lifted) { position: relative; z-index: 1; }
+/* A group forming (Jonas, 12 Nov 2026: "make an animation too when hovering a group creation"): held over another icon's
+ * middle, a plate in that icon's colour springs up behind it and breathes, the icon steps back onto it as a group's
+ * front card would, and the dragged icon shrinks to go in. Over a group, its cards part a little to take it. Moving
+ * off, all of it springs back. */
+.rail-app-stand { isolation: isolate; }
+.rail-app-stand::before {
+	content: ""; position: absolute; inset: -7px; z-index: -1; border-radius: 14px; pointer-events: none;
+	background: color-mix(in srgb, var(--app-colour, var(--text)) 16%, transparent);
+	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--app-colour, var(--text)) 34%, transparent);
+	opacity: 0; transform: scale(0.55);
+	transition: opacity 140ms ease, transform 200ms var(--ease-out);
+}
+.rail-app.is-merge-target .rail-app-stand::before {
+	opacity: 1; transform: scale(1);
+	transition: opacity 120ms ease, transform 380ms var(--ease-spring);
+	animation: rail-group-forming 1.1s ease-in-out 380ms infinite alternate;
+}
+@keyframes rail-group-forming { to { transform: scale(1.07); } }
+.rail-app.is-merge-target:not(.rail-app-group) .interface-emblem { transform: translate(-3px, -3px) scale(0.8); }
+.rail-app.is-merge-target:not(.rail-app-group) .rail-app-stand::after {
+	content: ""; position: absolute; inset: 6px -1px -1px 6px; z-index: -1; border-radius: 7px; pointer-events: none;
+	border: 2px solid var(--app-colour, var(--text)); opacity: 0.45;
+	animation: rail-group-card 320ms var(--ease-spring) both;
+}
+@keyframes rail-group-card { from { opacity: 0; transform: translate(-4px, -4px) scale(0.7); } }
+.rail-app-group.is-merge-target:not(.is-open) .group-card-front { transform: translate(-1.4px, -1.6px) rotate(-8deg); }
+.rail-app-group.is-merge-target:not(.is-open) .group-card-back { transform: translate(1.4px, 1.6px) rotate(8deg); }
+.rail-app.is-lifted.is-merging .interface-emblem {
+	transform: scale(0.78); transition: transform 260ms var(--ease-spring); filter: drop-shadow(0 3px 6px rgb(0 0 0 / 18%));
+}
+/* Its name would lie across the other's: only the group's icon shows a name while it forms. */
+.rail-app.is-lifted .rail-app-name { transition: opacity 120ms ease; }
+.rail-app.is-lifted.is-merging .rail-app-name { opacity: 0; }
 .rail-compact .rail-apps-grid { grid-template-columns: minmax(0, 1fr); }
 .rail-compact .rail-app-name { display: none; }
 @media (prefers-reduced-motion: reduce) {
-	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot { transition: none; }
+	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot, .group-emblem rect { transition: none; }
+	.rail-apps-drawer.is-open .rail-app.is-entering, .rail-app.is-leaving { animation: none; }
+	.rail-app-stand::before, .rail-app.is-merge-target .rail-app-stand::before, .rail-app .interface-emblem,
+	.rail-app.is-lifted.is-merging .interface-emblem, .rail-app.is-lifted .rail-app-name { transition: none; }
+	.rail-app.is-merge-target .rail-app-stand::before, .rail-app.is-merge-target:not(.rail-app-group) .rail-app-stand::after {
+		animation: none;
+	}
 }
 
 /* Every emblem is black or white against the theme (Jonas, 9 Nov 2026; ui/interface-emblem.ts): the text colour. Its
@@ -337,3 +398,47 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 	.interface-mail .email-draft-heading { flex-direction: column; align-items: flex-start; }
 	.interface-mail .email-draft-row { flex-direction: column; align-items: flex-start; gap: 2px; }
 }
+/* The Colour menu's swatches: a dot in each colour; Default an empty ring. */
+.colour-swatch { width: 14px; height: 14px; margin: 0 2px; border-radius: 50%; background: var(--swatch, currentColor); flex: none; }
+.colour-swatch.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted, currentColor); }
+/* Icon and colour (12 Nov 2026; ui/app-look-picker.ts): the panel an app's menu opens beside it. */
+.context-panel { width: 300px; max-width: calc(100vw - 16px); padding: 12px; gap: 0; }
+.context-panel:has(> .app-look.is-colours) { width: 224px; }
+.app-look { display: grid; gap: 6px; }
+.app-look-label { margin: 6px 2px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+/* The palette in two rows of six, in the icons' columns below it (Jonas, 13 Nov 2026: "it should be more than one row
+ * for the colors"). */
+.app-look .color-grid.app-look-colours {
+	grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px 4px; justify-items: center; width: 100%; margin: 4px 0 2px;
+}
+.app-look .color-choice { grid-column: auto; width: 24px; height: 24px; }
+.app-look .color-choice:nth-child(7) { grid-column: auto; }
+.app-look .color-choice.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
+.app-look .color-choice[aria-checked="true"]::after { inset: -3px; }
+.app-look-icons { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: pointer; }
+.app-look-icon:hover { background: var(--hover); }
+.app-look-icon:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.app-look-icon[aria-checked="true"] { background: color-mix(in srgb, var(--app-colour, var(--text)) 12%, transparent); box-shadow: inset 0 0 0 2px var(--app-colour, var(--text)); }
+.app-look-icon .interface-emblem { width: 28px; height: 28px; --emblem-ink: var(--app-colour, var(--text)); }
+.app-look-drawing {
+	aspect-ratio: 1; border-radius: 9px; background-size: 300% 100%; animation: app-look-shimmer 1.3s linear infinite;
+	background-image: linear-gradient(100deg, var(--hover) 30%, color-mix(in srgb, var(--app-colour, var(--text)) 18%, var(--hover)) 50%, var(--hover) 70%);
+}
+@keyframes app-look-shimmer { from { background-position: 100% 0; } to { background-position: -50% 0; } }
+.app-look-empty { grid-column: 1 / -1; padding: 2px; font-size: 12px; color: var(--text-muted); }
+.app-look-generate {
+	display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 9px 11px; border: 1px solid var(--border-strong);
+	border-radius: 9px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.app-look-generate:hover:not(:disabled) { background: var(--hover); }
+.app-look-generate:disabled { cursor: default; opacity: 0.75; }
+.app-look-generate .icon { width: 18px; height: 18px; flex: none; color: var(--rail-selection); }
+.app-look-generate-text { display: grid; gap: 1px; font-size: 13px; }
+.app-look-generate-text small { font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
+.app-look-problem { margin: 2px; font-size: 12px; color: var(--danger); }
+.app-look-own { justify-self: start; margin: 4px 2px 0; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+/* An app whose agent draws new icons breathes until they come. */
+.rail-app.is-drawing .interface-emblem { animation: app-drawing 1.2s ease-in-out infinite; }
+@keyframes app-drawing { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .app-look-drawing, .rail-app.is-drawing .interface-emblem { animation: none; } }

@@ -9,7 +9,11 @@ import {
 } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
-import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import {
+	type CloudNativeToolBinding,
+	type CloudNativeToolIdentity,
+	CloudNativeToolRun,
+} from "@qorpera/runtime/cloud-native-tool-authority";
 import type { CloudToolContext } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	type CloudNativeToolOperationControlPlane,
@@ -81,6 +85,12 @@ export async function folderWriterFixture(
 		archiveError?: { code: string; message: string };
 		/** What `qorpera_folder_cancel_agent_worker` raises instead of cancelling (C3c). */
 		cancelError?: { code: string; message: string };
+		/** The bytes the folder client reads and writes through, made from the fake's own (a test wraps a real transport
+		 * around some files). */
+		bytes?: (
+			bytes: CloudCompanyFolderBytes,
+			run: { binding: CloudNativeToolBinding; identity: CloudNativeToolIdentity; control: CloudCompanyPathControl },
+		) => CloudCompanyFolderBytes;
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -696,12 +706,20 @@ export async function folderWriterFixture(
 					replay: false,
 				};
 			}
+			// Whether the run has a receipt under a key (20260930766000), read from the receipt ledger below.
+			if (method === "qorpera_folder_run_receipt_exists")
+				return ledger.has((args.p_logical_operation_key as string).trim());
 			const answer = options.rpc?.(method, args);
 			if (answer !== undefined) return answer;
 			throw new Error(`Unexpected ${method}`);
 		}),
 	};
-	const folder = new CloudCompanyFolderClient({ binding, identity, control, bytes });
+	const folder = new CloudCompanyFolderClient({
+		binding,
+		identity,
+		control,
+		bytes: options.bytes ? options.bytes(bytes, { binding, identity, control }) : bytes,
+	});
 	// The receipt ledger: folder receipts that a commit satisfies, completed with that commit.
 	const ledger = new Map<
 		string,

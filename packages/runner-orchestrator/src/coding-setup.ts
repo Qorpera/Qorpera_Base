@@ -343,6 +343,12 @@ class SetupSyntaxError extends Error {
 		this.index = index;
 	}
 }
+/** The same reader for the other JSON files a repository keeps under `.qorpera/` (the checks file), and the error it
+ * throws with the place in the text. */
+export function parseCodingJson(text: string, trailingCommas: boolean): unknown {
+	return parseSetupJson(text, trailingCommas);
+}
+export { SetupSyntaxError as CodingJsonSyntaxError };
 
 const ESCAPES = new Map([
 	['"', '"'],

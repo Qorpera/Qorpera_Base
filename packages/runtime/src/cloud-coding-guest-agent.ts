@@ -23,7 +23,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
 	CODING_GUEST,
+	CODING_GUEST_MOUNT_V2,
 	CODING_GUEST_VERBS,
+	CODING_PACKAGE_CACHES,
 	type CodingGuestCancelRequest,
 	type CodingGuestCommand,
 	type CodingGuestCommandAnswer,
@@ -58,7 +60,8 @@ import { ensureFolderCacheDir, FOLDER_CACHE } from "./cloud-folder-cache-dir.ts"
 // at /run/qorpera-folder/mounts/<worker32> and a user manager that sees it at /company. Each command runs in its own
 // transient unit as the session's user, through `agent.mjs relay`, which writes its output into a ring of files and
 // its exit into exit.json. The machine's disk keeps each command's intent and outcome; nothing here is the truth the
-// executor keeps in SQL, only what this machine saw.
+// executor keeps in SQL, only what this machine saw. The machine's package caches, which all its sessions and
+// Qorpera's checks share (CODING_PACKAGE_CACHES), are made and trimmed at the first mount of each boot.
 
 const executeFile = promisify(execFile);
 const COMPACT = /^[0-9a-f]{32}$/;
@@ -92,6 +95,7 @@ const TOOLS = Object.freeze({
 	getent: "/usr/bin/getent",
 	chmod: "/usr/bin/chmod",
 	umount: "/usr/bin/umount",
+	systemdTmpfiles: "/usr/bin/systemd-tmpfiles",
 });
 
 export interface CodingGuestAgentPorts {
@@ -102,6 +106,9 @@ export interface CodingGuestAgentPorts {
 	folderCache?: string;
 	/** Where the user managers' drop-ins go. */
 	systemdRoot?: string;
+	/** The machine's package caches (CODING_PACKAGE_CACHES): their folder, the tmpfiles file that makes them, and the most
+	 * their tool folders may hold at boot. */
+	packageCaches?: { root: string; config: string; limitBytes: number };
 	subidFiles?: { uid: string; gid: string };
 	/** systemd-resolved's upstream list, bound over a session's /etc/resolv.conf (the stub is not in its netns). */
 	resolvConf?: string;
@@ -135,6 +142,11 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 		folderRoot: ports.folderRoot ?? CODING_GUEST.folder,
 		folderCache: ports.folderCache ?? FOLDER_CACHE.machine,
 		systemdRoot: ports.systemdRoot ?? "/run/systemd/system",
+		packageCaches: ports.packageCaches ?? {
+			root: CODING_PACKAGE_CACHES.root,
+			config: "/etc/tmpfiles.d/qorpera-packages.conf",
+			limitBytes: CODING_PACKAGE_CACHES.limitBytes,
+		},
 		subidFiles: ports.subidFiles ?? { uid: "/etc/subuid", gid: "/etc/subgid" },
 		resolvConf: ports.resolvConf ?? "/run/systemd/resolve/resolv.conf",
 		agent: ports.agent ?? CODING_GUEST.agent,
@@ -487,6 +499,154 @@ async function ensureSubids(at: Agent, name: string, uid: number): Promise<void>
 	]);
 }
 
+/** The tmpfiles lines of the machine's package caches under `root` (CODING_PACKAGE_CACHES): the folder and one per tool,
+ * root's in the group qorpera-coding, setgid so that what is made in them keeps the group, with the group's rwx as access
+ * and default ACL entries, so that what one session (or `sudo`) makes in them the next can add to, whatever its umask
+ * (tmpfiles adds the base entries and the mask; no setfacl). The age is tmpfiles' own: systemd-tmpfiles-clean.timer
+ * removes what was not read, written or changed for 30 days. Each tool folder is a line of its own, so it is only ever
+ * emptied, never removed. The tools' trees are left out of it (`x`, their contents too): a browser or an unpacked
+ * package missing a file it has not read for 30 days is broken, so the agent ages each whole (ageCodingPackageTrees). */
+export function codingPackageCachesTmpfiles(root: string): string {
+	const { group, ageDays, tools } = CODING_PACKAGE_CACHES;
+	const acl = `group:${group}:rwx,default:group:${group}:rwx`;
+	return [
+		"# The machine's package caches, which its coding sessions and Qorpera's checks share. Written by the coding guest",
+		"# agent at the first mount of each boot (CODING_PACKAGE_CACHES).",
+		...[root, ...tools.map(({ folder }) => `${root}/${folder}`)].flatMap((path) => [
+			`d ${path} 2775 root ${group} ${ageDays}d`,
+			`a ${path} - - - - ${acl}`,
+		]),
+		...tools.flatMap(({ folder, trees }) => trees.map((tree) => `x ${root}/${folder}/${tree}`)),
+		"",
+	].join("\n");
+}
+/** Every path below `folder` that a tree pattern names (CodingPackageCacheTool.trees: names, `*` any part of one, `/`
+ * between them), each not followed through a link. */
+async function treesMatching(folder: string, pattern: string): Promise<string[]> {
+	let paths = [folder];
+	for (const part of pattern.split("/")) {
+		const name = new RegExp(
+			`^${part
+				.split("*")
+				.map((piece) => piece.replace(/[.+?^$|()[\]{}\\]/g, "\\$&"))
+				.join(".*")}$`,
+		);
+		const next: string[] = [];
+		for (const path of paths) {
+			if (!(await missing(() => lstat(path)))?.isDirectory()) continue;
+			for (const entry of (await missing(() => readdir(path))) ?? [])
+				if (name.test(entry)) next.push(join(path, entry));
+		}
+		paths = next;
+	}
+	return paths;
+}
+/** The last use of what is at or below `path`, never followed through a link: the newest read, write or change of a
+ * file, and of a folder its newest write or change (this walk's own listing moves a folder's read time); 0 when there
+ * is nothing. */
+async function lastUse(path: string): Promise<number> {
+	let usedMs = 0;
+	for (const paths = [path]; paths.length > 0; ) {
+		const at = paths.pop() as string;
+		const stat = await missing(() => lstat(at));
+		if (stat?.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+		else if (stat?.isDirectory()) {
+			usedMs = Math.max(usedMs, stat.mtimeMs, stat.ctimeMs);
+			for (const name of (await missing(() => readdir(at))) ?? []) paths.push(join(at, name));
+		}
+	}
+	return usedMs;
+}
+/** The tools' trees under `root` (CodingPackageCacheTool.trees) that nothing in was read, written or changed for
+ * `ageMs` before `nowMs`, each removed whole: a browser, an npx package, a pnpm link tree, a uv archive or environment.
+ * Answers what went, below `root`. At boot, before any session's command: none of them runs. (The read time moves on
+ * the machine's file system, relatime: at the first read after a write, then at most once a day.) */
+export async function ageCodingPackageTrees(root: string, nowMs: number, ageMs: number): Promise<string[]> {
+	const removed: string[] = [];
+	for (const { folder, trees } of CODING_PACKAGE_CACHES.tools)
+		for (const tree of trees)
+			for (const path of await treesMatching(join(root, folder), tree)) {
+				if (nowMs - (await lastUse(path)) <= ageMs) continue;
+				await rm(path, { recursive: true, force: true });
+				removed.push(path.slice(root.length + 1));
+			}
+	return removed;
+}
+/** Whole tool folders of the machine's package caches under `root` emptied, the least recently used first, while
+ * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (ties in the tools'
+ * order; one that holds nothing is passed over). What they hold is the blocks of each file and folder in them, a file
+ * linked twice counted once; a file also linked from a folder not yet emptied still counts after its first folder is
+ * emptied, so the trim goes on while it stays on disk. A folder's last use is the newest read, write or change of a file
+ * in it (a hard link into a project changes only the change time). A tool folder that is not a real folder is neither
+ * counted nor emptied. Emptied, a folder stays, with its owner, mode and ACL. */
+export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
+	// Each file or folder once (by device and inode), with its blocks and how many of the tool folders still hold it.
+	const held = new Map<string, { bytes: number; folders: number }>();
+	const folders: { folder: string; path: string; entries: string[]; bytes: number; usedMs: number }[] = [];
+	for (const { folder } of CODING_PACKAGE_CACHES.tools) {
+		const path = join(root, folder);
+		if (!(await missing(() => lstat(path)))?.isDirectory()) continue;
+		const entries = new Set<string>();
+		let bytes = 0;
+		let usedMs = 0;
+		for (const directories = [path]; directories.length > 0; ) {
+			const directory = directories.pop() as string;
+			for (const name of (await missing(() => readdir(directory))) ?? []) {
+				const entry = join(directory, name);
+				const stat = await missing(() => lstat(entry));
+				if (!stat) continue;
+				if (stat.isDirectory()) directories.push(entry);
+				else if (stat.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+				const key = `${stat.dev}:${stat.ino}`;
+				if (entries.has(key)) continue;
+				entries.add(key);
+				bytes += stat.blocks * 512;
+				const known = held.get(key);
+				if (known) known.folders++;
+				else held.set(key, { bytes: stat.blocks * 512, folders: 1 });
+			}
+		}
+		folders.push({ folder, path, entries: [...entries], bytes, usedMs });
+	}
+	let total = 0;
+	for (const { bytes } of held.values()) total += bytes;
+	const emptied: string[] = [];
+	for (const { folder, path, entries, bytes } of folders.sort((a, b) => a.usedMs - b.usedMs)) {
+		if (total <= limitBytes) break;
+		if (bytes === 0) continue;
+		for (const name of (await missing(() => readdir(path))) ?? [])
+			await rm(join(path, name), { recursive: true, force: true });
+		// What only this folder held is gone; what another folder still holds stays counted.
+		for (const key of entries) {
+			const known = held.get(key) as { bytes: number; folders: number };
+			if (--known.folders === 0) total -= known.bytes;
+		}
+		emptied.push(folder);
+	}
+	return emptied;
+}
+/** The machine's package caches, once a boot, at its first mount and before the session's user (the guest agent has no
+ * boot of its own; every turn mounts before its commands run): the tmpfiles file written, its folders made or set right,
+ * the tools' trees not used for the age removed whole, and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. Answers
+ * whether they are ready. A step that fails leaves no record, and the mount goes on: the executor then gives the
+ * session's commands no cache variables (they work as before the caches), and the next mount tries again. */
+async function ensurePackageCaches(at: Agent): Promise<boolean> {
+	const ready = join(at.runtimeRoot, "packages.ready");
+	if (await exists(ready)) return true;
+	const { root, config, limitBytes } = at.packageCaches;
+	try {
+		await mkdir(dirname(config), { recursive: true, mode: 0o755 });
+		await writeText(config, codingPackageCachesTmpfiles(root), 0o644);
+		await at.system(TOOLS.systemdTmpfiles, ["--create", config]);
+		await ageCodingPackageTrees(root, at.nowMs(), CODING_PACKAGE_CACHES.ageDays * 86_400_000);
+		await trimCodingPackageCaches(root, limitBytes);
+		await writeText(ready, "", 0o600);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** The machine's NAT for the sessions' namespaces, which may reach out but not each other. Replaced whole. */
 const NAT_RULES = `table inet qorpera_guest
 delete table inet qorpera_guest
@@ -745,7 +905,8 @@ async function readSessionUser(session: Places): Promise<{ uid: number; gid: num
 	return { uid: user.uid as number, gid: user.gid as number };
 }
 
-/** `mount`: the session's user, network and view; then its user manager once the folder is up. */
+/** `mount`: the machine's package caches once a boot, the session's user, network and view; then its user manager once
+ * the folder is up. Asked in v2, the answer also says whether the caches are ready. */
 export async function mountCodingGuestSession(
 	request: CodingGuestMountRequest,
 	ports: CodingGuestAgentPorts = {},
@@ -759,21 +920,25 @@ export async function mountCodingGuestSession(
 		const held = await readSessionUser(session);
 		if (held && (held.uid !== request.uid || held.gid !== request.gid))
 			throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
-		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", () =>
-			ensureUser(at, request.uid, request.gid),
-		);
+		let caches = false;
+		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
+			caches = await ensurePackageCaches(at);
+			return ensureUser(at, request.uid, request.gid);
+		});
 		await mkdir(session.session, { recursive: true, mode: 0o755 });
 		if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
 		await ensureNetwork(at, session);
 		const shown = await showView(at, session, request.view, request.uid, request.gid);
 		if (shown.mount === "mounted") await ensureUserManager(at, session, request.uid, name, shown.restarted);
-		return shown.mount;
+		return { mount: shown.mount, caches };
 	});
+	// Said only when asked (v2): an executor from before reads exactly the v1 answer.
 	return Object.freeze({
 		schema: "qorpera.coding-guest-mounted/v1",
 		workerId: request.workerId,
 		viewId: request.view.viewId,
-		mount,
+		mount: mount.mount,
+		...(request.schema === CODING_GUEST_MOUNT_V2 ? { packageCaches: mount.caches } : {}),
 	});
 }
 

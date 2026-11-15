@@ -8,6 +8,104 @@ const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
 const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
+/** A member's look at an agent's desktop computer (20260930712000): a company and a machine, and `/watching` when the
+ * member says they still watch. The coding executor of the bridge's node answers it (deploy/coding-worker/README.md). */
+const MACHINE_SCREEN = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}(/watching)?$`);
+/** A member's action on an agent's desktop they took over (20260930713000): one click, drag, scroll, key or text, with
+ * the epoch and the seat of the hold the member's page captured it under (F24 and F26 of #1661; the executor and SQL
+ * check both), at most 16 KiB. The body passes through as it came: what the member typed is in it, never kept or logged
+ * here. */
+const MACHINE_ACT = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/act$`);
+const MAX_ACT_BYTES = 16 * 1024;
+/** A member turns an agent's desktop computer's screen on (20260930714000): `{}` today (a later stage may say what to
+ * open), at most 1 KiB, which the executor checks. The node's mux passes POST for this location. */
+const MACHINE_START = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/start$`);
+const MAX_START_BYTES = 1024;
+/** A member's pointer on an agent's desktop (20260930744000): a pointer pass's begin or one move, at most 256 bytes of
+ * numbers and an id, many a second while the member's pointer moves (the window keeps one in flight; the executor admits
+ * at most 30 a second on a pass). Its body is read without asking the auth service first: a body this small is no hold
+ * on the bridge, and the executor checks the member's token itself (SQL for a begin, the pass's own for a move), so a
+ * move costs the auth service nothing. A browser keeps the preflight for 10 minutes. The node's mux already passes POST
+ * for the location. */
+const MACHINE_POINTER = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/pointer$`);
+const MAX_POINTER_BYTES = 256;
+/** A pointer move is worth little once a newer one exists: the window gives up on it after this. */
+const POINTER_TIMEOUT_MS = 5_000;
+/** How long a browser keeps a preflight of the pointer route (seconds). On production the API gateway in front of the
+ * functions answers every preflight itself, so this is for a bridge without one; nothing depends on a preflight. */
+const POINTER_PREFLIGHT_SECONDS = 600;
+/** A member's call to the company's databases, for one environment (RUNTIME-COMPANY-DATABASES.md section 3): a
+ * question, a held watch, steps to apply, or what a database holds. The node's mux sends it to the data gateway. */
+const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe)$`);
+/** A question or a look at a database: names, parameters, and a question's text when asked for. */
+const MAX_DATA_BYTES = 64 * 1024;
+/** A watch: up to 24 questions with their etags, and their texts of up to 16 KiB each when asked for. */
+const MAX_WATCH_BYTES = 512 * 1024;
+/** A watch is held by the data gateway for up to 20 s after its own reads, and the bridge's sign-in check may take
+ * 5 s before it. */
+const WATCH_TIMEOUT_MS = 30_000;
+
+/** The signing algorithms of the project's own access tokens (its legacy secret, or its asymmetric keys). */
+const MEMBER_TOKEN_ALGORITHMS: ReadonlySet<string> = new Set(["HS256", "ES256", "RS256"]);
+const MEMBER_ID = new RegExp(`^${UUID}$`);
+
+/** Two issuers that differ only by a trailing slash are the same one (a deployment may write it either way). */
+function same(claimed: unknown, issuer: string): boolean {
+	return typeof claimed === "string" && claimed.replace(/\/$/, "") === issuer.replace(/\/$/, "");
+}
+
+/** One part of a token: base64url of a JSON object, or undefined. */
+function tokenPart(segment: string): Record<string, unknown> | undefined {
+	if (!/^[A-Za-z0-9_-]{2,4096}$/.test(segment)) return undefined;
+	try {
+		const binary = atob(
+			segment.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (segment.length % 4)) % 4),
+		);
+		const value: unknown = JSON.parse(
+			new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))),
+		);
+		return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Whether a bearer is a member's own access token that has not run out (step 2 of the member's pointer,
+ * 20260930745000), read here alone: three base64url parts, a JSON header naming one of the project's signing
+ * algorithms, and the claims of a signed-in member: role and audience `authenticated`, a user id, and an expiry still
+ * ahead. The project's publishable (anon) key, a service key, an expired token or any other string is no member's.
+ *
+ * `issuer` is checked only when the deployment names one (`QORPERA_MEMBER_TOKEN_ISSUER`): the string the auth service
+ * itself puts in `iss`, copied unchanged from the stack's own environment (on the pinned self-hosted configuration,
+ * `API_EXTERNAL_URL` as it stands, with nothing appended: review r2 F2 of #1746). Nothing here derives it, and no shape
+ * of it is assumed; deriving it from `SUPABASE_URL`, the address the functions reach the stack at, would have refused
+ * every real member token (review r1 F2). Unnamed, every other check still holds.
+ *
+ * The signature is not checked here (no key, no call out): the executor has the database (PostgREST) check it before
+ * any SQL runs for a pass's begin, and a move or a live picture's ticket is matched in the executor's memory against
+ * the pass that token began (no SQL, no call). So nobody's request leaves the bridge, and a forged one that looks
+ * right costs the executor one refused call to PostgREST, within its own bound on begins.
+ */
+export function memberTokenShaped(authorization: string, issuer: string | undefined, nowSeconds: number): boolean {
+	const parts = /^Bearer ([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,1024})$/.exec(authorization);
+	if (!parts || authorization.length > 8192) return false;
+	const header = tokenPart(parts[1] as string);
+	const claims = tokenPart(parts[2] as string);
+	if (!header || !claims) return false;
+	if (typeof header.alg !== "string" || !MEMBER_TOKEN_ALGORITHMS.has(header.alg)) return false;
+	if (header.typ !== undefined && header.typ !== "JWT") return false;
+	const audience = claims.aud;
+	return (
+		claims.role === "authenticated" &&
+		(audience === "authenticated" || (Array.isArray(audience) && audience.includes("authenticated"))) &&
+		(issuer === undefined || same(claims.iss, issuer)) &&
+		typeof claims.sub === "string" &&
+		MEMBER_ID.test(claims.sub) &&
+		Number.isSafeInteger(claims.exp) &&
+		(claims.exp as number) > nowSeconds
+	);
+}
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -28,6 +126,14 @@ export interface MemberCompanyGatewayOptions {
 	/** Whether the auth service knows this `Bearer` token. A write's body is read only after it says yes, so no one
 	 * signed out can make the bridge hold a body. */
 	memberSignedIn?: (authorization: string, signal: AbortSignal) => Promise<boolean>;
+	/** Exactly what the auth service puts in a token's `iss`, copied unchanged from the stack's own environment, when
+	 * the deployment names one (`QORPERA_MEMBER_TOKEN_ISSUER`): a token of another issuer is then refused here. Nothing
+	 * is appended to it and no path is demanded of it — the pinned self-hosted configuration issues with
+	 * `API_EXTERNAL_URL` as it stands (review r2 F2 of #1746) — and it is never derived from the address the functions
+	 * reach the stack at, which is not the issuer (review r1 F2 of #1746). */
+	memberTokenIssuer?: string;
+	/** The clock, in milliseconds (the tests'). */
+	now?: () => number;
 }
 
 interface RoutePolicy {
@@ -36,6 +142,15 @@ interface RoutePolicy {
 	maxBody?: number;
 	timeoutMs?: number;
 	unavailable: string;
+	/** A body small enough to read before asking the auth service (the destination checks the member's token itself). */
+	readsSmallBodyFirst?: boolean;
+	/** How long a browser keeps this route's preflight (seconds). */
+	preflightSeconds?: number;
+	/** The browser's Origin goes with it (already one of the allowed origins): the executor binds a live-picture ticket
+	 * to it, so only that Origin can open the stream (20260930745000). */
+	forwardsOrigin?: boolean;
+	/** Only a member's own unexpired token of this project goes on (memberTokenShaped): the route asks no auth service. */
+	memberToken?: boolean;
 }
 
 function route(path: string): RoutePolicy | undefined {
@@ -66,6 +181,52 @@ function route(path: string): RoutePolicy | undefined {
 					unavailable: IMAGE_UNAVAILABLE,
 				}
 			: { method: "GET", headers: ["authorization"], unavailable: IMAGE_UNAVAILABLE };
+	// A picture of at most 8 MiB, or 304 to the etag the member has: its If-None-Match goes with it.
+	if (MACHINE_SCREEN.test(path))
+		return {
+			method: "GET",
+			headers: ["authorization", "if-none-match"],
+			unavailable: "The computer's screen is unavailable just now.",
+		};
+	if (MACHINE_ACT.test(path))
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_ACT_BYTES,
+			unavailable: "The computer is unavailable just now.",
+		};
+	if (MACHINE_POINTER.test(path))
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_POINTER_BYTES,
+			timeoutMs: POINTER_TIMEOUT_MS,
+			readsSmallBodyFirst: true,
+			preflightSeconds: POINTER_PREFLIGHT_SECONDS,
+			forwardsOrigin: true,
+			memberToken: true,
+			unavailable: "The computer is unavailable just now.",
+		};
+	if (MACHINE_START.test(path))
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_START_BYTES,
+			unavailable: "The computer is unavailable just now.",
+		};
+	// Steps to apply may carry their texts, at most 1 MiB. A held watch gets 30 s, the others the default.
+	const data = COMPANY_DATA.exec(path);
+	if (data)
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: data[1] === "apply" ? MAX_WRITE_BYTES : data[1] === "watch" ? MAX_WATCH_BYTES : MAX_DATA_BYTES,
+			...(data[1] === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
+			unavailable:
+				data[1] === "apply"
+					? "Company data is unavailable just now. Steps sent may still apply."
+					: "Company data is unavailable just now.",
+		};
 	const erase = ERASE.exec(path);
 	if (erase)
 		return {
@@ -180,6 +341,7 @@ export async function forwardMemberCompanyGateway(
 			return fail(403, "Invalid member gateway preflight");
 		headers.set("access-control-allow-methods", policy.method);
 		headers.set("access-control-allow-headers", policy.headers.join(", "));
+		if (policy.preflightSeconds) headers.set("access-control-max-age", String(policy.preflightSeconds));
 		return new Response(null, { status: 204, headers });
 	}
 	if (request.method !== policy.method) return fail(405, "Method not allowed");
@@ -204,8 +366,8 @@ export async function forwardMemberCompanyGateway(
 	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > UPLOAD_TIMEOUT_MS)
 		return fail(503, "Member gateway is not configured");
 	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
-	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report or a
-	// chat image. A chunked body of unknown length is refused unread.
+	// A write states its length, within the gateway's bound for its route: a folder commit, a presence report, a chat
+	// image or a call to the company's data. A chunked body of unknown length is refused unread.
 	const length = request.headers.get("content-length");
 	const refuse = (status: number, error: string) => {
 		void request.body?.cancel().catch(() => {});
@@ -217,7 +379,18 @@ export async function forwardMemberCompanyGateway(
 		return refuse(400, "Member gateway request could not be read");
 	const size = Number(length ?? "0");
 	if (size > (policy.maxBody ?? MAX_WRITE_BYTES)) return refuse(413, "Member gateway request could not be read");
-	if (size > 0) {
+	// A route that asks no auth service takes only a member's own token that has not run out, and of the issuer the
+	// deployment names when it names one: nobody's request goes further than here (20260930745000).
+	if (
+		policy.memberToken &&
+		!memberTokenShaped(
+			request.headers.get("authorization") ?? "",
+			options.memberTokenIssuer,
+			Math.floor((options.now ?? Date.now)() / 1000),
+		)
+	)
+		return refuse(401, "Member sign-in is required");
+	if (size > 0 && !(policy.readsSmallBodyFirst && size <= (policy.maxBody ?? 0))) {
 		let signedIn: boolean;
 		try {
 			if (!options.memberSignedIn) throw new Error("Member sign-in check is not configured");
@@ -243,6 +416,7 @@ export async function forwardMemberCompanyGateway(
 			if (value !== null) forwarded.set(name, value);
 		}
 		if (body) forwarded.set("content-length", String(body.byteLength));
+		if (policy.forwardsOrigin && origin) forwarded.set("origin", origin);
 		const response = await (options.fetchImplementation ?? fetch)(new URL(path, upstream), {
 			method: request.method,
 			headers: forwarded,

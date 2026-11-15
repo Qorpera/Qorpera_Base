@@ -2,11 +2,15 @@ import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
 
 /* An agent's wall (Jonas, 5 November 2026: "a poster or wall of updates kept within rules, instead of many new
  * messages"): what the agent has done, with links, what it is working on, and what waits on a member, kept in place in
- * `QorperaOS/agents/<handle>/wall.md`. The agent keeps it with `update_wall`, and the web pins it above the agent's
+ * `QorperaOS/agents/<handle>/wall.md`. Agents kept it with `update_wall` until 14 November 2026, when the founder dropped
+ * the wall for agents ("it's the wrong medium for activity"); the web pins it above the agent's
  * thread. It is an ordinary file of the folder, so a member may edit it too; the write tools refuse a wall that breaks
  * the rules below. This module is the format both sides read. Browser-safe.
  *
  *     # Wall
+ *
+ *     ## Now
+ *     - Prices set, picking suppliers now
  *
  *     ## Waits on you
  *     - Pick a shop name
@@ -21,34 +25,43 @@ import { companyPathKey, osPath, osRelative } from "./company-state-shared.ts";
  * An item is a short headline (Jonas, 5 November 2026: no more text per headline than a glance takes), and under it,
  * indented, an optional detail of a sentence or two in Markdown, links included (`folder:` for a file, `app:` for an
  * interface app). The web shows the headlines and opens an item's detail on a click, with a preview of a picture or app
- * it links. A done item starts with the day it was done, newest first. */
+ * it links. A done item starts with the day it was done, newest first.
+ *
+ * Now is one line, no detail: where the agent's work stands at this moment, which the sidebar shows under its name
+ * (Jonas, 11 November 2026: the newest done headline there read as a work log). A wall written before it has none. */
 
 export const WALL_FILE = "wall.md";
 export const WALL_MAX_BYTES = 16 * 1024;
-/** An item's headline, in characters, as `update_wall` writes it. A headline written before details existed may be as
- * long as {@link WALL_ITEM_MAX_CHARS}: it still reads. */
+/** An item's headline, in characters, as `update_wall` wrote it until 14 November 2026 (no tool writes walls now; the
+ * web reads what is there). A headline written before details existed may be as long as {@link WALL_ITEM_MAX_CHARS}:
+ * it still reads. */
 export const WALL_HEADLINE_MAX_CHARS = 80;
+/** The Now line, in characters, as `update_wall` wrote it until 14 November 2026: it had to fit under a name in the
+ * sidebar. */
+export const WALL_NOW_MAX_CHARS = 60;
 /** An item's detail, in characters. */
 export const WALL_DETAIL_MAX_CHARS = 240;
 /** The most a headline in the file may hold. */
 export const WALL_ITEM_MAX_CHARS = 240;
 export const WALL_WAITING_MAX = 6;
 export const WALL_WORKING_MAX = 6;
-/** Done items a wall keeps; the writer drops the oldest past it. */
+/** Done items a wall kept; `update_wall` dropped the oldest past it until 14 November 2026. */
 export const WALL_DONE_MAX = 40;
 /** Done items newer than this many days show on the poster; older ones fold into Earlier. */
 export const WALL_RECENT_DAYS = 7;
 
-export type WallPart = "waiting" | "working" | "done";
+export type WallPart = "now" | "waiting" | "working" | "done";
 
 /** The parts' headings, as written and read (in any case). */
 export const WALL_HEADINGS: Readonly<Record<WallPart, string>> = Object.freeze({
+	now: "Now",
 	waiting: "Waits on you",
 	working: "Working on",
 	done: "Done",
 });
 
 const LIMITS: Readonly<Record<WallPart, number>> = {
+	now: 1,
 	waiting: WALL_WAITING_MAX,
 	working: WALL_WORKING_MAX,
 	done: WALL_DONE_MAX,
@@ -67,6 +80,8 @@ export interface WallDone extends WallItem {
 }
 
 export interface Wall {
+	/** Where the agent's work stands now, one line; absent on a wall written before it. */
+	readonly now?: string;
 	readonly waiting: readonly WallItem[];
 	readonly working: readonly WallItem[];
 	/** Newest first. */
@@ -118,7 +133,7 @@ export function isWallDay(value: string): boolean {
 }
 
 /** An item's headline as kept: one line, runs of spaces as one, or a problem in plain words. `max` is the most it may
- * hold: what the file holds by default, a shorter headline for what `update_wall` writes. */
+ * hold: what the file holds by default, a shorter headline for what `update_wall` wrote until 14 November 2026. */
 export function wallItemProblem(text: string, max = WALL_ITEM_MAX_CHARS): string | null {
 	if (/[\0-\x1f\x7f]/.test(text)) return "an item is one line, with no tabs or control characters";
 	const trimmed = text.trim();
@@ -161,7 +176,12 @@ export function wallItemText(text: string): string {
  * Anything else that is no item of a part is a problem. */
 export function parseWall(text: string): WallParse {
 	const problems: WallProblem[] = [];
-	const parts: { waiting: WallItem[]; working: WallItem[]; done: WallDone[] } = { waiting: [], working: [], done: [] };
+	const parts: { now: WallItem[]; waiting: WallItem[]; working: WallItem[]; done: WallDone[] } = {
+		now: [],
+		waiting: [],
+		working: [],
+		done: [],
+	};
 	if (new TextEncoder().encode(text).length > WALL_MAX_BYTES)
 		problems.push({ code: "size", line: 1, message: `a wall is at most ${WALL_MAX_BYTES / 1024} KiB` });
 	let part: WallPart | null = null;
@@ -200,6 +220,10 @@ export function parseWall(text: string): WallParse {
 		const last = (parts[part] as WallItem[]).at(-1);
 		const indented = /^(?: {2,}|\t)\S/.test(line) && last && lastLine === at - 1 ? line.trim() : null;
 		const item = indented === null ? /^[ \t]*[-*][ \t]+(.*)$/.exec(line) : null;
+		if (indented !== null && last && part === "now") {
+			problems.push({ code: "line", line: at, message: "the Now line is one line, with no detail under it" });
+			return;
+		}
 		if (indented !== null && last) {
 			const detail = wallItemText(last.detail ? `${last.detail} ${indented}` : indented);
 			const problem = wallDetailProblem(detail);
@@ -232,6 +256,15 @@ export function parseWall(text: string): WallParse {
 			problems.push({ code: "line", line: at, message: problem });
 			return;
 		}
+		// A second Now line is never kept: a writer would drop it, so it reads as a line out of shape, not a full part.
+		if (part === "now" && parts.now.length) {
+			problems.push({
+				code: "line",
+				line: at,
+				message: "the Now part holds one line: put the rest on the wall's items",
+			});
+			return;
+		}
 		if (part === "done") parts.done.push({ day: day as string, text: wallItemText(words) });
 		else parts[part].push({ text: wallItemText(words) });
 		lastLine = at;
@@ -244,7 +277,8 @@ export function parseWall(text: string): WallParse {
 			problems.push({ code: "shape", line: 1, message: "done items go newest first" });
 			break;
 		}
-	return { wall: parts, problems, head };
+	const { now, ...rest } = parts;
+	return { wall: now[0] ? { now: now[0].text, ...rest } : rest, problems, head };
 }
 
 /** The wall as the writer keeps it: the file's own head (the title and a note, as written), then the three parts in
@@ -258,6 +292,7 @@ export function renderWall(wall: Wall, head = "# Wall"): string {
 			if (item.detail) out.push(`  ${item.detail}`);
 		}
 	};
+	if (wall.now) part("now", [{ text: wall.now }]);
 	part("waiting", wall.waiting);
 	part("working", wall.working);
 	part("done", wall.done);
