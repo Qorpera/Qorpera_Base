@@ -148,6 +148,12 @@ lx exec "$builder" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$folder_sha" bash -euo
 	node --version | grep -q "^v2[4-9]\."
 	[[ $(sha256sum </opt/qorpera-folder/qorpera-folder | cut -d" " -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]]
 	/opt/qorpera-folder/qorpera-folder --version
+	# The command for the company databases, as deploy/machine/build-machine-image.sh writes and checks it.
+	printf "%s\n" "#!/bin/sh" "exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
+	chmod 0555 /usr/local/bin/data
+	[[ $(stat -c "%U:%G %a" /usr/local/bin/data) == "root:root 555" ]]
+	data >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]
+	data describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]
 	/usr/bin/flock --version >/dev/null
 	[[ $(systemctl is-enabled qorpera-machine-folder.service || true) == static ]]
 	[[ -d /company && -z $(ls -A /company) ]]

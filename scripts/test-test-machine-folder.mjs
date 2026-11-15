@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { expandTestFixture } from "./test-hosted-db.mjs";
+import { companyDatabase, Gateway, Platform, serveRuns } from "../deploy/company-data/gateway/gateway.mjs";
+import { checkLocale, expandTestFixture, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE } from "./test-hosted-db.mjs";
 import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 
 // P4 (deploy/test-machine/TEST-MACHINE-FOLDER.md): an agent's test machine works with the company folder, from the
@@ -23,6 +25,10 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 //   -> the node folder service (FolderService, its control and folder sockets, the folder program's vsock bridge; 6b)
 //      serving the boot's test_machine view (6a)
 //   -> the folder core in Postgres (a hosted database with every migration, through a PostgREST stand-in).
+//
+// Company databases (slice 8a part 4, step 8b): the machine's `data` command -> the folder service's data role -> the
+// data gateway's run door over TLS (a throwaway CA) -> the gateway on a throwaway store, its passes redeemed in the
+// same database as the publishable key's role.
 //
 // The company, its runs and the machine executor are SQL test 628's fixture (924's base). Everything this proves is
 // written to --record as evidence; the checks are judged from it, and the record is scanned for the run's secrets.
@@ -69,6 +75,20 @@ export const WORDS = Object.freeze({
 	refused: "the company folder refused this machine's view",
 	lostViewClosed: "the executor restarted the machine because its /company view was closed",
 });
+
+/** Step 8b's database, its files (as gateway.test.mjs and SQL test 1273 write them) and a step that would destroy data. */
+export const DATA_DB = "p4desk";
+export const DATA_FILES = Object.freeze({
+	"database.toml": 'format = "qorpera.database/v1"\nname = "P4 desk"\n',
+	"tables/001-tickets.sql":
+		"create table tickets (\n\tid bigint generated always as identity primary key,\n\ttitle text not null,\n\tpoints int not null default 0\n);\ninsert into tickets (title, points) values ('First', 1);\n",
+	"queries/open.sql": "-- The tickets, oldest first.\nselect id, title, points from tickets order by id;\n",
+	"actions/add-ticket.sql":
+		"-- Add a ticket called :title worth :points.\ninsert into tickets (title, points) values (:title, :points::int) returning id, title, points;\n",
+});
+export const DATA_HELD_STEP = Object.freeze({ "tables/002-drop-points.sql": "alter table tickets drop column points;\n" });
+/** The publishable key the gateway's platform client sends: not a JWT, so it goes alone, as the anon role's key. */
+const PUBLISHABLE = "sb_publishable_p4-stand-in";
 
 const sha256hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
 /** The sha256 of the bytes L leaves in `p4/loop.txt` at tick `n` (`n t`) or on TERM (`n last t`), `t` the guest's ms:
@@ -658,6 +678,91 @@ export function judge(evidence, leaks = []) {
 			"the core closed the view and the host restarted the guest (company none, heldBack), the refused open retired the " +
 			"placement, and the machine started on a new disk; the boot's command is refused ended with the folder's lost",
 	);
+	// Step 8b (company databases, slice 8a part 4).
+	const data = s.data ?? {};
+	const toml = `data/${DATA_DB}/database.toml`;
+	const question = `data/${DATA_DB}/queries/open.sql`;
+	const answered = (r) => r?.exitCode === 0 && r.answer !== null && typeof r.answer === "object" && !Array.isArray(r.answer);
+	const rowsWith = (r, ...titles) =>
+		Array.isArray(r?.answer?.rows) && titles.every((t) => r.answer.rows.some((row) => Array.isArray(row) && row.includes(t)));
+	const p4Hellos = (data.hellos ?? []).filter((h) => h.machine === boot.lxdName);
+	check(
+		"dataStoreAndDoor",
+		data.store?.ready === true && data.tls?.scheme === "https:" && /^[0-9A-F:]{95}$/.test(data.tls.caSha256 ?? "") &&
+			data.probes?.wrongToken?.status === 401 && /^(UNABLE_TO_|SELF_SIGNED|DEPTH_ZERO)/.test(data.probes?.unpinned?.error ?? "") &&
+			data.redeems?.length > 0 &&
+			data.redeems.every((r) => r.publishable === true && r.bearer === false && r.as === "anon" && !r.refused && !r.error &&
+				r.kind === "machine" && r.viewId === wake.view?.id && (r.database === DATA_DB || r.database === null)) &&
+			data.door?.some((x) => x.status === 200 && /^\/v1\/run-data\/(describe|apply|query|change)$/.test(x.path)) &&
+			p4Hellos.length > 0 && p4Hellos.every((h) => h.role === "data" && h.ok === true && h.viewId === wake.view?.id),
+		"a throwaway store made from store/cluster.sql and template.sql; the gateway's run door over TLS answered 401 to a " +
+			"wrong token and could not be reached without the throwaway CA pinned; every pass the gateway redeemed went as the " +
+			"publishable key alone, as the anon role, in this run's database, and answered a machine pass of the second " +
+			"boot's view; the folder service took p4's data hellos for that view and the door answered its calls",
+	);
+	check(
+		"dataCommand",
+		data.write?.receipt?.exitCode === 0 && Object.keys(DATA_FILES).every((p) => data.write.saved?.[`data/${DATA_DB}/${p}`] === 1) &&
+			answered(data.apply) && data.apply.answer.applied === true &&
+			same(data.apply.answer.results?.map((r) => `${r.name} ${r.state}`), ["001-tickets applied"]) &&
+			answered(data.change) && data.change.answer.changed === 1 && rowsWith(data.change, "Second") &&
+			answered(data.queryPlain) && rowsWith(data.queryPlain, "First", "Second") &&
+			answered(data.describe) && JSON.stringify(data.describe.answer).includes(DATA_DB) &&
+			answered(data.describeOne) && JSON.stringify(data.describeOne.answer).includes("tickets"),
+		"a command wrote the database's files under /company/data and they were saved; then `data apply` applied 001, " +
+			"`data change ... add-ticket title=Second points:=3` wrote a row and printed it, `data query` printed both rows, " +
+			"and `data describe` (all, and the one database) answered",
+	);
+	const rd = data.reads ?? {};
+	check(
+		"dataReadTakenIn",
+		/ --root \/root\/p4-data query /.test(data.query?.line ?? "") && answered(data.query) && data.query.by === "bob" &&
+			rowsWith(data.query, "First", "Second") && rd.viewId === wake.view?.id && Array.isArray(rd.viewBefore) &&
+			!rd.viewBefore.includes(question) && Array.isArray(rd.bobBefore) && !rd.bobBefore.includes(toml) &&
+			!rd.bobBefore.includes(question) && rd.bobAfter?.includes(toml) && rd.bobAfter.includes(question) &&
+			rd.viewAfter?.includes(toml) && rd.viewAfter.includes(question),
+		"Bob's command asked the question with the texts read from a copy outside /company and printed the rows; before " +
+			"it neither the view nor Bob's run had read the question, nor Bob's run database.toml; after its output was read, " +
+			"the view's and Bob's run's read records hold both",
+	);
+	const heldOf = (r) => r?.answer?.results?.find((x) => x.name === "002-drop-points");
+	const held = heldOf(data.held);
+	const heldAgain = heldOf(data.heldAgain);
+	check(
+		"dataHeld",
+		data.heldWrite?.receipt?.exitCode === 0 && answered(data.held) && data.held.answer.applied === false && held?.state === "held" &&
+			/^002-drop-points\.[0-9a-f]{64}\.[0-9a-f]{64}$/.test(held.allow ?? "") &&
+			(held.destroys ?? []).some((x) => x.what === "dropped table column" && /tickets\.points$/.test(x.object ?? "")) &&
+			answered(data.heldAgain) && heldAgain?.state === "held" && heldAgain.allow === held.allow &&
+			data.heldUsage?.exitCode === 2 && data.heldUsage.doorCalls === 0 && answered(data.afterHeld) &&
+			(data.afterHeld.answer.columns ?? []).includes("points") && rowsWith(data.afterHeld, "First", "Second") &&
+			same(data.storeAfter?.steps, ["001-tickets"]) && data.storeAfter.points === 1 && data.storeAfter.tickets === 2 &&
+			data.passes?.machine > 0 && data.passes.withAllow === 0,
+		"a step that drops a column was held with its allow, twice, and what it would drop was named; `data apply` takes no " +
+			"allow (exit 2, no call made); the column and both rows are still in the store, which has applied 001 only; no " +
+			"machine pass carries an allow",
+	);
+	const other = data.other ?? {};
+	check(
+		"dataOtherMachineRefused",
+		other.exitCode === 3 && other.stdout === "" && /cannot be reached from this machine now/.test(other.stderr ?? "") &&
+			/did not match/.test(other.stderr ?? "") && other.hellos?.length > 0 &&
+			other.hellos.every((h) => h.role === "data" && h.machine === refusals.intruder?.name && h.lookup === "found" &&
+				h.viewId === wake.view?.id && h.ok === false && h.code === "VIEW_REFUSED") &&
+			other.doorCalls === 0 && other.passCalls === 0 && other.redeems === 0 && answered(data.still) && rowsWith(data.still, "Second"),
+		"the second VM, given the first machine's view file, ran `data` and got exit 3 with the refusal's words: the service " +
+			"refused its hello VIEW_REFUSED for that VM, no pass was made and nothing reached the run door; the first machine " +
+			"still asks",
+	);
+	const disk = data.disk ?? {};
+	check(
+		"dataSecretsNotOnMachine",
+		disk.error === null && disk.status === 0 && disk.marker > 0 && Array.isArray(disk.secrets) &&
+			["dataDoorToken", "dataCaKey", "dataDoorKey"].every((n) => disk.secrets.some((x) => x.name === n)) &&
+			disk.secrets.every((x) => x.found === 0),
+		"the first machine's whole disk, read on the host after a sync, holds the marker its command wrote and none of the run " +
+			"door's token, the CA's or the door's key, the store's passwords or a data pass",
+	);
 	const deadlocks = deadlocksIn(evidence);
 	check(
 		"serviceClean",
@@ -670,7 +775,11 @@ export function judge(evidence, leaks = []) {
 				? `; deadlocks: ${deadlocks.map((d) => `t ${d.t} ${d.function} (${d.in.join(" in ") || "?"}) on ${d.lock ? `${d.lock.relation} ${d.lock.tuple}` : "?"}`).join("; ")}`
 				: ""),
 	);
-	check("noSecretsInEvidence", leaks.length === 0, "the record holds no holder token, view pass or service token");
+	check(
+		"noSecretsInEvidence",
+		leaks.length === 0,
+		"the record holds no holder token, view pass, service token, run door token, CA or door key, store password or data pass",
+	);
 	return checks;
 }
 
@@ -717,6 +826,23 @@ class Database {
 		const out = await this.session(`\\set VERBOSITY verbose
 begin;
 select set_config('request.jwt.claims', ${literal(JSON.stringify(claims))}, true) \\g /dev/null
+select to_jsonb(public.${method}(${parameters.join(",")}));
+commit;
+`);
+		return out ? JSON.parse(out) : null;
+	}
+	/** `public.<method>(…)` as PostgREST runs it for the publishable key alone: as the anon role, with its claims. */
+	async asAnon(method, args) {
+		assert(/^qorpera_[a-z0-9_]+$/.test(method));
+		const parameters = Object.entries(args).map(([name, value]) => {
+			assert(/^p_[a-z][a-z0-9_]*$/.test(name));
+			return `${name}=>${literal(value)}`;
+		});
+		this.calls[`anon:${method}`] = (this.calls[`anon:${method}`] ?? 0) + 1;
+		const out = await this.session(`\\set VERBOSITY verbose
+begin;
+set local role anon;
+select set_config('request.jwt.claims', '{"role":"anon"}', true) \\g /dev/null
 select to_jsonb(public.${method}(${parameters.join(",")}));
 commit;
 `);
@@ -796,6 +922,7 @@ async function bundle(work) {
 			resolveDir: repositoryRoot,
 			contents: [
 				'export {createControlServer} from "./packages/object-gateway/src/folder-service/control.ts";',
+				'export {httpsDataDoor} from "./packages/object-gateway/src/folder-service/data-door.ts";',
 				'export {createFolderServer} from "./packages/object-gateway/src/folder-service/server.ts";',
 				'export {FolderService} from "./packages/object-gateway/src/folder-service/service.ts";',
 				'export {FolderStaging, GatewayUploads} from "./packages/object-gateway/src/folder-service/staging.ts";',
@@ -1012,6 +1139,203 @@ const STOP_LOOP_COMMAND = [
 	`while :; do n=$((n+1)); echo "$n $(now)" > $f; sleep 0.5 & wait $!; done`,
 ].join("\n");
 
+/** A program run to its end without blocking the event loop: its exit status, stdout (up to `maxOut` characters) and
+ * the end of its stderr. `input` goes to its stdin. */
+function runProgram(command, args, { input = null, timeoutMs = 120_000, maxOut = 1024 * 1024 } = {}) {
+	return new Promise((done) => {
+		const child = spawn(command, args, { stdio: [input === null ? "ignore" : "pipe", "pipe", "pipe"], timeout: timeoutMs });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (d) => {
+			if (stdout.length < maxOut) stdout += d;
+		});
+		child.stderr.setEncoding("utf8").on("data", (d) => {
+			stderr = (stderr + d).slice(-2000);
+		});
+		child.on("error", (error) => done({ status: null, stdout, stderr: String(error.message).slice(0, 2000) }));
+		child.on("close", (status) => done({ status, stdout, stderr }));
+		if (input !== null) {
+			child.stdin.on("error", () => undefined);
+			child.stdin.end(input);
+		}
+	});
+}
+
+/** A PEM key as the run's secrets: its body whole and each of its lines. */
+function keySecrets(secrets, name, pem) {
+	const lines = pem.split("\n").filter((line) => line && !line.startsWith("-----"));
+	secrets[name] = lines.join("");
+	lines.forEach((line, i) => {
+		secrets[`${name}${i + 1}`] = line;
+	});
+}
+
+/** Step 8b's road behind the folder service, as the data gateway's tests make it (gateway.test.mjs): a throwaway
+ * PostgreSQL store in Docker from store/cluster.sql and store/template.sql, the real `Gateway` whose platform redeems
+ * passes with `qorpera_data_pass_redeem` in this run's database (the publishable key alone, as the anon role), and its
+ * run door (`serveRuns`) over TLS with a throwaway CA. Gives the door's URL, the CA and the node's token for the folder
+ * service, the store's SQL for the checks, and the evidence it keeps. */
+async function startCompanyData({ work, db, secrets, cleanups }) {
+	const evidence = { store: { ready: false }, tls: {}, probes: {}, redeems: [], door: [], doorRequests: 0, hellos: [] };
+	const container = `p4-data-store-${randomBytes(4).toString("hex")}`;
+	const superPassword = randomBytes(16).toString("hex");
+	const logins = {
+		...Object.fromEntries(["admin", "keeper", "watch"].map((login) => [login, randomBytes(16).toString("hex")])),
+		folderKey: randomBytes(32).toString("hex"),
+	};
+	secrets.dataStoreSuper = superPassword;
+	for (const [name, value] of Object.entries(logins)) secrets[`dataStore:${name}`] = value;
+	cleanups.push(async () => {
+		await runProgram("docker", ["rm", "-f", "-v", container]);
+	});
+	const started = await runProgram("docker", [
+		"run", "-d", "--name", container, "--cpus", "2", "--memory", "4g", "--shm-size", "256m",
+		"-e", `POSTGRES_PASSWORD=${superPassword}`, ...POSTGRES_LOCALE, "-p", "127.0.0.1::5432", POSTGRES_IMAGE, "-c", "max_connections=100",
+	]);
+	if (started.status !== 0) throw new Error(`P4: the data store did not start: ${started.stderr}`);
+	const published = (await runProgram("docker", ["port", container, "5432/tcp"])).stdout;
+	const storePort = Number(/^127\.0\.0\.1:(\d+)$/m.exec(published)?.[1]);
+	assert(storePort > 0, `P4: the data store has no loopback port: ${published}`);
+	const inStore = (args, input = null) =>
+		runProgram("docker", ["exec", ...(input === null ? [] : ["-i"]), container, "psql", "-X", "-q", "-h", "127.0.0.1", "-U", "postgres", ...args],
+			{ input });
+	let ready = false;
+	for (let attempt = 0; attempt < 240 && !ready; attempt++) {
+		ready = (await inStore(["-Atc", "select 1"])).status === 0;
+		if (!ready) await sleep(250);
+	}
+	assert(ready, "P4: the data store did not become ready");
+	const locale = (await inStore(["-Atc", LOCALE_QUERY])).stdout;
+	checkLocale(locale);
+	for (const [database, file, variables] of [
+		["postgres", "cluster.sql", { admin_password: logins.admin, keeper_password: logins.keeper, watch_password: logins.watch }],
+		["qorpera_company_template", "template.sql", {}],
+	]) {
+		const made = await inStore(
+			["-d", database, "-v", "ON_ERROR_STOP=1", ...Object.entries(variables).flatMap(([name, value]) => ["-v", `${name}=${value}`])],
+			readFileSync(join(repositoryRoot, "deploy", "company-data", "store", file)),
+		);
+		if (made.status !== 0) throw new Error(`P4: the data store's ${file}: ${made.stderr}`);
+	}
+	evidence.store = { ready: true, container, image: POSTGRES_IMAGE, locale: locale.trim() };
+
+	const pki = join(work, "company-data-pki");
+	mkdirSync(pki, { mode: 0o700 });
+	const at = (name) => join(pki, name);
+	const openssl = async (args) => {
+		const said = await runProgram("openssl", args);
+		if (said.status !== 0) throw new Error(`P4: openssl ${args[0]}: ${said.stderr}`);
+	};
+	const ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"];
+	await openssl(["req", "-x509", ...ec, "-keyout", at("ca.key"), "-out", at("ca.crt"), "-days", "2", "-subj", "/CN=P4 company data CA",
+		"-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
+	await openssl(["req", ...ec, "-keyout", at("door.key"), "-out", at("door.csr"), "-subj", "/CN=P4 run door"]);
+	writeFileSync(at("door.ext"),
+		"subjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n");
+	await openssl(["x509", "-req", "-in", at("door.csr"), "-CA", at("ca.crt"), "-CAkey", at("ca.key"),
+		"-set_serial", `0x${randomBytes(8).toString("hex")}`, "-days", "2", "-out", at("door.crt"), "-extfile", at("door.ext")]);
+	const ca = readFileSync(at("ca.crt"), "utf8");
+	const key = readFileSync(at("door.key"), "utf8");
+	keySecrets(secrets, "dataCaKey", readFileSync(at("ca.key"), "utf8"));
+	keySecrets(secrets, "dataDoorKey", key);
+	secrets.dataDoorToken = token();
+
+	let passes = 0;
+	const redeemFetch = async (input, init = {}) => {
+		const url = new URL(String(input));
+		const entry = { t: elapsed(), path: url.pathname, publishable: init.headers?.apikey === PUBLISHABLE,
+			bearer: init.headers?.authorization !== undefined, as: "anon" };
+		if (evidence.redeems.length < 400) evidence.redeems.push(entry);
+		const reply = (status, value) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+		if (url.origin !== ORIGIN || url.pathname !== "/rest/v1/rpc/qorpera_data_pass_redeem" || init.method !== "POST" ||
+			!entry.publishable || entry.bearer) {
+			entry.refused = true;
+			return reply(400, { code: "PGRST000", details: null, hint: null, message: "Not what the gateway calls" });
+		}
+		let pass = null;
+		try {
+			pass = JSON.parse(init.body)?.p_pass ?? null;
+		} catch {}
+		if (typeof pass === "string") secrets[`dataPass${++passes}`] = pass;
+		try {
+			const kept = await db.asAnon("qorpera_data_pass_redeem", { p_pass: pass });
+			Object.assign(entry, kept
+				? { kind: kept.kind ?? null, viewId: kept.viewId ?? null, machineId: kept.machineId ?? null, database: kept.database ?? null,
+					allow: kept.allow ?? null, files: Array.isArray(kept.files) ? kept.files.map((f) => f.path) : null }
+				: { kind: null });
+			return reply(200, kept);
+		} catch (error) {
+			const failed = postgrestFailure(error?.message ?? "");
+			entry.error = failed?.value.code ?? String(error?.message ?? error).slice(0, 200);
+			return reply(failed?.status ?? 500, failed?.value ?? { message: "The stand-in failed" });
+		}
+	};
+	const gateway = new Gateway({
+		store: { host: "127.0.0.1", port: storePort, logins },
+		platform: new Platform({ url: ORIGIN, publishableKey: PUBLISHABLE, fetch: redeemFetch }),
+		runs: { token: secrets.dataDoorToken },
+	});
+	cleanups.push(() => gateway.close());
+	const door = await serveRuns(gateway, { host: "127.0.0.1", port: 0, cert: readFileSync(at("door.crt"), "utf8"), key });
+	cleanups.push(() => new Promise((closed) => {
+		door.close(() => closed());
+		door.closeAllConnections();
+	}));
+	door.on("request", (request, response) => {
+		const entry = { n: ++evidence.doorRequests, t: elapsed(), method: request.method, path: request.url, status: null };
+		if (evidence.door.length < 400) evidence.door.push(entry);
+		response.on("finish", () => {
+			entry.status = response.statusCode;
+		});
+	});
+	const url = `https://127.0.0.1:${door.address().port}/`;
+	evidence.tls = { scheme: new URL(url).protocol, caSha256: new X509Certificate(ca).fingerprint256 };
+	// The door as anyone else reaches it: a token that is not the node's, and no CA pinned.
+	const probe = (options) =>
+		new Promise((done) => {
+			const asked = httpsRequest({
+				host: "127.0.0.1", port: door.address().port, method: "POST", path: "/v1/run-data/describe", agent: false,
+				headers: { authorization: `Bearer ${token()}`, "content-type": "application/json", "content-length": "2" }, ...options,
+			}, (response) => {
+				response.resume();
+				response.on("end", () => done({ status: response.statusCode }));
+			});
+			asked.on("error", (error) => done({ error: error?.code ?? String(error?.message ?? error).slice(0, 200) }));
+			asked.end("{}");
+		});
+	evidence.probes = { wrongToken: await probe({ ca }), unpinned: await probe({}) };
+	return {
+		url, ca, token: secrets.dataDoorToken, evidence,
+		storeSql: (sql, database) => inStore(["-d", database, "-Atc", sql]),
+	};
+}
+
+/** Whether a secret of the run's whose name starts with `data` is on a machine's disk: LXD's raw image of its root disk
+ * in the claimed pool, read whole on this host (after a `sync` in the guest), with `marker` (a line the guest wrote) to
+ * show the scan sees the guest's files. Counts only, never the bytes found. */
+async function scanDisk(pool, name, marker, secrets) {
+	const base = `/var/snap/lxd/common/lxd/storage-pools/${pool}/virtual-machines`;
+	let dir;
+	try {
+		dir = readdirSync(base).find((entry) => entry === name || entry.endsWith(`_${name}`));
+	} catch (error) {
+		return { error: String(error?.message ?? error).slice(0, 300) };
+	}
+	if (!dir) return { error: `no disk of ${name} under ${base}` };
+	const image = join(base, dir, "root.img");
+	const named = Object.entries(secrets).filter(([n, v]) => n.startsWith("data") && typeof v === "string" && v.length >= 16);
+	const said = await runProgram("grep", ["-a", "-o", "-F", "-f", "-", image], {
+		input: `${[marker, ...named.map(([, v]) => v)].join("\n")}\n`, timeoutMs: 20 * 60_000, maxOut: 4 * 1024 * 1024,
+	});
+	const found = said.stdout.split("\n").filter(Boolean);
+	return {
+		image: `${dir}/root.img`, bytes: statSync(image).size, status: said.status,
+		error: said.status === 0 || said.status === 1 ? null : said.stderr.slice(0, 300),
+		marker: found.filter((f) => f.includes(marker)).length,
+		secrets: named.map(([n, v]) => ({ name: n, found: found.filter((f) => f.includes(v)).length })),
+	};
+}
+
 async function prove(options, evidence, cleanups, secrets) {
 	const signal = AbortSignal.timeout(150 * 60_000);
 	const { project, pool, image, work } = options;
@@ -1168,6 +1492,9 @@ async function prove(options, evidence, cleanups, secrets) {
 	});
 	assert(seeded?.units?.every((u) => u.outcome === "saved"), `P4: the seed did not save: ${JSON.stringify(seeded)}`);
 	say(`seeded p4/seed.md at seq ${seeded.seq}`);
+	const companyData = await startCompanyData({ work, db, secrets, cleanups });
+	steps.data = companyData.evidence;
+	say("company data: the store, the gateway and its run door are up");
 
 	// The node folder service: its core over the stand-in, its control socket for the executor (root here) and its
 	// folder socket behind the folder program's vsock bridge. Every open it is asked is recorded (never its pass).
@@ -1195,9 +1522,24 @@ async function prove(options, evidence, cleanups, secrets) {
 				throw error;
 			}
 		}
+		data(hello, bridge) {
+			const entry = { t: elapsed(), viewId: hello.viewId, role: hello.role, cid: bridge.cid, lookup: bridge.lookup,
+				machine: bridge.machine?.name ?? null };
+			if (companyData.evidence.hellos.length < 400) companyData.evidence.hellos.push(entry);
+			try {
+				const handle = super.data(hello, bridge);
+				entry.ok = true;
+				return handle;
+			} catch (error) {
+				entry.ok = false;
+				entry.code = error?.code ?? String(error?.message ?? error).slice(0, 200);
+				throw error;
+			}
+		}
 	})({
 		core, objects, grants: new code.MountGrants([], [], [], [], [project]),
 		staging: new code.FolderStaging(core, uploads, objects), log,
+		dataDoor: code.httpsDataDoor({ url: companyData.url, ca: companyData.ca, token: companyData.token }),
 	});
 	const controlPath = join(work, "control.sock");
 	const folderPath = join(work, "folder.sock");
@@ -1898,6 +2240,105 @@ async function prove(options, evidence, cleanups, secrets) {
 	await soft(until("the wake look's window closes", () => closedOn(again.commandId), { timeoutMs: 120_000, signal }));
 	say(`wake: view ${wakeView?.id} boot ${wakeView?.bootId}; read ${JSON.stringify(steps.stop.wake.receipt.output)}`);
 
+	// 8b. Company databases (slice 8a part 4, RUNTIME-COMPANY-DATABASES.md §9a), on the second boot and before K (9a),
+	// whose window would take every later change: a command writes a database's files under /company/data, and the
+	// machine's `data` (the image's /usr/local/bin/data) applies, changes, asks and describes as the boot's view. A
+	// question's rows in Bob's output take the database's read into his run; a step that would destroy data is held.
+	const data = steps.data;
+	const dataPaths = (files) => Object.keys(files).map((path) => `data/${DATA_DB}/${path}`);
+	/** One `data` command line in a machine_run of `who`'s: its exit code, the answer it printed (one line of JSON) and its
+	 * words, with the calls that reached the run door and the passes asked for meanwhile. */
+	const dataRun = async (who, key, line) => {
+		const from = { door: data.doorRequests, passes: db.calls.qorpera_machine_data_pass ?? 0 };
+		// The exit code first: a receipt keeps only so much output, and the usage words are long.
+		const ran = await machineRun(who, key, `out=$(${line} 2>&1); code=$?; echo "data-exit $code"; printf '%s\\n' "$out"`);
+		const done = ran.receipt ? await soft(readDone(who, ran.commandId)) : { error: ran.refusal };
+		const output = String(done.output ?? "");
+		const exit = /^data-exit (\d+)$/m.exec(output);
+		const json = output.split("\n").find((l) => l.startsWith("{"));
+		let answer = null;
+		try {
+			answer = json ? JSON.parse(json) : null;
+		} catch {
+			answer = { unparsed: json.slice(0, 300) };
+		}
+		return {
+			commandId: ran.commandId, by: who, line, exitCode: exit ? Number(exit[1]) : null, answer,
+			words: output.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(0, 300)), output: output.slice(0, 1500),
+			receipt: { state: done.state ?? null, exitCode: done.exitCode ?? null, error: done.error ?? null, companyFolder: done.companyFolder ?? null },
+			doorCalls: data.doorRequests - from.door, passCalls: (db.calls.qorpera_machine_data_pass ?? 0) - from.passes,
+			door: data.door.filter((x) => x.n > from.door).map((x) => `${x.path} ${x.status}`),
+		};
+	};
+	const writeFiles = (root, files) =>
+		Object.entries(files).flatMap(([path, text]) => [`cat > ${root}/data/${DATA_DB}/${path} <<'P4DATA'`, text.replace(/\n$/, ""), "P4DATA"]);
+	const savedNow = (files) => Object.fromEntries(dataPaths(files).map((path) => [path, entries(path)]));
+	/** A command that writes files under /company/data, and their saves. */
+	const writeData = async (key, lines, files) => {
+		const ran = await machineRun("alice", key, ["set -e", ...lines, "echo written"].join("\n"));
+		const receipt = ran.receipt ? await soft(readDone("alice", ran.commandId)) : { error: ran.refusal };
+		await soft(until(`${key}'s files are saved`, () => Object.values(savedNow(files)).every((n) => n === 1), { timeoutMs: 120_000, signal }));
+		return { commandId: ran.commandId, receipt: { state: receipt.state ?? null, exitCode: receipt.exitCode ?? null, error: receipt.error ?? null },
+			saved: savedNow(files) };
+	};
+	// The files go to a copy on the machine's own disk first, then into /company: the copy is what Bob's question reads
+	// its text from (below), and copying writes to /company without reading it.
+	const copy = "/root/p4-data";
+	const marker = `p4-data-disk-marker-${randomBytes(12).toString("hex")}`;
+	data.write = await writeData("p4-data-write", [
+		`mkdir -p ${copy}/data/${DATA_DB}/tables ${copy}/data/${DATA_DB}/queries ${copy}/data/${DATA_DB}/actions`,
+		...writeFiles(copy, DATA_FILES),
+		`echo ${marker} > ${copy}/marker`,
+		`mkdir -p /company/data/${DATA_DB}`,
+		`cp -r ${copy}/data/${DATA_DB}/. /company/data/${DATA_DB}/`,
+	], DATA_FILES);
+	data.apply = await dataRun("alice", "p4-data-apply", `data apply ${DATA_DB}`);
+	data.change = await dataRun("alice", "p4-data-change", `data change ${DATA_DB} add-ticket title=Second points:=3`);
+	// The read: Bob's question, its text read from the copy (not /company), so only the data role can record the read of
+	// the question's file. Bob's run has had no command on this boot.
+	const viewReadsNow = () => readPaths("qorpera_folder_view_read_records", "view_id", wakeView.id);
+	const bobReads = () => readPaths("qorpera_folder_run_read_records", "run_id", runs.bob.binding.runId);
+	const tomlPath = `data/${DATA_DB}/database.toml`;
+	const questionPath = `data/${DATA_DB}/queries/open.sql`;
+	data.reads = { viewId: wakeView.id, viewBefore: viewReadsNow(), bobBefore: bobReads() };
+	data.query = await dataRun("bob", "p4-data-query", `data --root ${copy} query ${DATA_DB} open`);
+	data.reads.bobAfter = await until("Bob's run has the database's reads", () => {
+		const reads = bobReads();
+		return reads.includes(tomlPath) && reads.includes(questionPath) ? reads : null;
+	}, { timeoutMs: 60_000, signal }).catch(() => bobReads());
+	data.reads.viewAfter = viewReadsNow();
+	data.queryPlain = await dataRun("alice", "p4-data-query-plain", `data query ${DATA_DB} open`);
+	data.describe = await dataRun("alice", "p4-data-describe", "data describe");
+	data.describeOne = await dataRun("alice", "p4-data-describe-one", `data describe ${DATA_DB}`);
+	say(`data: apply ${data.apply.exitCode} change ${data.change.exitCode} query ${data.query.exitCode} (${JSON.stringify(data.query.answer?.rows ?? null)}); bob's reads ${JSON.stringify(data.reads.bobAfter)}`);
+	// The held step: it would drop a column. No command line of `data` carries an allow.
+	data.heldWrite = await writeData("p4-data-held-write", writeFiles("/company", DATA_HELD_STEP), DATA_HELD_STEP);
+	data.held = await dataRun("alice", "p4-data-held", `data apply ${DATA_DB}`);
+	data.heldAgain = await dataRun("alice", "p4-data-held-again", `data apply ${DATA_DB}`);
+	const allow = data.held.answer?.results?.find((r) => r.state === "held")?.allow ?? "002-drop-points";
+	data.heldUsage = await dataRun("alice", "p4-data-held-usage", `data apply ${DATA_DB} ${allow}`);
+	data.afterHeld = await dataRun("alice", "p4-data-after-held", `data query ${DATA_DB} open`);
+	const storeSaid = async (sql) => {
+		const said = await companyData.storeSql(sql, companyDatabase(ENV));
+		return said.status === 0 ? said.stdout.trim() : `error: ${said.stderr.slice(0, 300)}`;
+	};
+	data.storeAfter = {
+		steps: (await storeSaid(`select string_agg(name, ',' order by name) from qorpera_data.steps where database = '${DATA_DB}'`))
+			.split(",").filter(Boolean),
+		points: Number(await storeSaid(`select count(*) from information_schema.columns where table_schema = '${DATA_DB}'
+			and table_name = 'tickets' and column_name = 'points'`)),
+		tickets: Number(await storeSaid(`select count(*) from ${DATA_DB}.tickets`)),
+	};
+	data.passes = db.json(`select jsonb_build_object('machine', count(*), 'withAllow', count(*) filter (where allow is not null),
+		'redeemed', count(*) filter (where redeemed_at is not null)) from public.qorpera_data_passes
+		where kind = 'machine' and environment_id = ${literal(ENV)}`);
+	say(`data held: ${JSON.stringify(data.held.answer?.results ?? data.held.words)}; usage exit ${data.heldUsage.exitCode}; store ${JSON.stringify(data.storeAfter)}`);
+	// Nothing of the run door's or the store's is on the machine: its disk, read whole after a sync.
+	const synced = await machineRun("alice", "p4-data-sync", "sync; echo synced");
+	data.synced = synced.receipt ? (await soft(readDone("alice", synced.commandId))).exitCode ?? null : null;
+	data.disk = await scanDisk(pool, lxdName, marker, secrets);
+	say(`data disk: ${JSON.stringify({ ...data.disk, secrets: data.disk.secrets?.filter((x) => x.found > 0).map((x) => x.name) })}`);
+
 	// 9a. Refusals: a command ended in SQL is refused (the gateway's start again, and its write at the boundary).
 	const m = await machineRun("carol", "p4-m", "echo m > /company/p4/m.txt; echo wrote-m");
 	const mReceipt = await readDone("carol", m.commandId);
@@ -1975,11 +2416,32 @@ async function prove(options, evidence, cleanups, secrets) {
 		steps.refusals.intruder.answer = answer;
 		steps.refusals.intruder.mount = answer?.mount ?? null;
 		steps.refusals.intruder.opens = opens.filter((o) => o.t >= triedAt && o.machine === intruder);
+		// 8b's second machine: the same VM runs `data` with p4's own view file (read from p4 and handed over in memory,
+		// never logged). The service refuses its hello; no pass is made and nothing reaches the run door.
+		const execIn = (name, command, stdin = Buffer.alloc(0)) =>
+			lxd.execInstanceStream(project, name, { command, stdin, maxStdoutBytes: 65536, maxStderrBytes: 65536, timeoutMs: 120_000 }, signal)
+				.catch((error) => ({ error: String(error?.message ?? error).slice(0, 300) }));
+		const viewFile = await execIn(lxdName, ["cat", "/run/qorpera-folder/view.json"]);
+		const before = { door: data.doorRequests, passes: db.calls.qorpera_machine_data_pass ?? 0, redeems: data.redeems.length,
+			hellos: data.hellos.length };
+		const other = viewFile.exitCode === 0
+			? await execIn(intruder, ["sh", "-c", `umask 077; cat > /root/p4-view.json && exec data --view-file /root/p4-view.json describe ${DATA_DB}`],
+				viewFile.stdout)
+			: { error: `p4's view file: ${viewFile.error ?? `exit ${viewFile.exitCode}`}` };
+		data.other = {
+			machine: intruder, exitCode: other.exitCode ?? null, error: other.error ?? null,
+			stdout: other.stdout ? other.stdout.toString("utf8").slice(0, 2000) : null,
+			stderr: other.stderr ? other.stderr.toString("utf8").slice(0, 2000) : null,
+			hellos: data.hellos.slice(before.hellos), doorCalls: data.doorRequests - before.door,
+			passCalls: (db.calls.qorpera_machine_data_pass ?? 0) - before.passes, redeems: data.redeems.length - before.redeems,
+		};
 		steps.refusals.intruder.removed = (await lxc(project, ["delete", "--force", intruder])).status;
 	}
 	const still = await machineRun("alice", "p4-still", "cat /company/p4/alice.txt");
 	steps.refusals.stillReads = await readDone("alice", still.commandId);
 	say(`other machine: ${JSON.stringify(steps.refusals.intruder.mount)}; opens ${JSON.stringify(steps.refusals.intruder.opens)}`);
+	data.still = await dataRun("alice", "p4-data-still", `data query ${DATA_DB} open`);
+	say(`data, other machine: exit ${data.other?.exitCode} ${JSON.stringify(data.other?.stderr)}; p4 still asks: exit ${data.still.exitCode}`);
 	evidence.sql = { views: views(), commands: commandRows(), commits: commits() };
 	steps.p4Removed = await removeMachine("alice", p4);
 	say("p4 removed");
