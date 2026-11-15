@@ -5,9 +5,16 @@ import { CLOUD_HOME_OUTDATED, CLOUD_HOME_UNAVAILABLE, cloudHomeRefusalWords } fr
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_HOME_CHANNEL_KEEPALIVE,
+	CLOUD_HOME_SFTP_PIECE_BYTES,
+	type CloudHomeChannelKind,
 	CloudHomeChannelRefused,
+	type CloudHomeChannelRequest,
 	type CloudHomeChannelSide,
+	cloudHomeChannelHandshake,
 	cloudHomeChannelKeepAlive,
+	cloudHomeSftpBytes,
+	cloudHomeSftpLines,
+	parseCloudHomeChannelHandshake,
 } from "../src/cloud-home-channel.ts";
 import { createCloudHomeChannel } from "../src/cloud-home-channel-client.ts";
 
@@ -27,7 +34,7 @@ const until = async (test: () => boolean, ms = 3000): Promise<void> => {
 	}
 };
 
-async function fixture(open: () => Promise<CloudHomeChannelSide>) {
+async function fixture(open: (request: CloudHomeChannelRequest) => Promise<CloudHomeChannelSide>) {
 	const token = randomBytes(32).toString("base64url");
 	const binding = {
 		leaseId: randomUUID(),
@@ -64,7 +71,7 @@ async function fixture(open: () => Promise<CloudHomeChannelSide>) {
 				executorOwner: "node-a",
 				providerId: "machine-node",
 			}),
-			open: async () => await open(),
+			open: async (_authority, request) => await open(request),
 		},
 	});
 	const port = await service.start();
@@ -77,7 +84,10 @@ async function fixture(open: () => Promise<CloudHomeChannelSide>) {
 		allowLoopback: true,
 		keepAliveMs: 40,
 	});
-	return { open: () => channel.open({ sessionId: randomUUID(), machineId }, AbortSignal.timeout(5000)) };
+	return {
+		open: (kind?: CloudHomeChannelKind) =>
+			channel.open({ sessionId: randomUUID(), machineId, ...(kind ? { kind } : {}) }, AbortSignal.timeout(5000)),
+	};
 }
 
 /** A machine side whose lines the test pushes, and which records every line it is given. */
@@ -235,5 +245,93 @@ describe("a machine whose Codex is not the pinned build", () => {
 		expect(cloudHomeRefusalWords("HOME_CODEX_NOT_PINNED")).toBe(CLOUD_HOME_OUTDATED);
 		expect(CLOUD_HOME_OUTDATED).toMatch(/^HOME_OUTDATED: .*unavailable on this machine.*Start a new machine/);
 		expect(cloudHomeRefusalWords("HOME_NOT_SHARED")).toBe(CLOUD_HOME_UNAVAILABLE);
+	});
+});
+
+describe("the file channel's kind (Claude Code on the home, slice C1)", () => {
+	const binding = {
+		leaseId: randomUUID(),
+		runId: randomUUID(),
+		jobId: randomUUID(),
+		runnerId: randomUUID(),
+		assignmentId: randomUUID(),
+		credentialCapsuleId: randomUUID(),
+		computeIdentityId: randomUUID(),
+		provider: "openai" as const,
+		nativeHarness: "codex-cli" as const,
+		model: "gpt-test",
+	};
+
+	it("is named in the handshake only for sftp, so an exec channel's handshake is today's; anything else is refused", () => {
+		const ids = { binding, machineId: randomUUID(), sessionId: randomUUID() };
+		const exec = cloudHomeChannelHandshake(ids);
+		expect(Object.keys(JSON.parse(exec)).sort()).toEqual(["binding", "machineId", "schema", "sessionId"]);
+		expect(cloudHomeChannelHandshake({ ...ids, kind: "exec" })).toBe(exec);
+		expect(parseCloudHomeChannelHandshake(exec)?.kind).toBe("exec");
+		const sftp = cloudHomeChannelHandshake({ ...ids, kind: "sftp" });
+		expect(JSON.parse(sftp).kind).toBe("sftp");
+		expect(parseCloudHomeChannelHandshake(sftp)).toMatchObject({ kind: "sftp", sessionId: ids.sessionId });
+		expect(parseCloudHomeChannelHandshake(JSON.stringify({ ...JSON.parse(exec), kind: "exec" }))?.kind).toBe("exec");
+		for (const kind of ["shell", "", 1, null, "SFTP"])
+			expect(parseCloudHomeChannelHandshake(JSON.stringify({ ...JSON.parse(exec), kind }))).toBeUndefined();
+		expect(parseCloudHomeChannelHandshake(JSON.stringify({ ...JSON.parse(sftp), extra: 1 }))).toBeUndefined();
+		expect(() => cloudHomeChannelHandshake({ ...ids, kind: "shell" as CloudHomeChannelKind })).toThrow();
+	});
+
+	it("carries the stream as base64 lines in pieces, and takes nothing but standard base64 back", async () => {
+		const large = randomBytes(CLOUD_HOME_SFTP_PIECE_BYTES * 2 + 3);
+		const small = Buffer.from([0, 10, 13, 0xff]);
+		const lines: string[] = [];
+		for await (const line of cloudHomeSftpLines(
+			(async function* () {
+				yield small;
+				yield large;
+			})(),
+		))
+			lines.push(line);
+		expect(lines.map((line) => cloudHomeSftpBytes(line).byteLength)).toEqual([4, 786432, 786432, 3]);
+		expect(Buffer.concat(lines.map(cloudHomeSftpBytes))).toEqual(Buffer.concat([small, large]));
+		expect(lines.every((line) => !line.includes("\n") && line !== CLOUD_HOME_CHANNEL_KEEPALIVE)).toBe(true);
+		for (const bad of [
+			"",
+			"abc",
+			"ab=c",
+			"a===",
+			"YWJj\n",
+			"YW Jj",
+			"YWJj-_8=",
+			CLOUD_HOME_CHANNEL_KEEPALIVE,
+			"====",
+		])
+			expect(() => cloudHomeSftpBytes(bad), bad).toThrow();
+		expect(cloudHomeSftpBytes("YQ==")).toEqual(Buffer.from("a"));
+	});
+
+	it("reaches the machine's side through the ingress with its kind, and a machine without sftp-server is outdated", async () => {
+		const m = machine();
+		const asked: CloudHomeChannelRequest[] = [];
+		const f = await fixture(async (request) => {
+			asked.push(request);
+			if (asked.length === 3) throw new CloudHomeChannelRefused("HOME_SFTP_MISSING");
+			// Each channel its own machine side: the shell's never sees the file channel's lines.
+			return asked.length === 1 ? m.side : machine().side;
+		});
+		const files = await f.open("sftp");
+		const shell = await f.open();
+		expect(asked.map((request) => request.kind)).toEqual(["sftp", "exec"]);
+		const seen: string[] = [];
+		void (async () => {
+			for await (const line of files.lines) seen.push(line);
+		})().catch(() => undefined);
+		const line = Buffer.from([0, 0, 0, 5, 1, 0, 0, 0, 3]).toString("base64");
+		files.write(line);
+		m.push(line);
+		await until(() => seen.length === 1 && m.given.length === 1);
+		expect([seen, m.given]).toEqual([[line], [line]]);
+		await files.close();
+		await shell.close();
+		const refused = await f.open("sftp").catch((error: unknown) => error);
+		expect((refused as CloudHomeChannelRefused).reason).toBe("HOME_SFTP_MISSING");
+		expect(cloudHomeRefusalWords("HOME_SFTP_MISSING")).toBe(CLOUD_HOME_OUTDATED);
 	});
 });

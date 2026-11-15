@@ -1,0 +1,15 @@
+# /etc/apparmor.d/qorpera-claude-box-ns: the one program on the run host that may make a user namespace and use its
+# capabilities there (slice C2, lanes/agent-box-20261113/CLAUDE-HOME-BUILD.md). Ubuntu 26.04 denies every capability
+# in a new user namespace to an unconfined program (kernel.apparmor_restrict_unprivileged_userns = 1: profile
+# `unprivileged_userns`) and to everything bwrap starts (`bwrap-userns-restrict`: `unpriv_bwrap`), so neither can mount
+# FUSE there. This is the profile Ubuntu documents for a program that needs it, for one root-owned copy of util-linux
+# `unshare` (mode 0750, the run host's service group only), which the Claude Code box's mount stage runs in:
+# qorpera-claude-box-stage.sh drops every capability before the box itself starts.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile qorpera-claude-box-ns /opt/qorpera-runner/qorpera-claude-box-ns flags=(unconfined) {
+  userns,
+
+  include if exists <local/qorpera-claude-box-ns>
+}

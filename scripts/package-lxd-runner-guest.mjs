@@ -7,6 +7,42 @@ import { fileURLToPath } from "node:url";
 import { verifyNativeCompanyArtifact } from "./native-company-artifact.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const NATIVE_CLAUDE_ARTIFACT = "deploy/first-node/native-claude/linux-x64-artifact.json";
+
+/** The unmodified Claude Code the image fetches by its npm integrity and checks by size and sha-256 (the Claude Code
+ * box's binary; the node's own Claude sign-in path links to the same file). Never older than its minimum, 2.1.311 at
+ * least: older versions leak the sign-in in the box's set-up. */
+function nativeClaudeVersion(artifact) {
+	const version = (text) => (/^\d+\.\d+\.\d+$/.test(text ?? "") ? text.split(".").map(Number) : undefined);
+	const atLeast = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+	const source = artifact?.source;
+	const binary = artifact?.artifact;
+	const current = version(source?.version);
+	const minimum = version(artifact?.minimumVersion);
+	if (
+		artifact?.schema !== "qorpera.native-claude-artifact/v1" ||
+		source?.registry !== "https://registry.npmjs.org" ||
+		source?.package !== "@anthropic-ai/claude-code-linux-x64" ||
+		!current ||
+		!minimum ||
+		atLeast(minimum, [2, 1, 311]) < 0 ||
+		atLeast(current, minimum) < 0 ||
+		source?.tarball !== `${source.registry}/${source.package}/-/claude-code-linux-x64-${source.version}.tgz` ||
+		!/^sha512-[A-Za-z0-9+/]{86}==$/.test(source?.integrity) ||
+		!Number.isSafeInteger(source?.tarballBytes) ||
+		source.tarballBytes < 1 ||
+		binary?.file !== "claude" ||
+		binary.path !== "package/claude" ||
+		!Number.isSafeInteger(binary.bytes) ||
+		binary.bytes < 1 ||
+		binary.bytes > 1024 ** 3 ||
+		!/^[0-9a-f]{64}$/.test(binary.sha256) ||
+		binary.target !== "x86_64-unknown-linux-gnu" ||
+		binary.modified !== false
+	)
+		throw new Error(`${NATIVE_CLAUDE_ARTIFACT} is not a valid pin of the unmodified Claude Code`);
+	return source.version;
+}
 
 function options(args) {
 	let outputRoot = resolve(repositoryRoot, ".artifacts/lxd-runner-guest");
@@ -66,6 +102,7 @@ try {
 	await rm(outputRoot, { recursive: true, force: true });
 	await mkdir(join(outputRoot, "harness"), { recursive: true });
 	await mkdir(join(outputRoot, "runner-image"), { recursive: true });
+	await mkdir(join(outputRoot, "native-claude"), { recursive: true });
 	const sources = new Map([
 		["qorpera-ephemeral-runner.mjs", join(runnerRoot, "qorpera-ephemeral-runner.mjs")],
 		["qorpera-native-provider-host.mjs", join(runnerRoot, "qorpera-native-provider-host.mjs")],
@@ -77,7 +114,11 @@ try {
 			"qorpera-lxd-native-login-bootstrap.mjs",
 			join(runnerRoot, "qorpera-lxd-native-login-bootstrap.mjs"),
 		],
+		["qorpera-claude-home-shell.mjs", join(runnerRoot, "qorpera-claude-home-shell.mjs")],
 		["run-job", join(runnerRoot, "run-job")],
+		["qorpera-claude-box-stage.sh", resolve(repositoryRoot, "deploy/claude-box/qorpera-claude-box-stage.sh")],
+		["qorpera-claude-box-ns.apparmor", resolve(repositoryRoot, "deploy/claude-box/qorpera-claude-box-ns.apparmor")],
+		["native-claude/artifact.json", resolve(repositoryRoot, NATIVE_CLAUDE_ARTIFACT)],
 		[
 			"qorpera-ephemeral-runner.service",
 			resolve(repositoryRoot, "deploy/lxd-runner-guest/qorpera-ephemeral-runner.service"),
@@ -122,6 +163,7 @@ try {
 	}
 
 	for (const [file, source] of sources) await copyFile(source, join(outputRoot, file));
+	const claudeCode = nativeClaudeVersion(JSON.parse(await readFile(join(outputRoot, "native-claude/artifact.json"), "utf-8")));
 	const runnerImageContract = JSON.parse(await readFile(sources.get("runner-image/contract.json"), "utf-8"));
 	if (
 		runnerImageContract.schema !== "qorpera.ephemeral-runner-image-contract/v1" ||
@@ -173,7 +215,7 @@ try {
 				schema: "qorpera.lxd-runner-guest-package/v1",
 				platform: "linux-x64",
 				runtime: { node: ">=22.19.0", podman: ">=5.0.0", cgroups: "v2" },
-				nativeHarnesses: { codex: "0.147.0", claudeCode: "2.1.231" },
+				nativeHarnesses: { codex: "0.147.0", claudeCode },
 				...(nativeCompany ? { nativeCompany: nativeCompany.contract } : {}),
 				runnerImage: runnerImageContract,
 				artifacts,

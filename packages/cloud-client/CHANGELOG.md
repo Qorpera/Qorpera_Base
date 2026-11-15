@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- A plain worker's brief may name `harness: claude-code` (20260930770000); any other harness on a plain brief is refused, and a repository stays a coding brief's.
 - `APP_KITS` names two more data kits: `ring` and `flow` (company views plan step 5, lanes/company-views-20261114/PLAN.md). An `app.toml` with `kit = "ring"` reads as the others do.
 - `MemberAgentMachine.memberSleepSeconds` (migration `20260930759000`): for a machine that is awake only because a member woke it, how many seconds after that member's last sign it sleeps (whole seconds, a minute to a week); null for every other machine and from a database before it. Anything else fails the read.
 - `OWED_APPS` (`interface-apps.ts`): the apps that are views the company is owed, at their fixed folders `apps/products`, `apps/money` and `apps/ads`, in that order (company views step 4, lanes/company-views-20261114/DESIGN-4.md); the runtime's `save_app` uses it and a test holds the `look` guide to it, and the web's drawer has the same list under the same name until it reads this one.

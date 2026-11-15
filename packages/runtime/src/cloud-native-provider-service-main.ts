@@ -558,6 +558,20 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							}),
 					}
 				: {}),
+			// A Claude Code worker (slice C4c): the agent's home, and its member's Claude sign-in from this company's vault,
+			// under the same runtime token as a model login. Without either such a worker's run is refused.
+			...(codingConfiguration && codingToken && secretBrokerOrigin && secretBrokerToken
+				? {
+						claudeWorker: {
+							logins: {
+								origin: secretBrokerOrigin,
+								runtimeToken: secretBrokerToken,
+								companyId: state.companyId,
+								holder,
+							},
+						},
+					}
+				: {}),
 			...(computerConfiguration && computerToken
 				? {
 						computerSession: createHttpCompanyComputerSessionFactory({
