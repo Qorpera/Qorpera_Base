@@ -80,7 +80,7 @@ const COPIED_MS = 1600;
 const DOTS = "••••••••••••";
 
 /** A site as members call it: its title, else its name in the link. */
-export function nameOf(site: CompanySite): string {
+function nameOf(site: CompanySite): string {
 	return site.title ?? site.slug;
 }
 
@@ -143,7 +143,7 @@ function passwordProblem(password: string): string | undefined {
 }
 
 /** What to press to copy a text the page selected, when the browser would not let the page copy it. */
-export function pressToCopy(): string {
+function pressToCopy(): string {
 	return /Mac|iPhone|iPad/.test(navigator.userAgent) ? t("Press ⌘C to copy.") : t("Press Ctrl+C to copy.");
 }
 
@@ -173,7 +173,7 @@ export async function toClipboard(text: string | Promise<string>): Promise<boole
 }
 
 /** A password the list says was changed after it (the kernel writes both times from one column, so they compare). */
-export function outdated(site: CompanySite, password: CompanySitePassword): boolean {
+function outdated(site: CompanySite, password: CompanySitePassword): boolean {
 	return Date.parse(site.passwordChangedAt) > Date.parse(password.changedAt);
 }
 
@@ -185,7 +185,7 @@ interface Moment {
 
 /** The site's state as a dot and a word; when and by whom it was published as its tip. A site Qorpera took down is that,
  * whatever the list says of it. */
-function stateOf(site: CompanySite, down: boolean): HTMLElement {
+export function stateOf(site: CompanySite, down: boolean): HTMLElement {
 	const published = site.publishedAt
 		? site.publishedBy
 			? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
@@ -211,167 +211,6 @@ function downLine(down: CompanySiteTakedown): HTMLElement {
 			reason,
 			feedback: t("Feedback"),
 		}),
-	);
-}
-
-/** What a site's pills show beside the site: whether the member may see its password (`manage`), whether a change is
- * on its way (`busy`: the password's controls are off) or its password is being read (`reading`), the password shown
- * (else dots), a text the browser would not copy shown whole to copy by hand, and what each press does. */
-export interface SitePillsState {
-	readonly manage: boolean;
-	readonly busy: boolean;
-	readonly reading: boolean;
-	readonly password: string | undefined;
-	readonly byHandLink: string | undefined;
-	readonly byHandPassword: string | undefined;
-	readonly copyLink: () => void;
-	readonly copyPassword: () => void;
-	readonly eye: () => void;
-}
-
-/** What a pill shows when the browser would not copy its text: the text whole, in a field that selects it. */
-function byHandField(text: string, label: string, focusKey: string): HTMLElement {
-	const field = h("input", {
-		type: "text",
-		class: "site-pill-field",
-		readonly: true,
-		value: text,
-		"aria-label": label,
-		onfocus: (event: FocusEvent) => (event.target as HTMLInputElement).select(),
-	});
-	field.dataset.focusKey = focusKey;
-	return field;
-}
-
-const pillLead = (kind: string) => h("span", { class: "site-pill-lead" }, icon(kind), icon("copy"), icon("check"));
-
-/** A site's link as a pill: a press on it copies it, the arrow opens the site; with `byHand`, the link whole in a field
- * to copy by hand. `id` names its controls (`site-copy-link:<id>`, `site-by-hand:link:<id>`). The Sites page's rows,
- * a site's card in a thread, and the line a thread's card settles on once a change is live. */
-export function siteLinkPill(id: string, url: string, byHand: string | undefined, copy: () => void): HTMLElement {
-	const copyLink = h(
-		"button",
-		{
-			type: "button",
-			class: "site-pill-main site-link-copy",
-			title: t("Copy the link"),
-			// Its name is the link it shows; with the link in the field beside it, what it does.
-			...(byHand === undefined ? {} : { "aria-label": t("Copy the link") }),
-			onclick: copy,
-		},
-		pillLead("link"),
-		byHand === undefined ? h("span", { class: "site-pill-text" }, shownLink(url)) : null,
-	);
-	copyLink.dataset.focusKey = `site-copy-link:${id}`;
-	return h(
-		"div",
-		{ class: "site-pill site-link" },
-		copyLink,
-		byHand === undefined ? null : byHandField(byHand, t("The link"), `site-by-hand:link:${id}`),
-		h(
-			"a",
-			{
-				class: "site-pill-icon site-link-open",
-				href: url,
-				target: "_blank",
-				rel: "noopener noreferrer",
-				title: t("Open the site"),
-				"aria-label": t("Open the site"),
-			},
-			icon("external"),
-		),
-	);
-}
-
-/** A site's link and, for an owner or admin, its password, each a pill (the Sites page's rows, and a site's card in a
- * thread). */
-export function sitePills(site: CompanySite, state: SitePillsState): HTMLElement {
-	const link = siteLinkPill(site.id, site.url, state.byHandLink, state.copyLink);
-	let secret: HTMLElement | null = null;
-	if (state.manage) {
-		const shown = state.password;
-		const byHandPassword = state.byHandPassword;
-		const copyPassword = h(
-			"button",
-			{
-				type: "button",
-				class: `site-pill-main site-secret-copy${shown !== undefined ? " is-shown" : ""}`,
-				title: t("Copy the password"),
-				disabled: state.busy,
-				// Its name is the password once shown; hidden, or in the field beside it, what it does.
-				...(shown !== undefined && byHandPassword === undefined ? {} : { "aria-label": t("Copy the password") }),
-				...(state.reading ? { "aria-busy": "true" } : {}),
-				onclick: state.copyPassword,
-			},
-			pillLead("key"),
-			byHandPassword === undefined
-				? h(
-						"span",
-						{
-							class: "site-pill-text site-secret-text",
-							...(shown !== undefined ? {} : { "aria-hidden": "true" }),
-						},
-						shown ?? DOTS,
-					)
-				: null,
-		);
-		copyPassword.dataset.focusKey = `site-copy-password:${site.id}`;
-		const eye = h(
-			"button",
-			{
-				type: "button",
-				class: "site-pill-icon site-eye",
-				title: shown !== undefined ? t("Hide password") : t("Show password"),
-				"aria-label": shown !== undefined ? t("Hide password") : t("Show password"),
-				disabled: state.busy,
-				onclick: state.eye,
-			},
-			icon(shown !== undefined ? "hide" : "show"),
-		);
-		eye.dataset.focusKey = `site-eye:${site.id}`;
-		secret = h(
-			"div",
-			{ class: `site-pill site-secret${state.reading ? " is-reading" : ""}` },
-			copyPassword,
-			byHandPassword === undefined
-				? null
-				: byHandField(byHandPassword, t("The password"), `site-by-hand:password:${site.id}`),
-			eye,
-		);
-	}
-	return h("div", { class: "site-share" }, link, secret);
-}
-
-/** A site's row (styles/sites.css): the Sites globe, its title and state (what `head` adds after them), the row's menu
- * if any, and under them its pills, or, for a site Qorpera took down, why. The Sites page draws each site with it, and a
- * thread draws a site a message links with it, compact (`classes`). */
-export function siteRow(
-	site: CompanySite,
-	down: CompanySiteTakedown | undefined,
-	parts: {
-		readonly head?: HTMLElement | null;
-		readonly more?: HTMLElement | null;
-		readonly share: () => HTMLElement;
-		readonly classes?: readonly (string | false | undefined)[];
-	},
-): HTMLElement {
-	return h(
-		"article",
-		{
-			class: ["site-row", `is-${down ? "down" : site.state}`, ...(parts.classes ?? [])].filter(Boolean).join(" "),
-			dataset: { site: site.id },
-			"aria-label": nameOf(site),
-		},
-		siteEmblem(),
-		h(
-			"div",
-			{ class: "site-head" },
-			h("strong", { class: "site-name" }, nameOf(site)),
-			stateOf(site, Boolean(down)),
-			parts.head ?? null,
-		),
-		parts.more ?? null,
-		down ? downLine(down) : parts.share(),
 	);
 }
 
@@ -957,20 +796,108 @@ export class SitesView {
 		await this.#refresh(focusKey);
 	}
 
+	/** What a pill shows when the browser would not copy its text: the text whole, in a field that selects it. */
+	#byHandField(text: string, label: string, focusKey: string): HTMLElement {
+		const field = h("input", {
+			type: "text",
+			class: "site-pill-field",
+			readonly: true,
+			value: text,
+			"aria-label": label,
+			onfocus: (event: FocusEvent) => (event.target as HTMLInputElement).select(),
+		});
+		field.dataset.focusKey = focusKey;
+		return field;
+	}
+
 	/** A site's link and, for an owner or admin, its password, each a pill. */
 	#share(site: CompanySite, manage: boolean, busy: boolean): HTMLElement {
-		const shown = this.#passwords.get(site.id);
-		return sitePills(site, {
-			manage,
-			busy,
-			reading: this.#working?.site === site.id && this.#working.action !== "unpublish",
-			password: shown?.password,
-			byHandLink: this.#byHand?.key === `link:${site.id}` ? this.#byHand.text : undefined,
-			byHandPassword: this.#byHand?.key === `password:${site.id}` ? this.#byHand.text : undefined,
-			copyLink: () => void this.#copyLink(site),
-			copyPassword: () => void this.#copyPassword(site),
-			eye: () => (shown ? this.#hidePassword(site) : void this.#showPassword(site)),
-		});
+		const lead = (kind: string) => h("span", { class: "site-pill-lead" }, icon(kind), icon("copy"), icon("check"));
+		// The link: a press on it copies it, the arrow opens the site.
+		const byHandLink = this.#byHand?.key === `link:${site.id}` ? this.#byHand.text : undefined;
+		const copyLink = h(
+			"button",
+			{
+				type: "button",
+				class: "site-pill-main site-link-copy",
+				title: t("Copy the link"),
+				// Its name is the link it shows; with the link in the field beside it, what it does.
+				...(byHandLink === undefined ? {} : { "aria-label": t("Copy the link") }),
+				onclick: () => void this.#copyLink(site),
+			},
+			lead("link"),
+			byHandLink === undefined ? h("span", { class: "site-pill-text" }, shownLink(site.url)) : null,
+		);
+		copyLink.dataset.focusKey = `site-copy-link:${site.id}`;
+		const link = h(
+			"div",
+			{ class: "site-pill site-link" },
+			copyLink,
+			byHandLink === undefined ? null : this.#byHandField(byHandLink, t("The link"), `site-by-hand:link:${site.id}`),
+			h(
+				"a",
+				{
+					class: "site-pill-icon site-link-open",
+					href: site.url,
+					target: "_blank",
+					rel: "noopener noreferrer",
+					title: t("Open the site"),
+					"aria-label": t("Open the site"),
+				},
+				icon("external"),
+			),
+		);
+		let secret: HTMLElement | null = null;
+		if (manage) {
+			const shown = this.#passwords.get(site.id);
+			const reading = this.#working?.site === site.id && this.#working.action !== "unpublish";
+			const byHandPassword = this.#byHand?.key === `password:${site.id}` ? this.#byHand.text : undefined;
+			const copyPassword = h(
+				"button",
+				{
+					type: "button",
+					class: `site-pill-main site-secret-copy${shown ? " is-shown" : ""}`,
+					title: t("Copy the password"),
+					disabled: busy,
+					// Its name is the password once shown; hidden, or in the field beside it, what it does.
+					...(shown && byHandPassword === undefined ? {} : { "aria-label": t("Copy the password") }),
+					...(reading ? { "aria-busy": "true" } : {}),
+					onclick: () => void this.#copyPassword(site),
+				},
+				lead("key"),
+				byHandPassword === undefined
+					? h(
+							"span",
+							{ class: "site-pill-text site-secret-text", ...(shown ? {} : { "aria-hidden": "true" }) },
+							shown ? shown.password : DOTS,
+						)
+					: null,
+			);
+			copyPassword.dataset.focusKey = `site-copy-password:${site.id}`;
+			const eye = h(
+				"button",
+				{
+					type: "button",
+					class: "site-pill-icon site-eye",
+					title: shown ? t("Hide password") : t("Show password"),
+					"aria-label": shown ? t("Hide password") : t("Show password"),
+					disabled: busy,
+					onclick: () => (shown ? this.#hidePassword(site) : void this.#showPassword(site)),
+				},
+				icon(shown ? "hide" : "show"),
+			);
+			eye.dataset.focusKey = `site-eye:${site.id}`;
+			secret = h(
+				"div",
+				{ class: `site-pill site-secret${reading ? " is-reading" : ""}` },
+				copyPassword,
+				byHandPassword === undefined
+					? null
+					: this.#byHandField(byHandPassword, t("The password"), `site-by-hand:password:${site.id}`),
+				eye,
+			);
+		}
+		return h("div", { class: "site-share" }, link, secret);
 	}
 
 	#row(site: CompanySite, manage: boolean, index: number): HTMLElement {
@@ -1024,12 +951,31 @@ export class SitesView {
 		// Only a row new on the page moves in, one after another.
 		const first = !this.#seen.has(site.id);
 		this.#seen.add(site.id);
-		const row = siteRow(site, down, {
-			head: from,
+		const row = h(
+			"article",
+			{
+				class: [
+					"site-row",
+					`is-${down ? "down" : site.state}`,
+					first && "is-new",
+					this.#leaving === site.id && "is-leaving",
+				]
+					.filter(Boolean)
+					.join(" "),
+				dataset: { site: site.id },
+				"aria-label": name,
+			},
+			siteEmblem(),
+			h(
+				"div",
+				{ class: "site-head" },
+				h("strong", { class: "site-name" }, name),
+				stateOf(site, Boolean(down)),
+				from,
+			),
 			more,
-			share: () => this.#share(site, manage, busy),
-			classes: [first && "is-new", this.#leaving === site.id && "is-leaving"],
-		});
+			down ? downLine(down) : this.#share(site, manage, busy),
+		);
 		if (first) row.style.setProperty("--i", String(index));
 		return row;
 	}

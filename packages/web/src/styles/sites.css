@@ -141,24 +141,6 @@
 .site-row.is-waiting .site-emblem { --emblem-ink: var(--text-soft); }
 .site-actions { grid-area: end; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
-/* ---- a site a message links, in a thread (app/views/thread-sites.ts) ------------------------------------------
- * The Sites page's row, compact, as a card of its own under the words (an app's card's frame, styles/conversation.css
- * `.app-card`): the globe, the title and state, and the pills. No "⋯": what is rare stays on the Sites page. */
-.site-card { flex: 0 1 auto; width: 48em; min-width: 0; max-width: 100%; --site-ink: #2047bd; container: site-rows / inline-size; }
-:root[data-theme="dark"] .site-card { --site-ink: #7193f2; }
-.site-row.is-thread {
-	grid-template-areas: "emblem head head" "body body body"; column-gap: 12px; row-gap: 10px; padding: 12px 14px 14px;
-	border: 1px solid var(--border); border-radius: 18px; background: var(--bg);
-}
-.site-row.is-thread .site-name { font-size: 15px; }
-.site-row.is-thread .site-share { grid-template-columns: minmax(0, 1fr); }
-.site-row.is-thread .site-down { font-size: 13.5px; }
-.site-card-said { margin: 6px 4px 0; font-size: 12.5px; }
-/* Side by side only where the message is wide enough to show the link whole beside the password. */
-@container site-rows (min-width: 44em) {
-	.site-row.is-thread .site-share { grid-template-columns: minmax(0, 1fr) minmax(0, 13.5em); }
-}
-
 /* ---- the change-password question -------------------------------------------------- */
 .sites-question h2 { margin: 0; font-size: 17px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
 .sites-question > p { margin: -4px 0 2px; color: var(--text-muted); font-size: 14px; line-height: 1.45; }

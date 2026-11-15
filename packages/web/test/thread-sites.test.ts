@@ -2,24 +2,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import { SitesView } from "../src/app/views/settings-sites.ts";
 import { ThreadSites, type ThreadSitesClient } from "../src/app/views/thread-sites.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CompanySite, CompanySiteAccess, CompanySitePassword } from "../src/cloud/sites.ts";
 import { siteOfLink } from "../src/cloud/sites.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
-import sitesCss from "../src/styles/sites.css?raw";
 import { type LinkedSite, markdownBubbles } from "../src/ui/markdown.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
+import { fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
 
-/* A site a message links, as the Sites page's row under the words (own code storage, thread pieces): which links lead to
- * the company's own sites, the card's markup and calls (the Sites page's own), who sees the password, a site Qorpera
- * took down, and the thread that draws it. */
+/* A site a message links, as one calm row under the words, a sibling of an app's card (own code storage, thread pieces):
+ * which links lead to the company's own sites, the row, the owner's key that copies the password without ever showing
+ * it, a site Qorpera took down, and the thread that draws it. */
 
 const PASSWORD = "k7mq-x2pa-9fhd";
-const DOTS = "••••••••••••";
 
 /** A project's site at an address of its own (step 5.1). */
 const gift: CompanySite = {
@@ -102,7 +99,7 @@ function client(sites: CompanySite[] = [gift, shop, app, old], options: { down?:
 async function cards(manage = true, calls: ThreadSitesClient = client()) {
 	const changed = vi.fn();
 	const lifetime = new AbortController();
-	const sites = new ThreadSites(calls, () => manage, lifetime.signal, changed);
+	const sites = new ThreadSites(calls, () => manage, profileA.profileId, lifetime.signal, changed);
 	cleanup.push(() => lifetime.abort());
 	await settle();
 	return { sites, changed, calls };
@@ -127,7 +124,8 @@ function h(tag: string, className?: string, child?: Node): HTMLElement {
 	return element;
 }
 
-const focusKey = (root: ParentNode, key: string) => root.querySelector<HTMLElement>(`[data-focus-key="${key}"]`);
+const keyOf = (root: ParentNode) => root.querySelector<HTMLButtonElement>(".site-card-key");
+const note = (root: ParentNode) => root.querySelector(".app-card-note")?.textContent;
 
 describe("A site a message links: which links", () => {
 	const list = [gift, shop, app];
@@ -162,7 +160,7 @@ describe("A site a message links: which links", () => {
 });
 
 describe("A site a message links: the card under the words", () => {
-	it("keeps the link a link in the words, and draws the site's card in a row of its own under them", async () => {
+	it("keeps the link a link in the words, and draws the site as one row of its own under them, an app card's sibling", async () => {
 		const { sites } = await cards();
 		const root = message(sites, "Your change is live at [the gift page](https://saml-gift-message.qorpera.com/).");
 		const parts = [...root.children];
@@ -172,44 +170,33 @@ describe("A site a message links: the card under the words", () => {
 		expect(word.href).toBe("https://saml-gift-message.qorpera.com/");
 		expect(word.target).toBe("_blank");
 		expect(word.rel).toBe("noopener noreferrer");
-		// The row has no bubble paint (as an app's card's row), and holds the Sites page's row, compact.
+		// The row has no bubble paint, as an app card's row; the card wears the app card's own frame.
 		expect(conversationCss).toContain(".bubble:has(> .app-cards)");
-		const card = parts[1]!.querySelector<HTMLElement>(".site-cards > .site-card")!;
-		const row = card.querySelector<HTMLElement>(":scope > article.site-row.is-thread.is-live")!;
-		expect(row.dataset.site).toBe(gift.id);
-		expect(row.getAttribute("aria-label")).toBe("SAML gift message");
-		expect(row.querySelector("svg.site-emblem")).not.toBeNull();
-		expect(row.querySelector(".site-name")?.textContent).toBe("SAML gift message");
-		expect(row.querySelector(".site-state")?.textContent).toBe("Live");
-		expect(focusKey(row, `site-copy-link:${gift.id}`)?.textContent).toBe("saml-gift-message.qorpera.com");
-		expect(row.querySelector<HTMLAnchorElement>("a.site-link-open")?.href).toBe(gift.url);
-		expect(row.querySelector(".site-secret-text")?.textContent).toBe(DOTS);
-		// What is rare stays on the Sites page: no menu, no version, no machinery.
-		expect(row.querySelector(".site-more, .site-from")).toBeNull();
-		expect(row.textContent).not.toMatch(/code\/|qorpera\/|files|KiB/);
+		const card = parts[1]!.querySelector<HTMLElement>(".site-cards > .app-card.site-card")!;
+		expect(card.dataset.siteId).toBe(gift.id);
+		// The whole row is the way to the site, in a new tab.
+		const open = card.querySelector<HTMLAnchorElement>(":scope > a.site-card-open")!;
+		expect(open.href).toBe(gift.url);
+		expect(open.target).toBe("_blank");
+		expect(open.rel).toBe("noopener noreferrer");
+		expect(open.getAttribute("aria-label")).toBe("Open SAML gift message");
+		expect(open.querySelector(".app-card-emblem svg.site-emblem")).not.toBeNull();
+		expect(card.querySelector(".app-card-title")?.textContent).toBe("SAML gift message");
+		expect(card.querySelector(".site-state")?.textContent).toBe("Live");
+		expect(note(card)).toBe("saml-gift-message.qorpera.com");
+		expect(card.querySelector<HTMLElement>(".app-card-note")?.title).toBe(gift.url);
+		// One key for an owner or admin, then the arrow; no pills, no dots, no eye, no menu.
+		expect([...card.children].map((child) => child.className)).toEqual([
+			"site-card-open",
+			"site-pill-icon site-card-key",
+			"app-card-go",
+		]);
+		expect(keyOf(card)?.getAttribute("aria-label")).toBe("Copy the password");
+		expect(card.querySelector(".site-pill, .site-secret, .site-eye, .site-more, .site-from")).toBeNull();
+		expect(card.textContent).not.toMatch(/••|code\/|qorpera\/|files|KiB/);
 	});
 
-	it("draws the Sites page's own row: the same markup, classes and controls", async () => {
-		const calls = client([gift], { down: false });
-		const { sites } = await cards(true, calls);
-		const card = sites.card(gift);
-		const page = new SitesView({ ...calls, setPassword: vi.fn(), unpublish: vi.fn() }, new AbortController().signal, {
-			access: { canManage: () => true },
-		});
-		cleanup.push(() => page.dispose());
-		document.body.append(page.el, card);
-		await settle();
-		const pageRow = page.el.querySelector<HTMLElement>(`[data-site="${gift.id}"]`)!;
-		const shape = (row: Element) =>
-			[...row.querySelectorAll("*")].map((node) => [node.tagName, node.getAttribute("class"), node.textContent]);
-		const threadRow = card.querySelector(".site-row")!;
-		// The same row, but for the page's menu and its version line; the thread's is marked compact.
-		pageRow.querySelector(".site-more")?.remove();
-		expect(shape(threadRow)).toEqual(shape(pageRow));
-		expect(threadRow.className).toBe("site-row is-live is-thread");
-	});
-
-	it("shows each site once per message, and two sites side by side", async () => {
+	it("shows each site once per message, and two sites as two rows", async () => {
 		const { sites } = await cards();
 		const root = message(
 			sites,
@@ -224,7 +211,7 @@ describe("A site a message links: the card under the words", () => {
 		);
 		const rows = [...root.querySelectorAll(".site-cards")];
 		expect(
-			rows.map((row) => [...row.querySelectorAll<HTMLElement>(".site-row")].map((item) => item.dataset.site)),
+			rows.map((row) => [...row.querySelectorAll<HTMLElement>(".site-card")].map((item) => item.dataset.siteId)),
 		).toEqual([[shop.id], [gift.id]]);
 		// Each row stands right after the words that link it.
 		expect([...root.children].map((part) => part.firstElementChild?.className)).toEqual([
@@ -245,159 +232,101 @@ describe("A site a message links: the card under the words", () => {
 		).toBe(false);
 	});
 
-	it("shows an app link's card, and a site Qorpera took down with the Sites page's sentence and no link or password", async () => {
+	it("shows an app link's row, and a site Qorpera took down grey with its reason, leading to Sites", async () => {
 		const { sites } = await cards();
 		const root = message(
 			sites,
 			"The API: https://orders-api-preview.qorpera.com/ and the sale https://spring-sale.qorpera.com/",
 		);
-		const [api, sale] = [...root.querySelectorAll<HTMLElement>(".site-row")];
-		expect(api?.dataset.site).toBe(app.id);
-		expect(api?.querySelector(".site-name")?.textContent).toBe("Orders API");
-		expect(api?.querySelector(".site-pill-text")?.textContent).toBe("orders-api-preview.qorpera.com");
-		expect(sale?.className).toBe("site-row is-down is-thread");
+		const [api, sale] = [...root.querySelectorAll<HTMLElement>(".site-card")];
+		expect(api?.querySelector(".app-card-title")?.textContent).toBe("Orders API");
+		expect(note(api!)).toBe("orders-api-preview.qorpera.com");
+		expect(sale?.className).toBe("app-card site-card is-down");
 		expect(sale?.querySelector(".site-state")?.textContent).toBe("Taken down");
-		expect(sale?.querySelector(".site-down")?.textContent).toBe(
-			`Qorpera took this site down: ${REASON}. If you think this is wrong, tell us with Feedback in your menu.`,
-		);
-		expect(sale?.querySelector(".site-share, .site-link-open, .site-secret")).toBeNull();
+		// The reason alone, whole on a hover; the sentence and the Feedback hint are on the Sites page.
+		expect(note(sale!)).toBe(REASON);
+		expect(sale?.querySelector<HTMLElement>(".app-card-note")?.title).toBe(REASON);
+		const open = sale!.querySelector<HTMLAnchorElement>("a.site-card-open")!;
+		expect(open.getAttribute("data-href") ?? open.getAttribute("href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(open.target).toBe("");
+		expect(sale?.querySelector(".site-card-key, .app-card-go")).toBeNull();
 	});
 
-	it("shows and hides the password with the eye for an owner or admin, through the Sites page's call", async () => {
+	it("copies the password with the key through the Sites page's call, never showing it, and says so for a moment", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const writeText = vi.fn(async () => {});
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
 		const { sites, calls } = await cards();
-		const root = message(
-			sites,
-			"Look: https://saml-gift-message.qorpera.com/ and again https://saml-gift-message.qorpera.com/",
-		);
-		const extra = message(sites, "Same site, another message: https://saml-gift-message.qorpera.com/");
-		const eye = focusKey(root, `site-eye:${gift.id}`)!;
-		expect(eye.getAttribute("aria-label")).toBe("Show password");
-		eye.click();
+		const root = message(sites, "https://saml-gift-message.qorpera.com/");
+		keyOf(root)!.click();
 		await settle();
 		expect(calls.password).toHaveBeenCalledWith(gift.id, expect.any(AbortSignal));
-		expect(root.querySelector(".site-secret-text")?.textContent).toBe(PASSWORD);
-		// Every card of the site in the thread shows it.
-		expect(extra.querySelector(".site-secret-text")?.textContent).toBe(PASSWORD);
-		expect(document.activeElement).toBe(focusKey(root, `site-eye:${gift.id}`));
-		focusKey(root, `site-eye:${gift.id}`)!.click();
-		await settle();
-		expect(root.querySelector(".site-secret-text")?.textContent).toBe(DOTS);
-		expect(extra.querySelector(".site-secret-text")?.textContent).toBe(DOTS);
-		expect(focusKey(root, `site-eye:${gift.id}`)?.getAttribute("aria-label")).toBe("Show password");
-	});
-
-	it("shows a member who may not see passwords the link alone", async () => {
-		const { sites, calls } = await cards(false);
-		const root = message(sites, "https://saml-gift-message.qorpera.com/");
-		expect(root.querySelector(".site-link")).not.toBeNull();
-		expect(root.querySelector(".site-secret, .site-eye")).toBeNull();
-		expect(calls.password).not.toHaveBeenCalled();
-	});
-
-	it("takes a shown password away when the member's authority goes", async () => {
-		let manage = true;
-		const lifetime = new AbortController();
-		cleanup.push(() => lifetime.abort());
-		const sites = new ThreadSites(
-			client(),
-			() => manage,
-			lifetime.signal,
-			() => {},
-		);
-		await settle();
-		const root = message(sites, "https://saml-gift-message.qorpera.com/");
-		focusKey(root, `site-eye:${gift.id}`)!.click();
-		await settle();
-		expect(root.querySelector(".site-secret-text")?.textContent).toBe(PASSWORD);
-		manage = false;
-		sites.update();
-		expect(root.querySelector(".site-secret")).toBeNull();
+		expect(writeText).toHaveBeenCalledWith(PASSWORD);
+		expect(note(root)).toBe("The password is copied.");
 		expect(root.textContent).not.toContain(PASSWORD);
+		await vi.advanceTimersByTimeAsync(2100);
+		expect(note(root)).toBe("saml-gift-message.qorpera.com");
+		vi.useRealTimers();
 	});
 
-	it("shows nothing a read answers after the member's authority went while it was out", async () => {
-		const answer = deferred<CompanySitePassword>();
+	it("says why when the password could not be read, or the browser would not copy it", async () => {
 		const calls = client();
-		calls.password.mockImplementationOnce(() => answer.promise);
-		let manage = true;
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
+		});
+		const { sites } = await cards(true, calls);
+		const root = message(sites, "https://saml-gift-message.qorpera.com/");
+		keyOf(root)!.click();
+		await settle();
+		expect(note(root)).toBe("The password is in Sites.");
+		calls.password.mockRejectedValueOnce(new CloudRpcError("x", { message: "denied", code: "42501" }, 403));
+		keyOf(root)!.click();
+		await settle();
+		expect(note(root)).toBe("Only founders and admins can see passwords or take sites offline.");
+		expect(root.querySelector(".app-card-note.is-error")).not.toBeNull();
+		expect(root.textContent).not.toContain("42501");
+	});
+
+	it("shows a member who may not see passwords the row without the key, and follows a change of role", async () => {
+		let manage = false;
+		const calls = client();
 		const lifetime = new AbortController();
 		cleanup.push(() => lifetime.abort());
 		const sites = new ThreadSites(
 			calls,
 			() => manage,
+			profileA.profileId,
 			lifetime.signal,
 			() => {},
 		);
 		await settle();
 		const root = message(sites, "https://saml-gift-message.qorpera.com/");
-		focusKey(root, `site-eye:${gift.id}`)!.click();
-		await settle();
-		// While it is read, the password's pill breathes and its controls are off.
-		expect(root.querySelector(".site-secret.is-reading")).not.toBeNull();
-		expect((focusKey(root, `site-eye:${gift.id}`) as HTMLButtonElement).disabled).toBe(true);
-		manage = false;
-		sites.update();
+		expect(keyOf(root)).toBeNull();
+		expect(root.querySelector(".app-card-go")).not.toBeNull();
 		manage = true;
 		sites.update();
-		answer.resolve({ siteId: gift.id, password: PASSWORD, changedAt: timestamp });
-		await settle();
-		expect(root.textContent).not.toContain(PASSWORD);
-		expect(root.querySelector(".site-secret-text")?.textContent).toBe(DOTS);
-	});
-
-	it("copies the link and a hidden password, and says under the card when a password could not be read", async () => {
-		const writeText = vi.fn(async () => {});
-		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-		const calls = client();
-		const { sites } = await cards(true, calls);
-		const root = message(sites, "https://saml-gift-message.qorpera.com/");
-		focusKey(root, `site-copy-link:${gift.id}`)!.click();
-		await settle();
-		expect(writeText).toHaveBeenLastCalledWith(gift.url);
-		expect(focusKey(root, `site-copy-link:${gift.id}`)?.classList.contains("is-copied")).toBe(true);
-		focusKey(root, `site-copy-password:${gift.id}`)!.click();
-		await settle();
-		expect(writeText).toHaveBeenLastCalledWith(PASSWORD);
-		// Copied without showing it.
-		expect(root.querySelector(".site-secret-text")?.textContent).toBe(DOTS);
-		calls.password.mockRejectedValueOnce(new CloudRpcError("x", { message: "denied", code: "42501" }, 403));
-		focusKey(root, `site-eye:${gift.id}`)!.click();
-		await settle();
-		expect(root.querySelector(".site-card-said")?.textContent).toBe(
-			"Only founders and admins can see passwords or take sites offline.",
-		);
-		expect(root.textContent).not.toContain("42501");
-	});
-
-	it("shows the link whole to copy by hand when the browser will not copy it", async () => {
-		Object.defineProperty(navigator, "clipboard", {
-			configurable: true,
-			value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
-		});
-		const { sites } = await cards();
-		const root = message(sites, "https://saml-gift-message.qorpera.com/");
-		focusKey(root, `site-copy-link:${gift.id}`)!.click();
-		await settle();
-		const field = focusKey(root, `site-by-hand:link:${gift.id}`) as HTMLInputElement;
-		expect(field.value).toBe(gift.url);
-		expect(document.activeElement).toBe(field);
-		expect(root.querySelector(".site-card-said")?.textContent).toMatch(/^Press (⌘C|Ctrl\+C) to copy\.$/);
+		expect(keyOf(root)).not.toBeNull();
+		manage = false;
+		sites.update();
+		expect(keyOf(root)).toBeNull();
+		expect(calls.password).not.toHaveBeenCalled();
 	});
 
 	it("says it in Danish", async () => {
 		setLanguagePreference("da");
 		const { sites } = await cards();
 		const root = message(sites, "https://saml-gift-message.qorpera.com/ https://spring-sale.qorpera.com/");
-		const [live, down] = [...root.querySelectorAll<HTMLElement>(".site-row")];
+		const [live, down] = [...root.querySelectorAll<HTMLElement>(".site-card")];
 		expect(live?.querySelector(".site-state")?.textContent).toBe("Live");
-		expect(focusKey(live!, `site-eye:${gift.id}`)?.getAttribute("aria-label")).toBe("Vis adgangskode");
+		expect(keyOf(live!)?.getAttribute("aria-label")).toBe("Kopiér adgangskoden");
 		expect(down?.querySelector(".site-state")?.textContent).toBe("Taget ned");
 	});
 
-	it("lays the card out by its own width, compact, and keeps the Sites page's rules as they were", () => {
-		expect(sitesCss).toMatch(/\.site-card \{[^}]*container: site-rows \/ inline-size/);
-		expect(sitesCss).toMatch(/\.site-row\.is-thread \{[^}]*border: 1px solid var\(--border\)/);
-		expect(sitesCss).toContain(":is(.sites, .whats-new) {");
+	it("wears the app card's frame and lays its key above the row's link", () => {
+		expect(conversationCss).toMatch(/\.site-card \{ position: relative;/);
+		expect(conversationCss).toMatch(/\.site-card-open::after \{ content: ""; position: absolute; inset: 0;/);
+		expect(conversationCss).toMatch(/\.site-card-key \{ position: relative; z-index: 1;/);
 		expect(conversationCss).toMatch(/\.message-prose a\.site-link-word \{ color: inherit; font-weight: 600;/);
 	});
 });
@@ -449,7 +378,7 @@ describe("A site a message links, in a thread", () => {
 		const message = view.el.querySelector<HTMLElement>("article.message")!;
 		const parts = [...message.querySelectorAll(":scope > .bubble")].map((part) => part.firstElementChild?.className);
 		expect(parts).toEqual(["message-prose", "app-cards site-cards"]);
-		expect(message.querySelector(".site-row .site-name")?.textContent).toBe("SAML gift message");
+		expect(message.querySelector(".site-card .app-card-title")?.textContent).toBe("SAML gift message");
 		expect(message.querySelector("a.site-link-word")?.textContent).toBe("https://saml-gift-message.qorpera.com/");
 	});
 
@@ -458,7 +387,7 @@ describe("A site a message links, in a thread", () => {
 		const message = view.el.querySelector<HTMLElement>("article.message.mine")!;
 		const parts = [...message.querySelectorAll(":scope > .bubble")].map((part) => part.firstElementChild?.className);
 		expect(parts).toEqual(["text", "app-cards site-cards"]);
-		expect(message.querySelector(".site-row")?.getAttribute("aria-label")).toBe("Wristband shop");
+		expect(message.querySelector(".site-card .app-card-title")?.textContent).toBe("Wristband shop");
 	});
 
 	it("reads no sites while the company has none, and draws the link as before", async () => {

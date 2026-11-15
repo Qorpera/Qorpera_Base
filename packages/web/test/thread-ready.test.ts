@@ -177,16 +177,18 @@ function plain(root: Element) {
 }
 
 describe("A change is ready: the card", () => {
-	it("stands in the thread of the agent behind the change: the picture large, its line, What's new's count and buttons", async () => {
+	it("stands in the thread of the agent behind the change: Ready to go live, the picture large, its line, the rest as a way to What's new", async () => {
 		const { ready, image, shownChanged } = await card([releasesOf([gift(), quietProject()])]);
 		expect(ready.shown).toBe(true);
 		expect(shownChanged).toHaveBeenCalledOnce();
 		// One card, for the project with a change ready; none for the one with nothing ready.
 		expect(ready.el.querySelectorAll(".thread-ready-card")).toHaveLength(1);
 		const shown = cardOf(ready);
-		// The thread's widget that waits for the member: a question's frame, the agent's figure beside the project.
+		// The thread's widget that waits for the member: a question's frame, the agent's figure, "Ready to go live", and the
+		// project after it, quiet, as the company has two projects that make a site.
 		expect(shown.className).toBe("interaction-card is-asking thread-ready-card");
-		expect(shown.querySelector(".interaction-call strong")?.textContent).toBe("SAML gift message");
+		expect(shown.querySelector(".interaction-call strong")?.textContent).toBe("Ready to go live");
+		expect(shown.querySelector(".interaction-call .thread-ready-project")?.textContent).toBe("SAML gift message");
 		expect(shown.querySelector(".interaction-call .interaction-figure .figure")).not.toBeNull();
 		// The newest change a customer will notice: What's new's own tile, its picture read the same way.
 		const tile = shown.querySelector<HTMLElement>(".whats-new-change.is-thread")!;
@@ -194,7 +196,10 @@ describe("A change is ready: the card", () => {
 		expect(image).toHaveBeenCalledWith("code/qorpera/saml-gift-message/changes/17.png", expect.any(AbortSignal));
 		expect(shown.querySelectorAll(".whats-new-line")).toHaveLength(1);
 		expect(tile.querySelector(".whats-new-line")?.textContent).toBe("The checkout shows the gift message.");
-		expect(shown.querySelector(".whats-new-behind")?.textContent).toBe("3 changes are ready");
+		expect(shown.querySelector(".whats-new-behind")).toBeNull();
+		const more = shown.querySelector<HTMLAnchorElement>("a.thread-ready-more")!;
+		expect(more.textContent).toBe("and 2 more changes");
+		expect(more.getAttribute("data-href") ?? more.getAttribute("href")).toBe(`#/c/${profileA.profileId}/whats-new`);
 		expect(labels(shown.querySelector(".whats-new-actions")!)).toEqual(["Put it live", "Not yet"]);
 		plain(shown);
 		// A draw keeps the tile and its picture as they are.
@@ -203,14 +208,20 @@ describe("A change is ready: the card", () => {
 		expect(cardOf(ready).querySelector(".whats-new-change")).toBe(tile);
 	});
 
-	it("shows one change alone without a count, and only changes behind the scenes as their count", async () => {
+	it("says nothing more for one change, one more for two, and only changes behind the scenes in What's new's words", async () => {
 		const one = await card([
 			releasesOf([gift({ ready: { ...gift().ready!, changes: [gift().ready!.changes[0]!], quiet: 0 } })]),
 		]);
-		expect(cardOf(one.ready).querySelector(".whats-new-behind")).toBeNull();
+		expect(cardOf(one.ready).querySelector(".thread-ready-more")).toBeNull();
+		// A company with one project that makes a site: the head is "Ready to go live" alone.
+		expect(cardOf(one.ready).querySelector(".thread-ready-project")).toBeNull();
+		const two = await card([
+			releasesOf([gift({ ready: { ...gift().ready!, changes: [gift().ready!.changes[0]!], quiet: 1 } })]),
+		]);
+		expect(cardOf(two.ready).querySelector(".thread-ready-more")?.textContent).toBe("and 1 more change");
 		const quiet = await card([releasesOf([gift({ ready: { ...gift().ready!, changes: [], quiet: 2 } })])]);
-		expect(cardOf(quiet.ready).querySelector(".whats-new-change")).toBeNull();
-		expect(cardOf(quiet.ready).querySelector(".whats-new-line")?.textContent).toBe("2 changes are ready");
+		expect(cardOf(quiet.ready).querySelector(".whats-new-change, .thread-ready-more")).toBeNull();
+		expect(cardOf(quiet.ready).querySelector(".whats-new-line")?.textContent).toBe("2 changes behind the scenes");
 	});
 
 	it("is not in another agent's thread; the Co-Founder's thread has it when no agent made it, or the agent left", async () => {
@@ -268,21 +279,23 @@ describe("A change is ready: the card", () => {
 		const settled = cardOf(ready);
 		expect(settled.className).toBe("interaction-card is-exchange thread-ready-card is-settled");
 		// What the agent offered as its bubble, the member's own "Put it live" on their side, then one quiet line.
+		// The company has one project that makes a site: the agent's bubble is the change's line alone.
 		expect(settled.querySelector(".interaction-ask.bubble")?.textContent).toBe(
-			"SAML gift messageThe checkout shows the gift message.",
+			"The checkout shows the gift message.",
 		);
 		const said = settled.querySelector(".interaction-result.is-said.mine > .interaction-chosen.bubble");
 		expect(said?.textContent).toBe("Put it live");
 		const line = settled.querySelector<HTMLElement>(".interaction-result.is-done.thread-ready-live")!;
 		expect(line.querySelector(".review-mark.is-approved")).not.toBeNull();
 		expect(line.textContent).toContain("Version 4 is live.");
-		// The site's address, as the Sites page's link pill: a press copies it, the arrow opens it.
-		expect(line.querySelector(".site-pill.site-link .site-pill-text")?.textContent).toBe(
-			"saml-gift-message.qorpera.com",
-		);
-		expect(line.querySelector<HTMLAnchorElement>("a.site-link-open")?.href).toBe(
-			"https://saml-gift-message.qorpera.com/",
-		);
+		// The site's address, a plain quiet link with the small arrow, never a framed pill.
+		const address = line.querySelector<HTMLAnchorElement>("a.thread-ready-address")!;
+		expect(address.textContent).toBe("saml-gift-message.qorpera.com");
+		expect(address.href).toBe("https://saml-gift-message.qorpera.com/");
+		expect(address.target).toBe("_blank");
+		expect(address.rel).toBe("noopener noreferrer");
+		expect(address.querySelector("svg")).not.toBeNull();
+		expect(line.querySelector(".site-pill")).toBeNull();
 		expect(settled.querySelector(".whats-new-actions")).toBeNull();
 		plain(settled);
 		// It stays while the thread is open, through later reads.
@@ -292,17 +305,15 @@ describe("A change is ready: the card", () => {
 		expect(ready.shown).toBe(true);
 	});
 
-	it("copies the settled line's link with a press, as the Sites page's pill does", async () => {
-		const writeText = vi.fn(async () => {});
-		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-		const { ready } = await card([releasesOf([gift()]), releasesOf([live4()])]);
+	it("puts the project's name first in the agent's bubble once settled, only where the company has several", async () => {
+		const { ready } = await card([releasesOf([gift(), quietProject()]), releasesOf([live4(), quietProject()])]);
 		press(cardOf(ready), "Put it live");
 		await settle();
-		const copy = cardOf(ready).querySelector<HTMLButtonElement>(".site-link-copy")!;
-		copy.click();
-		await settle();
-		expect(writeText).toHaveBeenCalledWith("https://saml-gift-message.qorpera.com/");
-		expect(cardOf(ready).querySelector(".site-link-copy")?.classList.contains("is-copied")).toBe(true);
+		const ask = cardOf(ready).querySelector(".interaction-ask.bubble")!;
+		expect([...ask.children].map((child) => [child.className, child.textContent])).toEqual([
+			["thread-ready-project", "SAML gift message"],
+			["interaction-text", "The checkout shows the gift message."],
+		]);
 	});
 
 	it("settles once the read after an answer that never came shows the change live, and claims nothing before", async () => {
@@ -359,13 +370,19 @@ describe("A change is ready: the card", () => {
 		);
 	});
 
-	it("offers nothing the kernel would refuse for a site Qorpera took down, and says so in What's new's words", async () => {
+	it("draws no card for a site Qorpera took down: one quiet line in What's new's words, its Sites a way there", async () => {
 		const { ready } = await card([releasesOf([gift()], true, true)], { takenDown: new Set(["saml-gift-message"]) });
-		const shown = cardOf(ready);
-		expect(labels(shown)).toEqual(["Not yet"]);
-		expect(shown.querySelector(".whats-new-managers")?.textContent).toBe(
-			"Qorpera took this site down, so it can't be opened. See why in Sites.",
-		);
+		expect(ready.shown).toBe(true);
+		expect(ready.el.querySelector(".thread-ready-card, .whats-new-change, button")).toBeNull();
+		const line = ready.el.querySelector<HTMLElement>("p.conversation-note.thread-ready-down")!;
+		expect(line.textContent).toBe("Qorpera took this site down, so it can't be opened. See why in Sites.");
+		const sites = line.querySelector<HTMLAnchorElement>("a")!;
+		expect(sites.textContent).toBe("Sites");
+		expect(sites.getAttribute("data-href") ?? sites.getAttribute("href")).toBe(`#/c/${profileA.profileId}/sites`);
+		setLanguagePreference("da");
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(ready.el.querySelector(".thread-ready-down a")?.textContent).toBe("Hjemmesider");
 	});
 
 	it("opens Look first's tab within the press and answers `moved` in What's new's words", async () => {
@@ -413,6 +430,7 @@ describe("A change is ready: the card", () => {
 		setLanguagePreference("da");
 		const { ready } = await card([releasesOf([gift()], true, true)]);
 		expect(labels(cardOf(ready))).toEqual(["Se den først", "Sæt live", "Ikke endnu"]);
+		expect(cardOf(ready).querySelector(".interaction-call strong")?.textContent).toBe("Klar til at gå live");
 	});
 
 	it("shares What's new's desk: both places put a change live through the one implementation", async () => {
@@ -449,7 +467,8 @@ describe("A change is ready: the card", () => {
 		await settle();
 		expect(client.list).not.toHaveBeenCalled();
 		expect(takenDown).toHaveBeenCalledOnce();
-		expect(labels(cardOf(ready))).toEqual(["Not yet"]);
+		expect(ready.el.querySelector(".thread-ready-card")).toBeNull();
+		expect(ready.el.querySelector(".thread-ready-down")).not.toBeNull();
 		// The window coming back reads, as What's new does.
 		window.dispatchEvent(new Event("focus"));
 		await settle();
@@ -460,6 +479,8 @@ describe("A change is ready: the card", () => {
 		expect(conversationCss).toMatch(/\.thread-ready-card \.whats-new-change\.is-thread \{[^}]*border: 0;/);
 		expect(conversationCss).toMatch(/\.whats-new-change\.is-thread > \.choice-picture \{[^}]*aspect-ratio: 16 \/ 10/);
 		expect(conversationCss).toMatch(/\.thread-ready-live \{[^}]*flex-wrap: wrap/);
+		// A question's width, and never wider than a bubble.
+		expect(conversationCss).toMatch(/\.thread-ready-card\.is-asking \{ max-width: min\(72%, 720px\); \}/);
 	});
 });
 
@@ -512,7 +533,7 @@ describe("A change is ready, in the thread", () => {
 		const last = [...log.children].at(-1);
 		expect(last?.className).toBe("thread-ready");
 		expect(last?.previousElementSibling?.matches("article.message")).toBe(true);
-		expect(last?.querySelector(".interaction-call strong")?.textContent).toBe("SAML gift message");
+		expect(last?.querySelector(".interaction-call strong")?.textContent).toBe("Ready to go live");
 	});
 
 	it("reads nothing while the company has no project that makes a website", async () => {

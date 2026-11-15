@@ -1960,7 +1960,9 @@ export class ConversationView {
 	 * press on it opens the app. */
 	#memberParts(text: string, quotes: readonly MessageQuote[] = []): HTMLElement[] {
 		const parts = this.#memberWords(text, quotes);
-		// A site of the company the member's words link: its card under them, as under an agent's.
+		// A site of the company the member's words link: its card under them, as under an agent's. (A message may come
+		// without text: it shows as "(empty)".)
+		if (!this.#siteCards || typeof text !== "string") return parts;
 		const sites = new Map<string, HTMLElement>();
 		for (const [href] of text.matchAll(/https:\/\/[^\s<>"'`]+/g)) {
 			const site = this.#linkedSite(href.replace(/[.,;:!?)\]]+$/, ""));
@@ -1999,7 +2001,9 @@ export class ConversationView {
 		this.#ready?.update();
 		const sites = this.#actions.companySites;
 		if (!this.#siteCards && sites && (company.siteCount ?? 0) > 0)
-			this.#siteCards = new ThreadSites(sites.client, sites.canManage, signal, () => this.#redrawItems());
+			this.#siteCards = new ThreadSites(sites.client, sites.canManage, this.#company.profile.profileId, signal, () =>
+				this.#redrawItems(),
+			);
 		this.#siteCards?.update();
 	}
 
