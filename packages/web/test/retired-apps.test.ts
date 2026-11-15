@@ -143,6 +143,31 @@ describe("the company's retired interfaces", () => {
 		controller.stop();
 	});
 
+	it("lets no read that began before the newest one published change anything, whatever order they end in", async () => {
+		const { controller, fake } = await company();
+		const signal = new AbortController().signal;
+		// Read A begins with the old file; then the member retires plan, and read B begins after the write.
+		const older = performance.now();
+		const before = await readRetiredApps(fake.folder, signal);
+		expect(await controller.setAppRetired("plan", true)).toBe(true);
+		const newer = performance.now();
+		// B ends first and is published: plan is retired, as the file says, and the member's change is settled.
+		controller.publishRetiredApps(await readRetiredApps(fake.folder, signal), newer);
+		expect(names(controller)).toEqual(["plan"]);
+		// A ends after it, with the file from before the write: it changes nothing.
+		controller.publishRetiredApps(before, older);
+		expect(names(controller)).toEqual(["plan"]);
+		// The same in reverse for Bring back.
+		const olderBack = performance.now();
+		const stillRetired = await readRetiredApps(fake.folder, signal);
+		expect(await controller.setAppRetired("plan", false)).toBe(true);
+		controller.publishRetiredApps(await readRetiredApps(fake.folder, signal), performance.now());
+		expect(names(controller)).toEqual([]);
+		controller.publishRetiredApps(stillRetired, olderBack);
+		expect(names(controller)).toEqual([]);
+		controller.stop();
+	});
+
 	it("puts the app back and says so when the write fails, and offers nothing to a member who may not write", async () => {
 		const { controller, fake } = await company();
 		fake.answer("denied", "denied");

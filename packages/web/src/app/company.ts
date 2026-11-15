@@ -1384,8 +1384,9 @@ export class CompanyController {
 	appsFolder?: () => WebMemberFolder;
 	/** Reads the company's apps (and the retired interfaces) again now; the application sets it. */
 	appsReread?: () => void;
-	/** The retired interfaces as apps/retired.md said at the last read. */
+	/** The retired interfaces as apps/retired.md said at the newest read published, and when that read began. */
 	#retiredRead: readonly RetiredApp[] = [];
+	#retiredReadAt = Number.NEGATIVE_INFINITY;
 	/** This member's retires (an app) and bring-backs (null) that no read has seen yet, by the app's name, with when each
 	 * was written (`performance.now()`; undefined while it is on its way). */
 	readonly #retiredChanges = new Map<string, { readonly app: RetiredApp | null; written?: number }>();
@@ -1400,10 +1401,13 @@ export class CompanyController {
 		return Boolean(this.appsFolder && this.store.get().team?.capabilities.write && !this.#stopped);
 	}
 
-	/** The retired interfaces as a read of apps/retired.md found them; `startedAt` is when that read began. A change of
-	 * this member's stands over what a read from before it was written found. */
+	/** The retired interfaces as a read of apps/retired.md found them; `startedAt` is when that read began. Reads may end
+	 * in another order than they began (a hint, the minute's clock and a member's own change each start one): one that
+	 * began before the newest published changes nothing (review r1 of #1844, F1). A change of this member's stands over
+	 * what a read from before it was written found. */
 	publishRetiredApps(read: readonly RetiredApp[], startedAt: number): void {
-		if (this.#stopped) return;
+		if (this.#stopped || startedAt < this.#retiredReadAt) return;
+		this.#retiredReadAt = startedAt;
 		this.#retiredRead = read;
 		for (const [name, change] of this.#retiredChanges)
 			if (change.written !== undefined && startedAt >= change.written) this.#retiredChanges.delete(name);
