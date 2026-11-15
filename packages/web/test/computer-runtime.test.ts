@@ -2051,6 +2051,85 @@ describe("a member opens one of the company's apps on the computer (202609307580
 		expect(frameOpener(p).hidden).toBe(true);
 	});
 
+	it("stays on the computer a choice was made on while the list names another first, and opens it there (review r7 F1 of #1781)", async () => {
+		// Since the machine switcher went (#1826) the list alone names the computer shown. A choice made from the small
+		// window, on a computer that sleeps, must not be taken along when the agent goes to its other computer meanwhile.
+		const s = setup({ machines: [machine(1, { state: "stopped" }), machine(2, { state: "stopped" })] });
+		s.state.apps = apps;
+		const p = panel(s);
+		await flush();
+		expect(p.machineId).toBe(machine(1).machineId);
+		s.state.machines = [machine(1, { state: "starting" }), machine(2, { state: "stopped" })];
+		choose(p, 0);
+		await flush();
+		// The agent drives its other computer: the list names that one first now.
+		s.state.machines = [machine(2), machine(1, { state: "starting" })];
+		s.hint("machines");
+		await flush();
+		await advance(LOOK_EVERY_MS * 2);
+		expect(p.machineId).toBe(machine(1).machineId);
+		expect(p.choices.at(-1)?.ended).toBeUndefined();
+		expect(s.looks.filter((look) => look.url.includes(machine(2).machineId))).toHaveLength(0);
+		// It runs: the open goes to the computer it was chosen on, and the large view is of that one.
+		s.state.machines = [machine(2), machine(1)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.opens).toEqual(["apps/brooks-overblik"]);
+		expect(s.starts.at(-1)).toContain(machine(1).machineId);
+		await advance(LOOK_EVERY_MS);
+		expect(p.choices.at(-1)?.ended).toBe("answered");
+		expect(p.machineId).toBe(machine(1).machineId);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+	});
+
+	it("ends a choice whose computer is no longer the agent's, and enters no large view on the next one (review r7 F1 of #1781)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" }), machine(2)] });
+		s.state.apps = apps;
+		s.state.fallback = { picture: 2 };
+		const p = panel(s);
+		await flush();
+		// The list names the running one first; the tests' own move puts the window on the sleeping one.
+		p.choose(machine(1).machineId);
+		await flush();
+		s.state.machines = [machine(1, { state: "starting" }), machine(2)];
+		choose(p, 0);
+		await flush();
+		expect(p.choices.at(-1)?.ended).toBeUndefined();
+		// That computer is deleted: the window goes to the agent's other one, the choice ends with its computer, and the
+		// large view the open asked for is not entered on a computer where nothing was opened.
+		s.state.machines = [machine(2)];
+		s.hint("machines");
+		await flush();
+		await advance(LOOK_EVERY_MS * 3);
+		expect(p.machineId).toBe(machine(2).machineId);
+		expect(p.choices.at(-1)?.ended).toBe("replaced");
+		expect(mark(p)).toBe("Live");
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		expect(s.opens).toEqual([]);
+	});
+
+	it("enters nothing by itself once the window has left its thread with an open asked for (review r7 F2 of #1781)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		s.state.apps = apps;
+		const p = panel(s);
+		await flush();
+		s.state.machines = [machine(1, { state: "starting" })];
+		choose(p, 0);
+		await flush();
+		// The member leaves the thread before a picture came; the window comes back in another.
+		p.detach();
+		p.attach(document.body, () => p.dispose());
+		s.state.machines = [machine(1)];
+		s.state.fallback = { picture: 1 };
+		s.hint("machines");
+		await flush();
+		await advance(LOOK_EVERY_MS * 3);
+		expect(mark(p)).toBe("Live");
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+	});
+
 	it("drops the open with the wish at a switch or a close", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" }), machine(2, { state: "stopped" })] });
 		s.state.apps = apps;

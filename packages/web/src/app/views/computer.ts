@@ -520,8 +520,11 @@ export class ComputerPanel {
 	/**
 	 * Open (20260930758000). THE INVARIANT (review r3 of #1781): A CHOICE THE MEMBER MADE ENDS IN EXACTLY ONE OF THREE
 	 * WAYS: IT WAS SENT AND ANSWERED (and the answer handled by #openAnswered), A NEWER CHOICE OR THE MEMBER'S OWN MOVE
-	 * REPLACED IT (another choice, a switch of machine, the window closed, a plain press), OR THE WINDOW SAID WHY IT DID
-	 * NOT OPEN, WITH TRY AGAIN WHERE TRYING AGAIN CAN HELP. IT IS NEVER DROPPED SILENTLY.
+	 * REPLACED IT (another choice, the window closed, a plain press), OR THE WINDOW SAID WHY IT DID NOT OPEN, WITH TRY
+	 * AGAIN WHERE TRYING AGAIN CAN HELP. IT IS NEVER DROPPED SILENTLY. THE WINDOW STAYS ON THE COMPUTER A STANDING CHOICE
+	 * WAS MADE ON (#pick; review r7 of #1781: since the machine switcher went, the list alone names the computer shown,
+	 * and it must not take a choice with it); only that computer leaving the agent's computers with a screen moves the
+	 * window on, and the choice ends replaced with it.
 	 * WHILE A CHOICE STANDS UNSENT AND NO REQUEST IS OUT, THE PUMP RUNS AT EVERY TURN OF THE WINDOW'S LOOP, AND THE LOOP IS
 	 * WOKEN FOR IT (review r4 of #1781). A CHOICE HAS A TIME LIMIT OF ITS OWN: set when it is made (WANT_ON_MS), kept on
 	 * the choice and not on the wish; once it passes with the choice unsent and no request out, the choice ends said ("The
@@ -558,6 +561,10 @@ export class ComputerPanel {
 	readonly #frameOpener: HTMLButtonElement;
 	#opening = false;
 	#enterOnOpen = false;
+	/** The computer something just opened on, until its first picture shows (then the large view the open asked for
+	 * keeps the window there) or the choice's own time limit: the window stays on it meanwhile (#pick; review r7 F1 of
+	 * #1781). */
+	#openedOn: { readonly machineId: string; readonly until: number } | undefined;
 	#openNote: { readonly machineId: string; readonly words: string } | undefined;
 	#openRetry: { readonly machineId: string; readonly path: string; readonly words: string } | undefined;
 	readonly #openAgain = h(
@@ -1001,6 +1008,8 @@ export class ComputerPanel {
 		// cancelled: nothing enters out of a thread (review r1 F1 of #1685).
 		this.#enterOnHold = false;
 		this.#enterOnShow = false;
+		this.#enterOnOpen = false;
+		this.#openedOn = undefined;
 		this.#view?.back();
 		this.el.remove();
 		// Removal takes focus without a focusout in every browser; the next focus in the panel starts clean.
@@ -1112,9 +1121,13 @@ export class ComputerPanel {
 			if (machine) this.#startRefused = undefined;
 			if (machine?.machineId !== this.#machineId) {
 				// The wish that a desktop be on is for the machine it was made for alone (20260930714000), and so is a choice
-				// of what to open on it: the window moved on (a switch, by the member or the list).
+				// of what to open on it. The list alone never moves the window off a standing choice's computer (#pick holds
+				// it): what ends one here is that computer leaving the agent's computers with a screen. The large view an
+				// open asked for is not entered on another computer (review r7 F1 of #1781).
 				if (this.#wantOn && this.#wantOn.machineId !== machine?.machineId) this.#wantOn = undefined;
 				if (this.#choice && this.#choice.machineId !== machine?.machineId) this.#endChoice("replaced");
+				this.#enterOnOpen = false;
+				this.#openedOn = undefined;
 				this.#startEnded = undefined;
 				this.#wakeFailed = undefined;
 				// The window's machine changed: every machine of this agent's the ledger has but the one shown now goes back,
@@ -2293,6 +2306,8 @@ export class ComputerPanel {
 			this.#enterOnShow = false;
 			this.#view?.enterFrame();
 		}
+		// What opened shows: from here the large view keeps the window on it, or the window follows the list again.
+		if (picture && this.#openedOn?.machineId === this.#machineId) this.#openedOn = undefined;
 		// Open chosen in the small window: the large view, in the thread (never full screen), at the first picture.
 		if (this.#enterOnOpen && picture && this.el.parentElement !== null) {
 			this.#enterOnOpen = false;
@@ -2423,8 +2438,9 @@ export class ComputerPanel {
 	/** The machine the window shows: the first with a screen, as the list names them (running ones first, the one whose
 	 * screen the agent used last before the others), so the window follows the agent and a member chooses nothing. Two
 	 * things hold it for a while: the one the member just made with Start one, while its start is on its way (`#started`
-	 * and the wish for it); and the one the member is at in the large view, while it runs. (`#chosen` is the tests'
-	 * `choose` alone.) */
+	 * and the wish for it); the one a choice of what to open stands for, while the choice stands and then until what
+	 * opened shows (20260930758000); and the one the member is at in the large view, while it runs. (`#chosen` is the
+	 * tests' `choose` alone.) */
 	#pick(): MemberAgentMachine | undefined {
 		const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
 		const chosen = desktops.find((machine) => machine.machineId === this.#chosen);
@@ -2432,6 +2448,21 @@ export class ComputerPanel {
 		if (this.#started !== undefined && this.#wantOn?.machineId === this.#started && Date.now() < this.#wantOn.until) {
 			const started = desktops.find((machine) => machine.machineId === this.#started);
 			if (started) return started;
+		}
+		// A choice of what to open is for the computer it was made on: the window stays on it while the choice stands,
+		// so the list cannot move the window from under an open on its way, which would end the choice without a word
+		// and might still open it where the member no longer looks (review r7 F1 of #1781; the switcher held the window
+		// before it went). The choice's own time limit ends the hold with it.
+		const choice = this.#choice;
+		if (choice) {
+			const chosenFor = desktops.find((machine) => machine.machineId === choice.machineId);
+			if (chosenFor) return chosenFor;
+		}
+		// And from its answer to the first picture of what opened (#openedOn): the answer comes before the screen does.
+		const opened = this.#openedOn;
+		if (opened && Date.now() < opened.until) {
+			const openedOn = desktops.find((machine) => machine.machineId === opened.machineId);
+			if (openedOn) return openedOn;
 		}
 		// In the large view the member is at this computer, clicking and typing on it: the window stays on it while it
 		// runs, whatever the agent drives meanwhile, and follows the list again from the row. (The switcher gave them
@@ -2951,6 +2982,7 @@ export class ComputerPanel {
 			this.#wantTakeOver = undefined;
 			// A choice of what to open was for the last computer, and so were its words (20260930758000).
 			this.#enterOnOpen = false;
+			this.#openedOn = undefined;
 			this.#endChoice("replaced");
 			this.#clearOpenWords();
 			if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
@@ -3105,8 +3137,8 @@ export class ComputerPanel {
 	}
 
 	/** THE one way a choice ends (the invariant above): answered (its answer handled by #openAnswered), replaced (a newer
-	 * choice or the member's own move), or said (the window says why it did not open: `words`, with Try again where
-	 * `retry`). Ending none is nothing. */
+	 * choice, the member's own move, or its computer no longer the agent's with a screen), or said (the window says why
+	 * it did not open: `words`, with Try again where `retry`). Ending none is nothing. */
 	#endChoice(how: "answered" | "replaced" | "said", words?: string, retry = false, shown = true): void {
 		const choice = this.#choice;
 		if (!choice) return;
@@ -3116,6 +3148,8 @@ export class ComputerPanel {
 			entry.ended = how;
 			if (words !== undefined) entry.said = words;
 		}
+		// It opened: the window stays on that computer until the member sees it there.
+		this.#openedOn = how === "answered" ? { machineId: choice.machineId, until: choice.until } : undefined;
 		if (words !== undefined && shown) this.#sayOpen(choice, words, retry);
 	}
 
