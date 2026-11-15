@@ -8,6 +8,7 @@ import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import { cloudInterfaceTools } from "@qorpera/runtime/cloud-folder-interface-tools";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
 import { cloudPictureTool } from "@qorpera/runtime/cloud-folder-picture-tool";
+import { cloudReadingTool } from "@qorpera/runtime/cloud-folder-reading";
 import { cloudGoodWillTools } from "@qorpera/runtime/cloud-good-will-tools";
 import { cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import { cloudMachineTools } from "@qorpera/runtime/cloud-machine-tools";
@@ -105,6 +106,7 @@ export async function catalogs() {
 		...cloudGoodWillTools(binding, identity, standIn()),
 		...cloudMemberOfferTools(binding, identity, standIn()),
 		cloudRecordReflectionTool({ folder, operations, identity }),
+		cloudReadingTool(identity, standIn()),
 		...cloudEventTools(binding, identity, standIn(), folder),
 		...cloudSiteTools({
 			binding,
@@ -152,7 +154,8 @@ export async function catalogs() {
 		}),
 	];
 	const employee = staff.filter(
-		(tool) => !["crew_and_members", "offer_agents_to_member", "record_reflection"].includes(tool.name),
+		(tool) =>
+			!["crew_and_members", "offer_agents_to_member", "record_reflection", "update_reading"].includes(tool.name),
 	);
 	return { staff, employee, worker, all: [...staff, ...worker] };
 }

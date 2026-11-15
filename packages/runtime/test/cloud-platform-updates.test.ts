@@ -37,6 +37,7 @@ import {
 } from "@qorpera/runtime/cloud-platform-updates";
 import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it } from "vitest";
+import { catalogs } from "./fixtures/cloud-tool-catalogs-fixture.ts";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -68,6 +69,18 @@ describe("the list of platform updates", () => {
 			expect(`${update.title}${update.text}`, update.id).not.toMatch(/[\n\r]/);
 			expect(update.text, update.id).not.toMatch(/#\d|QorperaOS\/|\.(?:md|ts|sql|json)\b/);
 		}
+	});
+
+	it("names only tools the Co-Founder's company runs have", async () => {
+		const { staff } = await catalogs();
+		const tools = new Set(staff.map((tool) => tool.name));
+		const named = new Set(
+			PLATFORM_UPDATES.flatMap((update) =>
+				[...update.text.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g)].map(([name]) => name),
+			),
+		);
+		expect([...named]).toEqual(expect.arrayContaining(["update_reading", "end_role", "save_app"]));
+		for (const name of named) expect(tools.has(name), name).toBe(true);
 	});
 
 	it("names every model agents can be given: the models of today, or a model update's text", () => {

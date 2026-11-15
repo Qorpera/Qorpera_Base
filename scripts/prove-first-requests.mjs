@@ -83,6 +83,7 @@ async function bundle(scratch) {
 				`export {cloudGoodWillTools} from "${src("cloud-good-will-tools")}";`,
 				`export {cloudMemberOfferTools} from "${src("cloud-member-offer-tools")}";`,
 				`export {cloudRecordReflectionTool, cloudPlatformUpdatesContext, PLATFORM_UPDATES} from "${src("cloud-platform-updates")}";`,
+				`export {cloudReadingTool} from "${src("cloud-folder-reading")}";`,
 				`export {cloudEventTools} from "${src("cloud-event-tools")}";`,
 				`export {cloudSiteTools} from "${src("cloud-site-tools")}";`,
 				`export {cloudMachineTools} from "${src("cloud-machine-tools")}";`,
@@ -330,6 +331,8 @@ function toolsOf(mine, kind, context, wake, { binding, folder, operations, ident
 					...mine.cloudGoodWillTools(binding, identity, standIn()),
 					...(context.agentKind === "cofounder" ? mine.cloudMemberOfferTools(binding, identity, standIn()) : []),
 					...(context.agentKind === "cofounder" ? [mine.cloudRecordReflectionTool({ folder, operations, identity })] : []),
+					// The company's reading of itself (20260930766000): the Co-Founder's company runs.
+					...(context.agentKind === "cofounder" ? [mine.cloudReadingTool(identity, standIn())] : []),
 					...mine.cloudEventTools(binding, identity, standIn(), folder),
 					...mine.cloudSiteTools({ binding, identity, control: standIn(), folder, machines }),
 				]),

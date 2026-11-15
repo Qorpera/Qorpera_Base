@@ -11,7 +11,12 @@ import {
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
-import { cloudVisionAgreed, composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
+import {
+	cloudVisionAgreed,
+	composeCloudAgentHead,
+	readCloudAgentHeadReading,
+	readCloudAgentHeadVision,
+} from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { cloudCodeTools } from "./cloud-code-tools.ts";
 import {
@@ -56,6 +61,12 @@ import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
 import { cloudPictureTool } from "./cloud-folder-picture-tool.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
+import {
+	CloudFolderReading,
+	cloudCompanyMembers,
+	cloudReadingTool,
+	describeCloudCompanySenses,
+} from "./cloud-folder-reading.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
@@ -552,6 +563,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
 						? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
 						: Promise.resolve(undefined);
+				// The platform's facts about the whole company (the company's reading of itself, 20260930765000): the
+				// Co-Founder's company runs only, asked beside its open work. A failed read is null and the run goes on.
+				const sensesRequest =
+					context.identity.audienceKind === "company" &&
+					context.agentKind === "cofounder" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? describeCloudCompanySenses(binding, this.#paths, signal).catch((error) => {
+								if (!signal.aborted)
+									console.error(
+										`The company's senses were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return null;
+							})
+						: Promise.resolve(undefined);
 				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
 				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
 				const proposalsRequest =
@@ -578,8 +603,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
 				// precondition of company work. The vision, for the head (RUNTIME-AGENT-MEMORY-TREE.md
-				// §5.6), is read beside them; a failed read fails the composition, as the head is never cut.
-				const [memory, skills, vision] = await Promise.all([
+				// §5.6), is read beside them, and so is the company's reading of itself, the head's fourth part; a failed read
+				// fails the composition, as the head is never cut.
+				const [memory, skills, vision, reading] = await Promise.all([
 					Promise.resolve()
 						.then(() =>
 							composeCloudAgentMemory(
@@ -598,6 +624,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 					}),
 					readCloudAgentHeadVision(notebooks.composition, signal),
+					readCloudAgentHeadReading(notebooks.composition, signal),
 				]);
 				return {
 					initialPresence,
@@ -605,16 +632,28 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					memory,
 					skills,
 					vision,
+					reading,
 					openWork: await openWorkRequest,
+					senses: await sensesRequest,
 					proposals: await proposalsRequest,
 					platformUpdates: await updatesRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork, proposals, platformUpdates } =
-				await composeContext().catch(async (error) => {
-					await connectorTools();
-					throw error;
-				});
+			const {
+				initialPresence,
+				gateway,
+				memory,
+				skills,
+				vision,
+				reading,
+				openWork,
+				senses,
+				proposals,
+				platformUpdates,
+			} = await composeContext().catch(async (error) => {
+				await connectorTools();
+				throw error;
+			});
 			const connectorDescriptors = await connectorTools();
 			const viewed = await viewedRequest;
 			signal.throwIfAborted();
@@ -654,7 +693,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					// webhook signing secret is cut out of them before they are hashed, recorded or shown, as the tool boundary
 					// cuts one out of every tool result and the composer out of the context message (E3c-2). The session cuts
 					// all it sends Codex again, for any source added later.
-					const composedHead = composeCloudAgentHead(context, vision, memory);
+					const composedHead = composeCloudAgentHead(context, vision, memory, reading);
 					const head = { ...composedHead, text: redactCloudWebhookSecrets(composedHead.text) };
 					const request = await roomRequest;
 					// read_context admits the request's sources the context did not list.
@@ -679,6 +718,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						view?.tree,
 						request,
 						updates,
+						senses,
 					);
 					// The run's context is its head and views (in the developer instructions) and its context message, hashed
 					// together.
@@ -1220,6 +1260,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											: []),
 										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
 											? [cloudRecordReflectionTool({ folder: folder.client, operations, identity })]
+											: []),
+										// The company's reading of itself (20260930766000): the Co-Founder keeps it, in its company runs.
+										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
+											? [
+													cloudReadingTool(
+														identity,
+														new CloudFolderReading({
+															folder: folder.client,
+															operations,
+															identity,
+															members: cloudCompanyMembers(binding, this.#paths),
+														}),
+													),
+												]
 											: []),
 										// The agent changes the company's hooks through its folder client (E3a).
 										...cloudEventTools(binding, identity, this.#paths, folder.client),

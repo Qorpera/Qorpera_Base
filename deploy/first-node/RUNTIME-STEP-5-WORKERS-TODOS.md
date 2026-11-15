@@ -264,6 +264,14 @@ Migration `*_runtime_todo_worker_pages.sql` makes both listings pages:
   `todoKey`, or a worker named with `todoKey` and `workerKey`, is shown in full.
 - `qorpera_describe_agent_open_work` gives the runtime the counts for
   `openWork`; a failure leaves it out and never blocks the run.
+- Since the company's reading of itself (20260930765000, 20260930766000), the
+  Co-Founder's company runs (not a worker's, not a member's private
+  conversation) also carry `senses`, next to `openWork`: the answer of
+  `qorpera_describe_company_senses`, as it is (each agent's open, blocked and
+  lately done todos, runs, routines and waiting wake-ups; who joined and whose
+  role ended; unanswered question cards; each member's login; when the reading
+  was saved). It is asked beside `openWork`; a failed read makes it `null` and
+  the run goes on.
 - Proof: `supabase/tests/388_runtime_todo_worker_pages.test.sql` walks 60 and
   70 todos and 26 workers to the end with exact counts, pages through todos
   created in one instant, and changes items between pages.

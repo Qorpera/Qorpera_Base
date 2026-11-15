@@ -119,6 +119,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_good_will_agent_mark",
 			"qorpera_cofounder_crew",
 			"qorpera_offer_agents_to_member",
+			// The Co-Founder's senses (20260930765000).
+			"qorpera_describe_company_senses",
+			// Whether the run has a receipt under a key (20260930766000).
+			"qorpera_folder_run_receipt_exists",
 			// Machines agents start (2026-09-28).
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",

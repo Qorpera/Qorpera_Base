@@ -517,6 +517,16 @@ async function fixture(
 					workers: { active: 5, blocked: 1 },
 				};
 			}
+			// The Co-Founder's senses (20260930765000), as qorpera_describe_company_senses answers them.
+			if (method === "qorpera_describe_company_senses") {
+				if (mode === "company-worker") throw new Error("A worker reads no senses");
+				return {
+					schema: "qorpera.company-senses/v1",
+					runId: f.binding.runId,
+					agents: [{ handle: "nora", todos: { open: 40, blocked: 2, doneLast7d: 0 } }],
+					questions: { count: 0, oldest: [] },
+				};
+			}
 			if (method === "qorpera_list_native_connector_tools") {
 				return mode === "company-secret"
 					? [structuredClone(connectorDescriptor), ...structuredClone(moreConnectors)]
@@ -1278,6 +1288,8 @@ it.each([
 				"ask_member",
 				"create_group_chat",
 				"hire_agent",
+				// Ending an agent's role, beside hiring (20260930766000).
+				"end_role",
 				"manage_routine",
 				"manage_todo",
 				"manage_worker",
@@ -1306,7 +1318,10 @@ it.each([
 				"update_memory",
 				"update_skill",
 				// The Co-Founder deals the team out between the members (20260930702000).
-				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member", "record_reflection"] : []),
+				// The Co-Founder keeps the company's reading of itself (20260930766000).
+				...(agentKind === "cofounder"
+					? ["crew_and_members", "offer_agents_to_member", "record_reflection", "update_reading"]
+					: []),
 			].sort(),
 		);
 		// The catalog describes in full what the kind uses most; more_tools lists the rest (T3-6). The Co-Founder hires.
@@ -1331,7 +1346,7 @@ it.each([
 				"ask_member",
 				"update_memory",
 				"more_tools",
-				...(agentKind === "cofounder" ? ["hire_agent"] : []),
+				...(agentKind === "cofounder" ? ["hire_agent", "update_reading"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -1344,7 +1359,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v17",
+			schema: "qorpera.hire-overlay/v18",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1356,6 +1371,21 @@ it.each([
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
 		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
 		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
+		// The Co-Founder's company runs read the company's senses beside it; no other run asks for them.
+		const asked = f.pathCall.mock.calls.map(([method]) => method);
+		if (agentKind === "cofounder") {
+			expect(prompt.senses).toEqual({
+				schema: "qorpera.company-senses/v1",
+				runId: f.binding.runId,
+				agents: [{ handle: "nora", todos: { open: 40, blocked: 2, doneLast7d: 0 } }],
+				questions: { count: 0, oldest: [] },
+			});
+			expect(Object.keys(prompt).indexOf("senses")).toBe(Object.keys(prompt).indexOf("openWork") + 1);
+			expect(asked).toContain("qorpera_describe_company_senses");
+		} else {
+			expect(prompt).not.toHaveProperty("senses");
+			expect(asked).not.toContain("qorpera_describe_company_senses");
+		}
 		// Contract 15.2: the skill catalog sits before the notebook and the job; both libraries are empty here.
 		expect(Object.keys(prompt).slice(-3)).toEqual(["skills", "memory", "hireOverlay"]);
 		expect(prompt.skills).toMatchObject({
@@ -3009,6 +3039,27 @@ it("starts the run without the open-work count when the kernel cannot give it", 
 	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 });
 
+it("starts the Co-Founder's run with null senses when their read fails", async () => {
+	const f = await fixture("company-runtime");
+	f.context.agentKind = "cofounder";
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_senses") throw new Error("Senses unavailable");
+		return original(method, args, signal);
+	});
+	const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+	} finally {
+		errors.mockRestore();
+	}
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const prompt = JSON.parse(evidence.turnParameters.input[0].text);
+	expect(prompt).toHaveProperty("senses", null);
+	expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
+});
+
 it("asks for the run's context and its wake together, and reports a context failure first", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;
@@ -3703,6 +3754,16 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Master 01c90ff7a merged up through T3-3 for landing (15 November 2026) under no-wall: measured once more.
 	// Master 01c90ff7a merged up through no-wall into T3-5 for landing (15 November 2026): app_guide's look and kits in its contract, ask_member's takeover on the shared screen; measured once more.
 	// Master 01c90ff7a merged up through T3-5 into T3-6 for landing (15 November 2026): data_change opened on demand beside the other data tools; measured once more.
+	// Later that day the Co-Founder's update_reading came after offer_agents_to_member and end_role after
+	// create_group_chat (the company's reading of itself, 20260930766000), and hire_agent's description says an existing
+	// coworker takes new work only when it is the same kind and it has room, so both moved again.
+	// Review r1 of #1819: end_role's description says one already ended is answered so, not refused, so both moved again.
+	// Review r2 of #1819: a new call on an ended role is refused again, so end_role's description is round 0's and both
+	// pins are round 0's.
+	// The stack's new head (no-wall 9ecf100fe, with app_guide) merged in (15 November 2026): measured once more on node 1's
+	// test machine.
+	// The company's map (the founder, 15 November 2026: "Use a map kit"): update_reading's description says the founders see
+	// the reading as the first layer of the company's map, so both moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3714,6 +3775,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"app_guide",
 		"read_context",
 		"send_coworker_message",
+		"update_reading",
 		"update_memory",
 		"recall_memory",
 		"read_skill",
@@ -3756,13 +3818,14 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"search_skills",
 		"update_skill",
 		"create_group_chat",
+		"end_role",
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"5d30b192731eb5214b78b18e35cf1daeec6a2b94335fdbb95e04172ce74dde0c",
+		"80180de307c2a44745b9be9cff1add9808ffd5c8f4e720dff2ac3757c24e2812",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"cd6611a85c34ebe1407add8248edf1f166ce418fe48c2b5835dabee7512698d0",
+		"e9f29cb466f7925818fc145c6b93692625c065f9ff05615e49e5485f3296cbe4",
 	);
 });
 

@@ -1349,6 +1349,41 @@ C1d (bytes):
   also on a retry, its own allow and an earlier member's answer are refused by the recorder, and an owner's answer
   saves it with that owner as approver). 652's pin of the layering's snapshot-v1 text strips the `folder-v2` lines.
 
+**Built (the company's reading of itself, 20260930766000): `end_role`** (`packages/runtime/src/cloud-folder-hiring.ts`),
+the other end of a hire, offered to every company run that is offered `hire_agent` (the founder, 14 November 2026: "It
+should feel like the company is conscious almost"; no tool could archive an agent before: `company_edit` answered
+`review_required`).
+- `{agent, reason, operationKey}`: `agent` is the handle (folder name), `reason` one sentence a founder reads (at most
+  280 characters).
+- Before the automatic review (`prepare`), the agent's `agent.md` is read: the Co-Founder, the calling agent and a
+  handle that is no agent's folder are refused (`REFUSED: …`), and the card ("End an agent's role") names the agent as
+  its file has it, with the reason. Review class `delegation`, as SQL's for a status change.
+- An agent already archived is told apart by the call's receipt (reviews r1 and r2 of #1819), read with
+  `qorpera_folder_run_receipt_exists(environment, actor, key)` (20260930766000; the run's own receipts, the runtime's
+  role only) under the operations layer's key `end_role:end-role:<operationKey>`, before the review and again before
+  the receipt. With a receipt, the call is a repeat of one that archived the agent: it goes on to its receipt, which
+  replays its stored answer, in this run or a resumed one (the card says "Its role has already ended: nothing
+  changes"). With none, it is a new call on a role that has already ended: `REFUSED: <name>'s role has already ended`
+  before the review, with no receipt, no commit and nothing kept.
+- Under the receipt: one `write` unit, `setCompanyStateSettings(text, {status: "archived"})` over the version read,
+  staged, its review recorded (`recordReview`, tool `end_role`; the recorder takes `end_role` since 20260930766000) and
+  committed with it. The follow-up queue then pauses its routines, revokes its access and closes its threads; nothing
+  else is deleted, and a member who sets it active again brings it back. The result's `next` says so and that the
+  caller tells the founders who and why.
+
+**Built (the company's reading of itself, 20260930766000): `update_reading`** (`packages/runtime/src/cloud-folder-reading.ts`),
+the Co-Founder's only, in its company runs.
+- One `write` unit of `QorperaOS/vision/reading.md` (`writeReadingFile`) under the call's receipt, over the version
+  read (a new file without one). Plain, never reviewed: the reading is the company's bookkeeping.
+- Checked with the arguments: the file's own problems (the shared parser's), `team`'s shape.
+- Checked before the receipt: each agent of a thing is an active agent's folder; each agent of a change is an agent's
+  folder (an ended one is archived); each member id waited for is a member (`qorpera_cofounder_crew`).
+- **The owed decision**: when a saved reading parses and the new `attention` names another key, `team` is required:
+  the changes (`{agent, what, line}`, 1 to 6) or `{"none": "<why>"}`, else `REFUSED`. Given changes are saved as the
+  file's `changes`; with none, or with no `team` and no move, the saved changes stay while the saved file is under
+  seven days old (its folder entry's `updatedAt`) and are emptied after. A saved file that does not parse owes nothing
+  and is replaced.
+
 **Built (W4b): `create_group_chat`** (`packages/runtime/src/cloud-folder-group-chats.ts`), as W4a.
 - One `new_folder` unit `QorperaOS/agents/groups/<handle>` with `group.md` (`writeGroupFile`): the name, no subtitle (the app
   shows "Group chat"), the purpose as the body, `agents` the run's own agent and the coworkers named, `people` the

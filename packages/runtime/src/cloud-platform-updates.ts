@@ -62,6 +62,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "The map kit: the company as one picture",
 		text: "Interface apps can be drawn with the map kit (save_app's kit map; read app_guide map first). A map shows the company, or one owner's area, as three to seven things that fill as they are built or known, with the agents at work on each and a mark where a founder is waited on. A thing opens into a layer of what is made inside it, so a member can dive in. Its first layer can be the company's own reading of itself, drawn live, once the company has written one: that is the company's map, which you keep.",
 	},
+	{
+		id: "company-reading",
+		kind: "behaviour",
+		date: "2026-11-15",
+		title: "The company's reading and a team that changes",
+		text: "The Co-Founder now keeps the company's reading of itself with update_reading: where the company stands, the three to seven things it cares about and who attends to each. Every agent gets it at every run. When attention moves, a team decision is owed: hire, split an area, rewrite a job description, or end a role with end_role. Write the first reading if there is none, look at the team against where the company stands now, and make the company's map from the reading with the map kit.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
