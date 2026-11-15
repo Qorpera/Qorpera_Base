@@ -453,11 +453,11 @@ member or the agent from the lists it already holds.
 
 | Part | What | Tests |
 | --- | --- | --- |
-| a | The platform: the page `data`, `qorpera_member_folder_may_write` (one migration) | an SQL test |
+| a | The platform: `qorpera_member_folder_may_write` (one migration) | an SQL test |
 | b | The store and the gateway, reading: the record's tables and trigger, `describe` for a member, `rows`, a table's `watch`, who gets the list | the gateway's tests against a real PostgreSQL: a reader of a `:viewer` database gets no table by any road; no folder login reads the record, in its own folder or another's; a company whose record holds more than its free room still writes, also with the record's tables larger than 100 MiB, and its agents are told at 80 % of its own data, not the record's; a record past its 100 MiB keeps its newest lines; what the trigger costs a statement, against P2's |
 | c | Writing: `edit`, the actor's line for every write road, the edge function's routes | the gateway's and the function's tests |
 | d | The agents' instructions: what `[list]` is, and that a database with private rows says `"writers"` | the runtime's pin tests |
-| e | The web: the page, the list, a row, an edit, a removal. It goes live only after b, c and d are | web tests; pictures at several widths, both themes |
+| e | The web, and the page `data` in the platform's page lists (a migration), added with the web that knows it, since today's web refuses a page it does not know: the page, the list, a row, an edit, a removal. It goes live only after b, c and d are | web tests; pictures at several widths, both themes |
 | f | What changed: `changes`, and its view | the gateway's and web tests |
 | g | Ask from the list, and "Keep as a list" | runtime and web tests |
 
