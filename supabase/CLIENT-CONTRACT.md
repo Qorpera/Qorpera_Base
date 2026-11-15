@@ -74,8 +74,9 @@ runner guest and work only with that runner job's current lease token. Clients n
 they answer 42501 "native host call is refused".
 
 Company databases (slice 5, migration 20260930750000): `anon` may also call `qorpera_data_pass_redeem(p_pass)`. It is
-for the data gateway (`deploy/company-data/`), which redeems a run's data pass once: only knowing the pass (32 random
-bytes, only their sha256 kept, 60 s) opens it. Clients never call it; anything but a live, unredeemed pass answers null.
+for the data gateway (`deploy/company-data/`), which redeems a data pass once: a run's, or (migration 20260930775000)
+a company machine's, made for its folder view. Only knowing the pass (32 random bytes, only their sha256 kept, 60 s)
+opens it. Clients never call it; anything but a live, unredeemed pass answers null.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 

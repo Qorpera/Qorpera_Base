@@ -2,8 +2,9 @@
 -- 20260930775000, a company machine's data pass (RUNTIME-COMPANY-DATABASES.md §9a, slice 8a part 1), on 510's test
 -- machine and its view: the folder service asks for a pass as the view; it keeps the files the view may read under
 -- data/<name>/ and answers their versions and authorities (what the service records as the view's reads); the redeem
--- answers a machine's pass once, with its view and its machine, while the view is open and valid; a paused company, a
--- closed view, another kind of actor and a wrong pass get none; a run's pass is answered as before (1244, 1262).
+-- answers a machine's pass once, with its view and its machine, while the view is open and valid; a paused company
+-- (also for a pass made before the pause), a closed view, another kind of view or actor and a wrong pass get none; a
+-- run's pass is answered as before (1244, 1262).
 -- The machine, run, view and commit helpers are 510's, 639's and 632's.
 
 create function pg_temp.mp_same(p_got text, p_want text, p_what text) returns void language plpgsql as $$
@@ -68,6 +69,7 @@ end $$;
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); a jsonb := pg_temp.place(pg_temp.machine(v, 'data'));
 	s jsonb := pg_temp.open_machine(a); made jsonb; redeemed jsonb; row public.qorpera_data_passes%rowtype; e jsonb;
+	box jsonb;
 begin
 	made := pg_temp.mp_pass(s);
 	perform pg_temp.mp_same(made ->> 'schema', 'qorpera.machine-data-pass/v1', '2: the schema');
@@ -114,19 +116,28 @@ begin
 		'{"kind":"platform"}', 'shop'), '22023', 'A machine''s data pass is for a view');
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', jsonb_build_object('viewId', s ->> 'viewId', 'pass', repeat('A', 43))),
 		'42501', 'Folder view is unavailable');
+	-- Another kind of view, valid and its own run's: a run box gets no machine's pass (§9a: only a company machine's
+	-- view is taken), though the same view reads the database's files.
+	box := pg_temp.open('run_box', '{}', v);
+	if pg_temp.read('data/shop/database.toml', pg_temp.vactor(box)) ->> 'found' is distinct from 'true' then
+		raise exception '3: the run box''s view does not read the database''s file'; end if;
+	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', box), '22023', 'A machine''s data pass is for a company machine''s view');
 	perform set_config('request.jwt.claims', '{"role":"authenticated","sub":"63200000-0000-4000-8000-000000000002"}', true);
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', s), '42501', 'Folder core authority is required');
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 
-	-- 4. A paused company: no pass, as for a run; a pass made before the pause is still the view's until it ends.
+	-- 4. A paused company: no pass, as for a run, and a pass made just before the pause redeems to nothing: a machine
+	--    that keeps running through a pause reads and writes no rows.
 	made := pg_temp.mp_pass(s);
 	perform pg_temp.fx(format('insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason) values (%L, %L, %L)',
 		'63200000-0000-4000-8000-000000000010', '63200000-0000-4000-8000-000000000001', 'A test pause'));
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', s), '55000', 'Company execution is paused');
+	perform pg_temp.mp_same(pg_temp.mp_redeem(made ->> 'pass')::text, null, '4: a pass made before the pause, redeemed in it');
 	perform pg_temp.fx($q$delete from public.qorpera_company_execution_pauses where profile_id = '63200000-0000-4000-8000-000000000010'$q$);
-	perform pg_temp.mp_same(pg_temp.mp_pass(s) ->> 'files', '4', '4: after the pause');
+	perform pg_temp.mp_same(pg_temp.mp_redeem(pg_temp.mp_pass(s) ->> 'pass') ->> 'kind', 'machine', '4: after the pause');
 
 	-- 5. A closed view: no new pass, and a pass made before it closed redeems to nothing.
+	made := pg_temp.mp_pass(s);
 	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
 	perform pg_temp.refused(format('select pg_temp.mp_pass(%L)', s), '42501', 'Folder view has ended');
 	perform pg_temp.mp_same(pg_temp.mp_redeem(made ->> 'pass')::text, null, '5: a pass of a closed view');
