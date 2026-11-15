@@ -340,6 +340,97 @@ data may say are that lead's.
 Latency: the store and the gateway add about 3 ms from a commit to a new answer (§11, P2); the answer's way back
 through `api.qorpera.com` adds the rest (a request on that road took 139 to 354 ms on 4 November).
 
+## 5a. The Data app: a member's list (slice 10)
+
+A member sees and keeps the company's data in a built-in app, **Data**, beside Mailbox and Bank: one table at a time
+as a list of rows, in the client's own look. The founder picked the list on 15 November 2026 ("a database fits best
+as a list") and answered "Yes, both" to members seeing and changing whole tables there (§13). The pictures are on the
+design canvas "Company data view".
+
+### What a member may do there
+
+- **See.** A member who may read `data/<name>/database.toml` sees that database: its tables as tabs, every row of a
+  table, and each question they may read as a list of its own beside the tables.
+- **Change.** A member who may write `data/<name>/` may add a row, change a row and remove a row. Removing asks
+  first, on the bar above the list. A member who may only read sees the list and no way to change it.
+- **Narrower, never wider.** `database.toml` may say `[list] members = "writers"`: then only members who may write
+  the folder get the list. A database whose questions answer by `:viewer` keeps that privacy so; an agent sets it
+  when it makes such a database. Without the line, readers get the list.
+- This is the one exception to §4's rule that rows are reached only through questions and changes kept as files. It
+  holds for this built-in app alone: the gateway builds every statement itself, from the store's own catalog. A
+  page an agent wrote keeps §4, §5 and §8 as they are.
+
+### The member's calls
+
+At the gateway, beside `query`, `watch`, `apply`, `describe` and `change` (§3):
+
+- **`describe`** with no database answers every database the member may read (the names from the member's own
+  listing of `data/`). Each table gains its `kind` (table or view), its `key` (the primary key's columns) and, for
+  each column, whether a member's edit may set it (not generated, not an identity kept by the store). Each database
+  gains the questions and changes the member may read, with their words, and `write`: whether the member may write
+  the folder.
+- **`rows`** `{database, table, order?, after?, limit?}` reads one page: at most 200 rows (100 unless asked), within
+  a question's 2 s and 256 KiB, as the folder's read login. It orders by the column named (the key otherwise) and
+  then by the key, and answers `next`, the place the following page starts after, so a list pages by key and never
+  by offset. Each row carries `seen`, a hash of the row as it was read. Only relations in the folder's own schema are
+  read. A relation with no primary key is listed and cannot be changed.
+- **`edit`** `{database, table, op, key?, values?, seen?}`, `op` one of `add`, `change`, `remove`. The gateway
+  writes one statement from the catalog (identifiers quoted, every value a parameter cast to its column's type) and
+  runs it as the folder's write login under a change's rules (§8: 5 s, the watched tables, the company's size). A
+  `change` or a `remove` names the whole key and the row's `seen`: it touches exactly one row, and a row changed or
+  gone since is refused (409) with the row as it is now. It answers the row as written.
+- **`watch`** takes a table as it takes a question: the list hears the table's notices and reads its page again.
+- **`changes`** `{database, after?}` reads the record below, newest first, in pages.
+
+The edge function lets `rows`, `edit`, `changes` and `change` through for members (today it refuses `change`).
+
+**The write right.** Nothing proves today that a member may write a path: the gateway proves reads alone. A new
+platform call, `qorpera_member_folder_may_write(p_environment_id, p_path)`, answers for the signed-in member what
+the folder core's own `qorpera_folder_member_allowed` says for `write`. The gateway asks it for `data/<name>/` and
+keeps the answer as it keeps a read's proof (10 s).
+
+### Who changed what
+
+Today nothing records who changed a row. Every write road gets a record: a member's edit, a named change (from a
+member, a run or a machine), and an applied step.
+
+- **The rows.** A model trigger on every table of a database folder (with `changed` and `rows_gone`, so the watcher's
+  check for unwatched tables covers it) writes each row it adds, changes or removes to
+  `qorpera_data.row_changes(txid, seq, relation, op, key, before, after)`: for a change, the columns that differ.
+  The function runs with the store's rights; no folder login can write the table itself.
+- **The actor.** Before a write commits, the gateway writes `qorpera_data.change_log(txid, at, by_kind, by_id, via)`
+  on its keeper connection: `by_kind` member, agent, machine or step; `via` the list, the change's or the step's
+  name. The actor is never read from the transaction that writes rows, so a statement an agent wrote cannot name
+  another actor. A write that rolled back leaves a line with no rows, which the watcher removes.
+- Kept 30 days, counted in the company's size. The live store gets the tables and the trigger with the kit's
+  `update-store.sh`, as slice 7 did.
+
+"What changed" in the app reads this record: who, when, and each change as one plain sentence. The web names the
+member or the agent from the lists it already holds.
+
+### The app in the web
+
+- An interface page `data` (the cloud's list of pages and its checks gain it; one migration), shown in the apps row
+  when `describe` lists a database. Its emblem is a chest of drawers.
+- The list: tabs for the tables and the kept questions, column heads that sort, a row that opens with its fields,
+  an edit on the bar above the page with the member's yes, as `qorpera.act` will ask (§5, §8).
+- **Ask.** The box under the list sends the question to an agent with the list it was asked on. The answer comes as
+  that agent's message. "Keep as a list" has the agent write the question as a file (`queries/`), and it then shows
+  beside the tables.
+- Not in this slice: safe copies (going back a night and taking a copy home need slice 6's snapshot, a restore and
+  an export, each with its own design), and a named change as a button on a row (slice 7c's `act`).
+
+### Parts
+
+| Part | What | Tests |
+| --- | --- | --- |
+| a | The platform: the page `data`, `qorpera_member_folder_may_write` (one migration) | an SQL test |
+| b | The store and the gateway, reading: the record's tables and trigger, `describe` for a member, `rows`, a table's `watch` | the gateway's tests against a real PostgreSQL |
+| c | Writing: `edit`, the actor's line for every write road, the edge function's routes | the gateway's and the function's tests |
+| d | The web: the page, the list, a row, an edit, a removal | web tests; pictures at several widths, both themes |
+| e | What changed: `changes`, and its view | the gateway's and web tests |
+| f | Ask from the list, and "Keep as a list" | runtime and web tests |
+
 ## 6. Agents
 
 | Tool | What |
@@ -587,6 +678,7 @@ registry when a slice starts.
 | 7 | Named changes: `act`, `data_change`, the member's approval for what destroys, routines on a change. Built in parts: (a) the gateway's `change` call and `data_change`; (b) the member's approval for a step that destroys; (c) `act` and the bar; (d) routines on a change | a migration and an SQL test for each of (a) and (b) | bundle, node release, a later gateway on the store's machines, web |
 | 8 | The product's doors, each after its own design | | |
 | 8a | The `data` command on a company machine (§9a), in four parts, after slice 7 | one migration, one SQL test; the gateway's, the folder service's and the folder program's tests; a proof on a machine | the migration, a later gateway, the node release (the folder service and its two credentials), the folder program and the machine image |
+| 10 | The Data app (§5a): a member's list of rows, in six parts | one migration, one SQL test; the gateway's, the function's and web tests | the migration, the store's update and a later gateway, the edge function, the web |
 | 9 | Qorpera's own data as tables | | |
 
 Slices 2 to 5 together are "live reads": a fresh company's agents make a database and an interface shows its numbers
@@ -611,6 +703,15 @@ makes, and no command; rows changed only through a new step, a held step could n
 on an agent's machine ran could reach a database. To the order put to him (writing rows and a member's yes for a held
 step, slice 7; then a `data` command on the agent's machine with the same reach as the tools, §9a; later a server's
 direct connection, §9, and export and restore) he answered: "Yes, build them".
+
+**15 November 2026.** He asked whether members have the views of their databases that a hosted database service
+gives. They had none: pages show live numbers, and the files are in the company folder. Shown three ways in on a
+design canvas (shelves of the company's own things, a flow of where data comes from and goes, one list), he picked
+the list: "C, a database fits best as a list". To "May members see and change whole tables in the Data list?", put
+with a recommendation of yes to both (see: a member who may open the database's folder sees all rows of its tables;
+change: a member who may write there may add, change and remove rows, each change recorded with who did it, a removal
+asked first; pages that agents build keep decision 3), he answered: "Yes, both". §5a is that design. It amends
+decision 3 for the built-in Data app alone.
 
 ## 14. Not in this design
 
