@@ -641,7 +641,8 @@ the run), and a member's own changes.
 
 ## 4. Web
 
-- **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
+- **App page.** `#/c/<profileId>/a/<name>` shows the app (one a member retired shows it retired: "Retire interface"
+  below) in the main area, at full width and height, as Mailbox and
   Bank show (`AppPanel` placed as a page). It has **no header** (Jonas, 10 November 2026, on the page's slim header:
   "I would remove any headers as they add nothing but bad visual design"): the app is the whole page, as a concept is
   the whole stage. The rail beside it shows which app is open and leads everywhere else (at phone width, the top bar's
@@ -692,6 +693,19 @@ the run), and a member's own changes.
   page of the concept it asks about and on no other, also while it stands answered for a moment; one that points at
   no concept, or at one that is gone, shows on none and waits in its agent's thread.
 - **Apps drawer.** Posted apps join Mailbox, Members and Bank in #1430's drawer, as links to their pages.
+- **Retire interface** (§3e; the founder, 15 November 2026: a "retire interface" config "when rightclicking an
+  interface to stop maintaining it, and hide it"). For a member whose role writes the company's folder, the menu of an
+  agent's app in the drawer (arranged or not) and of a concept's row in the Concepts viewer offers Retire interface;
+  the platform's pages, Concepts, Sites and What's new do not. No question first and no danger colour. The app leaves
+  at once and its line is written to `apps/retired.md` as the member (`cloud/retired-apps.ts`), over the version read,
+  tried once more after another member's write; a write that fails puts it back and the rail says so. The file is read
+  with the apps (the same hints and minute); a read that began before the newest one published changes nothing, and
+  neither does one from before a member's own change. A retired app is hidden for the whole company: not in the drawer
+  (its place in each member's own layout is kept, so it comes back where it stood) and not in the Concepts viewer. Its
+  card in a message is muted and says "Retired". Its page, a retired concept's included, runs nothing: the app's cover
+  or emblem in grey, "This interface is retired." and, for a member who writes the folder, Bring back. The rail's
+  Hidden fold lists the retired interfaces for every member (emblem and name); a press opens the page, and a
+  right-click offers Bring back, which takes the app's lines out of the file.
 - **Changes.** The page or panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
   a minute's poll behind it). After a change it puts the page together again: a changed page is shown afresh, an
   unchanged one is told `qorpera-app-change` (§5).
@@ -1157,7 +1171,8 @@ thread's "Quoted from an email" title).
     to the web.
 12. Retired interfaces (§3e, 15 November 2026): the file's format (`cloud-client/app-retired.ts`) and the runtime's
     refusals and list label (`cloud-folder-app-retired.ts`). No migration, no tool name, no node change. The web's part
-    (the menu item, hiding, the retired page and the way back) is a change of its own, released after the runtime.
+    (§4 "Retire interface": the menu item, hiding, the retired page and the way back, `cloud/retired-apps.ts` and
+    `CompanyController.setAppRetired`) is the web PR stacked on it (#1844), released after the runtime with step 12.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway
