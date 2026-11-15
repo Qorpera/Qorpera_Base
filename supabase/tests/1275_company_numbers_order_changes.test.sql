@@ -675,7 +675,8 @@ begin
 		'12740000-0000-4000-8000-000000000020') -> 'rows' -> 0 ->> 0, 'none', 'no hook at all');
 end $$;
 
--- 11. Rights: any member of the company (owner, admin, contributor, viewer: who may read may change) and a run of it;
+-- 11. Rights: a member of the company who is not a viewer (owner, admin, contributor) and a run of it; a viewer sees
+--     the sales and changes none;
 --     never an outsider, another company's member or a run of another company; the read rule says no for both doors;
 --     a change that is not there has the same words. The doors' own checks.
 do $$
@@ -684,14 +685,39 @@ declare v_rule text := pg_get_functiondef('public.qorpera_company_numbers_orders
 begin
 	perform pg_temp.o_clean();
 	perform pg_temp.c_paid('pi_W1', 1000, v_at);
-	perform pg_temp.o_same(pg_temp.c_mark('pi_W1', 'packed', '{}', '92400000-0000-4000-8000-000000000003'), '1 packed',
-		'a viewer');
+	perform pg_temp.o_same(pg_temp.c_mark('pi_W1', 'packed', '{}', '92400000-0000-4000-8000-000000000003'),
+		'42501 A viewer sees the orders but changes none', 'a viewer marks none');
+	perform pg_temp.o_same(pg_temp.c_refused('order-add', '{"at": "@day", "amount": 1, "currency": "dkk"}',
+		'92400000-0000-4000-8000-000000000003'), '42501 A viewer sees the orders but changes none', 'a viewer adds none');
+	perform pg_temp.o_json(pg_temp.o_member('92400000-0000-4000-8000-000000000003', 'orders-now') -> 'rows',
+		pg_temp.o_rows('orders-now'), 'a viewer sees the sales');
+	perform pg_temp.o_same(split_part(pg_temp.o_order('pi_W1'), ' ', 6) || ' ' || pg_temp.o_count(), 'paid/stripe 1',
+		'nothing a viewer asked changed');
+	perform pg_temp.o_same(pg_temp.c_mark('pi_W1', 'packed'), '1 packed', 'the owner');
+	-- The contributor is a viewer in another company: a viewer there, not here.
+	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+	values ('12740000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000002', 'base-member@example.test',
+		'Member', 'viewer');
 	perform pg_temp.o_same(pg_temp.c_mark('pi_W1', 'on_the_way', '{}', '92400000-0000-4000-8000-000000000002'),
-		'1 on_the_way', 'a contributor');
+		'1 on_the_way', 'a contributor (a viewer elsewhere)');
 	perform pg_temp.o_same(pg_temp.c_mark('pi_W1', 'delivered', '{}', '92400000-0000-4000-8000-000000000004'),
 		'1 delivered', 'an admin');
-	v_ref := pg_temp.c_ref('{"at": "@day", "amount": 1, "currency": "dkk"}', '92400000-0000-4000-8000-000000000003');
-	perform pg_temp.o_same(split_part(pg_temp.o_order(v_ref), ' ', 6), 'paid/member', 'a viewer adds');
+	v_ref := pg_temp.c_ref('{"at": "@day", "amount": 1, "currency": "dkk"}', '92400000-0000-4000-8000-000000000002');
+	perform pg_temp.o_same(split_part(pg_temp.o_order(v_ref), ' ', 6), 'paid/member', 'a contributor adds');
+	-- A viewer made a contributor may change; one made a viewer no longer may.
+	update public.qorpera_profile_members set role = 'contributor'
+	where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000003';
+	perform pg_temp.o_same(pg_temp.c_refused('order-add', '{"at": "@day", "amount": 1, "currency": "dkk"}',
+		'92400000-0000-4000-8000-000000000003'), 'ok', 'a viewer made a contributor');
+	update public.qorpera_profile_members set role = 'viewer'
+	where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000002';
+	perform pg_temp.o_same(pg_temp.c_mark(v_ref, 'delivered', '{}', '92400000-0000-4000-8000-000000000002'),
+		'42501 A viewer sees the orders but changes none', 'a contributor made a viewer');
+	update public.qorpera_profile_members set role = case user_id
+		when '92400000-0000-4000-8000-000000000002' then 'contributor'::public.qorpera_profile_role
+		else 'viewer'::public.qorpera_profile_role end
+	where profile_id = '92400000-0000-4000-8000-000000000010'
+		and user_id in ('92400000-0000-4000-8000-000000000002', '92400000-0000-4000-8000-000000000003');
 	perform pg_temp.o_same(pg_temp.c_refused('order-add', '{"at": "@day", "amount": 1, "currency": "dkk"}',
 		'92400000-0000-4000-8000-000000000005'), '42501 Company numbers are unavailable', 'an outsider');
 	perform pg_temp.o_same(pg_temp.c_mark('pi_W1', 'cancelled', '{}', '92400000-0000-4000-8000-000000000005'),

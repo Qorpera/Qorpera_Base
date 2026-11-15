@@ -2049,8 +2049,9 @@ sales; agents may add orders outside Stripe by hand, marked as added, at most 50
 
 - `qorpera_member_company_numbers_change(environment, change, params)` (authenticated): a member of a folder-v2
   company (42501 "Company numbers are unavailable" for anyone else). `change` is the name after `qorpera/`, `params`
-  an object of named values. Who may read the orders may change them (as a company database's named change: a member
-  who may read may run), so everyone in the company, viewers too; the rule is `qorpera_company_numbers_orders_readable`.
+  an object of named values. Who may read the orders (`qorpera_company_numbers_orders_readable`: everyone in the
+  company) may change them, except a viewer, a read-only member: 42501 "A viewer sees the orders but changes none".
+  Owners, admins and contributors may.
   Answers the data gateway's change shape `{changed, columns, rows, more, asOf}`: `changed` how many orders it wrote
   (0 when nothing changed), `columns` and `rows` what it gives back, `more` false, `asOf` the time (ISO, UTC).
 - A run changes the same with `qorpera_run_company_numbers_change(environment, actor, change, params)` through the

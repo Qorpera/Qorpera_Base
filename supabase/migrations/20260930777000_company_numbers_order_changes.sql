@@ -7,10 +7,10 @@
 --
 -- 1. qorpera_company_numbers_change(...): the one change dispatcher, internal, beside the questions' dispatcher. It
 --    answers the data gateway's change shape {changed, columns, rows, more, asOf}: `changed` how many orders it wrote
---    (0 when the order already had that state), `columns` and `rows` what it gives back, `more` false. Who may change
---    is who may read the orders (the data gateway's rule for a named change, RUNTIME-COMPANY-DATABASES.md §8: a member
---    who may read may run): qorpera_company_numbers_orders_readable decides both, so everyone in the company, viewers
---    too, and any run of it. Two changes:
+--    (0 when the order already had that state), `columns` and `rows` what it gives back, `more` false. Who may change:
+--    whoever may read the orders (qorpera_company_numbers_orders_readable: everyone in the company and any run of it),
+--    except a viewer, a read-only member (the lead, 15 November 2026: everyone may see the sales, a viewer changes
+--    none; 42501, as the platform's other writes refuse a viewer). Owners, admins and contributors may. Two changes:
 --      order-state {order, state, test?}: `order` is Stripe's payment id (pi_...), a Checkout Session's id (cs_..., for
 --        a session with no payment, as a free one; a paid one is named by its payment_intent) or the ref order-add
 --        gave (add_...). It is hashed with the company's id as O1 keys its orders and matched; it is never kept. `state`
@@ -106,7 +106,7 @@ language sql immutable set search_path = '' as $$
 $$;
 
 -- A change of the company's orders, in the data gateway's change shape. Rights: the doors admit a member or a run of
--- the company; the orders' read rule decides the rest (who may read may change). p_actor is the doors' actor: a
+-- the company; the orders' read rule decides the rest, and a viewer changes nothing. p_actor is the doors' actor: a
 -- member's {kind: member, userId}, or a run's as qorpera_folder_read_actor resolves it (kind staff_agent).
 create function public.qorpera_company_numbers_change(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
 	p_change text, p_params jsonb)
@@ -151,6 +151,11 @@ begin
 		raise exception 'No change qorpera/% that you may run', p_change using errcode = 'P0002'; end if;
 	v_by := case p_actor ->> 'kind' when 'member' then 'member' when 'staff_agent' then 'agent' end;
 	if v_by is null then raise exception 'Company numbers are unavailable' using errcode = '42501'; end if;
+	-- A viewer sees the sales and changes none.
+	if v_by = 'member' and exists (select 1 from public.qorpera_profile_members as member
+			where member.profile_id = p_profile_id and member.user_id = (p_actor ->> 'userId')::uuid
+				and member.role = 'viewer') then
+		raise exception 'A viewer sees the orders but changes none' using errcode = '42501'; end if;
 	-- An in-house worker with read access writes nothing, as the folder core says (20260928259230).
 	if p_actor ->> 'sessionKind' = 'in_house' and p_actor ->> 'workerAccess' = 'read' then
 		raise exception 'A worker with read access changes no orders' using errcode = '42501'; end if;
