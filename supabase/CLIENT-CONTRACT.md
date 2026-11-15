@@ -2035,7 +2035,8 @@ member may delete it. A company whose routines stand still cannot write its own 
   wakes wait, and names the first that is not ready: `login_full` (with `resetsAt`, when the login's window resets),
   `sign_in` (a new sign-in is needed) or `no_login`; `member` is that member's user id. `why`, `member` and `resetsAt`
   are null when every such login is ready. Any member reads it, a viewer too; anyone else is 42501 "Standing
-  unavailable". Read it when the company page opens and every 30 s while it is open.
+  unavailable". The web reads it for an interface app that reads `reading` (`qorpera.reading()`, such as the
+  company's map), when its page opens and every 30 s while it is open.
 - The Co-Founder's facts for the reading are a host call of its run, never a member's:
   `qorpera_describe_company_senses(binding)`.
 

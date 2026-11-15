@@ -421,9 +421,20 @@ export class AppPanel {
 		// A note held for the app is on the bar again, with the member's words: when this bridge takes over under a page
 		// that stands (its request was put away with the earlier one; a new page's frame restores it once shown), and
 		// when one that was on its way, sent from any page of the app, is held again.
-		this.#unlisten = this.#host.tell?.listen(app.name, () => {
+		const unTell = this.#host.tell?.listen(app.name, () => {
 			if (this.#serving === serving && this.#frame) void serving.bridge.restore();
 		});
+		// A page that reads the company's reading hears when the company's standing changed, as it hears a change of the
+		// folder; the standing is read on its clock only while such a page is served.
+		const reading = (app.manifest.reads as readonly string[]).includes("reading") ? this.#host.reading : undefined;
+		const unRead = new AbortController();
+		reading?.watch(AbortSignal.any([unRead.signal, this.#lifetime.signal]), () => {
+			if (this.#serving === serving) this.#frame?.changed();
+		});
+		this.#unlisten = () => {
+			unTell?.();
+			unRead.abort();
+		};
 		if (this.#frame) void serving.bridge.restore();
 	}
 
