@@ -270,13 +270,18 @@ export function cloudActionEffect(
 		case "good_will_mark":
 		// An offer of agents moves nothing until the member says yes on the Members page.
 		case "offer_agents_to_member":
-		// Company databases (slice 5): the store made to match steps someone the folder let write them put there; a step
-		// that would destroy data is held until a member says yes.
-		case "data_apply":
+		// The company's reading of itself (20260930766000) is the company's bookkeeping, like a todo: members see it as the
+		// first layer of the company's map and say when it is wrong.
+		case "update_reading":
+		// A named change (slice 7): the company's own rows, written through a file someone the folder let write put
+		// there, as company_write writes a file. It may delete rows, which is that change's own defined act; the data
+		// gateway rolls back one that would drop or empty a table.
+		case "data_change":
 		case "send_message":
 		case "ask_member":
 		case "report_work":
 		case "manage_todo":
+		case "record_reflection":
 		case "send_coworker_message":
 		case "computer_start":
 		case "computer_screen":
@@ -296,14 +301,26 @@ export function cloudActionEffect(
 		// A move empties its source path: the folder core reviews it as a deletion (21 October 2026).
 		case "company_move":
 			return "destructive";
+		// Company databases (slice 5): the store made to match steps someone the folder let write them put there. A step
+		// that would destroy data is held; a call that names such a step's allow asks for it to be applied, which only
+		// a member's yes gives (slice 7, dataDestroyCheck).
+		case "data_apply":
+			return args.allow === undefined || args.allow === null ? "internal" : "destructive";
 		// A command on a company machine can reach the internet and, with the company folder mounted (F3 6d), the
 		// company's files, as a networked shell command can. Every one is reviewed, also on a boot without the folder:
 		// whether a boot has it is decided per boot, after the review (RUNTIME-FOLDER-TEST-MACHINES.md, Q2).
 		case "machine_run":
+		// The agent's home (lanes/agent-box-20261113, slice 4): one command of Codex's own on the run's machine, and
+		// one change it makes to files there. The same work as machine_run, under names of their own, so an approval
+		// of one is never an approval of the other.
+		case "home_command":
+		case "home_change":
 			return "external";
 		// A key saved off a machine's clipboard into the vault and granted to a repository's coding sessions changes who
 		// can use what (20260930705000), as computer_browser vault_capture of a coding value does.
 		case "save_coding_value":
+			return "external";
+		case "fill_company_account":
 			return "external";
 		// machine_screen (20260930708000): a look shows the agent its machine's screen and changes nothing; moving the
 		// pointer or scrolling changes only what shows. A click, a drag, typed text, keys or an opened page acts on what
@@ -365,6 +382,8 @@ export function cloudActionEffect(
 			return ["move", "scroll"].includes(action.action as string) ? "read" : "external";
 		case "hire_agent":
 		case "create_group_chat":
+		// Ending an agent's role sets its agent.md to archived, a change of who works here (20260930766000).
+		case "end_role":
 			return "delegation";
 		case "manage_routine":
 			return args.action === "list" ? "read" : "delegation";
@@ -444,7 +463,7 @@ export function machineWorkCheck(
 	askFirst: ReadonlySet<string>,
 ): CloudActionVerdict {
 	if (call.tool.source !== "runtime") return verdict;
-	if (call.tool.name === "machine_run")
+	if (call.tool.name === "machine_run" || call.tool.name === "home_command" || call.tool.name === "home_change")
 		return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_WORK_REASON, CLOUD_MACHINE_WORK_ASK_REASON);
 	if (call.tool.name === "machine_screen")
 		return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_SCREEN_WORK_REASON, CLOUD_MACHINE_SCREEN_WORK_ASK_REASON);
@@ -568,6 +587,42 @@ export function repositoryAccessCheck(
 		...verdict,
 		builtIn: "access_change",
 		proposedRule: verdict.proposedRule ?? "create public GitHub repositories for the company",
+	};
+}
+
+export const CLOUD_DATA_DESTROY_REASON =
+	"A database step that destroys data is applied only on a member's yes, never on the review's own word or a rule's.";
+
+/**
+ * A database step that would drop a table or a column, empty a table or delete rows is applied only on a member's yes
+ * (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §3 and §4; the founder's decision of 13 November 2026: only what
+ * destroys data waits for a member). So a data_apply call that names a held step's allow is always asked on a card,
+ * whatever the reviewer decided short of a denial: an allow becomes an ask, a company Allow rule the reviewer cited is
+ * dropped (an Ask first rule stays, and with it who answers), and no "Always allow" is offered. The platform keeps the
+ * step in the run's data pass only for a member's Allow on that card (qorpera_run_data_pass_approved,
+ * 20260930764000), so nothing here is what the data gateway trusts.
+ */
+export function dataDestroyCheck(
+	call: Pick<CloudActionCall, "tool" | "parsed">,
+	verdict: CloudActionVerdict,
+	/** The company's Ask first rules, by id in lower case. */
+	askFirst: ReadonlySet<string>,
+): CloudActionVerdict {
+	const allow = record(call.parsed).allow;
+	if (
+		call.tool.name !== "data_apply" ||
+		call.tool.source !== "runtime" ||
+		allow === undefined ||
+		allow === null ||
+		verdict.decision === "deny"
+	)
+		return verdict;
+	return {
+		...verdict,
+		decision: "ask",
+		ruleIds: verdict.ruleIds.filter((id) => askFirst.has(id.toLowerCase())),
+		proposedRule: null,
+		reason: bounded(`${CLOUD_DATA_DESTROY_REASON} The review said ${verdict.decision}: ${verdict.reason}`, 500),
 	};
 }
 
@@ -831,6 +886,26 @@ export function describeCloudAction(
 		title = "Run a command on a company machine";
 		target = text(args.machine) || null;
 		quote("command", args.command, 2000);
+	} else if (tool.name === "home_command" || tool.name === "home_change") {
+		// The agent's home (cloud-codex-home.ts): what the model itself asked of its machine, in the words of the thing
+		// it asked for. The card shows the command, the shell a typed line goes into, or the patch itself, as much of
+		// each as fits; the approval's identity covers all of it.
+		title = tool.name === "home_command" ? "Run a command on its own machine" : "Change files on its own machine";
+		target = text(args.machine) || null;
+		quote("command", args.command, 2000);
+		const into = record(args.into ?? null);
+		if (typeof into.command === "string") quote("typed into", into.command, 2000);
+		if (Array.isArray(args.changes))
+			quote(
+				"patch",
+				args.changes
+					.map((entry) => {
+						const change = record(entry);
+						const diff = typeof change.diff === "string" ? change.diff : text(record(change.diff ?? null).head);
+						return `${text(change.path ?? change.machinePath)} (${text(change.kind)})\n${diff}`;
+					})
+					.join("\n"),
+			);
 	} else if (tool.name === "machine_screen") {
 		// 20260930708000: one action on a company machine's desktop. The card says where it lands, the window the agent last
 		// saw there and what it is for; the screen's pixels never reach the card or the reviewer.
@@ -872,6 +947,11 @@ export function describeCloudAction(
 		add("variable", typeof args.variable === "string" ? args.variable.toUpperCase() : undefined);
 		add("repository", args.repository);
 		add("purpose", args.purpose);
+	} else if (tool.name === "fill_company_account") {
+		title = "Type a company account's sign-in into a web page on a company machine";
+		target = text(args.machine) || null;
+		add("account", args.account);
+		add("field", args.field);
 	} else if (tool.name === "send_mail") {
 		title = "Send an email";
 		const addresses = (value: JsonValue | undefined) =>
@@ -1043,6 +1123,17 @@ export function describeCloudAction(
 		// The job description is the new agent's charter; its first assignment is where it starts.
 		quote("intent", args.jobDescription, CONTENT_BYTES);
 		add("first task", args.firstAssignment);
+	} else if (tool.name === "end_role") {
+		// Its prepared arguments (cloud-hiring-tools.ts): the agent's name as its agent.md has it, read before the review.
+		title = "End an agent's role";
+		target = text(args.name) || text(args.agent) || null;
+		add("reason", args.reason);
+		add(
+			"effect",
+			args.ended === true
+				? "Its role has already ended: nothing changes"
+				: "Its routines pause and its threads close; its files stay, and a member can bring it back",
+		);
 	} else if (tool.name === "create_group_chat") {
 		title = "Start a group chat";
 		target = text(args.name) || text(args.title) || null;
@@ -1114,6 +1205,29 @@ export function describeCloudAction(
 		quote("task", args.goal ?? args.text, CONTENT_BYTES);
 		// Where a worker saves its finished files, when the dispatch names a folder (21 October 2026).
 		add("saves in", args.saveTo);
+	} else if (tool.name === "data_apply") {
+		// A held step a member is asked to let through (slice 7): the database, the step, and what it destroys, as the
+		// data gateway read it for this call (the tool's prepare), never the agent's own words.
+		title = "Apply a database step that destroys data";
+		target = [text(args.database), text(args.step)].filter(Boolean).join(": ") || null;
+		const destroys = (Array.isArray(args.destroys) ? args.destroys : []).map((item) => {
+			const one = record(item);
+			const object = text(one.object, 200);
+			const rows = typeof one.rows === "number" ? one.rows : null;
+			return one.what === "deleted rows"
+				? `deletes ${rows ?? "the"} ${rows === 1 ? "row" : "rows"} of ${object}`
+				: one.what === "emptied table"
+					? `empties the table ${object}`
+					: one.what === "dropped table"
+						? `drops the table ${object} with all its rows`
+						: one.what === "dropped table column"
+							? `drops the column ${object} with its values`
+							: one.what === "dropped schema"
+								? `drops the whole database ${object}`
+								: `${text(one.what, 100)} ${object}`;
+		});
+		add("destroys", destroys.length > 0 ? `It ${list(destroys)}.` : undefined, CONTENT_BYTES);
+		add("undo", "Cannot be undone: what it removes is gone.");
 	} else if (tool.name === "manage_code") {
 		// 20260930720000: not reviewed today (cloudActionEffect). These are its card's words should a member's yes be
 		// asked for an undo later: the repository, the change by its number, and why.
@@ -1570,6 +1684,11 @@ export interface CloudActionCall {
 	argumentsText: string;
 	argumentSha256: string;
 	callId: string;
+	/** How the agent makes this action happen once its card is approved, when repeating the tool call is not what it
+	 * would do: the agent's home, where the action is Codex's own shell or patch on the machine and there is no tool of
+	 * the model's own to call again (lanes/agent-box-20261113, slice 4). Without it a parked card says what it has
+	 * always said: call the same tool again with the card's `call`. */
+	repeat?: string;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -1689,6 +1808,7 @@ export class CloudActionReviewGate {
 				name(begin.approverName, "an owner or admin"),
 				signal,
 				begin.cardElsewhere === true,
+				call.repeat,
 			);
 		if (begin.state !== "review") throw new Error("Action review response is invalid");
 		const requester = name((begin.requester as { name?: unknown } | null)?.name, "");
@@ -1749,9 +1869,13 @@ export class CloudActionReviewGate {
 					: [],
 			),
 		);
-		verdict = repositoryAccessCheck(
+		verdict = dataDestroyCheck(
 			call,
-			siteAccessCheck(call, workerWorkCheck(call, machineWorkCheck(call, verdict, askFirst), askFirst)),
+			repositoryAccessCheck(
+				call,
+				siteAccessCheck(call, workerWorkCheck(call, machineWorkCheck(call, verdict, askFirst), askFirst)),
+			),
+			askFirst,
 		);
 		const recorded = object(
 			await this.#control.call(
@@ -1806,9 +1930,10 @@ export class CloudActionReviewGate {
 		approver: string,
 		signal: AbortSignal,
 		elsewhere = false,
+		repeat?: string,
 	): Promise<CloudActionGateResult> {
 		try {
-			return await this.#poll(reviewId, approver, signal, elsewhere);
+			return await this.#poll(reviewId, approver, signal, elsewhere, repeat);
 		} catch (error) {
 			// The hold ended early (the run stopped, or the kernel refused the wait): park the
 			// card so its answer wakes the agent.
@@ -1846,6 +1971,7 @@ export class CloudActionReviewGate {
 		approver: string,
 		signal: AbortSignal,
 		elsewhere: boolean,
+		repeat?: string,
 	): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
 		for (let parkFailures = 0; ; ) {
@@ -1890,7 +2016,10 @@ export class CloudActionReviewGate {
 						? // A worker's card, or one from a conversation that cannot hold it: the member answers it in the
 							// agent's thread, and the answer wakes the agent there to make the call.
 							`APPROVAL_PENDING: The action waits for approval from ${approver} on a card in the agent's own thread (members see it there, not here), so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again. Carry on with other work, and say in your reply or report what you could not do because this action waits for approval in the agent's thread. If it is approved, the agent makes this one call in its own thread; nothing else of this run's work is picked up again.`
-						: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. When you are woken because it was approved, call the same tool again with the card's \`call\` field as its arguments, value for value (not its \`arguments\` text, which is the same call escaped; use that only when the card has no \`call\`); it will then run without another review.`,
+						: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. ${
+								repeat ??
+								"When you are woken because it was approved, call the same tool again with the card's `call` field as its arguments, value for value (not its `arguments` text, which is the same call escaped; use that only when the card has no `call`); it will then run without another review."
+							}`,
 				};
 			// A wait that asked to park is answered, used or parked, never still pending.
 			if (state.state !== "pending" || park) throw new Error("Action review response is invalid");

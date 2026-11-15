@@ -74,8 +74,9 @@ runner guest and work only with that runner job's current lease token. Clients n
 they answer 42501 "native host call is refused".
 
 Company databases (slice 5, migration 20260930750000): `anon` may also call `qorpera_data_pass_redeem(p_pass)`. It is
-for the data gateway (`deploy/company-data/`), which redeems a run's data pass once: only knowing the pass (32 random
-bytes, only their sha256 kept, 60 s) opens it. Clients never call it; anything but a live, unredeemed pass answers null.
+for the data gateway (`deploy/company-data/`), which redeems a data pass once: a run's, or (migration 20260930775000)
+a company machine's, made for its folder view. Only knowing the pass (32 random bytes, only their sha256 kept, 60 s)
+opens it. Clients never call it; anything but a live, unredeemed pass answers null.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
@@ -1380,7 +1381,7 @@ request of another shape.
     no answer: moving the epoch is the only thing that voids that take-over whenever it arrives. It also ends another
     tab's hold of the member's under that epoch: a tab that closes while a take-over of its own is unanswered, while
     another tab of the same member holds the desktop under the same epoch, ends that tab's hold (it hears so at its
-    next heartbeat or action, and its window offers Take over again). This race is the one place a closing tab ends
+    next heartbeat or action, and its window shows the hold no more; the web begins no take-over since 14 Nov 2026). This race is the one place a closing tab ends
     another's; it keeps a take-over that outlives its window from seating anyone.
   A lease of the caller's that ran out is closed as it ended when the epoch moves. Which form each release sends:
   a close, a switch away, pagehide and leaving the page send VOID when uncertain, else EXACT by the seat the page's
@@ -1402,10 +1403,11 @@ request of another shape.
   A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
   the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
   member does a moment later.
-- A page uses a hold (input, heartbeats) only after a Take over pressed on that page (review r14 of #1661): a hold of
+- A page uses a hold (input, heartbeats) only after a take-over of that page's own (review r14 of #1661): a hold of
   the member's that the list shows from another window, or from before the page was loaded again, is shown, never
-  taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch takes
-  their own lease over, in a new seat), and without that the old lease ends by itself.
+  taken up, and ends with the window's Done or by itself. Since 14 Nov 2026 the web begins no take-over at all (Jonas:
+  private typing removed; no Take over, no Type privately): the take-over call stays in the database, unused by the
+  web, until it is retired.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat)`: one action, begun as the member.
   Clients do not call it: the action route (§4) does, with the member's own token, the action as SQL keeps it (a text
   by its length), `epoch` and `seat`, the hold the page captured the input under (release review r1 of #1667, F24 and
@@ -1518,6 +1520,28 @@ stops and deletes it as one it started.
   answers. A busy record moves its last use only
   while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
   window without use, busy or not.
+
+### A computer a member woke sleeps when that member is gone (20260930759000_machine_member_sleep)
+
+A task machine that is awake only because a member woke it (the window's wake, or a computer a member started for an
+agent) sleeps sooner than the node's quiet window: its node's `member_sleep_after_seconds` (600 by default) after that
+member's last sign, whatever is busy on it. It is such a machine while no agent has used it since that start (no
+command of an agent's that still runs or started since, no agent at its screen, no run that still goes that started it
+or asked for it by `machine_start`); once an agent uses it, the quiet window decides again until it has slept. An
+always-on machine is never one. There is no new call:
+
+- `qorpera_list_agent_machines` also answers, per machine, `memberSleepSeconds`: those seconds for such a machine, null
+  for every other.
+- The member's signs are what their own calls already record: the wake (`qorpera_member_manage_company_machine`
+  `start`, `qorpera_member_start_agent_computer`), a look (`qorpera_member_machine_screen_begin`), private typing (the
+  take-over, each action and the hand-back, never the heartbeat), an action or a pointer pass on the desktop shared with the agent, and
+  a start of the desktop. A look counts only for as long after the member's word (`watch.confirmed: true`) as the
+  machine's seconds: looks that go on in a tab nobody touches stop counting.
+- So, for a machine with `memberSleepSeconds`: a window stops looking and asks whether the member still watches after
+  that long without a touch on the page (at most the 30 minutes it keeps for every machine); it says `confirmed: true`
+  again within a minute of a touch, and also while the live picture shows the screen (the stream records nothing), on a
+  look whose picture it does not draw. A machine that slept is `stopped`, as after any idle sleep, and the member's ask
+  wakes it.
 
 ### The company's time zone (20260930739000_company_time_zone)
 
@@ -1775,6 +1799,47 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
   cookie is `__Host-` (no `Domain`), and a request that changes something also needs an Origin or Fetch Metadata check.
   Reviews hold every change to this rule.
 
+#### Seen inside Qorpera: a member's pass (20260930774000_site_member_pass)
+
+The web shows a files site in a frame on its own host (company views step 4, V1), opened without the site's password.
+`deploy/sites/SITE-HOSTS.md` ("Seen inside Qorpera") is the operator's side.
+
+- `qorpera_site_member_pass(site)`: any member of the site's company (viewers too). 42501 "Only the company's members
+  open its site here" for anyone else, and the same for no such site, an app link or a company being deleted; 22023
+  for no site. Answers `{schema: "qorpera.site-member-pass/v1", state, ...}`:
+  - `open`: `host` (`<slug>.qorpera.com`), `pass` (43 characters of base64url), `expiresAt` (60 seconds on), `action`
+    (`https://<host>/__qorpera/member`). One use, for that site's own host only; only its SHA-256 is kept.
+  - `off` while hosts are off; `gone` for a site taken down; `none` for a site not live; `limited` with `retryAfter`
+    (seconds) while the member holds 30 open passes. Nothing is written for these.
+- Using it: a form `POST` to `action`, `application/x-www-form-urlencoded`, fields `pass` and optionally `path` (a
+  path of the site such as `about/`, with or without its leading `/`; anything else opens the top), submitted so that
+  the frame navigates (a form with the frame as its `target`, or a form in the frame's own document). The answer is
+  303 to that path with the session cookie, or the site's password page (401) for a pass that failed. Ask a new pass
+  for each open and each reload; never put a pass in a URL.
+- **The submitting document must send its real `Origin`.** The door takes only an `Origin` exactly one of the web's
+  origins; `null` is refused. A form POST from a document under `Referrer-Policy: no-referrer` sends `Origin: null`
+  (Fetch: a non-CORS request's origin is serialized as null under that policy), and app.qorpera.com is served with
+  `no-referrer` (`packages/web/public/_headers`, and the `<meta name="referrer">` of `index.html`). Its CSP also has
+  `form-action 'self'` and no `frame-src` (so `default-src 'self'` blocks a frame of a site host). So the web, as
+  built today, cannot use the door; V2 must change one of these, and the choice is a security-header decision for the
+  web's lead:
+  - **A door page (recommended: the app keeps `no-referrer`).** A static same-origin page, say `/site-door/`, with its
+    own `_headers` entry. Cloudflare Pages applies the `/*` block to it too, and a browser enforces every CSP it gets,
+    so the entry first removes what it inherits, as `/page-preview/*` does: `! Content-Security-Policy`,
+    `! X-Frame-Options` and `! Referrer-Policy`. Then it sets `Referrer-Policy: strict-origin` (it sends only
+    `https://app.qorpera.com`), `X-Frame-Options: SAMEORIGIN` (or none), and a CSP of its own with
+    `form-action https://*.qorpera.com`, `frame-ancestors 'self'` and its script from `'self'`. The page has no
+    `<meta name="referrer">` of `no-referrer`. The site view's frame loads it; the app hands it the pass by
+    `postMessage` (target origin its own, checked on receipt); the page submits the form to `action` in its own
+    document, so the frame navigates to the site.
+  - The app itself: `frame-src 'self' https://*.qorpera.com` in its CSP (the frame's every navigation is checked
+    against the app's `frame-src`, the site host after the door's 303 too). Its `form-action 'self'` and
+    `no-referrer` then stay as they are.
+  - Or the app as a whole moves to `strict-origin-when-cross-origin` and adds `https://*.qorpera.com` to
+    `form-action` (simpler; every request from the app then carries its origin as Referer).
+- The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
+  `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
@@ -1887,6 +1952,186 @@ with the member folder client. Storage → the repository's folder → "Download
   same place and project it answers `queued` with the request that has it (the open one, or the one that brought it
   in). The list says how it goes (`bringing`, `lastImport`, `importedFrom`).
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
+
+### The company's numbers: door `money` (20260930767000_company_numbers_money)
+
+The platform's own numbers of a company, asked by the reserved database name `qorpera` (no company database may carry
+it): an interface app's `qorpera.query("qorpera/money-now")` and `qorpera.watch(...)`, a kit's live number, an agent's
+`data_query {database: "qorpera"}`. Read only, from the vault's bank summary; sums only, never a name, a transfer's
+text, an account number, a single payment or the summary's items. Design: the company-views lane's DESIGN-3.md §E.
+
+- `qorpera_member_company_numbers(environment, question, params)` (authenticated): a member of a folder-v2 company
+  (42501 "Company numbers are unavailable" for anyone else). `question` is the name after `qorpera/`, `params` an
+  object of named values (`{}` or null for none). Answers the data gateway's answer shape `{columns, rows, more,
+  asOf, etag}`: `columns` the names, `rows` arrays in their order, `more` false, `asOf` the time of the answer (ISO,
+  UTC), `etag` 32 hex that stay the same while the answer does (a client polls and compares it).
+- The `money-*` questions answer only a member who may read `bank/summary.json` by the folder's path authority; for
+  anyone else, and for a question that is not there, P0002 "No question qorpera/<question> that you may read" (the
+  same words). Kroner are JSON numbers rounded to øre (Danish kroner only); days are `YYYY-MM-DD`. "Today" and "this
+  month" (the default range, `money-kinds`' month) are the company's own, in its time zone (`time_zone` of
+  `qorpera_profile_team_info`, 20260930739000), or Europe/Copenhagen's while it has none or one the database does not
+  know. The answer does not name the zone (the shape has no place for it); a client that shows days reads the
+  company's zone from the team read. Until the vault counts in the company's zone (slice M2, migration
+  `20260930769000`), the summary's own days and month are the vault's UTC ones, taken at its fetch, and can lead or
+  lag the company's by hours: `money-balance`'s default range ends on the summary's newest day when that is the
+  company's tomorrow, and `money-kinds`' "this month" is the summary's own month when that is the month of the
+  company's today or tomorrow (a month that leads, in a zone behind UTC; either month may be named as `month`, and the
+  company's own then has no rows). A summary of an earlier month is never this month's: the company's month has no
+  rows until the vault fetches again.
+  - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
+    `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
+    `paused_since`; the numbers are null without a summary.
+  - `money-balance` (`from`, `to`; default the 90 days to today, at most 366 days): `day`, `balance` (end of day).
+  - `money-expected`: `day`, `balance`, the summary's forecast (an estimate).
+  - `money-months`: `month` (`YYYY-MM`), `money_in`, `money_out`, the summary's months (twelve at most).
+  - `money-kinds` (`month`, this month only, the default): `direction` (`in`, `out`), `kind`, `amount`, `count`. Out
+    kinds `salaries`, `taxes`, `rent`, `utilities`, `subscriptions`, `fees`, `other`; money in is one kind, `all`.
+    `count` is null for now (the summary keeps no count of payments).
+- The `site-*` questions and `sites` (20260930768000_company_numbers_site) answer any member of the company (viewers
+  too) and any run of it, for the company's files sites (never an app link). `site` is a site's name (its slug),
+  optional: without it every files site of the company, in name order (22023 `:site is not one of the company's sites`
+  for any other name). Hours are UTC hours; days are the company's, by the same zone rule as money. Views are counted
+  by site-serve: a page (a `text/html` file) of the live version opened by a visitor's password session (never a
+  member's, 20260930774000); a visit is a view whose session had no view of that site in the 30 minutes before; at
+  most 60 views a session an hour count. An
+  answer has at most 2000 rows (`more` true when it was cut). The upkeep (pg_cron, every 10 minutes) adds finished
+  hours to days, keeps hours 35 days and deletes a session's last view time about an hour after it (70 minutes at most).
+  - Hours are UTC hours: in a zone offset by half an hour, an hour falls on the local day it starts in, so that day's
+    edges are off by up to 30 minutes.
+  - Days already added keep the zone the company had then; a later change of zone moves only days added after it.
+  - A count that waits more than 100 ms for a lock is dropped (never waited for), so a very busy page can lose a few
+    views.
+  - `sites`: `site`, `title`, `url` (its own host while hosts are on), `live` (visitors can open it now).
+  - `site-now` (`site`): `site`, `here_now` (sessions with a view in the last 5 minutes), `views_today`,
+    `visits_today`; one row a site.
+  - `site-hours` (`site`, `from`, `to`; default the 48 hours to this one, at most 7 days): `site`, `hour` (ISO, UTC),
+    `hour_local` (`YYYY-MM-DDTHH:MI`, the company's), `views`, `visits`; every hour, zeros included. `from` and `to`
+    are a time with its zone (`2026-11-14T08:00Z`, `2026-11-14T09:00+01:00`) or a day of the company's (its first or
+    its last hour).
+  - `site-days` (`site`, `from`, `to`; default the 30 days to today, at most 400): `site`, `day`, `views`, `visits`;
+    every day, zeros included.
+  - `site-pages` (`site`, `from`, `to` as `site-days`, `limit` 1 to 50, default 10): `site`, `path` (the file's path in
+    the site, `index.html`, `about/index.html`), `views`, `visits` (the visits that began there); the most viewed paths
+    a site.
+- The `orders-*` questions (20260930776000_company_numbers_orders, door `orders`) answer any member of the company
+  (viewers too) and any run of it (the founder, 15 Nov 2026: everyone in the company, as site visits; the rule lives in
+  one SQL function, `qorpera_company_numbers_orders_readable`). They count the company's orders from its Stripe hooks:
+  when the vault verifies a Stripe delivery, the platform keeps one counts-only row a payment (when, how much, in what
+  currency, refunded so far, dispute, state), never a buyer's name, email, phone, address, country, IP, card, Stripe's
+  customer id, metadata, description or line items, and never Stripe's ids (a hash only). The events read are
+  `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`,
+  `charge.refunded`, `charge.dispute.created` and `charge.dispute.closed`: an agent picks these when it adds the hook's
+  endpoint at Stripe. Only Checkout Sessions of mode `payment` are orders: a subscription's later refunds and disputes name its invoices' payments, which its session never names, so subscriptions are left out for now (and `setup` is no order). Events
+  may come in any order (a refund before its session is kept and counted once the session comes).
+  - Every question takes `currency` (three letters, any case; by default the currency of most of the orders in the
+    last 90 days, else DKK) and `test` (`true` answers Stripe test-mode orders, kept apart from live ones; also the
+    string `"true"`). Money is a JSON number in the currency's major unit: two decimals, Stripe's zero-decimal
+    currencies (JPY, KRW, ...) whole, its three-decimal ones (KWD, BHD, ...) three. An order is a paid one: a session
+    still unpaid or whose payment failed is not counted (except in `orders-states`' `failed`). Only counts and sums,
+    never one order. Days and months are the company's, by the zone rule above; refunds count on the order's day.
+  - `orders-now` (`currency`, `test`): one row always: `stripe` (`none` no Stripe hook, `waiting` none has verified a
+    delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, a free one too, no state of the
+    company's yet, and, for Stripe's orders, made no earlier than the first Stripe order of the same mode, live or test,
+    that the company ever gave a state of its own, so a shop that starts marking on day 40 sees only orders from then
+    on; an added order never moves that start and, paid with no state of the company's, is to pack whenever it was
+    made (20260930777000); null while the company has set no state of its own in 90 days, Stripe's orders or added
+    ones, so it never grows for a shop that ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
+    `last_order_at` (ISO, UTC, or null). `to_pack`, `on_the_way`, `disputes_open` and `last_order_at` count every
+    currency; the rest the one asked.
+  - `orders-hours` (`currency`, `test`, `from`, `to` as `site-hours` takes them; default the 48 hours to this one, at
+    most 7 days): `hour` (ISO, UTC), `hour_local`, `orders`, `sales`; every hour, zeros included.
+  - `orders-days` (`currency`, `test`, `from`, `to`; default the 30 days to today, at most 400): `day`, `orders`,
+    `sales`, `refunds`; every day, zeros included.
+  - `orders-months` (`currency`, `test`): `month` (`YYYY-MM`), `orders`, `sales`, `refunds`: this month and the 11
+    before.
+  - `orders-states` (`currency`, `test`, `from`, `to` as `orders-days`, for the orders made then; `from` at most 400
+    days back, since order rows go then: 22023 otherwise): `state`, `orders`,
+    `amount`, one row each of `paid`, `packed`, `on_the_way`, `delivered`, `cancelled`, `failed`, in that order.
+    `packed` to `cancelled` are the company's own word (`order-state` below).
+  - `orders-sources` (`currency`, `test`, `from`, `to` as `orders-states`; 20260930777000): `source`, `orders`,
+    `sales`, `refunds`, one row each of `stripe` and `added` (orders added by hand, `order-add` below), in that order,
+    zeros included, for the orders made then. The days keep no source, so `orders-days` and `orders-months` count both
+    together.
+  - Order rows are kept 400 days after the order; the days as long as the company. The upkeep (pg_cron, every 10
+    minutes) adds changed orders to their days and retries a delivery whose order was locked when it came (while its
+    body is kept, 7 days); until then the answers read the order rows, so a day is whole at any time. A day added keeps
+    the zone the company had then.
+- A name of another shape, a parameter the question does not take or a value out of its bounds: 22023 in plain words
+  (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
+- A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
+  host's call (scope folder), with its own path authority.
+
+### The company's word on its orders (20260930777000_company_numbers_order_changes)
+
+What only the company knows about its orders (packed, on its way, delivered, cancelled), and the orders that never
+went through Stripe, it says with two changes on the same reserved name: an interface app's
+`qorpera.act("qorpera/order-state", ...)` (asked on the platform's bar, a later web slice), an agent's
+`data_change {database: "qorpera", change: "order-state", params}` (a later runtime slice). Design: the company-views
+lane's DESIGN-5-orders.md, "The narrow write" and §E (the founder, 15 Nov 2026: everyone in the company may see the
+sales; agents may add orders outside Stripe by hand, marked as added, at most 500 a day).
+
+- `qorpera_member_company_numbers_change(environment, change, params)` (authenticated): a member of a folder-v2
+  company (42501 "Company numbers are unavailable" for anyone else). `change` is the name after `qorpera/`, `params`
+  an object of named values. Who may read the orders (`qorpera_company_numbers_orders_readable`: everyone in the
+  company) may change them, except a viewer, a read-only member: 42501 "A viewer sees the orders but changes none".
+  Owners, admins and contributors may.
+  Answers the data gateway's change shape `{changed, columns, rows, more, asOf}`: `changed` how many orders it wrote
+  (0 when nothing changed), `columns` and `rows` what it gives back, `more` false, `asOf` the time (ISO, UTC).
+- A run changes the same with `qorpera_run_company_numbers_change(environment, actor, change, params)` through the
+  native host's call (scope folder), resolved as its read is. A run of an in-house worker with read access changes
+  nothing (42501 "A worker with read access changes no orders"), as the folder core refuses its writes.
+- The state's setter is kept as a kind (`agent` for a run, `member`), never a name.
+- `order-state` (`order`, `state`, `test` optional): `order` is Stripe's payment id (`pi_...`, from the event's
+  `payment_intent`), a Checkout Session's id (`cs_...`, only for a session with no payment, as a free one) or the ref
+  `order-add` gave (`add_...`). It is hashed with the company's id and matched, never kept. `state` is `packed`,
+  `on_the_way`, `delivered` or `cancelled`: forward only (a step may be skipped), or to `cancelled` from any state; a
+  cancelled order takes no other; the same state again answers `changed` 0. `test` true names a test-mode order, false
+  a live one; without it the order is found in either mode. Only a paid order takes a state. Stripe's facts (amount,
+  refunds, dispute) never change; cancelling an added order counts it refunded in full (no Stripe refund will); it
+  still counts as an order with its sales, and nothing deletes one. Gives
+  back `state`. P0002 "No order of this company is named so (a paid Checkout Session is named by its payment_intent,
+  pi_...)" for an order the company does not have; P0002 "The order named is not paid: only a paid order takes a
+  state" for one unpaid, failed, or a refund whose session never came; 22023 for a state it cannot take ("The order
+  is delivered already: a state only moves forward (packed, on_the_way, delivered), or to cancelled", "The order is
+  cancelled: a cancelled order takes no other state").
+- `order-add` (`at`, `amount`, `currency`, `state` optional): an order outside Stripe (MobilePay, an invoice, a sale at
+  a market), live, counted with Stripe's in every question and apart in `orders-sources` (never in `orders-now`'s
+  `stripe`, which speaks of the hook). `at`: when it was ordered, a time with its zone (`2026-11-15T14:30Z`,
+  `2026-11-15T15:30+01:00`, kept to the second) or a company day (`2026-11-15`, its first minute in the company's
+  zone), within the last 399 days (order rows go at 400) and not ahead of now (a minute's leeway). `amount`: what was paid, in the currency's major unit, a JSON number or its text (`249.95`), 0 or more, with
+  no more decimals than the questions answer for that currency (JPY whole, KWD three), at most 9 999 999 999 minor
+  units. `currency`: an ISO 4217 code, any case (funds and metals codes are refused). `state`: `paid` (the default),
+  `packed`, `on_the_way` or `delivered` (a sale already handled is added as it stands; cancel one with `order-state`).
+  Gives back `order` (the ref, `add_` and 32 hex: only its hash is kept, so the caller keeps it to name the order
+  later) and `state`. A company adds at most 500 orders in 24 hours: 54000 "A company adds at most 500 orders in 24
+  hours: add the rest later".
+- A change that is not there, and one the caller may not run: P0002 "No change qorpera/<change> that you may run" (the
+  same words). A parameter the change does not take, one it needs left out, or a value of the wrong kind or out of
+  bounds: 22023 in plain words (`The change takes no :x`, `The change takes :order`, `:amount has at most 2 decimals
+  in DKK`, ...).
+
+### The company's reading and standing (20260930765000_company_reading)
+
+The company keeps one short reading of itself, `QorperaOS/vision/reading.md` (Jonas, 14 Nov 2026: "It should feel
+like the company is conscious almost"). It is a structured file like the vision: members read it with the company
+folder reads above and parse it with `parseCompanyStateFile` (kind `reading`, format in
+deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §2). There is none until the Co-Founder writes the first one; a
+member may delete it. A company whose routines stand still cannot write its own reading, so the platform says it:
+
+- `qorpera_read_company_standing(profile)`: `{schema: "qorpera.company-standing/v1", stopped, since, why, member,
+  resetsAt, waiting}`. `waiting` counts the company's routine wakes that are due and still queued; `since` is the
+  time the oldest of them has waited from (null when none waits). `stopped` is true when that one has waited more than
+  30 minutes and no routine wake of the company was given a run in the last 30 minutes: a member's own turn, a room
+  delivery or a worker's run does not count, so a company whose members chat while its routines wait for days reads
+  as stopped. `why` reads the login of the member each waiting wake would
+  be paid by (its routine's payer, the member who saved it; else the member its agent works for), in the order the
+  wakes wait, and names the first that is not ready: `login_full` (with `resetsAt`, when the login's window resets),
+  `sign_in` (a new sign-in is needed) or `no_login`; `member` is that member's user id. `why`, `member` and `resetsAt`
+  are null when every such login is ready. Any member reads it, a viewer too; anyone else is 42501 "Standing
+  unavailable". The web reads it for an interface app that reads `reading` (`qorpera.reading()`, such as the
+  company's map), when its page opens and every 30 s while it is open.
+- The Co-Founder's facts for the reading are a host call of its run, never a member's:
+  `qorpera_describe_company_senses(binding)`.
 
 ## 3. Realtime
 
@@ -2099,8 +2344,20 @@ machine.
   `https://<host>`), Look first's ticket is taken at `/.qorpera/enter?t=`, a missing path gets the site's own
   `404.html` with 404, a site taken down answers 410, and private and next answers carry
   `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
-  `no-transform`. Service worker scripts are refused (404) on every site host. Every answer of site-serve, the old
+  `no-transform`. Service worker scripts are refused (404) on every site host. Since 20260930774000 an own host's
+  answers name the web's origins (`QORPERA_WEB_ORIGINS`, exact https origins; `https://app.qorpera.com` when unset) in
+  `frame-ancestors` and carry no `X-Frame-Options`, a frame's navigation passes its Fetch Metadata check, and
+  `POST /__qorpera/member` (`Origin` exactly one of the web's) redeems a member's pass
+  (`qorpera_site_member_pass_redeem`, service role only) for a member's session; the folder `/__qorpera/` is never
+  served from a site's files. Every answer of site-serve, the old
   host's too, carries an explicit `Cache-Control` with `no-transform` (D23).
+  Since 20260930768000 it counts a page view after answering it (`qorpera_site_count_view`, service role only): a GET
+  answered 200 or 304 with a `text/html` file of the live version for a visitor's session, with no `Range`,
+  `Sec-Fetch-Dest` `document` or absent and no `Sec-Purpose`/`Purpose` (prefetch), on the own host or the old host's
+  session path; never on a next host, for an asset, a HEAD, the password page or a refusal. It sends the host, the
+  file's path and the session token only; no address, user agent, referrer, query or other header is stored, and no
+  cookie is added. The count never changes the answer and delays it by at most 200 ms (none where the edge runtime
+  has `EdgeRuntime.waitUntil`).
 - `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
   `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),

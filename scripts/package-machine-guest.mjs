@@ -77,6 +77,9 @@ const files = [
 	{ file: "render-assets.tsv", installedPath: "/opt/qorpera-assets/SOURCES.tsv", mode: "0444" },
 	{ file: "render-assets.md", installedPath: "/opt/qorpera-assets/README.md", mode: "0444" },
 	{ file: "render-assets-preview.jpg", installedPath: "/opt/qorpera-assets/preview.jpg", mode: "0444" },
+	// The agent's home (13 Nov 2026): the account Codex's own shell runs as reaches root without a password, as every
+	// coding session's user does, so that shell can do on the machine everything `machine_run` does there as root.
+	{ file: "qorpera-agent.sudoers", installedPath: "/etc/sudoers.d/qorpera-agent", mode: "0440" },
 ];
 await Promise.all([...units, ...files.map((entry) => entry.file)].map((file) => readFile(`deploy/machine/${file}`)));
 // The desktop's pictures (the dock icons and the backdrop sets), one archive the image build unpacks at
@@ -158,6 +161,26 @@ artifacts.push({
 	mode: "0444",
 	sha256: createHash("sha256").update(screen).digest("hex"),
 	bytes: screen.length,
+});
+await build({
+	entryPoints: ["packages/runtime/src/cloud-machine-account-fill-main.ts"],
+	outfile: resolve(output, "cloud-machine-account-fill.mjs"),
+	bundle: true,
+	platform: "node",
+	format: "esm",
+	target: "node22.19",
+	legalComments: "none",
+	logLevel: "silent",
+});
+const accountFills = await readFile(resolve(output, "cloud-machine-account-fill.mjs"));
+artifacts.push({
+	file: "cloud-machine-account-fill.mjs",
+	source: "packages/runtime/src/cloud-machine-account-fill-main.ts",
+	installedPath: "/opt/qorpera-machine/cloud-machine-account-fill.mjs",
+	owner: "root:root",
+	mode: "0444",
+	sha256: createHash("sha256").update(accountFills).digest("hex"),
+	bytes: accountFills.length,
 });
 for (const unit of units) {
 	const bytes = await readFile(`deploy/machine/${unit}`);

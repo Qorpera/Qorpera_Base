@@ -5,7 +5,11 @@ import { describe, it } from "node:test";
 import {
 	byteRange,
 	CONTENT_SECURITY_POLICY,
+	COUNT_TIMEOUT_MS,
+	COUNT_WAIT_MS,
 	clientAddress,
+	countsAsView,
+	DEFAULT_WEB_ORIGINS,
 	escapeHtml,
 	fetchAllowed,
 	HOST_CONTENT_SECURITY_POLICY,
@@ -17,9 +21,12 @@ import {
 	MAX_FILE_BYTES,
 	MAX_STORE_ANSWER_BYTES,
 	MAX_UNLOCK_BODY_BYTES,
+	MEMBER_PATH,
 	MissingFunction,
 	nextBar,
 	onSitesHost,
+	ownContentSecurityPolicy,
+	ownPageSecurityPolicy,
 	PAGE_SECURITY_POLICY,
 	PostgrestSiteStore,
 	parseEnterAnswer,
@@ -34,6 +41,7 @@ import {
 	STRICT_TRANSPORT_SECURITY,
 	serviceHeaders,
 	siteHost,
+	webOrigins,
 } from "./site-serve.ts";
 
 const ORIGIN = "https://sites.qorpera.com";
@@ -49,6 +57,8 @@ interface Calls {
 	serveHost: [string, string, string | null, string | null, number, number][];
 	unlockHost: [string, string, string][];
 	enter: [string, string][];
+	countView: [string, string, string][];
+	memberPass: [string, string][];
 }
 
 /** What the database's site host calls answer in a test: a value (an Error is thrown), or a function of the call's host,
@@ -57,6 +67,10 @@ interface HostAnswers {
 	serveHost?: unknown;
 	unlockHost?: unknown;
 	enter?: unknown;
+	/** qorpera_site_count_view's answer: a value, an Error thrown, or a promise (one that never settles, say). */
+	countView?: unknown;
+	/** qorpera_site_member_pass_redeem's answer (20260930774000). */
+	memberPass?: unknown;
 }
 
 /** qorpera_site_serve_host while hosts are off (20260930756000 applied, hosts_enabled false, nothing taken down): the
@@ -108,7 +122,7 @@ function store(
 	unlock: unknown = { state: "open", token: NEW_TOKEN, maxAge: 604800 },
 	host: HostAnswers = {},
 ) {
-	const calls: Calls = { serve: [], unlock: [], serveHost: [], unlockHost: [], enter: [] };
+	const calls: Calls = { serve: [], unlock: [], serveHost: [], unlockHost: [], enter: [], countView: [], memberPass: [] };
 	const answer = async (value: unknown) => {
 		if (value instanceof Error) throw value;
 		return value;
@@ -140,6 +154,15 @@ function store(
 			calls.enter.push([name, ticket]);
 			return answer(host.enter ?? { state: "refused" });
 		},
+		countView(name, path, token) {
+			calls.countView.push([name, path, token]);
+			const given = host.countView ?? { state: "counted", visit: true };
+			return given instanceof Promise ? given : answer(given);
+		},
+		memberPass(name, pass) {
+			calls.memberPass.push([name, pass]);
+			return answer(host.memberPass ?? { state: "refused" });
+		},
 	};
 	return { calls, store: siteStore };
 }
@@ -151,8 +174,21 @@ function request(path: string, init: RequestInit & { headers?: Record<string, st
 	});
 }
 
-async function serve(req: Request, siteStore: SiteStore = store().store): Promise<Response> {
-	return handleSiteServe(req, { origin: ORIGIN, store: siteStore });
+/** The host each answer was asked on (x-forwarded-host), for the site host header checks. */
+const askedOn = new WeakMap<Response, string>();
+
+async function serve(
+	req: Request,
+	siteStore: SiteStore = store().store,
+	origins?: readonly string[],
+): Promise<Response> {
+	const response = await handleSiteServe(req, {
+		origin: ORIGIN,
+		store: siteStore,
+		...(origins ? { webOrigins: origins } : {}),
+	});
+	askedOn.set(response, req.headers.get("x-forwarded-host") ?? "");
+	return response;
 }
 
 function post(slug: string, body: string, headers: Record<string, string> = {}): Request {
@@ -245,6 +281,26 @@ function hostFile(text: string, extra: Json = {}): Json {
 	return { ...file(text), status: 200, scope: "site", public: false, ...extra };
 }
 
+/** A member's pass (V1): 43 characters of base64url. */
+const MEMBER_PASS = "PqRsTuVwXyZ0123456789-_abcdefghijklmnopqrst";
+const WEB = "https://app.qorpera.com";
+
+/** The web's form posting a member's pass to an own host's member door, into its frame. */
+function memberOn(host: string, body: string, headers: Record<string, string> = {}): Request {
+	return hostRequest(host, MEMBER_PATH, {
+		method: "POST",
+		body,
+		headers: {
+			"content-type": "application/x-www-form-urlencoded",
+			origin: WEB,
+			"sec-fetch-site": "same-site",
+			"sec-fetch-mode": "navigate",
+			"sec-fetch-dest": "iframe",
+			...headers,
+		},
+	});
+}
+
 const LOCKED = { state: "locked", scope: "site", public: false };
 const NEXT_LOCKED = { state: "locked", scope: "next", public: false };
 const WITH_SESSION = { cookie: `${HOST_COOKIE}=${TOKEN}` };
@@ -259,11 +315,20 @@ async function snapshot(response: Response): Promise<{ status: number; headers: 
 	};
 }
 
-/** The headers every answer on a site host carries (C2 item 1 of the pre-check; D22, D23). */
-function assertHostHeaders(response: Response, what = ""): void {
+/** Whether an answer of `serve` was asked on an own host (else a next host). */
+function onOwnHost(response: Response): boolean {
+	assert.ok(askedOn.has(response), "an answer of serve");
+	return siteHost(askedOn.get(response) ?? null)?.scope === "site";
+}
+
+/** The headers every answer on a site host carries (C2 item 1 of the pre-check; D22, D23). An own host's may be framed
+ * by the web (V1): frame-ancestors names the web's origins and there is no X-Frame-Options; a next host's keeps 'self'
+ * with X-Frame-Options SAMEORIGIN. */
+function assertHostHeaders(response: Response, what = "", origins: readonly string[] = DEFAULT_WEB_ORIGINS): void {
 	const headers = response.headers;
+	const own = onOwnHost(response);
 	assert.equal(headers.get("x-content-type-options"), "nosniff", what);
-	assert.equal(headers.get("x-frame-options"), "SAMEORIGIN", what);
+	assert.equal(headers.get("x-frame-options"), own ? null : "SAMEORIGIN", what);
 	assert.equal(headers.get("x-robots-tag"), "noindex, nofollow, noarchive", what);
 	assert.equal(headers.get("cross-origin-resource-policy"), "same-origin", what);
 	assert.equal(headers.get("cdn-cache-control"), "no-store", what);
@@ -272,16 +337,25 @@ function assertHostHeaders(response: Response, what = ""): void {
 	assert.equal(headers.get("access-control-allow-origin"), null, what);
 	assert.match(headers.get("cache-control") ?? "", /^(?:no-store|private, no-cache), no-transform$/, what);
 	const csp = headers.get("content-security-policy") ?? "";
-	assert.match(csp, /(?:^|; )frame-ancestors 'self'(?:;|$)/, what);
+	const ancestors = own ? `frame-ancestors 'self' ${origins.join(" ")}` : "frame-ancestors 'self'";
+	assert.ok(csp.split("; ").includes(ancestors), `${what}: ${csp}`);
+	assert.equal(csp.match(/frame-ancestors/g)?.length, 1, what);
 	assert.doesNotMatch(csp, /sandbox|frame-ancestors 'none'/, what);
 	for (const cookie of headers.getSetCookie())
 		assert.match(cookie, /^__Host-qorpera_site=[A-Za-z0-9_-]*; Path=\/; Max-Age=\d+; HttpOnly; Secure; SameSite=Lax$/, what);
 }
 
 /** A platform page, redirect or robots.txt on a site host. */
-function assertHostPage(response: Response, referrer = "no-referrer"): void {
-	assertHostHeaders(response);
-	assert.equal(response.headers.get("content-security-policy"), HOST_PAGE_SECURITY_POLICY);
+function assertHostPage(
+	response: Response,
+	referrer = "no-referrer",
+	origins: readonly string[] = DEFAULT_WEB_ORIGINS,
+): void {
+	assertHostHeaders(response, "", origins);
+	assert.equal(
+		response.headers.get("content-security-policy"),
+		onOwnHost(response) ? ownPageSecurityPolicy(origins) : HOST_PAGE_SECURITY_POLICY,
+	);
 	assert.equal(response.headers.get("referrer-policy"), referrer);
 	assert.equal(response.headers.get("cache-control"), "no-store, no-transform");
 }
@@ -1282,8 +1356,9 @@ describe("site-serve: a site's own host", () => {
 		const response = await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), siteStore);
 		assert.equal(response.status, 200);
 		assertHostHeaders(response);
-		assert.equal(response.headers.get("content-security-policy"), HOST_CONTENT_SECURITY_POLICY);
+		assert.equal(response.headers.get("content-security-policy"), ownContentSecurityPolicy(DEFAULT_WEB_ORIGINS));
 		assert.equal(HOST_CONTENT_SECURITY_POLICY, "frame-ancestors 'self'");
+		assert.equal(ownContentSecurityPolicy(DEFAULT_WEB_ORIGINS), "frame-ancestors 'self' https://app.qorpera.com");
 		assert.equal(response.headers.get("cache-control"), "private, no-cache, no-transform");
 		assert.equal(response.headers.get("etag"), `"${sha(HTML)}"`);
 		assert.equal(response.headers.get("referrer-policy"), "same-origin");
@@ -1445,7 +1520,7 @@ describe("site-serve: a site's own host", () => {
 		const response = await serve(hostRequest(OWN, "/nope.html", { headers: WITH_SESSION }), siteStore);
 		assert.equal(response.status, 404);
 		assertHostHeaders(response);
-		assert.equal(response.headers.get("content-security-policy"), HOST_CONTENT_SECURITY_POLICY);
+		assert.equal(response.headers.get("content-security-policy"), ownContentSecurityPolicy(DEFAULT_WEB_ORIGINS));
 		assert.equal(response.headers.get("cache-control"), "no-store, no-transform");
 		assert.equal(response.headers.get("etag"), null);
 		assert.equal(response.headers.get("accept-ranges"), null);
@@ -1920,7 +1995,6 @@ describe("site-serve: every site host refuses other origins", () => {
 			{ "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" },
 			{ "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" },
 			{ "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "style" },
-			{ "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
 			{ "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "frame" },
 			{ "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
 			{ "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate" },
@@ -1929,34 +2003,48 @@ describe("site-serve: every site host refuses other origins", () => {
 			{ "sec-fetch-site": "same-site", "sec-fetch-mode": "websocket", "sec-fetch-dest": "websocket" },
 			{ "sec-fetch-site": "Same-Origin" },
 			{ "sec-fetch-site": "" },
-		] as Record<string, string>[])
+			{ "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "iframe" },
+		] as Record<string, string>[]) {
 			assert.equal(passes(headers), false, JSON.stringify(headers));
+			// The own host (framed) refuses each of these too.
+			assert.equal(fetchAllowed(new Headers(headers), true), false, JSON.stringify(headers));
+		}
+		// A frame's navigation passes only where framed (an own host, V1): frame-ancestors decides there.
+		for (const site of ["same-site", "cross-site"]) {
+			const framed = { "sec-fetch-site": site, "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" };
+			assert.equal(passes(framed), false, site);
+			assert.equal(fetchAllowed(new Headers(framed), true), true, site);
+		}
 	});
 
-	it("refuses a sibling's subresource, frame or fetch with 403 before any database call, on both hosts", async () => {
+	it("refuses a sibling's subresource or fetch on both hosts, and a frame on the next host, with 403 before any database call", async () => {
 		const sibling = { "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" };
 		const framed = { "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" };
 		const { calls, store: siteStore } = store(undefined, undefined, {
 			serveHost: hostFile(HTML),
 			unlockHost: { state: "open", token: NEW_TOKEN, maxAge: 604800 },
 			enter: { state: "open", token: NEW_TOKEN, maxAge: 43200 },
+			memberPass: { state: "open", token: NEW_TOKEN, maxAge: 43200 },
 		});
-		for (const headers of [sibling, framed]) {
-			for (const make of [
-				() => hostRequest(OWN, "/app.js", { headers: { ...WITH_SESSION, ...headers } }),
-				() => hostRequest(NEXT, "/app.js", { headers: { ...WITH_SESSION, ...headers } }),
-				() => hostRequest(OWN, "/robots.txt", { headers }),
-				() => unlockOn(OWN, "password=pw", headers),
-				() => hostRequest(NEXT, `/.qorpera/enter?t=${TICKET}`, { headers }),
-			]) {
-				const response = await serve(make(), siteStore);
-				assert.equal(response.status, 403);
-				assertHostPage(response);
-				assert.equal(response.headers.get("set-cookie"), null);
-				assert.match(await response.text(), /This page can only be opened at its own address\./);
-			}
+		for (const make of [
+			() => hostRequest(OWN, "/app.js", { headers: { ...WITH_SESSION, ...sibling } }),
+			() => hostRequest(NEXT, "/app.js", { headers: { ...WITH_SESSION, ...sibling } }),
+			() => hostRequest(OWN, "/robots.txt", { headers: sibling }),
+			() => unlockOn(OWN, "password=pw", sibling),
+			() => hostRequest(NEXT, `/.qorpera/enter?t=${TICKET}`, { headers: sibling }),
+			() => memberOn(OWN, `pass=${MEMBER_PASS}`, sibling),
+			// A frame of the next host's (only its own pages frame it).
+			() => hostRequest(NEXT, "/app.js", { headers: { ...WITH_SESSION, ...framed } }),
+			() => hostRequest(NEXT, "/robots.txt", { headers: framed }),
+			() => hostRequest(NEXT, `/.qorpera/enter?t=${TICKET}`, { headers: framed }),
+		]) {
+			const response = await serve(make(), siteStore);
+			assert.equal(response.status, 403);
+			assertHostPage(response);
+			assert.equal(response.headers.get("set-cookie"), null);
+			assert.match(await response.text(), /This page can only be opened at its own address\./);
 		}
-		assert.equal(calls.serveHost.length + calls.unlockHost.length + calls.enter.length, 0);
+		assert.equal(calls.serveHost.length + calls.unlockHost.length + calls.enter.length + calls.memberPass.length, 0);
 		// The site's own loads pass: its document, its script, a typed address.
 		for (const headers of [
 			{ "sec-fetch-site": "same-origin", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" },
@@ -2039,6 +2127,20 @@ describe("site-serve: every site host refuses other origins", () => {
 			["416", () => hostRequest(OWN, "/v.mp4", { headers: { ...WITH_SESSION, range: "bytes=10-" } }), { serveHost: video }],
 			["429", () => unlockOn(OWN, "password=pw"), { unlockHost: { state: "limited", retryAfter: 60 } }],
 			["503", () => hostRequest(OWN, "/", { headers: WITH_SESSION }), { serveHost: new Error("down") }],
+			// The member's door (V1).
+			["303 member", () => memberOn(OWN, `pass=${MEMBER_PASS}`), { memberPass: { ...open, maxAge: 43200 } }],
+			["401 member", () => memberOn(OWN, `pass=${MEMBER_PASS}`), {}],
+			["403 member", () => memberOn(OWN, `pass=${MEMBER_PASS}`, { origin: `https://${OWN}` }), {}],
+			["404 member next", () => memberOn(NEXT, `pass=${MEMBER_PASS}`, { "sec-fetch-dest": "document" }), {}],
+			["405 member", () => hostRequest(OWN, MEMBER_PATH), {}],
+			[
+				"200 framed",
+				() =>
+					hostRequest(OWN, "/", {
+						headers: { ...WITH_SESSION, "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
+					}),
+				{ serveHost: hostFile(HTML) },
+			],
 		];
 		const statuses = new Set<number>();
 		await silenced(async () => {
@@ -2052,6 +2154,332 @@ describe("site-serve: every site host refuses other origins", () => {
 			[...statuses].sort((a, b) => a - b),
 			[200, 206, 303, 304, 308, 400, 401, 403, 404, 405, 410, 413, 415, 416, 429, 503],
 		);
+	});
+});
+
+// --- Seen inside Qorpera: a member's pass and the web's frame (company views step 4, V1; 20260930774000) -------------
+
+/** Migration 20260930774000's text: the redeem call site-serve makes must be there, as written. */
+const PASS_MIGRATION = readFileSync(
+	new URL("../../migrations/20260930774000_site_member_pass.sql", import.meta.url),
+	"utf8",
+);
+const MEMBER_OPEN = { state: "open", token: NEW_TOKEN, maxAge: 43200 };
+
+describe("site-serve: a member's pass on the own host (V1)", () => {
+	it("reads the web's origins: exact https origins only, the production app when none", () => {
+		assert.deepEqual(DEFAULT_WEB_ORIGINS, ["https://app.qorpera.com"]);
+		assert.equal(webOrigins(undefined), DEFAULT_WEB_ORIGINS);
+		for (const value of ["", "not json", "{}", '"https://app.qorpera.com"', "[]", "[42]", "null"])
+			assert.equal(webOrigins(value), DEFAULT_WEB_ORIGINS, value);
+		assert.deepEqual(webOrigins('["https://app.qorpera.com","https://staging.example.test"]'), [
+			"https://app.qorpera.com",
+			"https://staging.example.test",
+		]);
+		// Anything but an exact https origin is left out.
+		assert.deepEqual(
+			webOrigins(
+				JSON.stringify([
+					"http://localhost:5173",
+					"https://app.qorpera.com/",
+					"https://app.qorpera.com/x",
+					"https://u:p@app.example.test",
+					"https://app.example.test?x",
+					"https://APP.example.test",
+					"https://*.qorpera.com",
+					"https://a.example.test https://evil.example",
+					"https://a.example.test;",
+					"https://a.example.test 'unsafe-inline'",
+					"https://app.qorpera.com",
+					"https://xn--bcher-kva.example",
+					"https://app.example.test:443",
+					"https://app.example.test:99999",
+					"https://app.qorpera.com",
+					"https://app.example.test:8443",
+					7,
+				]),
+			),
+			["https://app.qorpera.com", "https://xn--bcher-kva.example", "https://app.example.test:8443"],
+		);
+		assert.equal(webOrigins('["http://localhost:5173"]'), DEFAULT_WEB_ORIGINS);
+		const many = Array.from({ length: 10 }, (_, index) => `https://web${index}.example.test`);
+		assert.deepEqual(webOrigins(JSON.stringify(many)), many.slice(0, 8));
+	});
+
+	it("takes the web's form into its frame: one redeem, the session's cookie, 303 to the top, framable by the web", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, { memberPass: MEMBER_OPEN });
+		const response = await serve(memberOn("Look-Shop.Qorpera.COM", `pass=${MEMBER_PASS}`), siteStore);
+		assert.equal(response.status, 303);
+		assert.equal(response.headers.get("location"), "/");
+		assert.equal(
+			response.headers.get("set-cookie"),
+			`${HOST_COOKIE}=${NEW_TOKEN}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax`,
+		);
+		assertHostPage(response);
+		assert.equal(response.headers.get("x-frame-options"), null);
+		assert.deepEqual(calls.memberPass, [[OWN, MEMBER_PASS]]);
+		assert.equal(calls.unlockHost.length + calls.serveHost.length + calls.countView.length, 0);
+		// A top-level form (a new tab) is taken too.
+		const top = await serve(
+			memberOn(OWN, `pass=${MEMBER_PASS}`, { "sec-fetch-dest": "document" }),
+			store(undefined, undefined, { memberPass: MEMBER_OPEN }).store,
+		);
+		assert.equal(top.status, 303);
+	});
+
+	it("answers 303 to the path the form names on this host only, else the top", async () => {
+		const cases: [string, string][] = [
+			["about/", "/about/"],
+			["/about/", "/about/"],
+			["shop/item.html", "/shop/item.html"],
+			["", "/"],
+			["/", "/"],
+			["//evil.example/", "/"],
+			["///evil.example", "/"],
+			["https://evil.example/", "/"],
+			["/\\evil.example", "/"],
+			["../secret", "/"],
+			["a/../b", "/"],
+			["about?x=1", "/"],
+			["about#x", "/"],
+			[".env", "/"],
+			["%2F%2Fevil.example", "/"],
+		];
+		for (const [path, location] of cases) {
+			const response = await serve(
+				memberOn(OWN, `pass=${MEMBER_PASS}&path=${encodeURIComponent(path)}`),
+				store(undefined, undefined, { memberPass: MEMBER_OPEN }).store,
+			);
+			assert.equal(response.status, 303, path);
+			assert.equal(response.headers.get("location"), location, path);
+		}
+	});
+
+	it("refuses every Origin but exactly one of the web's, 403 before any database call", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, { memberPass: MEMBER_OPEN });
+		for (const origin of [
+			null,
+			"null",
+			`https://${OWN}`,
+			`https://${NEXT}`,
+			"https://other-shop.qorpera.com",
+			"https://evil.example",
+			"https://app.qorpera.com.evil.example",
+			"https://app.qorpera.com/",
+			"https://APP.qorpera.com",
+			"http://app.qorpera.com",
+			"https://app.qorpera.com:8443",
+			"",
+		]) {
+			const request = memberOn(OWN, `pass=${MEMBER_PASS}`);
+			const headers = new Headers(request.headers);
+			if (origin === null) headers.delete("origin");
+			else headers.set("origin", origin);
+			const response = await serve(
+				hostRequest(OWN, MEMBER_PATH, { method: "POST", body: `pass=${MEMBER_PASS}`, headers: Object.fromEntries(headers) }),
+				siteStore,
+			);
+			assert.equal(response.status, 403, String(origin));
+			assertHostPage(response);
+			assert.equal(response.headers.get("set-cookie"), null);
+			assert.match(await response.text(), /This page can only be opened from Qorpera\./);
+		}
+		assert.equal(calls.memberPass.length, 0);
+		// The deployment's own list decides: another web origin passes, the default one no longer does.
+		const staging = ["https://staging.example.test"];
+		const passed = await serve(
+			memberOn(OWN, `pass=${MEMBER_PASS}`, { origin: "https://staging.example.test" }),
+			siteStore,
+			staging,
+		);
+		assert.equal(passed.status, 303);
+		assertHostPage(passed, "no-referrer", staging);
+		assert.equal((await serve(memberOn(OWN, `pass=${MEMBER_PASS}`), siteStore, staging)).status, 403);
+		assert.equal(calls.memberPass.length, 1);
+	});
+
+	it("answers a pass that fails exactly as a wrong password, and asks the database only for one of the right shape", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, { memberPass: { state: "refused" } });
+		const wrongPassword = await snapshot(
+			await serve(
+				unlockOn(OWN, "password=pw&next=about%2F"),
+				store(undefined, undefined, { unlockHost: { state: "wrong" } }).store,
+			),
+		);
+		assert.equal(wrongPassword.status, 401);
+		const refused = await serve(memberOn(OWN, `pass=${MEMBER_PASS}&path=about%2F`), siteStore);
+		assert.deepEqual(await snapshot(refused), wrongPassword);
+		assert.deepEqual(calls.memberPass, [[OWN, MEMBER_PASS]]);
+		for (const body of [
+			"",
+			"pass=",
+			`pass=${MEMBER_PASS.slice(1)}`,
+			`pass=${MEMBER_PASS}A`,
+			`pass=${MEMBER_PASS.slice(1)}=`,
+			`pass=${MEMBER_PASS.slice(1)}.`,
+			`pass=${MEMBER_PASS}&pass=${MEMBER_PASS}`,
+			`password=${MEMBER_PASS}`,
+		]) {
+			const response = await serve(memberOn(OWN, `${body}&path=about%2F`), siteStore);
+			assert.deepEqual(await snapshot(response), wrongPassword, body);
+		}
+		assert.equal(calls.memberPass.length, 1);
+	});
+
+	it("answers 415, 413 and 400 for a body that is no small form, 503 when the database fails, today's 404 before the migration", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, { memberPass: MEMBER_OPEN });
+		const json = await serve(memberOn(OWN, "{}", { "content-type": "application/json" }), siteStore);
+		assert.equal(json.status, 415);
+		assertHostPage(json);
+		const big = await serve(memberOn(OWN, `pass=${MEMBER_PASS}&x=${"y".repeat(MAX_UNLOCK_BODY_BYTES)}`), siteStore);
+		assert.equal(big.status, 413);
+		const notUtf8 = await serve(
+			hostRequest(OWN, MEMBER_PATH, {
+				method: "POST",
+				body: new Uint8Array([0x70, 0x3d, 0xff]),
+				headers: { "content-type": "application/x-www-form-urlencoded", origin: WEB },
+			}),
+			siteStore,
+		);
+		assert.equal(notUtf8.status, 400);
+		assert.equal(calls.memberPass.length, 0);
+		await silenced(async (logged) => {
+			const down = await serve(
+				memberOn(OWN, `pass=${MEMBER_PASS}`),
+				store(undefined, undefined, { memberPass: new Error("down") }).store,
+			);
+			assert.equal(down.status, 503);
+			assertHostPage(down);
+			assert.equal(down.headers.get("set-cookie"), null);
+			assert.ok(logged.every((line) => !line.includes(MEMBER_PASS)));
+			const invalid = await serve(
+				memberOn(OWN, `pass=${MEMBER_PASS}`),
+				store(undefined, undefined, { memberPass: { state: "open", token: "short", maxAge: 43200 } }).store,
+			);
+			assert.equal(invalid.status, 503);
+		});
+		const before = await serve(
+			memberOn(OWN, `pass=${MEMBER_PASS}`),
+			store(undefined, undefined, { memberPass: new MissingFunction("qorpera_site_member_pass_redeem") }).store,
+		);
+		assert.equal(before.status, 404);
+	});
+
+	it("answers 405 (Allow: POST) for every other method on the member's door, and never serves it from the site's files", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, { serveHost: hostFile(HTML), memberPass: MEMBER_OPEN });
+		for (const method of ["GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+			const response = await serve(hostRequest(OWN, MEMBER_PATH, { method, headers: WITH_SESSION }), siteStore);
+			assert.equal(response.status, 405, method);
+			assert.equal(response.headers.get("allow"), "POST", method);
+			assertHostPage(response);
+		}
+		// The same path written another way is the same door.
+		assert.equal((await serve(hostRequest(OWN, "/%5F_qorpera/member", { headers: WITH_SESSION }), siteStore)).status, 405);
+		// The platform's folder holds nothing of a site's, on either host; the next host has no member's door.
+		for (const [host, path, method] of [
+			[OWN, "/__qorpera", "GET"],
+			[OWN, "/__qorpera/", "GET"],
+			[OWN, "/__qorpera/member/", "GET"],
+			[OWN, "/__qorpera/index.html", "GET"],
+			[OWN, "/__qorpera/member/index.html", "GET"],
+			[NEXT, "/__qorpera/index.html", "GET"],
+			[NEXT, MEMBER_PATH, "GET"],
+		]) {
+			const response = await serve(hostRequest(host ?? "", path ?? "", { method, headers: WITH_SESSION }), siteStore);
+			assert.equal(response.status, 404, `${host}${path}`);
+			assertHostPage(response);
+		}
+		const next = await serve(memberOn(NEXT, `pass=${MEMBER_PASS}`, { "sec-fetch-dest": "document" }), siteStore);
+		assert.equal(next.status, 404);
+		assert.equal(calls.serveHost.length + calls.memberPass.length, 0);
+		// A site's own file whose name only looks like it is the site's.
+		const near = await serve(hostRequest(OWN, "/__qorpera-member/index.html", { headers: WITH_SESSION }), siteStore);
+		assert.equal(near.status, 200);
+		assert.equal(calls.serveHost.length, 1);
+	});
+
+	it("lets the web frame every own-host answer and nothing else frame a next host's", async () => {
+		const origins = ["https://a.example.test", "https://b.example.test"];
+		assert.equal(ownContentSecurityPolicy(origins), "frame-ancestors 'self' https://a.example.test https://b.example.test");
+		assert.equal(
+			ownPageSecurityPolicy(origins),
+			"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self' https://a.example.test https://b.example.test; base-uri 'none'",
+		);
+		const framed = { "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" };
+		const own = await serve(
+			hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...framed } }),
+			store(undefined, undefined, { serveHost: hostFile(HTML) }).store,
+			origins,
+		);
+		assert.equal(own.status, 200);
+		assert.equal(own.headers.get("content-security-policy"), ownContentSecurityPolicy(origins));
+		assert.equal(own.headers.get("x-frame-options"), null);
+		assertHostHeaders(own, "own", origins);
+		// The platform's own pages too: the password page a frame shows.
+		const page = await serve(
+			hostRequest(OWN, "/", { headers: WITH_SESSION }),
+			store(undefined, undefined, { serveHost: LOCKED }).store,
+			origins,
+		);
+		assert.equal(page.status, 401);
+		assert.equal(page.headers.get("content-security-policy"), ownPageSecurityPolicy(origins));
+		assert.equal(page.headers.get("x-frame-options"), null);
+		for (const response of [
+			await serve(hostRequest(NEXT, "/", { headers: WITH_SESSION }), store(undefined, undefined, {
+				serveHost: hostFile(HTML, { scope: "next" }),
+			}).store, origins),
+			await serve(hostRequest(NEXT, "/"), store(undefined, undefined, { serveHost: NEXT_LOCKED }).store, origins),
+		]) {
+			assert.equal(response.headers.get("x-frame-options"), "SAMEORIGIN");
+			assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'self'(?:;|$)/);
+			assert.doesNotMatch(response.headers.get("content-security-policy") ?? "", /example\.test/);
+		}
+		// The old host keeps its own pages' headers.
+		const old = await serve(request("/shop/"), store().store, origins);
+		assert.equal(old.headers.get("x-frame-options"), "DENY");
+		assert.equal(old.headers.get("content-security-policy"), PAGE_SECURITY_POLICY);
+	});
+
+	it("never counts a frame's page, whoever's session it is", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, { serveHost: hostFile(HTML) });
+		const framed = { "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" };
+		const response = await serveWith(hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...framed } }), siteStore);
+		assert.equal(response.status, 200);
+		assert.equal(calls.countView.length, 0);
+	});
+
+	it("calls qorpera_site_member_pass_redeem as migration 20260930774000 defines it, granted to the service role only", async () => {
+		const made: [string, Json][] = [];
+		const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+			made.push([String(url).split("/rest/v1/rpc/")[1] ?? "", JSON.parse(String(init?.body)) as Json]);
+			return new Response(JSON.stringify({ state: "refused" }), { status: 200 });
+		}) as typeof fetch;
+		const db = new PostgrestSiteStore("https://project.example.test", "sb_secret_fixture", fetcher);
+		assert.deepEqual(await db.memberPass(OWN, MEMBER_PASS), { state: "refused" });
+		assert.deepEqual(made, [["qorpera_site_member_pass_redeem", { p_host: OWN, p_pass: MEMBER_PASS }]]);
+		assert.match(
+			PASS_MIGRATION,
+			/create function public\.qorpera_site_member_pass_redeem\(p_host text, p_pass text\)\nreturns jsonb /,
+		);
+		assert.match(
+			PASS_MIGRATION,
+			/grant execute on function public\.qorpera_site_member_pass_redeem\(text, text\) to service_role;/,
+		);
+		assert.doesNotMatch(PASS_MIGRATION, /grant execute on function public\.qorpera_site_member_pass_redeem[^;]*(anon|authenticated)/);
+		// Its answers are the ticket's: open with a token for 12 hours, or refused.
+		const start = PASS_MIGRATION.indexOf("create function public.qorpera_site_member_pass_redeem(");
+		const redeem = PASS_MIGRATION.slice(start, PASS_MIGRATION.indexOf("\nend $$;", start));
+		assert.deepEqual(
+			[...new Set([...redeem.matchAll(/'\{"state":"([a-z]+)"\}'::jsonb/g)].map((match) => match[1]))],
+			["refused"],
+		);
+		assert.match(redeem, /return jsonb_build_object\('state', 'open', 'token', v_token, 'maxAge', 43200\);/);
+		assert.equal(parseEnterAnswer(MEMBER_OPEN).state, "open");
+		assert.equal(parseEnterAnswer({ state: "refused" }).state, "refused");
+		// The pass's shape is the ticket's, and the action the member's call names is this door.
+		assert.match(redeem, /p_pass !~ '\^\[A-Za-z0-9_-\]\{43\}\$'/);
+		assert.match(PASS_MIGRATION, /'action', 'https:\/\/' \|\| v_host \|\| '\/__qorpera\/member'/);
+		assert.equal(MEMBER_PATH, "/__qorpera/member");
 	});
 });
 
@@ -2434,5 +2862,305 @@ describe("site-serve: migration 20260930756000's calls and answers, read from it
 			body("qorpera_site_enter"),
 			/jsonb_build_object\('state', 'open', 'token', v_token, 'maxAge', 43200\)/,
 		);
+	});
+});
+
+// --- A page view's count (the company's numbers, door site; 20260930768000) -------------------------------------------
+
+/** Migration 20260930768000's text: the count call site-serve makes must be there, as written. */
+const COUNT_MIGRATION = readFileSync(
+	new URL("../../migrations/20260930768000_company_numbers_site.sql", import.meta.url),
+	"utf8",
+);
+
+async function serveWith(req: Request, siteStore: SiteStore, waitUntil?: (work: Promise<unknown>) => void) {
+	const response = await handleSiteServe(req, { origin: ORIGIN, store: siteStore, ...(waitUntil ? { waitUntil } : {}) });
+	askedOn.set(response, req.headers.get("x-forwarded-host") ?? "");
+	return response;
+}
+
+describe("site-serve: a page view's count", () => {
+	it("counts a page of the live version on the own host: the host, the file's path and the session's token", async () => {
+		const pages: Record<string, Json> = {
+			"": hostFile(HTML),
+			"about.html": hostFile(HTML, { path: "about.html" }),
+			"shop/": hostFile(HTML, { path: "shop/index.html" }),
+		};
+		const { calls, store: siteStore } = store(undefined, undefined, {
+			serveHost: (_host: string, path: string) => pages[path] ?? { state: "missing", scope: "site", public: false },
+		});
+		for (const path of ["/", "/about.html", "/shop/"])
+			assert.equal((await serve(hostRequest("Look-Shop.Qorpera.com", path, { headers: WITH_SESSION }), siteStore)).status, 200);
+		// A visitor who holds the page (304), and a navigation from another site.
+		const held = await serve(
+			hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "if-none-match": `"${sha(HTML)}"` } }),
+			siteStore,
+		);
+		assert.equal(held.status, 304);
+		const navigated = await serve(
+			hostRequest(OWN, "/", {
+				headers: {
+					...WITH_SESSION,
+					"sec-fetch-site": "cross-site",
+					"sec-fetch-mode": "navigate",
+					"sec-fetch-dest": "document",
+				},
+			}),
+			siteStore,
+		);
+		assert.equal(navigated.status, 200);
+		assert.deepEqual(calls.countView, [
+			[OWN, "index.html", TOKEN],
+			[OWN, "about.html", TOKEN],
+			[OWN, "shop/index.html", TOKEN],
+			[OWN, "index.html", TOKEN],
+			[OWN, "index.html", TOKEN],
+		]);
+	});
+
+	it("counts with the session cookie the page was read with", async () => {
+		const { calls, store: siteStore } = store(undefined, undefined, {
+			serveHost: (_host: string, _path: string, token: string | null) => (token === NEW_TOKEN ? hostFile(HTML) : LOCKED),
+		});
+		const response = await serve(
+			hostRequest(OWN, "/", { headers: { cookie: `${HOST_COOKIE}=${TOKEN}; ${HOST_COOKIE}=${NEW_TOKEN}` } }),
+			siteStore,
+		);
+		assert.equal(response.status, 200);
+		assert.deepEqual(calls.countView, [[OWN, "index.html", NEW_TOKEN]]);
+	});
+
+	it("counts nothing on a site host but a page view of the live version", async () => {
+		const css = hostFile("body{}", { path: "a.css", contentType: "text/css; charset=utf-8" });
+		const image = hostFile("png", { path: "logo.png", contentType: "image/png" });
+		const lost = hostFile(NOT_FOUND_HTML, { path: "404.html", status: 404 });
+		const sameOrigin = { "sec-fetch-site": "same-origin", "sec-fetch-mode": "no-cors" };
+		const cases: [string, Request, unknown][] = [
+			["HEAD", hostRequest(OWN, "/", { method: "HEAD", headers: WITH_SESSION }), hostFile(HTML)],
+			["a range", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, range: "bytes=0-3" } }), hostFile(HTML)],
+			["a suffix range", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, range: "bytes=-4" } }), hostFile(HTML)],
+			["a style sheet", hostRequest(OWN, "/a.css", { headers: WITH_SESSION }), css],
+			["an image", hostRequest(OWN, "/logo.png", { headers: WITH_SESSION }), image],
+			["the version's 404.html", hostRequest(OWN, "/gone.html", { headers: WITH_SESSION }), lost],
+			["a missing page", hostRequest(OWN, "/gone.html", { headers: WITH_SESSION }), { state: "missing", scope: "site", public: false }],
+			["a folder", hostRequest(OWN, "/shop", { headers: WITH_SESSION }), { state: "directory", path: "shop/", scope: "site", public: false }],
+			["the password page", hostRequest(OWN, "/"), LOCKED],
+			["an ended session", hostRequest(OWN, "/", { headers: WITH_SESSION }), LOCKED],
+			["no site", hostRequest(OWN, "/", { headers: WITH_SESSION }), { state: "none" }],
+			["taken down", hostRequest(OWN, "/", { headers: WITH_SESSION }), { state: "gone" }],
+			["the next host", hostRequest(NEXT, "/", { headers: WITH_SESSION }), hostFile(HTML, { scope: "next" })],
+			["an image's load", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...sameOrigin, "sec-fetch-dest": "image" } }), hostFile(HTML)],
+			["a frame", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...sameOrigin, "sec-fetch-dest": "iframe" } }), hostFile(HTML)],
+			["a fetch", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, ...sameOrigin, "sec-fetch-dest": "empty" } }), hostFile(HTML)],
+			["a prefetch", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "sec-purpose": "prefetch" } }), hostFile(HTML)],
+			["a prerender", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "sec-purpose": "prefetch;prerender" } }), hostFile(HTML)],
+			["an older prefetch", hostRequest(OWN, "/", { headers: { ...WITH_SESSION, purpose: "prefetch" } }), hostFile(HTML)],
+			[
+				"a sibling's load",
+				hostRequest(OWN, "/", {
+					headers: { ...WITH_SESSION, "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" },
+				}),
+				hostFile(HTML),
+			],
+			["robots.txt", hostRequest(OWN, "/robots.txt", { headers: WITH_SESSION }), hostFile(HTML)],
+			["a POST", hostRequest(OWN, "/", { method: "POST", body: "x", headers: WITH_SESSION }), hostFile(HTML)],
+			["the password form", unlockOn(OWN, "password=pw"), hostFile(HTML)],
+			["Look first's ticket", hostRequest(NEXT, `/.qorpera/enter?t=${TICKET}`), hostFile(HTML)],
+		];
+		for (const [what, made, answer] of cases) {
+			const { calls, store: siteStore } = store(undefined, undefined, {
+				serveHost: answer,
+				unlockHost: { state: "open", token: NEW_TOKEN, maxAge: 604800 },
+				enter: { state: "open", token: NEW_TOKEN, maxAge: 43200 },
+			});
+			await serve(made, siteStore);
+			assert.deepEqual(calls.countView, [], what);
+		}
+	});
+
+	it("counts the old host's session pages, the site's name first, and nothing else there", async () => {
+		const pages: Record<string, Json> = {
+			"": file(HTML),
+			"products/item.html": file(HTML, { path: "products/item.html" }),
+			"a.css": file("body{}", { path: "a.css", contentType: "text/css; charset=utf-8" }),
+		};
+		const { calls, store: siteStore } = store((path: string) => pages[path] ?? { state: "missing" });
+		for (const path of [`/shop/~${TOKEN}/`, `/shop/~${TOKEN}/products/item.html?id=7`])
+			assert.equal((await serve(request(path), siteStore)).status, 200);
+		const held = await serve(request(`/shop/~${TOKEN}/`, { headers: { "if-none-match": `"${sha(HTML)}"` } }), siteStore);
+		assert.equal(held.status, 304);
+		assert.deepEqual(calls.countView, [
+			["sites.qorpera.com", "shop/index.html", TOKEN],
+			["sites.qorpera.com", "shop/products/item.html", TOKEN],
+			["sites.qorpera.com", "shop/index.html", TOKEN],
+		]);
+		calls.countView.length = 0;
+		for (const made of [
+			request(`/shop/~${TOKEN}/`, { method: "HEAD" }),
+			request(`/shop/~${TOKEN}/`, { headers: { range: "bytes=0-3" } }),
+			request(`/shop/~${TOKEN}/a.css`),
+			request(`/shop/~${TOKEN}/gone.html`),
+			request(`/shop/~${TOKEN}/products`, {}),
+			request(`/shop/~${TOKEN}/`, { headers: { "sec-fetch-dest": "iframe" } }),
+			request(`/shop/~${TOKEN}/`, { headers: { "sec-purpose": "prefetch" } }),
+			request("/shop/", { headers: { cookie: `qorpera_site=${TOKEN}` } }),
+			request("/shop/"),
+			post("shop", "password=pw"),
+			request(`/shop/~${TOKEN}/data.json`, { method: "OPTIONS" }),
+		])
+			await serve(made, siteStore);
+		assert.deepEqual(calls.countView, []);
+		// An ended session's path goes back to the password: nothing counts.
+		const ended = store({ state: "locked" });
+		assert.equal((await serve(request(`/shop/~${TOKEN}/`), ended.store)).status, 303);
+		assert.deepEqual(ended.calls.countView, []);
+		// While hosts are on, the old host's links move: nothing is served there, nothing counts.
+		const moved = store(file(HTML), undefined, { serveHost: { state: "moved", url: "https://shop.qorpera.com/" } });
+		assert.equal((await serve(request(`/shop/~${TOKEN}/`), moved.store)).status, 308);
+		assert.deepEqual(moved.calls.countView, []);
+	});
+
+	it("never changes an answer: counted, refused, failed, missing or never answering, the same bytes", async () => {
+		const never = new Promise<unknown>(() => undefined);
+		const made: [string, () => Request, HostAnswers, unknown?][] = [
+			["own page", () => hostRequest(OWN, "/", { headers: WITH_SESSION }), { serveHost: hostFile(HTML) }],
+			[
+				"own held",
+				() => hostRequest(OWN, "/", { headers: { ...WITH_SESSION, "if-none-match": `"${sha(HTML)}"` } }),
+				{ serveHost: hostFile(HTML) },
+			],
+			["old page", () => request(`/shop/~${TOKEN}/`), {}, file(HTML)],
+			["old held", () => request(`/shop/~${TOKEN}/`, { headers: { "if-none-match": `"${sha(HTML)}"` } }), {}, file(HTML)],
+		];
+		await silenced(async () => {
+			for (const [what, make, host, serveAnswer] of made) {
+				const counted = await snapshot(await serveWith(make(), store(serveAnswer, undefined, host).store));
+				for (const countView of [
+					{ state: "skipped" },
+					{ state: "busy" },
+					new Error("down"),
+					new MissingFunction("qorpera_site_count_view"),
+					"not an answer",
+				]) {
+					const other = await snapshot(await serveWith(make(), store(serveAnswer, undefined, { ...host, countView }).store));
+					assert.deepEqual(other, counted, `${what}: ${String(countView)}`);
+				}
+				const kept: Promise<unknown>[] = [];
+				const later = await serveWith(make(), store(serveAnswer, undefined, { ...host, countView: never }).store, (work) =>
+					kept.push(work),
+				);
+				assert.deepEqual(await snapshot(later), counted, `${what}: never answering`);
+				assert.equal(kept.length, 1, what);
+			}
+		});
+	});
+
+	it("hands the count to waitUntil, the edge runtime's when it has one, and the answer never waits for it", async () => {
+		const never = new Promise<unknown>(() => undefined);
+		const kept: Promise<unknown>[] = [];
+		const { calls, store: siteStore } = store(undefined, undefined, { serveHost: hostFile(HTML), countView: never });
+		let started = Date.now();
+		const response = await serveWith(hostRequest(OWN, "/", { headers: WITH_SESSION }), siteStore, (work) => kept.push(work));
+		assert.equal(response.status, 200);
+		assert.ok(Date.now() - started < COUNT_WAIT_MS / 2, "the answer waited for the count");
+		assert.equal(kept.length, 1);
+		assert.equal(calls.countView.length, 1);
+		// Supabase's edge runtime: EdgeRuntime.waitUntil, called on its object.
+		const edge = { kept: [] as Promise<unknown>[], waitUntil(work: Promise<unknown>) { this.kept.push(work); } };
+		const global = globalThis as { EdgeRuntime?: unknown };
+		global.EdgeRuntime = edge;
+		try {
+			started = Date.now();
+			const viaEdge = await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), siteStore);
+			assert.equal(viaEdge.status, 200);
+			assert.ok(Date.now() - started < COUNT_WAIT_MS / 2, "the answer waited for the count");
+			assert.equal(edge.kept.length, 1);
+		} finally {
+			Reflect.deleteProperty(global, "EdgeRuntime");
+		}
+	});
+
+	it("without waitUntil, waits for the count at most 200 ms", async () => {
+		const never = new Promise<unknown>(() => undefined);
+		const { store: siteStore } = store(undefined, undefined, { serveHost: hostFile(HTML), countView: never });
+		const started = Date.now();
+		const response = await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), siteStore);
+		const waited = Date.now() - started;
+		assert.equal(response.status, 200);
+		assert.equal(await response.text(), HTML);
+		assert.ok(waited >= COUNT_WAIT_MS - 20 && waited < COUNT_WAIT_MS + 500, `waited ${waited} ms`);
+		assert.equal(COUNT_WAIT_MS, 200);
+		// A count that answers at once is not waited for longer.
+		const quick = store(undefined, undefined, { serveHost: hostFile(HTML) });
+		const begun = Date.now();
+		await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), quick.store);
+		assert.ok(Date.now() - begun < COUNT_WAIT_MS / 2);
+	});
+
+	it("logs a failed count by its kind only, never a token, a path or a host", async () => {
+		await silenced(async (logged) => {
+			const failing = store(undefined, undefined, {
+				serveHost: hostFile(HTML),
+				countView: new TypeError(`could not count ${OWN}/index.html for ${TOKEN}`),
+			});
+			assert.equal((await serve(hostRequest(OWN, "/", { headers: WITH_SESSION }), failing.store)).status, 200);
+			const old = store(file(HTML), undefined, { countView: new Error(`sites.qorpera.com shop ${TOKEN}`) });
+			assert.equal((await serve(request(`/shop/~${TOKEN}/`), old.store)).status, 200);
+			assert.deepEqual(logged, [
+				"site-serve: a view was not counted (TypeError)",
+				"site-serve: a view was not counted (Error)",
+			]);
+		});
+	});
+
+	it("reads the request's side of a view", () => {
+		const made = (headers: Record<string, string> = {}, method = "GET") => new Request(BASE, { method, headers });
+		assert.equal(countsAsView(made(), 200), true);
+		assert.equal(countsAsView(made(), 304), true);
+		assert.equal(countsAsView(made({ "sec-fetch-dest": "document" }), 200), true);
+		for (const status of [206, 301, 401, 404, 410, 416, 503]) assert.equal(countsAsView(made(), status), false, String(status));
+		assert.equal(countsAsView(made({}, "HEAD"), 200), false);
+		assert.equal(countsAsView(made({ range: "bytes=0-" }), 200), false);
+		for (const dest of ["iframe", "image", "script", "style", "empty", "frame", "embed", "object"])
+			assert.equal(countsAsView(made({ "sec-fetch-dest": dest }), 200), false, dest);
+		assert.equal(countsAsView(made({ "sec-purpose": "prefetch" }), 200), false);
+		assert.equal(countsAsView(made({ purpose: "prefetch" }), 200), false);
+	});
+
+	it("calls qorpera_site_count_view with the service key, its three arguments and a short deadline", async () => {
+		const made: { url: string; body: Json; signal: AbortSignal | null | undefined; headers: Headers }[] = [];
+		const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+			made.push({
+				url: String(url),
+				body: JSON.parse(String(init?.body)) as Json,
+				signal: init?.signal,
+				headers: new Headers(init?.headers),
+			});
+			return new Response(JSON.stringify({ state: "counted", visit: true }), { status: 200 });
+		}) as typeof fetch;
+		const db = new PostgrestSiteStore("https://project.example.test/", "sb_secret_fixture", fetcher);
+		assert.deepEqual(await db.countView(OWN, "index.html", TOKEN), { state: "counted", visit: true });
+		assert.equal(made[0]?.url, "https://project.example.test/rest/v1/rpc/qorpera_site_count_view");
+		assert.deepEqual(made[0]?.body, { p_host: OWN, p_path: "index.html", p_token: TOKEN });
+		assert.equal(made[0]?.headers.get("apikey"), "sb_secret_fixture");
+		assert.ok(made[0]?.signal instanceof AbortSignal);
+		assert.equal(COUNT_TIMEOUT_MS, 2000);
+		// The migration defines it with exactly those arguments, for the service role only.
+		const start = COUNT_MIGRATION.indexOf("create function public.qorpera_site_count_view(");
+		assert.ok(start > 0);
+		const head = COUNT_MIGRATION.slice(start, COUNT_MIGRATION.indexOf(")", start));
+		assert.deepEqual(
+			head
+				.slice(head.indexOf("(") + 1)
+				.split(",")
+				.map((part) => part.trim().split(/\s+/)[0]),
+			Object.keys(made[0]?.body ?? {}),
+		);
+		assert.match(COUNT_MIGRATION, /grant execute on function public\.qorpera_site_count_view\(text, text, text\) to service_role;/);
+		assert.doesNotMatch(COUNT_MIGRATION, /grant execute on function public\.qorpera_site_count_view[^;]*(anon|authenticated)/);
+		// A database without the call (installed before its migration): MissingFunction, as for the other calls.
+		const missing = new PostgrestSiteStore("https://project.example.test", "sb_secret_fixture", (async () =>
+			new Response(JSON.stringify(PGRST202), { status: 404 })) as typeof fetch);
+		await assert.rejects(missing.countView(OWN, "index.html", TOKEN), MissingFunction);
 	});
 });

@@ -8,7 +8,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import { build } from "esbuild";
-import { BACKDROP_FILES, DOCK_ICONS, MACHINE_DESKTOP_PICTURES, NEUTRAL_BACKDROP, tarArchive } from "./machine-desktop-art.mjs";
+import { BACKDROP_SOURCE_FIGURES, backdropEyes, productFaces } from "../deploy/lxd-company-computer-guest/backdrops-source/eyes.mjs";
+import {
+	BACKDROP_FILES,
+	DOCK_ICONS,
+	DOCK_ICONS_LIGHT,
+	MACHINE_DESKTOP_PICTURES,
+	NEUTRAL_BACKDROP,
+	tarArchive,
+} from "./machine-desktop-art.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(join(repositoryRoot, path), "utf8");
@@ -336,6 +344,7 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 		{ file: "render-assets.tsv", installedPath: "/opt/qorpera-assets/SOURCES.tsv", mode: "0444" },
 		{ file: "render-assets.md", installedPath: "/opt/qorpera-assets/README.md", mode: "0444" },
 		{ file: "render-assets-preview.jpg", installedPath: "/opt/qorpera-assets/preview.jpg", mode: "0444" },
+		{ file: "qorpera-agent.sudoers", installedPath: "/etc/sudoers.d/qorpera-agent", mode: "0440" },
 	]);
 	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
 	for (const { file, installedPath, mode } of files) {
@@ -614,6 +623,78 @@ test("desktop key presses no xdotool command word, whatever its case, by the ins
 	assert.match(read("deploy/machine/desktop"), /if \[\[ \$skipped == \*"No such key name"\* \]\]; then\n\t\tfail "no such key: /);
 });
 
+test("the image carries fill_company_account's fill helper as its own file, desktop open's DevTools port, and checks both", async () => {
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-account-fill-main\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-account-fill\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-account-fill-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The runtime imports the helper's module (its codes), and every service bundle with it: loading it runs nothing.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-account-fill.ts"), /process\.(argv|stdin|exitCode|exit)\b|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-account-fill-main.ts"), /^runMachineAccountFillCli\(/m);
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-account-fill.mjs"'));
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-account-fill.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-account-fill.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-account-fill.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	// The desktop's browser (desktop open, desktop start TARGET) starts with the profile the helper reads and a DevTools port
+	// the kernel picks on the loopback.
+	const desktop = read("deploy/machine/desktop");
+	assert.match(desktop, /\nPROFILE=\/home\/desktop\/\.config\/qorpera-chromium\nbrowser\(\) \{\n\tlocal flags=\(--user-data-dir="\$PROFILE" --remote-debugging-port=0 /);
+	assert.doesNotMatch(desktop, /remote-debugging-address|remote-allow-origins/);
+	const helperSource = read("packages/runtime/src/cloud-machine-account-fill.ts");
+	assert.match(helperSource, /MACHINE_CHROMIUM_PROFILE = "\/home\/desktop\/\.config\/qorpera-chromium"/);
+	assert.match(helperSource, /MACHINE_CHROMIUM = "\/usr\/lib\/qorpera-chromium\/chrome"/);
+	assert.match(imageScript, /mv \/tmp\/chromium\/chrome-linux64 \/usr\/lib\/qorpera-chromium\n/);
+	// The build's own check: a made-up password filled into a local page's password box, never printed; another site,
+	// another boot and a "Just a moment..." page refused by code; desktop open's port on the loopback only.
+	for (const line of [
+		'spawn("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-account-fill.mjs"]',
+		'fail("the fill helper printed the value")',
+		'"the page did not get the value whole"',
+		'await refusal(["example.org"], "FILL_WRONG_SITE");',
+		'await refusal(["fill-check.test"], "MACHINE_BOOT_CHANGED", { boot: id() });',
+		'await refusal(["fill-check.test"], "SITE_STOP_HUMAN_CHECK");',
+		'echo "the DevTools port is not on the loopback"',
+		'echo "the DevTools port listens beyond the loopback"',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// Both checks' scripts sit in the build's single-quoted script: they hold no single quote.
+	const fill = imageScript.slice(
+		imageScript.indexOf("# fill_company_account (20260930781000): the fill helper types"),
+		imageScript.indexOf("# Nothing of these checks stays in the desktop account"),
+	);
+	assert.ok(fill.length > 0 && !fill.includes("'"));
+	// The helper's deadline fits the executor's: the exec's own is longer, and both inside the command service's 30 s.
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const helperMs = Number(helperSource.match(/\nexport const MACHINE_ACCOUNT_FILL_MS = ([0-9_]+);\n/)[1].replaceAll("_", ""));
+	const execMs = Number(hostSource.match(/\nconst ACCOUNT_FILL_MS = (\d+);\n/)[1]);
+	assert.ok(helperMs + 2000 <= execMs && execMs <= 26000, `${helperMs} ms in the helper against ${execMs} ms`);
+	assert.match(hostSource, /COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs"/);
+	// Built with the packager's options, the guest helper holds none of it; the fill helper bundles no browser driver.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-account-fill-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-account-fill-main.ts")], outfile: join(temporary, "fill.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "fill.mjs"), "utf8");
+		assert.doesNotMatch(guest, /account-fill|Input\.insertText/);
+		// The value is set inside the checked document (Runtime.callFunctionOn on the checked box), never typed at the tab.
+		assert.match(helper, /"Runtime\.callFunctionOn"/);
+		assert.doesNotMatch(helper, /Input\.insertText/);
+		assert.match(helper, /\/json\/version/);
+		assert.doesNotMatch(helper, /playwright/);
+		assert.ok(helper.length < 131072, `the fill helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+
 test("a desktop is asked for: small machines refuse it, chosen files open on it, and pages work without a screen too", () => {
 	// deploy/machine/README.md, "The desktop" (10 Nov 2026: Jonas's shape, and the audit's fixes).
 	const command = read("deploy/machine/desktop");
@@ -762,6 +843,77 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 		"\t(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||\n",
 	])
 		assert.ok(imageScript.includes(line), line);
+});
+
+test("the agent's home: Codex's own home folder is the agent account's, where the executor points CODEX_HOME", () => {
+	// lanes/agent-box-20261113/home-lxd (14 Nov 2026): on a real machine without it the exec-server warned "could not
+	// create PATH aliases" and `apply_patch` typed in its shell was "command not found"; with it, the patch applied.
+	const host = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	assert.ok(host.includes("CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,"), "the executor's CODEX_HOME");
+	assert.match(read("packages/contracts/src/cloud-machine.ts"), /\thome: "\/var\/lib\/qorpera-agent",\n/);
+	// The executor runs a machine's Codex only when it is the pinned build: its sha-256 is the artifact's, the one the
+	// image takes (argument 8 is checked against the same file).
+	const pin = JSON.parse(read("deploy/first-node/native-codex/linux-x64-artifact.json")).artifact.sha256;
+	assert.match(pin, /^[0-9a-f]{64}$/);
+	assert.ok(read("packages/contracts/src/cloud-machine.ts").includes(`\tcodexSha256: "${pin}",\n`), "the executor's Codex pin");
+	const made = imageScript.indexOf("\tinstall -d -o qorpera-agent -g qorpera-agent -m 0700 /var/lib/qorpera-agent/.codex\n");
+	assert.ok(made > imageScript.indexOf("\tuseradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent "), "made after the account");
+	assert.ok(
+		imageScript.includes(
+			'\t[[ $(stat -c "%U:%G %a" /var/lib/qorpera-agent/.codex) == "qorpera-agent:qorpera-agent 700" ]] ||\n',
+		),
+		"the image's own check",
+	);
+});
+
+test("the agent's home: every image carries the pinned Codex, and the desktop account keeps its uid", async () => {
+	// lanes/agent-box-20261113/home-image (14 Nov 2026): with the Codex optional, an image built without it looked like
+	// any other (the same bootstrapSha256) while every home on it was refused HOME_CODEX_NOT_PINNED; and the pin was read
+	// from the record's top level, where it is not, so no build got past its first lines.
+	const artifact = JSON.parse(read("deploy/first-node/native-codex/linux-x64-artifact.json")).artifact;
+	assert.match(artifact.sha256, /^[0-9a-f]{64}$/);
+	assert.ok(Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0);
+	assert.ok(imageScript.includes("\nCODEX=${8:?argument 8: the pinned Codex,"), "argument 8 is required");
+	assert.ok(!imageScript.includes("${8:-"), "argument 8 has no default");
+	assert.ok(imageScript.includes('json.load(open(sys.argv[1]))["artifact"];print(a["sha256"],a["bytes"])'), "the pin is read where it is");
+	assert.ok(
+		imageScript.includes('\nlx file push "$CODEX" "$BUILDER/opt/qorpera-machine/codex" --uid 0 --gid 0 --mode 0555\n'),
+		"the Codex is always pushed, root's and 0555",
+	);
+	assert.ok(imageScript.includes('\t[[ $(stat -c "%U:%G %a" /opt/qorpera-machine/codex) == "root:root 555" &&\n'), "the image's own check");
+	assert.ok(imageScript.includes('\t\t$(sha256sum </opt/qorpera-machine/codex | cut -d" " -f1) == "$EXPECTED_CODEX_SHA256" ]] ||\n'));
+	assert.ok(imageScript.includes('EXPECTED_CODEX_SHA256="$EXPECTED_CODEX_SHA256" \\\n\tPLAYWRIGHT_VERSION='), "the checks get the pin");
+	assert.ok(imageScript.includes("codexSha256: $codexSha256,"), "the build record names the Codex");
+	// The desktop account first: useradd gives the next id above the highest in use, so an agent account made first
+	// (2000) would move the desktop's to 2001. The build prints both and refuses a moved desktop account.
+	const desktop = imageScript.indexOf("\tuseradd --create-home --shell /bin/bash --user-group desktop\n");
+	assert.ok(desktop > 0 && imageScript.indexOf("\tgroupadd --gid 2000 qorpera-agent\n") > desktop, "the agent account after the desktop's");
+	assert.ok(imageScript.indexOf("\tuseradd --uid 2000 --gid 2000 --home-dir /var/lib/qorpera-agent ") > desktop);
+	assert.ok(imageScript.includes('\techo "accounts: desktop $(id -u desktop):$(id -g desktop), qorpera-agent $(id -u qorpera-agent):$(id -g qorpera-agent)" >&2\n'));
+	assert.ok(imageScript.includes("&& $(id -u desktop) -lt 2000 ]] ||"));
+	// The script itself, up to where a build would begin: it refuses before root, a builder or a package is needed.
+	const work = await mkdtemp(join(tmpdir(), "machine-image-codex-"));
+	try {
+		const run = (...extra) =>
+			spawnSync("bash", [join(repositoryRoot, "deploy/machine/build-machine-image.sh"), work, "24.21.0", "0".repeat(64), "qorpera-build", "qorpera0", "qorpera-vm", ...extra], {
+				encoding: "utf8",
+				env: { PATH: process.env.PATH },
+			});
+		const none = run("machines");
+		assert.notEqual(none.status, 0);
+		assert.match(none.stderr, /argument 8: the pinned Codex, the build deploy\/first-node\/native-codex\/linux-x64-artifact\.json records/);
+		const missing = run("machines", join(work, "no-such-codex"));
+		assert.notEqual(missing.status, 0);
+		assert.match(missing.stderr, /argument 8 is not a file/);
+		const other = join(work, "codex");
+		await writeFile(other, "not the pinned build\n");
+		const wrong = run("machines", other);
+		assert.notEqual(wrong.status, 0);
+		assert.ok(wrong.stderr.includes(`the Codex given is not the pinned build (${artifact.sha256}, ${artifact.bytes} bytes)`), wrong.stderr);
+		assert.ok(!/no pinned Codex|Traceback/.test(`${none.stderr}${missing.stderr}${wrong.stderr}`), "the pin is read");
+	} finally {
+		await rm(work, { recursive: true, force: true });
+	}
 });
 
 test("every machine has compressed memory from its boot on and a guard at the edge of its memory", () => {
@@ -946,8 +1098,14 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	for (const figure of figures) assert.equal(BACKDROP_FILES[figure], table[figure], figure);
 	assert.deepEqual(pairs(characters.match(/RETIRED_STAFF_CHARACTERS = Object\.freeze\(\{([^}]+)\}/)[1]), { ghost: "moon" });
 	assert.match(look, /\n\t\[\[ \$word != ghost \]\] \|\| word=moon\n/);
-	// Every picture is there and is a PNG of its size: the nine dock icons, 24 frames a set, thirteen sets.
-	assert.equal(MACHINE_DESKTOP_PICTURES.length, 9 + 13 * 24);
+	// Every picture is there and is a PNG of its size: the nine dock icons, the six with a mark drawn again for a light
+	// ground, 24 frames a set, thirteen sets.
+	assert.equal(MACHINE_DESKTOP_PICTURES.length, 9 + 6 + 13 * 24);
+	assert.deepEqual(
+		[...DOCK_ICONS_LIGHT].toSorted(),
+		DOCK_ICONS.filter((icon) => !icon.endsWith("-idle")).toSorted(),
+		"every state with a mark has its drawing for a light ground; an idle icon has no mark",
+	);
 	assert.equal(new Set(MACHINE_DESKTOP_PICTURES.map((picture) => picture.name)).size, MACHINE_DESKTOP_PICTURES.length);
 	// The colour of a frame's first pixel, which is its ground: the frames are plain RGB, so the first row's first three
 	// bytes after its filter byte.
@@ -967,7 +1125,7 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		const bytes = readFileSync(join(repositoryRoot, source));
 		assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a", source);
 		const size = [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
-		if (name.startsWith("dock/")) {
+		if (name.startsWith("dock")) {
 			assert.deepEqual(size, [112, 112], source);
 			continue;
 		}
@@ -1013,6 +1171,8 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		}
 		await mkdir(join(art, "dock"));
 		for (const icon of DOCK_ICONS) await writeFile(join(art, "dock", `${icon}.png`), "png");
+		await mkdir(join(art, "dock-light"));
+		for (const icon of DOCK_ICONS_LIGHT) await writeFile(join(art, "dock-light", `${icon}.png`), "png");
 		const tools = join(temporary, "tools");
 		await mkdir(tools);
 		const asked = join(temporary, "asked");
@@ -1057,6 +1217,38 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 			);
 			assert.equal(channel("xfce4-panel").match(/<property name="timezone" type="string" value="([^"]+)"\/>/g).length, 2);
 			assert.ok(channel("xfce4-panel").includes(`<property name="timezone" type="string" value="${zone}"/>`), zone);
+			// The dock stands on the wallpaper: the bar is the hour's ground, the date and the time are written in that
+			// ground's ink (dark on a light ground, light on a dark one), and both are noted for the watcher and a press.
+			const share = (part) => (Math.floor((Number.parseInt(part, 16) * 1000000) / 255) / 1000000).toFixed(6);
+			const dock = (hour) => {
+				const colour = grounds[Number(hour)];
+				const light = Number.parseInt(colour.slice(0, 2), 16) >= 128;
+				const ink = (colourOf, format) => `value="&lt;span foreground=&quot;#${colourOf}&quot;&gt;${format}&lt;/span&gt;"`;
+				return {
+					colour,
+					tone: light ? "light" : "dark",
+					rgba: [0, 2, 4].map((at) => `        <value type="double" value="${share(colour.slice(at, at + 2))}"/>\n`).join("") + '        <value type="double" value="1"/>\n',
+					time: ink(light ? "1d2026" : "eef0f4", "%H:%M"),
+					date: ink(light ? "4b515c" : "a3abba", "%a %d %b"),
+				};
+			};
+			const panelNow = channel("xfce4-panel");
+			assert.ok(
+				[...hours].map(dock).some(
+					(now) =>
+						panelNow.includes(`      <property name="background-rgba" type="array">\n${now.rgba}      </property>\n`) &&
+						panelNow.split(now.time).length === 3 &&
+						panelNow.split(now.date).length === 3 &&
+						readFileSync(join(run, "dock.ground"), "utf8") === `${now.colour}\n` &&
+						readFileSync(join(run, "dock.tone"), "utf8") === `${now.tone}\n`,
+				),
+				`the dock's ground and ink in ${zone}: ${panelNow.match(/<property name="background-rgba"[\s\S]*?<\/property>/)?.[0]}`,
+			);
+		};
+		// A zone where it is that hour now (Etc/GMT-N is N hours ahead of UTC).
+		const zoneAt = (hour) => {
+			const ahead = (hour - new Date().getUTCHours() + 24) % 24;
+			return ahead <= 12 ? `Etc/GMT-${ahead}` : `Etc/GMT+${24 - ahead}`;
 		};
 		// No figure named: the neutral backdrop, on UTC.
 		written("neutral", "UTC");
@@ -1072,20 +1264,35 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 			assert.equal(icon, `${art}/dock/${app}-idle.png`);
 			assert.ok(existsSync(icon), icon);
 		}
+		// Each state is an entry; a state with a mark has a second one for a light ground, with the dark mark's picture.
 		assert.deepEqual(
-			spawnSync("ls", [join(config, "qorpera-dock")], { encoding: "utf8" }).stdout.trim().split("\n"),
+			spawnSync("ls", [join(config, "qorpera-dock")], { encoding: "utf8" }).stdout.trim().split("\n").toSorted(),
 			[
+				"qorpera-browser-failed-light.desktop",
 				"qorpera-browser-failed.desktop",
+				"qorpera-browser-launching-2-light.desktop",
 				"qorpera-browser-launching-2.desktop",
+				"qorpera-browser-launching-light.desktop",
 				"qorpera-browser-launching.desktop",
+				"qorpera-browser-running-light.desktop",
 				"qorpera-browser-running.desktop",
 				"qorpera-browser.desktop",
+				"qorpera-files-running-light.desktop",
 				"qorpera-files-running.desktop",
 				"qorpera-files.desktop",
+				"qorpera-terminal-running-light.desktop",
 				"qorpera-terminal-running.desktop",
 				"qorpera-terminal.desktop",
-			],
+			].toSorted(),
 		);
+		for (const [name, folder] of [
+			["qorpera-files-running.desktop", "dock"],
+			["qorpera-files-running-light.desktop", "dock-light"],
+		]) {
+			const entry = readFileSync(join(config, "qorpera-dock", name), "utf8");
+			assert.match(entry, /\nExec=\/opt\/qorpera-machine\/desktop-look press files\n/);
+			assert.equal(entry.match(/\nIcon=([^\n]+)\n/)[1], `${art}/${folder}/files-running.png`);
+		}
 		for (const file of ["gtk-3.0/gtk.css", "gtk-3.0/settings.ini", "qorpera-bashrc", "xfce4/terminal/terminalrc"])
 			assert.ok(readFileSync(join(config, file), "utf8").length > 0, file);
 		for (const name of ["xfwm4", "xfce4-terminal", "xsettings"]) assert.match(channel(name), new RegExp(`<channel name="${name}" version="1\\.0">`));
@@ -1106,6 +1313,18 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		written("neutral", "Pacific/Auckland");
 		writeFileSync(join(notes, "tz"), "No/Such_Zone");
 		written("neutral", "UTC");
+		// By day and at night, whatever the hour of this test: in a zone where it is noon the bar is the light ground and
+		// what is written on it is dark; in one where it is midnight both are the other way round.
+		for (const [hour, colour, tone] of [
+			[12, "f1f2f3", "light"],
+			[0, "0e0f11", "dark"],
+		]) {
+			writeFileSync(join(notes, "tz"), zoneAt(hour));
+			written("neutral", zoneAt(hour));
+			assert.equal(readFileSync(join(run, "dock.ground"), "utf8"), `${colour}\n`);
+			assert.equal(readFileSync(join(run, "dock.tone"), "utf8"), `${tone}\n`);
+		}
+		writeFileSync(join(notes, "tz"), "No/Such_Zone");
 		// Written anew every time: what was changed or removed in the account is put back.
 		await rm(config, { recursive: true, force: true });
 		written("neutral", "UTC");
@@ -1135,6 +1354,8 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 			});
 			return { status: result.status, asked: readFileSync(asked, "utf8"), stderr: result.stderr };
 		};
+		// The marks below are a dark ground's (the office dock's); a light ground's come after.
+		writeFileSync(join(run, "dock.tone"), "dark\n");
 		// (A variable named like one of the script's own tables, handed in by the environment, changes nothing.)
 		const there = press("files", { WINDOWS: "yes", WINDOW_IS: '"thunar", "Thunar"', WINDOW_CLASS: "x", PANEL_PLUGIN: "y" });
 		assert.equal(there.status, 0, there.stderr);
@@ -1159,6 +1380,21 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 			`xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s ${config}/qorpera-dock/qorpera-browser-running.desktop`,
 		]);
 		assert.equal(existsSync(join(run, "dock-browser.launching")), false, "the press let go of the browser's icon");
+		// On a light ground the same press shows the same states with the dark mark's pictures, and keeps the tone with
+		// the state, so a change of tone is a change to show.
+		writeFileSync(join(run, "dock.tone"), "light\n");
+		for (const app of ["browser", "files", "terminal"]) await rm(join(run, `dock-${app}.shows`), { force: true });
+		// (The stand-in for the display shows a window once the program was asked for: the earlier press's ask goes.)
+		await rm(join(ask, "browser"), { force: true });
+		const day = press("browser", { COMES: "browser", WINDOW_IS: '"chromium-browser", "Chromium-browser"' });
+		assert.equal(day.status, 0, day.stderr);
+		assert.deepEqual(day.asked.trim().split("\n"), [
+			`xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s ${config}/qorpera-dock/qorpera-browser-launching-light.desktop`,
+			"xdotool windowmap 0x1200007",
+			"xdotool windowactivate 0x1200007",
+			`xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s ${config}/qorpera-dock/qorpera-browser-running-light.desktop`,
+		]);
+		assert.equal(readFileSync(join(run, "dock-browser.shows"), "utf8"), "running light\n");
 		// Only the three programs can be asked for.
 		for (const args of [[], ["press"], ["press", "editor"], ["press", "browser", "more"], ["start"]]) {
 			const refused = lookRun(...args);
@@ -1188,6 +1424,10 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		words(imageScript.match(/\n\tfor icon in ([^;]+); do\n\t\t\[\[ \$\(file -b "\/usr\/share\/qorpera-desktop\/dock\/\$icon\.png"\)/)[1]).toSorted(),
 		[...DOCK_ICONS].toSorted(),
 	);
+	assert.deepEqual(
+		words(imageScript.match(/\n\tfor icon in ([^;]+); do\n\t\t\[\[ \$\(file -b "\/usr\/share\/qorpera-desktop\/dock-light\/\$icon\.png"\)/)[1]).toSorted(),
+		[...DOCK_ICONS_LIGHT].toSorted(),
+	);
 	assert.deepEqual(words(imageScript.match(/\n\tfor figure in ([^;]+); do\n\t\tfor hour in \$\(seq -w 0 23\); do\n/)[1]), [
 		...figures,
 		NEUTRAL_BACKDROP,
@@ -1200,7 +1440,11 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		"\ttar -xf /tmp/desktop-art.tar -C /usr/share/qorpera-desktop --no-same-owner\n\trm /tmp/desktop-art.tar\n",
 		"\tsystemctl enable qorpera-machine-desktop-dock.path\n",
 		"\tsystemd-tmpfiles --create /etc/tmpfiles.d/qorpera-machine-desktop.conf\n",
-		'\t[[ $(find /usr/share/qorpera-desktop -type f | wc -l) == $(( 9 + 13 * 24 )) ]] ||\n',
+		'\t[[ $(find /usr/share/qorpera-desktop -type f | wc -l) == $(( 9 + 6 + 13 * 24 )) ]] ||\n',
+		'\tdesktop start --tz "$(zone_at 12)" >/dev/null\n\tdock_stands_on f1f2f3 light 1d2026 4b515c || { echo "by day the dock does not stand on the wallpaper" >&2; exit 1; }\n',
+		'\tdesktop start --tz "$(zone_at 0)" >/dev/null\n\tdock_stands_on 0e0f11 dark eef0f4 a3abba || { echo "at night the dock does not stand on the wallpaper" >&2; exit 1; }\n',
+		'\t[[ $(pixel 798 465) == ffffff ]] || { echo "by day the figure has no eyes on the backdrop: $(pixel 798 465)" >&2; exit 1; }\n',
+		'\t[[ $(marks) == "$mark $mark $mark " ]] || { echo "a dock icon does not mark its open program: $(marks)" >&2; exit 1; }\n',
 		"\t[[ -z $(find /usr/share/qorpera-desktop ! -user root -o ! -group root -o -perm /022) ]] ||\n",
 		'\t[[ $(stat -c "%U:%G %a %F" /run/qorpera-desktop-dock) == "root:desktop 730 directory" ]] ||\n',
 		'\tdock_whole || { echo "the dock is not one bar with the browser, the files and a terminal: ',
@@ -1234,15 +1478,66 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	assert.ok(at("\texec startxfce4\n") < at("\n(/opt/qorpera-machine/desktop-look watch >/dev/null 2>&1 &)\n"));
 	assert.ok(at("\n(/opt/qorpera-machine/desktop-look watch >/dev/null 2>&1 &)\n") < at("\nwait -n\n"));
 
-	// The look is the office dock's, carried over, not drawn anew: the same bar and the same look of it (the clocks'
-	// zone is the one line more), the same windows and terminal.
+	// The look is the office dock's, carried over, not drawn anew: the same bar and the same look of it, the same
+	// windows and terminal. What a machine's dock has of its own, line for line: the clocks' zone; and since 14 Nov 2026
+	// (Jonas: "the docker should also not be black - it should be transparrant/wallpapers color") its colour, which is
+	// the hour's ground and not the office's fixed dark, and the ink of what is written on it, which follows that ground.
 	const between = (text, from, to) => text.slice(text.indexOf(from), text.indexOf(to, text.indexOf(from)));
 	const panel = between(look, '<channel name="xfce4-panel"', "\nPANEL\n");
-	assert.equal(
-		panel.replaceAll('      <property name="timezone" type="string" value="@ZONE@"/>\n', ""),
-		between(office, '<channel name="xfce4-panel"', "\nPANEL\n"),
+	const officePanel = between(office, '<channel name="xfce4-panel"', "\nPANEL\n");
+	const ownLine = (line) =>
+		/ name="(timezone|digital-time-format|digital-date-format|digital-format)" /.test(line) ||
+		(/^ {8}<value type="double" value="/.test(line) && !line.includes('value="1"'));
+	const shared = (text) => text.split("\n").filter((line) => !ownLine(line));
+	assert.deepEqual(shared(panel), shared(officePanel));
+	assert.deepEqual(
+		panel.split("\n").filter(ownLine),
+		[
+			'        <value type="double" value="$(share "${ground:0:2}")"/>',
+			'        <value type="double" value="$(share "${ground:2:2}")"/>',
+			'        <value type="double" value="$(share "${ground:4:2}")"/>',
+			'      <property name="digital-time-format" type="string" value="$time_format"/>',
+			'      <property name="digital-format" type="string" value="$time_format"/>',
+			'      <property name="timezone" type="string" value="$zone"/>',
+			'      <property name="digital-date-format" type="string" value="$date_format"/>',
+			'      <property name="digital-format" type="string" value="$date_format"/>',
+			'      <property name="timezone" type="string" value="$zone"/>',
+		],
 	);
-	assert.equal(between(look, "@keyframes qorpera-dock-jump", "\nCSS\n"), between(office, "@keyframes qorpera-dock-jump", "\nCSS\n"));
+	// Nothing else in that file is the shell's to fill in.
+	assert.deepEqual([...new Set(panel.match(/\$[({]?\w+/g))].toSorted(), ["$(share", "$date_format", "$time_format", "$zone", "${ground"]);
+	// The dock's own CSS: the office's rules, but the bar has no colour of its own (the panel paints the ground it is
+	// told, and a colour named there would stand over it), the highlights read on a light ground and on a dark one,
+	// and the clocks' colours are in their formats.
+	const css = between(look, "@keyframes qorpera-dock-jump", "\nCSS\n");
+	const officeCss = between(office, "@keyframes qorpera-dock-jump", "\nCSS\n");
+	const cut = (text, from, to) => text.slice(0, text.indexOf(from)) + text.slice(text.indexOf(to, text.indexOf(from)));
+	const withoutOwn = (text) =>
+		cut(
+			cut(text, ".xfce4-panel {", ".xfce4-panel button {"),
+			".xfce4-panel button:hover {",
+			".xfce4-panel #clock-button:hover,",
+		);
+	assert.equal(withoutOwn(css), withoutOwn(officeCss));
+	assert.equal(
+		css.slice(css.indexOf(".xfce4-panel {"), css.indexOf(".xfce4-panel button {")),
+		".xfce4-panel {\n\tbackground-image: none;\n\tborder: none;\n\tbox-shadow: none;\n}\n",
+	);
+	assert.doesNotMatch(css, /#[0-9a-f]{6}|rgba\(255, 255, 255/, "no colour of a dark bar is left in the dock's CSS");
+	assert.match(look, /\nunset DATE_INK TIME_INK\ndeclare -A DATE_INK=\(\[dark\]=a3abba \[light\]=4b515c\) TIME_INK=\(\[dark\]=eef0f4 \[light\]=1d2026\)\n/);
+	// The watcher moves the ground and the ink on with the hours, on a panel that runs: both are settings the panel
+	// takes at once (xfce4-panel 4.20: background-rgba while its background-style is a colour; a clock's format, which
+	// it reads as Pango markup). The tone is noted before the marks are set, so they are the tone's.
+	for (const line of [
+		'\txfconf-query -c xfce4-panel -p /panels/panel-1/background-rgba -n -t double -s "$(share "${1:0:2}")" \\\n',
+		'\txfconf-query -c xfce4-panel -p /plugins/plugin-3/digital-time-format -n -t string -s "$(inked "${TIME_INK[$1]}" %H:%M)" >/dev/null 2>&1 &&\n',
+		"\t\txfconf-query -c xfce4-panel -p /plugins/plugin-7/digital-date-format -n -t string -s \"$(inked \"${DATE_INK[$1]}\" '%a %d %b')\" >/dev/null 2>&1\n",
+		'\t\tif [[ $ground != "$ground_shown" ]] && dock_ground "$ground"; then\n',
+		'\t\tif [[ $tone != "$tone_shown" ]] && echo "$tone" >"$RUN/dock.tone" && dock_ink "$tone"; then tone_shown=$tone; fi\n',
+		'      <property name="background-style" type="uint" value="1"/>\n',
+	])
+		assert.ok(look.includes(line), line);
+	assert.ok(look.indexOf('dock_ink "$tone"; then tone_shown=$tone; fi') < look.indexOf('\t\t\tshow "$app" "$state"\n'));
 	assert.equal(panel.match(/<property name="panel-\d+" type="empty">/g).length, 1);
 	assert.deepEqual(
 		[...panel.matchAll(/<property name="plugin-(\d)" type="string" value="(\w+)">/g)].map((match) => `${match[1]} ${match[2]}`).toSorted(),
@@ -1304,6 +1599,71 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	assert.match(read("scripts/prove-machine-memory.sh"), / -- desktop click 400 960 <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n/);
 	for (const file of ["deploy/machine/desktop-look", "deploy/machine/desktop-dock-open", "deploy/machine/backdrops-source/render.sh"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
+});
+
+test("every figure's backdrop carries its eyes, where the product draws them (14 Nov 2026)", () => {
+	// Jonas, on the first real desktops: "The eyes should stay on the wallpaper - even if we can't animate it, it makes
+	// the computer feel alive". The computer window's start scene draws the figure with its eyes on the wallpaper; the
+	// picture that then came had the figure without them. The sources carry the product's own eye geometry
+	// (motion-model.js `faces`), written by backdrops-source/eyes.mjs, and the pictures were rendered from them.
+	const faces = productFaces();
+	const transform = "translate(560 200) scale(8) rotate(-4 50 50)";
+	assert.deepEqual(Object.values(BACKDROP_SOURCE_FIGURES).toSorted(), Object.keys(BACKDROP_FILES).toSorted());
+	for (const [source, figure] of Object.entries(BACKDROP_SOURCE_FIGURES)) assert.equal(BACKDROP_FILES[figure], source, figure);
+	// One pixel of a frame: the rows up to it, unfiltered (the frames are plain 8-bit RGB, not interlaced).
+	const pixel = (bytes, x, y) => {
+		const data = [];
+		for (let at = 8; at < bytes.length; ) {
+			const length = bytes.readUInt32BE(at);
+			if (bytes.subarray(at + 4, at + 8).toString("latin1") === "IDAT") data.push(bytes.subarray(at + 8, at + 8 + length));
+			at += 12 + length;
+		}
+		const raw = inflateSync(Buffer.concat(data));
+		const stride = bytes.readUInt32BE(16) * 3;
+		let above = Buffer.alloc(stride);
+		for (let row = 0; row <= y; row++) {
+			const filter = raw[row * (stride + 1)];
+			const line = Buffer.from(raw.subarray(row * (stride + 1) + 1, (row + 1) * (stride + 1)));
+			for (let at = 0; at < stride; at++) {
+				const left = at >= 3 ? line[at - 3] : 0;
+				const up = above[at];
+				const corner = at >= 3 ? above[at - 3] : 0;
+				const guess = left + up - corner;
+				const [toLeft, toUp, toCorner] = [Math.abs(guess - left), Math.abs(guess - up), Math.abs(guess - corner)];
+				const paeth = toLeft <= toUp && toLeft <= toCorner ? left : toUp <= toCorner ? up : corner;
+				line[at] = (line[at] + [0, left, up, (left + up) >> 1, paeth][filter]) & 255;
+			}
+			above = line;
+		}
+		return above.subarray(x * 3, x * 3 + 3).toString("hex");
+	};
+	for (const [source, figure] of Object.entries(BACKDROP_SOURCE_FIGURES)) {
+		const html = read(`deploy/lxd-company-computer-guest/backdrops-source/${source}.html`);
+		const eyes = faces[figure];
+		assert.equal(eyes.length, 2, figure);
+		// The source: the figure's own group, then its eyes in the same frame, white, exactly the product's.
+		assert.ok(html.includes(`<g id="fig" fill-rule="evenodd" transform="${transform}">`), source);
+		assert.ok(html.includes(`</g>${backdropEyes(eyes, transform)}</svg>`), `${source} carries the eyes of ${figure}`);
+		assert.equal(html.match(/<g id="eyes"/g).length, 1, source);
+		// The pictures: the middle of each eye is white by day and at night (a frame is 1920x1200; the figure's 100-unit
+		// frame is turned 4 degrees about its middle, drawn 8 times as large, 560 right and 200 down).
+		for (const hour of ["00", "07", "12"]) {
+			const bytes = readFileSync(join(repositoryRoot, `deploy/lxd-company-computer-guest/backdrops/qorpera-screen-${source}-${hour}.png`));
+			for (const eye of eyes) {
+				const turn = (-4 * Math.PI) / 180;
+				const [dx, dy] = [eye.x - 50, eye.y - 50];
+				const x = Math.round(560 + 8 * (50 + dx * Math.cos(turn) - dy * Math.sin(turn)));
+				const y = Math.round(200 + 8 * (50 + dx * Math.sin(turn) + dy * Math.cos(turn)));
+				assert.equal(pixel(bytes, x, y), "ffffff", `an eye of ${figure} at ${x},${y} in the frame of hour ${hour}`);
+			}
+		}
+	}
+	// The retired ghost has no eyes in the product, and its source none; the neutral backdrop is the wordmark.
+	assert.equal(faces.ghost, undefined);
+	for (const file of ["deploy/lxd-company-computer-guest/backdrops-source/wisp.html", "deploy/machine/backdrops-source/neutral.html"])
+		assert.doesNotMatch(read(file), /<g id="eyes"/, file);
+	// The web's copies of the figures (the start scene draws its own eyes over them) read the figure's group alone.
+	assert.match(read("packages/web/scripts/desktop-backdrops.mjs"), /html\.match\(\/<g id="fig"\(\[\^>\]\*\)>\(\[\\s\\S\]\*\?\)<\\\/g>\/\)/);
 });
 
 test("root keeps its notes about the desktop where only root writes (review r1 F1 of #1704)", async () => {
@@ -2207,7 +2567,7 @@ test("a press on the dock can steer nothing but which of three programs starts (
 	);
 	assert.match(
 		code,
-		/\nbrowser\(\) \{\n\tlocal flags=\(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
+		/\nbrowser\(\) \{\n\tlocal flags=\(--user-data-dir="\$PROFILE" --remote-debugging-port=0 --start-maximized --no-first-run\n\t\t--no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
 	);
 	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);

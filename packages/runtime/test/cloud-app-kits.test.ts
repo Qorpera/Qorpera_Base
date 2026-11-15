@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 import { APP_KITS, parseAppManifest } from "@qorpera/cloud-client/interface-apps";
+import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { JsonValue } from "@qorpera/contracts";
 import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
+import { KIT_FIGURES } from "@qorpera/runtime/cloud-app-kit-figures.generated";
 import {
 	DATA_KITS,
 	KIT_DATA_MAX_BYTES,
@@ -12,6 +14,7 @@ import {
 	KIT_LIVE_QUESTIONS,
 	kitBindings,
 	kitDataFile,
+	kitFigures,
 	kitMedia,
 	kitNotes,
 	kitPage,
@@ -92,8 +95,30 @@ const BOARD = {
 
 it("names the data kits as the kits an app can be made from", () => {
 	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS]);
-	expect([...DATA_KITS]).toEqual(["model", "board", "path", "object"]);
-	expect(DATA_KITS.map(kitDataFile)).toEqual(["model.json", "board.json", "path.json", "object.json"]);
+	expect([...DATA_KITS]).toEqual([
+		"model",
+		"board",
+		"path",
+		"object",
+		"curve",
+		"stack",
+		"shelf",
+		"map",
+		"ring",
+		"flow",
+	]);
+	expect(DATA_KITS.map(kitDataFile)).toEqual([
+		"model.json",
+		"board.json",
+		"path.json",
+		"object.json",
+		"curve.json",
+		"stack.json",
+		"shelf.json",
+		"map.json",
+		"ring.json",
+		"flow.json",
+	]);
 });
 
 it("holds each kit's engine and guide exactly as its source files have them", () => {
@@ -112,8 +137,9 @@ it("holds each kit's engine and guide exactly as its source files have them", ()
 		expect(Buffer.byteLength(KIT_ENGINE_JS[kit]), kit).toBeLessThan(128 * 1024);
 		// A guide is written for an agent, and small enough that the four sit in one schema with room to spare.
 		expect(Buffer.byteLength(KIT_GUIDE[kit]), kit).toBeLessThan(4608);
-		// A kit's words name the button of a note to the app's owner, which save_app's kits paragraph explains once.
-		expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
+		// A kit's words name the button of a note to the app's owner, which save_app's kits paragraph explains once. A
+		// curve, a ring and a flow have no thing a member opens, so no note.
+		if (!["curve", "ring", "flow"].includes(kit)) expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
 		// Each guide's example is data its own kit reads.
 		const example = /```json\n([\s\S]*?)\n```/.exec(KIT_GUIDE[kit])?.[1] ?? "";
 		expect(parseKitData(kit, example), kit).toHaveProperty("data");
@@ -127,7 +153,7 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 	for (const said of [
 		"lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch)",
 		"Text to read stays a file.",
-		"Kits draw nearly every app: you write the kit's one file among files (model.json, board.json, path.json or object.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit.",
+		"Kits draw nearly every app: you write the kit's one file among files (<kit>.json, such as model.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit.",
 		"A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
 		"What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved.",
 		// A page written by hand follows the kits.
@@ -140,23 +166,42 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", null]);
+	expect(kit.enum).toEqual([
+		"explainer",
+		"model",
+		"board",
+		"path",
+		"object",
+		"curve",
+		"stack",
+		"shelf",
+		"map",
+		"ring",
+		"flow",
+		null,
+	]);
 	for (const said of [
 		"model: how something works in numbers, such as a business model, a price, costs or capacity.",
 		"board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references.",
 		"path: a way through steps with the evidence for each, such as customers from need to purchase, a funnel or a supply route.",
 		"object: a physical thing a member turns in the hand.",
+		"curve: one value over time, such as money in the bank or orders a day, the past and what is expected.",
+		"stack: things that want a member's yes, one card each, such as bills to pay or ads to run.",
+		"shelf: the company's own things side by side, each with one level, such as products and their stock.",
+		"map: the company or your own area as its things, which fill as they are built, with the agents at them and layers to open, such as the company's map or a product's parts.",
+		"ring: a year, month or week with its dates, such as deadlines and seasons.",
+		"flow: money or people from where they come to where they go, such as a month's money.",
 	])
 		expect(kit.description).toContain(said);
-	// What the four data kits share stands at the head of each one's guide, which app_guide answers with: on the
+	// What the data kits share stands at the head of each one's guide, which app_guide answers with: on the
 	// schema, where it stood until 14 November 2026, no model received it.
 	for (const said of [
 		"save_app writes engine.js and index.html: never write or edit those two",
 		"A picture or video the data names shows only when it is in the app's folder as you save: write it there first",
 		"what nobody knows yet is marked unknown, which the page draws as open: never guess it and never write about it",
-		// A note to the app's owner (qorpera.tell), said once for the four kits.
+		// A note to the app's owner (qorpera.tell), said once for the data kits.
 		'Every kit\'s words may hold tell, the label of the button with which a member sends you a note about the thing they opened, naming you ("Ask Luna"), and told, what it says once the note went;',
-		"a thing a member opens (a board's item, a path lane's step, an object's part, a model's input) may hold ask, a draft for that note (≤40 characters).",
+		"a thing a member opens (a board's item, a path lane's step, an object's part, a model's input, a shelf's thing) may hold ask, a draft for that note (≤40 characters).",
 		"Such a note reaches you as the member's message, under a first line that names the app and the thing.",
 	])
 		for (const each of DATA_KITS) expect(appGuide(each), each).toContain(said);
@@ -1271,4 +1316,511 @@ it("adds data to a kit app's reads when its data names a question, and only adds
 	);
 	expect(own.state).toBe("applied");
 	expect(manifestOf(f, "tool")?.reads).toEqual(["data"]);
+});
+
+/* The shape kits (Jonas, 14 November 2026, on lanes/company-views-20261114/PLAN.md: "Yes, start building"): a value over
+ * time (curve), things that want a member's yes (stack), the company's things side by side (shelf). Their engines run
+ * in a browser (packages/web/test/app-kit-engines.test.ts); here are their data, their page and save_app. */
+
+const STACK = {
+	lang: "en",
+	title: "Wants your yes",
+	cards: [
+		{ id: "parts", title: "Pay the parts bill?", value: 4200, unit: "kr", by: "Mads", figure: "rocket" },
+		{ id: "vat", title: "Send the VAT return?", value: 3120, unit: "kr", by: "Co-Founder", figure: "crown" },
+		{ id: "ad", title: "Run this ad?", picture: "pictures/ad.webp", by: "Ida", figure: "rocket" },
+	],
+};
+
+it("reads a shape kit's data, or says in words why it does not read", () => {
+	const problem = (kit: (typeof DATA_KITS)[number], value: unknown) => {
+		const parsed = parseKitData(kit, JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem("curve", {})).toBe("curve.json has no points: the curve kit draws nothing without");
+	expect(problem("curve", { points: [{ label: "Nov", value: 1 }] })).toBe(
+		"curve.json needs two points at least in points: the curve kit draws a line between them",
+	);
+	expect(problem("curve", { points: [{ label: "Oct" }, { label: "Nov", value: 1 }] })).toBeNull();
+	expect(problem("shelf", { things: [] })).toBe(
+		"shelf.json has no thing in things: the shelf kit has nothing to stand on its shelf",
+	);
+	expect(problem("shelf", { things: [{ name: "Lamp" }] })).toBeNull();
+	// A stack of no cards is one with nothing waiting: its page says so.
+	expect(problem("stack", { cards: [] })).toBeNull();
+	expect(problem("stack", { cards: {} })).toBe("stack.json's cards must be a list");
+	expect(problem("stack", { title: "Yes" })).toBe("stack.json has no cards: the stack kit draws nothing without");
+});
+
+it("carries in a kit's page the agents' figures its data names, each once, as pictures of their own", () => {
+	// Only a field named figure names one, and only a figure an agent can have.
+	expect(kitFigures(STACK)).toEqual(["rocket", "crown"]);
+	expect(kitFigures({ things: [{ figure: "dragon" }, { name: "crown" }, { note: { figure: "moon" } }] })).toEqual([
+		"moon",
+	]);
+	const page = kitPage("yes", "stack", "Wants your yes", STACK, () => true);
+	expect(page).toContain(`<img data-kit-src="figure:rocket" src="${KIT_FIGURES.rocket}" alt="">`);
+	expect(page).toContain(`<img data-kit-src="figure:crown" src="${KIT_FIGURES.crown}" alt="">`);
+	expect(page.match(/data-kit-src="figure:rocket"/g)).toHaveLength(1);
+	// They stand with the app's own pictures, which the page reaches the same way.
+	expect(page.indexOf('data-kit-src="pictures/ad.webp"')).toBeLessThan(page.indexOf('data-kit-src="figure:rocket"'));
+	expect(page.indexOf('data-kit-src="figure:crown"')).toBeLessThan(page.indexOf("</div>"));
+	// A page whose data names no figure is as it was.
+	expect(kitPage("marked", "board", "Marked", BOARD, () => true)).not.toContain("figure:");
+	// Each is the web's figure made small (packages/runtime/kits/figures/<id>.webp, as npm run generate:app-kits
+	// writes it in): one for every figure an agent can have, a few kilobytes each.
+	expect(Object.keys(KIT_FIGURES).sort()).toEqual([...STAFF_CHARACTER_IDS].sort());
+	for (const [id, url] of Object.entries(KIT_FIGURES)) {
+		const file = readFileSync(new URL(`../kits/figures/${id}.webp`, import.meta.url));
+		expect(url, id).toBe(`data:image/webp;base64,${file.toString("base64")}`);
+		expect(file.byteLength, id).toBeLessThan(8 * 1024);
+	}
+});
+
+it("gives a stack's app the open questions and their answers, which its buttons answer", async () => {
+	const LOOK =
+		"questions was added to the app's reads and answers to its writes: a stack's buttons answer the open questions that point at the app.";
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	const made = read(
+		await f.call(
+			"save_app",
+			save("yes", "make-1", { title: "Wants your yes", kit: "stack", reads: ["files"], writes: ["table:orders"] }, [
+				{ path: "stack.json", text: JSON.stringify(STACK) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(manifestOf(f, "yes")).toMatchObject({ reads: ["files", "questions"], writes: ["table:orders", "answers"] });
+	expect(made.look).toContain(LOOK);
+	expect(f.text("apps/yes/engine.js")).toBe(KIT_ENGINE_JS.stack);
+	expect(f.text("apps/yes/index.html")).toBe(kitPage("yes", "stack", "Wants your yes", STACK, () => false));
+	// Saved again, it has them: nothing more is added, and the manifest is not written.
+	const again = read(
+		await f.call(
+			"save_app",
+			save("yes", "change-1", null, [{ path: "stack.json", text: JSON.stringify({ ...STACK, line: "Now" }) }]),
+		),
+	);
+	expect(again.files.map((file: { path: string }) => file.path)).not.toContain("apps/yes/app.toml");
+	expect(again.look ?? []).not.toContain(LOOK);
+	// A manifest that takes them away gets them back.
+	const taken = read(
+		await f.call("save_app", save("yes", "change-2", { title: "Wants your yes", reads: [], writes: [] }, [])),
+	);
+	expect(manifestOf(f, "yes")).toMatchObject({ reads: ["questions"], writes: ["answers"] });
+	expect(taken.look).toContain(LOOK);
+	// Writes already full without answers: questions is still added, answers cannot be, and the look says why.
+	const FULL =
+		"answers could not be added to the app's writes, which already hold 16 entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.";
+	const tables = Array.from({ length: 16 }, (_, k) => `table:t${k + 1}`);
+	const full = read(
+		await f.call(
+			"save_app",
+			save("full", "make-3", { title: "Full", kit: "stack", reads: ["files"], writes: tables }, [
+				{ path: "stack.json", text: JSON.stringify(STACK) },
+			]),
+		),
+	);
+	expect(full.state).toBe("applied");
+	expect(manifestOf(f, "full")).toMatchObject({ reads: ["files", "questions"], writes: tables });
+	expect(full.look).toContain(FULL);
+	expect(full.look).not.toContain(LOOK);
+	// Saved again, the manifest is not written, and the look says it again until answers has room.
+	const fullAgain = read(
+		await f.call(
+			"save_app",
+			save("full", "change-3", null, [{ path: "stack.json", text: JSON.stringify({ ...STACK, line: "Now" }) }]),
+		),
+	);
+	expect(fullAgain.files.map((file: { path: string }) => file.path)).not.toContain("apps/full/app.toml");
+	expect(fullAgain.look).toContain(FULL);
+	// Given room, answers joins: the look names only what was added.
+	const roomy = read(
+		await f.call(
+			"save_app",
+			save("full", "change-4", { title: "Full", reads: ["questions"], writes: tables.slice(1) }, []),
+		),
+	);
+	expect(manifestOf(f, "full")).toMatchObject({ reads: ["questions"], writes: [...tables.slice(1), "answers"] });
+	expect(roomy.look).toContain(
+		"answers was added to the app's writes: a stack's buttons answer the open questions that point at the app.",
+	);
+	expect(roomy.look).not.toContain(FULL);
+	// The other shape kits ask for nothing of the kind.
+	const shelf = read(
+		await f.call(
+			"save_app",
+			save("stock", "make-2", { title: "Stock", kit: "shelf" }, [
+				{ path: "shelf.json", text: JSON.stringify({ things: [{ name: "Lamp", value: 3, max: 10 }] }) },
+			]),
+		),
+	);
+	expect(shelf.state).toBe("applied");
+	expect(manifestOf(f, "stock")).toMatchObject({ reads: [], writes: [] });
+});
+
+/* The map kit (Jonas, 15 November 2026, on the company's page: "it should not be the platform that draws it, rather an
+ * agent should maintain it", and asked how: "Use a map kit"): the company, or an owner's area, as its things with
+ * layers to dive into; the company's own map takes its first layer live from the company's reading. Its engine runs in
+ * a browser (packages/web/test/app-kit-engines.test.ts); here are its data, its page and save_app. */
+
+const part = (id: string, more: Record<string, JsonValue> = {}) => ({ id, name: id, shape: "box", full: 50, ...more });
+const OWN_MAP = {
+	lang: "en",
+	top: {
+		title: "The repair tracker",
+		attention: "app",
+		things: [part("app"), part("price", { waits: true }), part("costs", { opens: "app:business-model" })],
+	},
+	layers: { app: { things: [part("jobs"), part("login", { state: "unknown" })] } },
+};
+
+it("reads a map's data, or says in words why it does not read", () => {
+	const problem = (value: unknown) => {
+		const parsed = parseKitData("map", JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem(OWN_MAP)).toBeNull();
+	expect(problem({ top: "reading" })).toBeNull();
+	expect(problem({ top: "reading", layers: { tracker: { things: [part("jobs")] } } })).toBeNull();
+	expect(problem({})).toBe("map.json has no top: the map kit draws nothing without");
+	expect(problem({ top: "company" })).toBe(
+		'map.json needs top: "reading" for the company\'s reading, or an object with its things',
+	);
+	expect(problem({ top: { things: [part("a"), part("b")] } })).toBe(
+		"map.json needs 3 to 7 things in top: the map kit draws one picture of them",
+	);
+	expect(problem({ ...OWN_MAP, layers: [] })).toBe(
+		"map.json has layers that are no object: each key is a thing's id, its value what is inside it",
+	);
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [] } } })).toBe(
+		"map.json has a layer app without 1 to 12 things",
+	);
+	// Every thing is one the page draws: an object with an id and a name, its id once in its list; a layer's key is an
+	// id (review r1 of #1847, F2).
+	const top = (things: unknown[]) => ({ ...OWN_MAP, top: { ...OWN_MAP.top, things } });
+	expect(problem(top([part("a"), part("b"), "c"]))).toBe("map.json has a thing in top that is no object (number 3)");
+	expect(problem(top([part("a"), part("b"), part("repair_app")]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { shape: "box", name: "No id" }]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { id: "c", name: " " }]))).toBe(
+		"map.json has a thing c in top with no name",
+	);
+	expect(problem(top([part("a"), part("b"), part("a")]))).toBe("map.json has the id a twice in top");
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [part("x"), part("x")] } } })).toBe(
+		"map.json has the id x twice in the layer app",
+	);
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [{ id: "x" }] } } })).toBe(
+		"map.json has a thing x in the layer app with no name",
+	);
+	expect(problem({ ...OWN_MAP, layers: { repair_app: { things: [part("x")] } } })).toBe(
+		"map.json has a layer repair_app whose key is not a thing's id (letters, digits and -)",
+	);
+	// Four layers deep at most: the first and three under it.
+	const chain = (depth: number) =>
+		Object.fromEntries(
+			Array.from({ length: depth }, (_, k) => [k ? `l${k}` : "app", { things: [part(`l${k + 1}`)] }]),
+		);
+	expect(problem({ ...OWN_MAP, layers: chain(3) })).toBeNull();
+	expect(problem({ ...OWN_MAP, layers: chain(4) })).toBe("map.json goes 5 layers deep: the map kit opens 4 at most");
+	expect(problem({ top: "reading", layers: chain(4) })).toBe(
+		"map.json goes 5 layers deep: the map kit opens 4 at most",
+	);
+	// 80 things in all.
+	const many = Object.fromEntries(
+		Array.from({ length: 7 }, (_, k) => [
+			`g${k}`,
+			{ things: Array.from({ length: 12 }, (_, j) => part(`g${k}-${j}`)) },
+		]),
+	);
+	expect(problem({ ...OWN_MAP, layers: many })).toBe("map.json holds 87 things: the map kit draws 80 at most");
+});
+
+it("carries every agent's figure in a map's page, since who stands where is found as it opens", () => {
+	const page = kitPage("map", "map", "Map", OWN_MAP, () => true);
+	for (const [id, url] of Object.entries(KIT_FIGURES))
+		expect(page).toContain(`<img data-kit-src="figure:${id}" src="${url}" alt="">`);
+	expect(kitFigures(OWN_MAP)).toEqual([]);
+	expect(KIT_ENGINE_JS.map).toBe(kitFile("map", "engine.js"));
+});
+
+it("gives a map's app the company's reading where it draws the reading or an agent's figure", async () => {
+	const LOOK =
+		"reading was added to the app's reads: a map's page reads the company's reading of itself and its agents' figures live.";
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	const company = read(
+		await f.call(
+			"save_app",
+			save("company", "make-1", { title: "Company", kit: "map", reads: ["agents"] }, [
+				{ path: "map.json", text: JSON.stringify({ top: "reading" }) },
+			]),
+		),
+	);
+	expect(company.state).toBe("applied");
+	expect(manifestOf(f, "company")?.reads).toEqual(["agents", "reading"]);
+	expect(company.look).toContain(LOOK);
+	expect(f.text("apps/company/engine.js")).toBe(KIT_ENGINE_JS.map);
+	// An owner's map that names an agent in a layer reads it too; one that names none asks for nothing.
+	const named = { ...OWN_MAP, layers: { app: { things: [part("jobs", { agents: ["Product"] })] } } };
+	const own = read(
+		await f.call(
+			"save_app",
+			save("tracker", "make-2", { title: "Tracker", kit: "map" }, [
+				{ path: "map.json", text: JSON.stringify(named) },
+			]),
+		),
+	);
+	expect(manifestOf(f, "tracker")?.reads).toEqual(["reading"]);
+	expect(own.look).toContain(LOOK);
+	const plain = read(
+		await f.call(
+			"save_app",
+			save("plain", "make-3", { title: "Plain", kit: "map" }, [{ path: "map.json", text: JSON.stringify(OWN_MAP) }]),
+		),
+	);
+	expect(manifestOf(f, "plain")?.reads).toEqual([]);
+	expect(plain.look ?? []).not.toContain(LOOK);
+	// Saved again with the reading, nothing more is added and the manifest is not written.
+	const again = read(
+		await f.call(
+			"save_app",
+			save("company", "change-1", null, [
+				{
+					path: "map.json",
+					text: JSON.stringify({ top: "reading", layers: { tracker: { things: [part("jobs")] } } }),
+				},
+			]),
+		),
+	);
+	expect(again.files.map((file: { path: string }) => file.path)).not.toContain("apps/company/app.toml");
+	expect(again.look ?? []).not.toContain(LOOK);
+});
+
+/* The ring and the flow (company views plan step 5): a year, a month or a week as a ring with marks and wedges, and money
+ * or people as bands from where they come to where they go. Their engines run in a browser
+ * (packages/web/test/app-kit-engines.test.ts); here are their data's bounds, what a save tells their maker, and save_app. */
+
+const RING = {
+	lang: "da",
+	title: "Lysvækkers år",
+	span: "year",
+	start: "2026-01-01",
+	marks: [
+		{ name: "Moms", at: "2026-12-01", value: { query: "bogholderi/moms", column: "beloeb" } },
+		{ name: "Lancering", at: "2026-10-08" },
+	],
+	wedges: [{ name: "Julesæson", from: "2026-11-15", to: "2026-12-24" }],
+};
+const FLOW = {
+	lang: "da",
+	title: "Pengene i november",
+	unit: "kr",
+	middle: "Banken",
+	from: [
+		{ id: "shop", name: "Webshop", value: { query: "bank/penge_ind", params: { slags: "salg" }, column: "beloeb" } },
+		{ id: "retail", name: "Forhandlere", value: 64200 },
+	],
+	to: [
+		{ id: "parts", name: "Dele", value: 71800 },
+		{ id: "kept", name: "Beholdt", value: 26700, kept: true },
+	],
+};
+
+it("reads a ring's data, or says in words why it does not read", () => {
+	const problem = (value: unknown) => {
+		const parsed = parseKitData("ring", JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem(RING)).toBeNull();
+	// A ring of wedges alone, and a wedge of one day (no to), read.
+	expect(problem({ span: "week", wedges: [{ name: "Fri", from: "2026-11-20" }] })).toBeNull();
+	expect(problem({ title: "Year" })).toBe(
+		"ring.json has no mark and no wedge: the ring kit has nothing to put on its ring",
+	);
+	expect(problem({ ...RING, span: "quarter" })).toBe(
+		'ring.json has a span the ring kit does not draw: "year", "month" or "week"',
+	);
+	expect(problem({ ...RING, start: "2026-13-01" })).toBe("ring.json has a start that is not a date (YYYY-MM-DD)");
+	expect(problem({ ...RING, now: "15 Nov" })).toBe("ring.json has a now that is not a date (YYYY-MM-DD)");
+	expect(problem({ ...RING, marks: {} })).toBe("ring.json has marks that are no list");
+	expect(problem({ ...RING, marks: [{ name: "Moms", at: "2026-02-30" }] })).toBe(
+		"ring.json has a mark Moms whose at is not a date (YYYY-MM-DD)",
+	);
+	expect(problem({ ...RING, marks: [{ at: "2026-03-01" }] })).toBe("ring.json has a mark with no name (number 1)");
+	expect(problem({ ...RING, wedges: [{ name: "Jul", from: "2026-12-01", to: "jul" }] })).toBe(
+		"ring.json has a wedge Jul whose to is not a date (YYYY-MM-DD)",
+	);
+	// The kit's bounds: 12 marks and 8 wedges, which save_app holds to, so what it takes is what the page draws.
+	const marks = (count: number) =>
+		Array.from({ length: count }, (_, at) => ({
+			name: "Løn",
+			at: `2026-${String((at % 12) + 1).padStart(2, "0")}-25`,
+		}));
+	const wedges = (count: number) =>
+		Array.from({ length: count }, (_, at) => ({ name: "Uge", from: `2026-0${(at % 9) + 1}-01` }));
+	expect(problem({ marks: marks(12), wedges: wedges(8) })).toBeNull();
+	expect(problem({ marks: marks(13) })).toBe("ring.json has 13 marks: the ring kit draws 12 at most");
+	expect(problem({ marks: marks(1), wedges: wedges(9) })).toBe("ring.json has 9 wedges: the ring kit draws 8 at most");
+});
+
+it("reads a flow's data, or says in words why it does not read", () => {
+	const problem = (value: unknown) => {
+		const parsed = parseKitData("flow", JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem(FLOW)).toBeNull();
+	expect(problem({ from: FLOW.from })).toBe("flow.json has no to: the flow kit draws nothing without");
+	expect(problem({ ...FLOW, to: [] })).toBe("flow.json has no end in to: the flow kit draws a band from each");
+	expect(problem({ ...FLOW, from: [{ id: "shop", value: 1 }] })).toBe(
+		"flow.json has an end in from with no name (number 1)",
+	);
+	expect(problem({ ...FLOW, from: [{ id: "web shop", name: "Webshop" }] })).toBe(
+		"flow.json has an end Webshop in from whose id is not letters, digits and -",
+	);
+	expect(problem({ ...FLOW, to: [...FLOW.to, { id: "parts", name: "Parts again" }] })).toBe(
+		"flow.json has parts twice in to",
+	);
+	// More ends than the page draws read: the smallest join one band, Other. Past 24 a side, not.
+	const ends = (count: number) =>
+		Array.from({ length: count }, (_, at) => ({ id: `e${at}`, name: `End ${at}`, value: at }));
+	expect(problem({ ...FLOW, from: ends(24) })).toBeNull();
+	expect(problem({ ...FLOW, from: ends(25) })).toBe("flow.json has 25 ends in from: the flow kit takes 24 at most");
+	// Bands straight through join ends it has, by their ids, 24 at most.
+	const links = [{ from: "shop", to: "parts", value: 3 }];
+	expect(problem({ ...FLOW, links })).toBeNull();
+	expect(problem({ ...FLOW, links: [{ from: "shop", to: "rent", value: 3 }] })).toBe(
+		"flow.json has a link (number 1) whose to is no id of an end in to",
+	);
+	expect(problem({ ...FLOW, links: [{ from: "Webshop", to: "parts" }] })).toBe(
+		"flow.json has a link (number 1) whose from is no id of an end in from",
+	);
+	expect(problem({ ...FLOW, links: Array.from({ length: 25 }, () => links[0]) })).toBe(
+		"flow.json has 25 links: the flow kit draws 24 at most",
+	);
+	expect(problem({ ...FLOW, links: {} })).toBe("flow.json has links that are no list");
+});
+
+it("tells the maker of a ring what falls outside its span, and of a flow which ends join one band", () => {
+	const today = new Date(2026, 10, 15, 9);
+	expect(kitNotes("ring", RING, () => true, today)).toEqual([]);
+	// Without start the ring is the year, month or week of today; a week begins on a Monday.
+	expect(kitNotes("ring", { marks: [{ name: "Moms", at: "2027-03-01" }, ...RING.marks] }, () => true, today)).toEqual([
+		"1 mark or wedge is outside the ring's year, 2026-01-01 to 2026-12-31: the page leaves it out. Give start, or take it away.",
+	]);
+	expect(
+		kitNotes(
+			"ring",
+			{
+				span: "week",
+				marks: [{ name: "Løn", at: "2026-11-15" }],
+				wedges: [
+					{ name: "Udsalg", from: "2026-11-02", to: "2026-11-08" },
+					{ name: "Jul", from: "2026-11-21", to: "2026-12-24" },
+				],
+			},
+			() => true,
+			today,
+		),
+	).toEqual([
+		"2 marks or wedges are outside the ring's week, 2026-11-09 to 2026-11-15: the page leaves them out. Give start, or take them away.",
+	]);
+	// a ring held still on a day by now is the span that holds that day, as its page draws it
+	expect(
+		kitNotes(
+			"ring",
+			{
+				span: "week",
+				now: "2026-11-11",
+				marks: [{ name: "Løn", at: "2026-11-13" }],
+				wedges: [{ name: "Jul", from: "2026-11-21" }],
+			},
+			() => true,
+			new Date(2026, 10, 16, 9),
+		),
+	).toEqual([
+		"1 mark or wedge is outside the ring's week, 2026-11-09 to 2026-11-15: the page leaves it out. Give start, or take it away.",
+	]);
+	expect(kitNotes("ring", { ...RING, span: "month", start: "2026-02-01" }, () => true, today)).toEqual([
+		"3 marks or wedges are outside the ring's month, 2026-02-01 to 2026-02-28: the page leaves them out. Give start, or take them away.",
+	]);
+	expect(kitNotes("flow", FLOW, () => true)).toEqual([]);
+	const ends = Array.from({ length: 9 }, (_, at) => ({ id: `e${at}`, name: `End ${at}`, value: at }));
+	expect(kitNotes("flow", { ...FLOW, to: ends }, () => true)).toEqual([
+		"to has 9 ends to draw: the page draws 5 of them (the largest, and a kept one always) and joins the other 4 into one band (words.other). Fewer bands read better.",
+	]);
+	// with links, only the ends a link joins are drawn, so only they count
+	const linked = {
+		from: [{ id: "a", name: "A" }],
+		to: ends,
+		links: ends.slice(0, 6).map((end) => ({ from: "a", to: end.id, value: 1 })),
+	};
+	expect(kitNotes("flow", linked, () => true)).toEqual([]);
+	// Through the middle both sides are the same money: a difference past a rounding is drawn as a band of its own, and
+	// its maker is told. Not while an amount is live, which is not known at the save.
+	const sides = (came: number, went: number) => ({
+		from: [{ id: "shop", name: "Shop", value: came }],
+		to: [{ id: "parts", name: "Parts", value: went }],
+	});
+	expect(kitNotes("flow", sides(240000, 215000), () => true)).toEqual([
+		'from adds up to 240,000 and to to 215,000: the page draws the 25,000 between them as a quiet band, going out (words.rest, "Not accounted for"). Give the end it is, such as what was kept, so the two sides add up.',
+	]);
+	expect(kitNotes("flow", sides(200000, 240000), () => true)[0]).toContain("as a quiet band, coming in");
+	expect(kitNotes("flow", sides(241000, 240000), () => true)).toEqual([]);
+	// an empty list of links is bands through the middle, as the page draws it
+	expect(kitNotes("flow", { ...sides(240000, 215000), links: [] }, () => true)).toHaveLength(1);
+	expect(kitNotes("flow", { ...FLOW, to: ends, links: [] }, () => true)).toEqual([
+		"to has 9 ends to draw: the page draws 5 of them (the largest, and a kept one always) and joins the other 4 into one band (words.other). Fewer bands read better.",
+	]);
+	expect(kitNotes("flow", FLOW, () => true)).toEqual([]);
+});
+
+it("makes a ring and a flow, and gives their pages the company's databases their data names", async () => {
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	for (const [name, kit, data] of [
+		["year", "ring", RING],
+		["money", "flow", FLOW],
+	] as const) {
+		const made = read(
+			await f.call(
+				"save_app",
+				save(name, `make-${name}`, { title: data.title, kit }, [
+					{ path: `${kit}.json`, text: JSON.stringify(data) },
+				]),
+			),
+		);
+		expect(made.state, kit).toBe("applied");
+		expect(f.text(`apps/${name}/engine.js`), kit).toBe(KIT_ENGINE_JS[kit]);
+		expect(f.text(`apps/${name}/index.html`), kit).toBe(kitPage(name, kit, data.title, data, () => false));
+		// a mark's amount and an end's are live: data joins the reads, and the look says so
+		expect(manifestOf(f, name), kit).toMatchObject({ reads: ["data"], writes: [] });
+		expect(made.look, kit).toContain(
+			"data was added to the app's reads: its data names a question of the company's databases, which the page reads live.",
+		);
+	}
+	// what the page cannot draw is refused with why, and nothing is saved
+	await refuses(
+		f.call(
+			"save_app",
+			save("bad-ring", "make-bad", { title: "Year", kit: "ring" }, [
+				{ path: "ring.json", text: JSON.stringify({ marks: [{ name: "Moms", at: "1 March" }] }) },
+			]),
+		),
+		"APP_DATA_INVALID: ring.json has a mark Moms whose at is not a date (YYYY-MM-DD)",
+	);
+	expect(f.folders.has("apps/bad-ring")).toBe(false);
 });

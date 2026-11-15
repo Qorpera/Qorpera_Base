@@ -6,22 +6,28 @@
  *   change set under the call's receipt. It applies at once (review class internal): the files are the agent's own work.
  *   It checks the name, the manifest, each file's kind and size and the app's totals before anything is written; it
  *   sets `owner` and `posted = false` on a new app and never changes either after.
- *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
+ *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice. A save of
+ *   an owed view (`OWED_APPS`, not a concept, not icons alone) adds to it, last, the line that says so (`owedAppNote`):
+ *   a line to know, which asks for no fix, so `next` asks for a fix only when another note stands.
  *   An app made from a kit (`manifest.kit`, §3a and §3b) gets the kit's own files from this call: for an explainer the
  *   engine and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts);
- *   for a data kit (model, board, path, object) the kit's engine and a page that names the pictures its data refers
- *   to, beside the agent's `<kit>.json`, whose read is the `look` (cloud-app-kits.ts).
+ *   for a data kit (model, board, path, object, curve, stack, shelf, map, ring, flow) the kit's engine and a page
+ *   that names the pictures its data refers to, beside the agent's `<kit>.json`, whose read is the `look`
+ *   (cloud-app-kits.ts).
  *   An app's own icons (`icons/<id>.svg`, @qorpera/cloud-client/app-icons), which members pick for their drawer, are
  *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
  *   automatic review sees (cloud-action-review.ts). It rewrites that one line of `app.toml`, every other byte as written.
- * - `app_guide` answers how one part of an app is made (cloud-app-guides.ts): what a kit's one file holds, how a page
- *   written by hand is styled, reads the company's live data and lets a member act, and how an app's own icons are
- *   drawn. It reads nothing of the company and changes nothing. `save_app` saves a kit's file only in a run that has
- *   read the kit's guide: until 14 November 2026 the guides were the descriptions of save_app's fields, which no
- *   model ever received (cloud-app-guides.ts says why), so nothing is left to a description being read.
+ * - `app_guide` answers how one part of an app is made (cloud-app-guides.ts): the look every app is held to, what a
+ *   kit's one file holds, how a page written by hand is styled, reads the company's live data and lets a member act,
+ *   and how an app's own icons are drawn. It reads nothing of the company and changes nothing. `save_app` saves a
+ *   kit's file only in a run that has read the kit's guide: until 14 November 2026 the guides were the descriptions of
+ *   save_app's fields, which no model ever received (cloud-app-guides.ts says why), so nothing is left to a
+ *   description being read.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
  * (cloud-folder-file-tools.ts, `appManifestCheck`).
+ * An interface a member retired (`apps/retired.md`, cloud-folder-app-retired.ts) is refused by `save_app` and
+ * `post_app`, as by the file tools and `make_picture`, until a member brings it back.
  */
 
 import { createHash } from "node:crypto";
@@ -44,12 +50,14 @@ import {
 	APP_TEXT_KINDS,
 	APP_VIDEO_FILE_MAX_BYTES,
 	APP_VIDEOS_MAX_BYTES,
+	APP_WRITE_ANSWERS,
 	APP_WRITES_MAX,
 	type AppManifest,
 	appFileKind,
 	appFolder,
 	appLinkName,
 	appRelativePath,
+	OWED_APPS,
 	parseAppManifest,
 	parseAppWrites,
 	setAppPosted,
@@ -92,6 +100,7 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { placeAppInGroup } from "./cloud-folder-app-groups.ts";
+import { refuseRetiredApp } from "./cloud-folder-app-retired.ts";
 import {
 	args,
 	cloudFolderRefusal,
@@ -139,7 +148,8 @@ const SAVE_APP_EMBLEM =
  */
 const APP_GUIDE_DESCRIPTION = [
 	"Read the guide to one part of an interface app before you make it with save_app. It reads nothing of the company and changes nothing.",
-	"- about a kit (model, board, path, object, explainer): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
+	"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
+	"- about a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, explainer): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
 	"- style, reads, writes: for a page written by hand: the base style and the company's colours as CSS variables, in light and dark; how its script reads the company's live data through the qorpera object, and how often; how it lets a member answer a question or change a table's row.",
 	"- icons: how an app's own icons are drawn.",
 	"The answer is the guide's text: read it again when you no longer have it.",
@@ -367,6 +377,12 @@ const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly strin
 	board: [KIT_ENGINE, KIT_PAGE],
 	path: [KIT_ENGINE, KIT_PAGE],
 	object: [KIT_ENGINE, KIT_PAGE],
+	curve: [KIT_ENGINE, KIT_PAGE],
+	stack: [KIT_ENGINE, KIT_PAGE],
+	shelf: [KIT_ENGINE, KIT_PAGE],
+	map: [KIT_ENGINE, KIT_PAGE],
+	ring: [KIT_ENGINE, KIT_PAGE],
+	flow: [KIT_ENGINE, KIT_PAGE],
 };
 
 /** The one file of a kit's app that its maker writes: an explainer's scenes, a data kit's data. */
@@ -383,6 +399,79 @@ function kitData(kit: DataKit, text: string): Readonly<Record<string, unknown>> 
 /** What the answer's look says when save_app added `data` to a kit app's reads. */
 const DATA_READ_ADDED =
 	"data was added to the app's reads: its data names a question of the company's databases, which the page reads live.";
+/** What the answer's look says when save_app gave a stack's page the open questions and their answers. */
+const STACK_ASKS_ADDED =
+	"questions was added to the app's reads and answers to its writes: a stack's buttons answer the open questions that point at the app.";
+/** What the answer's look says when save_app gave a stack's page the open questions only. */
+const STACK_QUESTIONS_ADDED =
+	"questions was added to the app's reads: a stack's cards show the open questions that point at the app.";
+/** What the answer's look says when save_app gave a stack's page the answers only. */
+const STACK_ANSWERS_ADDED =
+	"answers was added to the app's writes: a stack's buttons answer the open questions that point at the app.";
+/** What the answer's look says when save_app gave a map's page the company's reading. */
+const MAP_READING_ADDED =
+	"reading was added to the app's reads: a map's page reads the company's reading of itself and its agents' figures live.";
+/** What the answer's look says when a stack's writes are full and hold no `answers`, which save_app cannot add. */
+const STACK_WRITES_FULL = `answers could not be added to the app's writes, which already hold ${APP_WRITES_MAX} entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.`;
+
+/**
+ * A kit app's manifest with what its page needs and its maker may not think of, and the look's line for each: `data`
+ * in reads where its data names a question of the company's databases, and for a stack `questions` in reads and
+ * `answers` in writes, since its cards' buttons answer the open questions that point at the app; for a map `reading` in
+ * reads, when its first layer is the company's reading or a thing names an agent, whose figure the page finds there.
+ * Never taken away: when `writes` is full without `answers`, a look line tells the agent to make room.
+ */
+function kitNeeds(
+	kit: DataKit,
+	data: Readonly<Record<string, unknown>>,
+	manifest: AppManifest,
+): { readonly manifest: AppManifest; readonly notes: readonly string[] } {
+	let out = manifest;
+	const notes: string[] = [];
+	if (kitBindings(data).length > 0 && !out.reads.includes("data")) {
+		out = { ...out, reads: [...out.reads, "data"] };
+		notes.push(DATA_READ_ADDED);
+	}
+	if (kit === "stack") {
+		const addQuestions = !out.reads.includes("questions");
+		const hasAnswers = out.writes.includes(APP_WRITE_ANSWERS);
+		const addAnswers = !hasAnswers && out.writes.length < APP_WRITES_MAX;
+		if (addQuestions || addAnswers)
+			out = {
+				...out,
+				reads: addQuestions ? [...out.reads, "questions"] : out.reads,
+				writes: addAnswers ? [...out.writes, APP_WRITE_ANSWERS] : out.writes,
+			};
+		if (addQuestions && addAnswers) notes.push(STACK_ASKS_ADDED);
+		else if (addQuestions) notes.push(STACK_QUESTIONS_ADDED);
+		else if (addAnswers) notes.push(STACK_ANSWERS_ADDED);
+		// writes are full without answers: the agent must make room, since save_app never takes an entry away
+		if (!hasAnswers && !addAnswers) notes.push(STACK_WRITES_FULL);
+	}
+	if (kit === "map" && !out.reads.includes("reading") && mapReadsReading(data)) {
+		out = { ...out, reads: [...out.reads, "reading"] };
+		notes.push(MAP_READING_ADDED);
+	}
+	return { manifest: out, notes };
+}
+
+/** A map whose first layer is the company's reading, or one of whose things names an agent. */
+function mapReadsReading(data: Readonly<Record<string, unknown>>): boolean {
+	if (data.top === "reading") return true;
+	const names = (layer: unknown) =>
+		typeof layer === "object" &&
+		layer !== null &&
+		Array.isArray((layer as { things?: unknown }).things) &&
+		(layer as { things: unknown[] }).things.some(
+			(thing) =>
+				typeof thing === "object" &&
+				thing !== null &&
+				Array.isArray((thing as { agents?: unknown }).agents) &&
+				(thing as { agents: unknown[] }).agents.length > 0,
+		);
+	const layers = typeof data.layers === "object" && data.layers !== null ? Object.values(data.layers) : [];
+	return names(data.top) || layers.some(names);
+}
 
 /** Refuses a call that writes a file of the app's kit: the kit's files are Qorpera's, the same in every such app. */
 function refuseKitFiles(kit: NonNullable<AppManifest["kit"]>, files: readonly AppFile[]): void {
@@ -484,11 +573,11 @@ export function appLookNotes(html: string): string[] {
 		);
 	if (words > LOOK_WORDS)
 		notes.push(
-			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object or explainer: kit's schema says what each draws), and keep the text in its file.`,
+			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws), and keep the text in its file.`,
 		);
 	if (!shown && words > LOOK_WORDS_UNSHOWN)
 		notes.push(
-			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object or explainer: kit's schema says what each draws).",
+			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws).",
 		);
 	return notes;
 }
@@ -512,8 +601,17 @@ function groupPlaced(grouped: Grouped, units: readonly CloudCompanyFolderUnitRes
 		: `not placed (${unit?.reason ?? unit?.outcome ?? "not saved"}): organize_apps move puts it in the group`;
 }
 
+/** The look's line for an app at one of the folders of the views the company is owed (`OWED_APPS`; company views
+ * step 4, lanes/company-views-20261114/DESIGN-4.md): the web shows it first in the apps drawer. A concept is none: it
+ * shows inside Concepts. */
+export function owedAppNote(name: string, concept: boolean): string | null {
+	const owed = OWED_APPS.find((each) => each === name);
+	return owed && !concept ? `This is the company's ${owed} view: members find it first in the apps drawer.` : null;
+}
+
 /** What the model is told after a commit, by each unit's outcome. `notes` is what a quick read of what this call
- * wrote found (`lookNotes`). A call that wrote icons alone answers where the member picks one. */
+ * wrote found (`lookNotes`); `owed` is the line of an owed view (`owedAppNote`), told beside them and nothing to fix.
+ * A call that wrote icons alone answers where the member picks one. */
 function savedText(
 	request: { name: string; operationKey: string; files: readonly AppFile[] },
 	receiptId: string,
@@ -521,12 +619,14 @@ function savedText(
 	created: boolean,
 	notes: readonly string[],
 	grouped: Grouped | null,
+	owed: string | null,
 ): string {
 	const saved = units.filter((unit) => unit.outcome === "saved").length;
 	const state = saved === units.length ? "applied" : saved === 0 ? "not_applied" : "partly_applied";
 	const conflict = units.some((unit) => unit.outcome === "conflict");
-	const look = state === "applied" ? notes : [];
 	const drawn = request.files.length > 0 && request.files.every((file) => inIcons(file.path));
+	const fix = state === "applied" ? notes : [];
+	const look = state === "applied" && owed && !drawn ? [...fix, owed] : fix;
 	return cloudToolJsonText({
 		schema: "qorpera.app-save/v1",
 		state,
@@ -548,7 +648,7 @@ function savedText(
 			state === "applied" && drawn
 				? "Saved. Tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer."
 				: state === "applied"
-					? `Saved. ${look.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
+					? `Saved. ${fix.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
 					: conflict
 						? "Some files changed while this call saved them: read the app's files again, then call again with a new operationKey."
 						: "Some files were not saved (their reasons): fix them and call again with a new operationKey.",
@@ -663,7 +763,7 @@ export function cloudAppTools(options: {
 			"Make or change an interface app: a small web page in apps/<name>/ that lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch), opened as a page of its own. Text to read stays a file. It applies at once.",
 			`- name: the app's folder (lowercase letters, digits and hyphens). manifest: title, and optionally about, emblem, colour, kit, entry (the page that opens, ${APP_DEFAULT_ENTRY} by default), reads, writes, concept and cover; null keeps the manifest. A new app needs a manifest and its entry, which a kit writes. group: a group of the apps drawer (organize_apps list) to put a new app in, last; a concept goes in none.`,
 			`- files: at most ${FILES_PER_CALL} a call (.html, .css, .js, .json, .svg, .md, .csv, .txt), each at most ${APP_FILE_MAX_BYTES / 1024} KiB; pages and code ${APP_MAX_BYTES / 1024 / 1024} MiB in all. Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) written into the app's folder from a company machine may be ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each, ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all.`,
-			"Kits draw nearly every app: you write the kit's one file among files (model.json, board.json, path.json or object.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit. What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved. Change the data with save_app, not company_write. A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
+			"Kits draw nearly every app: you write the kit's one file among files (<kit>.json, such as model.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit. What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved. Change the data with save_app, not company_write. A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
 			"A page you write by hand (the product's own prototype, or a working tool no kit draws) is the entry alone, so every view is in it, as tabs or sections. It gets its pictures and videos only where it names them as it opens (<img src>, <video src>, a poster, url() in its styles): a script cannot load one later, so put every picture it may show in the page, hidden ones too. Its other files it uses by relative paths, and a script reads text files with qorpera.read(path). No page has a network. The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line, then the thing; labels and numbers, not sentences, boxes of text, a date or a list of what you did; what is not known yet drawn as open, such as a dashed outline or a question mark, not written about. Give it something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the product follows the product's own design instead. Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
 			"Live data: a page's script reads the company through the qorpera object (qorpera.read, list, table, todos, agents, questions; reads names its sources) and asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them). Qorpera shows the member what will be saved, and only their yes saves it. app_guide reads and writes say how.",
 			"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
@@ -746,6 +846,9 @@ export function cloudAppTools(options: {
 		// its owner to members. Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as SaveRequest;
+			// A retired interface is the members' alone (cloud-folder-app-retired.ts): neither changed nor made again under
+			// its name, refused before the review.
+			await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			const foreign = parsed?.ok === true && parsed.manifest.owner !== owner;
@@ -760,6 +863,9 @@ export function cloudAppTools(options: {
 			});
 			const root = appFolder(request.name) as string;
 			const reads: CloudCompanyFolderEntry[] = [];
+			// Again at the save, since a member may have retired it since the review: the read is released with the answer.
+			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
+			if (retired.entry) reads.push(retired.entry);
 			const at = await read(root, context.signal);
 			if (at !== null && at.kind !== "folder")
 				throw new CloudToolRefusal(
@@ -832,11 +938,9 @@ export function cloudAppTools(options: {
 					const data = kitData(kit, dataText);
 					const written = new Set(request.files.map((file) => file.path.toLowerCase()));
 					const holds = (path: string) => written.has(path.toLowerCase());
-					look = kitNotes(kit, data, holds);
-					if (kitBindings(data).length > 0 && !manifest.reads.includes("data")) {
-						manifest = { ...manifest, reads: [...manifest.reads, "data"] };
-						look.push(DATA_READ_ADDED);
-					}
+					const needs = kitNeeds(kit, data, manifest);
+					manifest = needs.manifest;
+					look = [...kitNotes(kit, data, holds), ...needs.notes];
 					files = [
 						...files,
 						{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
@@ -895,6 +999,7 @@ export function cloudAppTools(options: {
 							true,
 							look ?? lookNotes(request.files, manifest.kit, manifest.entry),
 							grouped,
+							owedAppNote(request.name, manifest.concept),
 						),
 					context,
 				);
@@ -1008,11 +1113,13 @@ export function cloudAppTools(options: {
 				const holds = (path: string) =>
 					written.has(path.toLowerCase()) || byKey.get(path.toLowerCase())?.kind === "file";
 				look = kitNotes(kit, data, holds);
-				// Data that names a question reads the company's databases: `data` joins the reads, never leaves them.
+				// Data that names a question reads the company's databases, and a stack answers questions: what the page
+				// needs joins the manifest, never leaves it.
 				const reading = manifestOut ?? before;
-				if (kitBindings(data).length > 0 && reading !== null && !reading.reads.includes("data")) {
-					manifestOut = { ...reading, reads: [...reading.reads, "data"] };
-					look.push(DATA_READ_ADDED);
+				if (reading !== null) {
+					const needs = kitNeeds(kit, data, reading);
+					if (needs.manifest !== reading) manifestOut = needs.manifest;
+					look.push(...needs.notes);
 				}
 				for (const file of [
 					{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
@@ -1096,7 +1203,15 @@ export function cloudAppTools(options: {
 				digest,
 				[...units, ...groupUnits],
 				(receiptId, results) =>
-					savedText(request, receiptId, results, false, look ?? lookNotes(request.files, kit, entry), grouped),
+					savedText(
+						request,
+						receiptId,
+						results,
+						false,
+						look ?? lookNotes(request.files, kit, entry),
+						grouped,
+						owedAppNote(request.name, concept),
+					),
 				context,
 			);
 			return showCommitted(context, answer, reads);
@@ -1128,6 +1243,8 @@ export function cloudAppTools(options: {
 		// version read here, so an app made or changed in between is refused, never posted under the wrong class.
 		async prepare(value, context) {
 			const request = value as unknown as { name: string };
+			// A retired interface is posted or taken away by no agent, refused before the review.
+			await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const stored = await manifestText(`${appFolder(request.name)}/${APP_MANIFEST}`, context.signal);
 			const parsed = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
 			// A manifest that cannot be read or does not parse names no owner: it is reviewed as another's.
@@ -1147,6 +1264,7 @@ export function cloudAppTools(options: {
 				checkedVersion?: string | null;
 			};
 			writable();
+			const retired = await refuseRetiredApp(folder, request.name, context.signal, "saved");
 			const path = `${appFolder(request.name)}/${APP_MANIFEST}`;
 			const stored = await manifestText(path, context.signal);
 			// The review judged the manifest read in prepare: one made or changed since is not the one it judged.
@@ -1170,7 +1288,7 @@ export function cloudAppTools(options: {
 						operationKey: request.operationKey,
 						...answer,
 					}),
-					[cloudCompanyFolderRelease(stored.entry)],
+					[stored.entry, ...(retired.entry ? [retired.entry] : [])].map(cloudCompanyFolderRelease),
 				);
 			if (!parsed.ok)
 				return show({
@@ -1222,7 +1340,7 @@ export function cloudAppTools(options: {
 				},
 				context,
 			);
-			return showCommitted(context, answer, [stored.entry]);
+			return showCommitted(context, answer, [stored.entry, ...(retired.entry ? [retired.entry] : [])]);
 		},
 	};
 

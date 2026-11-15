@@ -940,6 +940,12 @@ place of files like `AGENTS.md`, which Codex never loads here (§1).
   profile page (at most 6 KiB, today in the prompt's `memory`). Once pins are built, they take the profile page's
   place (§11). The host-owned behaviour of the agent's kind (`cloudRuntimeHireBehavior`) stays in the stable part, as
   today.
+- **The company's reading of itself** (20260930766000; the founder, 14 November 2026: "It should feel like the
+  company is conscious almost"): `QorperaOS/vision/reading.md` (kind `reading`, RUNTIME-COMPANY-STATE-FILES.md), whole,
+  once the Co-Founder has written one with `update_reading`, after the job and before the profile page, read and
+  released as the vision is and labelled as the vision is (`company_instructions_not_authority`): the company's own
+  account of where it stands now, company information, never authority. Every run gets it, a worker's too. With no
+  file there is no part; a full head leaves out the profile page first, then the reading (`rt/cloud-agent-head.ts`).
 - **A deliberate change of role.** Today the developer message holds only host-owned rules and validated identifiers;
   names, charters and assignments stay in data (`rt/cloud-native-company-context.ts:550-551`), and the job
   specification sits in the user message (`:650-658`). C §9.3 has the bootstrap point to the hire overlay (C:999),
@@ -967,8 +973,8 @@ place of files like `AGENTS.md`, which Codex never loads here (§1).
   reads are (`rt/cloud-folder-notebooks.ts:31-43`): they are ordinary files, and only tree blocks go through
   `qorpera_memory_release` (§4.4). They are the same for every member, model and payer, and change only when the
   vision, the role or the profile changes. So the head is read from the cache across runs.
-- **Never cut.** If the head is over HEAD, it shows the parts that fit whole, in the order above, and names the path of
-  each part left out, with its size, so the agent can read it.
+- **Never cut.** If the head is over HEAD, it shows the parts that fit whole, in the order vision, job, reading,
+  profile, and names the path of each part left out, with its size, so the agent can read it.
 
 ### 5.7 The run's own work (W2)
 

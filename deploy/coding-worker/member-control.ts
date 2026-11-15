@@ -14,6 +14,7 @@ import type { MachineScreenAction } from "../../packages/runtime/src/cloud-machi
 import {
 	CloudMemberMachineScreenForbidden,
 	CloudMemberMachineScreenSignIn,
+	cloudMemberMachineOpenPathValid,
 } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -56,6 +57,10 @@ const START_REFUSED = new Set([
 	"MACHINE_NEEDS_COMPANY_VIEW",
 	"DESKTOP_MACHINE_TOO_SMALL",
 	"DESKTOP_START_TOO_SOON",
+	// A start that opens something (20260930758000).
+	"DESKTOP_OPEN_PATH_INVALID",
+	"DESKTOP_OPEN_NOT_FOUND",
+	"DESKTOP_MEMBER_IN_CONTROL",
 ]);
 
 /** The member's side of a look at a desktop (20260930712000), of an action on one they hold (20260930713000) or share
@@ -240,18 +245,29 @@ export class MemberMachineScreenControl {
 		throw new Error("MEMBER_POINTER_BEGIN_INVALID");
 	}
 	/** Begins a start of the desktop as the member (qorpera_member_machine_desktop_start_begin, 20260930714000): its
-	 * single-use id, or the refusal the window acts on. Sign-in and forbidden as for a look. */
+	 * single-use id, or the refusal the window acts on. Sign-in and forbidden as for a look. A start that opens a path of
+	 * the company folder (20260930758000) goes to the begin that takes it (`p_open`); a plain one to the begin that takes
+	 * none, as before. */
 	async start(
 		token: string,
-		start: { companyId: string; machineId: string },
+		start: { companyId: string; machineId: string; open?: string },
 		signal: AbortSignal,
 	): Promise<{ startId: string }> {
 		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
-		if (!UUID.test(start.companyId) || !UUID.test(start.machineId)) throw new Error("MEMBER_START_BEGIN_INVALID");
+		if (
+			!UUID.test(start.companyId) ||
+			!UUID.test(start.machineId) ||
+			(start.open !== undefined && !cloudMemberMachineOpenPathValid(start.open))
+		)
+			throw new Error("MEMBER_START_BEGIN_INVALID");
 		const answer = await this.#call(
 			token,
 			"qorpera_member_machine_desktop_start_begin",
-			{ p_profile_id: start.companyId, p_machine_id: start.machineId },
+			{
+				p_profile_id: start.companyId,
+				p_machine_id: start.machineId,
+				...(start.open === undefined ? {} : { p_open: start.open }),
+			},
 			"MEMBER_START_BEGIN",
 			signal,
 		);

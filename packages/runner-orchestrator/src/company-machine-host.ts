@@ -9,6 +9,7 @@ import {
 	CLOUD_MACHINE_FOLDER_LIMITS,
 	CLOUD_MACHINE_FOLDER_LOST,
 	CLOUD_MACHINE_GUEST_PATHS,
+	CLOUD_MACHINE_HOME,
 	type CloudCodingCommandRead,
 	type CloudCodingNasPolicy,
 	type CloudMachineCommandFolder,
@@ -53,6 +54,8 @@ import type {
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
+import { LINE_PIPE_BYTES, LinePipe } from "./machine-exec-server.ts";
+import { type HomeFolderSession, HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -68,6 +71,11 @@ const FOLDER_WAIT_MS = 20000;
 const BOUNDARY_MS = 15000;
 /** The windows of one pass's ended commands, all of them. */
 const WINDOWS_MS = 30000;
+/** A home's output (slice 3, 20260930754000): the least time between two releases of what its channel sends back, how
+ * often a release that did not answer is tried before the channel ends, and what may wait for one. */
+const HOME_RELEASE_SPACING_MS = 200;
+const HOME_RELEASE_TRIES = 3;
+const HOME_OUTPUT_WAIT_BYTES = 16 * 1024 * 1024;
 /** A boot's final boundary: what an unanswered final held is not applied, and the stop goes on. */
 const FINAL_BOUNDARY_MS = 60000;
 /** folder-mount: the guest waits up to 60 s for a mount still settling, then up to 100 × 200 ms for readiness. */
@@ -85,6 +93,63 @@ const DELIVERY_MS = 30000;
 /** A start on a machine with a folder runs in its guest only on the boot it was let in on (`$0`): the guest's shell
  * compares the kernel's boot id at the exec, then runs the helper (`$@`). The helper's own start takes no boot. */
 const ON_BOOT = 'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"';
+/** The agent's home (lanes/agent-box-20261113): the machine's Codex, hashed as root on the boot SQL named (`$0`; else
+ * exit 97) where the image has it (`$1`; else exit 98). */
+const HOME_CODEX_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$1" ] || exit 98; exec /usr/bin/sha256sum -- "$1"';
+/** How long the hash of the machine's Codex (319 MB) may take, once per boot. */
+const HOME_CODEX_HASH_MS = 60000;
+
+/**
+ * The agent's home (lanes/agent-box-20261113): one channel's `codex exec-server --listen stdio`, started as root on the
+ * boot SQL named (ON_BOOT) as a transient unit of its own in the machines' slice, run as the agent's account. So what
+ * the agent starts in its own shell is the machine's work exactly as a machine_run command's unit is: the idle rule
+ * counts it (the LXD agent's unit is the machine's own control, and is not counted), the slice's memory bound and the
+ * memory guard apply to it (the LXD agent's OOMScoreAdjust=-900, deploy/machine/lxd-agent-memory.conf, is not
+ * inherited), the watchdog and the machine's stop end it with the slice, and when its channel ends the whole unit ends
+ * (KillMode=control-group), a process the agent detached included. `--pipe` hands the exec's stdin and stdout to the
+ * service itself; the environment is the service's, never expanded by systemd. Proven on a real machine of the live
+ * image (home-lxd, 14 Nov 2026).
+ */
+export function companyMachineHomeCommand(bootId: string, sessionId: string, channel: string): string[] {
+	if (!UUID.test(bootId) || !UUID.test(sessionId) || !/^[0-9a-f]{8,32}$/.test(channel))
+		throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+	const environment = {
+		HOME: CLOUD_MACHINE_HOME.home,
+		USER: CLOUD_MACHINE_HOME.account,
+		LOGNAME: CLOUD_MACHINE_HOME.account,
+		CODEX_HOME: `${CLOUD_MACHINE_HOME.home}/.codex`,
+		PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		LANG: "C.UTF-8",
+		TZ: "UTC",
+		NO_COLOR: "1",
+	};
+	return [
+		"/bin/sh",
+		"-c",
+		ON_BOOT,
+		bootId,
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--pipe",
+		"--wait",
+		"--collect",
+		"--service-type=exec",
+		"--expand-environment=no",
+		`--unit=${CLOUD_MACHINE_HOME.unitPrefix}${sessionId}-${channel}`,
+		`--slice=${PATHS.slice}`,
+		`--uid=${CLOUD_MACHINE_HOME.uid}`,
+		`--gid=${CLOUD_MACHINE_HOME.gid}`,
+		`--working-directory=${CLOUD_MACHINE_HOME.cwd}`,
+		"--property=KillMode=control-group",
+		"--property=TimeoutStopSec=10",
+		...Object.entries(environment).map(([key, value]) => `--setenv=${key}=${value}`),
+		CLOUD_MACHINE_HOME.codex,
+		"exec-server",
+		"--listen",
+		"stdio",
+	];
+}
 /** save_coding_value's clipboard helper (20260930705000), packaged beside the guest helper and installed by the image
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. */
 export const COMPANY_MACHINE_CODING_VALUE_HELPER = "/opt/qorpera-machine/cloud-machine-coding-value.mjs";
@@ -107,6 +172,12 @@ const CODING_VALUE_WAIT_MS = 6000;
  * one after another, 2 s each at most inside the machine, so 8 s) runs under it and the request's signal (round 25 P2 of
  * #1661): a request that ends cuts it off, and a cut-off clear failed, records nothing and stays owed. */
 const CODING_VALUE_CLEAR_MS = 10000;
+export const COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "/opt/qorpera-machine/cloud-machine-account-fill.mjs";
+/** Two JSON lines at most: the key's public half, then a code. */
+const ACCOUNT_FILL_OUTPUT_BYTES = 4096;
+/** The helper gives itself 20 s (cloud-machine-account-fill.ts, MACHINE_ACCOUNT_FILL_MS); the exec ends 4 s later at
+ * most, inside the command service's 30 s for the whole request. */
+const ACCOUNT_FILL_MS = 24000;
 /** The owed clear at an agent's screen call (F35 of #1661, round 24 N2): the fence, the host's own clear script and the
  * record together, at most this long. The caller gives the call 30 s; the helper takes 22 s at most (SCREEN_MS) and the
  * folder's boundary 4 s (SCREEN_BOUNDARY_MS): 3 s is what is left with a second for the way back. The script bounds
@@ -620,6 +691,104 @@ const MEMBER_START_EXITS: Readonly<Record<number, CompanyMachineMemberStartOutco
 	97: { refused: "MACHINE_BOOT_CHANGED" },
 	98: { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" },
 });
+/** A member opens something of the company folder on the desktop (20260930758000), once the desktop runs: the image's own
+ * `desktop open` with ONE word, the path's real place in the machine. The path comes on stdin, whole (the x keeps its
+ * last line breaks from the command substitution; a path with a line break, which SQL's rule and the host's check never
+ * let through, opens nothing): no shell parses it, and nothing of ours carries it (our unit's name, its description and
+ * its arguments, our log lines). The image's own helper does name the opened folder in the machine's own journal (the
+ * `systemd-run` lines of the page's server and the browser it starts), exactly as for an agent's `desktop open`. On the boot
+ * named in `$0` (else 97), with the helper (else 98). The company folder is there when `/company` is a mount of its own
+ * (else 89: a machine on an earlier helper has no `/company`, and one whose view is not mounted has an empty directory on
+ * the root's device). The path's real place (every link
+ * followed, `realpath -e`) must be inside `/company` and exist (else 91: not there, or a link that leads out): what is
+ * opened is that real place, so a link swapped afterwards opens nothing else. The helper's own failure is 1 or 2, and
+ * anything else is too: the open failed. Its output goes nowhere. Plain sh, in a transient unit of its own
+ * (companyMachineMemberOpenCommand); what the helper starts runs on after the unit ends (its programs are launched
+ * outside the unit, as an agent's `desktop open` launches them outside its action's unit). */
+export const COMPANY_MACHINE_MEMBER_OPEN = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	"command -v desktop >/dev/null 2>&1 || exit 98",
+	'dev=$(stat -c %d /company 2>/dev/null) && [ "$dev" != "$(stat -c %d /)" ] || exit 89',
+	"path=$(cat; printf x) || exit 1",
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	"path=${path%x}",
+	// No path of the folder has a line break (SQL's rule and the host's check refuse one): one here is no path at all.
+	"case $path in '' | *'",
+	"'*) exit 91 ;; esac",
+	'real=$(realpath -e -- "/company/$path" 2>/dev/null) || exit 91',
+	"case $real in /company/*) ;; *) exit 91 ;; esac",
+	'desktop open "$real" >/dev/null 2>&1 || exit 1',
+].join("\n");
+/** An open runs at most this long in the machine (its unit's RuntimeMaxSec): the helper waits for the desktop's own lock
+ * (an agent's desktop command holds it a few seconds at most), then starts a server and the browser and returns. */
+const MEMBER_OPEN_UNIT_SECONDS = 8;
+/** The executor's own deadline for an open: the unit's limit and the way back. */
+const MEMBER_OPEN_MS = 10000;
+/** What an open's unit is called in the journal: a fixed few words, never its path. */
+const MEMBER_OPEN_DESCRIPTION = "qorpera member desktop open";
+/** How long an open waits for the desktop's one actor (an agent's action, a member's) to be done before it says the
+ * desktop is busy. */
+const MEMBER_OPEN_WAIT_MS = 3000;
+/** How long the desktop stays held after an open's unit ended: what it opened maps its window and takes the focus within
+ * about this, so a member's next input waits for it rather than landing in it. */
+const MEMBER_OPEN_SETTLE_MS = 2000;
+/**
+ * How a member's open runs (20260930758000): COMPANY_MACHINE_MEMBER_OPEN as a transient service, as a member's typed text
+ * runs (companyMachineMemberTypeCommand): `--pipe` hands it the path on stdin; its command line holds the constant
+ * script and the boot alone; systemd ends it at its limit with everything in its control group. `path` and `slice` are
+ * the tests' own (stand-in tools).
+ */
+export function companyMachineMemberOpenCommand(
+	bootId: string,
+	options: { seconds?: number; path?: string; slice?: string } = {},
+): string[] {
+	return [
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--wait",
+		"--pipe",
+		"--collect",
+		"--expand-environment=no",
+		`--slice=${options.slice ?? "qorpera-machine.slice"}`,
+		"-p",
+		`RuntimeMaxSec=${options.seconds ?? MEMBER_OPEN_UNIT_SECONDS}`,
+		"-p",
+		"KillMode=control-group",
+		"-p",
+		"KillSignal=SIGKILL",
+		`--description=${MEMBER_OPEN_DESCRIPTION}`,
+		`--setenv=PATH=${options.path ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
+		"--setenv=HOME=/root",
+		"--setenv=LANG=C.UTF-8",
+		"--setenv=USER=root",
+		"--",
+		"/bin/sh",
+		"-c",
+		COMPANY_MACHINE_MEMBER_OPEN,
+		bootId,
+	];
+}
+/** The open's exits: 0 opened, 89 no company folder on this computer, 91 not in it, 97 another boot, 98 no desktop in the
+ * image. Anything else (the helper failed, or systemd's for a unit killed at its limit) is an open that failed. */
+const MEMBER_OPEN_EXITS: Readonly<Record<number, CompanyMachineMemberStartOutcome>> = Object.freeze({
+	0: { outcome: "opened" },
+	89: { refused: "DESKTOP_OPEN_NO_FOLDER" },
+	91: { refused: "DESKTOP_OPEN_NOT_FOUND" },
+	97: { refused: "MACHINE_BOOT_CHANGED" },
+	98: { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" },
+});
+/** A path SQL kept for an open, checked again here before it goes to a machine: the folder's rule in its plain part (no
+ * empty piece, `.` or `..`, no leading `/`, no control character or backslash), at most 500 bytes. SQL's rule is the
+ * whole one; this one keeps anything else from ever reaching the script. */
+export function memberOpenPathValid(path: unknown): path is string {
+	return (
+		typeof path === "string" &&
+		Buffer.byteLength(path, "utf8") >= 1 &&
+		Buffer.byteLength(path, "utf8") <= 500 &&
+		!/[\p{Cc}\p{Cs}\\]/u.test(path) &&
+		path.split("/").every((piece) => piece !== "" && piece !== "." && piece !== "..")
+	);
+}
 /** Text `desktop type` pastes rather than types: anything beyond printable ASCII (deploy/machine/desktop, `type`). */
 const PASTED = /[^\x20-\x7e]/;
 /** The member read check's refusal: a read the machine was served is not the watching member's to read. */
@@ -729,6 +898,10 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_machine_desktop_clipboard_cleared",
 	// A member's live picture, one release cycle (20260930745000).
 	"qorpera_member_machine_stream_release",
+	// The agent's home (slice 3, 20260930754000): whether a session may share its machine, and its window's ids.
+	"qorpera_folder_home_session_window",
+	// A member's open, right before it touches the desktop (20260930758000, review r1 F1 of #1781).
+	"qorpera_member_machine_desktop_open_check",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -780,6 +953,8 @@ export interface CompanyMachineHostOptions {
 	 * tests' own shorter ones. */
 	codingValueTimeoutMs?: number;
 	codingValueClearTimeoutMs?: number;
+	/** How long fill_company_account's helper may run, in all (default 24 s): the tests' own shorter one. */
+	accountFillTimeoutMs?: number;
 	/** How long the owed clipboard clear at a screen call may take (default 3 s, SCREEN_CLEAR_MS): the tests' own. */
 	screenClearTimeoutMs?: number;
 	/** How long machine_screen's helper may run (default 22 s): the tests' own shorter one. */
@@ -790,6 +965,8 @@ export interface CompanyMachineHostOptions {
 	memberTypeTimeoutMs?: number;
 	/** How long a member's start may take on the machine (default 22 s): the tests' own shorter one. */
 	memberStartTimeoutMs?: number;
+	/** A member's open's deadline (20260930758000; the tests' own). */
+	memberOpenTimeoutMs?: number;
 	/** How long one write of a word the desktop reads may take (default 2 s, DESKTOP_WORD_MS): the tests' own shorter one. */
 	desktopWordTimeoutMs?: number;
 	/** Watches a desktop for members' live pictures (20260930745000): the executor's starts a process of its own for
@@ -992,14 +1169,40 @@ export interface CompanyMachineMemberStart {
 	placementId: string;
 	bootId: string;
 	startId: string;
+	/** What the start opens on the desktop once it runs (20260930758000): a path of the company folder relative to its
+	 * root, as SQL kept it on the start (the company folder's own path rule, at most 500 bytes). */
+	open?: string;
 }
-/** The desktop runs now (started by this start, or running already), or why not: too small, the machine changed, no
- * desktop in the image, or the desktop did not start (DESKTOP_DID_NOT_START). */
+/** The desktop runs now (started by this start, or running already; with `open`, and what it opens is open), or why not:
+ * too small, the machine changed, no desktop in the image, the desktop did not start (DESKTOP_DID_NOT_START); and for an
+ * open, not in the company folder (DESKTOP_OPEN_NOT_FOUND), no company folder on this computer (DESKTOP_OPEN_NO_FOLDER),
+ * or the helper could not open it (DESKTOP_DID_NOT_OPEN). */
 export type CompanyMachineMemberStartOutcome =
-	| { readonly outcome: "started" | "running" }
+	| { readonly outcome: "started" | "running" | "opened" }
 	| { readonly refused: string };
 /** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
 type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
+
+export interface CompanyMachineAccountFill {
+	placementId: string;
+	bootId: string;
+	receiptId: string;
+	desktopGeneration: number;
+	target: Record<string, unknown>;
+}
+/** The vault's side of one fill: the value sealed to the helper's public key for this call, or the vault's refusal in
+ * the database's own words. */
+export type CompanyMachineAccountFillSeal = (
+	publicKey: string,
+	signal: AbortSignal,
+) => Promise<
+	{ readonly box: Readonly<Record<string, string>> } | { readonly refused: { code: string; message: string } }
+>;
+/** The helper typed the value, or why not: its code, or the vault's refusal. */
+export type CompanyMachineAccountFillOutcome =
+	| { readonly filled: true }
+	| { readonly refused: string }
+	| { readonly vaultRefused: { readonly code: string; readonly message: string } };
 
 /** A boot's company folder (F3 6d), in this process's memory only (the pass is never written anywhere). */
 interface BootFolder {
@@ -1033,6 +1236,9 @@ interface BootFolder {
 	/** The windows this process opened for the boot's commands, until their command ends: the service keeps them in
 	 * memory, so each pass opens them again (#reopen). */
 	windows: Map<string, FolderCommandWindow>;
+	/** The windows this process opened for the boot's home sessions (slice 3, 20260930754000), until their channel
+	 * ends: opened again each pass as the commands' are (#reopen). */
+	homes: Map<string, FolderCommandWindow>;
 	/** The paths the boot's boundaries said the company folder let go unsaved, for its next receipt whose output leaves
 	 * (6e-2a, #noted), and how many more there were. */
 	notSaved: CloudMachineFolderNotSaved[];
@@ -1380,6 +1586,8 @@ export class LxdCompanyMachineHost {
 	readonly #looks = new Set<Set<string>>();
 	/** Per placement and command: a window close on its way, answered with the machine's boundary (or none). */
 	readonly #closing = new Map<string, Promise<MachineBoundary | undefined>>();
+	/** Per placement: the boot whose Codex was hashed, and its sha-256 (#homeCodex). */
+	readonly #homeCodexes = new Map<string, { bootId: string; sha: Promise<string> }>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
 		if (
@@ -1776,6 +1984,7 @@ export class LxdCompanyMachineHost {
 				asked: true,
 				held: false,
 				windows: new Map(),
+				homes: new Map(),
 				notSaved: [],
 				moreNotSaved: 0,
 				stillNotSaved: new Map(),
@@ -1807,6 +2016,7 @@ export class LxdCompanyMachineHost {
 					asked: false,
 					held: false,
 					windows: new Map(),
+					homes: new Map(),
 					notSaved: [],
 					moreNotSaved: 0,
 					stillNotSaved: new Map(),
@@ -2229,6 +2439,13 @@ export class LxdCompanyMachineHost {
 		for (const [commandId, window] of f.windows) {
 			if (!e.commands.includes(commandId) || this.#delivering.has(`${e.placementId}/${commandId}`)) continue;
 			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
+		}
+		// A home's window closes when its channel ends, at any time: one that closed while this open was out (the service
+		// may take the two in either order) is closed again, so no window outlives its session.
+		for (const [sessionId, window] of [...f.homes]) {
+			await folder.openWindow(e.placementId, window, checked).catch(() => undefined);
+			if (!f.homes.has(sessionId))
+				noted(f, await folder.closeWindow(e.placementId, sessionId, checked).catch(() => undefined));
 		}
 	}
 	/** A settled boot's folder, watched each pass (6d-2) at the boundary its ends' closes answered, or a plain one.
@@ -3208,7 +3425,10 @@ export class LxdCompanyMachineHost {
 	async memberStart(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<CompanyMachineMemberStartOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_START_UNAVAILABLE");
-		if (![start.placementId, start.bootId, start.startId].every((id) => UUID.test(id)))
+		if (
+			![start.placementId, start.bootId, start.startId].every((id) => UUID.test(id)) ||
+			(start.open !== undefined && !memberOpenPathValid(start.open))
+		)
 			throw new Error("COMPANY_MACHINE_MEMBER_START_INVALID");
 		let exitCode: number;
 		try {
@@ -3231,7 +3451,86 @@ export class LxdCompanyMachineHost {
 			// Not answered in time: the unit ends at its own limit, and a desktop it started runs on.
 			return { refused: "DESKTOP_DID_NOT_START" };
 		}
-		return MEMBER_START_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_START" };
+		const started = MEMBER_START_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_START" };
+		if (start.open === undefined || "refused" in started) return started;
+		// The desktop runs. What the member chose opens on it (20260930758000), and an open is a member's action on the
+		// desktop (review r1 F1 of #1781): right before it touches the desktop it passes what a member's click passes on
+		// this host and in SQL. The one-actor rule (#holdDesktop, its grace as it stands: an agent's action or a member's
+		// on its way is waited for a moment, else DESKTOP_BUSY), the pointer's fence as a click moves and confirms it, and
+		// SQL's decision now, under the machine's lock (qorpera_member_machine_desktop_open_check, once): no other member
+		// types privately and none did since the open was begun, the member may still act and still reads the path. Else
+		// nothing opens, and the desktop the start started stays on.
+		if (!(await this.#holdDesktopWithin(start.placementId, MEMBER_OPEN_WAIT_MS, signal)))
+			return { refused: "DESKTOP_BUSY" };
+		this.#moveFence(start.placementId);
+		let checked: string;
+		try {
+			checked = await this.#openAllowed(start, signal);
+			if (checked === "ok") await this.#confirmFence(pipe, start.placementId, start.bootId, signal);
+		} catch (error) {
+			this.#releaseDesktop(start.placementId, true);
+			throw error;
+		}
+		if (checked !== "ok") {
+			this.#releaseDesktop(start.placementId, true);
+			return { refused: checked };
+		}
+		let ended = false;
+		try {
+			exitCode = (
+				await pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(start.placementId),
+					{
+						command: companyMachineMemberOpenCommand(start.bootId),
+						environment: {},
+						cwd: "/",
+						stdin: Buffer.from(start.open, "utf8"),
+						maxStdoutBytes: 4096,
+						stderrTailBytes: 0,
+					},
+					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberOpenTimeoutMs ?? MEMBER_OPEN_MS)]),
+				)
+			).exitCode;
+			// systemd-run answered: its unit ended (by itself, or at its limit) with everything in it.
+			ended = exitCode < 128;
+		} catch {
+			signal.throwIfAborted();
+			return { refused: "DESKTOP_DID_NOT_OPEN" };
+		} finally {
+			// What it opened gets a moment to show before the next action (its window takes the focus as it maps); a unit
+			// that did not answer keeps the desktop for the grace, as a member's action that did not end cleanly does.
+			const now = this.#options.now ?? Date.now;
+			this.#screenBusy.set(start.placementId, now() + (ended ? MEMBER_OPEN_SETTLE_MS : SCREEN_ACTION_GRACE_MS));
+		}
+		return MEMBER_OPEN_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_OPEN" };
+	}
+
+	/** SQL's decision right before an open touches the desktop (20260930758000, review r1 F1 of #1781): "ok", or why not. */
+	async #openAllowed(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<string> {
+		const answer = record(
+			await this.#call(
+				"qorpera_member_machine_desktop_open_check",
+				{ p_start_id: start.startId, p_placement_id: start.placementId, p_boot_id: start.bootId },
+				signal,
+			),
+			"COMPANY_MACHINE_OPEN_CHECK_INVALID",
+		);
+		if (answer.schema !== "qorpera.member-machine-desktop-open-check/v1")
+			throw new Error("COMPANY_MACHINE_OPEN_CHECK_INVALID");
+		if (answer.state === "ok" && Object.keys(answer).length === 2) return "ok";
+		if (
+			answer.state === "refused" &&
+			typeof answer.reason === "string" &&
+			[
+				"DESKTOP_MEMBER_IN_CONTROL",
+				"DESKTOP_OPEN_NOT_FOUND",
+				"MACHINE_NOT_RUNNING",
+				"MACHINE_BOOT_CHANGED",
+			].includes(answer.reason)
+		)
+			return answer.reason;
+		throw new Error("COMPANY_MACHINE_OPEN_CHECK_INVALID");
 	}
 
 	/**
@@ -3834,6 +4133,378 @@ export class LxdCompanyMachineHost {
 		return Object.freeze({ png, etag: createHash("sha256").update(png).digest("hex") });
 	}
 
+	async accountFill(
+		run: CompanyMachineAccountFill,
+		seal: CompanyMachineAccountFillSeal,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAccountFillOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_UNAVAILABLE");
+		if (
+			![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(run.desktopGeneration) ||
+			run.desktopGeneration < 0
+		)
+			throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		const memberHolds = async () =>
+			!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal));
+		if (!this.#holdDesktop(run.placementId)) {
+			if (await memberHolds()) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			if (!(await this.#holdDesktopWithin(run.placementId, CODING_VALUE_WAIT_MS, signal)))
+				throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_BUSY");
+		}
+		let ended = true;
+		try {
+			if (await memberHolds()) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			ended = false;
+			const outcome = await this.#runAccountFill(pipe, run, seal, memberHolds, signal);
+			ended = true;
+			return outcome;
+		} finally {
+			this.#releaseDesktop(run.placementId, ended);
+		}
+	}
+	async #runAccountFill(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		run: CompanyMachineAccountFill,
+		seal: CompanyMachineAccountFillSeal,
+		memberHolds: () => Promise<boolean>,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAccountFillOutcome> {
+		const deadline = AbortSignal.any([
+			signal,
+			AbortSignal.timeout(this.#options.accountFillTimeoutMs ?? ACCOUNT_FILL_MS),
+		]);
+		// The helper's second line on stdin: the box, or nothing (stdin ends).
+		let send: (line: Buffer | null) => void = () => undefined;
+		const second = new Promise<Buffer | null>((resolve) => {
+			send = resolve;
+		});
+		deadline.addEventListener("abort", () => send(null), { once: true });
+		const target = Buffer.from(
+			`${JSON.stringify(run.target)}
+`,
+			"utf8",
+		);
+		async function* stdin(): AsyncGenerator<Uint8Array> {
+			yield target;
+			const line = await second;
+			if (line) yield line;
+		}
+		let held = Buffer.alloc(0);
+		let ready: string | undefined;
+		let code: string | undefined;
+		let vaultRefused: { code: string; message: string } | undefined;
+		let sealFailure: unknown;
+		let memberTookOver = false;
+		let sealing: Promise<void> | undefined;
+		// A line that is not the helper's fails the call, whatever came before it.
+		let invalid = false;
+		const line = (text: string) => {
+			let output: Record<string, unknown>;
+			try {
+				output = record(JSON.parse(text), "COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			} catch {
+				invalid = true;
+				throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			}
+			const keys = Object.keys(output).sort().join();
+			if (
+				ready === undefined &&
+				code === undefined &&
+				output.schema === "qorpera.machine-account-fill-ready/v1" &&
+				keys === "publicKey,schema" &&
+				typeof output.publicKey === "string" &&
+				/^[A-Za-z0-9_-]{43}$/.test(output.publicKey)
+			) {
+				const publicKey = output.publicKey;
+				ready = publicKey;
+				const sealFailed = (error: unknown) => {
+					sealFailure = error ?? new Error("COMPANY_MACHINE_ACCOUNT_FILL_SEAL_FAILED");
+					send(null);
+				};
+				sealing = seal(publicKey, deadline)
+					.then(async (answer) => {
+						if (!("box" in answer)) {
+							vaultRefused = answer.refused;
+							send(null);
+						} else if (await memberHolds()) {
+							memberTookOver = true;
+							send(null);
+						} else send(Buffer.from(`${JSON.stringify(answer.box)}\n`, "utf8"));
+					})
+					.catch(sealFailed);
+				return;
+			}
+			if (
+				code === undefined &&
+				output.schema === "qorpera.machine-account-fill-result/v1" &&
+				keys === "code,schema" &&
+				typeof output.code === "string" &&
+				/^[A-Z][A-Z0-9_]{2,60}$/.test(output.code)
+			) {
+				code = output.code;
+				send(null);
+				return;
+			}
+			invalid = true;
+			throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		};
+		const onStdout = (chunk: Buffer) => {
+			held = Buffer.concat([held, chunk]);
+			for (let end = held.indexOf(10); end >= 0; end = held.indexOf(10)) {
+				const text = held.subarray(0, end).toString("utf8");
+				held = Buffer.from(held.subarray(end + 1));
+				line(text);
+			}
+		};
+		let exitCode: number | undefined;
+		try {
+			exitCode = (
+				await pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(run.placementId),
+					{
+						command: [
+							"/bin/sh",
+							"-c",
+							CODING_VALUE_ON_BOOT,
+							run.bootId,
+							"/usr/bin/node",
+							COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
+						],
+						environment: {},
+						cwd: "/",
+						stdin: stdin(),
+						maxStdoutBytes: ACCOUNT_FILL_OUTPUT_BYTES,
+						stderrTailBytes: 0,
+						onStdout,
+					},
+					deadline,
+				)
+			).exitCode;
+		} catch (error) {
+			// The helper said how it ended before the exec ended badly (its stdin closed under it after its answer): that
+			// answer stands. Anything else is the call's failure.
+			if (code === undefined || invalid) throw error;
+		} finally {
+			send(null);
+		}
+		await sealing;
+		if (invalid) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		if (exitCode === 97) return { refused: "MACHINE_BOOT_CHANGED" };
+		if (exitCode === 98) return { refused: "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS" };
+		if (exitCode !== undefined && exitCode !== 0) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_FAILED");
+		if (vaultRefused) return { vaultRefused };
+		if (sealFailure !== undefined) throw sealFailure;
+		if (memberTookOver) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+		if (code === "FILLED") return { filled: true };
+		// FILL_NO_BOX only follows the vault's refusal or failure, both answered above.
+		if (code === undefined || code === "FILL_NO_BOX") throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		return { refused: code };
+	}
+
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1): `codex exec-server --listen stdio` inside the machine, as
+	 * the machine's agent account (`qorpera-agent`, which reaches root through sudo, as a coding session's user does),
+	 * with its lines carried both ways for as long as the run's channel lasts. The ingress has proven the run's holder
+	 * and SQL has authorized this session on this boot; the guest's own shell checks that boot again at the exec
+	 * (ON_BOOT), so a machine that restarted in between never runs it, as a machine command's start never does. Each
+	 * channel's exec-server is a unit of its own in the machines' slice (companyMachineHomeCommand), and runs only when
+	 * the machine's Codex is the pinned build (#homeCodex): a home whose Codex is another is refused
+	 * HOME_CODEX_NOT_PINNED.
+	 *
+	 * It writes no inbox file and leaves no command row. What the model does through it is reviewed by
+	 * the run's own host before a line gets here (slice 4) and kept as the run's steps (slice 2); the changes it makes
+	 * land in the company folder through the machine's `/company` mount, as every change on a machine does.
+	 * On a machine with a folder (slice 3, 20260930754000) the session first gets its own folder window, so those
+	 * changes are credited to its run, and what the machine sends back leaves only once the folder released the
+	 * machine's reads and the run took them in (#homeFolder).
+	 */
+	async execServer(
+		input: { readonly placementId: string; readonly sessionId: string; readonly bootId: string },
+		signal: AbortSignal,
+	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
+		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId) || !UUID.test(input.bootId))
+			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
+		// Slice 3 (20260930754000): SQL says whether the session may share its machine, on every executor; the folder's
+		// part (the window and the release of the output) only where the machines have a folder.
+		const answer = parseHomeFolderAnswer(
+			await this.#call("qorpera_folder_home_session_window", { p_session_id: input.sessionId }, signal),
+			input,
+		);
+		if (answer.state === "refused") throw new Error(answer.reason);
+		if (answer.session.bootId !== input.bootId) throw new Error("HOME_SESSION_ENDED");
+		if ((await this.#homeCodex(input.placementId, input.bootId, exec, signal)) !== CLOUD_MACHINE_HOME.codexSha256)
+			throw new Error("HOME_CODEX_NOT_PINNED");
+		const home = this.#options.folder ? await this.#homeFolder(answer.session, signal) : undefined;
+		const toMachine = new LinePipe();
+		const fromMachine = new LinePipe();
+		const run = new AbortController();
+		const stop = (): void => run.abort();
+		signal.addEventListener("abort", stop, { once: true });
+		const gate = home?.gate(
+			(chunk) => fromMachine.push(chunk),
+			() => {
+				run.abort();
+				fromMachine.end();
+			},
+		);
+		const pipe = exec(
+			this.#policy.project,
+			lxdCompanyMachineName(input.placementId),
+			{
+				// Root only to hand the exec-server to systemd; the unit runs it as the agent's account.
+				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex")),
+				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+				cwd: "/",
+				stdin: toMachine.read(),
+				stdout: (chunk) => (gate ? gate.push(chunk) : fromMachine.push(chunk)),
+				// Streamed, so nothing is kept here and this bounds only each of LXD's messages: fromMachine ends the
+				// channel when more than its own bound (the same 16 MiB) waits unread, and the gate when more than its own
+				// waits for a release.
+				maxStdoutBytes: LINE_PIPE_BYTES,
+				stderrTailBytes: 4096,
+			},
+			run.signal,
+		)
+			.catch(() => undefined)
+			.then(async () => {
+				signal.removeEventListener("abort", stop);
+				// What the machine sent before it ended still leaves once released; then the session's window closes.
+				await gate?.drained();
+				fromMachine.end();
+				toMachine.end();
+				await home?.close();
+			});
+		return {
+			write: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
+			lines: fromMachine.lines(),
+			close: async () => {
+				toMachine.end();
+				gate?.close();
+				run.abort();
+				await pipe;
+			},
+		};
+	}
+	/** The sha-256 of the machine's Codex on this boot, read once per boot (the file is 319 MB; every later channel of the
+	 * boot takes the answer kept here), or "missing" where the image has none. A boot that is not the machine's is
+	 * HOME_SESSION_ENDED; a read that failed otherwise is not kept, so the next channel reads again. */
+	async #homeCodex(
+		placementId: string,
+		bootId: string,
+		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		signal: AbortSignal,
+	): Promise<string> {
+		const kept = this.#homeCodexes.get(placementId);
+		if (kept?.bootId === bootId) return await kept.sha;
+		const sha = (async () => {
+			const result = await exec(
+				this.#policy.project,
+				lxdCompanyMachineName(placementId),
+				{
+					command: ["/bin/sh", "-c", HOME_CODEX_ON_BOOT, bootId, CLOUD_MACHINE_HOME.codex],
+					environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+					cwd: "/",
+					maxStdoutBytes: 1024,
+					stderrTailBytes: 512,
+				},
+				AbortSignal.any([signal, AbortSignal.timeout(HOME_CODEX_HASH_MS)]),
+			);
+			if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
+			if (result.exitCode === 98) return "missing";
+			const read = /^([0-9a-f]{64}) /.exec(result.stdout.toString("utf8"));
+			if (result.exitCode !== 0 || !read) throw new Error("HOME_CODEX_UNREADABLE");
+			return read[1] as string;
+		})();
+		this.#homeCodexes.set(placementId, { bootId, sha });
+		try {
+			return await sha;
+		} catch (error) {
+			if (this.#homeCodexes.get(placementId)?.sha === sha) this.#homeCodexes.delete(placementId);
+			throw error;
+		}
+	}
+	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts, once SQL
+	 * said the session stands and may share its machine (its agent's, for the same member and worker access, and only
+	 * while they read the whole folder) and named the ids its window carries (execServer). Once the boot's folder
+	 * settled: on a boot with /company the session's command window opens,
+	 * its id the session's, so what the machine changes until it closes is credited to the session's run (opened again
+	 * each pass, #reopen); and the run takes in every read the disk was served before anything of the channel's reaches
+	 * it, so what an earlier run left on this disk is in this run's read set. A take-in that holds starts no channel.
+	 * The gate holds each later batch of output for the same release; `close` closes the window, once, with the
+	 * boundary that publishes what the session changed last. */
+	async #homeFolder(
+		session: HomeFolderSession,
+		signal: AbortSignal,
+	): Promise<{
+		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void): HomeOutputGate;
+		close(): Promise<void>;
+	}> {
+		const folder = this.#options.folder as FolderControl;
+		const boot = await this.#settled(session, signal);
+		const at: FolderRelease = { placementId: session.placementId, bootId: session.bootId, runId: session.runId };
+		if (boot.state === "open") {
+			const window: FolderCommandWindow = {
+				commandId: session.sessionId,
+				runId: session.runId,
+				staffAgentId: session.staffAgentId,
+				requestedByUserId: session.requestedByUserId,
+			};
+			try {
+				await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
+			} catch (error) {
+				// The service may have taken the open although it did not answer in time: no channel starts, so the
+				// window is closed again, at best, as a window whose channel ended (review r11 F1).
+				const answered = await folder
+					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+					.catch(() => undefined);
+				noted(boot, answered);
+				throw error;
+			}
+			boot.homes.set(session.sessionId, window);
+		}
+		let closing: Promise<void> | undefined;
+		const close = (): Promise<void> => {
+			closing ??= (async () => {
+				if (!boot.homes.delete(session.sessionId)) return;
+				const answered = await folder
+					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+					.catch(() => undefined);
+				noted(boot, answered);
+			})();
+			return closing;
+		};
+		// A release that did not answer (the service or SQL busy) is tried again a few times; any other hold is final.
+		const transient = new Set<string>([HELD.unanswered, HELD.unreleased, HELD.untaken, HELD.paused]);
+		const release = async (): Promise<string | undefined> => {
+			for (let tries = 1; ; tries++) {
+				const held = this.#heldAlready(at, boot) ?? (await this.#release(folder, at, boot, BOUNDARY_MS, signal));
+				if (held === undefined || !transient.has(held) || tries >= HOME_RELEASE_TRIES || signal.aborted)
+					return held;
+				await setTimeout(250 * tries, undefined, { signal }).catch(() => undefined);
+			}
+		};
+		const first = await release().catch(() => HELD.untaken);
+		if (first !== undefined) {
+			await close();
+			throw new Error("HOME_FOLDER_HELD");
+		}
+		return {
+			gate: (pass, fail) =>
+				new HomeOutputGate({
+					release,
+					pass,
+					fail,
+					spacingMs: HOME_RELEASE_SPACING_MS,
+					limitBytes: HOME_OUTPUT_WAIT_BYTES,
+				}),
+			close,
+		};
+	}
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
 	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends),
 	 * and a restart of its guest waits for it (#delivered). */
@@ -4161,7 +4832,10 @@ export class LxdCompanyMachineHost {
 	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s
 	 * (the gateway's request is bounded at 30 s): a boot still unsettled refuses the start, which so never runs
 	 * unfenced, and so does a boot whose folder ended (its guest restarts, or its placement was retired, 6d-2). */
-	async #settled(authority: CompanyMachineCommandAuthority, signal: AbortSignal): Promise<BootFolder> {
+	async #settled(
+		authority: Pick<CompanyMachineCommandAuthority, "placementId" | "bootId">,
+		signal: AbortSignal,
+	): Promise<BootFolder> {
 		const deadline = Date.now() + FOLDER_WAIT_MS;
 		for (;;) {
 			if (typeof authority.bootId === "string" && this.#ended(authority.placementId, authority.bootId))

@@ -5354,6 +5354,9 @@ amendment governs. In-place edits are marked "(changed in place)".
    awake: a company machine after 5 minutes, a coding machine after 10
    minutes, an agent's task machine after an hour. These stay per-node or
    per-environment settings.
+   - A task machine that is awake only because a member woke it sleeps 10
+     minutes after that member's last sign (the 2026-11-14 amendment "a
+     machine a member woke sleeps when that member is gone").
    - Sleep stops what is still running. Files and disks stay as before.
    - The next run of the agent that started a stopped program is told what
      stopped and why, once.
@@ -6803,6 +6806,73 @@ from one table to a database. Design: `deploy/first-node/RUNTIME-COMPANY-DATABAS
    execution host.
 9. **What the provider sees.** The kind's instructions and the input between tags, on a thread with no tools. No
    company instructions, no history, no file.
+
+### 2026-11-14 amendment: a machine a member woke sleeps when that member is gone
+
+Founder decision of 14 November 2026: "if a person has an idle tab in qorpera open, we should be able to close the
+machines when the user clearly isn't actually online"; "im referring to machines that start due to a users laptop being
+open on the platform - as we keep a machine warm for any requests they may send. not the always on machines"; and, to
+"Sleep a member-woken machine 5 minutes after the member leaves, not an hour?": "let's go with 10 minutes". It amends
+item 3 of the 2026-10-03 amendment "one idle rule for every machine" ("an agent's task machine after an hour"), for one
+kind of task machine. Nothing else of that amendment changes: no caps, busy work an agent started runs on, sleep stops
+what runs and the agent is told, always-on machines are never stopped by the kernel. It goes live with migration
+`20260930759000`, in a release the founder names.
+
+1. **Awake only for a member.** An agent's task machine is awake only for a member when the start that stands was a
+   member's (the computer window's wake, or a computer a member started for an agent) and no agent has used it since:
+   no command of an agent's that still runs or that started since (a worker's and a coding conversation's are
+   commands), no agent at its screen since, and no run that still goes that started the machine or asked for it by
+   `machine_start`. Once an agent uses it, it is an agent's machine again, and the hour decides, until it has slept and
+   a member wakes it.
+2. **It sleeps 10 minutes after that member's last sign**, counted from its boot when that is later. The time is a
+   per-node setting beside the quiet window (`member_sleep_after_seconds`, 600).
+3. **A member's signs** are what a member does at the machine: waking it, watching its screen, typing on its desktop
+   (privately or on the desktop shared with the agent), moving the pointer over it, turning its screen on. Watching
+   counts for as long as the member's word that they watch is at most that time old: a window in a tab nobody touches
+   stops counting, and the window itself stops looking then and asks whether the member still watches. A private
+   hold's heartbeat is no sign.
+4. **A busy machine is no sign.** For this kind of machine only, busy work does not keep it awake: what runs on it was
+   started from a member's desktop, or starts by itself at boot, and no agent's turn is waiting on it. A program a
+   member left running on the desktop stops with the machine.
+5. **Coming back.** The machine is asleep as after any idle sleep; the member's own ask wakes it (opening the computer,
+   or saying they still watch). Nothing new is shown to members.
+
+### 2026-11-15 amendment: the Co-Founder reflects on the platform's updates
+
+> The founder, 15 November 2026: "I would like to develop something entirely different - sort of a reflection mechanic
+> that the co-founder runs on an update hook. not any update, but when a newer better model is released, or an update
+> to behavior or platform capability drops, it should reflect. if it's a model-drop theres a lot to go over and review
+> since we now have smarter brains. if it's a platform capability that's been added, the co-founder may want to use it.
+> like the interface kit, or if it was added support for banking or other stuff. I hope such a hook is possible". Shown
+> the lead's design, he said "continue". The items below are that design. It adds to 9.1, 10 and 14.2. It goes live with
+> migration `20260930780000`, then the runtime bundle that carries it.
+
+1. **The list.** The runtime bundle carries `PLATFORM_UPDATES` (`packages/runtime/src/cloud-platform-updates.ts`): each
+   update an id (lowercase letters, digits and hyphens, never reused), a kind (`model`, `behaviour` or `capability`),
+   the day its PR was written, a title of at most 60 bytes and at most 700 bytes of plain words to the Co-Founder.
+   An entry reaches agents exactly when its release does; a release with no new entry asks for nothing. A PR that gives
+   agents a new capability, model or behaviour they should take up adds its entry (AGENTS.md), and a test fails when a
+   model agents can be given is neither one of today's nor named by a model update.
+2. **The company's record (5.6).** `QorperaOS/vision/reflections.md`, a plain file the Co-Founder keeps, one line per
+   reflection, newest last: `- <id> | <YYYY-MM-DD> | <use|later|not|reviewed> | <one line>`
+   (RUNTIME-COMPANY-STATE-FILES.md beside the reading).
+3. **Pending.** An update is pending for a company when it is dated no more than 30 days before the day the company's
+   `QorperaOS/vision` folder was made (seeded at its creation, never moved or deleted), and the record has no line for
+   it, or its newest line is `later` and more than 28 days old. The 30 days cover the time between a PR's day and its
+   release: a young company that reflects once on something it already had loses little, one that never hears of a
+   capability loses it. The whole record is read, up to 256 KiB; a record the run cannot read gives `updates` a
+   `problem` in place of the list, telling the Co-Founder to keep only the newest line for each update.
+4. **The hook (9.1).** No wake of its own: the Co-Founder's planning run (any routine run of the Co-Founder in the
+   company, not a worker's) reads the pending updates beside `openWork` and gets them as the context key `updates`
+   (`{pending: [{id, kind, date, title, text}], more?}`, at most 6, oldest first, or `{problem}`), with one sentence group first in its
+   planning run that says how to reflect on each kind. No other run reads them. A failed read leaves the key out, logs
+   its category, and the run goes on. A company without a planning routine reflects once it has one again.
+5. **The tool (10).** `record_reflection {operationKey, update, decision, line}`, the Co-Founder's company runs only,
+   opened through `more_tools`: a capability takes `use`, `later` or `not`; a model `reviewed`; a change in behaviour
+   any of the four; the line one line of at most 160 bytes. A record that would pass 64 KiB is refused with the same
+   advice: keep only the newest line for each update, which keeps every decision. It writes the record as the run, under the call's receipt
+   (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
+   class: the company's bookkeeping, no card.
 
 ## 20. Enforcement matrix
 

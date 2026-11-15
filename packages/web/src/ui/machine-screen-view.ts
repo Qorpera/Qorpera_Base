@@ -188,7 +188,7 @@ export interface MachineScreenViewOptions {
 	/** The panel's body: the view sits over its state text while it shows a picture. */
 	readonly mount: HTMLElement;
 	readonly title: string;
-	/** The view entered (full size in the thread, or full screen) or went back to the preview. */
+	/** The view entered (the frame over the thread) or went back to the preview. */
 	readonly onExpandedChange: (expanded: boolean) => void;
 	/** Decodes a picture (default createImageBitmap, off the main thread). */
 	readonly decode?: (png: Blob) => Promise<MachineScreenPicture>;
@@ -203,7 +203,7 @@ export interface MachineScreenViewOptions {
  * While the member holds the desktop (20260930713000, `capture`), the picture takes their input: clicks, double and
  * right clicks, drags and the wheel at the screen's own pixels (the picture's natural size, wherever it is drawn), keys
  * that are not text by their X names, typed text gathered into one action (TYPE_BATCH_MS), and what they paste. The
- * panel captures only while the view is entered (the frame in the thread, or full screen): in the preview (a row of its
+ * panel captures only while the view is entered (the frame over the thread): in the preview (a row of its
  * thread) a click opens the large view, and a desktop is not driven at that size. A slot under the picture holds the
  * take-over controls the panel gives it.
  */
@@ -212,8 +212,6 @@ export class MachineScreenView {
 	readonly #options: MachineScreenViewOptions;
 	readonly #heading = h("span");
 	readonly #hint = h("small");
-	/** Says when the browser refused full screen, so the entered frame is not taken for it. Empty until then. */
-	readonly #note = h("small", { class: "screen-viewer-note", role: "status", "aria-live": "polite" });
 	readonly #back = h("button", {
 		type: "button",
 		class: "screen-viewer-back",
@@ -230,8 +228,9 @@ export class MachineScreenView {
 	readonly #streamCanvas = h("canvas", { class: "machine-screen-canvas", role: "img", hidden: true });
 	/** "Live" while the pictures come, "Updating…" while the last one is held. */
 	readonly #mark = h("span", { class: "machine-screen-mark", hidden: true });
-	readonly #switcherSlot = h("span", { class: "machine-screen-switcher-slot" });
-	/** The take-over controls under the picture (the panel's: Take over, or what holding means and Hand back). */
+	/** Where Open stands in the large view: beside the title (the panel keeps its own on the preview). */
+	readonly #openerSlot = h("span", { class: "machine-screen-opener-slot" });
+	/** The controls under the picture (the panel's: the words of sharing, or what a private hold means and Done). */
 	readonly #controlSlot = h("div", { class: "machine-screen-control-slot" });
 	/** Where the take-over controls stand in the large view: a slim row of the frame under its titlebar, never on the
 	 * desktop's picture (its dock and clock; v239 real test, 13 Nov 2026). */
@@ -291,14 +290,12 @@ export class MachineScreenView {
 	 * waiting list and its own count of what it holds; when it is dropped, its queue goes, every waiter is let go at once
 	 * so nothing of a later stream waits behind it, and each of its bitmaps is closed as it lands. */
 	#paint: StreamPaint | null = null;
-	#fullscreenAttempt = 0;
-	#ownedFullscreen = false;
 
 	constructor(options: MachineScreenViewOptions) {
 		this.#options = options;
-		const headingWrap = h("span", { class: "screen-viewer-heading" }, this.#heading, this.#hint, this.#note);
+		const headingWrap = h("span", { class: "screen-viewer-heading" }, this.#heading, this.#hint);
 		const controls = h("div", { class: "screen-viewer-controls" }, this.#back);
-		const titlebar = h("div", { class: "screen-viewer-titlebar" }, headingWrap, this.#switcherSlot, controls);
+		const titlebar = h("div", { class: "screen-viewer-titlebar" }, headingWrap, this.#openerSlot, controls);
 		const stage = h(
 			"div",
 			{ class: "screen-viewer-stage" },
@@ -323,16 +320,6 @@ export class MachineScreenView {
 		const signal = this.#stop.signal;
 		this.#enter.addEventListener("click", () => this.#enterView(), { signal });
 		this.#back.addEventListener("click", () => this.back(), { signal });
-		document.addEventListener(
-			"fullscreenchange",
-			() => {
-				const active = document.fullscreenElement === this.el;
-				if (active) this.#note.textContent = "";
-				if (this.#ownedFullscreen && !active) this.back();
-				this.#ownedFullscreen = active;
-			},
-			{ signal },
-		);
 	}
 
 	get entered(): boolean {
@@ -375,9 +362,9 @@ export class MachineScreenView {
 		if (held) shown.focus({ preventScroll: true });
 	}
 
-	/** The machine switcher, in the titlebar beside the title while entered (the panel keeps its own on the preview). */
-	setSwitcher(switcher: HTMLElement | null): void {
-		this.#switcherSlot.replaceChildren(...(switcher ? [switcher] : []));
+	/** Open (20260930758000), in the titlebar beside the title while entered. */
+	setOpener(opener: HTMLElement | null): void {
+		this.#openerSlot.replaceChildren(...(opener ? [opener] : []));
 	}
 
 	/** The take-over controls: on the picture's foot in the preview, in the frame's row above the picture entered (full
@@ -1123,23 +1110,19 @@ export class MachineScreenView {
 		});
 	}
 
-	/** Enters the frame in the thread, as Enter does but without asking for full screen: only the member's own press on
-	 * Enter asks for that. The panel's take-over pressed in the preview comes here, so the picture can take their input.
-	 * Nothing while no picture shows. */
+	/** Enters the frame over the thread, as Enter does (the panel's take-over pressed in the preview, a click on the
+	 * picture, an open chosen there), so the picture can take the member's input. Nothing while no picture shows. */
 	enterFrame(): void {
 		if (this.#entered || this.#enter.disabled) return;
 		this.#setEntered(true);
 	}
 
-	/** Back to the preview, from the entered frame or full screen. */
+	/** Back to the preview, from the entered frame. */
 	back(): void {
 		if (!this.#entered) return;
-		this.#fullscreenAttempt++;
 		const focused = this.el.contains(document.activeElement);
 		this.#setEntered(false);
 		if (focused) this.el.focus();
-		if (document.fullscreenElement === this.el && typeof document.exitFullscreen === "function")
-			void document.exitFullscreen().catch(() => undefined);
 	}
 
 	dispose(): void {
@@ -1162,36 +1145,15 @@ export class MachineScreenView {
 		if (focused instanceof HTMLElement) focused.focus();
 		this.#back.hidden = !value;
 		this.#enter.hidden = value;
-		if (!value) this.#note.textContent = "";
 		this.#options.onExpandedChange(value);
 	}
 
-	/** Entering takes the browser full screen, with the frame around the picture; "Back to thread" is the way out, and
-	 * leaving full screen any other way (Escape, the system) goes back too. Refused, the entered frame stays in the
-	 * thread and says so. */
+	/** Enter (Jonas, 14 Nov 2026: "the enter should just be like clicking it and making it take up the page. the full
+	 * screen takeover is too much I think"): the frame takes up the page over the thread, as a click on the picture does;
+	 * the browser is never asked for full screen. "Back to thread" and Escape are the way back. */
 	#enterView(): void {
 		if (this.#entered || this.#enter.disabled) return;
 		this.#setEntered(true);
 		this.#back.focus();
-		const supports =
-			document.fullscreenEnabled !== false &&
-			typeof this.el.requestFullscreen === "function" &&
-			typeof document.exitFullscreen === "function";
-		if (!supports) return;
-		const attempt = ++this.#fullscreenAttempt;
-		const refused = () => {
-			if (attempt === this.#fullscreenAttempt && this.#entered && document.fullscreenElement !== this.el)
-				this.#note.textContent = t("Full screen unavailable");
-		};
-		const slow = setTimeout(refused, 2000);
-		// Asked before any await, so the click's user activation holds.
-		void this.el
-			.requestFullscreen()
-			.then(() => {
-				if (!this.#entered && document.fullscreenElement === this.el) return document.exitFullscreen();
-				return undefined;
-			})
-			.catch(() => setTimeout(refused, 0))
-			.finally(() => clearTimeout(slow));
 	}
 }

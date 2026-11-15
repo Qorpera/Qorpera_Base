@@ -153,7 +153,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			domain: matching(HOST_PATTERN),
 			idpDomain: matching(HOST_PATTERN),
 		},
-		"surface takeover: the member drives your computer for a sign-in or code, then hands it back.",
+		"surface takeover: the member signs in or enters a code on your computer's screen, then presses I'm done.",
 	),
 	draft: closedObject(
 		["platform", "connectorId", "from", "to", "body"],
@@ -229,7 +229,7 @@ const ASK_MEMBER_WORDS = [
 	"Raise one card for a member: question, secret, takeover or draft. The card is your final send, and text only introduces it: finish independent work first and nothing that depends on the answer, and in text do not answer the card's question, guess the choice or start on one.",
 	"- question: an answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them. Not for facts you can find or permission you have; ideas, offers and news stay in chat. Ask once, act on the chosen or custom answer, and follow up only for what is missing.",
 	"- secret: the member saves a value into the company vault; you never see it. It fills no page and signs in nowhere.",
-	"- takeover: for a sign-in or page entry on your desktop computer the member takes its screen; while they hold it your calls there are refused, so end your turn: their I'm done wakes you. Then look, since I'm done is not proof of a sign-in. With no desktop computer, say so.",
+	"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you. Then look, since I'm done is not proof of a sign-in. With no desktop computer, say so.",
 	"- draft: an email or message the member edits, then saves, sends or discards. Raise it directly, with no question before it. A card neither sends nor saves anything and asking for a draft never allows sending: report saved or sent only from a tool result or the card's outcome; a sent outcome is already sent.",
 	"Form and credential cards are refused. Passwords, tokens and one-time codes never go in chat or in a question's answer, and a question's answer never bypasses an approval the platform requires.",
 	"Say each thing once across title, body, text and chat. When the choice is visual (a look, a product, a layout), make a picture of each option first, an SVG sketch or an interface app, and set its preview: the card shows big pictures to pick from.",

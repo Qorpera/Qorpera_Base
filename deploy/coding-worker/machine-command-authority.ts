@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-machine.ts";
 import {
-	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
+	type CloudMachineAccountFillHttpRequest, CloudMachineAccountFillRefusal, CLOUD_MACHINE_TOOL_VERSION,
+	type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
 	cloudMachineCommandHead, CloudMachineCommandRefusal, type CloudMachineScreenHttpRequest, CloudMachineScreenRefusal,
 	CloudMemberMachineActRefusal, CloudMemberMachinePointerRefusal, type CloudMemberMachinePointerRefusalCode,
 	CloudMemberMachineScreenRefusal, CloudMemberMachineStartRefusal, cloudMemberMachineActRecord,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import { type MachineScreenAction, parseMachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
+import { cloudMemberMachineOpenPathValid } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../../packages/runtime/src/cloud-native-tool-operations.ts";
 import { CodingControlRefused } from "../../packages/runner-orchestrator/src/coding-executor.ts";
@@ -388,6 +390,8 @@ export interface MemberMachineStartAuthority {
 	providerId: string;
 	userId: string;
 	served: boolean;
+	/** What the start opens once the desktop runs (20260930758000): a path of the company folder, as SQL kept it. */
+	open?: string;
 }
 
 /** A start's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_desktop_start_authority,
@@ -406,10 +410,15 @@ export async function authorizeMemberMachineStart(
 	const result = value as Record<string, unknown>;
 	if (result.schema !== "qorpera.member-machine-desktop-start-authority/v1") throw new Error("MEMBER_START_AUTHORITY_INVALID");
 	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW" ||
-		result.reason === "DESKTOP_MACHINE_TOO_SMALL"))
+		result.reason === "DESKTOP_MACHINE_TOO_SMALL" || result.reason === "DESKTOP_OPEN_NOT_FOUND" ||
+		result.reason === "DESKTOP_MEMBER_IN_CONTROL"))
 		throw new CloudMemberMachineStartRefusal(result.reason);
+	// A start that opens something carries `open` (20260930758000); a plain start's answer is as before.
+	const opens = "open" in result;
 	if (result.state !== "authorized" ||
-		Object.keys(result).sort().join() !== "bootId,executorOwner,machineId,placementId,providerId,schema,served,startId,state,userId" ||
+		Object.keys(result).sort().join() !== (opens ? "bootId,executorOwner,machineId,open,placementId,providerId,schema,served,startId,state,userId"
+			: "bootId,executorOwner,machineId,placementId,providerId,schema,served,startId,state,userId") ||
+		(opens && !cloudMemberMachineOpenPathValid(result.open)) ||
 		result.startId !== request.startId ||
 		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
@@ -420,7 +429,7 @@ export async function authorizeMemberMachineStart(
 	signal.throwIfAborted();
 	return { startId: result.startId, machineId: result.machineId as string, placementId: result.placementId as string,
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
-		userId: result.userId as string, served: result.served as boolean };
+		userId: result.userId as string, served: result.served as boolean, ...(opens ? { open: result.open as string } : {}) };
 }
 
 /** What SQL says about one member's action on a desktop (20260930713000): where the machine runs, and whether this
@@ -484,4 +493,65 @@ export async function authorizeMemberMachineAct(
 	return { actionId: result.actionId, machineId: result.machineId as string, placementId: result.placementId as string,
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
 		userId: result.userId as string, seat: result.seat, served: result.served as boolean, shared };
+}
+
+export interface MachineAccountFillAuthority {
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	receiptId: string;
+	companyId: string;
+	desktopGeneration: number;
+	target: Record<string, unknown>;
+}
+
+/** What SQL answers instead of an authority, and the agent acts on. */
+const ACCOUNT_FILL_ANSWERS = new Set([
+	"MACHINE_NOT_RUNNING",
+	"ACCOUNTS_SWITCHED_OFF",
+	"ACCOUNT_NOT_OPEN",
+	"DESKTOP_MEMBER_IN_CONTROL",
+] as const);
+
+/** The calling run's live tool authority, its own executing fill_company_account receipt of exactly this envelope, the
+ * run's rules, the switch, a running machine of its company and the company's open account, all in SQL
+ * (qorpera_authorize_machine_account_fill). What the agent can act on is its refusal; anything else SQL refuses fails the
+ * request. */
+export async function authorizeMachineAccountFill(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: CloudMachineAccountFillHttpRequest,
+	signal: AbortSignal,
+): Promise<MachineAccountFillAuthority> {
+	const value = await control.call("qorpera_authorize_machine_account_fill", {
+		p_binding: request.binding, p_scope: request.scope, p_receipt_id: request.input.commandId, p_envelope: request.input.envelope,
+	}, signal);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.machine-account-fill-authority/v1") throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	if (result.state === "refused") {
+		const reason = result.reason;
+		if (typeof reason === "string" && (ACCOUNT_FILL_ANSWERS as ReadonlySet<string>).has(reason))
+			throw new CloudMachineAccountFillRefusal(reason as "MACHINE_NOT_RUNNING");
+		throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	}
+	const target = result.target;
+	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.receiptId !== request.input.commandId ||
+		typeof result.placementId !== "string" || !UUID.test(result.placementId) ||
+		typeof result.bootId !== "string" || !UUID.test(result.bootId) ||
+		typeof result.companyId !== "string" || !UUID.test(result.companyId) ||
+		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		typeof result.desktopGeneration !== "number" || !Number.isSafeInteger(result.desktopGeneration) || result.desktopGeneration < 0 ||
+		!target || typeof target !== "object" || Array.isArray(target)) throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	const bound = target as Record<string, unknown>;
+	// The helper's target names the same company, machine, placement, boot and receipt the executor runs it for.
+	if (bound.schema !== "qorpera.machine-account-fill-target/v1" || bound.companyId !== result.companyId ||
+		bound.companyMachineId !== result.machineId || bound.placementId !== result.placementId || bound.bootId !== result.bootId ||
+		bound.receiptId !== result.receiptId) throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	signal.throwIfAborted();
+	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
+		providerId: result.providerId, receiptId: result.receiptId, companyId: result.companyId,
+		desktopGeneration: result.desktopGeneration, target: { ...bound } };
 }

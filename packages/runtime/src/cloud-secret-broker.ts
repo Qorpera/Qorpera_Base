@@ -24,6 +24,7 @@ import {
 	type CompanyAccountCall,
 	type CompanyAccountFillAnswer,
 	type CompanyAccountFillRequest,
+	type CompanyAccountMachineFillRequest,
 	type CompanyAccountOpening,
 	type CompanyAccountRefusal,
 	type CompanyAccountRequest,
@@ -325,6 +326,7 @@ export interface CloudSecretBrokerAuthority {
 	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
 	setCompanyAccountState?: CompanyAccountAuthority["setCompanyAccountState"];
 	readCompanyAccountFill?: CompanyAccountAuthority["readCompanyAccountFill"];
+	readCompanyAccountMachineFill?: CompanyAccountAuthority["readCompanyAccountMachineFill"];
 	/** Signed hooks' secrets (E3b-2, E3b-3); a broker whose database cannot serve them leaves these out. */
 	describeSignedHook?: EventHookAuthority["describeSignedHook"];
 	openSignedHook?: EventHookAuthority["openSignedHook"];
@@ -996,8 +998,13 @@ export class CloudSecretBroker {
 	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
-		const { describeCompanyAccountOpen, openCompanyAccount, setCompanyAccountState, readCompanyAccountFill } =
-			options.authority;
+		const {
+			describeCompanyAccountOpen,
+			openCompanyAccount,
+			setCompanyAccountState,
+			readCompanyAccountFill,
+			readCompanyAccountMachineFill,
+		} = options.authority;
 		this.#companyAccounts =
 			describeCompanyAccountOpen && openCompanyAccount && setCompanyAccountState && readCompanyAccountFill
 				? new CompanyAccountVault({
@@ -1006,6 +1013,9 @@ export class CloudSecretBroker {
 							openCompanyAccount: openCompanyAccount.bind(options.authority),
 							setCompanyAccountState: setCompanyAccountState.bind(options.authority),
 							readCompanyAccountFill: readCompanyAccountFill.bind(options.authority),
+							...(readCompanyAccountMachineFill
+								? { readCompanyAccountMachineFill: readCompanyAccountMachineFill.bind(options.authority) }
+								: {}),
 						},
 						keys: options.keyring,
 					})
@@ -1155,6 +1165,14 @@ export class CloudSecretBroker {
 	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
 		if (!this.#companyAccounts) return Promise.reject(new Error("Company accounts unavailable"));
 		return this.#companyAccounts.fill(request, signal);
+	}
+
+	companyAccountMachineFill(
+		request: CompanyAccountMachineFillRequest,
+		signal: AbortSignal,
+	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
+		if (!this.#companyAccounts) return Promise.reject(new Error("Company accounts unavailable"));
+		return this.#companyAccounts.machineFill(request, signal);
 	}
 
 	/** One signed manage_hook create of an agent's run (E3b-2): the hook's receipt or the database's refusal; the
@@ -2060,6 +2078,25 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	readCompanyAccountMachineFill(request: CompanyAccountMachineFillRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_fill_company_account_on_machine($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::text,$8::uuid,$9::uuid,$10::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(request.binding),
+				request.receiptId,
+				request.envelope,
+				createHash("sha256").update(request.idempotencyKey).digest("hex"),
+				request.executorOwner,
+				request.placementId,
+				request.bootId,
+				request.fillPublicKey,
+			],
+			signal,
+		);
+	}
+
 	/** The broker and the tool call, as every company account function takes them first. */
 	#companyAccountCall(call: CompanyAccountCall): unknown[] {
 		return [
@@ -2237,6 +2274,25 @@ export class PostgresCloudSecretBrokerAuthority
 				input.lease,
 				JSON.stringify(input.accountKeys),
 				JSON.stringify(input.transactions),
+			],
+			signal,
+		);
+	}
+
+	/** The company's days by kind for the leased sync's range (20260930769000). */
+	recordBankDays(input: Parameters<BankSyncAuthority["recordBankDays"]>[0], signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_bank_days($1::uuid,$2::text,$3::uuid,$4::bigint,$5::uuid,$6::jsonb,$7::date,$8::date,$9::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.secretId,
+				input.version,
+				input.lease,
+				JSON.stringify(input.accountKeys),
+				input.from,
+				input.to,
+				JSON.stringify(input.days),
 			],
 			signal,
 		);

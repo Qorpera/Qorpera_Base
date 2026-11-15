@@ -44,6 +44,8 @@ desktop open TARGET [--copy]  open TARGET on the desktop. A URL opens in Chromiu
                               reload. --copy puts a copy on the desktop instead (for a program that writes beside
                               its files; nothing it writes reaches /company). Nothing on the desktop is replaced:
                               a name that is taken gets a number (site-2), and the answer says the name used.
+                              The vault types a company account's values only into the browser desktop open starts
+                              (fill_company_account).
 desktop run PROGRAM [ARG...]  start a program on the desktop as the desktop's user; it keeps running after this ends
                               (programs on the desktop save in /home/desktop: copy what matters into /company as root)
 desktop click X Y [BUTTON]    click at X,Y: pixels from the top left of the screen, as in a shot; BUTTON left
@@ -114,8 +116,13 @@ launch() {
 # Playwright passes; it does nothing else). --enable-unsafe-swiftshader gives pages 3D drawing (WebGL) on a machine
 # without a graphics card: the drawing runs in software inside the browser's own sandbox, on a machine that holds no
 # credentials.
+# Its own profile, and a DevTools port on the machine's loopback that the kernel picks: the port fill_company_account's
+# helper types a company account's value through (20260930781000), read off the kernel as the socket this browser holds,
+# never off a file. A Chromium already running with this profile takes the address and keeps its port.
+PROFILE=/home/desktop/.config/qorpera-chromium
 browser() {
-	local flags=(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars
+	local flags=(--user-data-dir="$PROFILE" --remote-debugging-port=0 --start-maximized --no-first-run
+		--no-default-browser-check --password-store=basic --disable-infobars
 		--enable-unsafe-swiftshader)
 	[[ -s $RUN/lang ]] && flags+=(--lang="$(<"$RUN/lang")")
 	launch "$CHROME" "${flags[@]}" "$@"

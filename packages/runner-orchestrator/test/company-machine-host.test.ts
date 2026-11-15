@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import type { TimerOptions } from "node:timers";
 import type * as TimersPromises from "node:timers/promises";
 import {
+	CLOUD_MACHINE_HOME,
 	type CloudMachineCommandReceipt,
 	cloudMachineFolderBytes,
 	parseCloudMachineCommandReceipt,
@@ -17,10 +18,12 @@ import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import {
+	COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
 	COMPANY_MACHINE_CLIPBOARD_CLEAR,
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	COMPANY_MACHINE_HOST_RPCS,
 	COMPANY_MACHINE_MEMBER_LOOK,
+	COMPANY_MACHINE_MEMBER_OPEN,
 	COMPANY_MACHINE_MEMBER_POINTER,
 	COMPANY_MACHINE_MEMBER_POINTER_PROGRAM,
 	COMPANY_MACHINE_MEMBER_START,
@@ -31,6 +34,8 @@ import {
 	type CompanyMachineEntry,
 	type CompanyMachineHostOptions,
 	type CompanyMachineMemberStream,
+	companyMachineHomeCommand,
+	companyMachineMemberOpenCommand,
 	companyMachineMemberStartCommand,
 	companyMachineMemberTypeCommand,
 	desktopRelay,
@@ -55,17 +60,40 @@ import type {
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
-const state = vi.hoisted(() => ({ controlPath: "" }));
+const state = vi.hoisted(() => ({
+	controlPath: "",
+	/** A pass's hold in the test's hand (passHold), while a test holds it. */
+	passHold: undefined as { ms: number; ends: Set<() => void> } | undefined,
+}));
 // The host waits 500 ms before it looks again at a machine whose LXD effect it just dispatched (reconcileCodingMachine
 // answers "pending" after every create, start, stop and delete). Here LXD's fake settles each one at once, so that wait
 // was 128 of this file's 157 s (256 waits, 8 Nov). It is 5 ms here: the host still waits and looks again as often; only
-// this one delay is shorter. Every other wait (the passes' second, a look's five seconds) is real.
+// this one delay is shorter. Every other wait (the passes' second, a look's five seconds) is real, but for a pass's
+// hold that a test holds in its hand (passHold): that one ends when the test ends it, or on its signal.
 vi.mock("node:timers/promises", async (importOriginal) => {
 	const timers = await importOriginal<typeof TimersPromises>();
 	return {
 		...timers,
-		setTimeout: (delay?: number, value?: unknown, options?: TimerOptions) =>
-			timers.setTimeout(delay === 500 ? 5 : delay, value, options),
+		setTimeout: (delay?: number, value?: unknown, options?: TimerOptions) => {
+			const hold = state.passHold;
+			if (hold === undefined || delay !== hold.ms)
+				return timers.setTimeout(delay === 500 ? 5 : delay, value, options);
+			const signal = options?.signal;
+			return new Promise((settle, fail) => {
+				const end = (): void => {
+					hold.ends.delete(end);
+					signal?.removeEventListener("abort", abort);
+					settle(value);
+				};
+				const abort = (): void => {
+					hold.ends.delete(end);
+					fail(signal?.reason);
+				};
+				if (signal?.aborted) return abort();
+				signal?.addEventListener("abort", abort, { once: true });
+				hold.ends.add(end);
+			});
+		},
 	};
 });
 vi.mock("../src/coding-storage.ts", () => ({
@@ -82,6 +110,7 @@ vi.mock("../src/coding-storage.ts", () => ({
 
 const roots: string[] = [];
 afterEach(async () => {
+	state.passHold = undefined;
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -122,6 +151,7 @@ async function fixture(
 		guestReadyTimeoutMs?: number;
 		codingValueTimeoutMs?: number;
 		codingValueClearTimeoutMs?: number;
+		accountFillTimeoutMs?: number;
 		screenTimeoutMs?: number;
 		screenClearTimeoutMs?: number;
 		memberLookTimeoutMs?: number;
@@ -158,10 +188,14 @@ async function fixture(
 	const memberReads: unknown[] = [];
 	/** What SQL's fence after a capture answers, in turn (then: the picture leaves), 20260930713000. */
 	const pictureChecks: unknown[] = [];
+	/** The host's check right before a member's open (20260930758000), in turn (then ok). */
+	const openChecks: unknown[] = [];
 	/** What a live picture's release cycle answers, in turn (then ok; 20260930745000). */
 	const streamReleases: unknown[] = [];
 	/** What qorpera_machine_desktop_clipboard_cleared answers, in turn (then ok; F32). */
 	const clipboardClears: unknown[] = [];
+	/** What the executor's ask for a home session answers, in turn (20260930754000): an answer, or an error. */
+	const homeSessions: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
 	const service = {
 		reads: "released" as FolderReads,
@@ -249,6 +283,11 @@ async function fixture(
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.folder-member-reads/v1", viewId: null, reads: 0 };
 			}
+			if (method === "qorpera_member_machine_desktop_open_check") {
+				const next = openChecks.shift();
+				if (next instanceof Error) throw next;
+				return next ?? { schema: "qorpera.member-machine-desktop-open-check/v1", state: "ok" };
+			}
 			if (method === "qorpera_machine_desktop_picture_check") {
 				const next = pictureChecks.shift();
 				if (next instanceof Error) throw next;
@@ -263,6 +302,11 @@ async function fixture(
 				const next = clipboardClears.shift();
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.machine-desktop-clipboard/v1", state: "ok" };
+			}
+			if (method === "qorpera_folder_home_session_window") {
+				const next = homeSessions.shift();
+				if (next instanceof Error) throw next;
+				return next;
 			}
 			if (method === "qorpera_retire_company_machine")
 				return (
@@ -513,8 +557,10 @@ async function fixture(
 		inherits,
 		memberReads,
 		pictureChecks,
+		openChecks,
 		streamReleases,
 		clipboardClears,
+		homeSessions,
 		busy,
 		client,
 		get host() {
@@ -1470,6 +1516,22 @@ describe("company machine host's wake (perf A5)", () => {
 		for (let tries = 0; tries < 1000 && !done(); tries++) await new Promise((settle) => setTimeout(settle, 5));
 		expect(done()).toBe(true);
 	};
+	/** passHoldMs for the host, and the pass's hold in the test's hand: a pass answers without its steps only once
+	 * the test ends its hold; until then it waits for them, as with no hold. A real hold short enough to test with
+	 * (20 ms) was outrun on a loaded test machine by steps that were meant to end within their pass: a start's whole
+	 * step, or a running guest's, which then came with the pass after (13-14 Nov). */
+	function passHold() {
+		const hold = { ms: 3_600_007, ends: new Set<() => void>() };
+		state.passHold = hold;
+		return {
+			ms: hold.ms,
+			/** Ends the hold of the one pass that waits on it now. */
+			end: () => {
+				expect(hold.ends.size).toBe(1);
+				for (const end of [...hold.ends]) end();
+			},
+		};
+	}
 
 	it("a wake ends the wait before the next pass, and one during a pass leaves no wait after it", async () => {
 		const f = await fixture();
@@ -1560,7 +1622,8 @@ describe("company machine host's wake (perf A5)", () => {
 	});
 
 	it("one placement's slow step does not hold its pass, and none starts another until it ended", async () => {
-		const f = await fixture({ passHoldMs: 20 });
+		const hold = passHold();
+		const f = await fixture({ passHoldMs: hold.ms });
 		await f.host.pass(f.signal);
 		f.running();
 		let free = () => {};
@@ -1573,9 +1636,11 @@ describe("company machine host's wake (perf A5)", () => {
 			return exec(project, name, asked);
 		});
 		f.client.execInstance.mockClear();
-		// The pass answers though the guest does not, without its step.
-		expect(await f.host.pass(f.signal)).toEqual([]);
+		// The pass answers though the guest does not, without its step: its hold ends while the step waits on the guest.
+		const passing = f.host.pass(f.signal);
 		await until(() => f.client.execInstance.mock.calls.length === 1);
+		hold.end();
+		expect(await passing).toEqual([]);
 		// The next one admits and lists, and does not start the placement again.
 		f.calls.length = 0;
 		expect(await f.host.pass(f.signal)).toEqual([]);
@@ -1583,17 +1648,21 @@ describe("company machine host's wake (perf A5)", () => {
 		expect(f.client.execInstance).toHaveBeenCalledTimes(1);
 		free();
 		await f.host.settled();
-		// Then its step comes up again as ever.
+		// Then its step comes up again as ever, in the next pass.
 		f.client.execInstance.mockImplementation(exec);
+		const before = f.client.execInstance.mock.calls.length;
 		await f.host.pass(f.signal);
-		expect(f.client.execInstance.mock.calls.map((call) => call[2][3]).slice(-2)).toEqual([
-			"refresh-lease",
-			"observe",
-		]);
+		expect(
+			f.client.execInstance.mock.calls
+				.slice(before)
+				.map((call) => call[2][3])
+				.slice(-2),
+		).toEqual(["refresh-lease", "observe"]);
 	});
 
 	it("hands over what a step that outlasted its pass came to, with the next pass", async () => {
-		const f = await fixture({ passHoldMs: 20 });
+		const hold = passHold();
+		const f = await fixture({ passHoldMs: hold.ms });
 		await f.host.pass(f.signal);
 		f.running();
 		let free = () => {};
@@ -1605,7 +1674,11 @@ describe("company machine host's wake (perf A5)", () => {
 			await held;
 			throw new Error("LXD instance command failed");
 		});
-		expect(await f.host.pass(f.signal)).toEqual([]);
+		const asked = f.client.execInstance.mock.calls.length;
+		const passing = f.host.pass(f.signal);
+		await until(() => f.client.execInstance.mock.calls.length > asked);
+		hold.end();
+		expect(await passing).toEqual([]);
 		free();
 		await f.host.settled();
 		f.client.execInstance.mockImplementation(exec);
@@ -3989,6 +4062,230 @@ describe("a machine's clipboard helper", () => {
 		} finally {
 			errors.mockRestore();
 		}
+	});
+});
+
+describe("a machine's fill helper", () => {
+	const run = {
+		placementId: id(6),
+		bootId: id(7),
+		receiptId: id(8),
+		desktopGeneration: 3,
+		target: { schema: "qorpera.machine-account-fill-target/v1", hosts: ["npmjs.com"] },
+	};
+	const key = "K".repeat(43);
+	const box = {
+		schema: "qorpera.company-account-fill-box/v1",
+		ephemeralPublicKey: "e",
+		iv: "i",
+		tag: "t",
+		ciphertext: "c",
+	};
+	const ready = `${JSON.stringify({ schema: "qorpera.machine-account-fill-ready/v1", publicKey: key })}\n`;
+	const result = (code: string) => `${JSON.stringify({ schema: "qorpera.machine-account-fill-result/v1", code })}\n`;
+	/** The helper as LXD runs it: it reads its target, prints `first`, reads the box (or stdin's end), prints the result for
+	 * it, reads stdin to its end and exits. `hang` waits for the signal instead. Its stdin lines are kept. */
+	async function piped(
+		helper: {
+			first?: string;
+			after?: (box: string | null) => string;
+			exitCode?: number;
+			hang?: "before" | "after";
+		} = {},
+		options: { accountFillTimeoutMs?: number } = {},
+	) {
+		const f = await fixture(options);
+		const stdin: string[] = [];
+		const calls: { request: LxdExecPipeRequest; name: string; signal: AbortSignal }[] = [];
+		const pipe = vi.fn(async (_project: string, name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			calls.push({ request, name, signal });
+			const hung = () =>
+				new Promise<never>((_resolve, reject) => {
+					if (signal.aborted) reject(signal.reason);
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			if (helper.exitCode === 97 || helper.exitCode === 98)
+				return { exitCode: helper.exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			const source = (request.stdin as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+			const next = async () => {
+				const read = await source.next();
+				if (read.done) return null;
+				const text = Buffer.from(read.value).toString("utf8");
+				stdin.push(text);
+				return text;
+			};
+			let out = "";
+			const say = (text: string) => {
+				out += text;
+				request.onStdout?.(Buffer.from(text));
+			};
+			await next();
+			if (helper.hang === "before") return hung();
+			const first = helper.first ?? ready;
+			say(first);
+			const second = await next();
+			if (helper.hang === "after") return hung();
+			// A helper that answered at once only reads stdin to its end.
+			if (!first.includes("machine-account-fill-result")) say((helper.after ?? (() => result("FILLED")))(second));
+			while ((await next()) !== null);
+			return { exitCode: helper.exitCode ?? 0, stdout: Buffer.from(out), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const seal = vi.fn(
+			async (_publicKey: string, _signal: AbortSignal) =>
+				({ box }) as { box: Record<string, string> } | { refused: { code: string; message: string } },
+		);
+		return { f, pipe, calls, stdin, seal };
+	}
+
+	it("runs the helper as the executor runs it, gives it SQL's target and then the vault's box for its key", async () => {
+		const { f, pipe, calls, stdin, seal } = await piped();
+		expect(await f.host.accountFill(run, seal, f.signal)).toEqual({ filled: true });
+		expect(pipe).toHaveBeenCalledTimes(1);
+		expect(calls[0]!.name).toBe(lxdCompanyMachineName(id(6)));
+		expect(calls[0]!.request.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"'),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
+		]);
+		expect(COMPANY_MACHINE_ACCOUNT_FILL_HELPER).toBe("/opt/qorpera-machine/cloud-machine-account-fill.mjs");
+		expect(calls[0]!.request).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 4096, stderrTailBytes: 0 });
+		// The target, then the box sealed to the key the helper printed, each one line.
+		expect(stdin).toEqual([`${JSON.stringify(run.target)}\n`, `${JSON.stringify(box)}\n`]);
+		expect(seal).toHaveBeenCalledWith(key, expect.any(AbortSignal));
+		expect(f.methods()).not.toContain("qorpera_authorize_machine_command");
+	});
+
+	it("answers the helper's refusal before the vault, the vault's refusal, and another boot or image, by code", async () => {
+		const early = await piped({ first: result("FILL_WRONG_SITE") });
+		expect(await early.f.host.accountFill(run, early.seal, early.f.signal)).toEqual({ refused: "FILL_WRONG_SITE" });
+		// The vault was never asked, and stdin ended after the target.
+		expect(early.seal).not.toHaveBeenCalled();
+		expect(early.stdin).toHaveLength(1);
+		const vault = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
+		vault.seal.mockResolvedValueOnce({ refused: { code: "22023", message: "The company has no such open account" } });
+		expect(await vault.f.host.accountFill(run, vault.seal, vault.f.signal)).toEqual({
+			vaultRefused: { code: "22023", message: "The company has no such open account" },
+		});
+		expect(vault.stdin).toHaveLength(1);
+		for (const [exitCode, refused] of [
+			[97, "MACHINE_BOOT_CHANGED"],
+			[98, "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS"],
+		] as const) {
+			const other = await piped({ exitCode });
+			expect(await other.f.host.accountFill(run, other.seal, other.f.signal)).toEqual({ refused });
+			expect(other.seal).not.toHaveBeenCalled();
+		}
+		const after = await piped({ after: () => result("SITE_STOP_CAPTCHA") });
+		expect(await after.f.host.accountFill(run, after.seal, after.f.signal)).toEqual({ refused: "SITE_STOP_CAPTCHA" });
+		const bad = await piped();
+		await expect(bad.f.host.accountFill({ ...run, bootId: "boot" }, bad.seal, bad.f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_ACCOUNT_FILL_INVALID",
+		);
+		const bare = await fixture();
+		await expect(bare.host.accountFill(run, vi.fn(), bare.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_ACCOUNT_FILL_UNAVAILABLE",
+		);
+	});
+
+	it("fails on a line that is not the helper's, a failed exit, or a vault that did not answer", async () => {
+		for (const helper of [
+			{ first: "not json\n" },
+			{ first: `${JSON.stringify({ schema: "qorpera.machine-account-fill-ready/v1", publicKey: "short" })}\n` },
+			{
+				first: `${JSON.stringify({ schema: "qorpera.machine-account-fill-ready/v1", publicKey: key, value: "x" })}\n`,
+			},
+			{ after: () => `${result("FILLED")}${result("FILLED")}` },
+			{ after: () => result("lower case") },
+			{ exitCode: 1 },
+		]) {
+			const { f, seal } = await piped(helper);
+			await expect(f.host.accountFill(run, seal, f.signal), JSON.stringify(helper)).rejects.toThrow(
+				/COMPANY_MACHINE_ACCOUNT_FILL_(INVALID|FAILED)/,
+			);
+		}
+		const lost = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
+		lost.seal.mockRejectedValueOnce(new Error("MACHINE_ACCOUNT_FILL_BROKER_UNAVAILABLE"));
+		await expect(lost.f.host.accountFill(run, lost.seal, lost.f.signal)).rejects.toThrow(
+			"MACHINE_ACCOUNT_FILL_BROKER_UNAVAILABLE",
+		);
+	});
+
+	it("ends the exec at its deadline or when the request is cancelled, the vault's wait included", async () => {
+		const slow = await piped({ hang: "before" }, { accountFillTimeoutMs: 50 });
+		await expect(slow.f.host.accountFill(run, slow.seal, slow.f.signal)).rejects.toThrow();
+		expect(slow.calls[0]!.signal.aborted).toBe(true);
+		expect(slow.f.signal.aborted).toBe(false);
+		expect(slow.seal).not.toHaveBeenCalled();
+		// Cancelled while the vault is asked: the vault's own signal ends too, and nothing more goes to the helper.
+		const { f, calls, stdin, seal } = await piped({ hang: "after" });
+		let sealSignal: AbortSignal | undefined;
+		seal.mockImplementationOnce(
+			(_key, signal) =>
+				new Promise((_resolve, reject) => {
+					sealSignal = signal;
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		);
+		const request = new AbortController();
+		const filling = f.host.accountFill(run, seal, request.signal);
+		await vi.waitFor(() => expect(seal).toHaveBeenCalledTimes(1));
+		request.abort(new Error("the gateway's request ended"));
+		await expect(filling).rejects.toThrow("the gateway's request ended");
+		expect(calls[0]!.signal.aborted).toBe(true);
+		expect(sealSignal?.aborted).toBe(true);
+		expect(stdin).toHaveLength(1);
+	});
+
+	it("takes the desktop and types nothing while a member holds it, before the helper or before its box", async () => {
+		const ok = { schema: "qorpera.machine-desktop-picture/v1", state: "ok" };
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		const before = await piped();
+		before.f.pictureChecks.push(held);
+		expect(await before.f.host.accountFill(run, before.seal, before.f.signal)).toEqual({
+			refused: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		expect(before.pipe).not.toHaveBeenCalled();
+		expect(before.seal).not.toHaveBeenCalled();
+		expect(before.f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args).toEqual({
+			p_placement_id: id(6),
+			p_generation: 3,
+			p_user_id: null,
+		});
+		const during = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
+		during.f.pictureChecks.push(ok, held);
+		expect(await during.f.host.accountFill(run, during.seal, during.f.signal)).toEqual({
+			refused: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		expect(during.seal).toHaveBeenCalledTimes(1);
+		expect(during.stdin).toEqual([`${JSON.stringify(run.target)}\n`]);
+		const again = await piped();
+		expect(await again.f.host.accountFill(run, again.seal, again.f.signal)).toEqual({ filled: true });
+		expect(await again.f.host.accountFill(run, again.seal, again.f.signal)).toEqual({ filled: true });
+		const checkFails = await piped();
+		checkFails.f.pictureChecks.push(new Error("fence unavailable"));
+		await expect(checkFails.f.host.accountFill(run, checkFails.seal, checkFails.f.signal)).rejects.toThrow(
+			"fence unavailable",
+		);
+		expect(checkFails.pipe).not.toHaveBeenCalled();
+		expect(await checkFails.f.host.accountFill(run, checkFails.seal, checkFails.f.signal)).toEqual({ filled: true });
+		const secondFails = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
+		secondFails.f.pictureChecks.push(ok, new Error("fence unavailable"));
+		await expect(secondFails.f.host.accountFill(run, secondFails.seal, secondFails.f.signal)).rejects.toThrow(
+			"fence unavailable",
+		);
+		expect(secondFails.stdin).toEqual([`${JSON.stringify(run.target)}\n`]);
+		const unfenced = await piped();
+		await expect(
+			unfenced.f.host.accountFill({ ...run, desktopGeneration: -1 }, unfenced.seal, unfenced.f.signal),
+		).rejects.toThrow("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
 	});
 });
 
@@ -6891,6 +7188,301 @@ describe("a member's start of a desktop (20260930714000)", () => {
 	);
 });
 
+describe("a member opens something on a desktop (20260930758000)", () => {
+	const answer = (exitCode: number) => ({ exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+	const open = "apps/a;b $(x) 'q'.txt";
+	const start = (path: string = open) => ({ placementId: id(6), bootId: id(7), startId: id(40), open: path });
+	async function piped(
+		reply: (given: LxdExecPipeRequest) => Promise<ReturnType<typeof answer>>,
+		options: Parameters<typeof fixture>[0] = {},
+	) {
+		const f = await fixture(options);
+		const calls: LxdExecPipeRequest[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest) => {
+			calls.push(given);
+			return reply(given);
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, calls };
+	}
+
+	it("starts first, then opens in a unit of its own: the path on stdin, never in a word of the command", async () => {
+		const { f, calls } = await piped(async (given) =>
+			answer(given.command.includes(COMPANY_MACHINE_MEMBER_START) ? 92 : 0),
+		);
+		expect(await f.host.memberStart(start(), f.signal)).toEqual({ outcome: "opened" });
+		expect(calls.map((call) => call.command)).toEqual([
+			companyMachineMemberStartCommand(id(7)),
+			companyMachineMemberOpenCommand(id(7)),
+		]);
+		expect(calls[1]!.command).toEqual([
+			"/usr/bin/systemd-run",
+			"--quiet",
+			"--wait",
+			"--pipe",
+			"--collect",
+			"--expand-environment=no",
+			"--slice=qorpera-machine.slice",
+			"-p",
+			"RuntimeMaxSec=8",
+			"-p",
+			"KillMode=control-group",
+			"-p",
+			"KillSignal=SIGKILL",
+			"--description=qorpera member desktop open",
+			"--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"--setenv=HOME=/root",
+			"--setenv=LANG=C.UTF-8",
+			"--setenv=USER=root",
+			"--",
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_MEMBER_OPEN,
+			id(7),
+		]);
+		expect(Buffer.from(calls[1]!.stdin as Uint8Array).toString("utf8")).toBe(open);
+		expect(JSON.stringify(calls.map((call) => call.command))).not.toContain("q'.txt");
+		expect(calls[0]!.stdin).toBeUndefined();
+	});
+
+	it("opens nothing after a start that did not end with a desktop, and maps the open's exit to a fixed outcome", async () => {
+		for (const refused of [3, 97, 98, 1]) {
+			const { f, calls } = await piped(async () => answer(refused));
+			expect("refused" in (await f.host.memberStart(start(), f.signal))).toBe(true);
+			expect(calls).toHaveLength(1);
+		}
+		for (const [exitCode, outcome] of [
+			[0, { outcome: "opened" }],
+			[89, { refused: "DESKTOP_OPEN_NO_FOLDER" }],
+			[91, { refused: "DESKTOP_OPEN_NOT_FOUND" }],
+			[97, { refused: "MACHINE_BOOT_CHANGED" }],
+			[98, { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }],
+			[1, { refused: "DESKTOP_DID_NOT_OPEN" }],
+			[2, { refused: "DESKTOP_DID_NOT_OPEN" }],
+			[137, { refused: "DESKTOP_DID_NOT_OPEN" }],
+		] as const) {
+			const { f } = await piped(async (given) =>
+				answer(given.command.includes(COMPANY_MACHINE_MEMBER_START) ? 0 : exitCode),
+			);
+			expect(await f.host.memberStart(start(), f.signal), String(exitCode)).toEqual(outcome);
+		}
+		const slow = await piped(async (given) => {
+			if (given.command.includes(COMPANY_MACHINE_MEMBER_START)) return answer(0);
+			throw new Error("LXD exec stalled");
+		});
+		expect(await slow.f.host.memberStart(start(), slow.f.signal)).toEqual({ refused: "DESKTOP_DID_NOT_OPEN" });
+		// A path no folder could have runs nothing at all.
+		for (const bad of [
+			"",
+			"/etc/passwd",
+			"a//b",
+			"a/../b",
+			"./a",
+			"a/",
+			"a\nb",
+			"a\\b",
+			"x".repeat(501),
+			"a\u0000b",
+		]) {
+			const never = await piped(async () => answer(0));
+			await expect(never.f.host.memberStart(start(bad), never.f.signal), JSON.stringify(bad)).rejects.toThrow(
+				"COMPANY_MACHINE_MEMBER_START_INVALID",
+			);
+			expect(never.pipe).not.toHaveBeenCalled();
+		}
+	});
+
+	it("asks SQL right before the open, holding the desktop: a take-over begun during a delayed start opens nothing (review r1 F1 of #1781)", async () => {
+		let release = () => {};
+		const delayed = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { f, calls } = await piped(async (given) => {
+			if (given.command.includes(COMPANY_MACHINE_MEMBER_START)) await delayed;
+			return answer(0);
+		});
+		const opening = f.host.memberStart(start(), f.signal);
+		// While the start runs, another member takes the desktop over: SQL's check right before the open says so.
+		await vi.waitFor(() => expect(calls).toHaveLength(1));
+		expect(f.methods()).not.toContain("qorpera_member_machine_desktop_open_check");
+		f.openChecks.push({
+			schema: "qorpera.member-machine-desktop-open-check/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		release();
+		expect(await opening).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		// The start ran and its desktop stays on; the open never ran; the check came after the start, with its ids.
+		expect(calls.map((call) => call.command)).toEqual([companyMachineMemberStartCommand(id(7))]);
+		expect(f.calls.find((call) => call.method === "qorpera_member_machine_desktop_open_check")?.args).toEqual({
+			p_start_id: id(40),
+			p_placement_id: id(6),
+			p_boot_id: id(7),
+		});
+		// Nothing holds the desktop after it: a member's next action goes.
+		f.pictureChecks.push({ schema: "qorpera.machine-desktop-picture/v1", state: "ok" });
+		expect(
+			await f.host
+				.memberAct(
+					{
+						placementId: id(6),
+						bootId: id(7),
+						actionId: id(31),
+						action: { type: "key", keys: ["Return"] },
+						seat: 0,
+						shared: true,
+						userId: id(21),
+					},
+					f.signal,
+				)
+				.catch(() => "ran"),
+		).not.toEqual({ refused: "DESKTOP_BUSY" });
+		// The check's other refusals are the member's too; an answer of another shape fails.
+		for (const reason of ["DESKTOP_OPEN_NOT_FOUND", "MACHINE_NOT_RUNNING", "MACHINE_BOOT_CHANGED"]) {
+			const one = await piped(async () => answer(0));
+			one.f.openChecks.push({ schema: "qorpera.member-machine-desktop-open-check/v1", state: "refused", reason });
+			expect(await one.f.host.memberStart(start(), one.f.signal)).toEqual({ refused: reason });
+			expect(one.calls).toHaveLength(1);
+		}
+		const odd = await piped(async () => answer(0));
+		odd.f.openChecks.push({ schema: "qorpera.member-machine-desktop-open-check/v1", state: "ok", more: 1 });
+		await expect(odd.f.host.memberStart(start(), odd.f.signal)).rejects.toThrow("COMPANY_MACHINE_OPEN_CHECK_INVALID");
+		expect(odd.calls).toHaveLength(1);
+	});
+
+	it("holds the desktop while the open runs and a moment after: input that comes meanwhile waits, then goes", async () => {
+		let clock = Date.parse("2026-11-14T06:00:00Z");
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { f } = await piped(
+			async (given) => {
+				if (given.command.includes(COMPANY_MACHINE_MEMBER_OPEN)) await held;
+				return answer(given.command.includes(COMPANY_MACHINE_MEMBER_START) ? 92 : 0);
+			},
+			{ now: () => clock },
+		);
+		const act = () =>
+			f.host.memberAct(
+				{
+					placementId: id(6),
+					bootId: id(7),
+					actionId: randomUUID(),
+					action: { type: "key", keys: ["a"] },
+					seat: 1,
+					userId: id(22),
+				},
+				f.signal,
+			);
+		const opening = f.host.memberStart(start(), f.signal);
+		await vi.waitFor(() => expect(f.methods()).toContain("qorpera_member_machine_desktop_open_check"));
+		// A member who began typing privately while the open's unit runs: their keys wait (the window says the computer
+		// is finishing a step and sends them again), never land while it opens.
+		expect(await act()).toEqual({ refused: "DESKTOP_BUSY" });
+		release();
+		expect(await opening).toEqual({ outcome: "opened" });
+		// For a moment after, while what it opened maps its window and takes the focus.
+		clock += 1999;
+		expect(await act()).toEqual({ refused: "DESKTOP_BUSY" });
+		clock += 2;
+		expect(await act().catch(() => "ran")).not.toEqual({ refused: "DESKTOP_BUSY" });
+	});
+
+	it("waits a moment for the desktop's one actor, and says it is busy past that, opening nothing", async () => {
+		let clock = Date.parse("2026-11-14T06:00:00Z");
+		const { f, calls } = await piped(
+			async (given) => {
+				// An action that never answers keeps the desktop.
+				if (
+					given.command.includes(COMPANY_MACHINE_MEMBER_START) ||
+					given.command.includes(COMPANY_MACHINE_MEMBER_OPEN)
+				)
+					return answer(0);
+				return new Promise<never>(() => {});
+			},
+			{ now: () => clock },
+		);
+		void f.host
+			.memberAct(
+				{
+					placementId: id(6),
+					bootId: id(7),
+					actionId: randomUUID(),
+					action: { type: "key", keys: ["a"] },
+					seat: 0,
+					shared: true,
+					userId: id(22),
+				},
+				f.signal,
+			)
+			.catch(() => undefined);
+		await vi.waitFor(() => expect(calls).toHaveLength(1));
+		const opening = f.host.memberStart(start(), f.signal);
+		// The start ran; the open now waits for the desktop (a few of its looks, real time), then its time is up.
+		await vi.waitFor(() =>
+			expect(calls.some((call) => call.command.includes(COMPANY_MACHINE_MEMBER_START))).toBe(true),
+		);
+		await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+		clock += 3001;
+		expect(await opening).toEqual({ refused: "DESKTOP_BUSY" });
+		expect(calls.filter((call) => call.command.includes(COMPANY_MACHINE_MEMBER_OPEN))).toEqual([]);
+	});
+
+	it.skipIf(process.platform !== "linux")(
+		"exits as the script says in a real shell, the path one word whatever is in it",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-open-")));
+			roots.push(bin);
+			const tool = async (name: string, body: string) => {
+				await writeFile(join(bin, name), `#!/bin/sh\n${body}\n`);
+				await chmod(join(bin, name), 0o755);
+			};
+			await symlink("/bin/cat", join(bin, "cat"));
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const asked = join(bin, "asked");
+			const run = (path: string, bootId = boot) =>
+				spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_MEMBER_OPEN, bootId], { env: { PATH: bin }, input: path })
+					.status;
+			expect(run(open, randomUUID())).toBe(97);
+			expect(run(open)).toBe(98);
+			await tool(
+				"desktop",
+				`printf '%s\\n' "$#" > ${asked}; for word in "$@"; do printf '[%s]\\n' "$word" >> ${asked}; done`,
+			);
+			// No company folder: /company not there, or on the root's own device (a view not mounted).
+			await tool("stat", "exit 1");
+			expect(run(open)).toBe(89);
+			await tool("stat", "echo 1");
+			expect(run(open)).toBe(89);
+			// The folder mounted: its real place found, then opened as ONE word.
+			await tool("stat", 'if [ "$3" = /company ]; then echo 2; else echo 1; fi');
+			await tool("realpath", 'printf "%s\\n" "$3"');
+			for (const path of [open, "Møder/æble og grød ø.md", "a  b", "*", "$HOME", "-x"]) {
+				expect(run(path), path).toBe(0);
+				expect(readFileSync(asked, "utf8"), path).toBe(`2\n[open]\n[/company/${path}]\n`);
+			}
+			// A line break, or nothing: no path.
+			expect(run("a\nb")).toBe(91);
+			expect(run("a\n")).toBe(91);
+			expect(run("")).toBe(91);
+			// Not there, or a link that leads out: 91, and nothing opened.
+			await writeFile(asked, "");
+			await tool("realpath", "exit 1");
+			expect(run(open)).toBe(91);
+			for (const out of ["/etc/passwd", "/company", "/companyx/a"]) {
+				await tool("realpath", `echo ${out}`);
+				expect(run(open), out).toBe(91);
+			}
+			expect(readFileSync(asked, "utf8")).toBe("");
+			// The helper's own failure.
+			await tool("realpath", 'printf "%s\\n" "$3"');
+			await tool("desktop", "exit 2");
+			expect(run(open)).toBe(1);
+		},
+	);
+});
+
 describe("company machine host: the desktop's figure (20260930737000)", () => {
 	const FIGURE = "/etc/qorpera-machine/desktop-figure";
 	type F = Awaited<ReturnType<typeof fixture>>;
@@ -7184,5 +7776,316 @@ describe("company machine host: the desktop's time zone (20260930739000)", () =>
 		expect([...cut].sort()).toEqual([FIGURE, ZONE]);
 		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
 		expect(failures(f)).toEqual([]);
+	});
+});
+
+describe("the agent's home in the company folder (slice 3, 20260930754000)", () => {
+	/** A machine whose boot's folder settled with /company, and a channel to it that runs until its signal aborts. */
+	async function home() {
+		const f = await fixture({ folder: true });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		f.running();
+		await f.host.pass(f.signal);
+		const exec: { request?: LxdExecPipeRequest; signal?: AbortSignal; codex: string; hashes: number } = {
+			codex: `${CLOUD_MACHINE_HOME.codexSha256}  /opt/qorpera-machine/codex\n`,
+			hashes: 0,
+		};
+		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			// The machine's Codex, hashed once per boot before its first channel (#homeCodex).
+			if (request.command.includes("/opt/qorpera-machine/codex") && !request.command.includes("exec-server")) {
+				exec.hashes++;
+				f.order.push("exec:codex-sha");
+				const missing = exec.codex === "missing";
+				return {
+					exitCode: missing ? 98 : 0,
+					stdout: Buffer.from(missing ? "" : exec.codex),
+					stderrTail: Buffer.alloc(0),
+				};
+			}
+			f.order.push("exec:exec-server");
+			exec.request = request;
+			exec.signal = signal;
+			return await new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((resolve) => {
+				const done = () => resolve({ exitCode: 0, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+				if (signal.aborted) done();
+				signal.addEventListener("abort", done, { once: true });
+			});
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const session = (sessionId = id(30)) => ({
+			schema: "qorpera.folder-home-session/v1",
+			state: "open",
+			sessionId,
+			runId: id(31),
+			staffAgentId: id(32),
+			requestedByUserId: id(33),
+			machineId: id(2),
+			placementId: id(6),
+			bootId: f.boot,
+		});
+		const opens = (sessionId = id(30)) =>
+			f.service.requests.filter((request) => request.op === "open" && request.commandId === sessionId).length;
+		return { f, exec, pipe, session, opens };
+	}
+
+	it("opens the session's own window, takes in the disk's reads before the channel starts, and lets output out only once released", async () => {
+		const { f, exec, session, opens } = await home();
+		f.homeSessions.push(session());
+		const before = f.order.length;
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		expect(f.order.slice(before)).toEqual([
+			"sql:qorpera_folder_home_session_window",
+			"exec:codex-sha",
+			"folder:open",
+			"folder:boundary",
+			"sql:qorpera_folder_test_machine_inherit_reads",
+			"exec:exec-server",
+		]);
+		expect(f.calls.find((call) => call.method === "qorpera_folder_home_session_window")?.args).toEqual({
+			p_session_id: id(30),
+		});
+		// The window carries the session's id and its run's, agent's and member's.
+		expect(f.service.requests.find((request) => request.op === "open" && request.commandId === id(30))).toEqual({
+			op: "open",
+			machine: id(6),
+			commandId: id(30),
+			runId: id(31),
+			staffAgentId: id(32),
+			requestedByUserId: id(33),
+		});
+		expect(
+			f.calls.filter((call) => call.method === "qorpera_folder_test_machine_inherit_reads").at(-1)?.args,
+		).toEqual({
+			p_placement_id: id(6),
+			p_boot_id: f.boot,
+			p_run_id: id(31),
+			p_inherit_id: expect.any(String),
+		});
+		// What the machine sends back leaves after a boundary and the run's take-in, not before.
+		const lines = channel.lines[Symbol.asyncIterator]();
+		const mark = f.order.length;
+		exec.request?.stdout?.(Buffer.from('{"id":1,"result":{}}\n'));
+		expect(await lines.next()).toEqual({ done: false, value: '{"id":1,"result":{}}' });
+		expect(f.order.slice(mark)).toEqual(["folder:boundary", "sql:qorpera_folder_test_machine_inherit_reads"]);
+		// Each pass opens the window again, as a command's, for a folder service that restarted.
+		await f.host.pass(f.signal);
+		expect(opens()).toBe(2);
+		// The channel ends: the window closes once, with a boundary, and no pass opens it again.
+		await channel.close();
+		expect(exec.signal?.aborted).toBe(true);
+		expect(f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30))).toEqual([
+			{ op: "close", machine: id(6), commandId: id(30) },
+		]);
+		await f.host.pass(f.signal);
+		expect(opens()).toBe(2);
+	});
+
+	it("starts each channel's exec-server as a unit of its own in the machines' slice, as the agent's account, on the boot SQL named", async () => {
+		const { f, exec, session } = await home();
+		f.homeSessions.push(session(), session());
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		const command = exec.request?.command ?? [];
+		const unit = command.find((word) => word.startsWith("--unit="));
+		expect(command).toEqual(companyMachineHomeCommand(f.boot, id(30), unit?.split("-").at(-1) ?? ""));
+		expect(unit).toMatch(new RegExp(`^--unit=qorpera-machine-home-${id(30)}-[0-9a-f]{16}$`));
+		expect(command.slice(0, 11)).toEqual([
+			"/bin/sh",
+			"-c",
+			'read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ] && exec "$@"',
+			f.boot,
+			"/usr/bin/systemd-run",
+			"--quiet",
+			"--pipe",
+			"--wait",
+			"--collect",
+			"--service-type=exec",
+			"--expand-environment=no",
+		]);
+		for (const word of [
+			"--slice=qorpera-machine.slice",
+			"--uid=2000",
+			"--gid=2000",
+			"--working-directory=/company",
+			"--property=KillMode=control-group",
+			"--setenv=HOME=/var/lib/qorpera-agent",
+			"--setenv=CODEX_HOME=/var/lib/qorpera-agent/.codex",
+		])
+			expect(command).toContain(word);
+		expect(command.slice(-4)).toEqual(["/opt/qorpera-machine/codex", "exec-server", "--listen", "stdio"]);
+		// Root only to hand it to systemd: the exec names no account, so LXD runs it as root.
+		expect([exec.request?.user, exec.request?.group]).toEqual([undefined, undefined]);
+		await channel.close();
+		// Another channel of the same session is another unit, so a reconnect never meets the one still ending.
+		const again = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		expect(exec.request?.command.find((word) => word.startsWith("--unit="))).not.toBe(unit);
+		await again.close();
+		// The guest's own shell, for real: on this boot the program runs; on another nothing does.
+		const boot = existsSync("/proc/sys/kernel/random/boot_id")
+			? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+			: undefined;
+		if (!boot) return;
+		const run = (bootId: string) =>
+			spawnSync("/bin/sh", ["-c", command[2] as string, bootId, "/bin/echo", "ran"], { encoding: "utf8" });
+		expect(run(boot)).toMatchObject({ status: 0, stdout: "ran\n" });
+		expect(run("00000000-0000-4000-8000-000000000000")).toMatchObject({ status: 1, stdout: "" });
+	});
+
+	it("hashes the machine's Codex once per boot and refuses a home whose Codex is not the pinned build", async () => {
+		const { f, exec, pipe, session } = await home();
+		f.homeSessions.push(session(), session(id(40)));
+		const first = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		const second = await f.host.execServer({ placementId: id(6), sessionId: id(40), bootId: f.boot }, f.signal);
+		expect(exec.hashes).toBe(1);
+		await first.close();
+		await second.close();
+		// Another machine's state on a fresh host: an earlier build, and none at all, are both refused before any
+		// exec-server, window or folder read.
+		for (const codex of [`${"0".repeat(64)}  /opt/qorpera-machine/codex\n`, "missing"]) {
+			const other = await home();
+			other.exec.codex = codex;
+			other.f.homeSessions.push(other.session(), other.session());
+			const before = other.f.order.length;
+			await expect(
+				other.f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: other.f.boot }, other.f.signal),
+			).rejects.toThrow("HOME_CODEX_NOT_PINNED");
+			expect(other.f.order.slice(before)).toEqual(["sql:qorpera_folder_home_session_window", "exec:codex-sha"]);
+			// Kept for the boot: the next session is refused without hashing again.
+			await expect(
+				other.f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: other.f.boot }, other.f.signal),
+			).rejects.toThrow("HOME_CODEX_NOT_PINNED");
+			expect(other.exec.hashes).toBe(1);
+		}
+		// The hash's own shell: a boot that is not the machine's ends the session; a missing file is 98.
+		const boot = existsSync("/proc/sys/kernel/random/boot_id")
+			? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+			: undefined;
+		const script = pipe.mock.calls.map((call) => call[2].command).find((c) => !c.includes("exec-server"))?.[2];
+		if (!boot || !script) return;
+		const shell = (bootId: string, path: string) =>
+			spawnSync("/bin/sh", ["-c", script, bootId, path], { encoding: "utf8" });
+		expect(shell(boot, "/proc/sys/kernel/random/boot_id")).toMatchObject({ status: 0 });
+		expect(shell(boot, "/proc/sys/kernel/random/boot_id").stdout).toMatch(/^[0-9a-f]{64} {2}\/proc\//);
+		expect(shell("00000000-0000-4000-8000-000000000000", "/proc/sys/kernel/random/boot_id").status).toBe(97);
+		expect(shell(boot, "/nothing/here").status).toBe(98);
+	});
+
+	it("ends the channel at a take-in that holds: nothing of that output leaves, and the window closes", async () => {
+		const { f, exec, session } = await home();
+		f.homeSessions.push(session());
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		const lines = channel.lines[Symbol.asyncIterator]();
+		f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+		exec.request?.stdout?.(Buffer.from('{"id":2,"result":"a secret"}\n'));
+		expect(await lines.next()).toEqual({ done: true, value: undefined });
+		expect(exec.signal?.aborted).toBe(true);
+		await channel.close();
+		expect(
+			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)),
+		).toHaveLength(1);
+	});
+
+	it("closes again a window whose channel ended while a pass was opening it again (review r10 F1)", async () => {
+		const { f, session, opens } = await home();
+		f.homeSessions.push(session());
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		let answer = (): void => undefined;
+		f.service.opening = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const passing = f.host.pass(f.signal);
+		await vi.waitFor(() => expect(opens()).toBe(2));
+		// The channel ends while the pass's open is still out; the service may take the close first.
+		await channel.close();
+		answer();
+		await passing;
+		expect(f.service.requests.filter((request) => request.commandId === id(30)).map((request) => request.op)).toEqual(
+			["open", "open", "close", "close"],
+		);
+	});
+
+	it("closes the window again when its first open is not answered, and starts no channel (review r11 F1)", async () => {
+		const { f, pipe, session } = await home();
+		f.homeSessions.push(session());
+		f.service.down = true;
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("FOLDER_CONTROL_UNANSWERED");
+		expect(f.service.requests.filter((request) => request.commandId === id(30)).map((request) => request.op)).toEqual(
+			["open", "close"],
+		);
+		// The machine's Codex was hashed; no exec-server started.
+		expect(pipe.mock.calls.some((call) => call[2].command.includes("exec-server"))).toBe(false);
+	});
+
+	it("asks whether the session may share its machine on an executor without a folder too (review r10 F2)", async () => {
+		const f = await fixture();
+		const pipe = vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (!request.command.includes("exec-server"))
+				return {
+					exitCode: 0,
+					stdout: Buffer.from(`${CLOUD_MACHINE_HOME.codexSha256}  /opt/qorpera-machine/codex\n`),
+					stderrTail: Buffer.alloc(0),
+				};
+			return await new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((resolve) => {
+				const done = () => resolve({ exitCode: 0, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+				if (signal.aborted) done();
+				signal.addEventListener("abort", done, { once: true });
+			});
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		f.homeSessions.push({ schema: "qorpera.folder-home-session/v1", state: "refused", reason: "HOME_NOT_SHARED" });
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_NOT_SHARED");
+		expect(pipe).not.toHaveBeenCalled();
+		f.homeSessions.push({
+			schema: "qorpera.folder-home-session/v1",
+			state: "open",
+			sessionId: id(30),
+			runId: id(31),
+			staffAgentId: id(32),
+			requestedByUserId: id(33),
+			machineId: id(2),
+			placementId: id(6),
+			bootId: f.boot,
+		});
+		const channel = await f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal);
+		// The machine's Codex hashed once, then the exec-server.
+		expect(pipe).toHaveBeenCalledTimes(2);
+		// No folder here: no window and no release, only the ask.
+		expect(f.service.requests).toEqual([]);
+		expect(f.calls.filter((call) => call.method === "qorpera_folder_home_session_window")).toHaveLength(2);
+		await channel.close();
+	});
+
+	it("starts no channel when SQL refuses the session, or when the disk's reads cannot be taken in", async () => {
+		const { f, pipe, session, opens } = await home();
+		f.homeSessions.push({ schema: "qorpera.folder-home-session/v1", state: "refused", reason: "HOME_NOT_SHARED" });
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_NOT_SHARED");
+		expect(opens()).toBe(0);
+		// An answer about another boot is an ended session; one about another placement is no answer.
+		f.homeSessions.push({ ...session(), bootId: id(35) });
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_SESSION_ENDED");
+		f.homeSessions.push({ ...session(), placementId: id(9) });
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_FOLDER_SESSION_INVALID");
+		// The take-in before the channel holds: the window it opened closes again.
+		f.homeSessions.push(session());
+		f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+		await expect(
+			f.host.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal),
+		).rejects.toThrow("HOME_FOLDER_HELD");
+		expect(opens()).toBe(1);
+		expect(
+			f.service.requests.filter((request) => request.op === "close" && request.commandId === id(30)),
+		).toHaveLength(1);
+		expect(pipe.mock.calls.some((call) => call[2].command.includes("exec-server"))).toBe(false);
 	});
 });

@@ -14,14 +14,17 @@ import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/sr
 export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
 	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
 	"qorpera_authorize_coding_command", "qorpera_route_coding_command",
-	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_screen",
+	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_account_fill",
+	"qorpera_authorize_machine_screen",
 	"qorpera_member_machine_screen_authority", "qorpera_member_machine_desktop_act_authority",
 	// A member's start of a desktop (20260930714000; it was missing, as F33 of #1661 found for take-over's record).
 	"qorpera_member_machine_desktop_start_authority", "qorpera_native_binding_proven",
 	// The agent was told a member touched the shared screen (20260930734000, review r1 F4 of #1701).
 	"qorpera_machine_desktop_shared_told",
 	// A member's pointer pass, read once per pass (20260930744000).
-	"qorpera_member_machine_desktop_pointer_authority"]);
+	"qorpera_member_machine_desktop_pointer_authority",
+	// A run's channel to its home, before a byte reaches the machine (20260930752000).
+	"qorpera_authorize_home_session"]);
 
 /** Calls whose refusal (SQLSTATE 42501) the caller acts on: a test machine's folder view open, which the executor
  * answers with a boot without /company, or with a move to a new disk when the open refused its disk (F3 6d), and a

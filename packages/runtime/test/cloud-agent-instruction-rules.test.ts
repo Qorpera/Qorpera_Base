@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { APP_KITS } from "@qorpera/cloud-client/interface-apps";
 import {
 	compileCloudNativeCompanyInstructions,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
+import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { describe, expect, it } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -28,8 +30,10 @@ const COFOUNDER_TOOLS = [
 	"create_group_chat",
 	"crew_and_members",
 	"data_apply",
+	"data_change",
 	"data_describe",
 	"data_query",
+	"end_role",
 	"find_mail",
 	"good_will_list",
 	"good_will_mark",
@@ -58,6 +62,7 @@ const COFOUNDER_TOOLS = [
 	"read_event",
 	"read_skill",
 	"recall_memory",
+	"record_reflection",
 	"save_app",
 	"save_coding_value",
 	"search_skills",
@@ -69,10 +74,16 @@ const COFOUNDER_TOOLS = [
 	"table_write",
 	"unpublish_site",
 	"update_memory",
+	"update_reading",
 	"update_skill",
 ];
+/** The company's reading of itself (20260930766000): update_reading is the Co-Founder's, end_role any run's that hires. */
 const EMPLOYEE_TOOLS = COFOUNDER_TOOLS.filter(
-	(tool) => tool !== "crew_and_members" && tool !== "offer_agents_to_member",
+	(tool) =>
+		tool !== "crew_and_members" &&
+		tool !== "offer_agents_to_member" &&
+		tool !== "record_reflection" &&
+		tool !== "update_reading",
 );
 const WORKER_TOOLS = [
 	"app_guide",
@@ -115,6 +126,7 @@ const PRIVATE_TOOLS = EMPLOYEE_TOOLS.filter(
 		!tool.startsWith("machine_") &&
 		![
 			"create_group_chat",
+			"end_role",
 			"hire_agent",
 			"manage_code",
 			"manage_todo",
@@ -782,6 +794,14 @@ const RULES: [string, string, string, Run[]][] = [
 		"on a machine of 8 cpus or more, because a render uses every processor it is given",
 		ALL,
 	],
+	// Master merged up through T3-2 for landing (15 November 2026): the render frames and no person built from shapes.
+	[
+		"5",
+		"a render's frames into the folder",
+		"Save each final frame into the company folder as it finishes (under /company on the machine)",
+		ALL,
+	],
+	["5", "no person built from plain shapes", "so frame the shot without one", ALL],
 	[
 		"5",
 		"when it is hard, never smaller",
@@ -1111,6 +1131,24 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "the founding never restarts", "Once agreed, the founding never restarts.", HAND_OFF],
 	[
 		"7",
+		"reflecting on the platform's updates first",
+		"# Your planning run\nWhen your context has updates, the platform the company runs on has changed since you last looked: reflect on each before you plan, oldest first.",
+		PLANNING,
+	],
+	[
+		"7",
+		"a new model is a review",
+		"A new model: we think better than when the company's work was made, so this planning run is a review",
+		PLANNING,
+	],
+	[
+		"7",
+		"reflections recorded and told",
+		"Record each with record_reflection, and tell the founders in one message",
+		PLANNING,
+	],
+	[
+		"7",
 		"a planning run's reading and fixes",
 		"In a planning run, read the vision, the plan, every agent's agent.md, todos and routines, and QorperaOS/human-tasks/",
 		PLANNING,
@@ -1124,10 +1162,18 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	["7", "done is a claim", "Treat every report of done as a claim", PLANNING],
 	["7", "apps remade with a kit", "tell its owner to remake it and name the kit", PLANNING],
+	// The Co-Founder's own company app is the company's map, made with the map kit, the reading its first layer (overlay
+	// v18; the founder, 15 November 2026: "Use a map kit"); an interface a member retired stays retired.
 	[
 		"7",
-		"the company app",
-		"Keep one posted app of your own, named company, that shows the plan as a picture, never a list",
+		"the company's map",
+		"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer: under each thing, what is being made there, as deep as you can keep true, and a thing that has an interface of its own opens it. Change it in the run that changes what it shows.",
+		PLANNING,
+	],
+	[
+		"7",
+		"a retired interface stays retired",
+		"An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.",
 		PLANNING,
 	],
 	[
@@ -1157,6 +1203,72 @@ const RULES: [string, string, string, Run[]][] = [
 		PLANNING,
 	],
 	["7", "good will", "by you with good_will_mark, then show the members once what counted", PLANNING],
+	// The company's reading of itself (overlay v18, 14 November 2026; the founder: "It should feel like the company is
+	// conscious almost").
+	[
+		"7",
+		"a founder's ask goes to its owner",
+		"When the ask is work an agent owns, hand it to that owner in the same run and tell the founder who has it; do it yourself only when it is one step and nobody owns it.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"an existing agent only with the same kind of work and room",
+		"give it to an existing agent only when it is the same kind of work and that agent has room, otherwise hire.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"keep the reading",
+		"Keep the company's reading of itself, QorperaOS/vision/reading.md: where the company stands now, in its own words, as we.",
+		COFOUNDER,
+	],
+	["7", "the map's first layer", "and the founders see it as the first layer of the company's map", COFOUNDER],
+	[
+		"7",
+		"when the reading is saved",
+		"Save it with update_reading whenever it has stopped being true (a founder's decision, a finding that changes the picture, a first customer, a hire, a blocker gone) and in every planning run.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"answer as the company",
+		"When a founder asks how the company is doing, answer as the company, from the reading and the team's files",
+		COFOUNDER,
+	],
+	["7", "the senses", "Start with your context's senses", PLANNING],
+	["7", "what the senses show", "a card nobody answered, a login that holds the company still", PLANNING],
+	[
+		"7",
+		"the team decision",
+		"When the company's attention has moved, and every Monday, decide the team for where the company stands now",
+		PLANNING,
+	],
+	["7", "end a role", "whose work is over (end the role with end_role and say why)", PLANNING],
+	[
+		"7",
+		"none is an answer",
+		"update_reading asks for this decision when attention moves, and none with the reason is an answer.",
+		PLANNING,
+	],
+	[
+		"7",
+		"an unanswered vision card",
+		"A card still unanswered after two working days no longer holds the company",
+		FOUNDING,
+	],
+	[
+		"4",
+		"senses in the context",
+		"- senses: the platform's facts about the whole company as this run started",
+		COFOUNDER,
+	],
+	[
+		"9",
+		"the reading in the head",
+		"Its reading, when the company has one, is the company's own account of where it stands now",
+		ALL,
+	],
 	// 8. The employee's role.
 	["8", "own the outcomes", "You own the outcomes in your job description, your list of responsibilities.", EMPLOYEE],
 	[
@@ -1205,6 +1317,24 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	[
 		"8",
+		"the reading at each wake",
+		"At each wake, ask what your responsibilities call for given that, not what your routine said last time: conclude a routine whose purpose has passed and set up the one the work now needs.",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"lessons out of routines",
+		"What you learn belongs in your notebook or the files, never in a routine's instructions.",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"tell the Co-Founder",
+		"When the reading is wrong about your area, or your area has grown into work for another owner, tell the Co-Founder in one line.",
+		EMPLOYEE,
+	],
+	[
+		"8",
 		"voice and escalation",
 		"Use the voice and escalation your job description sets; otherwise be clear, brief and candid.",
 		EMPLOYEE,
@@ -1219,6 +1349,12 @@ const RULES: [string, string, string, Run[]][] = [
 		"8",
 		"words alone stay a file",
 		"Work that is words alone stays a file, linked when a member needs it: no app is better than a page of text.",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"a retired interface",
+		"When save_app refuses an interface because a member retired it, leave it as it is and show that work in a file.",
 		EMPLOYEE,
 	],
 	// 9. The head.
@@ -1409,7 +1545,16 @@ const RULES: [string, string, string, Run[]][] = [
 		"A step that would drop a table or column or delete rows waits for a member's yes",
 		STAFF,
 	],
-	["10", "no secret in a database", "Never put a secret in a step, a query or a row.", ALL],
+	// Master merged up through T3-2 for landing (15 November 2026): a database's changes (slice 7) and the member's yes for a
+	// held step.
+	["10", "a change writes rows", "To add, change or remove rows, write a change and run it with data_change", STAFF],
+	[
+		"10",
+		"a held step is asked on a card",
+		"call data_apply again with the allow its answer gave, which asks them on a card",
+		STAFF,
+	],
+	["10", "no secret in a database", "Never put a secret in a step, a query, a change or a row.", ALL],
 	["10", "answer from what is known", "When asked, answer at once from what you and the files already know", STAFF],
 	[
 		"10",
@@ -1662,9 +1807,62 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		["the hand-off once the founding is done", "close Start with the founders", ["cofounder-member-agreed"]],
 		["calling a skill by name", "/its-name", [...WORKERS, "read-only-worker"]],
 		["the Co-Founder's role", "# Your role: Co-Founder", [...EMPLOYEE, ...WORKERS]],
+		// The reading is the Co-Founder's to keep, its senses too; the owner's wake question is the owner's.
+		[
+			"keeping the reading",
+			"Keep the company's reading of itself",
+			[...EMPLOYEE, ...WORKERS, "private-conversation"],
+		],
+		["the senses", "- senses:", [...EMPLOYEE, ...WORKERS, "private-conversation"]],
+		["the team decision", "decide the team for where the company stands now", ["cofounder-member", ...EMPLOYEE]],
+		[
+			"the owner's wake question",
+			"At each wake, ask what your responsibilities call for",
+			[...COFOUNDER, ...WORKERS],
+		],
+		// The company's map is the Co-Founder's, kept in its planning runs; an owner leaves an interface save_app refuses as
+		// retired as it is.
+		[
+			"the company's map",
+			"Keep the company's map",
+			["cofounder-member", ...EMPLOYEE, ...WORKERS, "private-conversation"],
+		],
+		[
+			"a retired interface stays retired",
+			"organize_apps list marks it, and save_app refuses it with the reason",
+			["cofounder-member", ...EMPLOYEE, ...WORKERS],
+		],
+		[
+			"leaving a retired interface",
+			"When save_app refuses an interface because a member retired it",
+			[...COFOUNDER, ...WORKERS],
+		],
 		["an owner's role", "# Your role: owner of an area", [...COFOUNDER, ...WORKERS]],
+		[
+			"the reflection on the platform's updates",
+			"When your context has updates",
+			["cofounder-member", "cofounder-member-agreed", "cofounder-first-run", ...EMPLOYEE, ...WORKERS],
+		],
 	] as const)("leaves out %s where it does not apply", (_what, words, runs) => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);
+	});
+
+	it("names only kits save_app takes", () => {
+		const named = new Set<string>();
+		const NOT_A_KIT = new Set(["a", "the", "no", "each", "one", "any", "its", "that", "this", "another", "which"]);
+		for (const text of [
+			...compiled.values(),
+			cloudRuntimeHireBehavior("cofounder"),
+			cloudRuntimeHireBehavior("employee"),
+		]) {
+			for (const [, kit] of text.matchAll(/\b([a-z]+) kit(?:'s)?\b/g)) if (!NOT_A_KIT.has(kit!)) named.add(kit!);
+			const list = /so use one nearly always: ([^.]+)\./.exec(text)?.[1] ?? "";
+			for (const [, kit] of list.matchAll(/(?:^|, )([a-z]+) \(/g)) named.add(kit!);
+		}
+		expect([...named]).toContain("map");
+		expect([...named]).toContain("board");
+		expect([...named]).toContain("explainer");
+		for (const kit of named) expect(APP_KITS as readonly string[], kit).toContain(kit);
 	});
 
 	// The founder dropped the wall for agents (14 November 2026): no run names it or its tool. The board kit's mode that
