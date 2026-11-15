@@ -17,24 +17,6 @@ cd "$REPO"
 say "prepare: C2's parts and the nested home"
 bash "$HERE/prove.sh" shell c4c-prep --prepare 2>&1 | tail -4
 
-# LOCAL STAND-IN, this run's copy only (never committed): the home's two calls in the path control's list and the
-# dispatch's, which #1761 adds at the bottom of the stack.
-python3 - <<'PY'
-import re
-for path, old, new in [
-    ("packages/runtime/src/cloud-company-path-control.ts", '\t\t\t"qorpera_describe_company_run_context",\n',
-     '\t\t\t"qorpera_describe_company_run_context",\n\t\t\t"qorpera_company_home_available", // LOCAL STAND-IN (#1761)\n\t\t\t"qorpera_close_home_session", // LOCAL STAND-IN (#1761)\n'),
-    ("packages/runtime/src/cloud-native-host-dispatch.ts", '\t["qorpera_check_native_run", "standard"],\n',
-     '\t["qorpera_check_native_run", "standard"],\n\t["qorpera_close_home_session", "standard"], // LOCAL STAND-IN (#1761)\n\t["qorpera_company_home_available", "standard"], // LOCAL STAND-IN (#1761)\n'),
-]:
-    s = open(path).read()
-    if "LOCAL STAND-IN (#1761)" in s:
-        continue
-    assert s.count(old) == 1, (path, old)
-    open(path, "w").write(s.replace(old, new))
-    print("LOCAL STAND-IN applied to", path)
-PY
-
 install -d -m 0755 $P
 BANNER="--banner:js=import { createRequire as __c4c_require } from \"node:module\"; const require = __c4c_require(import.meta.url);"
 npx esbuild "$HERE/prove-worker.ts" --bundle --platform=node --format=esm --target=node22 --log-level=warning \

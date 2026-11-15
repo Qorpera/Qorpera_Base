@@ -1683,18 +1683,28 @@ it("refuses a Claude Code worker's run here, never running it on Codex", async (
 it("takes a Claude Code worker's run into its own composition, never Codex", async () => {
 	const launched = vi.fn();
 	const fetched = vi.fn(async () => new Response(null, { status: 500 }));
-	const f = await fixture("company-claude-worker", false, undefined, false, false, 10_000, false, {}, {
-		homeChannel: () => ({ open: launched }) as never,
-		claudeWorker: {
-			logins: {
-				origin: "https://vault.example",
-				runtimeToken: "t".repeat(43),
-				companyId: randomUUID(),
-				holder: () => "holder",
-				fetch: fetched,
+	const f = await fixture(
+		"company-claude-worker",
+		false,
+		undefined,
+		false,
+		false,
+		10_000,
+		false,
+		{},
+		{
+			homeChannel: () => ({ open: launched }) as never,
+			claudeWorker: {
+				logins: {
+					origin: "https://vault.example",
+					runtimeToken: "t".repeat(43),
+					companyId: randomUUID(),
+					holder: () => "holder",
+					fetch: fetched,
+				},
 			},
 		},
-	});
+	);
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
 		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
@@ -1720,21 +1730,81 @@ it("takes a Claude Code worker's run into its own composition, never Codex", asy
 	expect(fetched).not.toHaveBeenCalled();
 });
 
+it.each([
+	["an internal error (XX000)", "XX000", false],
+	["a statement timeout (57014)", "57014", true],
+] as const)(
+	"takes a Claude Code worker's home ask that ended on %s as the home's rule says",
+	async (_, sqlstate, lost) => {
+		const journal = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const launched = vi.fn();
+		const ended = new CloudControlRpcEnded("Native control-plane RPC failed (500)", sqlstate);
+		const f = await fixture(
+			"company-claude-worker",
+			false,
+			undefined,
+			false,
+			false,
+			10_000,
+			false,
+			{},
+			{
+				homeChannel: () => ({ open: launched }) as never,
+				claudeWorker: {
+					logins: {
+						origin: "https://vault.example",
+						runtimeToken: "t".repeat(43),
+						companyId: randomUUID(),
+						holder: () => "holder",
+						fetch: vi.fn(async () => new Response(null, { status: 500 })),
+					},
+				},
+			},
+		);
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_company_home_available") throw ended;
+			if (method === "qorpera_claude_worker_run_facts")
+				return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+			return original(method, args, signal);
+		});
+		const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
+			() => null,
+			(thrown: unknown) => thrown,
+		);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "claude-worker" });
+		expect(error === ended).toBe(!lost);
+		expect(journal.mock.calls.some(([line]) => String(line).startsWith("The agent's home was not asked"))).toBe(lost);
+		expect(launched).not.toHaveBeenCalled();
+		journal.mockRestore();
+	},
+);
+
 // Every database call the Claude Code worker's run makes through the runtime's path control is one a real host can make:
 // in HttpCloudCompanyPathControl's list and in the native host dispatch's (NATIVE_HOST_CALLS). The suite's stand-in path
 // control takes any name, so this asks the real two.
 it("makes only calls a real host can make, through the path control and the native host dispatch", async () => {
-	const f = await fixture("company-claude-worker", false, undefined, false, false, 10_000, false, {}, {
-		homeChannel: () => ({ open: vi.fn() }) as never,
-		claudeWorker: {
-			logins: {
-				origin: "https://vault.example",
-				runtimeToken: "t".repeat(43),
-				companyId: randomUUID(),
-				holder: () => "h",
+	const f = await fixture(
+		"company-claude-worker",
+		false,
+		undefined,
+		false,
+		false,
+		10_000,
+		false,
+		{},
+		{
+			homeChannel: () => ({ open: vi.fn() }) as never,
+			claudeWorker: {
+				logins: {
+					origin: "https://vault.example",
+					runtimeToken: "t".repeat(43),
+					companyId: randomUUID(),
+					holder: () => "h",
+				},
 			},
 		},
-	});
+	);
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
 		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };

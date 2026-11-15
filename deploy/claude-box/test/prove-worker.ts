@@ -240,11 +240,6 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			.slice(0, end)
 			.replace(randomBoot, `select pg_temp.h1_up('home-a', '${boot}') \\g /dev/null`)}
 			insert into public.qorpera_claude_sign_in_members(user_id) values (pg_temp.c4_owner_id());
-			-- LOCAL STAND-IN on this test VM only (the lead's word, 14 Nov): the home's two calls are not yet native host calls
-			-- (20260930752000 lists none); #1761 adds them at the bottom of the stack. prove-worker.sh adds them to this
-			-- run's copy of the path control and the dispatch the same way. Nothing of it is in a commit.
-			insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_company_home_available', 'binding'),
-				('qorpera_close_home_session', 'binding') on conflict do nothing;
 			select jsonb_build_object('alice', current_setting('qorpera_test.base_binding')::jsonb,
 				'nativeBinarySha256', (select bundle.manifest ->> 'nativeBinarySha256' from public.qorpera_active_runtime_bundle active
 					join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id),
