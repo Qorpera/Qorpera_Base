@@ -55,17 +55,40 @@ import type {
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
-const state = vi.hoisted(() => ({ controlPath: "" }));
+const state = vi.hoisted(() => ({
+	controlPath: "",
+	/** A pass's hold in the test's hand (passHold), while a test holds it. */
+	passHold: undefined as { ms: number; ends: Set<() => void> } | undefined,
+}));
 // The host waits 500 ms before it looks again at a machine whose LXD effect it just dispatched (reconcileCodingMachine
 // answers "pending" after every create, start, stop and delete). Here LXD's fake settles each one at once, so that wait
 // was 128 of this file's 157 s (256 waits, 8 Nov). It is 5 ms here: the host still waits and looks again as often; only
-// this one delay is shorter. Every other wait (the passes' second, a look's five seconds) is real.
+// this one delay is shorter. Every other wait (the passes' second, a look's five seconds) is real, but for a pass's
+// hold that a test holds in its hand (passHold): that one ends when the test ends it, or on its signal.
 vi.mock("node:timers/promises", async (importOriginal) => {
 	const timers = await importOriginal<typeof TimersPromises>();
 	return {
 		...timers,
-		setTimeout: (delay?: number, value?: unknown, options?: TimerOptions) =>
-			timers.setTimeout(delay === 500 ? 5 : delay, value, options),
+		setTimeout: (delay?: number, value?: unknown, options?: TimerOptions) => {
+			const hold = state.passHold;
+			if (hold === undefined || delay !== hold.ms)
+				return timers.setTimeout(delay === 500 ? 5 : delay, value, options);
+			const signal = options?.signal;
+			return new Promise((settle, fail) => {
+				const end = (): void => {
+					hold.ends.delete(end);
+					signal?.removeEventListener("abort", abort);
+					settle(value);
+				};
+				const abort = (): void => {
+					hold.ends.delete(end);
+					fail(signal?.reason);
+				};
+				if (signal?.aborted) return abort();
+				signal?.addEventListener("abort", abort, { once: true });
+				hold.ends.add(end);
+			});
+		},
 	};
 });
 vi.mock("../src/coding-storage.ts", () => ({
@@ -82,6 +105,7 @@ vi.mock("../src/coding-storage.ts", () => ({
 
 const roots: string[] = [];
 afterEach(async () => {
+	state.passHold = undefined;
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -116,6 +140,7 @@ async function fixture(
 	options: {
 		helperSha256?: string;
 		previousHelperSha256s?: string[];
+		folderHelperSha256s?: string[];
 		folder?: boolean;
 		passHoldMs?: number;
 		guestReadyTimeoutMs?: number;
@@ -1100,6 +1125,41 @@ describe("company machine host", () => {
 		});
 	});
 
+	it("puts to sleep and deletes its own instance an earlier release made, which it never runs, and nobody else's", async () => {
+		const configs = (target: LxdInstanceRecord) => [target.config, target.expandedConfig] as Record<string, string>[];
+		const actions = (f: Awaited<ReturnType<typeof fixture>>) =>
+			f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action);
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		// What a later release finds on an instance an earlier one made: a key it no longer sets, a device it no longer adds.
+		const old = f.instance()!;
+		for (const config of configs(old)) delete config["security.devlxd"];
+		const devices = { ...old.devices, gpu: { type: "gpu", gputype: "virtio" } };
+		Object.assign(old, { devices, expandedDevices: structuredClone(devices) });
+		const drifted = { placementId: id(6), step: "start", state: "failed", code: "COMPANY_MACHINE_DRIFTED" };
+		expect(await f.host.pass(f.signal)).toEqual([drifted]);
+		f.entry.sleepDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.instance()?.status).toBe("Stopped");
+		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+		Object.assign(f.entry, { sleepDue: false, reserved: false, desiredState: "deleted", removeDue: true });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(f.instance()).toBeUndefined();
+		expect(actions(f)).toEqual(["create", "start", "stop", "delete"]);
+		// An instance of this name that is not this placement's own (another binding's digest) is neither stopped nor deleted.
+		const g = await fixture();
+		await g.host.pass(g.signal);
+		for (const config of configs(g.instance()!)) config["user.qorpera.instance_sha256"] = "f".repeat(64);
+		g.entry.sleepDue = true;
+		expect(await g.host.pass(g.signal)).toEqual([{ ...drifted, step: "stop" }]);
+		Object.assign(g.entry, { sleepDue: false, reserved: false, desiredState: "deleted", removeDue: true });
+		expect(await g.host.pass(g.signal)).toEqual([{ ...drifted, step: "delete" }]);
+		expect(g.instance()?.status).toBe("Running");
+		expect(actions(g)).toEqual(["create", "start"]);
+		expect(g.methods()).not.toContain("qorpera_suspend_company_machine");
+		expect(g.methods()).not.toContain("qorpera_release_company_machine");
+	});
+
 	it("waits when SQL refuses the effect, and deletes an asleep machine before releasing it", async () => {
 		const f = await fixture();
 		f.refusals.set("run", "NODE_CAPACITY_EXHAUSTED");
@@ -1434,6 +1494,22 @@ describe("company machine host's wake (perf A5)", () => {
 		for (let tries = 0; tries < 1000 && !done(); tries++) await new Promise((settle) => setTimeout(settle, 5));
 		expect(done()).toBe(true);
 	};
+	/** passHoldMs for the host, and the pass's hold in the test's hand: a pass answers without its steps only once
+	 * the test ends its hold; until then it waits for them, as with no hold. A real hold short enough to test with
+	 * (20 ms) was outrun on a loaded test machine by steps that were meant to end within their pass: a start's whole
+	 * step, or a running guest's, which then came with the pass after (13-14 Nov). */
+	function passHold() {
+		const hold = { ms: 3_600_007, ends: new Set<() => void>() };
+		state.passHold = hold;
+		return {
+			ms: hold.ms,
+			/** Ends the hold of the one pass that waits on it now. */
+			end: () => {
+				expect(hold.ends.size).toBe(1);
+				for (const end of [...hold.ends]) end();
+			},
+		};
+	}
 
 	it("a wake ends the wait before the next pass, and one during a pass leaves no wait after it", async () => {
 		const f = await fixture();
@@ -1524,7 +1600,8 @@ describe("company machine host's wake (perf A5)", () => {
 	});
 
 	it("one placement's slow step does not hold its pass, and none starts another until it ended", async () => {
-		const f = await fixture({ passHoldMs: 20 });
+		const hold = passHold();
+		const f = await fixture({ passHoldMs: hold.ms });
 		await f.host.pass(f.signal);
 		f.running();
 		let free = () => {};
@@ -1537,9 +1614,11 @@ describe("company machine host's wake (perf A5)", () => {
 			return exec(project, name, asked);
 		});
 		f.client.execInstance.mockClear();
-		// The pass answers though the guest does not, without its step.
-		expect(await f.host.pass(f.signal)).toEqual([]);
+		// The pass answers though the guest does not, without its step: its hold ends while the step waits on the guest.
+		const passing = f.host.pass(f.signal);
 		await until(() => f.client.execInstance.mock.calls.length === 1);
+		hold.end();
+		expect(await passing).toEqual([]);
 		// The next one admits and lists, and does not start the placement again.
 		f.calls.length = 0;
 		expect(await f.host.pass(f.signal)).toEqual([]);
@@ -1547,17 +1626,21 @@ describe("company machine host's wake (perf A5)", () => {
 		expect(f.client.execInstance).toHaveBeenCalledTimes(1);
 		free();
 		await f.host.settled();
-		// Then its step comes up again as ever.
+		// Then its step comes up again as ever, in the next pass.
 		f.client.execInstance.mockImplementation(exec);
+		const before = f.client.execInstance.mock.calls.length;
 		await f.host.pass(f.signal);
-		expect(f.client.execInstance.mock.calls.map((call) => call[2][3]).slice(-2)).toEqual([
-			"refresh-lease",
-			"observe",
-		]);
+		expect(
+			f.client.execInstance.mock.calls
+				.slice(before)
+				.map((call) => call[2][3])
+				.slice(-2),
+		).toEqual(["refresh-lease", "observe"]);
 	});
 
 	it("hands over what a step that outlasted its pass came to, with the next pass", async () => {
-		const f = await fixture({ passHoldMs: 20 });
+		const hold = passHold();
+		const f = await fixture({ passHoldMs: hold.ms });
 		await f.host.pass(f.signal);
 		f.running();
 		let free = () => {};
@@ -1569,7 +1652,11 @@ describe("company machine host's wake (perf A5)", () => {
 			await held;
 			throw new Error("LXD instance command failed");
 		});
-		expect(await f.host.pass(f.signal)).toEqual([]);
+		const asked = f.client.execInstance.mock.calls.length;
+		const passing = f.host.pass(f.signal);
+		await until(() => f.client.execInstance.mock.calls.length > asked);
+		hold.end();
+		expect(await passing).toEqual([]);
 		free();
 		await f.host.settled();
 		f.client.execInstance.mockImplementation(exec);
@@ -1904,7 +1991,8 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 	});
 
 	it("gives a guest of an earlier image no view, and fences it while the service may have one reach it", async () => {
-		const pins = { helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] };
+		// One the node's list leaves out (without a list every earlier helper takes the folder).
+		const pins = { helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256], folderHelperSha256s: [] };
 		const f = await fixture({ folder: true, ...pins });
 		expect(await f.host.pass(f.signal)).toEqual([
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
@@ -2435,8 +2523,9 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		await f.host.pass(f.signal);
 		f.running();
 		const [view] = f.views.opened;
-		// The node's helper moved on; the guest still runs, mounted, with the one it booted with.
-		f.restart({ helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		// The node's helper moved on; the guest still runs, mounted, with the one it booted with, which the node's list
+		// leaves out of those that take the folder.
+		f.restart({ helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256], folderHelperSha256s: [] });
 		expect(await f.host.pass(f.signal)).toEqual([
 			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
 		]);
@@ -2461,6 +2550,167 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 			machine: id(6),
 			final: [view.viewId],
 		});
+	});
+
+	// The node's helper moved on while the guest still runs, mounted, with the one it booted with (14 Nov 2026: image
+	// c03bca32's fee9f69d, then 24b9a08e). Without folderHelperSha256s every earlier helper takes the folder as the current
+	// one does; given, only those it names do.
+	const moved = { helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] };
+	const takers = [moved, { ...moved, folderHelperSha256s: [helperSha256] }];
+	const others = [
+		{ ...moved, folderHelperSha256s: [] },
+		{ ...moved, previousHelperSha256s: [helperSha256, "1".repeat(64)], folderHelperSha256s: ["1".repeat(64)] },
+	];
+	const startHeld =
+		"a start shows no output: machine_read shows it once the company folder has released what the machine read";
+	const earlier =
+		"this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)";
+
+	it("after its own restart, keeps /company for a guest whose earlier helper takes the folder", async () => {
+		for (const pins of takers) {
+			const f = await fixture({ folder: true });
+			await f.host.pass(f.signal);
+			f.running();
+			const [view] = f.views.opened;
+			// An executor that names the helper among none that take the folder fences the boot without /company.
+			f.restart(others[0]);
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
+			]);
+			// One whose earlier helpers take it keeps the view the service holds, at its first pass, the machine running.
+			f.restart(pins);
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_HELD" },
+			]);
+			expect(f.service.requests.at(-1)).toEqual({ op: "boundary", machine: id(6), final: [] });
+			expect(f.views.opened).toHaveLength(1);
+			expect(f.handovers).toHaveLength(1);
+			expect(f.order).not.toContain("reboot");
+			// Its receipts say /company is there, and its commands stay fenced.
+			const commandId = randomUUID();
+			f.result(finished);
+			expect((await start(f, commandId)).companyFolder).toEqual({ company: "mounted", heldBack: startHeld });
+			expect(f.service.requests.at(-1)).toMatchObject({ op: "open", machine: id(6), commandId });
+			expect((await read(f, commandId)).companyFolder).toEqual({ company: "mounted" });
+			// The held view is the boot's own: closed by the core, it restarts the guest as any boot's would.
+			f.service.held = [];
+			f.service.closed = [view.viewId];
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_RESTART:VIEW_CLOSED" },
+			]);
+			expect(f.order.at(-1)).toBe("reboot");
+		}
+	});
+
+	it("hands its own view to a guest whose earlier helper takes the folder, at its start or when none is held", async () => {
+		for (const pins of takers) {
+			const f = await fixture({ folder: true, ...pins });
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			expect(f.views.opened).toHaveLength(1);
+			expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual([f.views.opened[0].viewId]);
+			// After the executor's restart with the service holding no view of the machine: a new one, handed over, and
+			// the machine not restarted.
+			const g = await fixture({ folder: true });
+			await g.host.pass(g.signal);
+			g.running();
+			g.service.held = [];
+			g.restart(pins);
+			expect(await g.host.pass(g.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			expect(g.views.opened).toHaveLength(2);
+			expect(g.handovers.map((handover) => handover.stdin.viewId)).toEqual(
+				g.views.opened.map((view) => view.viewId),
+			);
+			expect(g.order).not.toContain("reboot");
+			g.result(finished);
+			expect((await start(g)).companyFolder).toMatchObject({ company: "mounted" });
+		}
+	});
+
+	it("hands its own view to each new boot of a machine whose earlier helper takes the folder, also after its own restart", async () => {
+		for (const pins of takers) {
+			const f = await fixture({ folder: true, ...pins });
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			f.running();
+			const sleepAndWake = async () => {
+				f.entry.sleepDue = true;
+				expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+				// It boots again with the same earlier helper (whichever disk SQL gives it: here the same one).
+				Object.assign(f.entry, { sleepDue: false, runningAt: null, bootId: null });
+				f.reboot();
+			};
+			await sleepAndWake();
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			// And again after the executor restarted while it slept.
+			f.running();
+			await sleepAndWake();
+			f.restart(pins);
+			expect(await f.host.pass(f.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+			]);
+			// Each boot its own view, handed over once, and the last boot's commands run with /company.
+			expect(f.views.opened).toHaveLength(3);
+			expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual(
+				f.views.opened.map((view) => view.viewId),
+			);
+			f.running();
+			f.result(finished);
+			expect((await start(f)).companyFolder).toEqual({ company: "mounted", heldBack: startHeld });
+			expect(f.order).not.toContain("reboot");
+		}
+	});
+
+	it("gives no view to an earlier helper the list leaves out, at its start or after its own restart, and says why", async () => {
+		for (const pins of others) {
+			const g = await fixture({ folder: true, ...pins });
+			expect(await g.host.pass(g.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
+			]);
+			g.running();
+			g.result(finished);
+			expect((await start(g)).companyFolder).toEqual({ company: "none", why: earlier });
+			expect(g.handovers).toEqual([]);
+			expect(g.methods()).not.toContain("qorpera_folder_view_open");
+			// A running boot that took a view under the current helper: fenced after the restart, no new view.
+			const h = await fixture({ folder: true });
+			await h.host.pass(h.signal);
+			h.running();
+			h.restart(pins);
+			expect(await h.host.pass(h.signal)).toEqual([
+				{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
+			]);
+			expect(h.views.opened).toHaveLength(1);
+			expect(h.handovers).toHaveLength(1);
+		}
+	});
+
+	it("lets a list name only an earlier helper it still trusts", async () => {
+		// The current helper, or one not among the earlier ones, is no earlier helper that takes the folder.
+		// A helper named twice is refused too.
+		for (const pins of [
+			{ folderHelperSha256s: [helperSha256] },
+			{ ...moved, folderHelperSha256s: ["1".repeat(64)] },
+			{ ...moved, folderHelperSha256s: [helperSha256, helperSha256] },
+		])
+			await expect(fixture({ folder: true, ...pins })).rejects.toThrow("COMPANY_MACHINE_HOST_CONFIGURATION_INVALID");
+		// A guest whose helper the node does not trust is refused as before, whatever the list names.
+		const g = await fixture({
+			folder: true,
+			helperSha256: "0".repeat(64),
+			previousHelperSha256s: ["1".repeat(64)],
+			folderHelperSha256s: ["1".repeat(64)],
+		});
+		expect(await g.host.pass(g.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "failed", code: "COMPANY_MACHINE_HELPER_DIFFERS" },
+		]);
+		expect(g.handovers).toEqual([]);
 	});
 });
 
@@ -2689,7 +2939,12 @@ describe("company machine host when a test machine's folder can never be proven 
 		expect(await start(f)).toMatchObject({ state: "running" });
 		expect(reboots(f)).toBe(2);
 		// A boot fenced without a view of its own (a guest of an earlier image, while the service held one) restarts too.
-		const g = await fixture({ folder: true, helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		const g = await fixture({
+			folder: true,
+			helperSha256: "0".repeat(64),
+			previousHelperSha256s: [helperSha256],
+			folderHelperSha256s: [],
+		});
 		g.service.held = [randomUUID()];
 		expect(await g.host.pass(g.signal)).toEqual([
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
@@ -3241,14 +3496,19 @@ describe("company machine host's report of the company folder on each receipt (F
 			expect(told(receipt)).toEqual({ company: "none", why });
 		}
 		// A guest of an earlier image.
-		const old = await fixture({ folder: true, helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		const old = await fixture({
+			folder: true,
+			helperSha256: "0".repeat(64),
+			previousHelperSha256s: [helperSha256],
+			folderHelperSha256s: [],
+		});
 		expect(await old.host.pass(old.signal)).toEqual([
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
 		]);
 		old.running();
 		expect(told(await start(old))).toEqual({
 			company: "none",
-			why: "this machine runs an earlier image without the company folder; it gets /company once it sleeps and wakes again",
+			why: "this machine was made from an earlier image that gets no /company; a new machine has it (start a new machine)",
 		});
 		// Views the node closed each time: fenced, and without /company.
 		const closed = await fixture({ folder: true });

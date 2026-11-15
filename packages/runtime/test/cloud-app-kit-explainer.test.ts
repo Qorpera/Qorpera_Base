@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { appGuide } from "@qorpera/runtime/cloud-app-guides";
 import {
 	captionHash,
 	EXPLAINER_ENGINE_JS,
@@ -246,7 +247,7 @@ it("tells the maker what a read of the scenes found, and nothing of a video that
 	expect(notes[1]).toMatch(/^About 4:\d\d of captions: aim at 90 to 120 seconds/);
 });
 
-it("tells an agent on kit only what the engine can draw", async () => {
+it("tells an agent in the explainer's guide only what the engine can draw", async () => {
 	const f = await folderWriterFixture();
 	runs.push(f.run);
 	const [saveApp] = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
@@ -258,8 +259,9 @@ it("tells an agent on kit only what the engine can draw", async () => {
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", null]);
-	const said = kit.description;
+	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", "curve", "stack", "shelf", null]);
+	expect(kit.description).toContain("explainer: a mechanism or a decision that a short narrated video explains.");
+	const said = appGuide("explainer");
 	// Every call the guidance names is one the engine's scene has, and every icon and colour is one it draws.
 	const methods = new Set([...said.matchAll(/\bs\.([A-Za-z]+)\(/g)].map((match) => match[1] as string));
 	expect([...methods].sort()).toEqual(

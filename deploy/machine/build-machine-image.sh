@@ -269,12 +269,17 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	systemd-tmpfiles --create /etc/tmpfiles.d/qorpera-machine-desktop.conf
 	systemctl start qorpera-machine-desktop-dock.path
 	# Checks the reviewed image must pass.
-	# The desktop look. Every picture the look names is there and is what it says: the nine dock icons, and a frame for
-	# each hour of the day for every figure an agent can have and for the neutral backdrop, nothing else beside them.
+	# The desktop look. Every picture the look names is there and is what it says: the nine dock icons, the six with a
+	# mark drawn again for a light ground, and a frame for each hour of the day for every figure an agent can have and
+	# for the neutral backdrop, nothing else beside them.
 	for icon in browser-idle browser-running browser-launching browser-launching-2 browser-failed files-idle files-running \
 		terminal-idle terminal-running; do
 		[[ $(file -b "/usr/share/qorpera-desktop/dock/$icon.png") == "PNG image data, 112 x 112,"* ]] ||
 			{ echo "the dock icon $icon is missing or no 112x112 PNG" >&2; exit 1; }
+	done
+	for icon in browser-running browser-launching browser-launching-2 browser-failed files-running terminal-running; do
+		[[ $(file -b "/usr/share/qorpera-desktop/dock-light/$icon.png") == "PNG image data, 112 x 112,"* ]] ||
+			{ echo "the dock icon $icon for a light ground is missing or no 112x112 PNG" >&2; exit 1; }
 	done
 	for figure in planet acorn flame rocket crown heart star cloud bolt mushroom moon puzzle neutral; do
 		for hour in $(seq -w 0 23); do
@@ -282,8 +287,8 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 				{ echo "the backdrop of $figure for hour $hour is missing or no 1920x1200 PNG" >&2; exit 1; }
 		done
 	done
-	[[ $(find /usr/share/qorpera-desktop -type f | wc -l) == $(( 9 + 13 * 24 )) ]] ||
-		{ echo "the desktop pictures are not the 9 icons and 13 sets of 24 frames" >&2; exit 1; }
+	[[ $(find /usr/share/qorpera-desktop -type f | wc -l) == $(( 9 + 6 + 13 * 24 )) ]] ||
+		{ echo "the desktop pictures are not the 9 icons, the 6 for a light ground and 13 sets of 24 frames" >&2; exit 1; }
 	[[ -z $(find /usr/share/qorpera-desktop ! -user root -o ! -group root -o -perm /022) ]] ||
 		{ echo "someone but root could change a desktop picture" >&2; exit 1; }
 	echo "the desktop pictures take $(du -sk /usr/share/qorpera-desktop | cut -f1) KiB of the image" >&2
@@ -554,6 +559,44 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	done
 	echo rocket >/etc/qorpera-machine/desktop-figure
 	backdrop_is rocket || { echo "the backdrop did not follow the figure rocket: $(shown)" >&2; exit 1; }
+	# The dock stands on the wallpaper (14 Nov 2026): the bar is the ground of the hour frame, the date and the time are
+	# written in the ink of that ground, and both move on while the desktop runs. Looked at on the screen itself, at noon
+	# and at midnight, in zones that have those hours now: an empty spot of the bar is the ground colour; the date and
+	# the time are a few words wide (their colour is read from the format, not shown as words); and the eyes of the
+	# figure are on the backdrop XFCE drew (the rocket: the middle of its first eye is white).
+	zone_at() { # hour
+		local ahead=$(( (10#$1 - 10#$(date -u +%H) + 24) % 24 ))
+		if (( ahead <= 12 )); then echo "Etc/GMT-$ahead"; else echo "Etc/GMT+$(( 24 - ahead ))"; fi
+	}
+	pixel() { # x y, of a new look at the screen
+		desktop shot /tmp/dock-check.png >/dev/null &&
+			python3 -c "import sys; from PIL import Image; print(\"%02x%02x%02x\" % Image.open(\"/tmp/dock-check.png\").convert(\"RGB\").getpixel((int(sys.argv[1]), int(sys.argv[2]))))" "$1" "$2"
+	}
+	written() { # from-x to-x ground: how wide what is written on that part of the bar is, in the look pixel took
+		python3 -c "import sys; from PIL import Image; picture = Image.open(\"/tmp/dock-check.png\").convert(\"RGB\"); ground = tuple(bytes.fromhex(sys.argv[3])); columns = [x for x in range(int(sys.argv[1]), int(sys.argv[2])) if any(picture.getpixel((x, y)) != ground for y in range(924, 996))]; print(columns[-1] - columns[0] + 1 if columns else 0)" "$1" "$2" "$3"
+	}
+	dock_tone() { runuser -u desktop -- cat /run/qorpera-desktop/session/dock.tone 2>/dev/null; }
+	dock_stands_on() { # ground tone time-ink date-ink
+		local date_wide time_wide
+		for _ in $(seq 1 100); do
+			if [[ $(dock_tone) == "$2" && $(look -c xfce4-panel -p /plugins/plugin-3/digital-time-format) == "<span foreground=\"#$3\">%H:%M</span>" &&
+				$(look -c xfce4-panel -p /plugins/plugin-7/digital-date-format) == "<span foreground=\"#$4\">%a %d %b</span>" &&
+				$(pixel 400 960) == "$1" ]]; then
+				date_wide=$(written 0 600 "$1")
+				time_wide=$(written 1000 1600 "$1")
+				(( date_wide > 40 && date_wide < 220 && time_wide > 20 && time_wide < 140 )) && return 0
+			fi
+			sleep 0.1
+		done
+		echo "the bar at 400,960 is $(pixel 400 960), its tone $(dock_tone), the date $(written 0 600 "$1") and the time $(written 1000 1600 "$1") pixels wide, the time format $(look -c xfce4-panel -p /plugins/plugin-3/digital-time-format)" >&2
+		return 1
+	}
+	desktop start --tz "$(zone_at 12)" >/dev/null
+	dock_stands_on f1f2f3 light 1d2026 4b515c || { echo "by day the dock does not stand on the wallpaper" >&2; exit 1; }
+	[[ $(pixel 798 465) == ffffff ]] || { echo "by day the figure has no eyes on the backdrop: $(pixel 798 465)" >&2; exit 1; }
+	desktop start --tz "$(zone_at 0)" >/dev/null
+	dock_stands_on 0e0f11 dark eef0f4 a3abba || { echo "at night the dock does not stand on the wallpaper" >&2; exit 1; }
+	[[ $(pixel 798 465) == ffffff ]] || { echo "at night the figure has no eyes on the backdrop: $(pixel 798 465)" >&2; exit 1; }
 	# The dock clocks and the backdrop hour follow the time zone the desktop is given.
 	desktop start --tz Pacific/Auckland >/dev/null
 	backdrop_is rocket Pacific/Auckland && [[ $(look -c xfce4-panel -p /plugins/plugin-3/timezone) == Pacific/Auckland &&
@@ -580,11 +623,14 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	read -r _ _ _ _ browser_width browser_height _ <<<"$(DISPLAY=:1 wmctrl -lG | grep "Chrome for Testing$")"
 	[[ $browser_width == 1600 ]] && (( browser_height > 800 && browser_height <= 920 )) ||
 		{ echo "the dock browser does not fill the screen above the dock: ${browser_width}x${browser_height}" >&2; exit 1; }
+	# The mark is the one for the ground the dock has at this hour: dark on a light ground ("running light").
+	mark=running
+	[[ $(dock_tone) == dark ]] || mark="running light"
 	for _ in $(seq 1 50); do
-		[[ $(marks) == "running running running " ]] && break
+		[[ $(marks) == "$mark $mark $mark " ]] && break
 		sleep 0.1
 	done
-	[[ $(marks) == "running running running " ]] || { echo "a dock icon does not mark its open program" >&2; exit 1; }
+	[[ $(marks) == "$mark $mark $mark " ]] || { echo "a dock icon does not mark its open program: $(marks)" >&2; exit 1; }
 	desktop click 720 960
 	sleep 1.5
 	[[ $(pgrep -u desktop -o -x chrome) == "$browser" && $(desktop windows | grep -c "Chrome for Testing$") == 1 ]] ||

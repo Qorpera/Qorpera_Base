@@ -9,7 +9,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import http from "node:http";
 import https from "node:https";
 import pg from "pg";
-import { leadingWords, readStatement, VIEWER } from "./sql-text.mjs";
+import { leadingWords, readStatement, VIEWER, wordsWith } from "./sql-text.mjs";
 
 export const DATABASE_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 export const FILE_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -27,6 +27,24 @@ const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
 const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin: 1, qorpera_data_watch: 1 };
 /** Connections a company's database takes, all logins together. */
 const COMPANY_CONNECTIONS = 24;
+/** What a member's yes to a held step is for (§3): the step, the hash of its text, and the hash of what it would
+ * destroy, as `<step>.<sha256>.<sha256>`. A held step's answer carries it as `allow`; a run's pass carries the one a
+ * member said yes to. A step is applied on a yes only when all three are still what the member was shown. */
+const TICKET = /^([0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*)\.([0-9a-f]{64})\.([0-9a-f]{64})$/;
+/** How long a call waits for a connection of a login's own before the pool gives up. */
+const CONNECT_MS = 5_000;
+/** A file of a database's API: a question is a named read in queries/, a change a named write in actions/. */
+const NAMED = { question: { folder: "queries", may: "read" }, change: { folder: "actions", may: "run" } };
+/** The rows this session added or changed, in every table (a catalog's and a large object's too) but Qorpera's own
+ * records beside a company's rows, as PostgreSQL counts them itself: no login of a company's can switch the counts
+ * off. They hold the current transaction's writes and those of the session's earlier transactions that it has not
+ * reported yet (it reports between transactions, at most once a second), so what one transaction wrote is the
+ * difference of two reads inside it. */
+const WRITTEN =
+	"select coalesce(sum(n_tup_ins + n_tup_upd), 0) as rows from pg_catalog.pg_stat_xact_all_tables where schemaname <> 'qorpera_data'";
+/** What a change's one statement may be, by the word PostgreSQL ends it with: a write to rows, or a select (which
+ * may call a function a step made). */
+const CHANGE_COMMANDS = ["INSERT", "UPDATE", "DELETE", "MERGE", "SELECT"];
 
 /** What a company's database sets so that no session in it writes the company's values into the server's log:
  * errors, the statements behind them and their context carry them. The caller hears its errors through the gateway,
@@ -69,15 +87,16 @@ export const LIMITS = Object.freeze({
 	agentMs: 15_000,
 	agentRows: 200,
 	agentBytes: 24 * 1024,
-	/** A named change. */
+	/** A named change: its time, and the most its statement may send back before it is stopped and rolled back. */
 	changeMs: 5_000,
+	changeBytes: 1024 * 1024,
 	/** A step: its own time, and its wait for a lock. */
 	stepMs: 60_000,
 	stepLockMs: 5_000,
 	/** An apply call starts no step once this has passed since it began: it answers `more: true` with the steps still
 	 * waiting, so a call lasts at most this and one step's time. */
 	applyMs: 45_000,
-	/** A file's text. */
+	/** A file's text: a question's or a change's, and a step's. */
 	questionTextBytes: 16 * 1024,
 	stepTextBytes: 64 * 1024,
 	/** Steps a database folder holds, and questions one watch call holds. */
@@ -92,6 +111,8 @@ export const LIMITS = Object.freeze({
 	bodyBytes: 1024 * 1024,
 	/** A company's database, all its rows: at this size its steps stop applying, and its questions still answer. */
 	companyBytes: 1024 ** 3,
+	/** Counting the rows of the tables one describe call shows: all its counts together. */
+	countMs: 1_500,
 });
 
 /** How long past its door's limit the watcher lets a statement run before it ends it. */
@@ -167,7 +188,8 @@ export class Platform {
 			.map((entry) => ({ name: entry.path.slice(entry.path.lastIndexOf("/") + 1), sha256: entry.fileSha256, bytes: entry.bytes }));
 	}
 	/** What a run's data pass kept (`qorpera_data_pass_redeem`, with the publishable key alone), once: `{ environmentId,
-	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }> }`, or null for a pass that answers nothing. */
+	 * runId, requesterUserId, database, files: Map<path, { sha256, bytes }>, allow }`, or null for a pass that answers
+	 * nothing. */
 	async redeemPass(pass) {
 		const headers = { apikey: this.#key, "content-type": "application/json" };
 		// A legacy anon key is a JWT and goes as the bearer too; a publishable key goes alone.
@@ -195,6 +217,7 @@ export class Platform {
 			!ENVIRONMENT.test(answer.requesterUserId ?? "") ||
 			(answer.database !== null && !DATABASE_NAME.test(answer.database ?? "")) ||
 			!files ||
+			(answer.allow !== undefined && answer.allow !== null && !(typeof answer.allow === "string" && TICKET.test(answer.allow))) ||
 			files.length > 1000 ||
 			!files.every(
 				(file) => KEPT_PATH.test(file?.path ?? "") && SHA.test(file.sha256 ?? "") && Number.isSafeInteger(file.bytes) && file.bytes >= 0,
@@ -207,6 +230,8 @@ export class Platform {
 			requesterUserId: answer.requesterUserId,
 			database: answer.database,
 			files: new Map(files.map((file) => [file.path, { sha256: file.sha256, bytes: file.bytes }])),
+			// The held step a member said yes to on its card, which this run used (20260930764000), or none.
+			allow: answer.allow ?? null,
 		};
 	}
 }
@@ -283,6 +308,32 @@ function storeProblem(error) {
 	}
 }
 
+/** `connecting`'s connection when it comes before `until`. Else a refusal, and the connection is given back, unused,
+ * when it does come. */
+function inTime(connecting, until) {
+	return new Promise((resolve, reject) => {
+		let late = false;
+		const timer = setTimeout(
+			() => {
+				late = true;
+				reject(new Refusal(408, "No connection to the data store was free in time"));
+			},
+			Math.max(0, until - Date.now()),
+		);
+		connecting.then(
+			(client) => {
+				clearTimeout(timer);
+				if (late) client.release();
+				else resolve(client);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
+}
+
 export class Gateway {
 	#store;
 	#platform;
@@ -354,7 +405,7 @@ export class Gateway {
 				max: POOL_SIZE[kind ?? user],
 				// A step's login holds one connection, and steps are rare: it is given back soon.
 				idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
-				connectionTimeoutMillis: 5_000,
+				connectionTimeoutMillis: CONNECT_MS,
 				application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
 			});
 			pool.on("error", () => undefined);
@@ -498,7 +549,7 @@ export class Gateway {
 
 	/** A statement's values in its parameters' order. `:viewer` is the member looking; a run, which may read everything in
 	 * the database anyway, may name the member it asks for, else it is the member who asked the run. */
-	#values(caller, statement, params) {
+	#values(caller, statement, params, kind = "question") {
 		if (!params || typeof params !== "object" || Array.isArray(params)) refuse(400, "Parameters are named values");
 		let viewer = caller.userId;
 		if (Object.hasOwn(params, VIEWER)) {
@@ -508,28 +559,30 @@ export class Gateway {
 		}
 		const values = statement.parameters.map((parameter) => {
 			if (parameter === VIEWER) return viewer;
-			if (!Object.hasOwn(params, parameter)) refuse(400, `The question takes :${parameter}`);
+			if (!Object.hasOwn(params, parameter)) refuse(400, `The ${kind} takes :${parameter}`);
 			const value = params[parameter];
 			if (value === null || typeof value === "string") return value;
 			if (typeof value === "number" && Number.isFinite(value)) return String(value);
 			if (typeof value === "boolean") return value ? "true" : "false";
 			return refuse(400, `:${parameter} is text, a number, true, false or null`);
 		});
-		for (const given of Object.keys(params)) if (!statement.parameters.includes(given)) refuse(400, `The question takes no :${given}`);
+		for (const given of Object.keys(params)) if (!statement.parameters.includes(given)) refuse(400, `The ${kind} takes no :${given}`);
 		return values;
 	}
 
-	/** One question, ready to ask: the caller may read its file, the gateway holds its text, its parameters are filled. */
-	async #question(caller, environmentId, asked, texts, proofs = null) {
-		if (!asked || typeof asked !== "object") refuse(400, "Name a question");
-		const { database: name, question, params = {} } = asked;
-		if (typeof name !== "string" || !DATABASE_NAME.test(name) || typeof question !== "string" || !FILE_NAME.test(question) || question.length > 60)
-			refuse(400, "Name a question as <database>/<question>");
-		const path = `data/${name}/queries/${question}.sql`;
+	/** One question or change (`kind`), ready: the caller may read its file, the gateway holds its text, its parameters
+	 * are filled. A member who may read a change's file may run it (§8). */
+	async #named(kind, caller, environmentId, asked, texts, proofs = null) {
+		const { folder, may } = NAMED[kind];
+		if (!asked || typeof asked !== "object") refuse(400, `Name a ${kind}`);
+		const { database: name, [kind]: file, params = {} } = asked;
+		if (typeof name !== "string" || !DATABASE_NAME.test(name) || typeof file !== "string" || !FILE_NAME.test(file) || file.length > 60)
+			refuse(400, `Name a ${kind} as <database>/<${kind}>`);
+		const path = `data/${name}/${folder}/${file}.sql`;
 		const proof = (proofs ?? (await this.#proven(caller, environmentId, [path]))).get(path);
-		// The same answer for a question that is not there and one this member may not read.
-		if (!proof) refuse(404, `No question ${name}/${question} that you may read`);
-		if (proof.bytes > this.#limits.questionTextBytes) refuse(400, `The question's file is larger than ${this.#limits.questionTextBytes / 1024} KiB`);
+		// The same answer for one that is not there and one this member may not read.
+		if (!proof) refuse(404, `No ${kind} ${name}/${file} that you may ${may}`);
+		if (proof.bytes > this.#limits.questionTextBytes) refuse(400, `The ${kind}'s file is larger than ${this.#limits.questionTextBytes / 1024} KiB`);
 		const database = companyDatabase(environmentId);
 		const text = await this.#text(database, proof.sha256, texts, this.#limits.questionTextBytes);
 		if (text === null) return { need: { path, sha256: proof.sha256 } };
@@ -537,7 +590,7 @@ export class Gateway {
 		if (!statement.ok) refuse(400, `${path}: ${statement.problem}`);
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		return { database, name, n, sql: statement.sql, values: this.#values(caller, statement, params) };
+		return { database, name, n, sql: statement.sql, values: this.#values(caller, statement, params, kind), sha256: proof.sha256, statement };
 	}
 
 	/** An agent's read of its own, ready to ask as a question is: one statement, run as the database folder's read role
@@ -559,16 +612,18 @@ export class Gateway {
 
 	/** Asks a ready question as the database folder's read role, in one read-only transaction. `ms`: the most it may
 	 * take, at most a question's limit. `gone`: when it aborts, the statement is cancelled. `agent`: an agent's read,
-	 * with an agent's time, rows and bytes; the watcher knows its backend while it runs. */
-	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false } = {}) {
+	 * with an agent's time, rows and bytes; the watcher knows its backend while it runs. `until`: the time by which it
+	 * must be over, its wait for a connection included: with none free by then it is refused (the read role's
+	 * connections are few, and a call would else wait for one as long as the pool lets it), and the statement gets
+	 * what is left of the time. */
+	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null } = {}) {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const client = await this.#pool(ready.database, `${ready.database}_r${ready.n}`)
-			.connect()
-			.catch((error) => {
-				throw storeProblem(error);
-			});
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
+			throw storeProblem(error);
+		});
 		const pid = client.processID;
 		if (agent) this.#agentReads.set(pid, (this.#agentReads.get(pid) ?? 0) + 1);
 		// A connection its backend left (the watcher ended it) is not given back to the pool.
@@ -583,6 +638,10 @@ export class Gateway {
 		gone?.addEventListener("abort", cancel, { once: true });
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
+			if (until !== null) {
+				ms = Math.min(ms, until - Date.now());
+				if (ms < 1) refuse(408, "No time was left for the statement");
+			}
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
@@ -653,11 +712,162 @@ export class Gateway {
 	}
 
 	async query(caller, environmentId, body) {
-		const ready = await this.#question(caller, environmentId, body, body.texts);
+		const ready = await this.#named("question", caller, environmentId, body, body.texts);
 		if (ready.need) return { need: [ready.need] };
 		const answer = await this.#ask(ready);
 		if (typeof body.etag === "string" && body.etag === answer.etag) return { same: true, etag: answer.etag };
 		return { ...answer, asOf: new Date().toISOString() };
+	}
+
+	/** Runs a ready change as the database folder's write role, in a transaction of its own: one statement, a change's
+	 * time. What it did is judged after it ran and before anything is kept:
+	 * - a statement that is no insert, update, delete, merge or select is rolled back (a `set`, a `copy`, a `do`);
+	 * - so is one that dropped or emptied a table or dropped a column, which the write role can only do through a
+	 *   function a step made: that is a step's work, which waits for a member. Deleting rows is the change's own
+	 *   defined act and runs (§8). The statement's deferred work runs before this check. The transaction is not
+	 *   sealed as a step's is: a seal is a row kept for good, one for every change a company ever runs, and a change
+	 *   may delete rows anyway. So work that a step's function defers a second time, past this check to the commit,
+	 *   is not seen; it can reach only the folder's own tables, whose every row a change may delete as it is;
+	 * - so is one that left a table without Qorpera's triggers;
+	 * - a company at its size limit runs only what writes nothing, so it can make room: a delete. That is judged by
+	 *   what the transaction wrote, as PostgreSQL counted it (`WRITTEN`, read before the statement and after: rows
+	 *   added or changed in any table, a `with` part's and a function's too), not by the statement's word: a delete
+	 *   can carry an insert.
+	 * Unlike a question, a change is committed, so what its statement left on its session (a setting, a session
+	 * advisory lock) would meet the next change on that connection: the connection is given back only after
+	 * `discard all`.
+	 * A write is no subquery, so the statement cannot be wrapped as a question's is, and what it sends back is counted
+	 * as it arrives: past `changeBytes` the connection is closed under it, which rolls the change back (it was never
+	 * committed), so one company's `returning *` cannot fill the gateway's memory. The rows it gives back are cut at an
+	 * answer's rows and bytes, with `more`; the change itself ran whole. `gone`: a caller that left before the change
+	 * began gets none; once begun it runs to its end. */
+	async #act(ready, { agent = false, gone = null } = {}) {
+		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
+		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
+		const ms = this.#limits.changeMs;
+		// The write role holds two connections: a call waits for one a change's time at most, and less than the pool does.
+		const client = await inTime(
+			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(),
+			Date.now() + Math.min(ms, CONNECT_MS - 1_000),
+		).catch((error) => {
+			throw storeProblem(error);
+		});
+		const stream = client.connection.stream;
+		let lost;
+		let cut = false;
+		let taken = 0;
+		const counting = (piece) => {
+			taken += piece.length;
+			if (taken <= this.#limits.changeBytes || cut) return;
+			// Given back as broken: the pool ends it at once, under the statement, and the client says nothing of it.
+			cut = true;
+			this.#letGo(client, true);
+		};
+		const undone = async (status, message) => {
+			await client.query("rollback");
+			refuse(status, message);
+		};
+		try {
+			if (gone?.aborted) refuse(499, "The caller went away");
+			await client.query(
+				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
+			);
+			// Whether the company is at its limit is what the watcher last found, as this change began.
+			const full = this.#full.has(ready.database);
+			const before = full ? Number((await client.query(WRITTEN)).rows[0].rows) : 0;
+			let result;
+			stream.on("data", counting);
+			try {
+				// The extended protocol: PostgreSQL refuses a second statement in the text.
+				result = await client.query({ text: ready.sql, values: ready.values, rowMode: "array", queryMode: "extended", types: TEXT_TYPES });
+			} finally {
+				stream.off("data", counting);
+			}
+			// The whole answer may have come in one piece, counted after the statement was read as done.
+			if (cut) throw new Error("The change gave back too much");
+			if (!CHANGE_COMMANDS.includes(result.command))
+				await undone(400, "A change is one insert, update, delete or merge, or a select that calls a function: nothing was changed");
+			await client.query("set constraints all immediate");
+			const effects = (await client.query("select kind, object, rows from qorpera_data.effects()")).rows;
+			const beyond = effects.filter((effect) => effect.kind !== "deleted rows");
+			if (beyond.length > 0)
+				await undone(
+					400,
+					`A change adds, changes and deletes rows. This one also ${beyond.map((effect) => `${effect.kind} ${effect.object}`).join(", ")}, which is a step's work: nothing was changed`,
+				);
+			const unwatched = (await client.query("select table_name, problem from qorpera_data.unwatched($1)", [ready.name])).rows;
+			if (unwatched.length > 0)
+				await undone(
+					400,
+					`A change may not remove or switch off Qorpera's triggers (${unwatched.map((row) => `${row.table_name} ${row.problem}`).join("; ")}): nothing was changed`,
+				);
+			if (full && Number((await client.query(WRITTEN)).rows[0].rows) > before)
+				await undone(
+					507,
+					`This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: only a change that deletes rows and writes none runs until there is room`,
+				);
+			await client.query("commit");
+			// How many rows the statement itself wrote, as PostgreSQL counts them; a select says none.
+			const answer = result.command === "SELECT" ? {} : { changed: result.rowCount ?? 0 };
+			if (result.fields.length === 0) return answer;
+			const rows = [];
+			let bytes = 0;
+			let more = result.rows.length > maxRows;
+			for (const row of result.rows.slice(0, maxRows)) {
+				const shapedRow = row.map((value, index) => shaped(value, result.fields[index].dataTypeID));
+				bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
+				if (bytes > maxBytes) {
+					more = true;
+					break;
+				}
+				rows.push(shapedRow);
+			}
+			return { ...answer, columns: result.fields.map((field) => field.name), rows, more };
+		} catch (error) {
+			if (cut)
+				throw new Refusal(
+					400,
+					`The change gives back more than ${amount(this.#limits.changeBytes)}, so it was stopped and nothing was changed: give back less, such as only an id`,
+				);
+			if (!(error instanceof Refusal) && !/^(57P0[123]|08...)$/.test(error?.code ?? "") && error?.code) {
+				await client.query("rollback").catch(() => undefined);
+			} else if (!(error instanceof Refusal)) lost = error;
+			throw storeProblem(error);
+		} finally {
+			if (!cut) {
+				// Nothing of this change stays on the session for the next one; a connection that cannot be cleaned is closed.
+				if (!lost)
+					await client.query("discard all").catch((error) => {
+						lost = error;
+					});
+				this.#release(client, lost);
+			}
+		}
+	}
+
+	/** A named change (§8): its file read as the caller, one statement run as the database folder's write role.
+	 * `preview: true` runs nothing: it answers the file's words with the call's values in place, every value the
+	 * statement takes, and the file's hash, which is what a member is shown before they say yes. `sha256`: the hash
+	 * the member was shown; a file that changed since is not run. `agent`: an agent's rows and bytes for what the
+	 * change gives back. */
+	async change(caller, environmentId, body, { agent = false, gone = null } = {}) {
+		if (body.sha256 !== undefined && (typeof body.sha256 !== "string" || !SHA.test(body.sha256))) refuse(400, "sha256 is the hash a preview gave");
+		const ready = await this.#named("change", caller, environmentId, body, body.texts);
+		if (ready.need) return { need: [ready.need] };
+		if (body.preview === true) {
+			// The member looking reads as "you": their id says nothing to them.
+			const values = new Map(
+				ready.statement.parameters.map((name, index) => [name, name === VIEWER && !caller.run ? "you" : ready.values[index]]),
+			);
+			return {
+				words: wordsWith(ready.statement.words, values),
+				values: [...values].filter(([name]) => name !== VIEWER).map(([name, value]) => ({ name, value })),
+				sha256: ready.sha256,
+			};
+		}
+		if (body.sha256 !== undefined && body.sha256 !== ready.sha256) refuse(409, "The change's file was changed since it was shown: ask again");
+		return { ...(await this.#act(ready, { agent, gone })), asOf: new Date().toISOString() };
 	}
 
 	/** One connection that listens on a company's database, shared by every watch call on it, open only while one is. */
@@ -753,7 +963,7 @@ export class Gateway {
 		const need = [];
 		for (const watched of watches) {
 			if (stop.aborted) return { same: true, partial: true };
-			const one = await this.#question(caller, environmentId, watched, body.texts, proofs);
+			const one = await this.#named("question", caller, environmentId, watched, body.texts, proofs);
 			if (one.need) need.push(one.need);
 			ready.push(one);
 		}
@@ -926,7 +1136,12 @@ export class Gateway {
 	}
 
 	/** Applies a database folder's waiting steps, in order. Anyone who may read the steps may ask for it: a step that is
-	 * live in the folder was put there by someone the folder let write it. */
+	 * live in the folder was put there by someone the folder let write it. A step that would destroy data is held, and
+	 * its answer carries `allow`, what a member's yes is for. It is applied only for a run whose pass carries that very
+	 * `allow` (a member said yes on its card, and the platform kept it in the pass), and only while the step's text and
+	 * what it destroys are still what the member was shown.
+	 * `check: <allow>` applies nothing: it runs the held step named, which must be the next to apply, rolls it back
+	 * and answers `{ step, destroys }` when both are still as `allow` says. That is what the card shows. */
 	async apply(caller, environmentId, body) {
 		const began = Date.now();
 		const name = body.database;
@@ -972,6 +1187,23 @@ export class Gateway {
 		for (const step of waiting)
 			if (newest !== undefined && step.name.slice(0, 3) <= newest.slice(0, 3))
 				refuse(400, `Step ${step.name} is numbered at or below ${newest}, which is applied: give it a higher number`);
+		const check = body.check === undefined ? null : TICKET.exec(typeof body.check === "string" ? body.check : "");
+		if (body.check !== undefined) {
+			if (!check) refuse(400, "check is a held step's allow");
+			const [, stepName, stepSha] = check;
+			if (applied.has(stepName)) refuse(409, `Step ${stepName} is applied already`);
+			const step = waiting.find((one) => one.name === stepName);
+			if (!step) refuse(404, `No step ${stepName} in ${root}/tables`);
+			if (waiting[0] !== step) refuse(409, `Step ${waiting[0].name} waits before ${stepName}: apply the steps before it first`);
+			if (step.sha256 !== stepSha) refuse(409, `Step ${stepName} was changed since it was held: apply again to see what it would destroy now`);
+			const text = await this.#text(database, step.sha256, body.texts, this.#limits.stepTextBytes);
+			if (text === null) return { need: [{ path: `${root}/tables/${step.name}.sql`, sha256: step.sha256 }] };
+			const outcome = await this.#step(database, name, n, step, text, { dry: true });
+			if (outcome.state === "failed") refuse(400, `Step ${stepName} fails: ${outcome.detail}`);
+			if (outcome.allow === undefined) refuse(409, `Step ${stepName} destroys nothing now: apply it without allow`);
+			if (outcome.allow !== body.check) refuse(409, `What step ${stepName} would destroy changed since it was held: apply again to see it`);
+			return { step: stepName, destroys: outcome.destroys };
+		}
 		const need = [];
 		const texts = new Map();
 		for (const step of waiting) {
@@ -986,15 +1218,17 @@ export class Gateway {
 				for (const left of waiting.slice(index)) results.push({ name: left.name, state: "waiting" });
 				return { applied: false, more: true, results };
 			}
-			const outcome = await this.#step(database, name, n, step, texts.get(step.name));
+			const outcome = await this.#step(database, name, n, step, texts.get(step.name), { allow: caller.allow ?? null });
 			results.push(outcome);
 			if (outcome.state !== "applied") break;
 		}
 		return { applied: results.every((result) => result.state === "applied" || result.state === "already"), results };
 	}
 
-	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing. */
-	async #step(database, name, n, step, text) {
+	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing, or if what
+	 * it destroyed is exactly what `allow` says a member said yes to (the step, its text's hash, and the hash of what it
+	 * destroys). `dry`: nothing is kept; the answer says what the step would destroy, with the `allow` for it. */
+	async #step(database, name, n, step, text, { allow = null, dry = false } = {}) {
 		const client = await this.#pool(database, `${database}_o${n}`).connect();
 		try {
 			await client.query(
@@ -1034,13 +1268,27 @@ export class Gateway {
 					detail: `A step may not remove or switch off Qorpera's triggers: ${unwatched.map((row) => `${row.table_name} ${row.problem}`).join("; ")}`,
 				};
 			}
-			if (effects.length > 0) {
+			const destroys = effects.map((effect) => ({ what: effect.kind, object: effect.object, ...(effect.rows === null ? {} : { rows: Number(effect.rows) }) }));
+			// A yes is for the step by name, its text and all it destroys, counted rows included: the hash of each.
+			const ticket =
+				destroys.length === 0
+					? null
+					: `${step.name}.${step.sha256}.${sha256(JSON.stringify(destroys.map((one) => [one.what, one.object, one.rows ?? null])))}`;
+			if (dry) {
+				await client.query("rollback");
+				return { name: step.name, state: ticket ? "held" : "harmless", ...(ticket ? { destroys, allow: ticket } : {}) };
+			}
+			if (ticket && allow !== ticket) {
 				await client.query("rollback");
 				return {
 					name: step.name,
 					state: "held",
-					detail: "It would destroy data, which waits for a member",
-					destroys: effects.map((effect) => ({ what: effect.kind, object: effect.object, ...(effect.rows === null ? {} : { rows: Number(effect.rows) }) })),
+					detail:
+						allow && TICKET.exec(allow)?.[1] === step.name
+							? "It would destroy data, and not what a member said yes to: it waits for a new yes"
+							: "It would destroy data, which waits for a member",
+					destroys,
+					allow: ticket,
 				};
 			}
 			await client.query("select qorpera_data.record_step($1, $2, $3)", [name, step.name, step.sha256]);
@@ -1053,7 +1301,8 @@ export class Gateway {
 				const told = storeProblem(error);
 				return { name: step.name, state: "failed", detail: told.message, ...told.extra };
 			}
-			return { name: step.name, state: "applied" };
+			// Applied on a member's yes: what it destroyed, as they were shown it.
+			return { name: step.name, state: "applied", ...(ticket ? { destroyed: destroys } : {}) };
 		} catch (error) {
 			await client.query("rollback").catch(() => undefined);
 			throw storeProblem(error);
@@ -1071,7 +1320,7 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) return { database: name, applied: [], tables: [] };
-		const stored = await this.#stored(database, name);
+		const stored = await this.#stored(database, name, n, Date.now() + this.#limits.countMs);
 		return {
 			database: name,
 			applied: stored.applied.map((step) => ({ name: step.name, at: step.at })),
@@ -1080,13 +1329,20 @@ export class Gateway {
 		};
 	}
 
-	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size. */
-	async #stored(database, name) {
+	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size.
+	 * A table's `rows` are counted now, as the folder's read role `n`, while the time until `until` lasts (`#count`):
+	 * `rows` is never a guess. One that was not counted carries PostgreSQL's own estimate as `rowsAbout` when it has
+	 * one, under a name of its own so that nothing that passes `rows` on can pass a guess for a count (an agent's
+	 * shorter describe keeps a table's name, `rows` and columns). It carries neither when PostgreSQL has none: the
+	 * estimate is unset until a table is first analysed, and autovacuum leaves a table of a few rows alone, so on its
+	 * own it said 0 for a small table that held rows. */
+	async #stored(database, name, n, until) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
 		const [steps, columns, size] = await Promise.all([
 			pool.query("select name, sha256, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
 			pool.query(
-				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.reltuples::bigint as rows
+				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type,
+					c.relkind as kind, c.relpages as pages, c.reltuples::bigint as estimate
 				from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1
 				join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
 				where c.relkind in ('r', 'p', 'v', 'm') order by c.relname, a.attnum`,
@@ -1098,14 +1354,47 @@ export class Gateway {
 		});
 		const tables = new Map();
 		for (const row of columns.rows) {
-			if (!tables.has(row.table)) tables.set(row.table, { name: row.table, rows: Math.max(0, Number(row.rows)), columns: [] });
+			if (!tables.has(row.table))
+				tables.set(row.table, { name: row.table, kind: row.kind, pages: Number(row.pages), estimate: Number(row.estimate), counted: null, columns: [] });
 			tables.get(row.table).columns.push({ name: row.column, type: row.type });
 		}
+		await this.#count(database, name, n, [...tables.values()], until);
 		return {
 			applied: steps.rows.map((row) => ({ name: row.name, sha256: row.sha256, at: row.applied_at.toISOString() })),
-			tables: [...tables.values()],
+			tables: [...tables.values()].map((table) => ({
+				name: table.name,
+				// A view holds no rows of its own, so PostgreSQL's number for it says nothing.
+				...(table.counted !== null
+					? { rows: table.counted }
+					: table.estimate >= 0 && table.kind !== "v"
+						? { rowsAbout: table.estimate }
+						: {}),
+				columns: table.columns,
+			})),
 			companyBytes: Number(size.rows[0].bytes),
 		};
+	}
+
+	/** Counts the rows of a database folder's `tables` (`counted`), each as a question of its own: the folder's read
+	 * role, a read-only transaction, a question's time at most. Tables and materialized views go first, the ones
+	 * PostgreSQL holds as smallest before the others, then partitioned tables, then views, whose count runs their own
+	 * statement. Every count is over by `until`, its wait for one of the read role's connections included, and
+	 * nothing is started after it. A count that ran out of time, found no connection free or was refused leaves its
+	 * table uncounted: a describe is never refused over a count. The table is named with its schema: a name alone
+	 * would find a catalog relation of the same name first (`pg_tables`), whatever the search path. */
+	async #count(database, name, n, tables, until) {
+		const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
+		const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
+		for (const table of order) {
+			if (until - Date.now() < 1) return;
+			const sql = `select count(*) from ${quoted(name)}.${quoted(table.name)}`;
+			const answer = await this.#ask({ database, name, n, sql, values: [] }, { until }).catch((error) => {
+				if (error instanceof Refusal) return null;
+				throw error;
+			});
+			const rows = Number(answer?.rows[0]?.[0]);
+			if (answer && Number.isSafeInteger(rows) && rows >= 0) table.counted = rows;
+		}
 	}
 
 	/** Whether the company's database exists yet: a company that never applied a step has none. */
@@ -1123,8 +1412,8 @@ export class Gateway {
 
 	/** data_describe (§6): the databases the run may read, or the one it names, as the folder and the store hold them:
 	 * each one's name and words from its database.toml, its steps (applied, waiting, changed after they were applied,
-	 * gone), its tables and columns, its questions with their words; and the company database's size against its
-	 * limit. The texts it does not hold come from the caller, as for a question. */
+	 * gone), its tables and columns, its questions and its changes with their words; and the company database's size
+	 * against its limit. The texts it does not hold come from the caller, as for a question. */
 	async runDescribe(caller, environmentId, body) {
 		const asked = body.database ?? null;
 		if (asked !== null && (typeof asked !== "string" || !DATABASE_NAME.test(asked))) refuse(400, "Name a database");
@@ -1137,7 +1426,8 @@ export class Gateway {
 		const need = [];
 		for (const name of wanted) {
 			for (const [path, file] of caller.files) {
-				if (path !== `data/${name}/database.toml` && !(path.startsWith(`data/${name}/queries/`) && path.endsWith(".sql"))) continue;
+				const within = path.startsWith(`data/${name}/`) ? path.slice(`data/${name}/`.length) : "";
+				if (within !== "database.toml" && !/^(queries|actions)\/[^/]+\.sql$/.test(within)) continue;
 				if (file.bytes > this.#limits.questionTextBytes) continue;
 				const text = await this.#text(exists ? database : null, file.sha256, body.texts, this.#limits.questionTextBytes);
 				if (text === null) need.push({ path, sha256: file.sha256 });
@@ -1157,9 +1447,11 @@ export class Gateway {
 						})
 				).rows[0].bytes,
 			);
+		// One call's counts share one time, however many databases it shows.
+		const countUntil = Date.now() + this.#limits.countMs;
 		for (const name of wanted) {
 			const n = exists ? await this.#folder(database, name) : null;
-			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name);
+			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
 			const root = `data/${name}`;
 			const steps = [...caller.files]
 				.filter(([path]) => path.startsWith(`${root}/tables/`) && path.endsWith(".sql"))
@@ -1168,6 +1460,23 @@ export class Gateway {
 			const live = new Map(steps.map((step) => [step.name, step.sha256]));
 			const applied = new Map(stored.applied.map((step) => [step.name, step]));
 			const toml = texts.get(`${root}/database.toml`) ?? "";
+			// A question's or a change's words, and its parameters when it reads as one statement; a file larger than one
+			// may be has neither.
+			const named = (folder) =>
+				[...caller.files]
+					// The files directly in the folder, as their texts were asked for: one in a folder below is no question.
+					.filter(([path]) => path.startsWith(`${root}/${folder}/`) && /^[^/]+\.sql$/.test(path.slice(`${root}/${folder}/`.length)))
+					.map(([path]) => {
+						const text = texts.get(path);
+						const statement = text === undefined ? null : readStatement(text);
+						return {
+							name: path.slice(`${root}/${folder}/`.length, -4),
+							words: text === undefined ? null : leadingWords(text).join(" "),
+							parameters: statement?.ok ? statement.parameters : null,
+							...(statement && !statement.ok ? { problem: statement.problem } : {}),
+						};
+					})
+					.sort((a, b) => (a.name < b.name ? -1 : 1));
 			const word = (key) => {
 				const found = new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")\\s*(#.*)?$`, "m").exec(toml)?.[1];
 				try {
@@ -1187,21 +1496,8 @@ export class Gateway {
 					missing: stored.applied.filter((step) => !live.has(step.name)).map((step) => step.name),
 				},
 				tables: stored.tables,
-				// A question's words, and its parameters when it reads as one statement; a file larger than a question may
-				// be has neither.
-				questions: [...caller.files]
-					.filter(([path]) => path.startsWith(`${root}/queries/`) && path.endsWith(".sql"))
-					.map(([path]) => {
-						const text = texts.get(path);
-						const statement = text === undefined ? null : readStatement(text);
-						return {
-							name: path.slice(`${root}/queries/`.length, -4),
-							words: text === undefined ? null : leadingWords(text).join(" "),
-							parameters: statement?.ok ? statement.parameters : null,
-							...(statement && !statement.ok ? { problem: statement.problem } : {}),
-						};
-					})
-					.sort((a, b) => (a.name < b.name ? -1 : 1)),
+				questions: named("queries"),
+				changes: named("actions"),
 			});
 		}
 		return { databases, companyBytes, limitBytes: this.#limits.companyBytes };
@@ -1211,10 +1507,15 @@ export class Gateway {
 	async runQuery(caller, environmentId, body) {
 		if (body.sql !== undefined && body.question !== undefined) refuse(400, "Ask a question or give a read, not both");
 		const ready =
-			body.sql !== undefined ? await this.#ownRead(caller, environmentId, body) : await this.#question(caller, environmentId, body, body.texts);
+			body.sql !== undefined ? await this.#ownRead(caller, environmentId, body) : await this.#named("question", caller, environmentId, body, body.texts);
 		if (ready.need) return { need: [ready.need] };
 		const { columns, rows, more } = await this.#ask(ready, { agent: true });
 		return { columns, rows, more, asOf: new Date().toISOString() };
+	}
+
+	/** data_change (§8): a named change, with an agent's rows and bytes for what it gives back. */
+	runChange(caller, environmentId, body) {
+		return this.change(caller, environmentId, body, { agent: true });
 	}
 
 	/** The watcher (§3), one look with `qorpera_data_watch`. It cancels any statement of a database folder's login that
@@ -1257,7 +1558,7 @@ export class Gateway {
 
 	/** A member's request, begun as that member. */
 	async handle(method, path, headers, read, gone) {
-		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe)$/.exec(path);
+		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change)$/.exec(path);
 		if (!route) refuse(404, "Not a call the data gateway answers");
 		if (method !== "POST") refuse(405, "Use POST");
 		const token = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(headers.authorization ?? "")?.[1];
@@ -1290,6 +1591,8 @@ export class Gateway {
 				return this.watch(caller, environmentId, body, gone);
 			case "apply":
 				return this.apply(caller, environmentId, body);
+			case "change":
+				return this.change(caller, environmentId, body, { gone });
 			default:
 				return this.describe(caller, environmentId, body);
 		}
@@ -1299,7 +1602,7 @@ export class Gateway {
 	 * A wrong token, no pass and a pass that redeems to nothing get one answer, 401, with no detail. The pass names the
 	 * company, the run's requester and the files the run may read; nothing else in the request does. */
 	async handleRun(method, path, headers, read) {
-		const route = /^\/v1\/run-data\/(describe|apply|query)$/.exec(path);
+		const route = /^\/v1\/run-data\/(describe|apply|query|change)$/.exec(path);
 		if (!this.#runToken) refuse(404, "Not a call the data gateway answers");
 		if (!bearerIs(headers.authorization, this.#runToken)) refuse(401, "Not allowed");
 		if (!route) refuse(404, "Not a call the data gateway answers");
@@ -1317,12 +1620,14 @@ export class Gateway {
 			refuse(400, "Texts are given by their hash");
 		const kept = await this.#platform.redeemPass(body.pass);
 		if (!kept) refuse(401, "Not allowed");
-		const caller = { run: true, userId: kept.requesterUserId, key: `run:${sha256(body.pass)}`, files: kept.files };
+		const caller = { run: true, userId: kept.requesterUserId, key: `run:${sha256(body.pass)}`, files: kept.files, allow: kept.allow };
 		switch (route[1]) {
 			case "query":
 				return this.runQuery(caller, kept.environmentId, body);
 			case "apply":
 				return this.apply(caller, kept.environmentId, body);
+			case "change":
+				return this.runChange(caller, kept.environmentId, body);
 			default:
 				return this.runDescribe(caller, kept.environmentId, body);
 		}
@@ -1406,7 +1711,7 @@ export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
 
 /** The run door (SLICE5; nodework/road.md part (c)): its own listener, on its own host and port, for agents' tools on
  * the nodes. TLS when a certificate and key are given (PEM text); plain only for a test on loopback. It answers only
- * `POST /v1/run-data/(describe|apply|query)`, and only when the gateway holds the node's private token. */
+ * `POST /v1/run-data/(describe|apply|query|change)`, and only when the gateway holds the node's private token. */
 export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null } = {}) {
 	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
 	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");

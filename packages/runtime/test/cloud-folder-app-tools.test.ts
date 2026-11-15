@@ -1,5 +1,6 @@
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { JsonValue } from "@qorpera/contracts";
+import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
 import { captionHash, EXPLAINER_ENGINE_JS, explainerPage } from "@qorpera/runtime/cloud-app-kit-explainer";
 import { appLookNotes, cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
@@ -18,7 +19,9 @@ afterEach(() => {
 	for (const run of runs.splice(0)) run.close();
 });
 
-async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
+/** A run's app and file tools over a folder. The run has read every guide, as a run does before it writes a kit's
+ * file, unless `unread`. */
+async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}, unread = false) {
 	const f = await folderWriterFixture(seed);
 	runs.push(f.run);
 	const tools = [
@@ -31,6 +34,7 @@ async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
 		const prepared = (await tool(name).prepare?.(parsed, f.context)) ?? parsed;
 		return tool(name).execute(prepared, f.context);
 	};
+	if (!unread) for (const about of APP_GUIDES) await call("app_guide", { about });
 	return { ...f, tools, tool, call };
 }
 
@@ -57,11 +61,12 @@ const save = (name: string, key: string, m: JsonValue, files: { path: string; te
 	files,
 });
 
-it("offers save_app and post_app as Company File tools", async () => {
+it("offers save_app and post_app as Company File tools, and app_guide as the runtime's own", async () => {
 	const f = await fixture();
-	expect(f.tools.slice(0, 2).map((tool) => [tool.name, tool.source])).toEqual([
+	expect(f.tools.slice(0, 3).map((tool) => [tool.name, tool.source])).toEqual([
 		["save_app", "company_file"],
 		["post_app", "company_file"],
+		["app_guide", "runtime"],
 	]);
 });
 
@@ -82,14 +87,16 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
 		"Give the page something to do: a control that changes what it shows, or a choice a member makes (writes).",
 		"Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
-		"Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: files says which",
+		"Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: app_guide style says which",
+		"Draw what the company already holds from its live data instead of typing it in: app_guide reads says how.",
 		"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.",
 	])
 		expect(tool.description).toContain(rule);
 	// The web opens an app's links and gives it a base style now: the description no longer says otherwise.
 	expect(tool.description).not.toMatch(/does not open inside an app|copied in because/);
-	// How a page reads live data is said on reads, which the schema's 64 KiB hold.
-	const schema = JSON.stringify(tool.inputSchema);
+	// How a page reads live data is the guide reads: a field's description never reached a model from a schema this
+	// long (14 November 2026).
+	const schema = JSON.stringify(appGuide("reads"));
 	for (const call of [
 		"qorpera.read(path) gives a file's text",
 		"qorpera.table(name) gives {name, columns, rows}",
@@ -97,7 +104,7 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 		"qorpera.agents() gives each agent's name, role and working",
 		"qorpera.onChange(fn) calls fn when the company folder changed",
 		"qorpera.questions() gives your and the other agents' open questions to this member that point at this app",
-		"Reading changes nothing: writes says what a page may ask a member to change.",
+		"Reading changes nothing: app_guide writes says what a page may ask a member to change.",
 		// The bridge gives an app 120 calls a minute and counts todos as ten, and a busy company's folder changes every
 		// few seconds: a page that drew on every change would spend that in seconds and then show an error.
 		"after a change draw again once, no sooner than ten seconds after the last draw however many changes arrive",
@@ -106,7 +113,7 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 	])
 		expect(schema).toContain(call);
 	// So is the base style a page starts from: its variables, where the company's colours come from, light and dark.
-	const files = JSON.stringify((tool.inputSchema as { properties: { files: unknown } }).properties.files);
+	const files = JSON.stringify(appGuide("style"));
 	for (const said of [
 		"Each page starts from Qorpera's base style, which sits in a layer under your own CSS, so any rule you write wins over it",
 		"a centred column at most 800 px wide (set body's margin yourself to use the whole width)",
@@ -122,13 +129,11 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 		expect(files).toContain(said);
 });
 
-it("tells on writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
+it("tells in the guide writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
 	expect(tool.description).toContain("writes: what it may ask a member to change");
-	const properties = (tool.inputSchema as { properties: { manifest: { properties: Record<string, unknown> } } })
-		.properties.manifest.properties;
-	const writes = JSON.stringify(properties.writes);
+	const writes = appGuide("writes");
 	for (const rule of [
 		// The gate: the page asks, the member allows on a bar the page cannot draw, and the save is the member's own.
 		"A page changes nothing by itself",
@@ -150,6 +155,190 @@ it("tells on writes how a page lets a member act, and that nothing is saved with
 		"manage_routine with a trigger of kind file_change and path QorperaOS/tables/<name>/rows.csv",
 	])
 		expect(writes).toContain(rule);
+});
+
+it("keeps save_app's schema small enough that the model receives its fields' descriptions", async () => {
+	const f = await fixture();
+	// The patched Codex sends no field description of a tool whose schema is 5,000 bytes or more as it sends it (probed
+	// 14 November 2026: 4,991 bytes kept them, 5,000 lost every one), and save_app's was about 40 KB: no model had read
+	// a guide. What it sends is no longer than this, since it leaves the bounds out.
+	for (const name of ["save_app", "post_app", "app_guide"]) {
+		expect(Buffer.byteLength(JSON.stringify(f.tool(name).inputSchema)), name).toBeLessThan(4600);
+		expect(Buffer.byteLength(f.tool(name).description), name).toBeLessThanOrEqual(4096);
+	}
+	const properties = (
+		f.tool("save_app").inputSchema as {
+			properties: { manifest: { properties: Record<string, { description?: string }> } };
+		}
+	).properties.manifest.properties;
+	// Which kit draws which thing is where the agent chooses; what the kit's file holds is its guide.
+	for (const said of [
+		"or null for a page you write by hand",
+		"model: how something works in numbers",
+		"board: real things as pictures",
+		"path: a way through steps with the evidence for each",
+		"object: a physical thing a member turns in the hand",
+		"curve: one value over time",
+		"stack: things that want a member's yes",
+		"shelf: the company's own things side by side",
+		"explainer: a mechanism or a decision that a short narrated video explains.",
+	])
+		expect(properties.kit?.description).toContain(said);
+	expect(properties.reads?.description).toContain("app_guide reads says how");
+	expect(properties.writes?.description).toContain("app_guide writes says how");
+	expect(f.tool("save_app").description).toContain(
+		"app_guide says what its file holds: read the kit's guide before you write the file, since a kit's file is saved only in a run that has read it.",
+	);
+});
+
+it("answers a guide's text, and nothing of the company", async () => {
+	const f = await fixture({}, true);
+	const tool = f.tool("app_guide");
+	expect((tool.inputSchema as { properties: { about: { enum: string[] } } }).properties.about.enum).toEqual([
+		"look",
+		"model",
+		"board",
+		"path",
+		"object",
+		"curve",
+		"stack",
+		"shelf",
+		"explainer",
+		"style",
+		"reads",
+		"writes",
+		"icons",
+	]);
+	for (const about of APP_GUIDES) expect(tool.description, about).toContain(about);
+	refusesArguments(
+		tool,
+		{ about: "kits" },
+		"about must be one of look, model, board, path, object, curve, stack, shelf, explainer",
+	);
+	refusesArguments(tool, {}, "app_guide takes exactly about");
+	refusesArguments(tool, { about: "model", more: 1 }, "app_guide takes exactly about");
+	for (const about of APP_GUIDES) {
+		const answer = await f.call("app_guide", { about });
+		expect(answer, about).toEqual({ kind: "text", value: appGuide(about) });
+		// One result holds it whole, with room for its envelope.
+		expect(Buffer.byteLength(JSON.stringify(appGuide(about))), about).toBeLessThan(16 * 1024);
+	}
+	// A data kit's guide starts with what the data kits share, then its own: fields, bounds and an example.
+	for (const kit of ["model", "board", "path", "object", "curve", "stack", "shelf"] as const) {
+		expect(appGuide(kit), kit).toMatch(
+			/^For a data kit \(model, board, path, object, curve, stack, shelf\) you write one file among files/,
+		);
+		expect(appGuide(kit), kit).toContain(`\`${kit}.json\``);
+		expect(appGuide(kit), kit).toContain("```json");
+	}
+	expect(appGuide("explainer")).toContain("You write one file, scenes.js");
+	expect(f.commits).toEqual([]);
+	expect(f.releases).toEqual([]);
+});
+
+it("holds every app to one look, with screens at the bar and three not to make", async () => {
+	const f = await fixture({}, true);
+	const look = appGuide("look");
+	// Jonas's taste from 44 sketched screens (14 November 2026), in short words: the bar, never the layout.
+	for (const rule of [
+		"Read this before your first app.",
+		"Qorpera's own plain look: the base style's page (--q-bg) and the system font, never colours of your own for the page. No scenes, skies, landscapes or themed backdrops.",
+		// A kit keeps its own form; the look decides what goes in it (review r1 of #1820).
+		"A kit draws its own form, sliders, chips and arrows included: for a kit, this decides what you put in it (real things, few words, the numbers that matter). For a page you write by hand, it decides the page too.",
+		"Show the company's real things: its products, its shop, its money, its dates, its customers' own words.",
+		"One big shape owns each screen: a ring, a curve, a big card, a big window, a shelf of real things. Colour comes as large, soft fields. Use very few words.",
+		"Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.",
+		"Copy the quality, not the layout. The screens below show the bar; they are not screens to make. Build what this company needs",
+	])
+		expect(look).toContain(rule);
+	// Seven screens he liked and three he did not, a line each, each naming why.
+	const lines = (heading: string) => look.split(`\n\n${heading}:\n`)[1]?.split("\n\n")[0]?.split("\n") ?? [];
+	expect(lines("Screens at the bar").map((line) => line.split(":")[0])).toEqual([
+		"- While you slept",
+		"- Money as a river",
+		"- Sign-off",
+		"- Replay the day",
+		"- The year ring",
+		"- The week's forecast",
+		"- The shop live",
+	]);
+	expect(lines("Not this")).toHaveLength(3);
+	for (const line of lines("Not this")) expect(line).toMatch(/^- [^:]+: \S/);
+	// Short: a guide read before every first app.
+	expect(Buffer.byteLength(look)).toBeLessThan(2500);
+	// An agent meets it where it chooses: app_guide's description, and save_app's kit.
+	expect(f.tool("app_guide").description).toContain(
+		"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app.",
+	);
+	const kit = (
+		f.tool("save_app").inputSchema as {
+			properties: { manifest: { properties: { kit: { description: string } } } };
+		}
+	).properties.manifest.properties.kit;
+	expect(kit.description).toContain("Before your first app, read app_guide look.");
+	// It is read, not held to: a page saves in a run that has not read it.
+	expect(
+		read(await f.call("save_app", save("sales", "make-1", manifest("Sales"), [{ path: "index.html", text: PAGE }]))),
+	).toMatchObject({ state: "applied", created: true });
+});
+
+it("saves a kit's file only in a run that has read the kit's guide", async () => {
+	const f = await fixture({}, true);
+	const scenes = [{ path: "scenes.js", text: SCENES }];
+	// A new app: refused before anything is written, naming the guide.
+	await refuses(
+		f.call("save_app", save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), scenes)),
+		"APP_GUIDE_UNREAD: this call saved nothing. Read the explainer kit's guide first: it says what scenes.js holds and gives an example. Call app_guide with about explainer, check scenes.js against it, then make this call again.",
+	);
+	expect(f.commits).toEqual([]);
+	// Another kit's guide is not this kit's.
+	await f.call("app_guide", { about: "model" });
+	await refuses(
+		f.call("save_app", save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), scenes)),
+		"APP_GUIDE_UNREAD",
+	);
+	// Read, the same call saves.
+	await f.call("app_guide", { about: "explainer" });
+	expect(
+		read(
+			await f.call("save_app", save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), scenes)),
+		),
+	).toMatchObject({ state: "applied", created: true });
+});
+
+it("holds a change of a kit's file to the guide too, and leaves every other save alone", async () => {
+	// An app a run made earlier, in a run that has read nothing.
+	const f = await fixture(
+		{
+			folders: ["apps"],
+			files: {
+				"apps/fee/app.toml": `name = "Fee"\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\nposted = false\nkit = "explainer"\n`,
+				"apps/fee/scenes.js": SCENES,
+			},
+		},
+		true,
+	);
+	await refuses(
+		f.call("save_app", save("fee", "change-1", null, [{ path: "scenes.js", text: `${SCENES}\n` }])),
+		"APP_GUIDE_UNREAD: this call saved nothing. Read the explainer kit's guide first",
+	);
+	// By the kit the app keeps under a manifest that names none, and by the file's name in any case.
+	await refuses(
+		f.call("save_app", save("fee", "change-2", manifest("How the fee works"), [{ path: "Scenes.JS", text: SCENES }])),
+		"APP_GUIDE_UNREAD",
+	);
+	expect(f.commits).toEqual([]);
+	// The manifest alone, or a file that is not the kit's own, is saved unread.
+	expect(
+		read(await f.call("save_app", save("fee", "change-3", manifest("How fees work", { kit: "explainer" }), []))),
+	).toMatchObject({ state: "applied" });
+	expect(
+		read(await f.call("save_app", save("fee", "change-4", null, [{ path: "notes.md", text: "# Notes\n" }]))),
+	).toMatchObject({ state: "applied" });
+	// A page written by hand needs no guide to be saved.
+	expect(
+		read(await f.call("save_app", save("sales", "make-1", manifest("Sales"), [{ path: "index.html", text: PAGE }]))),
+	).toMatchObject({ state: "applied", created: true });
 });
 
 it("refuses arguments it cannot save before anything is read", async () => {
@@ -266,9 +455,9 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 const LINKS_NOTE =
 	"a link opens another app (app:<name>), a file of the company's own work (folder:<path>, never under QorperaOS/), a web page (https://…) or a place in the page (#id). For anything else, such as a tab, use a button with a click handler.";
 const WORDS_NOTE =
-	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object or explainer: kit's schema says what each draws), and keep the text in its file.";
+	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws), and keep the text in its file.";
 const UNSHOWN_NOTE =
-	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object or explainer: kit's schema says what each draws).";
+	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws).";
 const words = (count: number) => Array.from({ length: count }, () => "word").join(" ");
 
 it("reads a page quickly and names what a member would trip on", () => {
@@ -808,11 +997,12 @@ const ICON =
 const icons = (from: number, count: number) =>
 	Array.from({ length: count }, (_, n) => ({ path: `icons/sign-${from + n}.svg`, text: ICON }));
 
-it("tells on files how to draw an app's own icons, and on emblem that members may pick one", async () => {
+it("tells in the guide icons how to draw an app's own icons, and on emblem that members may pick one", async () => {
 	const f = await fixture();
 	const schema = f.tool("save_app").inputSchema as {
 		properties: { files: { description: string }; manifest: { properties: { emblem: { description: string } } } };
 	};
+	const guide = appGuide("icons");
 	for (const said of [
 		"An app's own icons are files icons/<id>.svg, the id one or two words for what it shows, such as compass or trail-sign",
 		"When a member asks you for new icons for an app, draw 3 clearly different ones from its name and what its page shows",
@@ -824,9 +1014,10 @@ it("tells on files how to draw an app's own icons, and on emblem that members ma
 		"company_read shows an .svg as its text, not as a picture",
 		"Then tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer.",
 	])
-		expect(schema.properties.files.description).toContain(said);
+		expect(guide).toContain(said);
+	expect(schema.properties.files.description).toContain("app_guide icons says how to draw them");
 	expect(schema.properties.manifest.properties.emblem.description).toContain(
-		"Members may pick another for their own drawer, or one of the app's own icons (files says how to draw those).",
+		"Members may pick another for their own drawer, or one of the app's own icons (app_guide icons says how to draw those).",
 	);
 });
 

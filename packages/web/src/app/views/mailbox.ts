@@ -1,4 +1,5 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { cloudRoutineTriggerOfFile } from "@qorpera/cloud-client/cloud-routine-file";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFolderRejectedError, withProblems } from "../../cloud/company-folder-writes.ts";
 import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
@@ -19,6 +20,8 @@ import {
 	claudeLogin,
 	latestVersions,
 	type WebRoutine,
+	WebRoutineChangedError,
+	type WebRoutineFile,
 	type WebRoutines,
 } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
@@ -121,6 +124,16 @@ interface MailboxUi {
 	answerErrors: Record<string, string>;
 	/** Who answers the address the Add form makes; nobody until the member picks. */
 	addAgent: string | null;
+	/** How that agent answers the new address: the member's own words, written into its routine. */
+	addHow: string;
+	/** Words on how an agent answers an address made with the Add form, by address, while giving it to the agent
+	 * could not be done: the next agent given the address answers with them. */
+	pendingHow: Record<string, string>;
+	/** Whether Digital Post's card is open under its pill. */
+	postOpen: boolean;
+	/** Words on how an agent answers that were typed and not yet saved or let go, by `hookId:agent` (`add` for the Add
+	 * form's): a menu that closes without Save keeps them, and the panel opens on them again. */
+	howDrafts: Record<string, HowDraft>;
 	busy: boolean;
 	error: string | null;
 	toast: { readonly text: string; readonly agent: string | null; readonly id: number } | null;
@@ -197,8 +210,13 @@ interface ManageViews {
 	page: Page;
 	/** What the cards' own parts were last drawn from: they are drawn again only when it changed. */
 	shown: string;
+	/** The company's routines as the cards read them last, for how each agent answers an address: none before the first
+	 * read, and when it began (`at`). `reading` numbers the reads: one begun later wins over an older one. */
+	routines: { list: readonly WebRoutine[] | null; at: number; reading: number };
 }
 const manageViews = new WeakMap<MailboxUi, ManageViews>();
+/** How long a read of the routines stands before the Addresses read them again, as they are drawn. */
+const ROUTINES_FRESH_MS = 30_000;
 /** A page's addresses being given to agents, one after another: the last of them. */
 const answerings = new WeakMap<MailboxUi, Promise<void>>();
 /** Who answers an address as the routines said when it was last given or taken on a page, by address, where the
@@ -372,7 +390,7 @@ export interface MailboxManage {
 	readonly digitalPost: DigitalPostClient;
 	/** The routines behind "who answers an address": an agent answers one through a routine that starts on its mail.
 	 * Without them, and the member's accounts, who answers an address is only shown. */
-	readonly routines?: Pick<WebRoutines, "list" | "save" | "setEnabled">;
+	readonly routines?: Pick<WebRoutines, "list" | "open" | "payer" | "save" | "setEnabled">;
 	/** The signed-in member's own model accounts: such a routine runs on one of them. */
 	readonly accounts?: (signal: AbortSignal) => Promise<NativeExecutionConnections>;
 }
@@ -410,6 +428,10 @@ export function renderMailbox(
 			answering: null,
 			answerErrors: {},
 			addAgent: null,
+			addHow: "",
+			pendingHow: {},
+			postOpen: false,
+			howDrafts: {},
 			busy: false,
 			error: null,
 			toast: null,
@@ -442,6 +464,8 @@ export function renderMailbox(
 		// The addresses whose lines still go by what the routines said (`answeredBy`): a new read of the addresses
 		// draws them from it, also when it reads the same as the last one.
 		[...(answeredBy.get(ui) ?? [])].map(([address, kept]) => [address, kept.agents, kept.read === mail?.addresses]),
+		// How each agent answers an address, as its routine says.
+		manageViews.get(ui)?.routines.list?.map((routine) => [routine.routineId, routine.status, routine.prompt]) ?? null,
 		state.team?.capabilities.write === true,
 		state.team?.capabilities.authorize === true,
 		state.team?.members.map((member) => [member.userId, member.displayName]) ?? null,
@@ -738,7 +762,7 @@ function noAddress(page: Page): HTMLElement {
 		h("p", null, t("Make one, and pick the agent who answers what comes in.")),
 		h("p", null, t("Letters from public authorities come here too, once Digital Post is connected.")),
 		views
-			? h("div", { class: "mailbox-manage" }, views.hooks.el, views.post?.el ?? null)
+			? h("div", { class: "mailbox-manage" }, views.hooks.el)
 			: h("p", { class: "mailbox-muted" }, t("An owner or admin makes the company's addresses.")),
 	);
 }
@@ -778,19 +802,27 @@ function manageOf(page: Page): ManageViews | null {
 			page,
 			shown: "",
 			post: undefined,
+			routines: { list: null, at: 0, reading: 0 },
 			hooks: new HooksView(calls.hooks, company.signal, {
 				access,
 				kinds: ["mailbox"],
 				changed,
 				card: (hook) => answerer(drawn(), calls, hook),
 				form: () => newAnswerer(drawn(), calls),
-				// The new address goes to the agent its form named.
+				// An address's line says no more than who answers it: a paused one says so.
+				state: (hook) => (hook.status === "paused" ? t("Paused") : null),
+				// Adding an address comes first, with Digital Post beside it: its card opens under them.
+				top: { beside: () => postPill(drawn()), below: () => postCard(drawn()) },
+				// The new address goes to the agent its form named, with the words on how it answers.
 				added: (hook) => {
 					const now = drawn();
 					const agent = now.ui.addAgent;
+					const how = now.ui.addHow;
 					now.ui.addAgent = null;
+					now.ui.addHow = "";
+					dropDraft(now, "add");
 					if (agent && hook.email)
-						void answerWith(now, calls, { address: hook.email, hookId: hook.id }, agent, true);
+						void answerWith(now, calls, { address: hook.email, hookId: hook.id }, agent, true, how);
 				},
 			}),
 		};
@@ -799,6 +831,8 @@ function manageOf(page: Page): ManageViews | null {
 	views.page = page;
 	if (access.canManage())
 		views.post ??= new DigitalPostView(views.calls.digitalPost, company.signal, { access, changed });
+	// How each agent answers is in its routine: read once the member may change it, and again when that read is old.
+	if (assigns(page, views.calls) && Date.now() - views.routines.at > ROUTINES_FRESH_MS) void readRoutines(page);
 	views.hooks.update();
 	// Who answers an address is the mail's to say: its lines are drawn again when that, or what the member is doing
 	// about it, changed. A form being filled is otherwise left alone.
@@ -809,6 +843,11 @@ function manageOf(page: Page): ManageViews | null {
 		ui.answering,
 		ui.answerErrors,
 		ui.addAgent,
+		// Whether each agent has words on how it answers, which its menu says.
+		views.routines.list?.map((routine) => [routine.routineId, routine.status, routine.prompt]) ?? null,
+		ui.addHow !== "",
+		ui.postOpen,
+		views.post !== undefined,
 		assigns(page, views.calls),
 		state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]),
 	]);
@@ -1852,17 +1891,7 @@ function addressesView(page: Page): HTMLElement {
 	const post = digitalPostAddress(page, agentsAtWork(page));
 	const postList = post ? h("ul", { class: "mailbox-address-list" }, post) : null;
 	if (views)
-		return h(
-			"div",
-			{ class: "mailbox-addresses" },
-			h(
-				"div",
-				{ class: "mailbox-manage" },
-				views.hooks.el,
-				postList,
-				company.store.get().team?.capabilities.authorize === true ? (views.post?.el ?? null) : null,
-			),
-		);
+		return h("div", { class: "mailbox-addresses" }, h("div", { class: "mailbox-manage" }, views.hooks.el, postList));
 	// A page without the calls behind the addresses reads them from the mail: each one and who answers it.
 	const rows = (company.store.get().mail?.addresses ?? []).map((address) => {
 		const [handler] = address.handledBy;
@@ -1924,28 +1953,18 @@ function agentChip(
 	return chip;
 }
 
-/** Who answers a mailbox, on its line of Addresses, and how much came to it. An address may have more than one agent:
+/** Who answers a mailbox, on its line of Addresses. An address may have more than one agent:
  * each agent with a routine that starts on its mail answers it, as the cloud lets several listen. An owner or admin
  * has a chip that opens the agents, those who answer it checked: a press gives the address to an agent, or takes it
  * from one (`answerWith`), and nobody else's answering changes. While that is on its way the chip shows the agents as
  * they will be, and waits. Anyone else reads who answers it. What could not be done is said under it. */
 function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElement | null {
-	const { company, ui } = page;
+	const { ui } = page;
 	const email = hook.email;
 	if (!email) return null;
-	// A mailbox just made is in the list before the mail is read again: nobody answers it yet.
-	const address = company.store.get().mail?.addresses.find((item) => item.address === email);
 	const handlers = handlersOf(page, email);
 	const nameOf = (agentId: string) =>
 		agentName(page, agentId, handlers.find((each) => each.staffAgentId === agentId)?.name);
-	const week = address
-		? h(
-				"span",
-				{ class: "mailbox-muted mailbox-address-week" },
-				h("strong", { class: "mailbox-week" }, String(address.last7Days)),
-				` ${t("in the last 7 days")}`,
-			)
-		: null;
 	const setting = ui.answering?.address === email ? ui.answering : null;
 	// Those who answer it, as they will be once what is on its way is done.
 	const answering = handlers.map((each) => each.staffAgentId).filter((agentId) => agentId !== setting?.agent);
@@ -1968,7 +1987,6 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 				first ? figure(page, first, undefined, 24) : null,
 				names ? t("{name} answers it", { name: names }) : t("No agent answers it yet"),
 			),
-			week,
 		);
 	const said = ui.answerErrors[email];
 	const target = { address: email, hookId: hook.id };
@@ -1990,7 +2008,7 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 					// The agents at work, and after them whoever else answers it (an agent no longer at work can be taken off).
 					const listed = agentsAtWork(page).map((agent) => agent.id);
 					for (const each of handlers) if (!listed.includes(each.staffAgentId)) listed.push(each.staffAgentId);
-					return listed.map((agentId): MenuEntry => {
+					const items = listed.map((agentId): MenuEntry => {
 						const on = handlers.some((each) => each.staffAgentId === agentId);
 						return {
 							label: nameOf(agentId),
@@ -2000,11 +2018,26 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 							select: () => void answerWith(page, calls, target, agentId, !on),
 						};
 					});
+					// How each agent that answers it answers: the member's words, in a panel beside the menu.
+					if (handlers.length) items.push({ kind: "separator" });
+					for (const each of handlers) {
+						const name = nameOf(each.staffAgentId);
+						const routine = answeringRoutine(page, hook.id, each.staffAgentId);
+						items.push({
+							kind: "panel",
+							icon: "edit",
+							label:
+								routine && !splitHow(routine.prompt).how
+									? t("Tell {name} how to answer", { name })
+									: t("How {name} answers", { name }),
+							panel: (close) => howPanel(page, calls, target, each.staffAgentId, close),
+						});
+					}
+					return items;
 				},
 				setting !== null,
 			),
 		),
-		week,
 		said ? h("p", { class: "mailbox-error", role: "alert" }, said) : null,
 	);
 }
@@ -2044,6 +2077,19 @@ function newAnswerer(page: Page, calls: MailboxManage): HTMLElement | null {
 						checked: agent.id === chosen?.id,
 						select: pick(agent.id),
 					});
+				// How the agent picked answers the new address: words kept with the form until the address is made.
+				if (chosen) {
+					const name = chosen.displayName;
+					items.push(
+						{ kind: "separator" },
+						{
+							kind: "panel",
+							icon: "edit",
+							label: ui.addHow ? t("How {name} answers", { name }) : t("Tell {name} how to answer", { name }),
+							panel: (close) => newHowPanel(page, name, close),
+						},
+					);
+				}
 				return items;
 			}),
 		),
@@ -2070,11 +2116,14 @@ function answerWith(
 	target: { readonly address: string; readonly hookId: string },
 	agentId: string,
 	on: boolean,
+	given?: string,
 ): Promise<void> {
+	// Words from the form that made the address, kept while it could not be given: the next agent given it has them.
+	const how = given ?? (on ? page.ui.pendingHow[target.address] : undefined);
 	const before = page.ui.answering ? answerings.get(page.ui) : undefined;
 	const turn = before
-		? before.then(() => giveAddress(page, calls, target, agentId, on))
-		: giveAddress(page, calls, target, agentId, on);
+		? before.then(() => giveAddress(page, calls, target, agentId, on, how))
+		: giveAddress(page, calls, target, agentId, on, how);
 	answerings.set(page.ui, turn);
 	return turn;
 }
@@ -2111,6 +2160,10 @@ function newestFirst(a: WebRoutine, b: WebRoutine): number {
  *   email. Of the routines this began and those begun meanwhile, the one the cloud saved last is kept, here and on
  *   the other member's page, and the others stop. A routine at work before is nobody's to stop here.
  *
+ * `how` is the member's words on how the agent answers, from the form that made the address: a new routine is
+ * written with them. Picked from the address's own menu (no `how`), the member is asked for them next, where the agent
+ * has none yet.
+ *
  * The company's mail is read again after, so the line says who answers it now. What could not be done is kept for the
  * address's line; nothing is thrown. */
 async function giveAddress(
@@ -2119,6 +2172,7 @@ async function giveAddress(
 	target: { readonly address: string; readonly hookId: string },
 	agentId: string,
 	on: boolean,
+	how?: string,
 ): Promise<void> {
 	const { company, ui } = page;
 	const { routines, accounts } = calls;
@@ -2160,9 +2214,12 @@ async function giveAddress(
 						clientRoutineId: crypto.randomUUID(),
 						staffAgentId: agentId,
 						title: t("Answer email to {address}", { address: target.address }),
-						prompt: t(
-							"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.",
-							{ address: target.address },
+						prompt: withHow(
+							t(
+								"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.",
+								{ address: target.address },
+							),
+							how ?? "",
 						),
 						trigger: {
 							id: "file",
@@ -2225,10 +2282,17 @@ async function giveAddress(
 		if (held.answers) agents.push(agentId);
 		kept.set(target.address, { agents, read: company.store.get().mail?.addresses });
 	}
+	// How each agent answers is read again too: a routine taken up again keeps its words.
+	await readRoutines(page);
 	const listed = handlersOf(page, target.address);
 	ui.answering = null;
 	const reached = held !== null && held.answers === on;
 	if (held && reached && !held.twice) {
+		// The words from the form that made the address are in the agent's routine now.
+		if (on && how) {
+			const { [target.address]: _kept, ...others } = ui.pendingHow;
+			ui.pendingHow = others;
+		}
 		say(
 			page,
 			!on
@@ -2241,6 +2305,8 @@ async function giveAddress(
 		);
 		return;
 	}
+	// Words from the form that made the address are kept for it: the next agent given it answers with them.
+	if (on && how) ui.pendingHow = { ...ui.pendingHow, [target.address]: how };
 	// A refusal saved nothing; the file's or the mailbox's problems say why, in English.
 	ui.answerErrors = {
 		...ui.answerErrors,
@@ -2260,6 +2326,365 @@ async function giveAddress(
 							: t("It could not be changed. Try again."),
 	};
 	page.redraw(focus);
+}
+
+// How an agent answers an address ------------------------------------------------------------------------------------
+
+/** The heading the member's words on how an agent answers stand under, in its routine's instructions. It is written
+ * and read the same in every language, so words written in one are found, changed and taken out in another. */
+const HOW_HEADING = "How to answer";
+
+/** A routine's instructions, split where the member's words on how its agent answers begin (`withHow` writes them
+ * under a heading of their own): what the page wrote first (`base`), and those words (`how`, empty without). */
+function splitHow(prompt: string): { readonly base: string; readonly how: string } {
+	const lines = prompt.split("\n");
+	const at = lines.findIndex((line) => line.trim() === `## ${HOW_HEADING}`);
+	if (at < 0) return { base: prompt.trim(), how: "" };
+	return {
+		base: lines.slice(0, at).join("\n").trim(),
+		how: lines
+			.slice(at + 1)
+			.join("\n")
+			.trim(),
+	};
+}
+
+/** A routine's instructions with the member's words on how its agent answers in place of any before; none without. */
+function withHow(prompt: string, how: string): string {
+	const { base } = splitHow(prompt);
+	const words = how.trim();
+	return words ? `${base}\n\n## ${HOW_HEADING}\n\n${words}` : base;
+}
+
+/** Reads the company's routines again for the Addresses' cards, for how each agent answers, and draws the page. A read
+ * begun later wins; one that fails leaves the last read, and the next is begun once this one is old. */
+async function readRoutines(page: Page): Promise<void> {
+	const views = manageViews.get(page.ui);
+	const routines = views?.calls.routines;
+	if (!views || !routines) return;
+	const kept = views.routines;
+	const reading = ++kept.reading;
+	kept.at = Date.now();
+	try {
+		const list = await routines.list();
+		if (kept.reading !== reading || page.company.signal.aborted) return;
+		kept.list = list;
+	} catch {
+		return;
+	}
+	page.redraw();
+}
+
+/** The routine an agent answers an address with, as the cards read them last: the one at work saved last. */
+function answeringRoutine(page: Page, hookId: string, agentId: string): WebRoutine | undefined {
+	const list = manageViews.get(page.ui)?.routines.list ?? [];
+	return list
+		.filter(
+			(routine) =>
+				routine.staffAgentId === agentId &&
+				routine.status === "active" &&
+				routine.triggers.some(
+					(trigger) => trigger.kind === "listener" && trigger.source === "event" && trigger.hookId === hookId,
+				),
+		)
+		.sort(newestFirst)[0];
+}
+
+/** Words typed on how an agent answers and not yet saved, and the routine's words they were typed over (`base`; null
+ * for the Add form's, which has no routine yet): when the routine's words are not those any more, someone changed them
+ * meanwhile, and the panel says so before a Save puts these in their place. */
+interface HowDraft {
+	readonly words: string;
+	readonly base: string | null;
+}
+
+/** Lets go of the words typed on how an agent answers, `key` as `MailboxUi.howDrafts` names them. */
+function dropDraft(page: Page, key: string): void {
+	const { [key]: _draft, ...rest } = page.ui.howDrafts;
+	page.ui.howDrafts = rest;
+}
+
+/** The field the member writes how an agent answers in: it grows with the words, and takes the focus as the panel
+ * opens. What is typed is kept as the draft `key` until it is saved or let go, with the routine's words it was typed
+ * over (`base`, as the panel read them). ⌘/Ctrl-Enter is `submit`. */
+function howField(
+	page: Page,
+	key: string,
+	name: string,
+	text: string,
+	submit: () => void,
+	base: () => string | null = () => null,
+): HTMLTextAreaElement {
+	const field: HTMLTextAreaElement = h("textarea", {
+		rows: "4",
+		maxlength: "4000",
+		placeholder: t(
+			"For example: answer in Danish, short and warm. Sign as the team. Ask me before you promise a price or a date.",
+		),
+		"aria-label": t("How {name} answers", { name }),
+		"data-autofocus": "",
+		oninput: () => {
+			const kept = page.ui.howDrafts[key];
+			page.ui.howDrafts = { ...page.ui.howDrafts, [key]: { words: field.value, base: kept ? kept.base : base() } };
+		},
+		onkeydown: (event: KeyboardEvent) => {
+			if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+				event.preventDefault();
+				submit();
+			}
+		},
+	});
+	field.value = text;
+	return field;
+}
+
+/** How an agent answers an address, in a panel beside the chip's menu: the member's words in the agent's routine, which
+ * they change and save there. The routine's file is read as the panel opens, and Save changes that file: a change made
+ * to it meanwhile is found, not written over, and the member's words wait for a second Save. A save runs on the
+ * member's own model account, as the routines' own editor's does; where another member's account pays for it now, the
+ * panel says so before. What could not be done is said in the panel, or under the address once the panel has closed. */
+function howPanel(
+	page: Page,
+	calls: MailboxManage,
+	target: { readonly address: string; readonly hookId: string },
+	agentId: string,
+	close: () => void,
+): { el: HTMLElement; dispose: () => void } {
+	const { company } = page;
+	const { routines, accounts } = calls;
+	const name = agentName(page, agentId);
+	let gone = false;
+	let opened: WebRoutineFile | null = null;
+	let saving = false;
+	// One save id while the file stays as it was opened: a request whose answer was lost is sent again as it was.
+	let saveId = crypto.randomUUID();
+	const save = () => void store();
+	// Words typed before and not saved, when a menu closed on them: the panel opens on them again.
+	const draftKey = `${target.hookId}:${agentId}`;
+	const draft = page.ui.howDrafts[draftKey];
+	// The routine's words as the panel read them last: what words typed now are typed over.
+	let fileHow: string | null = null;
+	const field = howField(page, draftKey, name, draft?.words ?? "", save, () => fileHow);
+	field.readOnly = true;
+	const note = h("p", { class: "mailbox-how-note", hidden: true });
+	const error = h("p", { class: "mailbox-error", role: "alert", hidden: true });
+	const button = h(
+		"button",
+		{ type: "button", class: "mailbox-text is-send", disabled: true, onclick: save },
+		t("Save"),
+	);
+	const tell = (text: string | null) => {
+		error.textContent = text ?? "";
+		error.hidden = !text;
+	};
+	const ready = (on: boolean) => {
+		field.readOnly = !on;
+		button.disabled = !on;
+	};
+	/** The agent's routine for the address and its file as they are now, and who pays for it. True when words typed
+	 * before were typed over the routine's words as they were, and someone changed them since. */
+	const load = async (keepWords: boolean): Promise<boolean> => {
+		if (!routines) throw new Error(t("This routine could not be opened."));
+		const [routine] = (await listeners(routines, target.hookId))
+			.filter((each) => each.staffAgentId === agentId && each.status === "active")
+			.sort(newestFirst);
+		if (!routine) throw new Error(t("{name} no longer answers {address}", { name, address: target.address }));
+		const file = await routines.open(routine);
+		const payer = await routines.payer(routine.routineId).catch(() => null);
+		if (gone) return false;
+		opened = file;
+		const how = splitHow(file.file.instructions).how;
+		fileHow = how;
+		const kept = page.ui.howDrafts[draftKey];
+		if (!keepWords && !kept) field.value = how;
+		// The draft is typed over these words from now on: said once, a Save puts the member's words in their place.
+		const changed = kept !== undefined && kept.base !== null && kept.base !== how;
+		if (kept) page.ui.howDrafts = { ...page.ui.howDrafts, [draftKey]: { words: kept.words, base: how } };
+		const other =
+			payer?.payer === "member" && payer.payerUserId && payer.payerUserId !== company.userId
+				? (company.store.get().team?.members.find((member) => member.userId === payer.payerUserId)?.displayName ??
+					t("another member"))
+				: null;
+		note.textContent = other
+			? t("{name} answers on {member}'s model account now. Saving moves it to yours.", { name, member: other })
+			: "";
+		note.hidden = !other;
+		return changed;
+	};
+	const changedMeanwhile = () =>
+		t("How {name} answers was changed meanwhile. Save again to put your words in its place.", { name });
+	const store = async () => {
+		if (saving || gone || !opened || !routines || !accounts) return;
+		const file = opened;
+		saving = true;
+		ready(false);
+		button.textContent = t("Saving…");
+		tell(null);
+		const words = field.value.trim();
+		try {
+			const trigger = cloudRoutineTriggerOfFile(file.file);
+			if (!trigger) throw new Error(t("This routine could not be opened."));
+			const account = payingAccount(await accounts(company.signal));
+			if (!account)
+				throw new Error(
+					t(
+						"An agent answers email by itself on one of your own model accounts, and none of yours can pay for that. Connect one in Settings → AI subscriptions.",
+					),
+				);
+			await routines.save(
+				{
+					clientRoutineId: file.file.id,
+					staffAgentId: agentId,
+					title: file.file.title,
+					prompt: withHow(file.file.instructions, words),
+					trigger,
+					effort: file.file.effort,
+					opened: file,
+				},
+				account,
+				saveId,
+			);
+		} catch (failure) {
+			saving = false;
+			button.textContent = t("Save");
+			const said =
+				failure instanceof WebRoutineChangedError
+					? changedMeanwhile()
+					: failure instanceof WebCompanyFolderRejectedError
+						? withProblems(t("How {name} answers could not be saved.", { name }), failure.problems)
+						: describeError(failure);
+			// The panel closed meanwhile: what happened is said under the address.
+			if (gone) {
+				page.ui.answerErrors = { ...page.ui.answerErrors, [target.address]: said };
+				page.redraw();
+				return;
+			}
+			if (failure instanceof WebRoutineChangedError) {
+				// Read as it is now, the member's words kept: a second Save puts them in its place.
+				saveId = crypto.randomUUID();
+				await load(true).catch(() => {});
+			}
+			ready(!gone && opened !== null);
+			tell(said);
+			return;
+		}
+		// Saved: the words are the routine's now (the field could not be changed while they went).
+		dropDraft(page, draftKey);
+		if (!gone) close();
+		await readRoutines(page);
+		say(
+			page,
+			words
+				? t("Saved how {name} answers {address}", { name, address: target.address })
+				: t("{name} answers {address} without your instructions now", { name, address: target.address }),
+			agentId,
+			`answerer:${target.hookId}`,
+		);
+	};
+	load(false).then(
+		(changed) => {
+			ready(!gone);
+			if (changed && !gone) tell(changedMeanwhile());
+		},
+		(failure: unknown) => {
+			if (!gone) tell(describeError(failure));
+		},
+	);
+	const el = h(
+		"div",
+		{ class: "mailbox-how-panel" },
+		h("span", { class: "mailbox-how-title" }, t("How {name} answers", { name })),
+		field,
+		note,
+		error,
+		h(
+			"div",
+			{ class: "mailbox-how-foot" },
+			button,
+			h(
+				"button",
+				{
+					type: "button",
+					class: "mailbox-text is-quiet",
+					onclick: () => {
+						dropDraft(page, draftKey);
+						close();
+					},
+				},
+				t("Cancel"),
+			),
+		),
+	);
+	return {
+		el,
+		dispose: () => {
+			gone = true;
+		},
+	};
+}
+
+/** How the agent picked in the Add form answers the new address, in a panel beside its chip's menu: the words are kept
+ * with the form, and go into the agent's routine as the address is made. */
+function newHowPanel(page: Page, name: string, close: () => void): { el: HTMLElement } {
+	const { ui } = page;
+	const done = () => {
+		ui.addHow = field.value.trim();
+		dropDraft(page, "add");
+		close();
+		page.redraw("add-answerer");
+	};
+	const field = howField(page, "add", name, ui.howDrafts.add?.words ?? ui.addHow, done);
+	const el = h(
+		"div",
+		{ class: "mailbox-how-panel" },
+		h("span", { class: "mailbox-how-title" }, t("How {name} answers", { name })),
+		field,
+		h(
+			"div",
+			{ class: "mailbox-how-foot" },
+			h("button", { type: "button", class: "mailbox-text is-send", onclick: done }, t("Save")),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "mailbox-text is-quiet",
+					onclick: () => {
+						dropDraft(page, "add");
+						close();
+					},
+				},
+				t("Cancel"),
+			),
+		),
+	);
+	return { el };
+}
+
+/** Digital Post's pill beside Add mailbox, for an owner or admin: it opens the card that connects it, under them. */
+function postPill(page: Page): HTMLElement | null {
+	const { ui } = page;
+	if (!manageViews.get(ui)?.post) return null;
+	const open = ui.postOpen;
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "btn hook-add mailbox-post-pill",
+			"aria-expanded": String(open),
+			"data-focus-key": "post-pill",
+			onclick: () => {
+				ui.postOpen = !open;
+				page.redraw("post-pill");
+			},
+		},
+		t("Digital Post"),
+	);
+}
+
+/** Digital Post's card, while its pill has it open. */
+function postCard(page: Page): HTMLElement | null {
+	const post = manageViews.get(page.ui)?.post;
+	return page.ui.postOpen && post ? post.el : null;
 }
 
 // Writing an email ------------------------------------------------------------------------------------------------
