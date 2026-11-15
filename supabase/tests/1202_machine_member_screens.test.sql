@@ -221,7 +221,9 @@ begin
 			'name', 'm-1202-bob', 'purpose', 'Tests the app.', 'state', 'running', 'lifetime', 'task', 'desktopCapable', true,
 			'startedByAgent', false, 'screenAgentName', 'Alice', 'control', null, 'waitingFor', null,
 			-- 20260930713000: the caller's own hand-back epoch for the machine (0: never handed back).
-			'epoch', 0)
+			'epoch', 0,
+			-- 20260930759000: awake only for a member, its seconds; null for this one, which an agent started.
+			'memberSleepSeconds', null)
 			and (v_first ->> 'screenUsedAt')::timestamptz > clock_timestamp() - interval '2 minutes',
 		'1: one machine, only what the window needs: ' || v_first::text);
 	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v_alice -> 'machines') m

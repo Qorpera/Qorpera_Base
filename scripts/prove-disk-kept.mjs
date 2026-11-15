@@ -473,13 +473,13 @@ await finish(
 					assert(start && stop, `machine_start and machine_stop are offered: ${definitions.map((tool) => tool.name)}`);
 					assert(
 						start.description.includes(
-							"Its disk is kept while the machine sleeps. It comes back with an empty disk only if its server ran out of disk, had no room for it at the wake, or is gone or moved; the result then says diskFreed. Keep what matters in the company's files. Newer preinstalled tools come only on new machines.",
+							"Disk: kept while the machine sleeps. It comes back empty only when its server ran out of disk, had no room for it at the wake, or is gone or moved; the result then says diskFreed. Keep what matters in the company's files. Newer preinstalled tools come only on new machines.",
 						),
 						start.description,
 					);
 					assert(
 						stop.description.includes(
-							"Its disk is kept for a wake on the same server; only if that server runs out of disk, has no room at the wake, or is gone or moved does it come back with an empty disk, and its status then says diskFreed.",
+							"Its disk is kept for a wake on the same server, unless that server runs out of disk, has no room at the wake, or is gone or moved: then it comes back with an empty disk and its status says diskFreed.",
 						),
 						stop.description,
 					);
