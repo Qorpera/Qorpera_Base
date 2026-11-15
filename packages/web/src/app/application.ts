@@ -14,7 +14,7 @@ import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
-import { type CodeReleaseCalls, type CodeReleases, codeReleaseCalls } from "../cloud/releases.ts";
+import { type CodeReleases, codeReleaseCalls } from "../cloud/releases.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -51,6 +51,7 @@ import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { watchOnline } from "./online-mark.ts";
 import { OpenQuestions } from "./open-questions.ts";
+import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -489,54 +490,23 @@ export function mountApplication(
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
-	/** Each company's What's new calls as the apps drawer and the threads' "a change is ready" cards share them: one read
-	 * out at a time serves every caller that asks while it is out (the drawer's badge and a thread's card both read when
-	 * the window comes back), never across a write (a read that left before a write began, or while it was out, is not
-	 * shared with a caller after it), and the last answer starts a thread's card without a read of its own. What's new's
-	 * page reads with calls of its own, as before. */
-	const sharedReleases = new WeakMap<
-		CompanyController,
-		{ readonly calls: CodeReleaseCalls; last: CodeReleases | undefined }
-	>();
-	const companyReleases = (controller: CompanyController) => {
-		let shared = sharedReleases.get(controller);
-		if (shared) return shared;
-		const calls = codeReleaseCalls(cloud, controller.profile.profileId);
-		let writes = 0;
-		let out: { readonly writes: number; readonly read: Promise<CodeReleases> } | undefined;
-		// A write moves the count on as it leaves and as it lands: no read out meanwhile is shared after it.
-		const write = <T>(work: () => Promise<T>): Promise<T> => {
-			writes++;
-			return work().finally(() => {
-				writes++;
-			});
-		};
-		const holder: { readonly calls: CodeReleaseCalls; last: CodeReleases | undefined } = {
-			last: undefined,
-			calls: {
-				// The company's lifetime bounds the shared read; each caller drops an answer that comes after its own end.
-				list: () => {
-					if (out?.writes === writes) return out.read;
-					const read = calls.list(controller.signal).then((answer) => {
-						holder.last = answer;
-						return answer;
-					});
-					const flight = { writes, read };
-					out = flight;
-					const landed = () => {
-						if (out === flight) out = undefined;
-					};
-					void read.then(landed, landed);
-					return read;
-				},
-				putLive: (owner, name, shown, signal) => write(() => calls.putLive(owner, name, shown, signal)),
-				goBack: (owner, name, shown, signal) => write(() => calls.goBack(owner, name, shown, signal)),
-				openPreview: (owner, name, shown, signal) => write(() => calls.openPreview(owner, name, shown, signal)),
-			},
-		};
-		shared = holder;
-		sharedReleases.set(controller, shared);
-		return shared;
+	/** Each company's What's new reads and writes, as the apps drawer, What's new's page and the threads' "a change is
+	 * ready" cards make them: numbered as they start, one shared read out at a time for the drawer and the threads, never
+	 * across a write from any of them, and the latest-started answer as the company's last read (app/release-reads.ts). */
+	const releaseReads = new WeakMap<CompanyController, CompanyReleaseReads>();
+	const companyReleases = (controller: CompanyController): CompanyReleaseReads => {
+		let reads = releaseReads.get(controller);
+		if (!reads) {
+			reads = companyReleaseReads(codeReleaseCalls(cloud, controller.profile.profileId), controller.signal);
+			releaseReads.set(controller, reads);
+		}
+		return reads;
+	};
+	/** The drawer's entry and the versions the Sites page names, from the company's latest-started read that answered:
+	 * an answer that comes back after a newer one changes neither. `read` stands in until one did. */
+	const showReleases = (controller: CompanyController, read: CodeReleases) => {
+		const newest = companyReleases(controller).last ?? read;
+		controller.store.set({ whatsNew: whatsNewEntry(controller, newest), siteVersions: liveVersions(newest) });
 	};
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
@@ -1346,21 +1316,15 @@ export function mountApplication(
 		// What's new's calls and what it reads beside them: its page and the "a change is ready" card in an agent's thread
 		// share them (views/release-desk.ts).
 		const releaseDesk = (shared = false) => ({
-			client: shared ? companyReleases(controller).calls : codeReleaseCalls(cloud, controller.profile.profileId),
+			client: shared ? companyReleases(controller).shared : companyReleases(controller).own,
 			// The company's last read, which a thread's card starts from.
 			last: () => companyReleases(controller).last,
 			options: {
 				image: (path: string, signal: AbortSignal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
-				// Every read that answers, from What's new's page or a thread's card, is also the company's last read: a
-				// thread opened next starts from what is true now (a change put live on the page is no card), with no read
-				// of its own.
-				listed: (read: CodeReleases) => {
-					companyReleases(controller).last = read;
-					controller.store.set({
-						whatsNew: whatsNewEntry(controller, read),
-						siteVersions: liveVersions(read),
-					});
-				},
+				// Every read, from What's new's page or a thread's card, is numbered as it starts (its client), so the latest
+				// to start is the company's last read: a thread opened next starts from what is true now (a change put live on
+				// the page is no card), with no read of its own. The drawer counts from it too.
+				listed: (read: CodeReleases) => showReleases(controller, read),
 				// The sites Qorpera took down (step 5.1): no link to one. Their names come with the access read, so a
 				// project's site that never went live is one too (the review of #1774, F4); the list is read only for an
 				// entry that names none.
@@ -1723,15 +1687,11 @@ export function mountApplication(
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
 			releasesRead = controller;
-			const releases = companyReleases(controller).calls;
+			const releases = companyReleases(controller).shared;
 			const readReleases = () =>
 				void releases.list(controller.signal).then(
 					(read) => {
-						if (!controller.signal.aborted)
-							controller.store.set({
-								whatsNew: whatsNewEntry(controller, read),
-								siteVersions: liveVersions(read),
-							});
+						if (!controller.signal.aborted) showReleases(controller, read);
 					},
 					(error: unknown) => {
 						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))

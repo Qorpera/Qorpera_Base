@@ -313,6 +313,33 @@ describe("A site a message links: the card under the words", () => {
 		expect(calls.password).not.toHaveBeenCalled();
 	});
 
+	it("lets go of the rows of a message drawn again before any redraw: only the rows on screen are kept (review r1 of #1848, F2)", async () => {
+		let manage = true;
+		const lifetime = new AbortController();
+		cleanup.push(() => lifetime.abort());
+		const sites = new ThreadSites(
+			client(),
+			() => manage,
+			profileA.profileId,
+			lifetime.signal,
+			() => {},
+		);
+		await settle();
+		// The message's body drawn three times (its words changed, or the language), each time before any redraw: the
+		// first two bodies leave the thread.
+		const text = "https://saml-gift-message.qorpera.com/ and https://orders-api-preview.qorpera.com/";
+		message(sites, text).remove();
+		message(sites, text).remove();
+		const shown = message(sites, text);
+		expect(sites.drawn).toBe(6);
+		// The next redraw (here, a change of role) keeps the two rows on screen alone, and draws them.
+		manage = false;
+		sites.update();
+		expect(sites.drawn).toBe(2);
+		expect(shown.querySelectorAll(".site-card")).toHaveLength(2);
+		expect(shown.querySelector(".site-card-key")).toBeNull();
+	});
+
 	it("says it in Danish", async () => {
 		setLanguagePreference("da");
 		const { sites } = await cards();

@@ -122,20 +122,26 @@ export class ThreadSites {
 		return this.#reading;
 	}
 
-	/** Draws every card again; the keyboard stays on the key it was on. */
+	/** Draws every card again; the keyboard stays on the key it was on. A card not in the page is let go: its message was
+	 * drawn again, or left the thread. Every redraw comes after the task that made a card and put it in its message (a
+	 * read, the window's focus, a change of role, a key's line), so a card that is not in the page by then never will be
+	 * (review r1 of #1848, F2). */
 	#drawAll(): void {
 		for (const [card, id] of [...this.#cards]) {
-			// A card that stood in the thread and left it (its message drawn again) is let go.
-			if (!card.isConnected && card.dataset.placed) this.#cards.delete(card);
+			if (!card.isConnected) this.#cards.delete(card);
 			else this.#draw(card, id);
 		}
+	}
+
+	/** How many cards the thread keeps drawing (for its tests). */
+	get drawn(): number {
+		return this.#cards.size;
 	}
 
 	#draw(card: HTMLElement, id: string): void {
 		if (this.#lifetime.signal.aborted) return;
 		const site = this.#sites.find((item) => item.id === id);
 		if (!site) return;
-		if (card.isConnected) card.dataset.placed = "1";
 		const keyed = card.contains(document.activeElement) && document.activeElement?.matches(".site-card-key");
 		const down = this.#takenDown.get(id);
 		const name = site.title ?? site.slug;
