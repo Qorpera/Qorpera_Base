@@ -221,7 +221,7 @@ begin
 			'state', 'authorized', 'machineId', '12790000-0000-4000-8000-0000000007a1',
 			'placementId', '12790000-0000-4000-8000-0000000007b1', 'bootId', '12790000-0000-4000-8000-0000000007c1',
 			'executorOwner', 'mx-1196', 'providerId', 'machine-1196', 'receiptId', '12790000-0000-4000-8000-000000000111',
-			'companyId', '92400000-0000-4000-8000-000000000010',
+			'companyId', '92400000-0000-4000-8000-000000000010', 'desktopGeneration', 0,
 			'target', jsonb_build_object('schema', 'qorpera.machine-account-fill-target/v1',
 				'companyId', '92400000-0000-4000-8000-000000000010', 'companyMachineId', '12790000-0000-4000-8000-0000000007a1',
 				'placementId', '12790000-0000-4000-8000-0000000007b1', 'bootId', '12790000-0000-4000-8000-0000000007c1',
