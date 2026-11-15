@@ -60,7 +60,7 @@ interface OpenRow {
 	readonly notes: Map<string, string>;
 	readonly saved: Set<string>;
 	readonly saving: Set<string>;
-	readonly pending: Map<string, unknown>;
+	readonly pending: Map<string, { value: unknown; writes: number }>;
 	gone: boolean;
 	queue: Promise<void>;
 	asking: boolean;
@@ -1095,7 +1095,8 @@ class DataListView {
 			if (typed === undefined || typed === "") return null;
 			return this.#kindOf(name) === "boolean" ? typed === "true" : typed;
 		}
-		if (open.pending.has(name)) return open.pending.get(name);
+		const pending = open.pending.get(name);
+		if (pending) return pending.value;
 		return open.row.values[open.columns.indexOf(name)] ?? null;
 	}
 
@@ -1110,11 +1111,12 @@ class DataListView {
 			this.#syncRow();
 			return Promise.resolve();
 		}
-		if (kind === "boolean") open.pending.set(name, value);
+		if (kind === "boolean") open.pending.set(name, { value, writes: (open.pending.get(name)?.writes ?? 0) + 1 });
 		open.saving.add(name);
 		this.#syncRow();
 		return this.#queue(open, () => this.#change(open, { [name]: value })).finally(() => {
-			if (open.pending.get(name) === value) open.pending.delete(name);
+			const pending = open.pending.get(name);
+			if (pending && --pending.writes === 0) open.pending.delete(name);
 			open.saving.delete(name);
 			if (this.#open === open) this.#syncRow();
 		});

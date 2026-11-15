@@ -571,6 +571,31 @@ describe("a new row and a toggle, while the store answers", () => {
 		expect(edits.at(-1)).toMatchObject({ op: "change", values: { ready: false } });
 	});
 
+	it("shows the last toggle while several of its writes are on their way", async () => {
+		const { container, calls } = await open(describedWith());
+		button(container, "Gazelle Orange C7450Yes1").click();
+		await settle();
+		const lands: (() => void)[] = [];
+		const first = calls.edit.getMockImplementation()!;
+		calls.edit.mockImplementation(
+			(edit: CloudMemberDataEdit) =>
+				new Promise((resolve) => {
+					lands.push(() => resolve(first(edit)));
+				}),
+		);
+		const ready = container.querySelector<HTMLButtonElement>("#data-field-ready")!;
+		ready.click();
+		ready.click();
+		ready.click();
+		expect(ready.textContent).toBe("No");
+		for (let landed = 0; landed < 3; landed++) {
+			await settle();
+			lands[landed]?.();
+			await settle();
+			expect(ready.textContent).toBe("No");
+		}
+	});
+
 	it("puts back only a refused toggle, not a field saved before it", async () => {
 		const { container, calls } = await open(describedWith());
 		button(container, "Gazelle Orange C7450Yes1").click();
