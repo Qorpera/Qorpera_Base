@@ -3362,6 +3362,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
 	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
 	// (20260930764000), so they moved again.
+	// The same day ask_member's takeover says that the member signs in on the screen the agent and they both use, not
+	// that the agent's calls are refused meanwhile (the web begins no private hold any more: #1812), in its description
+	// and in the takeover surface's schema, so both moved again, measured on master with data_change and data_apply's
+	// allow.
 	// Then save_app's reads took money and site (the platform's own numbers of the company, asked as questions of the
 	// reserved database qorpera; company views step 3, slice W1, 20260930767000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
@@ -3416,10 +3420,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"c3b198c819c3a7eed2f57ea0324a00c6403f51d63dfa2185253dd7ffcd02d6ba",
+		"8d0098f3b07b127a909e9fe29f6eeb4e286973ca01f1ea5fb89816fcf1641f1c",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"cf163b21e291b8b3f98ed30981a1112468cad5945d7bc914164923961f9986f6",
+		"57ec768cb450a199ce8c282e8c7e69be9d108335c3efc3bd3f2dc3187db3483a",
 	);
 });
 

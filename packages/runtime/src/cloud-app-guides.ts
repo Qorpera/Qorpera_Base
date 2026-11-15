@@ -58,6 +58,7 @@ const LOOK = `Read this before your first app. It is the bar every app is held t
 - Never a grid of small controls, rows of little chips or pills, scattered dots, cards of text, or diagram lines with labels.
 - Copy the quality, not the layout. The screens below show the bar; they are not screens to make. Build what this company needs, in the shape that shows it best.
 - A kit draws its own form, sliders, chips and arrows included: for a kit, this decides what you put in it (real things, few words, the numbers that matter). For a page you write by hand, it decides the page too.
+- Some apps are views the company is owed, which members find first: apps/products (what it sells), apps/money (its money), apps/ads (its ads). Make one when asked, at exactly that folder; the platform draws the website itself.
 
 Screens at the bar:
 - While you slept: three big numbers of the night (orders, money in, new customers), what each agent did in a word or two, and one button for the two things that want a yes.

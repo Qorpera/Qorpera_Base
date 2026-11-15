@@ -92,6 +92,43 @@ const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])$/;
  * holds it (step 5.1's gate). What's new reads Look first's next host by it too (cloud/releases.ts), so the bundle holds
  * the text once. */
 export const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;
+/** The host every website had before sites had addresses of their own (step 5.1): https://sites.qorpera.com/<slug>/.
+ * Links written then stay in the threads. */
+export const OLD_SITES_HOST = "sites.qorpera.com";
+
+/** The company's site a link leads to, from the company's own list, or undefined: a website by its own host
+ * (`https://<slug>.qorpera.com/…`, never its next host) or its old link (`https://sites.qorpera.com/<slug>/…`), or by
+ * the host its listed link has; an app link by its own host. Nothing is guessed from the link's text: a host that names
+ * no site of the list leads to none. */
+export function siteOfLink(sites: readonly CompanySite[], href: string): CompanySite | undefined {
+	let url: URL;
+	try {
+		url = new URL(href);
+	} catch {
+		return undefined;
+	}
+	if (url.protocol !== "https:" || url.username || url.password || url.port) return undefined;
+	const own = SITE_HOST.exec(url.hostname);
+	for (const site of sites) {
+		let listed: URL;
+		try {
+			listed = new URL(site.url);
+		} catch {
+			continue;
+		}
+		if (site.kind === "app") {
+			if (url.hostname === listed.hostname) return site;
+			continue;
+		}
+		if (own?.[1] === site.slug && own[2] === undefined) return site;
+		const path = `/${site.slug}/`;
+		const under = url.pathname === `/${site.slug}` || url.pathname.startsWith(path);
+		if (under && (url.hostname === OLD_SITES_HOST || (listed.pathname === path && url.hostname === listed.hostname)))
+			return site;
+	}
+	return undefined;
+}
+
 /** A machine's name, as an agent gives one. */
 const MACHINE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SITE_KEYS = [

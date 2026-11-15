@@ -1776,6 +1776,47 @@ host form, the app relay's cross-origin refusal and the front's `site-hosts` rou
   cookie is `__Host-` (no `Domain`), and a request that changes something also needs an Origin or Fetch Metadata check.
   Reviews hold every change to this rule.
 
+#### Seen inside Qorpera: a member's pass (20260930774000_site_member_pass)
+
+The web shows a files site in a frame on its own host (company views step 4, V1), opened without the site's password.
+`deploy/sites/SITE-HOSTS.md` ("Seen inside Qorpera") is the operator's side.
+
+- `qorpera_site_member_pass(site)`: any member of the site's company (viewers too). 42501 "Only the company's members
+  open its site here" for anyone else, and the same for no such site, an app link or a company being deleted; 22023
+  for no site. Answers `{schema: "qorpera.site-member-pass/v1", state, ...}`:
+  - `open`: `host` (`<slug>.qorpera.com`), `pass` (43 characters of base64url), `expiresAt` (60 seconds on), `action`
+    (`https://<host>/__qorpera/member`). One use, for that site's own host only; only its SHA-256 is kept.
+  - `off` while hosts are off; `gone` for a site taken down; `none` for a site not live; `limited` with `retryAfter`
+    (seconds) while the member holds 30 open passes. Nothing is written for these.
+- Using it: a form `POST` to `action`, `application/x-www-form-urlencoded`, fields `pass` and optionally `path` (a
+  path of the site such as `about/`, with or without its leading `/`; anything else opens the top), submitted so that
+  the frame navigates (a form with the frame as its `target`, or a form in the frame's own document). The answer is
+  303 to that path with the session cookie, or the site's password page (401) for a pass that failed. Ask a new pass
+  for each open and each reload; never put a pass in a URL.
+- **The submitting document must send its real `Origin`.** The door takes only an `Origin` exactly one of the web's
+  origins; `null` is refused. A form POST from a document under `Referrer-Policy: no-referrer` sends `Origin: null`
+  (Fetch: a non-CORS request's origin is serialized as null under that policy), and app.qorpera.com is served with
+  `no-referrer` (`packages/web/public/_headers`, and the `<meta name="referrer">` of `index.html`). Its CSP also has
+  `form-action 'self'` and no `frame-src` (so `default-src 'self'` blocks a frame of a site host). So the web, as
+  built today, cannot use the door; V2 must change one of these, and the choice is a security-header decision for the
+  web's lead:
+  - **A door page (recommended: the app keeps `no-referrer`).** A static same-origin page, say `/site-door/`, with its
+    own `_headers` entry. Cloudflare Pages applies the `/*` block to it too, and a browser enforces every CSP it gets,
+    so the entry first removes what it inherits, as `/page-preview/*` does: `! Content-Security-Policy`,
+    `! X-Frame-Options` and `! Referrer-Policy`. Then it sets `Referrer-Policy: strict-origin` (it sends only
+    `https://app.qorpera.com`), `X-Frame-Options: SAMEORIGIN` (or none), and a CSP of its own with
+    `form-action https://*.qorpera.com`, `frame-ancestors 'self'` and its script from `'self'`. The page has no
+    `<meta name="referrer">` of `no-referrer`. The site view's frame loads it; the app hands it the pass by
+    `postMessage` (target origin its own, checked on receipt); the page submits the form to `action` in its own
+    document, so the frame navigates to the site.
+  - The app itself: `frame-src 'self' https://*.qorpera.com` in its CSP (the frame's every navigation is checked
+    against the app's `frame-src`, the site host after the door's 303 too). Its `form-action 'self'` and
+    `no-referrer` then stay as they are.
+  - Or the app as a whole moves to `strict-origin-when-cross-origin` and adds `https://*.qorpera.com` to
+    `form-action` (simpler; every request from the app then carries its origin as Referer).
+- The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
+  `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
+
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
 
 A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
@@ -1927,8 +1968,9 @@ text, an account number, a single payment or the summary's items. Design: the co
   too) and any run of it, for the company's files sites (never an app link). `site` is a site's name (its slug),
   optional: without it every files site of the company, in name order (22023 `:site is not one of the company's sites`
   for any other name). Hours are UTC hours; days are the company's, by the same zone rule as money. Views are counted
-  by site-serve: a page (a `text/html` file) of the live version opened by a visitor's password session; a visit is a
-  view whose session had no view of that site in the 30 minutes before; at most 60 views a session an hour count. An
+  by site-serve: a page (a `text/html` file) of the live version opened by a visitor's password session (never a
+  member's, 20260930774000); a visit is a view whose session had no view of that site in the 30 minutes before; at
+  most 60 views a session an hour count. An
   answer has at most 2000 rows (`more` true when it was cut). The upkeep (pg_cron, every 10 minutes) adds finished
   hours to days, keeps hours 35 days and deletes a session's last view time about an hour after it (70 minutes at most).
   - Hours are UTC hours: in a zone offset by half an hour, an hour falls on the local day it starts in, so that day's
@@ -2186,7 +2228,12 @@ machine.
   `https://<host>`), Look first's ticket is taken at `/.qorpera/enter?t=`, a missing path gets the site's own
   `404.html` with 404, a site taken down answers 410, and private and next answers carry
   `Cross-Origin-Resource-Policy: same-origin`, `frame-ancestors 'self'` and an explicit `Cache-Control` with
-  `no-transform`. Service worker scripts are refused (404) on every site host. Every answer of site-serve, the old
+  `no-transform`. Service worker scripts are refused (404) on every site host. Since 20260930774000 an own host's
+  answers name the web's origins (`QORPERA_WEB_ORIGINS`, exact https origins; `https://app.qorpera.com` when unset) in
+  `frame-ancestors` and carry no `X-Frame-Options`, a frame's navigation passes its Fetch Metadata check, and
+  `POST /__qorpera/member` (`Origin` exactly one of the web's) redeems a member's pass
+  (`qorpera_site_member_pass_redeem`, service role only) for a member's session; the folder `/__qorpera/` is never
+  served from a site's files. Every answer of site-serve, the old
   host's too, carries an explicit `Cache-Control` with `no-transform` (D23).
   Since 20260930768000 it counts a page view after answering it (`qorpera_site_count_view`, service role only): a GET
   answered 200 or 304 with a `text/html` file of the live version for a visitor's session, with no `Range`,
