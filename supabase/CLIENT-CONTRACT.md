@@ -1787,12 +1787,29 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
     (`https://<host>/__qorpera/member`). One use, for that site's own host only; only its SHA-256 is kept.
   - `off` while hosts are off; `gone` for a site taken down; `none` for a site not live; `limited` with `retryAfter`
     (seconds) while the member holds 30 open passes. Nothing is written for these.
-- Using it: a `<form method="post" action="<action>" target="<the frame's name>">` (or a form built and submitted from
-  script), `application/x-www-form-urlencoded`, fields `pass` and optionally `path` (a path of the site such as
-  `about/`, with or without its leading `/`; anything else opens the top). The page that submits it must send its
-  `Origin` (a POST under `Referrer-Policy: no-referrer` sends `Origin: null`, which is refused): the web's
-  `strict-origin-when-cross-origin` default does. The answer is 303 to that path with the session cookie, or the site's
-  password page (401) for a pass that failed. Ask a new pass for each open and each reload; never put a pass in a URL.
+- Using it: a form `POST` to `action`, `application/x-www-form-urlencoded`, fields `pass` and optionally `path` (a
+  path of the site such as `about/`, with or without its leading `/`; anything else opens the top), submitted so that
+  the frame navigates (a form with the frame as its `target`, or a form in the frame's own document). The answer is
+  303 to that path with the session cookie, or the site's password page (401) for a pass that failed. Ask a new pass
+  for each open and each reload; never put a pass in a URL.
+- **The submitting document must send its real `Origin`.** The door takes only an `Origin` exactly one of the web's
+  origins; `null` is refused. A form POST from a document under `Referrer-Policy: no-referrer` sends `Origin: null`
+  (Fetch: a non-CORS request's origin is serialized as null under that policy), and app.qorpera.com is served with
+  `no-referrer` (`packages/web/public/_headers`, and the `<meta name="referrer">` of `index.html`). Its CSP also has
+  `form-action 'self'` and no `frame-src` (so `default-src 'self'` blocks a frame of a site host). So the web, as
+  built today, cannot use the door; V2 must change one of these, and the choice is a security-header decision for the
+  web's lead:
+  - **A door page (recommended: the app keeps `no-referrer`).** A static same-origin page, say `/site-door/`, with its
+    own `_headers` entry: `Referrer-Policy: strict-origin` (it sends only `https://app.qorpera.com`), a CSP of its own
+    with `form-action https://*.qorpera.com`, `frame-ancestors 'self'` and its script from `'self'`, and no
+    `<meta name="referrer">` of `no-referrer`. The site view's frame loads it; the app hands it the pass by
+    `postMessage` (target origin its own, checked on receipt); the page submits the form to `action` in its own
+    document, so the frame navigates to the site.
+  - The app itself: `frame-src 'self' https://*.qorpera.com` in its CSP (the frame's every navigation is checked
+    against the app's `frame-src`, the site host after the door's 303 too). Its `form-action 'self'` and
+    `no-referrer` then stay as they are.
+  - Or the app as a whole moves to `strict-origin-when-cross-origin` and adds `https://*.qorpera.com` to
+    `form-action` (simpler; every request from the app then carries its origin as Referer).
 - The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
   `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
 
