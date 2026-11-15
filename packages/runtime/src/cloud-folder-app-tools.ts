@@ -9,8 +9,8 @@
  *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
  *   An app made from a kit (`manifest.kit`, §3a and §3b) gets the kit's own files from this call: for an explainer the
  *   engine and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts);
- *   for a data kit (model, board, path, object) the kit's engine and a page that names the pictures its data refers
- *   to, beside the agent's `<kit>.json`, whose read is the `look` (cloud-app-kits.ts).
+ *   for a data kit (model, board, path, object, curve, stack, shelf) the kit's engine and a page that names the
+ *   pictures its data refers to, beside the agent's `<kit>.json`, whose read is the `look` (cloud-app-kits.ts).
  *   An app's own icons (`icons/<id>.svg`, @qorpera/cloud-client/app-icons), which members pick for their drawer, are
  *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
@@ -45,6 +45,7 @@ import {
 	APP_TEXT_KINDS,
 	APP_VIDEO_FILE_MAX_BYTES,
 	APP_VIDEOS_MAX_BYTES,
+	APP_WRITE_ANSWERS,
 	APP_WRITES_MAX,
 	type AppManifest,
 	appFileKind,
@@ -150,7 +151,7 @@ const SAVE_APP_DESIGN =
 const APP_GUIDE_DESCRIPTION =
 	"Read how one part of an interface app is made, before you make it with save_app. " +
 	"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app. " +
-	"about a kit (model, board, path, object or explainer) answers what the one file you write holds, field by field with its bounds, an example, and how to check the page; save_app saves a kit's file only in a run that has read the kit's guide. " +
+	"about a kit (model, board, path, object, curve, stack, shelf or explainer) answers what the one file you write holds, field by field with its bounds, an example, and how to check the page; save_app saves a kit's file only in a run that has read the kit's guide. " +
 	"For a page written by hand: style is the base style every page starts from, the company's colours as CSS variables, and light and dark; reads is how the page's script reads the company's live data through the qorpera object, and how often; writes is how it lets a member answer a question or change a table's row. " +
 	"icons is how an app's own icons are drawn. " +
 	"The answer is the guide's text. It reads nothing of the company and changes nothing; read a guide again when you no longer have it.";
@@ -377,6 +378,9 @@ const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly strin
 	board: [KIT_ENGINE, KIT_PAGE],
 	path: [KIT_ENGINE, KIT_PAGE],
 	object: [KIT_ENGINE, KIT_PAGE],
+	curve: [KIT_ENGINE, KIT_PAGE],
+	stack: [KIT_ENGINE, KIT_PAGE],
+	shelf: [KIT_ENGINE, KIT_PAGE],
 };
 
 /** The one file of a kit's app that its maker writes: an explainer's scenes, a data kit's data. */
@@ -393,6 +397,53 @@ function kitData(kit: DataKit, text: string): Readonly<Record<string, unknown>> 
 /** What the answer's look says when save_app added `data` to a kit app's reads. */
 const DATA_READ_ADDED =
 	"data was added to the app's reads: its data names a question of the company's databases, which the page reads live.";
+/** What the answer's look says when save_app gave a stack's page the open questions and their answers. */
+const STACK_ASKS_ADDED =
+	"questions was added to the app's reads and answers to its writes: a stack's buttons answer the open questions that point at the app.";
+/** What the answer's look says when save_app gave a stack's page the open questions only. */
+const STACK_QUESTIONS_ADDED =
+	"questions was added to the app's reads: a stack's cards show the open questions that point at the app.";
+/** What the answer's look says when save_app gave a stack's page the answers only. */
+const STACK_ANSWERS_ADDED =
+	"answers was added to the app's writes: a stack's buttons answer the open questions that point at the app.";
+/** What the answer's look says when a stack's writes are full and hold no `answers`, which save_app cannot add. */
+const STACK_WRITES_FULL = `answers could not be added to the app's writes, which already hold ${APP_WRITES_MAX} entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.`;
+
+/**
+ * A kit app's manifest with what its page needs and its maker may not think of, and the look's line for each: `data`
+ * in reads where its data names a question of the company's databases, and for a stack `questions` in reads and
+ * `answers` in writes, since its cards' buttons answer the open questions that point at the app. Never taken away: when `writes` is full without `answers`, a
+ * look line tells the agent to make room.
+ */
+function kitNeeds(
+	kit: DataKit,
+	data: Readonly<Record<string, unknown>>,
+	manifest: AppManifest,
+): { readonly manifest: AppManifest; readonly notes: readonly string[] } {
+	let out = manifest;
+	const notes: string[] = [];
+	if (kitBindings(data).length > 0 && !out.reads.includes("data")) {
+		out = { ...out, reads: [...out.reads, "data"] };
+		notes.push(DATA_READ_ADDED);
+	}
+	if (kit === "stack") {
+		const addQuestions = !out.reads.includes("questions");
+		const hasAnswers = out.writes.includes(APP_WRITE_ANSWERS);
+		const addAnswers = !hasAnswers && out.writes.length < APP_WRITES_MAX;
+		if (addQuestions || addAnswers)
+			out = {
+				...out,
+				reads: addQuestions ? [...out.reads, "questions"] : out.reads,
+				writes: addAnswers ? [...out.writes, APP_WRITE_ANSWERS] : out.writes,
+			};
+		if (addQuestions && addAnswers) notes.push(STACK_ASKS_ADDED);
+		else if (addQuestions) notes.push(STACK_QUESTIONS_ADDED);
+		else if (addAnswers) notes.push(STACK_ANSWERS_ADDED);
+		// writes are full without answers: the agent must make room, since save_app never takes an entry away
+		if (!hasAnswers && !addAnswers) notes.push(STACK_WRITES_FULL);
+	}
+	return { manifest: out, notes };
+}
 
 /** Refuses a call that writes a file of the app's kit: the kit's files are Qorpera's, the same in every such app. */
 function refuseKitFiles(kit: NonNullable<AppManifest["kit"]>, files: readonly AppFile[]): void {
@@ -494,11 +545,11 @@ export function appLookNotes(html: string): string[] {
 		);
 	if (words > LOOK_WORDS)
 		notes.push(
-			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object or explainer: kit's schema says what each draws), and keep the text in its file.`,
+			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws), and keep the text in its file.`,
 		);
 	if (!shown && words > LOOK_WORDS_UNSHOWN)
 		notes.push(
-			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object or explainer: kit's schema says what each draws).",
+			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws).",
 		);
 	return notes;
 }
@@ -830,11 +881,9 @@ export function cloudAppTools(options: {
 					const data = kitData(kit, dataText);
 					const written = new Set(request.files.map((file) => file.path.toLowerCase()));
 					const holds = (path: string) => written.has(path.toLowerCase());
-					look = kitNotes(kit, data, holds);
-					if (kitBindings(data).length > 0 && !manifest.reads.includes("data")) {
-						manifest = { ...manifest, reads: [...manifest.reads, "data"] };
-						look.push(DATA_READ_ADDED);
-					}
+					const needs = kitNeeds(kit, data, manifest);
+					manifest = needs.manifest;
+					look = [...kitNotes(kit, data, holds), ...needs.notes];
 					files = [
 						...files,
 						{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
@@ -1006,11 +1055,13 @@ export function cloudAppTools(options: {
 				const holds = (path: string) =>
 					written.has(path.toLowerCase()) || byKey.get(path.toLowerCase())?.kind === "file";
 				look = kitNotes(kit, data, holds);
-				// Data that names a question reads the company's databases: `data` joins the reads, never leaves them.
+				// Data that names a question reads the company's databases, and a stack answers questions: what the page
+				// needs joins the manifest, never leaves it.
 				const reading = manifestOut ?? before;
-				if (kitBindings(data).length > 0 && reading !== null && !reading.reads.includes("data")) {
-					manifestOut = { ...reading, reads: [...reading.reads, "data"] };
-					look.push(DATA_READ_ADDED);
+				if (reading !== null) {
+					const needs = kitNeeds(kit, data, reading);
+					if (needs.manifest !== reading) manifestOut = needs.manifest;
+					look.push(...needs.notes);
 				}
 				for (const file of [
 					{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
