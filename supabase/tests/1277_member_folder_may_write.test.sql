@@ -52,10 +52,12 @@ begin
 		or pg_temp.mw_write('92400000-0000-4000-8000-000000000004', 'data/mine/') then
 		raise exception 'a private folder is written by its owner alone'; end if;
 
+	if pg_temp.mw_write('92400000-0000-4000-8000-000000000001', 'trail/x') then
+		raise exception 'a name the folder never holds is no write'; end if;
 	perform pg_temp.mw_refused('92400000-0000-4000-8000-000000000005', 'data/shop', '42501');
 	foreach v in array array[to_jsonb(''::text), to_jsonb('/data'::text), to_jsonb('data//shop'::text),
 			to_jsonb('data/../x'::text), to_jsonb('data/./x'::text), to_jsonb(E'data\\shop'::text),
-			to_jsonb(repeat('a', 4097))] loop
+			to_jsonb(repeat('a', 4097)), to_jsonb('data/a:b'::text), to_jsonb('data/x.'::text), to_jsonb('data/'::text || repeat('é', 2100))] loop
 		perform pg_temp.mw_refused('92400000-0000-4000-8000-000000000001', v #>> '{}', '22023');
 	end loop;
 	perform pg_temp.mw_refused('92400000-0000-4000-8000-000000000001', null, '22023');

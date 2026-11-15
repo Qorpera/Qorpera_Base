@@ -1046,7 +1046,8 @@ by their keys, never with a lowercase literal.
   snapshot; an invalid path refuses the whole call. A client that finds it missing reads each path alone.
 - `qorpera_member_folder_may_write(environment, path)` (`20260930779000`): `{schema: "qorpera.member-folder-may-write/v1",
   path, write}`, whether the folder core lets the signed-in member write `path` now (the path's resource and the
-  member's place in it). A member of the company only (42501), not while it is being deleted or paused (55000); an
+  member's place in it; a name the folder never holds, such as `trail/`, is no write). The path is checked as the
+  core checks every path, with one trailing `/` allowed. A member of the company only (42501), not while it is being deleted or paused (55000); an
   invalid path is 22023. It changes nothing. The data gateway asks it before a member's row edit (company databases
   §5a).
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
