@@ -131,6 +131,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	machine_stop: "stop a machine; its disk is kept",
 	machine_delete: "delete a machine and its disk",
 	save_coding_value: "save a key made on npm, GitHub, Stripe or Resend as a coding value",
+	record_reflection: "record what the company decided about a platform update",
 };
 
 /** Bytes of a tool's description: the boundary's bound. */

@@ -105,6 +105,7 @@ import {
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudToolsOnDemand } from "./cloud-native-tools-on-demand.ts";
 import { CloudPictureChannel } from "./cloud-picture-channel.ts";
+import { cloudRecordReflectionTool, readCloudPlatformUpdates } from "./cloud-platform-updates.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { CloudRunLogGone } from "./cloud-run-log.ts";
@@ -515,6 +516,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
 						? CloudFolderProposals.list(folder.client, signal)
 						: Promise.resolve(undefined);
+				const updatesRequest =
+					context.identity.audienceKind === "company" &&
+					context.agentKind === "cofounder" &&
+					wake.kind === "routine" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? readCloudPlatformUpdates(folder.client, new Date(), signal).catch((error: unknown) => {
+								if (!signal.aborted)
+									console.error(
+										`Platform updates were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return undefined;
+							})
+						: Promise.resolve(undefined);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
@@ -548,14 +562,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					vision,
 					openWork: await openWorkRequest,
 					proposals: await proposalsRequest,
+					platformUpdates: await updatesRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
-				async (error) => {
+			const { initialPresence, gateway, memory, skills, vision, openWork, proposals, platformUpdates } =
+				await composeContext().catch(async (error) => {
 					await connectorTools();
 					throw error;
-				},
-			);
+				});
 			const connectorDescriptors = await connectorTools();
 			const viewed = await viewedRequest;
 			signal.throwIfAborted();
@@ -607,6 +621,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					// What the instructions are composed for: the run's tools and whether the vision is agreed (T3-2).
 					if (!offeredTools) throw new Error("The run's tools were not made before its opening");
 					const parts = { head: head.text, views, tools: offeredTools, visionAgreed: cloudVisionAgreed(vision) };
+					const updates = offeredTools.has("record_reflection") ? platformUpdates?.context : undefined;
 					const prompt = composeCloudNativeCompanyPrompt(
 						{ ...context, continuation },
 						wake,
@@ -618,6 +633,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						head,
 						view?.tree,
 						request,
+						updates,
 					);
 					// The run's context is its head and views (in the developer instructions) and its context message, hashed
 					// together.
@@ -627,7 +643,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const contextSha256 = createHash("sha256").update(text).digest("hex");
 					// What composition read from the folder is released under the composed context before any model request,
 					// with the paths of the proposals it shows (P40b).
-					await notebooks.releaseComposition(contextSha256, openingSignal, proposals?.reads);
+					await notebooks.releaseComposition(contextSha256, openingSignal, [
+						...(proposals?.reads ?? []),
+						...(updates ? (platformUpdates?.reads ?? []) : []),
+					]);
 					// So are the summary lines the view and the branches show, and the run's first request is recorded with
 					// the settle's wait (§13). A failed release fails the run. A failed record leaves it without the answer,
 					// the view reference (W4a-1), which is for the workers the run dispatches (W4b).
@@ -1115,6 +1134,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										// The Co-Founder deals the team out between the members (20260930702000).
 										...(context.agentKind === "cofounder"
 											? cloudMemberOfferTools(binding, identity, this.#paths)
+											: []),
+										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
+											? [cloudRecordReflectionTool({ folder: folder.client, operations, identity })]
 											: []),
 										// The agent changes the company's hooks through its folder client (E3a).
 										...cloudEventTools(binding, identity, this.#paths, folder.client),
