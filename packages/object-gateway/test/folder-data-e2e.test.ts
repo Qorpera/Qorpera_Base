@@ -1,8 +1,3 @@
-/** The node's folder service and a company machine's `data` command together (company databases slice 8a,
- * deploy/first-node/RUNTIME-COMPANY-DATABASES.md §9a): this package's service over a Unix socket with a stand-in for
- * the data gateway's run door, and the Rust program's `data` subcommand calling it through a small stand-in for the
- * vsock bridge, which names the machine. Needs the built program, so it runs only when QORPERA_FOLDER_MOUNT_BIN names
- * it (the run-on-node step "folder-program" does, in a container). */
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, type Server } from "node:net";
@@ -52,7 +47,6 @@ function listen(server: Server, path: string): Promise<void> {
 	return new Promise((resolve) => server.listen(path, resolve));
 }
 
-/** The command, run to its end: its exit code and what it printed. */
 function data(args: readonly string[]): Promise<{ code: number | null; out: string; err: string }> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(program as string, ["data", ...args], { stdio: ["ignore", "pipe", "pipe"] });
@@ -70,8 +64,6 @@ function data(args: readonly string[]): Promise<{ code: number | null; out: stri
 }
 
 describe.skipIf(!program)("the data command against the folder service", () => {
-	/** A company with one database, a test machine's view held open as its folder program holds it, the service with a
-	 * stand-in run door, a bridge for the view's machine and one for another, and the company folder on a disk here. */
 	async function machine() {
 		const dir = await mkdtemp(join(tmpdir(), "qorpera-folder-data-e2e-"));
 		cleanup.push(() => rm(dir, { recursive: true, force: true }));
@@ -119,7 +111,6 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 		const server = createFolderServer(service, () => {});
 		await listen(server, serviceSocket);
 		cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
-		// The bridge's part: name the machine, then pass bytes through.
 		const bridged = async (name: string, info: BridgeInfo): Promise<string> => {
 			const path = join(dir, name);
 			const bridge = createServer((from) => {
@@ -176,7 +167,6 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 		);
 		const asked = await data([...here, "query", "shop", "count", "since=2026-01-01", "limit:=5"]);
 		expect(asked).toEqual({ code: 0, out: '{"columns":["count"],"more":false,"rows":[[2]]}\n', err: "" });
-		// Two calls, each with a pass of its own made as the view; the second carries the file's text under its hash.
 		expect(core.dataPasses.map((pass) => [pass.viewId, pass.database])).toEqual([
 			[TEST_VIEW, "shop"],
 			[TEST_VIEW, "shop"],
@@ -186,7 +176,6 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 			{ verb: "query", body: { ...asks, pass: core.dataPasses[0]?.pass } },
 			{ verb: "query", body: { ...asks, pass: core.dataPasses[1]?.pass, texts: { [hash]: FILES[question] } } },
 		]);
-		// What the answer showed is the view's read: released at the machine's next boundary.
 		expect(await service.boundary(PLACEMENT)).toMatchObject({ reads: "released" });
 		expect([...(core.readSets.get(TEST_VIEW)?.keys() ?? [])].sort()).toEqual(["data/shop/database.toml", question]);
 	});
@@ -228,7 +217,6 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 			["change", { database: "shop", change: "add", params: { id: 7 }, pass: undefined }],
 			["query", { database: "shop", question: "nope", pass: undefined }],
 		]);
-		// The service's own refusal, in the same form.
 		expect(await data([...here, "apply", "nothing"])).toMatchObject({
 			code: 1,
 			err: expect.stringContaining("No database nothing that this machine may read"),
@@ -237,21 +225,17 @@ describe.skipIf(!program)("the data command against the folder service", () => {
 
 	it("reaches nothing from another machine, without a view, or past what the command line says", async () => {
 		const { dir, calls, here, elsewhere } = await machine();
-		// The view's pass on another machine: refused by the node, as any hello is.
 		expect(await data([...elsewhere, "describe"])).toMatchObject({
 			code: 3,
 			out: "",
 			err: expect.stringContaining("The view, its pass or this machine did not match"),
 		});
-		// A boot without the company folder has no view file.
 		expect(
 			await data(["--view-file", join(dir, "none.json"), "--connect", here[5] as string, "describe"]),
 		).toMatchObject({ code: 3, out: "", err: expect.stringContaining("this machine has no company folder") });
-		// A node that does not answer.
 		expect(
 			await data(["--view-file", here[1] as string, "--connect", `unix:${join(dir, "gone.sock")}`, "describe"]),
 		).toMatchObject({ code: 3, out: "" });
-		// A command line it cannot read: said so, with how it is used.
 		for (const bad of [
 			[],
 			["watch", "shop"],

@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL: u32 = 4;
-/// The `data` role's protocol (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §9a): only `data` says it. A mount
-/// keeps saying `PROTOCOL`, so a node's folder service from before the `data` role still serves every mount.
+// WHY: only `data` says 5; a mount keeps saying 4, so a node's folder service from before the `data` role still
+// serves every mount.
 pub const DATA_PROTOCOL: u32 = 5;
 /// The folder service's vsock port on the node (the host is always CID 2 from inside a VM).
 pub const VSOCK_PORT: u32 = 5250;
