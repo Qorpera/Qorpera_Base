@@ -23,6 +23,8 @@ import { companyNameFromIdea, renderNewCompany, type Viewer } from "./new-compan
  * switched the lobby off, creating a company is paused. There is no local company list — the cloud is
  * the only registry. */
 
+const RENAME_SETTLE_WAITS_MS = [1500, 2500, 4000, 8000];
+
 /** A role as the hub names it; the English is the role's own word. */
 const ROLE_LABELS: Record<HostedProfileRole, string> = {
 	owner: phrase("founder"),
@@ -77,6 +79,7 @@ export class HubController {
 	#refresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
+	readonly #renames = new Map<string, string>();
 
 	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
@@ -136,6 +139,37 @@ export class HubController {
 		await this.refresh();
 	}
 
+	renamed(profileId: string, name: string): void {
+		if (this.#disposed) return;
+		this.#renames.set(profileId, name);
+		this.store.set(({ profiles }) => ({ profiles: this.#withRenames(profiles) }));
+		void this.#settleRename(profileId, name);
+	}
+
+	#withRenames(profiles: HostedProfile[]): HostedProfile[] {
+		if (!this.#renames.size) return profiles;
+		return profiles.map((profile) => {
+			const name = this.#renames.get(profile.profileId);
+			if (name === undefined) return profile;
+			if (profile.profileName === name) {
+				this.#renames.delete(profile.profileId);
+				return profile;
+			}
+			return { ...profile, profileName: name };
+		});
+	}
+
+	async #settleRename(profileId: string, name: string): Promise<void> {
+		for (const wait of RENAME_SETTLE_WAITS_MS) {
+			await new Promise((resolve) => setTimeout(resolve, wait));
+			if (this.#disposed || this.#renames.get(profileId) !== name) return;
+			await this.refreshAfter();
+			if (this.#renames.get(profileId) !== name) return;
+		}
+		this.#renames.delete(profileId);
+		await this.refreshAfter();
+	}
+
 	async companyRemoved(profileId: string): Promise<void> {
 		if (this.#disposed) return;
 		this.#membershipRevision++;
@@ -182,7 +216,13 @@ export class HubController {
 				this.#readFounding(),
 			]);
 			if (revision === this.#membershipRevision)
-				this.store.set({ profiles, invitations, ...founding, loading: false, loaded: true });
+				this.store.set({
+					profiles: this.#withRenames(profiles),
+					invitations,
+					...founding,
+					loading: false,
+					loaded: true,
+				});
 		} catch (error) {
 			if (revision === this.#membershipRevision) this.store.set({ loading: false, error: describeError(error) });
 		}
