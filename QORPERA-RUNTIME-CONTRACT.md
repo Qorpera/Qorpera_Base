@@ -6911,6 +6911,24 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
 
+### 2026-11-16 amendment: the agent's home for every company
+
+Founder decision of 16 November 2026, to "Switch it on for every company in the next release, with the node 1 fix?":
+"Yes, next release". It goes live with migration `20260930789000`, in the release that carries #1880 (a Claude Code
+worker's run is claimed only by a shared execution host), never before it.
+
+1. **One more setting.** The platform's home switch (`qorpera_home_settings`) has `every_company`. A company has the
+   home when the platform switch is on and either `every_company` is on or the company is listed
+   (`qorpera_home_companies`), and slice 3's sharing rule exists, as before. A company made later has it as well.
+2. **Turned on where the switch is.** The migration sets `every_company` only where the platform switch's row is on; a
+   database whose switch is off or absent stays off. The listed companies keep their rows.
+3. **An earlier machine.** A machine whose disk was made from an image without the pinned Codex or `sftp-server`
+   answers its home `HOME_OUTDATED`. A run's home calls get those words and the run goes on with the company's own
+   tools; a Claude Code worker on such a machine ends blocked in those words. Waking the machine keeps its disk; a new
+   machine has the home.
+4. **The way back** is one statement, and leaves the listed companies on:
+   `update public.qorpera_home_settings set every_company = false where singleton;`
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
