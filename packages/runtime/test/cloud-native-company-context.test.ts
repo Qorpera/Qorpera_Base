@@ -935,6 +935,9 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	const noMachines = compile(without("machine_start", "machine_run"));
 	expect(noMachines).not.toContain("- Commands (");
 	expect(noMachines).not.toContain("Playwright's addInitScript");
+	expect(full).toContain("A program on a company machine reaches these databases with the command data");
+	expect(noMachines).not.toContain("the command data");
+	expect(noMachines).toContain("\n# Company databases\n");
 	expect(noMachines).toContain(
 		"Before you link an app, look at it as a demanding designer, fix the weakest thing, and look again. Then cover the words",
 	);
@@ -2091,7 +2094,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "beda60c7d3a9bd03bd8dd945ac5c2292e9a6062bcbdc5747d35e7e8cf7885102",
+			instructions: "752e68d2328bbe2725266207982801eace3b350bbfa25b4845e2acf088f596a3",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2099,7 +2102,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "4ecdde26333cfc305d263663ad41c07578885ea56214b993c8c1b9d9e1b1989b",
+			instructions: "cf7590a6f1b86f86d77b3dabf81891263c45220738134f89336a9641cea3cb52",
 			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
@@ -2107,7 +2110,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "beda60c7d3a9bd03bd8dd945ac5c2292e9a6062bcbdc5747d35e7e8cf7885102",
+			instructions: "752e68d2328bbe2725266207982801eace3b350bbfa25b4845e2acf088f596a3",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
