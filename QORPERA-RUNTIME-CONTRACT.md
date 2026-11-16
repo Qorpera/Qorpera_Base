@@ -6911,6 +6911,24 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
 
+### 2026-11-16 amendment: web search on a member's Codex login
+
+> The founder, 16 November 2026: "Yes, turn it on" (web search for agents, paid by the member's own plan). It changes
+> the 2026-10-21 amendment's "web search is off" and the 2026-09-27 amendment's item 7 ("web work stays on the Company
+> Computer's browser and on connectors"). It goes live with the runtime bundle that carries it; the native Codex does not change.
+
+1. **Where.** An agent's own thread, when its run is on a member's Codex sign-in, searches the web from OpenAI's cached
+   index (`web_search="cached"`: no live fetch of a site, so a query never reaches a third party's server). The search
+   is Codex's own `web.run`, on the same sign-in, and counts toward that member's ChatGPT plan, then their credits,
+   never Qorpera. The reviewer's, the compactor's, a voice call's and a picture's threads have none, nor a run on a
+   member's ChatGPT plan through the API.
+2. **The fence keeps its meaning.** Each result reaches the model only as a function output the result fence issues
+   as one of Codex's own: an `unconfirmed` envelope of untrusted data, at most 32 KiB, under the run's live authority
+   at every request. The provider's hosted search, whose results never pass the host, is not offered; its
+   `web_search_call` item stays refused.
+3. **The record.** Each search is a `web_search` step of the run's work log, with its query and the envelope the model
+   got. Members see what was found in the agent's own words, never the steps.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

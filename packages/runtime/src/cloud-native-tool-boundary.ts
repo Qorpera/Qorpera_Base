@@ -596,6 +596,7 @@ export class CloudNativeToolBoundary {
 	 * pixels), kept as long as the issued results are. */
 	readonly #shownImages = new Map<string, string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
+	readonly #webSearches = new Map<string, string>();
 	#pending: Promise<void> = Promise.resolve();
 	/** The calls (by tool and arguments) that made the run's final send, or a card's: once there is one, what the run
 	 * calls next is its bookkeeping, or the same call again, which only replays it. */
@@ -695,6 +696,12 @@ export class CloudNativeToolBoundary {
 	/** The run's work log, which the session feeds the agent's own text as it streams. */
 	get runLog(): CloudRunLog | undefined {
 		return this.#runLog;
+	}
+
+	webSearched(callId: string, query: string, completed = true): void {
+		if (!CALL_ID.test(callId) || (!completed && this.#webSearches.has(callId))) return;
+		this.#webSearches.set(callId, JSON.stringify({ query }));
+		remember(this.#webSearches, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 	}
 
 	/** Matches the pinned Codex 0.147.0 DynamicToolSpec, without exposing server identity as arguments. */
@@ -825,7 +832,8 @@ export class CloudNativeToolBoundary {
 				this.#issuedResults.has(`${input.callId}:${createHash("sha256").update(text).digest("hex")}`);
 			// What the run's home had to say about this call (it was refused, or its machine went away under it) comes
 			// first, in its own words: Codex's own output for a failed patch drops them ("Failed to write file X").
-			const note = issued ? undefined : this.#home?.noteFor(input.callId);
+			const search = issued ? undefined : this.#webSearches.get(input.callId);
+			const note = issued || search !== undefined ? undefined : this.#home?.noteFor(input.callId);
 			// Codex answers a call of a tool its catalog does not hold itself ("unsupported call: <name>"). For a tool the
 			// run opens through more_tools, the model is told so instead (T3-6): the answer names nothing it lacks.
 			const opened = issued ? undefined : this.#openedThroughMoreTools(text);
@@ -844,7 +852,22 @@ export class CloudNativeToolBoundary {
 			remember(this.#nativeResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 			// The first release of one of Codex's own calls: its step keeps the exact envelope the model is shown. A
 			// later request carrying the same output is a replay above, which finishes nothing twice.
-			this.#home?.released(input.callId, output, !issued);
+			if (search === undefined) this.#home?.released(input.callId, output, !issued);
+			else {
+				this.#webSearches.delete(input.callId);
+				const runLog = this.#runLog;
+				if (runLog)
+					runLog.finish(
+						runLog.step({
+							call: input.callId,
+							tool: "web_search",
+							argumentsText: search,
+							argumentSha256: createHash("sha256").update(search).digest("hex"),
+						}),
+						output,
+						[],
+					);
+			}
 			return release({ kind: input.kind, callId: input.callId, output, ...image });
 		});
 		await untilStopped(() => this.#captures?.assertReadable(this.#signal) ?? Promise.resolve(), this.#signal);
