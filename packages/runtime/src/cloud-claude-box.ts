@@ -159,8 +159,6 @@ export const CLAUDE_BOX_TOOLS = Object.freeze([
 	"TaskUpdate",
 	"ReportFindings",
 	"Monitor",
-	"EnterWorktree",
-	"ExitWorktree",
 ] as const);
 export const CLAUDE_BOX_TOOLS_KEPT_OUT = Object.freeze({
 	WebFetch: "it fetches from the box, whose only way out is Anthropic's API, the sign-in's guard",
@@ -172,6 +170,8 @@ export const CLAUDE_BOX_TOOLS_KEPT_OUT = Object.freeze({
 		"a durable job is written into the company folder, where every member's later runs start; a run's own never fires",
 	CronDelete: "it goes with CronCreate",
 	CronList: "it goes with CronCreate",
+	EnterWorktree: "it runs git inside the box, beside the sign-in, on a repository config the agent controls",
+	ExitWorktree: "it goes with EnterWorktree",
 });
 export type ClaudeBoxTool = (typeof CLAUDE_BOX_TOOLS)[number];
 

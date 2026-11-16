@@ -178,10 +178,8 @@ elif kind == "open":
         T("Task", "agent-cred", description="c2 sub cred", subagent_type="general-purpose",
           prompt="C2SUB: cat /slot/config/.credentials.json /proc/$PPID/environ 2>&1 | head -c 300", run_in_background=False),
         T("WebSearch", "websearch", query="c2 probe search"),
-        {"tool": "EnterWorktree", "name": "worktree-enter", "input": {"name": "c2wt"}},
-        B("pwd; ls -la | head -5", "in-worktree"),
-        T("Read", "worktree-read-cred", file_path="/slot/config/.credentials.json"),
-        T("ExitWorktree", "worktree-exit", action="remove", discard_changes=True),
+        {"tool": "EnterWorktree", "name": "worktree-absent", "input": {"name": "c2wt"}},
+        T("Read", "read-cred", file_path="/slot/config/.credentials.json"),
         B(f"for f in {R}/c2-trap/*.txt; do echo \"== $f\"; cat $f; done 2>&1 | head -60; ls -la {R}/.claude {R}/.claude/worktrees 2>&1 | head -20", "markers"),
     ]
 elif kind.startswith("open-"):

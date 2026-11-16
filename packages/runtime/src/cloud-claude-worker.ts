@@ -158,7 +158,6 @@ function stepWhat(tool: string, input: unknown): string {
 		Task: () => [first("subagent_type"), first("description")].filter(Boolean).join(": "),
 		WebSearch: () => first("query"),
 		Skill: () => first("skill"),
-		EnterWorktree: () => first("name", "path"),
 	};
 	const what = Object.hasOwn(byTool, tool)
 		? byTool[tool]()

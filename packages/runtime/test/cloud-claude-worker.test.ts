@@ -243,7 +243,6 @@ describe("the stream", () => {
 			["Task", { subagent_type: "general-purpose", description: "sort the notes", prompt: "long" }],
 			["WebSearch", { query: "danish vat rules" }],
 			["Skill", { skill: "pdf" }],
-			["EnterWorktree", { name: "fix-1" }],
 			["TaskCreate", { subject: "s", description: "d" }],
 		];
 		calls.forEach(([name, input], index) => {
@@ -256,7 +255,6 @@ describe("the stream", () => {
 			"general-purpose: sort the notes",
 			"danish vat rules",
 			"pdf",
-			"fix-1",
 			"",
 		]);
 	});
