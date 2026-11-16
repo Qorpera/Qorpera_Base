@@ -38,7 +38,8 @@ const TEST = "cargo clean --locked -p qorpera-folder && cargo test --locked";
 const BUILD = `cargo clean --locked -p qorpera-folder --release && ${CARGO_BUILD} && cp ${TARGET}/release/qorpera-folder /out/`;
 const CLEAN_BUILD = `rm -rf ${TARGET}/release && ${CARGO_BUILD} && cp ${TARGET}/release/qorpera-folder /out/`;
 const CHECK = "node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder";
-const E2E = "node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts";
+const E2E =
+	"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts";
 /** The pinned git, for the program's runs with real git on the mount (F3 step 5d): the coding machine's
  * (deploy/coding-machine/coding-image.json), built in NODE_IMAGE once per test machine into a volume of its own,
  * relocatable, and without what the runs do not use (http, Perl, Python, translations). A run that loses the race to

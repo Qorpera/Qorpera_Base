@@ -13,14 +13,15 @@ import type { CoreReceipt, CoreRefusal } from "./core.ts";
  * 1 reads only. Version 3 adds the read log (F3 4c, RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"): a core view takes
  * writes only from a machine that sends it. Version 4 adds links (RUNTIME-FOLDER-LINKS.md, "Protocol 4"): a machine
  * below it never sees one. */
-export const PROTOCOL = 4;
-export const PROTOCOLS = [1, 2, 3, 4] as const;
+export const PROTOCOL = 5;
+export const PROTOCOLS = [1, 2, 3, 4, 5] as const;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** Before a machine's hello is accepted, frames (the bridge's and the hello) are small: an unfinished large frame
  * would otherwise hold memory for any machine on the node, with no pass. */
 export const HELLO_MAX_PAYLOAD = 4 * 1024;
 /** After it, a machine sends only requests and acknowledgements: a path of at most 4 KiB and a few numbers. */
 export const REQUEST_MAX_PAYLOAD = 64 * 1024;
+export const DATA_MAX_PAYLOAD = 1024 * 1024;
 export const MAX_READ = 1024 * 1024;
 /** Entries per listing page. */
 export const LIST_PAGE = 1000;
@@ -63,6 +64,8 @@ export const Kind = {
 	// Notices (protocol 4, the `notices` role only).
 	notices: 0x51, // Q: a view's notices after one
 	noticed: 0x71, // q
+	dataCall: 0x54,
+	dataAnswer: 0x74,
 } as const;
 
 export const ErrorCode = {
@@ -149,7 +152,7 @@ export class FrameReader {
 
 /** `notices` (protocol 4): the office's folder helper asks for the notices of a view the service holds, and nothing
  * else (F3 4f-2b-2, "Notices" below). */
-export type Role = "io" | "feed" | "notices";
+export type Role = "io" | "feed" | "notices" | "data";
 
 export interface Hello {
 	readonly protocol: number;
@@ -268,11 +271,13 @@ export function parseHello(payload: Buffer): Hello {
 		typeof v === "string" && v.length > 0 && v.length <= 256 && /^[\x21-\x7e]+$/.test(v);
 	if (!printable(value.viewId) || !printable(value.pass))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad view id or pass");
-	if (value.role !== "io" && value.role !== "feed" && value.role !== "notices")
+	if (value.role !== "io" && value.role !== "feed" && value.role !== "notices" && value.role !== "data")
 		throw new ProtocolError(ErrorCode.badRequest, "Bad role");
 	// Notices join no mount: no previous view and no abandoned program.
 	if (value.role === "notices" && (protocol < 4 || value.previous !== undefined || value.abandon !== undefined))
 		throw new ProtocolError(ErrorCode.badRequest, "Bad notices request");
+	if (value.role === "data" && (protocol < 5 || value.previous !== undefined || value.abandon !== undefined))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad data request");
 	let previous: Hello["previous"];
 	if (value.previous !== undefined) {
 		const old = value.previous as Record<string, unknown>;
@@ -765,4 +770,27 @@ export function parseNotices(payload: Buffer): NoticesRequest {
 	if (value.nonce !== null && (typeof value.nonce !== "string" || !isUuid(value.nonce)))
 		throw new ProtocolError(ErrorCode.badRequest, "Bad nonce");
 	return { after: count(value.after, Number.MAX_SAFE_INTEGER), nonce: value.nonce };
+}
+
+export const DATA_VERBS = ["describe", "apply", "query", "change"] as const;
+export type DataVerb = (typeof DATA_VERBS)[number];
+
+export interface DataCall {
+	readonly verb: DataVerb;
+	readonly body: Readonly<Record<string, unknown>>;
+}
+
+export interface DataAnswer {
+	readonly status: number;
+	readonly value: unknown;
+}
+
+export function parseDataCall(payload: Buffer): DataCall {
+	const value = object(payload);
+	exactKeys(value, ["verb", "body"]);
+	if (!DATA_VERBS.includes(value.verb as DataVerb)) throw new ProtocolError(ErrorCode.badRequest, "Bad verb");
+	const body = value.body;
+	if (!body || typeof body !== "object" || Array.isArray(body))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad body");
+	return { verb: value.verb as DataVerb, body: body as Record<string, unknown> };
 }

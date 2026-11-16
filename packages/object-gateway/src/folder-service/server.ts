@@ -1,6 +1,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import {
 	type BridgeInfo,
+	DATA_MAX_PAYLOAD,
 	ErrorCode,
 	encodeFrame,
 	encodeJson,
@@ -14,6 +15,7 @@ import {
 	parseBridge,
 	parseChunkPart,
 	parseClose,
+	parseDataCall,
 	parseExecutable,
 	parseGetChunk,
 	parseHello,
@@ -32,7 +34,7 @@ import {
 	REQUEST_MAX_PAYLOAD,
 	type Role,
 } from "./protocol.ts";
-import type { ChangeMessage, FolderService, NoticesHandle, ViewHandle } from "./service.ts";
+import type { ChangeMessage, DataHandle, FolderService, NoticesHandle, ViewHandle } from "./service.ts";
 
 /** The bridge's frame must arrive this soon after it connects, and the machine's hello this soon after that. */
 const BRIDGE_MS = 5_000;
@@ -58,6 +60,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 	let bridge: BridgeInfo | undefined;
 	let handle: ViewHandle | undefined;
 	let notices: NoticesHandle | undefined;
+	let data: DataHandle | undefined;
+	const gone = new AbortController();
 	let role: Role | undefined;
 	/** The machine speaks protocol 2 (3 for a core view: it logs its reads) and its view takes writes. */
 	let writes = false;
@@ -97,6 +101,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 		if (ended) return;
 		ended = true;
 		clearTimeout(deadline);
+		gone.abort();
 		handle?.release();
 		socket.end();
 		socket.destroySoon();
@@ -128,7 +133,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			bridge = parseBridge(frame.payload);
 			clearTimeout(deadline);
 			deadline = setTimeout(() => {
-				if (!handle && !notices && !opening) end();
+				if (!handle && !notices && !data && !opening) end();
 			}, HELLO_MS);
 			return;
 		}
@@ -140,9 +145,23 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			send(encodeJson(Kind.noticed, notices.page(parseNotices(frame.payload))));
 			return;
 		}
+		if (data) {
+			if (frame.kind !== Kind.dataCall)
+				throw new ProtocolError(ErrorCode.badRequest, "A data connection only makes data calls", true);
+			send(encodeJson(Kind.dataAnswer, await data.call(parseDataCall(frame.payload), gone.signal)));
+			return;
+		}
 		if (!handle) {
 			if (frame.kind !== Kind.hello) throw new ProtocolError(ErrorCode.badRequest, "Expected a hello");
 			const hello = parseHello(frame.payload);
+			if (hello.role === "data") {
+				data = service.data(hello, bridge);
+				role = hello.role;
+				clearTimeout(deadline);
+				reader.limit = DATA_MAX_PAYLOAD;
+				send(encodeJson(Kind.helloOk, { protocol: hello.protocol, viewId: hello.viewId }));
+				return;
+			}
 			if (hello.role === "notices") {
 				notices = service.notices(hello, bridge);
 				role = hello.role;

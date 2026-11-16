@@ -17,6 +17,7 @@ import type { CompanyDatabases, CompanyDataCalls } from "../company-data.ts";
 import type { DataAskPlace, DataAskSend } from "../data-ask.ts";
 import { takeWantedDataList } from "../data-page.ts";
 import { DataAskBox } from "./data-ask.ts";
+import { DataChanges } from "./data-changes.ts";
 import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
@@ -264,11 +265,18 @@ class DataListView {
 	readonly #inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>();
 	#observer: IntersectionObserver | undefined;
 	readonly #counted = new Map<string, number>();
+	readonly #changes: DataChanges;
+	#changing = false;
 
 	constructor(company: CompanyController, databases: CompanyDatabases, send: DataAskSend | undefined) {
 		this.company = company;
 		this.#databases = databases;
 		this.#ask = new DataAskBox(company, send);
+		this.#changes = new DataChanges(
+			company,
+			() => this.#calls(),
+			(database, table, key) => this.#listedTitle(database, table, key),
+		);
 		replace(this.el, this.#bar, this.#top, this.#params.el, this.#body, this.#ask.el);
 		company.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		databases.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -287,6 +295,7 @@ class DataListView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#changes.dispose();
 		this.#list?.stop.abort();
 		this.#observer?.disconnect();
 	}
@@ -359,7 +368,7 @@ class DataListView {
 	#place(): DataAskPlace | undefined {
 		const database = this.#current();
 		const tab = this.#tab;
-		if (!database || !tab || this.#open) return undefined;
+		if (!database || !tab || this.#open || this.#changing) return undefined;
 		if (database.questions.some((question) => question.parameters?.includes("viewer"))) return undefined;
 		return {
 			database: database.database,
@@ -602,7 +611,8 @@ class DataListView {
 	}
 
 	#choose(tab: Tab): void {
-		if (this.#tab?.kind === tab.kind && this.#tab.name === tab.name && !this.#open) return;
+		if (this.#tab?.kind === tab.kind && this.#tab.name === tab.name && !this.#open && !this.#changing) return;
+		this.#changing = false;
 		this.#tab = tab;
 		this.#close();
 		this.#ensureList();
@@ -613,6 +623,7 @@ class DataListView {
 		if (database === this.#database) return;
 		this.#database = database;
 		const current = this.#current();
+		if (!current?.list) this.#changing = false;
 		this.#tab = current ? tabsOf(current)[0] : undefined;
 		this.#close();
 		this.#ensureList();
@@ -653,7 +664,9 @@ class DataListView {
 		const database = this.#current();
 		const question = this.#question();
 		this.#params.show(
-			this.#open || !this.#database || !question ? undefined : `${this.#database}/${question.name}`,
+			this.#open || this.#changing || !this.#database || !question
+				? undefined
+				: `${this.#database}/${question.name}`,
 			this.#asks(),
 			this.#given(),
 			humanName,
@@ -675,14 +688,14 @@ class DataListView {
 					type: "button",
 					role: "tab",
 					class: one.kind === "question" ? "data-tab is-question" : "data-tab",
-					"aria-selected": String(this.#tab?.kind === one.kind && this.#tab.name === one.name),
+					"aria-selected": String(!this.#changing && this.#tab?.kind === one.kind && this.#tab.name === one.name),
 					dataset: { focusKey: `tab:${one.kind}:${one.name}` },
 					onclick: () => this.#choose(one),
 				},
 				humanName(one.name),
 			);
 		const add =
-			this.#writable() && this.#tab?.kind === "table"
+			!this.#changing && this.#writable() && this.#tab?.kind === "table"
 				? button(t("New row"), () => this.#startDraft(), { primary: true })
 				: null;
 		replace(
@@ -717,6 +730,7 @@ class DataListView {
 						: null,
 					...questions.map(tab),
 				),
+				database.list ? this.#changesButton(database) : null,
 				add,
 			),
 		);
@@ -735,8 +749,47 @@ class DataListView {
 		});
 	}
 
+	#listedTitle(database: string, table: string, key: Readonly<Record<string, unknown>>): unknown {
+		const read = this.#list;
+		if (read?.database !== database || read.tab.kind !== "table" || read.tab.name !== table || read.key.length === 0)
+			return undefined;
+		const wanted = JSON.stringify(read.key.map((name) => key[name] ?? null));
+		const row = read.rows.find((one) => keyOf(read.columns, read.key, one.values) === wanted);
+		const [lead] = shownColumns(read.columns, read.key);
+		return row && lead !== undefined ? row.values[read.columns.indexOf(lead)] : undefined;
+	}
+
+	#changesButton(database: CloudMemberDatabase): HTMLElement {
+		return h(
+			"button",
+			{
+				type: "button",
+				class: "data-changes-open",
+				"aria-pressed": String(this.#changing),
+				"aria-label": t("What changed"),
+				title: t("What changed"),
+				dataset: { focusKey: "changes" },
+				onclick: () => {
+					this.#changing = true;
+					this.#changes.open(database);
+					this.#draw();
+				},
+			},
+			icon("clock"),
+			h("span", { class: "data-changes-open-words", "aria-hidden": "true" }, t("What changed")),
+		);
+	}
+
 	#drawBody(): void {
 		if (this.#open) return;
+		const changing = this.#current();
+		if (this.#changing && changing?.list) {
+			this.#observer?.disconnect();
+			const view = this.#changes.show(changing);
+			if (this.#body.childNodes.length !== 1 || this.#body.firstChild !== view) replace(this.#body, view);
+			return;
+		}
+		this.#changing = false;
 		const focus = this.#focusKey();
 		this.#observer?.disconnect();
 		const scroller = this.#body.querySelector<HTMLElement>(".data-scroll");

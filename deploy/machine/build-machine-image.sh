@@ -84,7 +84,7 @@ BLENDER_VERSION=4.3.2
 BLENDER_SHA256=4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
-EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8b27f7f574c1eb056"
+EXPECTED_FOLDER_PROGRAM_SHA256="c3fee4e458141d61e5fdad8e8568568a7a5a00d465f1a93bfd4c331e4bbc01e0"
 # The pin: the record's artifact, its sha-256 and its size (both under "artifact").
 EXPECTED_CODEX_SHA256= EXPECTED_CODEX_BYTES=
 read -r EXPECTED_CODEX_SHA256 EXPECTED_CODEX_BYTES < <(python3 -c 'import json,sys;a=json.load(open(sys.argv[1]))["artifact"];print(a["sha256"],a["bytes"])' \
@@ -560,6 +560,19 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	# The folder program is the pinned one, runs, and is only started by the helper (its unit has no [Install]).
 	[[ $(sha256sum </opt/qorpera-folder/qorpera-folder | cut -d" " -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]]
 	/opt/qorpera-folder/qorpera-folder --version
+	# The command for the company databases (RUNTIME-COMPANY-DATABASES.md 9a): data runs the folder program with its
+	# data verb, as the folder view of the boot. With nothing to do it says how it is used (exit 2), and on a machine
+	# with no folder view, as this builder is, it says the machine reaches no databases (exit 3).
+	printf "%s\n" "#!/bin/sh" "[ \"\$(id -u)\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \"\$@\"" \
+		"exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
+	chmod 0555 /usr/local/bin/data
+	[[ $(stat -c "%U:%G %a" /usr/local/bin/data) == "root:root 555" ]]
+	data >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]
+	data describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]
+	[[ $(stat -c %a /root) == 700 && ! -e /root/no-view.json ]]
+	[[ $(runuser -u qorpera-agent -- data --view-file /root/no-view.json describe 2>&1 >/dev/null; echo "exit $?") == \
+		*"has no company folder"*"exit 3" ]] ||
+		{ echo "the agent account does not reach data as root" >&2; exit 1; }
 	# The guest helper runs one folder-mount at a time under util-linux flock.
 	/usr/bin/flock --version >/dev/null
 	[[ $(systemctl is-enabled qorpera-machine-folder.service || true) == static ]]

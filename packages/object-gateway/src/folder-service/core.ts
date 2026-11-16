@@ -170,7 +170,22 @@ export interface FolderCore {
 		units: readonly unknown[],
 		signal?: AbortSignal,
 	): Promise<GitPublish>;
+	machineDataPass(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		database: string | null,
+		signal?: AbortSignal,
+	): Promise<MachineDataPass>;
 }
+
+export interface MachineDataPass {
+	readonly pass: string;
+	readonly entries: readonly { readonly path: string; readonly version: string; readonly authority?: CoreReceipt }[];
+}
+
+export const NO_SUCH_DATABASE = "Data pass has no such database";
+export const TOO_MANY_DATA_FOLDERS = "Data pass would look through more than 5,000 folders under data/";
+export const TOO_MANY_DATA_FILES = "Data pass would keep more than 1,000 files";
 
 /** One file or link a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it.
  * A link's copy holds its target and no manifest. */
@@ -433,6 +448,32 @@ export function parseReleaseAnswer(value: unknown, releaseId: string, reads: num
 	)
 		invalidAnswer("release");
 	return { releaseId, replay: answer.replay };
+}
+
+export function parseMachineDataPass(value: unknown): MachineDataPass {
+	const answer = answerRecord(value, "machine data pass");
+	if (
+		answer.schema !== "qorpera.machine-data-pass/v1" ||
+		typeof answer.pass !== "string" ||
+		!/^[A-Za-z0-9_-]{43}$/.test(answer.pass) ||
+		!Array.isArray(answer.entries)
+	)
+		invalidAnswer("machine data pass");
+	return {
+		pass: answer.pass,
+		entries: answer.entries.map((item) => {
+			const entry = answerRecord(item, "machine data pass entry");
+			if (typeof entry.path !== "string" || !entry.path.startsWith("data/"))
+				invalidAnswer("machine data pass entry");
+			return {
+				path: entry.path,
+				version: versionOf(entry.version),
+				...(entry.authority === undefined || entry.authority === null
+					? {}
+					: { authority: receiptOf(entry.authority) }),
+			};
+		}),
+	};
 }
 
 /** The versions a git lease's holder writes over (5b): the file, its reflog and `packed-refs`, each null when no such
@@ -1000,14 +1041,36 @@ export class SupabaseFolderCore implements FolderCore {
 		);
 	}
 
-	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal);
+	async machineDataPass(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		database: string | null,
+		signal?: AbortSignal,
+	) {
+		return parseMachineDataPass(
+			await this.#rpc(
+				"qorpera_machine_data_pass",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_database: database },
+				signal,
+				["54000"],
+			),
+		);
+	}
+
+	async #rpc(
+		name: string,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+		invalid: readonly string[] = [],
+	): Promise<unknown> {
+		return this.#request(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) }, signal, invalid);
 	}
 
 	async #request(
 		path: string,
 		init: { method: "GET" | "POST"; body?: string },
 		caller?: AbortSignal,
+		invalid: readonly string[] = [],
 	): Promise<unknown> {
 		return this.#api.run(async (signal) => {
 			const response = await this.#transport(
@@ -1036,7 +1099,12 @@ export class SupabaseFolderCore implements FolderCore {
 						said,
 					);
 				if (error.code === "55000") throw new CoreRefusal("stopped", said);
-				if (error.code === "22023" || error.code === "0A000" || error.code === "P0002")
+				if (
+					error.code === "22023" ||
+					error.code === "0A000" ||
+					error.code === "P0002" ||
+					(typeof error.code === "string" && invalid.includes(error.code))
+				)
 					throw new CoreRefusal("invalid", said);
 				throw new ObjectDependencyError(response.status >= 500 || response.status === 0 ? 503 : response.status);
 			}

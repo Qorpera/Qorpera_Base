@@ -299,6 +299,7 @@ ${sentences(
 	has("data_apply")
 		? "data_apply applies waiting steps, data_describe shows what a database holds, data_query asks. A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card."
 		: "data_describe shows what a database holds, and data_query asks.",
+	'Members see a database\'s whole tables when they may read its folder, and change rows there when they may write it; a database whose rows are private to each member (its questions name :viewer) says members = "writers" under [list] in its database.toml, so only those who may write the folder see whole tables.',
 	"Never put a secret in a step, a query, a change or a row.",
 	member &&
 		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app, and every member may read that conversation: answer it from rows every member may read, the number or the few rows first, never the SQL (for a database only some members may read, or one whose questions name :viewer, say in one line that the list itself shows them), then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql (at most 60 characters of a-z and 0-9, a - only between them) with -- lines in their words, and it shows beside the tables.',

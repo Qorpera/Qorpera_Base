@@ -52,6 +52,7 @@ export class CloudMemberDataError extends Error {
 export const CLOUD_MEMBER_DATA_PAGE_ROWS = 200;
 const DESCRIBE_DEADLINE_MS = 20_000;
 const ROWS_DEADLINE_MS = 15_000;
+const CHANGES_DEADLINE_MS = 15_000;
 const EDIT_DEADLINE_MS = 20_000;
 const MAX_DESCRIBE_BYTES = 4 * 1024 * 1024;
 const MAX_EDIT_BYTES = 1024 * 1024;
@@ -62,7 +63,13 @@ const FOLDER_BODY_BYTES: Readonly<Record<string, number>> = {
 	rows: 900 * 1024,
 	edit: 900 * 1024,
 	watch: 448 * 1024,
+	changes: 900 * 1024,
 };
+const CHANGE_OPS: ReadonlySet<unknown> = new Set(["add", "change", "remove"]);
+const ACTORS: ReadonlySet<unknown> = new Set(["member", "agent", "machine", "step"]);
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const AFTER = /^[1-9][0-9]{0,18}$/;
+export const CLOUD_MEMBER_DATA_ZONE = /^[A-Za-z][A-Za-z0-9_+-]{0,30}(?:\/[A-Za-z0-9_+-]{1,30}){0,2}$/;
 const FOLDER_FILE = /^data\/([a-z][a-z0-9_]{0,39})\/(?:database\.toml|(queries|actions)\/[^/\0\\]{1,1024}\.sql)$/;
 const UTF8 = new TextEncoder();
 
@@ -161,6 +168,55 @@ export interface CloudMemberDataEdited {
 	readonly key: readonly string[];
 	readonly row: CloudMemberDataRow | null;
 	readonly asOf: string;
+}
+
+export type CloudMemberDataChangeOp = "add" | "change" | "remove";
+export type CloudMemberDataActor = "member" | "agent" | "machine" | "step";
+export type CloudMemberDataRecordValues = Readonly<Record<string, unknown>>;
+
+export interface CloudMemberDataChangedTable {
+	readonly table: string;
+	readonly op: CloudMemberDataChangeOp;
+	readonly rows: number;
+}
+
+export interface CloudMemberDataChangedLine extends CloudMemberDataChangedTable {
+	readonly key: CloudMemberDataRecordValues | null;
+	readonly before: CloudMemberDataRecordValues | null;
+	readonly after: CloudMemberDataRecordValues | null;
+	readonly columns: readonly string[] | null;
+}
+
+export interface CloudMemberDataWrite {
+	readonly at: string | null;
+	readonly by: CloudMemberDataActor | null;
+	readonly id: string | null;
+	readonly via: string | null;
+	readonly tables: readonly CloudMemberDataChangedTable[];
+	readonly lines: readonly CloudMemberDataChangedLine[];
+	readonly more?: true;
+	readonly many?: true;
+}
+
+export interface CloudMemberDataChangedDay {
+	readonly day: string;
+	readonly by: CloudMemberDataActor;
+	readonly id: string | null;
+	readonly rows: number;
+}
+
+export interface CloudMemberDataChanges {
+	readonly writes: readonly CloudMemberDataWrite[];
+	readonly more: boolean;
+	readonly next?: string;
+	readonly days?: readonly CloudMemberDataChangedDay[] | null;
+	readonly asOf: string;
+}
+
+export interface CloudMemberDataChangesAsked {
+	readonly database: string;
+	readonly after?: string;
+	readonly zone?: string;
 }
 
 /** One question with its parameters. */
@@ -415,6 +471,81 @@ export function parseCloudMemberDataPage(value: unknown): CloudMemberDataPage {
 		...(page.tooLarge ? { tooLarge: true as const } : {}),
 		etag: page.etag,
 		asOf: page.asOf,
+	};
+}
+
+function recordValues(value: unknown): CloudMemberDataRecordValues | null {
+	if (value === null) return null;
+	if (!plainObject(value)) invalid();
+	return value;
+}
+
+function parseChangedTable(value: unknown): CloudMemberDataChangedTable {
+	const one = closed(value, ["table", "op", "rows"]);
+	if (!isText(one.table, 200) || !CHANGE_OPS.has(one.op) || !isCount(one.rows)) invalid();
+	return { table: one.table, op: one.op as CloudMemberDataChangeOp, rows: one.rows };
+}
+
+function parseWrite(value: unknown): CloudMemberDataWrite {
+	const write = shapedKeys(value, ["at", "by", "id", "via", "tables", "lines"], ["more", "many"]);
+	if (write.at !== null && (!isText(write.at, 64) || !Number.isFinite(Date.parse(write.at)))) invalid();
+	if (write.by !== null && !ACTORS.has(write.by)) invalid();
+	if ((write.id !== null && !isText(write.id, 200)) || (write.via !== null && !isText(write.via, 1024))) invalid();
+	if ((write.more !== undefined && write.more !== true) || (write.many !== undefined && write.many !== true))
+		invalid();
+	if (!Array.isArray(write.tables) || !Array.isArray(write.lines)) invalid();
+	const lines = write.lines.map((item): CloudMemberDataChangedLine => {
+		const line = closed(item, ["table", "op", "rows", "key", "before", "after", "columns"]);
+		return {
+			...parseChangedTable({ table: line.table, op: line.op, rows: line.rows }),
+			key: recordValues(line.key),
+			before: recordValues(line.before),
+			after: recordValues(line.after),
+			columns: line.columns === null ? null : texts(line.columns, 200),
+		};
+	});
+	return {
+		at: write.at as string | null,
+		by: write.by as CloudMemberDataActor | null,
+		id: write.id as string | null,
+		via: write.via as string | null,
+		tables: write.tables.map(parseChangedTable),
+		lines,
+		...(write.more ? { more: true as const } : {}),
+		...(write.many ? { many: true as const } : {}),
+	};
+}
+
+export function parseCloudMemberDataChanges(value: unknown): CloudMemberDataChanges {
+	const changes = shapedKeys(value, ["writes", "more", "asOf"], ["next", "days"]);
+	if (!Array.isArray(changes.writes) || typeof changes.more !== "boolean") invalid();
+	if (typeof changes.asOf !== "string" || !Number.isFinite(Date.parse(changes.asOf))) invalid();
+	if (changes.next !== undefined && (typeof changes.next !== "string" || !AFTER.test(changes.next))) invalid();
+	if ((changes.next !== undefined) !== changes.more) invalid();
+	const days =
+		changes.days === undefined || changes.days === null
+			? changes.days
+			: (() => {
+					if (!Array.isArray(changes.days)) invalid();
+					return changes.days.map((item): CloudMemberDataChangedDay => {
+						const day = closed(item, ["day", "by", "id", "rows"]);
+						if (typeof day.day !== "string" || !DAY.test(day.day) || !ACTORS.has(day.by) || !isCount(day.rows))
+							invalid();
+						if (day.id !== null && !isText(day.id, 200)) invalid();
+						return {
+							day: day.day,
+							by: day.by as CloudMemberDataActor,
+							id: day.id as string | null,
+							rows: day.rows,
+						};
+					});
+				})();
+	return {
+		writes: changes.writes.map(parseWrite),
+		more: changes.more,
+		...(changes.next === undefined ? {} : { next: changes.next as string }),
+		...(days === undefined ? {} : { days }),
+		asOf: changes.asOf,
 	};
 }
 
@@ -681,6 +812,29 @@ export class CloudMemberData {
 		return parseEdited(answer);
 	}
 
+	async changes(asked: CloudMemberDataChangesAsked, signal: AbortSignal): Promise<CloudMemberDataChanges> {
+		if (!asked || typeof asked !== "object") throw new CloudMemberDataError("Name a database");
+		checkDatabase(asked.database);
+		if (asked.after !== undefined && (typeof asked.after !== "string" || !AFTER.test(asked.after)))
+			throw new CloudMemberDataError("after is the next a page gave");
+		if (asked.zone !== undefined && (typeof asked.zone !== "string" || !CLOUD_MEMBER_DATA_ZONE.test(asked.zone)))
+			throw new CloudMemberDataError("zone is a time zone's name");
+		const body = {
+			database: asked.database,
+			...(asked.after === undefined ? {} : { after: asked.after }),
+			...(asked.zone === undefined ? {} : { zone: asked.zone }),
+		};
+		const answer = await this.#askFolder(
+			"changes",
+			body,
+			folderFileOf(new Set([asked.database])),
+			CHANGES_DEADLINE_MS,
+			MAX_ANSWER_BYTES,
+			signal,
+		);
+		return parseCloudMemberDataChanges(answer);
+	}
+
 	async watchTables(
 		watches: readonly CloudMemberDataWatched[],
 		signal: AbortSignal,
@@ -714,7 +868,7 @@ export class CloudMemberData {
 	}
 
 	async #askFolder(
-		verb: "describe" | "rows" | "edit" | "watch",
+		verb: "describe" | "rows" | "edit" | "watch" | "changes",
 		body: Record<string, unknown>,
 		mayRead: (path: string) => boolean,
 		deadlineMs: number,

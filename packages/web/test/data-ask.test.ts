@@ -82,6 +82,7 @@ const calls = (mine = false) =>
 		edit: vi.fn(async () => {
 			throw new Error("no edits here");
 		}),
+		changes: vi.fn(async () => ({ writes: [], more: false, days: [], asOf })),
 		watchTables: vi.fn(
 			(_watches: unknown, signal: AbortSignal) =>
 				new Promise<never>((_resolve, reject) =>
@@ -221,6 +222,21 @@ describe("Ask under the list", () => {
 			"The Co-Founder's thread can't be opened here.",
 		);
 		expect(field.value).toBe("How many?");
+	});
+
+	it("steps aside while What changed is open, and comes back with the list", async () => {
+		const { container } = await open({ send: vi.fn() });
+		const box = () => container.querySelector<HTMLFormElement>(".data-ask-box");
+		expect(box()?.hidden).toBe(false);
+		container.querySelector<HTMLButtonElement>(".data-changes-open")?.click();
+		await settle();
+		expect(container.querySelector(".data-changes")).not.toBeNull();
+		expect(box()?.hidden).toBe(true);
+		expect(container.querySelector<HTMLElement>(".data-params")?.hidden).toBe(true);
+		tab(container, "Repairs").click();
+		await settle();
+		expect(container.querySelector(".data-changes")).toBeNull();
+		expect(box()?.hidden).toBe(false);
 	});
 
 	it("is not there for a member who may not write, with no Co-Founder at work, or with no way to send", async () => {
