@@ -462,6 +462,34 @@ member or the agent from the lists it already holds.
 - On a narrow page the list is two lines a row, with no column heads.
 - The member's own drawer takes `page:data`. Agents' `organize_apps` does not know it yet.
 
+**Part g as built** (Ask, and kept questions that take values):
+
+- **Who is asked.** The Co-Founder, while it is at work; with none, or for a member who may not send messages, there is
+  no line to ask on. Nothing records who made a database (`database.toml` names no maker and a folder entry names no
+  writer), so its maker cannot be asked; `app/tell-agent.ts` `noteReceiver` already answers an app with no owner
+  with the Co-Founder, and the Ask goes the same way.
+- **The road.** The line under the list sends the member's own message through `tellAgent`, the road an app's note
+  and the Mailbox take: sent from the page when the Co-Founder's thread has nothing drafted, otherwise it waits in that
+  thread's composer. Either way the page opens that conversation, where the answer comes as the Co-Founder's message.
+  A thread whose draft already answers another page's or app's note takes nothing, and the words stay in the line
+  with a link to it. The member presses once; the line is held while the thread opens and has no spinner.
+- **What travels.** The message opens with `> page:data#<database>.<table> · <about>` (`#<database>:<question>` for a
+  kept question; `#<database>` alone when the name is no id), `about` being the database's and the list's names in
+  words and the values filled in, at most 60 characters. The conversation draws that line as the Data page's card
+  (its drawers, "Data", `about`), which opens that list; the composer shows it above the field while it waits. The
+  sort and the page in view do not travel: the agent reads the database itself, and the question is about rows, not
+  how they were laid out. `page:` names the web's own pages (only `data` is read), so an agent's app that is named
+  `data` keeps `app:data`.
+- **Keep as a list.** The staff runs' "Company databases" paragraph gains a sentence: such a message was asked on that
+  list; answer it from the rows (the number or the few rows first, never the SQL), offer Keep as a list on a question
+  card, and on yes write the question as `data/<database>/queries/<name>.sql` with `--` lines in the member's words.
+  The Data page lists it beside the tables at its next read of `describe`. A worker's words do not change.
+- **Kept questions that take values** are tabs too: a field a value above the list (`:viewer` stays Qorpera's), and
+  the list reads once each is filled in, each value as text, which PostgreSQL types from the statement as for any
+  caller. A filled value stays while the page is open.
+- Left out: the answer drawn on the Data page itself (the board shows it there; it comes in the conversation), and
+  "Show how it was counted" (an answer never shows SQL).
+
 ### Parts
 
 | Part | What | Tests |

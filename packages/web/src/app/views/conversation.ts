@@ -95,6 +95,7 @@ import {
 } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
+import { pageNoteApp, pageNoteCard } from "./page-note.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
@@ -1978,6 +1979,7 @@ export class ConversationView {
 	 * drawer draws them), with a key that changes when any of it does. */
 	#answerApp(answering: string | undefined): { name: string; look?: AppLook; key: string } | undefined {
 		const note = answering === undefined ? undefined : appNoteHeader(answering);
+		if (note?.page) return pageNoteApp(note.app);
 		const app = note && this.#company.store.get().apps?.find((entry) => entry.name === note.app);
 		if (!app?.manifest) return undefined;
 		const look = appLook(this.#company, app);
@@ -2062,7 +2064,11 @@ export class ConversationView {
 		const note = appNoteHeader(reply.question);
 		if (note)
 			return [
-				h("div", { class: "app-cards" }, appCard(note.app, note.app, note.about)),
+				h(
+					"div",
+					{ class: "app-cards" },
+					note.page ? pageNoteCard(note.app, note.at, note.about) : appCard(note.app, note.app, note.about),
+				),
 				...(reply.text ? [h("div", { class: "text" }, ...this.#withMentions(reply.text, own))] : []),
 			];
 		return [

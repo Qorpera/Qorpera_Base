@@ -11,6 +11,7 @@ import { invalid, readStateFile, rewriteStateFile, type WebMemberFolder } from "
 import type { WebConnectors } from "../cloud/connectors.ts";
 import { t } from "../ui/preferences.ts";
 import type { CompanyDatabases } from "./company-data.ts";
+import type { DataAskSend } from "./data-ask.ts";
 import type { InterfaceOfferActions } from "./interface-offers.ts";
 import type { MailboxManage } from "./views/mailbox.ts";
 
@@ -37,6 +38,7 @@ export interface InterfaceWrites {
 	/** Opens Settings at a tab, for the Members page's Connect ChatGPT and Sign in again. */
 	readonly openSettings?: (tab: "ai-subscriptions") => void;
 	readonly data?: () => CompanyDatabases | undefined;
+	readonly dataAsk?: DataAskSend;
 }
 
 /** The offer an accept answers: the cell it names and what it read there. */

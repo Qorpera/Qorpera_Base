@@ -160,6 +160,23 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
 });
 
+it("tells a member's agent how to answer a question asked on the Data app's list, and to keep it as a list", () => {
+	const said =
+		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app: answer it in your message from the rows (the number or the few rows first, never the SQL), then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql with -- lines in their words, and it shows beside the tables.';
+	expect(cloudCompanyRuntimeInstructions(null, false)).toContain(
+		`Never put a secret in a step, a query, a change or a row. ${said}\n`,
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch" } } as unknown as Parameters<
+			typeof cloudCompanyRuntimeInstructions
+		>[0],
+		false,
+	);
+	expect(worker).toContain("Never put a secret in a step, a query, a change or a row.");
+	expect(worker).not.toContain("page:data");
+});
+
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
 	const f = nativeCompanyContextFixture();
 	f.context.identity = {
@@ -2014,7 +2031,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "122b203975a874e32ca1abeb07e1b68f16a240ed4706aa4d1d2354ce07ff17ef",
+			instructions: "1136a23178f7de61ef031c53afef7624baa9a0bb523209df218d7669b82d23ff",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2030,7 +2047,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "122b203975a874e32ca1abeb07e1b68f16a240ed4706aa4d1d2354ce07ff17ef",
+			instructions: "1136a23178f7de61ef031c53afef7624baa9a0bb523209df218d7669b82d23ff",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],

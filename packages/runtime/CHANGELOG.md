@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Agents' words about company databases say how to answer a question a member asked on the Data page's list (slice 10 part g; words only, no SQL, the runtime bundle only; staff runs, not workers): a member's message whose first line is `> page:data#<database>.<table> · <about>` (or `#<database>:<question>`) was asked on that list; the agent answers in its message from the rows (the number or the few rows first, never the SQL) and offers Keep as a list on a question card, and on yes writes the question as `data/<database>/queries/<name>.sql` with `--` lines in the member's words, so it shows beside the tables. The sentence stands after the paragraph's last one, apart from part d's (#1868). Pins: the staff instructions (a conversation and a private conversation) `122b203975a8` → `1136a23178f7de61ef031c53afef7624baa9a0bb523209df218d7669b82d23ff`, measured on node 1's test VM on part e's head (b7a842c66); the worker's and the three prompts do not move. Once part d merges, both pins are measured again.
 - Release v250 (the Claude Code worker on the agent's machine: #1821, #1822, #1831, #1832, #1833 and #1835; and master since
   v249): runtime bundle 250 `78618f12bdb6cb3c275809c9c55d13e3877dfa374c62ab14bcd5a501b1f1e097` (activation `20260929025099`,
   previous 249 `049019cdd704`). Its activation requires the release's eight migrations, which the roll's `migrate` runs

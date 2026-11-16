@@ -240,9 +240,15 @@ describe("the Data page in the apps row", () => {
 });
 
 describe("the list (app/views/data.ts)", () => {
-	it("shows a table's rows under tabs for its tables and its kept questions without parameters", async () => {
+	it("shows a table's rows under tabs for its tables and its kept questions", async () => {
 		const { container, calls } = await open(describedWith());
-		expect(texts(container, ".data-tab")).toEqual(["Repairs", "Open repairs", "Notes", "Waited over a week"]);
+		expect(texts(container, ".data-tab")).toEqual([
+			"Repairs",
+			"Open repairs",
+			"Notes",
+			"Waited over a week",
+			"Since",
+		]);
 		expect(container.querySelector(".data-tab[aria-selected='true']")?.textContent).toBe("Repairs");
 		expect(calls.rows).toHaveBeenCalledWith({ database: "shop", table: "repairs", limit: 100 }, expect.anything());
 		expect(texts(container, ".data-row-head .data-cell")).toEqual(["Bike", "Price", "Ready", "Id"]);

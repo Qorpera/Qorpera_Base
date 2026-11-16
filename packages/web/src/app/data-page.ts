@@ -1,5 +1,18 @@
 export const DATA_PAGE = "data";
 
+let wanted: { readonly profileId: string; readonly at: string } | undefined;
+
+export function wantDataList(profileId: string, at: string): void {
+	wanted = { profileId, at };
+}
+
+export function takeWantedDataList(profileId: string): string | undefined {
+	if (wanted?.profileId !== profileId) return undefined;
+	const { at } = wanted;
+	wanted = undefined;
+	return at;
+}
+
 export const DATA_INTERFACE = `format = "qorpera.interface/v0"
 
 [interface]

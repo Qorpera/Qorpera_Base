@@ -289,7 +289,7 @@ For history, run git log, show and diff in /company/code/<owner>/<name>/main on 
 }
 
 /** Company databases (slice 5): a run that can read one; applying steps needs data_apply. */
-function databaseSection(has: CloudOfferedTool): string {
+function databaseSection(has: CloudOfferedTool, member = false): string {
 	return `
 # Company databases
 ${sentences(
@@ -300,6 +300,8 @@ ${sentences(
 		? "data_apply applies waiting steps, data_describe shows what a database holds, data_query asks. A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card."
 		: "data_describe shows what a database holds, and data_query asks.",
 	"Never put a secret in a step, a query, a change or a row.",
+	member &&
+		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app: answer it in your message from the rows (the number or the few rows first, never the SQL), then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql with -- lines in their words, and it shows beside the tables.',
 )}`;
 }
 
@@ -336,7 +338,7 @@ function situationSections(has: CloudOfferedTool, worker: boolean): string[] {
 		...(has("save_app") ? [`${appsSection(has)}\n${APPS_FOR_MEMBERS}`, CONCEPTS] : []),
 		...(has("save_app") && has("manage_worker") ? [IDEAS] : []),
 		...(has("manage_worker") ? [codeSection(has)] : []),
-		...(has("data_query") ? [databaseSection(has)] : []),
+		...(has("data_query") ? [databaseSection(has, true)] : []),
 		BANK,
 		...(has("manage_routine") ? [STANDING_WORK] : []),
 		...(has("manage_todo") && has("manage_worker") ? [OPEN_WORK] : []),

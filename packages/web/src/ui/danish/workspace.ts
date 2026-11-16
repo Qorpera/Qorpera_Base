@@ -966,4 +966,10 @@ export const WORKSPACE: Record<string, string> = {
 	"You can't change this table.": "Du kan ikke ændre denne tabel.",
 	"{count} rows": "{count} rækker",
 	"{used} of {limit}": "{used} af {limit}",
+	Ask: "Spørg",
+	"Ask {name} about {database}…": "Spørg {name} om {database}…",
+	"Fill in {names} to see the list.": "Udfyld {names} for at se listen.",
+	"Open the conversation": "Åbn samtalen",
+	"Your conversation with {name} already holds a note from another page. Send it first.":
+		"Din samtale med {name} har allerede en besked fra en anden side. Send den først.",
 };
