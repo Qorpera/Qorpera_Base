@@ -30,13 +30,16 @@ import { lstat, mkdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
+	CLOUD_CLAUDE_SHELL_SOCKET_NAME,
 	type CloudClaudeHomeChannel,
 	CloudClaudeHomeShell,
 	type CloudClaudeHomeStream,
 } from "./cloud-claude-home-shell.ts";
 import {
+	assertNativeSocketPath,
 	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
+	NATIVE_EGRESS_SOCKET_NAME,
 	type NativeEgressTransport,
 	startNativeCodexEgress,
 } from "./cloud-native-egress.ts";
@@ -222,6 +225,36 @@ export function claudeBoxEnvironment(options: {
 }
 
 /** The scratch root's own parts, made per run. */
+export const CLAUDE_BOX_START_STAGES = Object.freeze([
+	"platform",
+	"parts",
+	"pin",
+	"arguments",
+	"scratch",
+	"socket-path",
+	"shell-socket",
+	"files-channel",
+	"egress",
+	"spawn",
+] as const);
+export type ClaudeBoxStartStage = (typeof CLAUDE_BOX_START_STAGES)[number];
+
+const startStages = new WeakMap<Error, ClaudeBoxStartStage>();
+
+function claudeBoxStartFailure(error: unknown, stage: ClaudeBoxStartStage): Error {
+	const failure = error instanceof Error ? error : new Error("The Claude Code box did not start");
+	if (!startStages.has(failure)) startStages.set(failure, stage);
+	return failure;
+}
+
+export function claudeBoxStartStage(error: unknown): ClaudeBoxStartStage | undefined {
+	return error instanceof Error ? startStages.get(error) : undefined;
+}
+
+export function claudeBoxSocketPaths(scratchRoot: string): string[] {
+	return [join(scratchRoot, CLOUD_CLAUDE_SHELL_SOCKET_NAME), join(scratchRoot, NATIVE_EGRESS_SOCKET_NAME)];
+}
+
 function scratchPaths(root: string) {
 	return {
 		config: join(root, "slot-config"),
@@ -453,23 +486,30 @@ export interface ClaudeCodeBoxOptions {
  * will not open or a mount that fails ends the start, and nothing of the box runs outside it.
  */
 export async function launchClaudeCodeBox(options: ClaudeCodeBoxOptions): Promise<ClaudeCodeBox> {
-	if (process.platform !== "linux" || !process.getuid?.())
-		throw new Error("The Claude Code box needs unprivileged Linux");
-	options.signal.throwIfAborted();
 	const configuration = options.configuration ?? CLAUDE_BOX_CONFIGURATION;
-	for (const file of [
-		configuration.binary,
-		configuration.entryPoint,
-		configuration.shellClient,
-		configuration.stage,
-		configuration.namespaceHelper,
-		configuration.sshfs,
-		configuration.bwrap,
-		configuration.node,
-		...(options.proof?.extraCa ? [options.proof.extraCa] : []),
-	])
-		await rootOwnedFile(file);
-	await checkClaudeCodePin(configuration.binary);
+	let stage: ClaudeBoxStartStage = "platform";
+	try {
+		if (process.platform !== "linux" || !process.getuid?.())
+			throw new Error("The Claude Code box needs unprivileged Linux");
+		options.signal.throwIfAborted();
+		stage = "parts";
+		for (const file of [
+			configuration.binary,
+			configuration.entryPoint,
+			configuration.shellClient,
+			configuration.stage,
+			configuration.namespaceHelper,
+			configuration.sshfs,
+			configuration.bwrap,
+			configuration.node,
+			...(options.proof?.extraCa ? [options.proof.extraCa] : []),
+		])
+			await rootOwnedFile(file);
+		stage = "pin";
+		await checkClaudeCodePin(configuration.binary);
+	} catch (error) {
+		throw claudeBoxStartFailure(error, stage);
+	}
 	return startClaudeCodeBox({ ...options, configuration }, spawn);
 }
 
@@ -483,10 +523,24 @@ export async function startClaudeCodeBox(
 	options: ClaudeCodeBoxOptions & { configuration: ClaudeBoxConfiguration },
 	spawnBox: typeof spawn,
 ): Promise<ClaudeCodeBox> {
+	const progress: { stage: ClaudeBoxStartStage } = { stage: "platform" };
+	try {
+		return await startBox(options, spawnBox, progress);
+	} catch (error) {
+		throw claudeBoxStartFailure(error, progress.stage);
+	}
+}
+
+async function startBox(
+	options: ClaudeCodeBoxOptions & { configuration: ClaudeBoxConfiguration },
+	spawnBox: typeof spawn,
+	progress: { stage: ClaudeBoxStartStage },
+): Promise<ClaudeCodeBox> {
 	// Said again here, where the account is used: the box's own account is this process's, never root's (review r2, F1).
 	const uid = process.getuid?.();
 	if (process.platform !== "linux" || !uid) throw new Error("The Claude Code box needs unprivileged Linux");
 	options.signal.throwIfAborted();
+	progress.stage = "arguments";
 	const configuration = options.configuration;
 	const login = options.login;
 	const token = "token" in login ? login.token : undefined;
@@ -496,7 +550,11 @@ export async function startClaudeCodeBox(
 	claudeBoxArguments({ model: options.model, tools: options.tools });
 	if (options.systemNote !== undefined && (!options.systemNote || Buffer.byteLength(options.systemNote) > 16_384))
 		throw new Error("Invalid Claude system note");
+	progress.stage = "scratch";
 	await privateDirectory(options.scratchRoot);
+	progress.stage = "socket-path";
+	for (const path of claudeBoxSocketPaths(options.scratchRoot)) assertNativeSocketPath(path, "The Claude Code box's");
+	progress.stage = "scratch";
 	if ("folder" in login) {
 		if (!isAbsolute(login.folder) || login.folder.startsWith(`${options.scratchRoot}/`))
 			throw new Error("Invalid Claude login folder");
@@ -566,16 +624,19 @@ export async function startClaudeCodeBox(
 			machineId: options.machineId,
 			signal,
 		});
+		progress.stage = "shell-socket";
 		await shell.listen(options.scratchRoot);
 		shellOf = shell;
 		cleanups.push(() => shell.close());
 		// The files: the sftp channel of the same session, open before sshfs says its first word.
+		progress.stage = "files-channel";
 		const files: CloudClaudeHomeStream = await options.channel.open(
 			{ sessionId: options.sessionId, machineId: options.machineId, kind: "sftp" },
 			signal,
 		);
 		filesOpened = true;
 		cleanups.push(() => files.close());
+		progress.stage = "egress";
 		const relay = await startNativeCodexEgress({
 			root: options.scratchRoot,
 			signal,
@@ -584,6 +645,7 @@ export async function startClaudeCodeBox(
 		});
 		cleanups.push(() => relay.close());
 		signal.throwIfAborted();
+		progress.stage = "spawn";
 		const invocation = claudeBoxInvocation({
 			configuration,
 			scratchRoot: options.scratchRoot,

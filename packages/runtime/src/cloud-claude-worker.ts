@@ -15,13 +15,14 @@
 //   are overwritten and the folder removed, also when the run is stopped or fails.
 // - Members see no step list: each tool call becomes one step of the run's own work log, never shown as a log.
 
-import { lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_CODE_PIN,
 	type ClaudeCodeBox,
 	type ClaudeCodeBoxOptions,
+	claudeBoxStartStage,
 } from "./cloud-claude-box.ts";
 import type { ClaudeLoginFileName } from "./cloud-claude-login-vault.ts";
 import { cloudHomeRefusalWords } from "./cloud-codex-home.ts";
@@ -518,6 +519,7 @@ export interface ClaudeWorkerOutcome {
 	readonly steps: number;
 	/** The login: how many times its credentials were sealed back, and whether another run's seal came first. */
 	readonly login?: { readonly sealed: number; readonly stale: number };
+	readonly boxFailure?: string;
 }
 
 export interface ClaudeWorkerRunOptions {
@@ -529,7 +531,6 @@ export interface ClaudeWorkerRunOptions {
 	readonly launch: (
 		options: Pick<ClaudeCodeBoxOptions, "scratchRoot" | "login" | "prompt" | "systemNote" | "signal">,
 	) => Promise<ClaudeCodeBox>;
-	/** The run's own private root (0700): the box's scratch and the login folder are made in it. */
 	readonly root: string;
 	/** Each step as it finishes, for the run's work log. Never throws back into the run. */
 	readonly step?: (step: ClaudeWorkerStep | { readonly start: { model: string; sessionId: string } }) => void;
@@ -537,6 +538,18 @@ export interface ClaudeWorkerRunOptions {
 	/** How long after the box starts a replaced credentials file is sealed back early (default 120 s). */
 	readonly earlySealMs?: number;
 	readonly pollMs?: number;
+}
+
+export function claudeWorkerScratchPrefix(root: string): string {
+	return join(dirname(root), "qorpera-claude-box-");
+}
+
+export function claudeBoxFailureCode(error: unknown): string {
+	const coded = error as { code?: unknown; reason?: unknown } | null;
+	const detail = [coded?.code, coded?.reason].find(
+		(value): value is string => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(value),
+	);
+	return `box-${claudeBoxStartStage(error) ?? "unknown"}${detail ? `:${detail}` : ""}`;
 }
 
 const SUMMARY_BYTES = 4000;
@@ -583,7 +596,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			opened.refused === "SIGNED_OUT" ? CLAUDE_WORKER_WORDS.signedOut(member) : CLAUDE_WORKER_WORDS.notOpen(member),
 		);
 	const folder = join(options.root, "claude-login");
-	const scratchRoot = join(options.root, "claude-box");
+	let scratchRoot: string | undefined;
 	let keeper: ClaudeWorkerLoginKeeper | undefined;
 	let box: ClaudeCodeBox | undefined;
 	const stream = new ClaudeWorkerStream();
@@ -592,7 +605,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 		outcome = await (async (): Promise<ClaudeWorkerOutcome> => {
 			try {
 				await mkdir(folder, { mode: 0o700 });
-				await mkdir(scratchRoot, { mode: 0o700 });
+				scratchRoot = await mkdtemp(claudeWorkerScratchPrefix(options.root));
 				for (const [name, bytes] of opened.files)
 					await writeFile(join(folder, name), bytes, { mode: 0o600, flag: "wx" });
 			} catch {
@@ -606,7 +619,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			const before = await credentialsStamp(folder);
 			try {
 				box = await options.launch({
-					scratchRoot,
+					scratchRoot: scratchRoot as string,
 					login: { folder },
 					prompt: claudeWorkerPrompt(options.brief),
 					systemNote: CLAUDE_WORKER_SYSTEM_NOTE,
@@ -614,10 +627,13 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				});
 			} catch (error) {
 				signal.throwIfAborted();
+				const boxFailure = claudeBoxFailureCode(error);
+				console.error(`The Claude Code box did not start (${boxFailure})`);
 				return blocked(
 					error instanceof CloudHomeChannelRefused
 						? cloudHomeRefusalWords(error.reason)
 						: CLAUDE_WORKER_WORDS.boxFailed,
+					{ boxFailure },
 				);
 			}
 			// The early seal: a credentials file Claude Code replaced soon after its start (its renewal) goes back at once, so a
@@ -693,15 +709,18 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 		// member's only valid ones. Bounded, so a stopped run still ends.
 		if (keeper) await keeper.sync(AbortSignal.timeout(20_000)).catch(() => undefined);
 		await wipeClaudeLoginFolder(folder).catch(() => undefined);
-		await rm(scratchRoot, { recursive: true, force: true }).catch(() => undefined);
+		if (scratchRoot) await rm(scratchRoot, { recursive: true, force: true }).catch(() => undefined);
 	}
 	return keeper ? { ...outcome, login: { sealed: keeper.sealed, stale: keeper.stale } } : outcome;
 }
 
 /** What the run's records say did the work: Claude Code's build and the model its init line named. */
-export function claudeWorkerSessionId(outcome: Pick<ClaudeWorkerOutcome, "model" | "sessionId">): string {
+export function claudeWorkerSessionId(
+	outcome: Pick<ClaudeWorkerOutcome, "model" | "sessionId" | "boxFailure">,
+): string {
 	const part = (value: string | undefined) => (value ? value.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 200) : "none");
-	return `claude-code/${CLAUDE_CODE_PIN.version}/${part(outcome.model)}/${part(outcome.sessionId)}`;
+	const id = `claude-code/${CLAUDE_CODE_PIN.version}/${part(outcome.model)}/${part(outcome.sessionId)}`;
+	return outcome.boxFailure ? `${id}/${part(outcome.boxFailure)}` : id;
 }
 
 /** A blocked outcome in these words, before any of Claude Code ran (no machine for the run, for instance). */

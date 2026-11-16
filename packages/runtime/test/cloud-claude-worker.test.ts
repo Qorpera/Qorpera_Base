@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	CLAUDE_BOX_TOOLS,
 	type ClaudeCodeBox,
 	claudeBoxArguments,
 	claudeBoxInvocation,
+	claudeBoxSocketPaths,
 } from "@qorpera/runtime/cloud-claude-box";
 import {
 	CLAUDE_WORKER_CATALOG,
@@ -18,12 +19,15 @@ import {
 	claudeWorkerBrief,
 	claudeWorkerPrompt,
 	claudeWorkerReportText,
+	claudeWorkerScratchPrefix,
 	claudeWorkerSessionId,
 	claudeWorkerSettledOutputs,
 	runClaudeWorker,
 } from "@qorpera/runtime/cloud-claude-worker";
 import { CLOUD_HOME_OUTDATED } from "@qorpera/runtime/cloud-codex-home";
 import { CloudHomeChannelRefused } from "@qorpera/runtime/cloud-home-channel";
+import { assertNativeSocketPath, NATIVE_SOCKET_PATH_BYTES } from "@qorpera/runtime/cloud-native-egress";
+import { nativeRunRootPrefix } from "@qorpera/runtime/cloud-native-provider-host";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /*
@@ -596,12 +600,13 @@ describe("a Claude Code worker's run", () => {
 				"Claude Code could not start on Qorpera's side; nothing ran on the agent's machine. Try again later.",
 			),
 			login: { sealed: 0, stale: 0 },
+			boxFailure: "box-unknown",
 		});
 		expect(
 			await run(vault().logins, async () => {
 				throw new CloudHomeChannelRefused("HOME_SFTP_MISSING");
 			}),
-		).toMatchObject({ outcome: "blocked", needs: CLOUD_HOME_OUTDATED });
+		).toMatchObject({ outcome: "blocked", needs: CLOUD_HOME_OUTDATED, boxFailure: "box-unknown:HOME_SFTP_MISSING" });
 		// Other tools than the eight: stopped at its first line.
 		const wrong = standInBox([init(["Bash", "WebFetch"]), use("t1", "WebFetch", {}), answer("t1"), result("x")]);
 		expect(await run(vault().logins, wrong.launch)).toMatchObject({
@@ -842,5 +847,84 @@ describe("review round 1 of #1835", () => {
 		const stopped = new AbortController();
 		stopped.abort();
 		await expect(claudeWorkerSettledOutputs(async () => [], stopped.signal, { sleep })).rejects.toThrow();
+	});
+});
+
+describe("the box's scratch root on a run host", () => {
+	const hosts = [
+		...Array.from({ length: 12 }, (_, slot) => `/var/lib/qorpera-shared-execution/slots/${slot}/host`),
+		"/var/lib/qorpera-native-provider/tmp",
+	];
+
+	it("fits every socket of the box beside the provider host's real run root, on every slot and a one-VM host", () => {
+		expect(NATIVE_SOCKET_PATH_BYTES).toBeLessThanOrEqual(107);
+		for (const temporaryRoot of hosts) {
+			const runRoot = `${nativeRunRootPrefix(temporaryRoot, randomUUID())}XXXXXX`;
+			const scratch = `${claudeWorkerScratchPrefix(runRoot)}XXXXXX`;
+			expect(dirname(scratch)).toBe(temporaryRoot);
+			expect(scratch.split("/").length).toBeGreaterThanOrEqual(4);
+			for (const path of claudeBoxSocketPaths(scratch))
+				expect(() => assertNativeSocketPath(path, "A")).not.toThrow();
+			for (const path of claudeBoxSocketPaths(join(runRoot, "claude-box")))
+				expect(() => assertNativeSocketPath(path, "A")).toThrow("A socket path too long");
+		}
+		const slot11 = `${nativeRunRootPrefix(hosts[11], randomUUID())}XXXXXX`;
+		expect(slot11).toMatch(
+			/^\/var\/lib\/qorpera-shared-execution\/slots\/11\/host\/qorpera-native-run-[0-9a-f-]{36}-XXXXXX$/,
+		);
+		expect(Buffer.byteLength(join(slot11, "claude-box", "shell.sock"))).toBeGreaterThan(107);
+	});
+
+	it("makes the scratch beside the run's root, hands it to the box, and removes it with the run", async () => {
+		const host = await mkdtemp(join(tmpdir(), "c4c-host-"));
+		const runRoot = join(host, "qorpera-native-run-x");
+		await mkdir(runRoot, { mode: 0o700 });
+		const scratches: string[] = [];
+		const box = standInBox(OK);
+		const outcome = await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins: vault().logins,
+			launch: async (options) => {
+				scratches.push(options.scratchRoot);
+				expect((await stat(options.scratchRoot)).mode & 0o777).toBe(0o700);
+				return box.launch(options);
+			},
+			root: runRoot,
+			signal: new AbortController().signal,
+		});
+		expect(outcome.outcome).toBe("succeeded");
+		expect(scratches).toHaveLength(1);
+		expect(dirname(scratches[0])).toBe(host);
+		expect(scratches[0].startsWith(claudeWorkerScratchPrefix(runRoot))).toBe(true);
+		expect(await readdir(host)).toEqual(["qorpera-native-run-x"]);
+		expect(await readdir(runRoot)).toEqual([]);
+		await rm(host, { recursive: true });
+	});
+
+	it("names why the box did not start on the run's record, in codes only, and keeps the member's words", async () => {
+		const host = await mkdtemp(join(tmpdir(), "c4c-host-"));
+		const runRoot = join(host, "run");
+		await mkdir(runRoot, { mode: 0o700 });
+		const outcome = await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins: vault().logins,
+			launch: async () => {
+				throw Object.assign(new Error(`listen EINVAL: ${runRoot}/x ${CANARY}`), { code: "EINVAL" });
+			},
+			root: runRoot,
+			signal: new AbortController().signal,
+		});
+		expect(outcome).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.boxFailed,
+			boxFailure: "box-unknown:EINVAL",
+		});
+		expect(claudeWorkerSessionId(outcome)).toBe("claude-code/2.1.325/none/none/box-unknown:EINVAL");
+		expect(JSON.stringify(outcome)).not.toContain(CANARY);
+		expect(JSON.stringify(outcome)).not.toContain(runRoot);
+		expect(await readdir(host)).toEqual(["run"]);
+		await rm(host, { recursive: true });
 	});
 });
