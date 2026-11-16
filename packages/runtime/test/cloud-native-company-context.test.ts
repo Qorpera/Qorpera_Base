@@ -162,7 +162,7 @@ it("tells an agent when a database is the right home, how its folder is laid out
 
 it("tells a member's agent how to answer a question asked on the Data app's list, and to keep it as a list", () => {
 	const said =
-		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app: answer it in your message from the rows that member may see (in a database whose questions name :viewer, only their own), the number or the few rows first, never the SQL, then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql (a-z, 0-9 and -) with -- lines in their words, and it shows beside the tables.';
+		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app, and every member may read that conversation: answer it from rows every member may read, the number or the few rows first, never the SQL (for a database only some members may read, or one whose questions name :viewer, say in one line that the list itself shows them), then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql (at most 60 characters of a-z and 0-9, a - only between them) with -- lines in their words, and it shows beside the tables.';
 	expect(cloudCompanyRuntimeInstructions(null, false)).toContain(
 		`Never put a secret in a step, a query, a change or a row. ${said}\n`,
 	);
@@ -2031,7 +2031,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "9aab1af3b730c2a34a03679087051711e89181615e4079bebf6c8598423ef98d",
+			instructions: "b88ba183e17c5ea49ed3d4091bab1e39343a8672ba24111ac398b72ba61edb44",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2047,7 +2047,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "9aab1af3b730c2a34a03679087051711e89181615e4079bebf6c8598423ef98d",
+			instructions: "b88ba183e17c5ea49ed3d4091bab1e39343a8672ba24111ac398b72ba61edb44",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],

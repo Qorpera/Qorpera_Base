@@ -470,7 +470,10 @@ member or the agent from the lists it already holds.
   with the Co-Founder, and the Ask goes the same way.
 - **No Ask on private rows.** A database whose questions name `:viewer` shows each member their own rows, and the
   Co-Founder's thread is the company's: every member reads an answer there. So such a database has no line to ask on,
-  on any of its lists. Asking about one's own rows waits for a thread only that member reads.
+  on any of its lists. A database in a folder only some members may read cannot be told from here (the web sees only
+  what this member may read), so there the agent's words carry it: it answers in the thread only from rows every
+  member may read, and otherwise says in one line that the list itself shows them. Asking about rows that are not
+  everyone's waits for a thread only that member reads.
 - **The road.** The line under the list sends the member's own message through `tellAgent`, the road an app's note
   and the Mailbox take: sent from the page when the Co-Founder's thread has nothing drafted, otherwise it waits in that
   thread's composer. Either way the page opens that conversation, where the answer comes as the Co-Founder's message.
@@ -484,10 +487,11 @@ member or the agent from the lists it already holds.
   how they were laid out. `page:` names the web's own pages (only `data` is read), so an agent's app that is named
   `data` keeps `app:data`.
 - **Keep as a list.** The staff runs' "Company databases" paragraph gains a sentence: such a message was asked on that
-  list; answer it from the rows that member may see (in a database whose questions name `:viewer`, only their own,
-  as the list itself would show them; the thread is the company's), the number or the few rows first, never the SQL;
-  offer Keep as a list on a question card, and on yes write the question as `data/<database>/queries/<name>.sql`
-  (`a-z`, `0-9` and `-`, as every question's name) with `--` lines in the member's words.
+  list, and every member may read that conversation; answer it from rows every member may read, the number or the
+  few rows first, never the SQL (for a database only some members may read, or one whose questions name `:viewer`,
+  say in one line that the list itself shows them); offer Keep as a list on a question card, and on yes write the
+  question as `data/<database>/queries/<name>.sql` (at most 60 characters of `a-z` and `0-9`, a `-` only between
+  them, as the gateway takes a question's name) with `--` lines in the member's words.
   The Data page lists it beside the tables at its next read of `describe`. A worker's words do not change.
 - **Kept questions that take values** are tabs too: a field a value above the list (`:viewer` stays Qorpera's), and
   the list reads once each is filled in, each value as text, which PostgreSQL types from the statement as for any
