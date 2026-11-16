@@ -12,6 +12,7 @@ import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { CompanyDatabases, CompanyDataCalls } from "../company-data.ts";
+import { DataChanges } from "./data-changes.ts";
 
 const PAGE_ROWS = 100;
 const WATCH_GAP_MS = 500;
@@ -254,10 +255,17 @@ class DataListView {
 	readonly #inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>();
 	#observer: IntersectionObserver | undefined;
 	readonly #counted = new Map<string, number>();
+	readonly #changes: DataChanges;
+	#changing = false;
 
 	constructor(company: CompanyController, databases: CompanyDatabases) {
 		this.company = company;
 		this.#databases = databases;
+		this.#changes = new DataChanges(
+			company,
+			() => this.#calls(),
+			(database, table, key) => this.#listedTitle(database, table, key),
+		);
 		replace(this.el, this.#bar, this.#top, this.#body);
 		company.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		databases.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -276,6 +284,7 @@ class DataListView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#changes.dispose();
 		this.#list?.stop.abort();
 		this.#observer?.disconnect();
 	}
@@ -526,7 +535,8 @@ class DataListView {
 	}
 
 	#choose(tab: Tab): void {
-		if (this.#tab?.kind === tab.kind && this.#tab.name === tab.name && !this.#open) return;
+		if (this.#tab?.kind === tab.kind && this.#tab.name === tab.name && !this.#open && !this.#changing) return;
+		this.#changing = false;
 		this.#tab = tab;
 		this.#close();
 		this.#ensureList();
@@ -590,14 +600,14 @@ class DataListView {
 					type: "button",
 					role: "tab",
 					class: one.kind === "question" ? "data-tab is-question" : "data-tab",
-					"aria-selected": String(this.#tab?.kind === one.kind && this.#tab.name === one.name),
+					"aria-selected": String(!this.#changing && this.#tab?.kind === one.kind && this.#tab.name === one.name),
 					dataset: { focusKey: `tab:${one.kind}:${one.name}` },
 					onclick: () => this.#choose(one),
 				},
 				humanName(one.name),
 			);
 		const add =
-			this.#writable() && this.#tab?.kind === "table"
+			!this.#changing && this.#writable() && this.#tab?.kind === "table"
 				? button(t("New row"), () => this.#startDraft(), { primary: true })
 				: null;
 		replace(
@@ -632,6 +642,7 @@ class DataListView {
 						: null,
 					...questions.map(tab),
 				),
+				database.list ? this.#changesButton(database) : null,
 				add,
 			),
 		);
@@ -647,8 +658,46 @@ class DataListView {
 		});
 	}
 
+	#listedTitle(database: string, table: string, key: Readonly<Record<string, unknown>>): unknown {
+		const read = this.#list;
+		if (read?.database !== database || read.tab.kind !== "table" || read.tab.name !== table || read.key.length === 0)
+			return undefined;
+		const wanted = JSON.stringify(read.key.map((name) => key[name] ?? null));
+		const row = read.rows.find((one) => keyOf(read.columns, read.key, one.values) === wanted);
+		const [lead] = shownColumns(read.columns, read.key);
+		return row && lead !== undefined ? row.values[read.columns.indexOf(lead)] : undefined;
+	}
+
+	#changesButton(database: CloudMemberDatabase): HTMLElement {
+		return h(
+			"button",
+			{
+				type: "button",
+				class: "data-changes-open",
+				"aria-pressed": String(this.#changing),
+				"aria-label": t("What changed"),
+				title: t("What changed"),
+				dataset: { focusKey: "changes" },
+				onclick: () => {
+					this.#changing = true;
+					this.#changes.open(database);
+					this.#draw();
+				},
+			},
+			icon("clock"),
+			h("span", { class: "data-changes-open-words", "aria-hidden": "true" }, t("What changed")),
+		);
+	}
+
 	#drawBody(): void {
 		if (this.#open) return;
+		const changing = this.#current();
+		if (this.#changing && changing?.list) {
+			this.#observer?.disconnect();
+			replace(this.#body, this.#changes.show(changing));
+			return;
+		}
+		this.#changing = false;
 		const focus = this.#focusKey();
 		this.#observer?.disconnect();
 		const scroller = this.#body.querySelector<HTMLElement>(".data-scroll");

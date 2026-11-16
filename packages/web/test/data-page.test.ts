@@ -86,6 +86,7 @@ function fakeCalls(described: CloudMemberDataDescription) {
 	let current: unknown[] = [1, "Gazelle Orange C7", 450, true];
 	const calls = {
 		describe: vi.fn(async () => described),
+		changes: vi.fn(async () => ({ writes: [], more: false, asOf })),
 		rows: vi.fn(async (asked: { table: string; after?: readonly unknown[] }): Promise<CloudMemberDataPage> => {
 			if (asked.table === "open_repairs")
 				return { columns: ["bike"], key: [], rows: [{ values: ["Trek"], seen: seen(9) }], more: true, etag, asOf };
