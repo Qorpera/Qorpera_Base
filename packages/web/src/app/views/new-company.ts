@@ -98,9 +98,6 @@ class NewCompanyView {
 	#carried: string | undefined;
 	#viewerKey = "";
 	#statusKey = "";
-	#typing: ReturnType<typeof setTimeout> | undefined;
-	/** The founder has been in the box: the example ideas stop writing themselves for good. */
-	#touched = false;
 	/** Where the caret stood when the box lost focus to a move or a new language, to put it back. */
 	#caret: { start: number; end: number; direction: "forward" | "backward" | "none" } | undefined;
 	/** The box had focus when an opening started, so it gets it back if the opening fails. */
@@ -115,15 +112,10 @@ class NewCompanyView {
 			class: "hero-idea",
 			rows: 1,
 			maxlength: IDEA_MAX_CHARACTERS,
-			oninput: () => {
-				this.#touch();
-				this.#changed();
-			},
-			onfocus: () => this.#touch(),
-			onpointerdown: () => this.#touch(),
-			oncompositionstart: () => this.#touch(),
+			placeholder: t("Describe your idea"),
+			"aria-label": t("Describe your idea"),
+			oninput: () => this.#changed(),
 			onkeydown: (event: KeyboardEvent) => {
-				this.#touch();
 				// Enter sends, as on qorpera.com; Shift+Enter is a new line, and Enter that ends an IME composition is neither.
 				if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
 				event.preventDefault();
@@ -136,7 +128,8 @@ class NewCompanyView {
 			type: "text",
 			maxlength: FOUNDING_NAME_MAX_CHARACTERS,
 			autocomplete: "organization",
-			placeholder: t("Named after your idea"),
+			placeholder: t("Name your company"),
+			"aria-label": t("Company name"),
 			onkeydown: (event: KeyboardEvent) => {
 				// Enter goes on to the idea; Enter that ends an IME composition stays.
 				if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -160,12 +153,7 @@ class NewCompanyView {
 		this.el = h(
 			"div",
 			{ class: "hero" },
-			h(
-				"div",
-				{ class: "hero-name-field" },
-				h("label", { for: "newCompanyName", class: "hero-name-label" }, t("Company name")),
-				h("div", { class: "hero-name-box" }, this.#name, icon("edit")),
-			),
+			h("div", { class: "hero-name-field" }, h("div", { class: "hero-name-box" }, this.#name, icon("edit"))),
 			h(
 				"form",
 				{
@@ -176,18 +164,12 @@ class NewCompanyView {
 					},
 				},
 				this.#from,
-				h(
-					"div",
-					{ class: "hero-idea-row" },
-					h("label", { for: "newCompanyIdea", class: "hero-idea-label" }, t("The idea")),
-					this.#idea,
-				),
+				h("div", { class: "hero-idea-row" }, this.#idea),
 				h("div", { class: "hero-row" }, this.#invite, this.#go),
 			),
 			this.#status,
 			this.#invitations,
 		);
-		this.#placeholder();
 	}
 
 	mount(container: HTMLElement, wrapperClass: string): void {
@@ -197,7 +179,6 @@ class NewCompanyView {
 		container.replaceChildren(h("section", { class: wrapperClass, "data-form-owner": "new-company" }, this.el));
 		this.#restoreCaret();
 		this.#resize();
-		this.#placeholder();
 	}
 
 	carry(handoff: WebsiteHandoff): void {
@@ -214,7 +195,6 @@ class NewCompanyView {
 		this.#idea.value = other.#idea.value;
 		this.#name.value = other.#name.value;
 		this.#carried = other.#carried;
-		this.#touched = other.#touched;
 		if (document.activeElement === other.#idea) this.#caret = caretOf(other.#idea);
 		this.#changed();
 	}
@@ -283,10 +263,9 @@ class NewCompanyView {
 	#changed(): void {
 		this.#resize();
 		const idea = this.#idea.value.trim();
-		this.#name.placeholder = idea ? companyNameFromIdea(idea) : t("Named after your idea");
+		this.#name.placeholder = idea ? companyNameFromIdea(idea) : t("Name your company");
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
-		this.#placeholder();
 	}
 
 	#start(): void {
@@ -314,67 +293,12 @@ class NewCompanyView {
 		this.#changed();
 	}
 
-	#touch(): void {
-		if (this.#touched) return;
-		this.#touched = true;
-		this.#placeholder();
-	}
-
 	#restoreCaret(): void {
 		const caret = this.#caret;
 		this.#caret = undefined;
 		if (!caret || !this.el.isConnected || this.#idea.disabled) return;
 		this.#idea.focus({ preventScroll: true });
 		this.#idea.setSelectionRange(caret.start, caret.end, caret.direction);
-	}
-
-	/** An empty box writes out example ideas, as qorpera.com does, in its placeholder only (never its text), until
-	 * the founder first focuses it, presses in it or types: from then on it rests on the first example. It goes
-	 * through them twice, then rests on the first. */
-	#placeholder(): void {
-		clearTimeout(this.#typing);
-		const examples = KINDS.map((kind) => t(kind.example));
-		this.#idea.placeholder = examples[0]!;
-		const still =
-			window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true ||
-			this.#touched ||
-			document.activeElement === this.#idea ||
-			this.#idea.value !== "" ||
-			!this.el.isConnected;
-		if (still) return;
-		let shown = 0,
-			length = 0,
-			erasing = false;
-		const step = () => {
-			if (
-				!this.el.isConnected ||
-				this.#touched ||
-				document.activeElement === this.#idea ||
-				this.#idea.value !== ""
-			) {
-				this.#idea.placeholder = examples[0]!;
-				return;
-			}
-			const text = examples[shown % examples.length]!;
-			if (!erasing) {
-				length++;
-				if (length >= text.length) erasing = true;
-			} else {
-				length -= 2;
-				if (length <= 0) {
-					erasing = false;
-					length = 0;
-					shown++;
-				}
-			}
-			this.#idea.placeholder = text.slice(0, Math.max(0, length));
-			if (shown >= examples.length * 2) {
-				this.#idea.placeholder = examples[0]!;
-				return;
-			}
-			this.#typing = setTimeout(step, !erasing ? 70 : length >= text.length ? 2200 : 28);
-		};
-		this.#typing = setTimeout(step, 600);
 	}
 }
 
