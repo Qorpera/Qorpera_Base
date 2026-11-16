@@ -2538,6 +2538,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 			"delete from qorpera_data.row_changes",
 			"update qorpera_data.record_limit set bytes = 1",
 			"select qorpera_data.keep_record(1000000000)",
+			"select qorpera_data.forget_record(now())",
 			"select qorpera_data.give_triggers('qorpera_data.model'::regclass)",
 		];
 		for (const text of tries) {
@@ -2564,6 +2565,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		assert.deepEqual(kept.map((row) => row.grant), [
 			"qorpera_data_keeper change_log DELETE,INSERT,SELECT",
 			"qorpera_data_keeper row_changes SELECT",
+			"qorpera_data_recorder change_log SELECT",
 			"qorpera_data_recorder record_bytes DELETE,INSERT,SELECT,UPDATE",
 			"qorpera_data_recorder record_limit SELECT",
 			"qorpera_data_recorder row_changes DELETE,INSERT,SELECT,UPDATE",
@@ -2572,7 +2574,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 			(select string_agg(p.proname, ',' order by p.proname) from pg_proc p where p.proowner = r.oid) as names,
 			has_table_privilege(r.oid, 'qorpera_data.texts', 'select') as texts, has_table_privilege(r.oid, 'crm.people', 'select') as rows
 			from pg_roles r where r.rolname = 'qorpera_data_recorder'`);
-		assert.deepEqual(recorder, { rolsuper: false, rolcanlogin: false, functions: 2, names: "keep_record,recorded", texts: false, rows: false }, "the record's functions run with the record's rights alone");
+		assert.deepEqual(recorder, { rolsuper: false, rolcanlogin: false, functions: 3, names: "forget_record,keep_record,recorded", texts: false, rows: false }, "the record's functions run with the record's rights alone");
 		put(ENV_E, {
 			"data/crm/tables/002-try.sql":
 				"create type mood as enum ('ok');\ncreate function leak(mood) returns json language sql as $f$ select json_build_object('user', current_user) $f$;\ncreate cast (mood as json) with function leak(mood);\n",
@@ -2760,7 +2762,7 @@ create view slow as select id, pg_sleep(0.05) is null as napped from people;
 		assert.deepEqual(await runSend("describe", { database: "stock", pass: once }), { status: 401, value: { error: "Not allowed" } });
 		assert.equal((await runSend("query", { database: "yard", sql: "select 1", pass: pass() })).status, 404);
 		assert.equal((await runSend("apply", { database: "stock", pass: pass({ allow: `003-x.${"0".repeat(64)}.${"0".repeat(64)}` }) })).status, 503);
-		for (const broken of [{ viewId: undefined }, { machineId: "not-a-machine" }, { kind: "desktop" }]) {
+		for (const broken of [{ viewId: undefined }, { machineId: "not-a-machine" }, { kind: "desktop" }, { staffAgentId: undefined }, { staffAgentId: "an agent" }]) {
 			const made = pass();
 			Object.assign(PASSES.get(made).kept, broken);
 			assert.equal((await runSend("describe", { database: "stock", pass: made })).status, 503, JSON.stringify(broken));
@@ -2975,11 +2977,11 @@ create trigger nap before update on slowed for each row execute function nap();
 		assert.deepEqual(byMember.rows, ["crm.people change"]);
 		const byAgent = await oneLine(() => runAs("change", { database: "crm", change: "rename", params: { id: 7, name: "By an agent" } }));
 		assert.equal(byAgent.answer.status, 200, JSON.stringify(byAgent.answer.value));
-		assert.deepEqual(byAgent.line, { by_kind: "agent", by_id: byAgent.answer.kept.runId, via: "rename" });
+		assert.deepEqual(byAgent.line, { by_kind: "agent", by_id: byAgent.answer.kept.staffAgentId, via: "rename" });
 		assert.deepEqual(byAgent.rows, ["crm.people change"]);
 		const byMachine = await oneLine(() => runAs("change", { database: "crm", change: "rename", params: { id: 8, name: "By a machine" } }, { machine: true }));
 		assert.equal(byMachine.answer.status, 200, JSON.stringify(byMachine.answer.value));
-		assert.deepEqual(byMachine.line, { by_kind: "machine", by_id: byMachine.answer.kept.machineId, via: "rename" });
+		assert.deepEqual(byMachine.line, { by_kind: "machine", by_id: byMachine.answer.kept.staffAgentId, via: "rename" });
 		assert.deepEqual(byMachine.rows, ["crm.people change"]);
 		put(ENV_E, { "data/ledger/tables/002-more.sql": "insert into items (name) values ('from a step');\nupdate items set qty = qty + 1 where name = 'from a step';\n" });
 		const byStep = await oneLine(() => ask(contributor, "apply", { database: "ledger" }, ENV_E));
@@ -2988,7 +2990,7 @@ create trigger nap before update on slowed for each row execute function nap();
 		assert.deepEqual(byStep.rows, ["ledger.items add", "ledger.items change"]);
 		put(ENV_E, { "data/ledger/tables/003-again.sql": "insert into items (name) values ('from a run''s step');\n" });
 		const byRunStep = await oneLine(() => runAs("apply", { database: "ledger" }));
-		assert.deepEqual(byRunStep.line, { by_kind: "step", by_id: byRunStep.answer.kept.runId, via: "003-again" });
+		assert.deepEqual(byRunStep.line, { by_kind: "step", by_id: byRunStep.answer.kept.staffAgentId, via: "003-again" });
 		const before = await actorLines();
 		const forged = await ask(contributor, "change", { database: "crm", change: "forge" }, ENV_E);
 		assert.deepEqual([forged.status, /permission denied/.test(forged.value.error)], [400, true], JSON.stringify(forged.value));
@@ -3175,6 +3177,192 @@ create trigger nap before update on slowed for each row execute function nap();
 			});
 		} finally {
 			await running.end().catch(() => undefined);
+			await asAdmin("postgres", `drop database ${scratch} with (force)`);
+		}
+	});
+
+	it("answers what changed in a database as the keeper, newest first: who, when, each table's rows and the first lines, to the list's members alone", async () => {
+		put(ENV_E, {
+			"data/journal/database.toml": 'format = "qorpera.database/v1"\nname = "Journal"\n',
+			"data/journal/tables/001-entries.sql":
+				"create table entries (id int primary key, title text not null, state text not null default 'open', body text);\ninsert into entries (id, title) select n, 'Entry ' || n from generate_series(1, 3) n;\n",
+			"data/journal/actions/close.sql": "-- Close entry :id.\nupdate entries set state = 'done' where id = :id::int;\n",
+		});
+		assert.equal((await ask(contributor, "apply", { database: "journal" }, ENV_E)).value.applied, true);
+		const journal = (body) => edit(contributor, { database: "journal", table: "entries", ...body });
+		const entry = async (id) => (await listed(contributor, { database: "journal", table: "entries", after: [String(id - 1)], limit: 1 })).value.rows[0];
+		assert.equal((await journal({ op: "add", values: { id: 4, title: "Entry 4" } })).status, 200);
+		assert.equal((await journal({ op: "change", key: { id: 2 }, seen: (await entry(2)).seen, values: { title: "Second" } })).status, 200);
+		const closed = await runAs("change", { database: "journal", change: "close", params: { id: 1 } });
+		assert.equal(closed.status, 200, JSON.stringify(closed.value));
+		assert.equal((await journal({ op: "remove", key: { id: 3 }, seen: (await entry(3)).seen })).status, 200);
+		assert.equal((await ask(contributor, "change", { database: "crm", change: "rename", params: { id: 9, name: "Elsewhere" } }, ENV_E)).status, 200);
+		const changes = (bearer, body = {}) => ask(bearer, "changes", { database: "journal", ...body }, ENV_E);
+		const first = await changes(contributor);
+		assert.equal(first.status, 200, JSON.stringify(first.value));
+		const all = ["body", "id", "state", "title"];
+		const one = (op, line) => ({ tables: [{ table: "entries", op, rows: 1 }], lines: [{ table: "entries", op, rows: 1, ...line }] });
+		assert.deepEqual(
+			first.value.writes.map(({ at, ...write }) => write),
+			[
+				{ by: "member", id: CONTRIBUTOR, via: "list", ...one("remove", { key: { id: 3 }, before: { id: 3, title: "Entry 3", state: "open", body: null }, after: null, columns: all }) },
+				{ by: "agent", id: closed.kept.staffAgentId, via: "close", ...one("change", { key: { id: 1 }, before: { state: "open" }, after: { state: "done" }, columns: ["state"] }) },
+				{ by: "member", id: CONTRIBUTOR, via: "list", ...one("change", { key: { id: 2 }, before: { title: "Entry 2" }, after: { title: "Second" }, columns: ["title"] }) },
+				{ by: "member", id: CONTRIBUTOR, via: "list", ...one("add", { key: { id: 4 }, before: null, after: { id: 4, title: "Entry 4", state: "open", body: null }, columns: all }) },
+				{
+					by: "step",
+					id: CONTRIBUTOR,
+					via: "001-entries",
+					tables: [{ table: "entries", op: "add", rows: 3 }],
+					lines: [1, 2, 3].map((id) => ({ table: "entries", op: "add", rows: 1, key: { id }, before: null, after: { id, title: `Entry ${id}`, state: "open", body: null }, columns: all })),
+				},
+			],
+		);
+		const times = first.value.writes.map((write) => Date.parse(write.at));
+		assert.ok(times.every((time, index) => Number.isFinite(time) && (index === 0 || time <= times[index - 1])), JSON.stringify(times));
+		assert.deepEqual([first.value.more, first.value.next, first.value.days], [false, undefined, undefined]);
+		const seen = await changes(viewer);
+		assert.deepEqual([seen.status, seen.value.writes?.length], [200, 5], "a reader of a database whose list is its readers' sees what changed");
+		assert.deepEqual(
+			[(await changes(viewer, { database: "closed" })).status, (await changes(stranger)).status, (await changes(contributor, { database: "nowhere" })).status],
+			[403, 404, 404],
+			"a member who does not get the list gets no changes",
+		);
+		for (const body of [{ after: "0" }, { after: 5 }, { after: "1e3" }, { zone: "../etc/passwd" }, { zone: 1 }, { database: "Journal" }]) {
+			const refused = await changes(contributor, body);
+			assert.equal(refused.status, 400, `${JSON.stringify(body)}: ${JSON.stringify(refused.value)}`);
+		}
+		assert.deepEqual(await changes(contributor, { zone: "Mars/Olympus" }), { status: 400, value: { error: "No time zone Mars/Olympus" } });
+		const dated = await changes(contributor, { zone: "Europe/Copenhagen" });
+		const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Copenhagen" }).format(new Date());
+		assert.deepEqual(dated.value.days, [
+			{ day: today, by: "agent", id: closed.kept.staffAgentId, rows: 1 },
+			{ day: today, by: "member", id: CONTRIBUTOR, rows: 3 },
+			{ day: today, by: "step", id: CONTRIBUTOR, rows: 3 },
+		]);
+		await inE("update qorpera_data.change_log set at = at - interval '3 days' where by_kind = 'step' and via = '001-entries'");
+		await inE("update qorpera_data.change_log set at = at - interval '20 days' where by_kind = 'agent' and via = 'close'");
+		const earlier = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Copenhagen" }).format(new Date(Date.now() - 3 * 86_400_000));
+		assert.deepEqual((await changes(contributor, { zone: "Europe/Copenhagen" })).value.days, [
+			{ day: earlier, by: "step", id: CONTRIBUTOR, rows: 3 },
+			{ day: today, by: "member", id: CONTRIBUTOR, rows: 3 },
+		], "the days of the last two weeks alone, in the member's own time zone");
+		assert.equal((await changes(contributor, { zone: "Europe/Copenhagen", after: "9" })).value.days, undefined, "a later page counts no days");
+		await withGateway({ limits: { ...LIMITS_HERE, changesWrites: 2 } }, async () => {
+			const pages = [];
+			let after = null;
+			for (let round = 0; round < 10; round++) {
+				const page = await changes(viewer, after === null ? {} : { after });
+				assert.equal(page.status, 200, JSON.stringify(page.value));
+				pages.push(page.value.writes.map((write) => `${write.via} ${write.lines[0].op}`));
+				if (!page.value.more) break;
+				after = page.value.next;
+			}
+			assert.deepEqual(pages, [["list remove", "close change"], ["list change", "list add"], ["001-entries add"]]);
+		});
+	});
+
+	it("pages what changed by write, also when writes' lines cross and when one write fills the look, and cuts what a line holds", async () => {
+		const actor = (txid, kind, via) =>
+			inE("insert into qorpera_data.change_log (txid, at, by_kind, by_id, via) values ($1::bigint, now(), $2, $3, $4)", [txid, kind, kind === "member" ? OWNER : null, via]);
+		const line = (txid, id) =>
+			inE(
+				"insert into qorpera_data.row_changes (txid, schema, relation, op, key, after, rows, bytes) values ($1::bigint, 'journal', 'entries', 'add', $2::jsonb, $3::jsonb, 1, 10)",
+				[txid, JSON.stringify({ id }), JSON.stringify({ id, title: id === 103 ? "x".repeat(3000) : `fake ${id}` })],
+			);
+		const base = 9_000_000_000;
+		try {
+			await actor(base + 1, "member", "list");
+			await actor(base + 2, "member", "list");
+			await actor(base + 3, "step", "009-fill");
+			for (const [txid, id] of [[base + 1, 101], [base + 2, 102], [base + 1, 103], [base + 1, 104]]) await line(txid, id);
+			for (let n = 0; n < 6; n++) await inE("insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes) values ($1::bigint, 'journal', 'entries', 'add', 2000, 10)", [base + 3]);
+			await withGateway({ limits: { ...LIMITS_HERE, changesWrites: 1, changesWindow: 4 } }, async () => {
+				const writes = [];
+				let after = null;
+				for (let round = 0; round < 20; round++) {
+					const page = await ask(contributor, "changes", { database: "journal", ...(after === null ? {} : { after }) }, ENV_E);
+					assert.equal(page.status, 200, JSON.stringify(page.value));
+					writes.push(...page.value.writes);
+					if (!page.value.more) break;
+					after = page.value.next;
+				}
+				const fakes = writes.filter((write) => write.via === "009-fill" || write.lines.some((line) => line.key?.id >= 101));
+				assert.deepEqual(
+					fakes.map((write) => [write.via, write.tables, write.lines.map((line) => line.key?.id ?? null), write.more ?? false]),
+					[
+						["009-fill", [{ table: "entries", op: "add", rows: 12000 }], [null, null, null], true],
+						["list", [{ table: "entries", op: "add", rows: 3 }], [101, 103, 104], false],
+						["list", [{ table: "entries", op: "add", rows: 1 }], [102], false],
+					],
+					"each write once, by its newest line, with all its rows counted",
+				);
+				const cut = fakes[1].lines[1];
+				assert.deepEqual([cut.key, cut.after, cut.columns], [{ id: 103 }, null, ["id", "title"]], "a line past 2 KiB names its columns and not their values");
+				assert.equal(writes.filter((write) => write.via === "list" && write.lines[0].key?.id === 101).length, 1);
+			});
+		} finally {
+			await inE("delete from qorpera_data.row_changes where txid >= $1::bigint", [base]);
+			await inE("delete from qorpera_data.change_log where txid >= $1::bigint", [base]);
+		}
+	});
+
+	it("forgets a write's lines after 30 days at the watcher's sweep, with every older line, and counts their bytes off the record's 100 MiB", async () => {
+		const scratch = companyDatabase("64000000-0000-4000-8000-0000000000f1");
+		await asAdmin("postgres", `create database ${scratch} template qorpera_company_template`);
+		try {
+			await asAdmin("postgres", `grant connect on database ${scratch} to qorpera_data_keeper, qorpera_data_watch`);
+			await asAdmin(scratch, "create schema s; create table s.t (id int primary key, v text)");
+			const write = async (sql, via) => {
+				const client = connect(scratch);
+				await client.connect();
+				try {
+					await client.query("begin");
+					const { txid } = (await client.query("select txid_current()::text as txid")).rows[0];
+					await client.query(sql);
+					await client.query("commit");
+					await asAdmin(scratch, "insert into qorpera_data.change_log (txid, by_kind, via) values ($1::bigint, 'member', $2)", [txid, via]);
+					return txid;
+				} finally {
+					await client.end();
+				}
+			};
+			const unlogged = await write("insert into s.t select n, 'before any actor' from generate_series(1, 3) n", "x");
+			await asAdmin(scratch, "delete from qorpera_data.change_log where txid = $1::bigint", [unlogged]);
+			const old = await write("insert into s.t select n, 'old' from generate_series(4, 8) n", "old");
+			const recent = await write("update s.t set v = 'recent' where id = 4", "recent");
+			const fresh = await write("delete from s.t where id = 5", "fresh");
+			await asAdmin(scratch, "update qorpera_data.change_log set at = now() - interval '31 days' where txid = $1::bigint", [old]);
+			await asAdmin(scratch, "update qorpera_data.change_log set at = now() - interval '29 days' where txid = $1::bigint", [recent]);
+			const state = async () =>
+				(
+					await asAdmin(scratch, `select (select string_agg(txid::text, ',' order by seq) from qorpera_data.row_changes) as lines,
+						(select string_agg(via, ',' order by via) from qorpera_data.change_log) as actors,
+						(select sum(bytes)::bigint from qorpera_data.row_changes)::text as held,
+						(select sum(bytes)::bigint from qorpera_data.record_bytes)::text as counted`)
+				)[0];
+			const before = await state();
+			assert.equal(before.lines, [unlogged, unlogged, unlogged, ...Array(5).fill(old), recent, fresh].join(","));
+			assert.equal(before.counted, before.held);
+			await withGateway({}, async (other) => {
+				await other.watchOnce();
+				const after = await state();
+				assert.deepEqual(
+					[after.lines, after.actors, after.counted],
+					[[recent, fresh].join(","), "fresh,recent", after.held],
+					"the old write's lines and every line older than them are gone, and their bytes with them",
+				);
+				await other.watchOnce();
+				assert.deepEqual(await state(), after, "nothing more goes before the next sweep");
+			});
+			await asAdmin(scratch, "update qorpera_data.change_log set at = now() - interval '40 days'");
+			assert.deepEqual(await asAdmin(scratch, "select qorpera_data.forget_record(now() - interval '30 days')::int as lines"), [{ lines: 2 }]);
+			assert.deepEqual(
+				await asAdmin(scratch, "select (select count(*)::int from qorpera_data.row_changes) as lines, (select coalesce(sum(bytes), 0)::int from qorpera_data.record_bytes) as counted"),
+				[{ lines: 0, counted: 0 }],
+			);
+			assert.deepEqual(await asAdmin(scratch, "select qorpera_data.forget_record(now())::int as lines"), [{ lines: 0 }], "an empty record forgets nothing");
+		} finally {
 			await asAdmin("postgres", `drop database ${scratch} with (force)`);
 		}
 	});

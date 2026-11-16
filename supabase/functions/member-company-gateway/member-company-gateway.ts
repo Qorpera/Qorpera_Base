@@ -34,8 +34,8 @@ const POINTER_TIMEOUT_MS = 5_000;
 /** How long a browser keeps a preflight of the pointer route (seconds). On production the API gateway in front of the
  * functions answers every preflight itself, so this is for a bridge without one; nothing depends on a preflight. */
 const POINTER_PREFLIGHT_SECONDS = 600;
-const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe|rows|edit|change)$`);
-const LARGE_DATA_CALLS: ReadonlySet<string> = new Set(["apply", "rows", "edit"]);
+const COMPANY_DATA = new RegExp(`^/v1/company-data/${UUID}/(query|watch|apply|describe|rows|edit|change|changes)$`);
+const LARGE_DATA_CALLS: ReadonlySet<string> = new Set(["apply", "rows", "edit", "changes"]);
 const DATA_WRITES: Record<string, string> = {
 	apply: "Company data is unavailable just now. Steps sent may still apply.",
 	edit: "Company data is unavailable just now. A change sent may still apply.",

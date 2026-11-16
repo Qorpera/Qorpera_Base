@@ -82,6 +82,7 @@ grant select on qorpera_data.row_changes to qorpera_data_keeper;
 grant select, insert, delete on qorpera_data.change_log to qorpera_data_keeper;
 grant select, insert, update, delete on qorpera_data.row_changes, qorpera_data.record_bytes to qorpera_data_recorder;
 grant select on qorpera_data.record_limit to qorpera_data_recorder;
+grant select on qorpera_data.change_log to qorpera_data_recorder;
 
 create or replace function qorpera_data.keep_record(p_bytes bigint) returns void
 language plpgsql security definer set search_path = '' as $$
@@ -121,6 +122,31 @@ begin
 end $$;
 revoke all on function qorpera_data.keep_record(bigint) from public;
 alter function qorpera_data.keep_record(bigint) owner to qorpera_data_recorder;
+
+create or replace function qorpera_data.forget_record(p_before timestamptz) returns bigint
+language plpgsql security definer set search_path = '' as $$
+declare v_through bigint; v_lines bigint; v_freed bigint;
+begin
+	select max(r.seq) into v_through
+	from qorpera_data.change_log c join qorpera_data.row_changes r on r.txid = c.txid
+	where c.at < p_before;
+	if v_through is null then
+		return 0;
+	end if;
+	with gone as (
+		delete from qorpera_data.row_changes r
+		where r.seq in (select x.seq from qorpera_data.row_changes x where x.seq <= v_through order by x.seq limit 50000 for update skip locked)
+		returning r.bytes)
+	select count(*), coalesce(sum(gone.bytes), 0) into v_lines, v_freed from gone;
+	if v_freed > 0 then
+		insert into qorpera_data.record_bytes as b (pid, bytes) values (pg_catalog.pg_backend_pid(), -v_freed)
+			on conflict (pid) do update set bytes = b.bytes + excluded.bytes;
+	end if;
+	return v_lines;
+end $$;
+revoke all on function qorpera_data.forget_record(timestamptz) from public;
+alter function qorpera_data.forget_record(timestamptz) owner to qorpera_data_recorder;
+grant execute on function qorpera_data.forget_record(timestamptz) to qorpera_data_keeper;
 
 create or replace function qorpera_data.recorded() returns trigger language plpgsql security definer set search_path = '' as $$
 declare

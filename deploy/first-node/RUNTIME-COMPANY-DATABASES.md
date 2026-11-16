@@ -532,6 +532,29 @@ text above:
   cast to the column's type. An edit names only the columns the member changed: a JSON number past a double's digits
   and a `json` value's own spacing reach the page as JavaScript reads them, so they would not survive being sent back.
 
+**Part f as built** (`deploy/company-data/`, `supabase/functions/member-company-gateway/`). Where it differs from the
+text above:
+
+- **`changes` pages by write, not by line.** A page is up to 25 writes (transactions), each placed by its newest line:
+  who and when from its actor's line, the rows it added, changed and removed in each table, and its first three
+  lines. `next` is the newest line of the last write given; a write whose lines cross another's is given once. Each
+  read looks at no more than 5,000 lines, so a write of many lines makes a page of fewer writes, never a slow one.
+  A line's `key`, `before` and `after` are left out past 2 KiB each; its `columns` still say which columns changed.
+- **The days come with the first page.** With `zone` (the member's time zone), the first page also counts the rows
+  each actor changed on each of the last 14 days, so "What changed" draws its two weeks without reading them all.
+  These two (`zone`, `days`) are not in the text above.
+- **The reader's own connection.** `changes` reads on a keeper connection of its own (one a company's database), so a
+  member reading what changed never holds up a write's actor's line, and within a question's 2 s.
+- **The actor names the agent.** An agent's and a machine's line, and a step an agent applied, carry the agent's own id
+  (the data pass's `staffAgentId`), not the run's or the machine's, so the web names the agent from the list it holds.
+  Part c wrote the run's id and the machine's id; a pass without an agent's id is refused (503).
+- **Kept 30 days, built.** At the watcher's hourly sweep the keeper calls `qorpera_data.forget_record` (the record's
+  own role, which now reads the actors' lines): the newest line of every write older than 30 days goes, with every
+  line before it (at most 50,000 a sweep), and their bytes come off the 100 MiB. The actors' lines then go as before.
+  A row line with no actor's line goes once a later write is forgotten.
+- **The edge function** lets `changes` through, with 1 MiB, as `rows` (it may carry the question texts the list's rule
+  reads).
+
 ## 6. Agents
 
 | Tool | What |
