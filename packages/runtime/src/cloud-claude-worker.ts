@@ -709,7 +709,10 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 		// member's only valid ones. Bounded, so a stopped run still ends.
 		if (keeper) await keeper.sync(AbortSignal.timeout(20_000)).catch(() => undefined);
 		await wipeClaudeLoginFolder(folder).catch(() => undefined);
-		if (scratchRoot) await rm(scratchRoot, { recursive: true, force: true }).catch(() => undefined);
+		if (scratchRoot)
+			await rm(scratchRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() =>
+				console.error("The Claude Code box's scratch folder was not removed"),
+			);
 	}
 	return keeper ? { ...outcome, login: { sealed: keeper.sealed, stale: keeper.stale } } : outcome;
 }

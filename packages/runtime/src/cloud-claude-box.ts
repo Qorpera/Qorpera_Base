@@ -224,7 +224,6 @@ export function claudeBoxEnvironment(options: {
 	};
 }
 
-/** The scratch root's own parts, made per run. */
 export const CLAUDE_BOX_START_STAGES = Object.freeze([
 	"platform",
 	"parts",
@@ -255,6 +254,7 @@ export function claudeBoxSocketPaths(scratchRoot: string): string[] {
 	return [join(scratchRoot, CLOUD_CLAUDE_SHELL_SOCKET_NAME), join(scratchRoot, NATIVE_EGRESS_SOCKET_NAME)];
 }
 
+/** The scratch root's own parts, made per run. */
 function scratchPaths(root: string) {
 	return {
 		config: join(root, "slot-config"),
