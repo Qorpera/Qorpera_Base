@@ -140,13 +140,6 @@ export function claudeBoxMountOptions(
 	].join(",");
 }
 
-/**
- * The tools a box may offer, and the list slice 1 gives: exactly the ones the proofs cover. `--tools` is the exclusive
- * list: every other built-in tool (agents, schedules, triggers, web, worktrees, skills) is absent, not merely denied.
- * Naming Grep and Glob in it also brings them back: 2.1.325 hides them unless a launch list names them
- * (`setSearchToolsOptIn`, search6.log). They run ripgrep, which here is the home's own through the `rg` bridge
- * (USE_BUILTIN_RIPGREP=0): one round trip on the home's disk, never a walk of the mount.
- */
 export const CLAUDE_BOX_TOOLS = Object.freeze([
 	"Bash",
 	"Read",
@@ -156,7 +149,29 @@ export const CLAUDE_BOX_TOOLS = Object.freeze([
 	"Grep",
 	"Glob",
 	"TaskStop",
+	"Task",
+	"WebSearch",
+	"Skill",
+	"ToolSearch",
+	"TaskCreate",
+	"TaskGet",
+	"TaskList",
+	"TaskUpdate",
+	"ReportFindings",
+	"Monitor",
+	"CronCreate",
+	"CronDelete",
+	"CronList",
+	"EnterWorktree",
+	"ExitWorktree",
 ] as const);
+export const CLAUDE_BOX_TOOLS_KEPT_OUT = Object.freeze({
+	WebFetch: "it fetches from the box, whose only way out is Anthropic's API, the sign-in's guard",
+	Workflow: "it runs scripts the model writes inside the box, beside the sign-in",
+	ListAgents: "it lists the member's other Claude sessions, outside this run",
+	SendMessage: "it writes to the member's other Claude sessions, outside this run",
+	ScheduleWakeup: "a wakeup keeps Claude Code running after its report, prompting itself again on the member's plan",
+});
 export type ClaudeBoxTool = (typeof CLAUDE_BOX_TOOLS)[number];
 
 /** Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only, and

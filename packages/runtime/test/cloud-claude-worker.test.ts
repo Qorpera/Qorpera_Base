@@ -172,17 +172,12 @@ describe("what Claude Code is told", () => {
 		]);
 	});
 
-	it("admits Claude Code's own eight tools as the run's catalog, and no tool of Qorpera's", () => {
-		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual([
-			"claude_code_bash",
-			"claude_code_read",
-			"claude_code_edit",
-			"claude_code_write",
-			"claude_code_notebookedit",
-			"claude_code_grep",
-			"claude_code_glob",
-			"claude_code_taskstop",
-		]);
+	it("admits Claude Code's own tools as the run's catalog, and no tool of Qorpera's", () => {
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual(
+			CLAUDE_BOX_TOOLS.map((name) => `claude_code_${name.toLowerCase()}`),
+		);
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toContain("claude_code_task");
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).not.toContain("claude_code_webfetch");
 		for (const tool of CLAUDE_WORKER_CATALOG.tools)
 			expect(tool.inputSchema).toEqual({ type: "object", additionalProperties: false });
 		expect(claudeWorkerSessionId({ model: "claude-sonnet-5-5", sessionId: "abc-1" })).toBe(
