@@ -19,10 +19,11 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, chownSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createConnection } from "node:net";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { authorizeHomeSession } from "../../coding-worker/home-session-authority.ts";
 import { MachineCommandRouter } from "../../coding-worker/machine-command-routing.ts";
 import { LxdCompanyMachineHost } from "../../../packages/runner-orchestrator/src/company-machine-host.ts";
@@ -38,6 +39,7 @@ import { CLAUDE_LOGIN_FIELD } from "../../../packages/runtime/src/cloud-model-lo
 import { CloudNativeCompanyRuntime } from "../../../packages/runtime/src/cloud-native-company-runtime.ts";
 import { nativeRuntimeFailureMetadata } from "../../../packages/runtime/src/cloud-native-failure.ts";
 import { NativeHostDispatch } from "../../../packages/runtime/src/cloud-native-host-dispatch.ts";
+import { nativeRunRootPrefix } from "../../../packages/runtime/src/cloud-native-provider-host.ts";
 import { SupabaseNativeProviderControlPlane } from "../../../packages/runtime/src/cloud-native-provider-service.ts";
 import { CloudSecretBroker } from "../../../packages/runtime/src/cloud-secret-broker.ts";
 import { HttpCloudSecretBrokerService, sealClaudeLoginBack } from "../../../packages/runtime/src/cloud-secret-broker-http.ts";
@@ -45,6 +47,8 @@ import { CloudSecretKeyring } from "../../../packages/runtime/src/cloud-secret-c
 
 const P = "/opt/qorpera-c2-proof";
 const B = "/var/lib/c4c-proof";
+const SLOT_HOST = "/var/lib/qorpera-shared-execution/slots/11/host";
+const RUN_ROOT = /^\/var\/lib\/qorpera-shared-execution\/slots\/11\/host\/qorpera-native-run-[0-9a-f-]{36}-[A-Za-z0-9]{6}$/;
 const REPO = process.env.C4C_REPO ?? process.cwd();
 const COMPANY = "92400000-0000-4000-8000-000000000010";
 const ENVIRONMENT = "92400000-0000-4000-8000-000000000020";
@@ -206,6 +210,8 @@ interface RunResult {
 	readonly error?: string;
 	readonly stage?: string;
 	readonly leftInRoot?: string[];
+	readonly root?: string;
+	readonly leftInSlot?: string[];
 	readonly stub?: {
 		requests: number;
 		authTags: string[];
@@ -672,6 +678,21 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			return found ? `${bytes?.toString("utf8") ?? ""}\n${JSON.stringify(found.parse)}` : null;
 		};
 		let runCount = 0;
+		const slotRuns: { label: string; root?: string; left?: string[] }[] = [];
+		const slotUnit = spawnSync(
+			"python3",
+			[
+				"-I",
+				join(REPO, "deploy/claude-box/test/unit-props.py"),
+				join(REPO, "deploy/shared-execution/qorpera-shared-run-host@.service"),
+				"11",
+			],
+			{ encoding: "utf8" },
+		)
+			.stdout.split("\n")
+			.filter(Boolean)
+			.flatMap((property) => ["-p", property]);
+		check("slot-unit", slotUnit.includes("PrivateTmp=yes") && slotUnit.includes("ProtectSystem=strict"), `the runs have qorpera-shared-run-host@11's hardening: ${slotUnit.filter((_, i) => i % 2).join(" ")}`);
 		const runWorker = async (binding: Record<string, string>, scenarioPath: string, extra: Record<string, unknown> = {}) => {
 			runCount++;
 			const label = `run${runCount}`;
@@ -702,48 +723,11 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 					"--uid=65534",
 					"--gid=65534",
 					`--working-directory=${B}`,
+					...slotUnit,
 					"-p",
-					"NoNewPrivileges=yes",
-					"-p",
-					"PrivateDevices=yes",
-					"-p",
-					"DeviceAllow=/dev/fuse rw",
-					"-p",
-					"BindPaths=/dev/fuse",
-					"-p",
-					"CapabilityBoundingSet=",
-					"-p",
-					"AmbientCapabilities=",
-					"-p",
-					"RestrictNamespaces=user mnt pid net ipc uts cgroup",
-					"-p",
-					"ProtectSystem=strict",
-					"-p",
-					"ProtectHome=yes",
-					"-p",
-					"ProtectProc=invisible",
-					"-p",
-					"ProcSubset=all",
-					"-p",
-					"ProtectKernelTunables=no",
-					"-p",
-					"ProtectKernelModules=yes",
-					"-p",
-					"ProtectControlGroups=yes",
-					"-p",
-					"RestrictSUIDSGID=yes",
-					"-p",
-					"LockPersonality=yes",
-					"-p",
-					"PrivateTmp=yes",
-					"-p",
-					"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
-					"-p",
-					"TasksMax=512",
+					`ReadWritePaths=${SLOT_HOST}`,
 					"-p",
 					`ReadWritePaths=${B}`,
-					"-p",
-					"UMask=0077",
 					process.execPath,
 					join(P, "worker.bundle.mjs"),
 					"run",
@@ -764,6 +748,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			const result = line ? (JSON.parse(line.slice(7)) as RunResult) : ({ ok: false, error: "no RESULT line", outputs: text.slice(-3000), ms: 0 } as RunResult);
 			say(`${label}: ${result.ok ? `ok ${result.providerSessionId}` : `failed ${result.stage ?? ""} ${result.error?.slice(0, 300)}`} in ${Date.now() - t0} ms`);
 			if (!result.ok) say(`${label} output tail: ${text.slice(-2500).replaceAll("\n", " | ")}`);
+			slotRuns.push({ label, root: result.root, left: result.leftInSlot });
 			return { ...result, text };
 		};
 
@@ -863,6 +848,12 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("tools-ran", (r1.stub?.results ?? []).length === 5 && (r1.stub?.results ?? []).filter((r) => r.isError).map((r) => r.name).join() === "read-missing",
 			`stub saw the five results (one error): ${JSON.stringify(r1.stub?.results)}`);
 		check("root-left", (r1.leftInRoot ?? ["?"]).length === 0, `nothing left in the run's root: ${JSON.stringify(r1.leftInRoot)}`);
+		check("real-root", RUN_ROOT.test(r1.root ?? "") && Buffer.byteLength(r1.root ?? "") === 110,
+			`the run's root is the provider host's own, in slot 11's host folder (${Buffer.byteLength(r1.root ?? "")} bytes): ${r1.root}`);
+		check("slot-left", (r1.leftInSlot ?? ["?"]).length === 0, `nothing of the box left beside the run's root in the slot: ${JSON.stringify(r1.leftInSlot)}`);
+		const homeSession1 = sessionJson<{ opened: number; closed: number }>(`select jsonb_build_object('opened', count(*), 'closed', count(*) filter (where closed_at is not null))::text
+			from public.qorpera_company_home_sessions where run_id = '${b1.runId}';`);
+		check("home-session", homeSession1.opened === 1 && homeSession1.closed === 1, `the run's home session opened and closed: ${JSON.stringify(homeSession1)}`);
 		const steps1 = sessionJson<{ tool: string }[]>(
 			`select coalesce(jsonb_agg(jsonb_build_object('tool', s.tool, 'finished', s.finished) order by s.j), '[]')::text
 				from public.qorpera_memory_run_steps s where s.run_id = '${b1.runId}';`,
@@ -1021,6 +1012,8 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			...[...objects.values()].map((bytes) => bytes.toString("latin1")),
 			session(`select coalesce(string_agg(s::text, E'\\n'), '') from public.qorpera_memory_run_steps s;`),
 		].join("\n");
+		check("slot-left-all", slotRuns.length > 0 && slotRuns.every((run) => RUN_ROOT.test(run.root ?? "") && run.left?.length === 0),
+			`every run's root was the provider host's own in slot 11, and nothing of its box was left beside it: ${JSON.stringify(slotRuns.map((run) => [run.label, run.left]))}`);
 		check("canary-outputs", (everything.match(CANARY) ?? []).length === 0, `canaries in outputs, objects and steps: ${(everything.match(CANARY) ?? []).length}`);
 		check("canary-channels", sessions.canaryInChannels.length === 0, `canaries on the channels: ${sessions.canaryInChannels.length} of ${sessions.channelBytes} bytes, ${sessions.exec} channels`);
 		say(`refused SQL calls: ${db.refusals.slice(0, 12).join(" || ")}`);
@@ -1081,7 +1074,7 @@ async function runProcess(): Promise<void> {
 	const release = dispatch.begin(config.binding.jobId as string, { leaseToken: config.binding.leaseToken as string, publishableKey });
 	const paths = new HttpCloudCompanyPathControl({ supabaseUrl: `${origin}/`, serviceRoleKey: publishableKey, fetch: dispatch.fetch });
 	const control = new SupabaseNativeProviderControlPlane(origin, publishableKey, dispatch.fetch);
-	const root = mkdtempSync(join(B, `root-${config.label}-`));
+	const root = await mkdtemp(nativeRunRootPrefix(SLOT_HOST, config.binding.runId as string));
 	const stop = new AbortController();
 	if (config.stopAfterMs !== undefined) {
 		void (async () => {
@@ -1182,10 +1175,14 @@ async function runProcess(): Promise<void> {
 	})();
 	const requests = lines.filter((line) => line.kind === "request" && line.main === true);
 	const leftInRoot = readdirSync(root);
+	const leftInSlot = readdirSync(SLOT_HOST).filter((name) => name !== basename(root));
+	rmSync(root, { recursive: true, force: true });
 	console.log(
 		`RESULT ${JSON.stringify({
 			...result,
 			leftInRoot,
+			root,
+			leftInSlot,
 			ms: Date.now() - t0,
 			stub: {
 				requests: requests.length,

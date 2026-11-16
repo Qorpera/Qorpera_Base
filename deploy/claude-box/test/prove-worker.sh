@@ -29,6 +29,16 @@ npx esbuild "$HERE/prove-worker.ts" --bundle --platform=node --format=esm --targ
 	--outfile=scripts/.prove-worker.platform.mjs || { echo "BUNDLE FAILED"; exit 1; }
 
 rm -rf $B; install -d -o 65534 -g 65534 -m 0700 $B
+S=/var/lib/qorpera-shared-execution
+SLOT=$S/slots/11/host
+say "this test VM's slot units: $(systemctl list-unit-files --no-legend 'qorpera-shared-run-host@*' 2>/dev/null | wc -l)"
+[[ -e $SLOT ]] && { echo "$SLOT exists already: not the proof's"; exit 1; }
+MADE=()
+for d in $S $S/slots $S/slots/11 $S/journals /var/lib/qorpera /var/lib/qorpera/identities /run/qorpera-shared-execution /srv/qorpera-folder /etc/qorpera-folder; do
+	[[ -e $d ]] || { install -d -o root -g root -m 0711 "$d"; MADE+=("$d"); }
+done
+install -d -o 65534 -g 65534 -m 0700 $SLOT
+MADE+=("$SLOT")
 BOOT=$(lxc exec $H -- cat /proc/sys/kernel/random/boot_id </dev/null)
 lxc exec $H -- sh -c 'rm -rf /company/QorperaOS /etc/c4c-root-made' </dev/null
 say "platform: the home's boot $BOOT"
@@ -50,5 +60,13 @@ pgrep -u 65534 -a | grep -v -E "^[0-9]+ (sd-pam|systemd)" | head -5 || true
 grep -l "fuse.sshfs" /proc/[0-9]*/mountinfo 2>/dev/null | while read -r f; do pid=${f#/proc/}; pid=${pid%/mountinfo}; [[ $(stat -c %u /proc/$pid) == 65534 ]] && echo "sshfs seen by $pid"; done
 echo "canaries anywhere under $B: $(grep -rhoaE 'C2CANARY-[A-Z0-9]+-[0-9a-f]{8,}' $B 2>/dev/null | grep -v '^$' | wc -l) (stub logs record tags only)"
 
-[[ "${1:-}" == --keep ]] || { bash "$HERE/cleanup.sh"; rm -rf $B; rm -f scripts/.prove-worker.platform.mjs; }
+echo "=== slot 11's host folder after the runs: $(ls -A $SLOT | wc -l) entries"
+ls -A $SLOT | head -5
+[[ "${1:-}" == --keep ]] || {
+	bash "$HERE/cleanup.sh"
+	rm -rf $B
+	rm -f scripts/.prove-worker.platform.mjs
+	rm -rf "$SLOT"
+	for ((i = ${#MADE[@]} - 1; i >= 0; i--)); do [[ ${MADE[i]} == "$SLOT" ]] || rmdir "${MADE[i]}"; done
+}
 exit $RC
