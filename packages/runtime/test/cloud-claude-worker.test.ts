@@ -16,6 +16,7 @@ import {
 	type ClaudeWorkerLogins,
 	type ClaudeWorkerOpenedLogin,
 	ClaudeWorkerStream,
+	claudeWorkerBlocked,
 	claudeWorkerBrief,
 	claudeWorkerPrompt,
 	claudeWorkerReportText,
@@ -625,12 +626,14 @@ describe("a Claude Code worker's run", () => {
 		};
 		const words = (needs: string) => ({ outcome: "blocked", summary: needs, needs, steps: 0 });
 		const never = vi.fn();
-		expect(await run(vault({ refused: "SIGNED_OUT" }).logins, never)).toEqual(
-			words("Claude Code could not sign in as Ada: their Claude sign-in has ended. Ask them to sign in again."),
-		);
-		expect(await run(vault({ refused: "NOT_OPEN" }).logins, never)).toEqual(
-			words(CLAUDE_WORKER_WORDS.notOpen("Ada")),
-		);
+		expect(await run(vault({ refused: "SIGNED_OUT" }).logins, never)).toEqual({
+			...words("Claude Code could not sign in as Ada: their Claude sign-in has ended. Ask them to sign in again."),
+			claudeSide: "signed_out",
+		});
+		expect(await run(vault({ refused: "NOT_OPEN" }).logins, never)).toEqual({
+			...words(CLAUDE_WORKER_WORDS.notOpen("Ada")),
+			claudeSide: "not_open",
+		});
 		expect(never).not.toHaveBeenCalled();
 		expect(
 			await run(vault().logins, async () => {
@@ -642,18 +645,25 @@ describe("a Claude Code worker's run", () => {
 			),
 			login: { sealed: 0, stale: 0 },
 			boxFailure: "box-unknown",
+			claudeSide: "could_not_start",
 		});
 		expect(
 			await run(vault().logins, async () => {
 				throw new CloudHomeChannelRefused("HOME_SFTP_MISSING");
 			}),
-		).toMatchObject({ outcome: "blocked", needs: CLOUD_HOME_OUTDATED, boxFailure: "box-unknown:HOME_SFTP_MISSING" });
+		).toMatchObject({
+			outcome: "blocked",
+			needs: CLOUD_HOME_OUTDATED,
+			boxFailure: "box-unknown:HOME_SFTP_MISSING",
+			claudeSide: "could_not_start",
+		});
 		// Other tools than the eight: stopped at its first line.
 		const wrong = standInBox([init(["Bash", "WebFetch"]), use("t1", "WebFetch", {}), answer("t1"), result("x")]);
 		expect(await run(vault().logins, wrong.launch)).toMatchObject({
 			outcome: "blocked",
 			needs: CLAUDE_WORKER_WORDS.toolsWrong,
 			steps: 0,
+			claudeSide: "could_not_start",
 		});
 		// The plan's limit, in Claude Code's words; nothing ran after it.
 		expect(
@@ -670,6 +680,8 @@ describe("a Claude Code worker's run", () => {
 		).toMatchObject({
 			outcome: "blocked",
 			needs: `Ada's Claude plan has reached its limit. Claude Code said: "You've hit your limit · resets 9pm (UTC)". Nothing was changed after that point.`,
+			steps: 1,
+			claudeSide: "limit",
 		});
 		// A sign-in that failed inside Claude Code; a stream cut before its result; an error result.
 		expect(
@@ -681,19 +693,30 @@ describe("a Claude Code worker's run", () => {
 					result("x", "success", true),
 				]).launch,
 			),
-		).toMatchObject({ needs: CLAUDE_WORKER_WORDS.signedOut("Ada") });
-		expect(
-			await run(vault().logins, standInBox([init(), use("t1", "Bash", { command: "a" }), answer("t1")]).launch),
-		).toMatchObject({ needs: CLAUDE_WORKER_WORDS.cut(true) });
+		).toMatchObject({ needs: CLAUDE_WORKER_WORDS.signedOut("Ada"), claudeSide: "signed_out" });
+		const cut = await run(
+			vault().logins,
+			standInBox([init(), use("t1", "Bash", { command: "a" }), answer("t1")]).launch,
+		);
+		expect(cut).toMatchObject({ needs: CLAUDE_WORKER_WORDS.cut(true), steps: 1 });
+		expect(cut.claudeSide).toBeUndefined();
 		expect(await run(vault().logins, standInBox([init()]).launch)).toMatchObject({
 			needs: CLAUDE_WORKER_WORDS.cut(false),
+			claudeSide: "could_not_start",
 		});
-		expect(
-			await run(
-				vault().logins,
-				standInBox([init(), result("I could not read the notes.", "error_during_execution", true)]).launch,
-			),
-		).toMatchObject({ needs: `Claude Code could not finish the work. It said: "I could not read the notes.".` });
+		const failed = await run(
+			vault().logins,
+			standInBox([init(), result("I could not read the notes.", "error_during_execution", true)]).launch,
+		);
+		expect(failed).toMatchObject({
+			needs: `Claude Code could not finish the work. It said: "I could not read the notes.".`,
+		});
+		expect(failed.claudeSide).toBeUndefined();
+		expect(claudeWorkerBlocked(CLAUDE_WORKER_WORDS.boxFailed)).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.boxFailed,
+			claudeSide: "could_not_start",
+		});
 	});
 });
 
@@ -815,6 +838,7 @@ describe("review round 1 of #1835", () => {
 			summary: CLAUDE_WORKER_WORDS.openFailed("Ada"),
 			needs: CLAUDE_WORKER_WORDS.openFailed("Ada"),
 			steps: 0,
+			claudeSide: "could_not_start",
 		});
 		expect(CLAUDE_WORKER_WORDS.openFailed("Ada")).toBe(
 			"Claude Code could not open Ada's sign-in on Qorpera's side now; nothing ran on the agent's machine. Try again later.",
@@ -830,7 +854,7 @@ describe("review round 1 of #1835", () => {
 				root: join(runRoot, "missing", "deeper"),
 				signal: new AbortController().signal,
 			}),
-		).toMatchObject({ outcome: "blocked", needs: CLAUDE_WORKER_WORDS.openFailed("Ada") });
+		).toMatchObject({ outcome: "blocked", needs: CLAUDE_WORKER_WORDS.openFailed("Ada"), claudeSide: "could_not_start" });
 		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
 		expect(launch).not.toHaveBeenCalled();
 		const stopped = new AbortController();

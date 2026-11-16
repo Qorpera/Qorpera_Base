@@ -641,6 +641,12 @@ describe("worker dispatch and completion envelopes", () => {
 		expect(parseCloudWakeEnvelope(turn, identity).payload.species).toBe("coding");
 		expect(() =>
 			parseCloudWakeEnvelope(
+				{ ...turn, source: { ...turn.source, occurrenceKey: `${turn.source.occurrenceKey}:codex` } },
+				identity,
+			),
+		).toThrow("Invalid worker dispatch wake");
+		expect(() =>
+			parseCloudWakeEnvelope(
 				{ ...turn, payload: { ...turn.payload, coding: { ...coding, sequence: 2 } } },
 				identity,
 			),
@@ -669,6 +675,24 @@ describe("worker dispatch and completion envelopes", () => {
 			parseCloudWakeEnvelope({ ...claude, payload: { ...claude.payload, species: "coding" } }, identity),
 		).toThrow();
 		expect(Object.hasOwn(parseCloudWakeEnvelope(wake, identity).payload, "harness")).toBe(false);
+	});
+	it("admits a plain Codex worker's wake under the key a Claude Code fallback starts it by, and nothing else", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const codex = `worker-dispatch:${wake.source.id}:1:codex`;
+		const fallback = { ...wake, source: { ...wake.source, occurrenceKey: codex } };
+		expect(parseCloudWakeEnvelope(fallback, identity).source.occurrenceKey).toBe(codex);
+		expect(() =>
+			parseCloudWakeEnvelope({ ...fallback, payload: { ...fallback.payload, harness: "claude-code" } }, identity),
+		).toThrow("Invalid worker dispatch wake");
+		for (const occurrenceKey of [
+			`worker-dispatch:${wake.source.id}:2:codex`,
+			`worker-dispatch:${wake.source.id}:1:claude`,
+			`worker-dispatch:${wake.source.id}:1:codex:codex`,
+			`worker-dispatch:${randomUUID()}:1:codex`,
+		])
+			expect(() =>
+				parseCloudWakeEnvelope({ ...wake, source: { ...wake.source, occurrenceKey } }, identity),
+			).toThrow("Invalid worker dispatch wake");
 	});
 	it("admits the member's Claude pick on a Claude Code worker's wake alone (20260930784000)", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");

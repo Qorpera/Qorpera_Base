@@ -202,6 +202,8 @@ import { memoryZoomTool } from "./memory-tree/zoom.ts";
 export const CLAUDE_WORKER_NOT_CARRIED =
 	"Claude Code workers run in their own composition, which this node does not carry; nothing ran on Codex";
 
+const CLAUDE_WORKER_FALLBACK_ATTEMPTS = 3;
+
 /** What a host that carries the Claude Code worker's composition gives it (slice C4c). */
 export interface CloudClaudeWorkerHost {
 	/** The vault's Claude sign-in routes, under this host's runtime token (C4b). */
@@ -1867,6 +1869,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						}, runSignal)
 					).slice(0, 4)
 				: [];
+			if (outcome.claudeSide && (await this.#claudeWorkerFellBack(binding, outcome.claudeSide, outputs, runSignal)))
+				return {
+					providerSessionId: claudeWorkerSessionId(outcome),
+					delivery: { messageCount: 0, finalMessageId: null },
+				};
 			const workers = new CloudFolderWorkers({
 				folder,
 				operations,
@@ -1904,6 +1911,31 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 		} finally {
 			run.close();
+		}
+	}
+
+	async #claudeWorkerFellBack(
+		binding: CloudNativeToolBinding,
+		reason: NonNullable<ClaudeWorkerOutcome["claudeSide"]>,
+		changed: readonly string[],
+		signal: AbortSignal,
+	): Promise<boolean> {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				const answer = (await this.#paths.call(
+					"qorpera_claude_worker_fall_back",
+					{ p_binding: binding, p_reason: reason, p_changed: [...changed] },
+					signal,
+				)) as { state?: unknown } | null;
+				return answer?.state === "fell_back";
+			} catch {
+				signal.throwIfAborted();
+				if (attempt >= CLAUDE_WORKER_FALLBACK_ATTEMPTS) {
+					console.error("The Claude Code worker's fallback to Codex was not saved");
+					return false;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 1000 * attempt).unref?.());
+			}
 		}
 	}
 

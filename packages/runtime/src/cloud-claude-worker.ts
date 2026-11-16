@@ -511,9 +511,12 @@ class ClaudeWorkerLoginKeeper {
 // ---------------------------------------------------------------------------------------------------------------------
 // The run
 
+export type ClaudeWorkerClaudeSide = "signed_out" | "not_open" | "limit" | "could_not_start";
+
 /** How a Claude Code worker's run ended, for its report. */
 export interface ClaudeWorkerOutcome {
 	readonly outcome: "succeeded" | "blocked";
+	readonly claudeSide?: ClaudeWorkerClaudeSide;
 	/** The report's summary: Claude Code's own final message, or the words for why there is none. */
 	readonly summary: string;
 	/** For a blocked worker: what the agent can do. */
@@ -597,12 +600,12 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 	} catch {
 		// The vault unreachable, or an answer out of shape: nothing of Claude Code ran. Only a stop throws.
 		signal.throwIfAborted();
-		return blocked(CLAUDE_WORKER_WORDS.openFailed(member));
+		return blocked(CLAUDE_WORKER_WORDS.openFailed(member), { claudeSide: "could_not_start" });
 	}
 	if ("refused" in opened)
-		return blocked(
-			opened.refused === "SIGNED_OUT" ? CLAUDE_WORKER_WORDS.signedOut(member) : CLAUDE_WORKER_WORDS.notOpen(member),
-		);
+		return opened.refused === "SIGNED_OUT"
+			? blocked(CLAUDE_WORKER_WORDS.signedOut(member), { claudeSide: "signed_out" })
+			: blocked(CLAUDE_WORKER_WORDS.notOpen(member), { claudeSide: "not_open" });
 	const folder = join(options.root, "claude-login");
 	let scratchRoot: string | undefined;
 	let keeper: ClaudeWorkerLoginKeeper | undefined;
@@ -619,7 +622,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			} catch {
 				// The run's folders could not be made: nothing of Claude Code ran (what was written goes in `finally`).
 				signal.throwIfAborted();
-				return blocked(CLAUDE_WORKER_WORDS.openFailed(member));
+				return blocked(CLAUDE_WORKER_WORDS.openFailed(member), { claudeSide: "could_not_start" });
 			} finally {
 				for (const bytes of opened.files.values()) bytes.fill(0);
 			}
@@ -644,7 +647,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 					error instanceof CloudHomeChannelRefused
 						? cloudHomeRefusalWords(error.reason)
 						: CLAUDE_WORKER_WORDS.boxFailed,
-					{ boxFailure },
+					{ boxFailure, claudeSide: "could_not_start" },
 				);
 			}
 			// The early seal: a credentials file Claude Code replaced soon after its start (its renewal) goes back at once, so a
@@ -696,7 +699,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				steps: stream.steps.length + stream.uncounted,
 				...(stream.init ? { model: stream.init.model, sessionId: stream.init.sessionId } : {}),
 			};
-			if (toolsWrong) return blocked(CLAUDE_WORKER_WORDS.toolsWrong, facts);
+			if (toolsWrong) return blocked(CLAUDE_WORKER_WORDS.toolsWrong, { ...facts, claudeSide: "could_not_start" });
 			// A successful result is the report, whatever an earlier message said.
 			if (stream.result && !stream.result.isError)
 				return {
@@ -708,10 +711,18 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 					...facts,
 				};
 			if (stream.limit)
-				return blocked(CLAUDE_WORKER_WORDS.limit(member, stream.limit.words, stream.limit.toolsAfter === 0), facts);
-			if (stream.signedOut) return blocked(CLAUDE_WORKER_WORDS.signedOut(member), facts);
+				return blocked(CLAUDE_WORKER_WORDS.limit(member, stream.limit.words, stream.limit.toolsAfter === 0), {
+					...facts,
+					claudeSide: "limit",
+				});
+			if (stream.signedOut)
+				return blocked(CLAUDE_WORKER_WORDS.signedOut(member), { ...facts, claudeSide: "signed_out" });
 			const result = stream.result;
-			if (!result) return blocked(CLAUDE_WORKER_WORDS.cut(facts.steps > 0), facts);
+			if (!result)
+				return blocked(
+					CLAUDE_WORKER_WORDS.cut(facts.steps > 0),
+					facts.steps > 0 ? facts : { ...facts, claudeSide: "could_not_start" },
+				);
 			return blocked(CLAUDE_WORKER_WORDS.failed(oneLine(result.text || result.subtype, WORDS_CHARS)), facts);
 		})();
 	} finally {
@@ -739,7 +750,7 @@ export function claudeWorkerSessionId(
 
 /** A blocked outcome in these words, before any of Claude Code ran (no machine for the run, for instance). */
 export function claudeWorkerBlocked(words: string): ClaudeWorkerOutcome {
-	return blocked(words);
+	return blocked(words, { claudeSide: "could_not_start" });
 }
 
 /** The run's admitted tool catalog: Claude Code's own tools, under names of its own, and no tool of Qorpera's. The

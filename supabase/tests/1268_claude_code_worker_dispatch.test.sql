@@ -201,7 +201,9 @@ begin
 	perform pg_temp.base_assert(public.qorpera_company_state_parse_problems('worker-brief',
 		v_plain || '{"harness":"claude-code"}') = '[]'::jsonb, '1: a plain brief may name claude-code');
 	perform pg_temp.base_assert(public.qorpera_company_state_parse_problems('worker-brief',
-		v_plain || '{"harness":"codex"}') <> '[]'::jsonb, '1: a plain brief never names codex (its unsaid default)');
+		v_plain || '{"harness":"codex"}') = '[]'::jsonb, '1: a plain brief may name codex');
+	perform pg_temp.base_assert(public.qorpera_company_state_parse_problems('worker-brief',
+		v_plain || '{"harness":"cursor"}') <> '[]'::jsonb, '1: and no other harness');
 	perform pg_temp.base_assert(public.qorpera_company_state_parse_problems('worker-brief',
 		v_plain || '{"harness":null}') <> '[]'::jsonb, '1: nor a null harness');
 	perform pg_temp.base_assert(public.qorpera_company_state_parse_problems('worker-brief',
@@ -213,9 +215,8 @@ end $$;
 do $$
 declare v_alice jsonb := pg_temp.c4_alice(); v_brief jsonb; v_folder text := 'QorperaOS/agents/alice/todos/onboarding/pdf';
 begin
-	-- Harness codex on a plain worker: the model's codex is dropped by the tool; the database refuses it if sent.
 	v_brief := pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b1', null);
-	perform pg_temp.c4_refused(pg_temp.c4_dispatch(v_alice, 'c4-refuse-codex', v_folder, v_brief, '{"harness":"codex"}'), v_brief,
+	perform pg_temp.c4_refused(pg_temp.c4_dispatch(v_alice, 'c4-refuse-cursor', v_folder, v_brief, '{"harness":"cursor"}'), v_brief,
 		'Worker species is invalid');
 	v_brief := pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b1');
 	-- Not on the Claude list.
@@ -327,7 +328,7 @@ begin
 		pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b2', p_title => 'Make the slides'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '4: the second dispatch: ' || v_result::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'c4-dispatch-3', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b3', null, 'Read the notes'));
+		pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b3', 'codex', 'Read the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '4: the plain dispatch: ' || v_result::text);
 	v_drain := pg_temp.c4_drain();
 	perform pg_temp.base_assert((v_drain ->> 'started')::integer = 1 and (v_drain ->> 'skipped')::integer = 0
@@ -452,7 +453,7 @@ begin
 		perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '5b: dispatch ' || v_i || ': ' || v_result::text);
 	end loop;
 	v_result := pg_temp.c4_dispatch(v_alice, 'c4-many-plain', 'QorperaOS/agents/alice/todos/onboarding/summary',
-		pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b9', null, 'Write the summary'));
+		pg_temp.c4_brief('12680000-0000-4000-8000-0000000000b9', 'codex', 'Write the summary'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '5b: the plain dispatch: ' || v_result::text);
 	v_drain := pg_temp.c4_drain();
 	perform pg_temp.base_assert((pg_temp.c4_worker('12680000-0000-4000-8000-0000000000b9')).occurrence_id is not null
