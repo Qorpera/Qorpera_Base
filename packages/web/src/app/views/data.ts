@@ -695,7 +695,8 @@ class DataListView {
 		const changing = this.#current();
 		if (this.#changing && changing?.list) {
 			this.#observer?.disconnect();
-			replace(this.#body, this.#changes.show(changing));
+			const view = this.#changes.show(changing);
+			if (this.#body.childNodes.length !== 1 || this.#body.firstChild !== view) replace(this.#body, view);
 			return;
 		}
 		this.#changing = false;

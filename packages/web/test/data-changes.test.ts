@@ -211,7 +211,7 @@ describe("What changed (app/views/data-changes.ts)", () => {
 			],
 			asOf,
 		};
-		const { container, calls } = await open([page]);
+		const { container, calls, controller } = await open([page]);
 		expect(calls.changes).toHaveBeenCalledWith({ database: "shop", zone: presentationTimeZone() }, expect.anything());
 		expect(container.querySelector(".data-changes-open")?.getAttribute("aria-pressed")).toBe("true");
 		expect(container.querySelector(".data-changes-open")?.textContent).toBe("What changed");
@@ -237,8 +237,13 @@ describe("What changed (app/views/data-changes.ts)", () => {
 		expect([...container.querySelectorAll("button")].some((one) => one.textContent === "New row")).toBe(false);
 
 		const quiet = [...container.querySelectorAll<HTMLButtonElement>(".data-changes-day")][12];
+		quiet?.focus();
 		quiet?.click();
 		await settle();
+		expect((document.activeElement as HTMLElement | null)?.dataset.focusKey).toBe(`day:${daysAgo(1)}`);
+		controller.store.set({ companyData: { ...described } });
+		await settle();
+		expect((document.activeElement as HTMLElement | null)?.dataset.focusKey).toBe(`day:${daysAgo(1)}`);
 		expect(container.querySelector(".data-changes-picked")?.textContent).toBe("Yesterday");
 		expect(said(container)).toEqual([]);
 		expect(container.querySelector(".data-changes-quiet")?.textContent).toBe("Nothing changed this day.");

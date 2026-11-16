@@ -23,7 +23,8 @@ const GROUPS: readonly ChangesGroup[] = ["agents", "you", "others"];
 
 interface Read {
 	readonly database: string;
-	zone: string;
+	readonly zone: string;
+	zoneRefused: boolean;
 	readonly days: readonly string[];
 	readonly stop: AbortController;
 	writes: CloudMemberDataWrite[];
@@ -103,6 +104,7 @@ export class DataChanges {
 		this.#read = {
 			database: database.database,
 			zone: CLOUD_MEMBER_DATA_ZONE.test(zone) ? zone : "",
+			zoneRefused: false,
 			days: lastDays(today),
 			stop: new AbortController(),
 			writes: [],
@@ -134,7 +136,11 @@ export class DataChanges {
 			const page: CloudMemberDataChanges = await this.#calls().changes(
 				{
 					database: read.database,
-					...(read.next === undefined ? (read.zone ? { zone: read.zone } : {}) : { after: read.next }),
+					...(read.next === undefined
+						? read.zone && !read.zoneRefused
+							? { zone: read.zone }
+							: {}
+						: { after: read.next }),
 				},
 				read.stop.signal,
 			);
@@ -148,8 +154,13 @@ export class DataChanges {
 			read.failed = false;
 		} catch (error) {
 			if (read.stop.signal.aborted) return;
-			if ((error as { status?: unknown }).status === 400 && read.next === undefined && read.zone) {
-				read.zone = "";
+			if (
+				(error as { status?: unknown }).status === 400 &&
+				read.next === undefined &&
+				read.zone &&
+				!read.zoneRefused
+			) {
+				read.zoneRefused = true;
 				return this.#page(read);
 			}
 			read.failed = true;
