@@ -474,6 +474,46 @@ describe("downloading a folder from Storage (app/views/folder-download.ts)", () 
 		expect(page.line().textContent).toBe("shop.zip is ready: your browser saves it in your downloads.");
 	});
 
+	it("lets one download run at a time, both ways: the folder's waits for the code's, and the code's for the folder's", async () => {
+		const fake = folderFake();
+		fake.file("code/qorpera/shop/main/README.md", "# Shop\n");
+		fake.file("Work/a.txt", "aaaa", "aaaa");
+		const page = await storage(fake, { code: true });
+		const code = () =>
+			page.host.querySelector<HTMLButtonElement>(".storage-code-button:not(.storage-import-button)")!;
+		const codeLine = () => page.host.querySelector<HTMLElement>(".storage-code-line:not(.storage-import-line)")!;
+		await page.go("code/qorpera/shop");
+		await until(() => code().hidden === false);
+		code().click();
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role=menuitem]")]
+			.find((row) => row.querySelector(".context-menu-label")?.textContent === "With full history")!
+			.click();
+		await until(() => /Cancel/.test(codeLine().textContent ?? ""));
+		await page.go("Work");
+		expect(page.download().hidden).toBe(false);
+		expect(page.download().getAttribute("aria-disabled")).toBe("true");
+		expect(page.download().hasAttribute("aria-busy")).toBe(false);
+		await page.press();
+		await settle();
+		expect(fake.client.list).not.toHaveBeenCalled();
+		expect(fake.client.readFilePieces).not.toHaveBeenCalled();
+		expect(page.line().textContent).toBe("");
+		[...codeLine().querySelectorAll("button")].find((each) => each.textContent === "Cancel")!.click();
+		await until(() => !page.download().hasAttribute("aria-disabled"));
+		fake.holding.set("Work/a.txt", { after: 1, signals: [] });
+		await page.press();
+		await until(() => fake.holding.get("Work/a.txt")!.signals.length === 1);
+		await page.go("code/qorpera/shop");
+		await until(() => code().hidden === false);
+		expect(code().getAttribute("aria-disabled")).toBe("true");
+		code().click();
+		expect(document.querySelector(".context-menu")).toBeNull();
+		expect(page.line().textContent).toBe("Downloading Work…50%Cancel");
+		[...page.line().querySelectorAll("button")].find((each) => each.textContent === "Cancel")!.click();
+		await until(() => !code().hasAttribute("aria-disabled"));
+		expect(saved).toEqual([]);
+	});
+
 	it("keeps its own button with its word on a code project's folder for a member who may not download the code", async () => {
 		const fake = folderFake();
 		fake.file("code/qorpera/shop/main/README.md", "# Shop\n");

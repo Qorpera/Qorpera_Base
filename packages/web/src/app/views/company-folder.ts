@@ -477,6 +477,7 @@ export class CompanyFolderBrowser {
 				shown: (path) => !this.#import?.hidden(path),
 				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
 				menu: () => (this.#code && !this.#code.button.hidden ? this.#code.button : null),
+				busy: () => this.#code?.running === true,
 				changed: () => this.#code?.redraw(),
 			});
 		if (calls)

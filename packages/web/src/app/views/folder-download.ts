@@ -17,6 +17,7 @@ export interface FolderDownloadHost {
 	shown(path: string): boolean;
 	offer(name: string, pieces: readonly Blob[], bytes: number): void;
 	menu(): HTMLElement | null;
+	busy(): boolean;
 	changed(): void;
 }
 
@@ -109,6 +110,10 @@ export class FolderDownload {
 
 	redraw(): void {
 		this.button.hidden = this.#host.menu() !== null;
+		if (this.#job || this.#host.busy()) this.button.setAttribute("aria-disabled", "true");
+		else this.button.removeAttribute("aria-disabled");
+		if (this.#job) this.button.setAttribute("aria-busy", "true");
+		else this.button.removeAttribute("aria-busy");
 	}
 
 	enter(dir: string, name: string): void {
@@ -120,14 +125,7 @@ export class FolderDownload {
 
 	#draw(): void {
 		this.redraw();
-		if (this.#job) {
-			this.button.setAttribute("aria-disabled", "true");
-			this.button.setAttribute("aria-busy", "true");
-			return;
-		}
-		this.button.removeAttribute("aria-disabled");
-		this.button.removeAttribute("aria-busy");
-		replace(this.line, this.#ended ? h("span", null, this.#ended) : null);
+		if (!this.#job) replace(this.line, this.#ended ? h("span", null, this.#ended) : null);
 	}
 
 	#working(words: string): (part: number) => void {
@@ -145,7 +143,7 @@ export class FolderDownload {
 	}
 
 	async #download(dir: string, name: string): Promise<void> {
-		if (this.#job || this.#host.signal.aborted) return;
+		if (this.#job || this.#host.busy() || this.#host.signal.aborted) return;
 		const job = new AbortController();
 		this.#job = job;
 		this.#ended = null;

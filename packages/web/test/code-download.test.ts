@@ -576,6 +576,37 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		expect(button()?.getAttribute("aria-expanded")).toBe("false");
 	});
 
+	it("says what the whole folder holds: the files and the change records on the project's folder, that folder alone below it", async () => {
+		const { go, button } = await storage();
+		const hints = () => {
+			button()!.click();
+			const menu = document.querySelector<HTMLElement>(".context-menu")!;
+			const hint = [...menu.querySelectorAll<HTMLElement>("[role=menuitem]")]
+				.find((row) => row.querySelector(".context-menu-label")?.textContent === "The whole folder")
+				?.querySelector(".context-menu-hint")?.textContent;
+			expect(menu.textContent).not.toMatch(/git|branch|commit|bundle|repositor|pull request|zip|main/i);
+			menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+			return hint;
+		};
+		await go("code/qorpera/shop");
+		expect(hints()).toBe("The files and the change records, in one file");
+		await go("code/qorpera/shop/main");
+		expect(button()?.hidden).toBe(false);
+		expect(hints()).toBe("This folder, in one file");
+		await go("code/qorpera/shop/main/src");
+		expect(hints()).toBe("This folder, in one file");
+		await go("code/qorpera/shop/changes");
+		expect(hints()).toBe("This folder, in one file");
+		await go("code/qorpera/shop");
+		expect(hints()).toBe("The files and the change records, in one file");
+		setLanguagePreference("da");
+		await go("code/qorpera/shop/main");
+		button()!.click();
+		expect([...document.querySelectorAll<HTMLElement>(".context-menu [role=menuitem]")].at(-1)?.textContent).toBe(
+			"Hele mappenDenne mappe, i én fil",
+		);
+	});
+
 	it("gets a file that is ready at once: read from the repository's downloads folder in pieces, handed over as one file", async () => {
 		const calls = callsFake();
 		const { fake, go, button, line, choose } = await storage(calls);

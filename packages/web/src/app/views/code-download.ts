@@ -157,7 +157,10 @@ export class CodeDownload {
 						? [
 								{
 									label: t("The whole folder"),
-									hint: t("The files and the change records, in one file"),
+									hint:
+										this.#dir === `code/${here.owner}/${here.name}`
+											? t("The files and the change records, in one file")
+											: t("This folder, in one file"),
 									icon: "folder",
 									select: () => this.#wholeFolder(),
 								},
@@ -258,6 +261,10 @@ export class CodeDownload {
 
 	redraw(): void {
 		this.#draw();
+	}
+
+	get running(): boolean {
+		return this.#job !== null;
 	}
 
 	#busy(): boolean {

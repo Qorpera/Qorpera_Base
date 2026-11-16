@@ -48,6 +48,7 @@ export const STORAGE: Record<string, string> = {
 	"For a developer": "Til en udvikler",
 	"The whole folder": "Hele mappen",
 	"The files and the change records, in one file": "Filerne og ændringerne, i én fil",
+	"This folder, in one file": "Denne mappe, i én fil",
 	"Getting the code ready…": "Gør koden klar…",
 	"Downloading the code…": "Henter koden…",
 	"{percent}%": "{percent}%",
