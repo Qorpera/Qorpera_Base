@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CloudMemberData, CloudMemberDataError, parseCloudMemberDataAnswer } from "../src/cloud-member-data.ts";
+import {
+	CloudMemberData,
+	CloudMemberDataError,
+	parseCloudMemberDataAnswer,
+	parseCloudMemberDataDescription,
+	parseCloudMemberDataPage,
+} from "../src/cloud-member-data.ts";
 
 const env = "63000000-0000-4000-8000-000000000020";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -344,5 +350,260 @@ describe("a member's questions to the company's databases", () => {
 		const none = fakeFetch([]);
 		await expect(client(none.fetch).data.query(asked, stop.signal)).rejects.toThrow("put away");
 		expect(none.sent).toHaveLength(0);
+	});
+
+	describe("the Data list's calls", () => {
+		const seen = "a".repeat(64);
+		const toml = 'name = "Shop"\n[list]\nmembers = "readers"\n';
+		const table = {
+			name: "orders",
+			kind: "table",
+			key: ["id"],
+			rows: 2,
+			columns: [
+				{ name: "id", type: "integer", settable: false },
+				{ name: "customer", type: "text", settable: true },
+			],
+		};
+		const described = {
+			databases: [
+				{
+					database: "shop",
+					name: "Shop",
+					about: null,
+					write: true,
+					list: true,
+					applied: [{ name: "001-orders", at: "2026-11-15T10:00:00.000Z" }],
+					tables: [
+						table,
+						{ name: "totals", kind: "view", key: [], columns: [{ name: "n", type: "bigint", settable: false }] },
+					],
+					questions: [{ name: "by-status", words: "Orders by status.", parameters: [] }],
+					changes: [],
+				},
+				{ database: "hr", name: null, about: null, write: false, list: false, questions: [], changes: [] },
+			],
+			companyBytes: 12_000_000,
+			limitBytes: 1024 ** 3,
+		};
+		const page = {
+			columns: ["id", "customer"],
+			key: ["id"],
+			rows: [
+				{ values: [1, "Emma"], seen },
+				{ values: [2, "Noah"], seen },
+			],
+			more: true,
+			next: [2],
+			etag: "0123456789abcdef0123456789abcdef",
+			asOf: "2026-11-15T10:00:00.000Z",
+		};
+
+		it("describes every database the member may read, sending the texts it asks for in rounds that fit", async () => {
+			const files: Record<string, string> = { "data/shop/database.toml": toml };
+			const need = [{ path: "data/shop/database.toml", sha256: sha(toml) }];
+			for (let index = 0; index < 6; index++) {
+				const text = `-- Question ${index}.\nselect '${"x".repeat(12 * 1024)}';\n`;
+				files[`data/shop/queries/q${index}.sql`] = text;
+				need.push({ path: `data/shop/queries/q${index}.sql`, sha256: sha(text) });
+			}
+			const { fetch, sent } = fakeFetch([
+				[200, { need }],
+				[200, { need: need.slice(4) }],
+				[200, described],
+			]);
+			const { data, reads } = client(fetch, files);
+			expect(await data.describe(null, signal())).toEqual(described);
+			expect(sent.map((call) => call.url.split("/").at(-1))).toEqual(["describe", "describe", "describe"]);
+			expect(sent[0]?.body).toEqual({});
+			const first = Object.keys((sent[1]?.body.texts ?? {}) as object);
+			const second = Object.keys((sent[2]?.body.texts ?? {}) as object);
+			expect(first.length).toBeGreaterThan(0);
+			expect(new Set([...first, ...second]).size).toBe(need.length);
+			expect(first.some((hash) => second.includes(hash))).toBe(false);
+			for (const call of sent) expect(String(call.init.body).length).toBeLessThan(64 * 1024);
+			expect(reads).toContain("data/shop/database.toml");
+
+			const one = fakeFetch([[200, { ...described, databases: [described.databases[0]] }]]);
+			await client(one.fetch).data.describe("shop", signal());
+			expect(one.sent[0]?.body).toEqual({ database: "shop" });
+			const stranger = fakeFetch([[200, { need: [{ path: "data/hr/database.toml", sha256: sha(toml) }] }]]);
+			await expect(
+				client(stranger.fetch, { "data/hr/database.toml": toml }).data.describe("shop", signal()),
+			).rejects.toThrow("not this call's");
+			for (const path of ["data/shop/tables/001-orders.sql", "notes/x.md", "data/shop/queries/a/b.sql"]) {
+				const odd = fakeFetch([[200, { need: [{ path, sha256: sha(toml) }] }]]);
+				await expect(client(odd.fetch).data.describe(null, signal()), path).rejects.toThrow("not this call's");
+			}
+			const stuck = fakeFetch([
+				[200, { need: need.slice(0, 1) }],
+				[200, { need: need.slice(0, 1) }],
+			]);
+			await expect(client(stuck.fetch, files).data.describe(null, signal())).rejects.toThrow(
+				"could not take the files' texts",
+			);
+			await expect(data.describe("Shop", signal())).rejects.toThrow("Name a database");
+		});
+
+		it("reads a description with closed shapes", () => {
+			expect(parseCloudMemberDataDescription(described)).toEqual(described);
+			const long = {
+				...described,
+				databases: [
+					{
+						...described.databases[0]!,
+						about: "a".repeat(16 * 1024),
+						questions: [{ name: "q".repeat(250), words: null, parameters: [] }],
+					},
+				],
+			};
+			expect(parseCloudMemberDataDescription(long)).toEqual(long);
+			const shop = described.databases[0]!;
+			for (const odd of [
+				{ ...described, extra: 1 },
+				{ ...described, databases: [{ ...shop, write: "yes" }] },
+				{ ...described, databases: [{ ...shop, list: false }] },
+				{ ...described, databases: [{ ...shop, tables: [{ ...table, kind: "index" }] }] },
+				{ ...described, databases: [{ ...shop, tables: [{ ...table, key: ["nope"] }] }] },
+				{ ...described, databases: [{ ...shop, tables: [{ ...table, rows: -1 }] }] },
+				{ ...described, databases: [shop, shop] },
+				{ ...described, companyBytes: "12" },
+			])
+				expect(() => parseCloudMemberDataDescription(odd), JSON.stringify(odd).slice(0, 80)).toThrow(
+					"an answer this page does not know",
+				);
+		});
+
+		it("reads a page of rows by key, and the next one after it", async () => {
+			const { fetch, sent } = fakeFetch([
+				[200, page],
+				[200, { ...page, rows: [], more: false, next: undefined }],
+			]);
+			const data = client(fetch).data;
+			expect(
+				await data.rows({ database: "shop", table: "orders", order: "customer", desc: true, limit: 50 }, signal()),
+			).toEqual(page);
+			expect(sent[0]?.url.endsWith(`/v1/company-data/${env}/rows`)).toBe(true);
+			expect(sent[0]?.body).toEqual({ database: "shop", table: "orders", order: "customer", desc: true, limit: 50 });
+			await data.rows({ database: "shop", table: "orders", after: [2] }, signal());
+			expect(sent[1]?.body).toEqual({ database: "shop", table: "orders", after: [2] });
+			await expect(data.rows({ database: "shop", table: "orders", limit: 201 }, signal())).rejects.toThrow(
+				"1 to 200",
+			);
+			await expect(data.rows({ database: "shop", table: "" }, signal())).rejects.toThrow("Name a table");
+			await expect(data.rows({ database: "shop", table: "x".repeat(64) }, signal())).rejects.toThrow("Name a table");
+			for (const odd of [
+				{ ...page, rows: [{ values: [1], seen }] },
+				{ ...page, rows: [{ values: [1, "a"], seen: "x" }] },
+				{ ...page, rows: [{ values: null, seen }] },
+				{ ...page, key: ["other"] },
+				{ ...page, next: [] },
+				{ ...page, extra: true },
+			])
+				expect(() => parseCloudMemberDataPage(odd), JSON.stringify(odd).slice(0, 80)).toThrow(
+					"an answer this page does not know",
+				);
+			expect(parseCloudMemberDataPage({ ...page, rows: [], tooLarge: true })).toMatchObject({ tooLarge: true });
+		});
+
+		it("writes an edit and says a row changed since in plain words, with the row as it is now", async () => {
+			const written = {
+				columns: ["id", "customer"],
+				key: ["id"],
+				row: { values: [3, "Ida"], seen },
+				asOf: page.asOf,
+			};
+			const { fetch, sent } = fakeFetch([
+				[200, written],
+				[200, written],
+				[200, { ...written, row: null }],
+				[
+					409,
+					{
+						error: "The row was changed since it was read: it is as it is now",
+						row: { values: [3, "Ida Skov"], seen },
+					},
+				],
+				[409, { error: "The row is gone: it was removed since it was read", row: null }],
+				[400, { error: 'null value in column "customer" violates not-null constraint', code: "23502" }],
+				[507, { error: "The company's database is at its size limit" }],
+			]);
+			const data = client(fetch).data;
+			expect(
+				await data.edit({ database: "shop", table: "orders", op: "add", values: { customer: "Ida" } }, signal()),
+			).toEqual(written);
+			await data.edit(
+				{ database: "shop", table: "orders", op: "change", key: { id: 3 }, seen, values: { customer: "Ida" } },
+				signal(),
+			);
+			await data.edit({ database: "shop", table: "orders", op: "remove", key: { id: 3 }, seen }, signal());
+			expect(sent.map((call) => call.body)).toEqual([
+				{ database: "shop", table: "orders", op: "add", values: { customer: "Ida" } },
+				{ database: "shop", table: "orders", op: "change", key: { id: 3 }, seen, values: { customer: "Ida" } },
+				{ database: "shop", table: "orders", op: "remove", key: { id: 3 }, seen },
+			]);
+			const refused = (edit: Parameters<CloudMemberData["edit"]>[0]) =>
+				data.edit(edit, signal()).then(
+					() => null,
+					(error: unknown) => error as CloudMemberDataError,
+				);
+			const change = {
+				database: "shop",
+				table: "orders",
+				op: "change",
+				key: { id: 3 },
+				seen,
+				values: { customer: "I" },
+			} as const;
+			expect(await refused(change)).toMatchObject({ status: 409, row: { values: [3, "Ida Skov"], seen } });
+			expect(await refused(change)).toMatchObject({ status: 409, row: null });
+			expect(await refused(change)).toMatchObject({ status: 400, code: "23502" });
+			expect(await refused(change)).toMatchObject({ status: 507, row: undefined });
+			await expect(
+				data.edit({ database: "shop", table: "orders", op: "change", key: { id: 3 }, seen, values: {} }, signal()),
+			).rejects.toThrow("at least one column");
+			await expect(
+				data.edit({ database: "shop", table: "orders", op: "remove", key: { id: 3 }, seen: "x" }, signal()),
+			).rejects.toThrow("whole key");
+			expect(sent).toHaveLength(7);
+		});
+
+		it("watches a table's first page beside a question, and reads each answer by what it watches", async () => {
+			const watches = [
+				{ database: "shop", table: "orders", order: "customer", etag: "old" },
+				{ ...asked, etag: "e2" },
+			];
+			const { fetch, sent } = fakeFetch([
+				[200, { need: [{ path: "data/shop/database.toml", sha256: sha(toml) }] }],
+				[
+					200,
+					{
+						changed: [
+							{ index: 0, answer: page },
+							{ index: 1, answer },
+						],
+					},
+				],
+			]);
+			const got = await client(fetch, { "data/shop/database.toml": toml }).data.watchTables(watches, signal());
+			expect(got).toEqual({
+				changed: [
+					{ index: 0, answer: page },
+					{ index: 1, answer },
+				],
+			});
+			expect(sent[0]?.body).toEqual({
+				watches: [
+					{ database: "shop", table: "orders", order: "customer", etag: "old" },
+					{ database: "shop", question: "sales-since", params: { since: "2026-11-01" }, etag: "e2" },
+				],
+				wait: 20,
+			});
+			expect(sent[1]?.body.texts).toEqual({ [sha(toml)]: toml });
+			const swapped = fakeFetch([[200, { changed: [{ index: 0, answer }] }]]);
+			await expect(client(swapped.fetch).data.watchTables(watches, signal())).rejects.toThrow(
+				"an answer this page does not know",
+			);
+		});
 	});
 });

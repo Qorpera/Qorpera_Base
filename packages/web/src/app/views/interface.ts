@@ -40,6 +40,7 @@ import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { CompanyMail, type MailList, type MailListRequest } from "../company-mail.ts";
+import { DATA_PAGE } from "../data-page.ts";
 import { AgentInAreaError, addArea, agentList, setAreaAgents } from "../interface-areas.ts";
 import { type BoardLane, boardLanes } from "../interface-board.ts";
 import { type ClaimVerb, claimFailure, claimTableCell, type InterfaceWrites } from "../interface-claims.ts";
@@ -80,6 +81,7 @@ import {
 } from "../interfaces.ts";
 import type { QuotedText } from "../quotes.ts";
 import { renderBank } from "./bank.ts";
+import { renderData } from "./data.ts";
 import {
 	type BlockExtra,
 	type CalendarSource,
@@ -346,6 +348,11 @@ export function renderInterface(
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).
 	if (entry.name === "bank") {
 		renderBank(container, company, writes?.bankConnection ? { connection: writes.bankConnection } : {});
+		return;
+	}
+	const databases = entry.name === DATA_PAGE ? writes?.data?.() : undefined;
+	if (databases) {
+		renderData(container, company, databases);
 		return;
 	}
 	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the page was switched

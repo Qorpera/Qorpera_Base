@@ -15,7 +15,7 @@ type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 
 /** An emblem a file may name, or the Bank page's, the Sites page's or What's new's, which only the web draws
  * (app/bank-page.ts, views/settings-sites.ts, views/whats-new.ts). */
-export type Emblem = InterfaceEmblem | "bank" | "globe" | "spark";
+export type Emblem = InterfaceEmblem | "bank" | "globe" | "spark" | "drawers";
 
 /** Each emblem on a 48×48 grid: the solid parts take the ink, the cuts the page colour. */
 const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
@@ -27,6 +27,11 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 		["rect", { x: "26.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
 		["rect", { x: "35.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
 		["rect", { x: "3.5", y: "38.5", width: "41", height: "5.5", rx: "2.2", fill: "solid" }],
+	],
+	drawers: [
+		["rect", { x: "6", y: "5", width: "36", height: "38", rx: "8", fill: "solid" }],
+		["path", { d: "M5 18.5h38M5 30h38", stroke: "cut" }],
+		["path", { d: "M20 12.2h8M20 24.2h8M20 35.8h8", stroke: "cut-thin" }],
 	],
 	globe: [
 		["circle", { cx: "24", cy: "24", r: "20", fill: "solid" }],
