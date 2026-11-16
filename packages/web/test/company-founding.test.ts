@@ -1629,7 +1629,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		try {
 			relabelNewCompany(hub);
 			renderNewCompany(hub, container, { userId: me, name: "Anna" });
-			expect(visibleText(container)).toContain("Idéen");
+			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.placeholder).toBe("Beskriv din idé");
 			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("A roofing company in Odense");
 			expect(container.querySelector<HTMLInputElement>(".hero-name")?.value).toBe("Tagfolk");
 		} finally {
@@ -1709,11 +1709,11 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		});
 		const hub = new HubController(api, me);
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
-		const label = container.querySelector<HTMLLabelElement>("label.hero-name-label")!;
-		expect(label.textContent).toBe("Company name");
-		const field = container.querySelector<HTMLInputElement>(`#${label.htmlFor}`)!;
+		expect(container.querySelector("label")).toBeNull();
+		const field = container.querySelector<HTMLInputElement>(".hero-name")!;
+		expect(field.getAttribute("aria-label")).toBe("Company name");
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
-		expect(field.placeholder).toBe("Named after your idea");
+		expect(field.placeholder).toBe("Name your company");
 		box.value = "A webshop with ceramics. We ship from Aarhus.";
 		box.dispatchEvent(new Event("input"));
 		// Empty, it says the name the idea gives.
@@ -1795,34 +1795,23 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		hub.dispose();
 	});
 
-	it("writes example ideas only into the placeholder, and stops for good once the founder is in the box", () => {
+	it("asks for the idea in its placeholder, which stays put while you type and after", () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-		// Motion allowed: the examples write themselves out.
 		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 		const { api } = fixture();
 		const hub = new HubController(api, me);
 		try {
 			renderNewCompany(hub, container, { userId: me, name: "Anna" });
 			const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
-			vi.advanceTimersByTime(600 + 70 * 4);
-			expect(box.placeholder).toBe("A web");
-			expect(box.value).toBe("");
-			const name = container.querySelector<HTMLInputElement>(".hero-name")!;
-			name.value = "Lerværket";
-			name.dispatchEvent(new Event("input"));
-			expect(box.placeholder).toBe("A web");
-			vi.advanceTimersByTime(70);
-			expect(box.placeholder).toBe("A webs");
-			box.dispatchEvent(new KeyboardEvent("keydown", { key: "A", bubbles: true }));
+			expect(box.placeholder).toBe("Describe your idea");
+			expect(box.getAttribute("aria-label")).toBe("Describe your idea");
+			vi.advanceTimersByTime(10_000);
+			expect(box.placeholder).toBe("Describe your idea");
 			box.value = "A Danish webshop";
 			box.dispatchEvent(new Event("input"));
-			expect(box.placeholder).toBe("A webshop with ceramics");
-			// Emptied and left, the box still writes nothing more.
 			box.value = "";
 			box.dispatchEvent(new Event("input"));
-			box.dispatchEvent(new Event("blur"));
-			vi.advanceTimersByTime(10_000);
-			expect(box.placeholder).toBe("A webshop with ceramics");
+			expect(box.placeholder).toBe("Describe your idea");
 			expect(box.value).toBe("");
 		} finally {
 			vi.useRealTimers();

@@ -68,7 +68,7 @@ export const FOUNDING: Record<string, string> = {
 	"{name} invited you to start {company} together.": "{name} har inviteret dig til at starte {company} sammen.",
 	"{name} is starting": "{name} starter",
 	"{name} owns it now.": "{name} ejer den nu.",
-	"The idea": "Idéen",
+	"Describe your idea": "Beskriv din idé",
 	"Your Co-Founder is getting ready": "Din Co-Founder gør sig klar",
 	"Your idea from qorpera.com": "Din idé fra qorpera.com",
 	Start: "Start",
@@ -87,5 +87,5 @@ export const FOUNDING: Record<string, string> = {
 	"Connect your ChatGPT account, and {name} starts.": "Forbind din ChatGPT-konto, så starter {name}.",
 	"Your own account, connected to {name}. It pays for the work you start there.":
 		"Din egen konto, forbundet til {name}. Den betaler for det arbejde, du sætter i gang der.",
-	"Named after your idea": "Opkaldt efter din idé",
+	"Name your company": "Navngiv din virksomhed",
 };
