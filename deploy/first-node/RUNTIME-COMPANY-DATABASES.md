@@ -470,10 +470,12 @@ member or the agent from the lists it already holds.
   with the Co-Founder, and the Ask goes the same way.
 - **No Ask on private rows.** A database whose questions name `:viewer` shows each member their own rows, and the
   Co-Founder's thread is the company's: every member reads an answer there. So such a database has no line to ask on,
-  on any of its lists. A database in a folder only some members may read cannot be told from here (the web sees only
-  what this member may read), so there the agent's words carry it: it answers in the thread only from rows every
-  member may read, and otherwise says in one line that the list itself shows them. Asking about rows that are not
-  everyone's waits for a thread only that member reads.
+  on any of its lists. A database in a folder only some members may read cannot be told from the web (it sees only
+  what this member may read), and an agent cannot see a folder's readers either (`data_describe` answers its own
+  view): the agent's words hold back such rows only when it knows the folder is restricted, from a member or from
+  `:viewer`. Today no member can make such a folder from the product, so it can come only from outside it. Once
+  members can, asking about rows that are not everyone's needs a thread only that member reads, or the folder's
+  readers given to the agent: the owner's open decision.
 - **The road.** The line under the list sends the member's own message through `tellAgent`, the road an app's note
   and the Mailbox take: sent from the page when the Co-Founder's thread has nothing drafted, otherwise it waits in that
   thread's composer. Either way the page opens that conversation, where the answer comes as the Co-Founder's message.
