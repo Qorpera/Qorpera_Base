@@ -56,6 +56,7 @@ export class CompanyBrandView {
 	readonly #menu: HTMLElement;
 	#busy = false;
 	#editing = false;
+	#holdRename: ((held: boolean) => void) | undefined;
 	#savedName: string | undefined;
 
 	constructor(options: CompanyBrandOptions) {
@@ -140,7 +141,10 @@ export class CompanyBrandView {
 		this.#logoButton.setAttribute("aria-label", label);
 		this.#logoButton.title = manage ? label : "";
 		if (!manage) this.#setMenu(false);
-		if (this.#editing) return;
+		if (this.#editing) {
+			this.#holdRename?.(this.#busy);
+			return;
+		}
 		const current = this.#options.name();
 		if (this.#savedName === current) this.#savedName = undefined;
 		replace(
@@ -211,10 +215,10 @@ export class CompanyBrandView {
 			"aria-label": t("Company name"),
 		});
 		const controls: (HTMLInputElement | HTMLButtonElement)[] = [input];
-		const hold = (held: boolean) => {
+		this.#holdRename = (held) => {
 			for (const control of controls) control.disabled = held;
 		};
-		const save = () => void this.#rename(input.value, hold, () => input.focus());
+		const save = () => void this.#rename(input.value, () => input.focus());
 		const cancel = () => {
 			if (this.#busy) return;
 			this.#editing = false;
@@ -237,11 +241,12 @@ export class CompanyBrandView {
 			button(t("Cancel"), cancel, { small: true }),
 		);
 		replace(this.#nameSlot, ...controls);
+		this.#holdRename(this.#busy);
 		input.focus();
 		input.select();
 	}
 
-	async #rename(raw: string, hold: (held: boolean) => void, retry: () => void): Promise<void> {
+	async #rename(raw: string, retry: () => void): Promise<void> {
 		if (this.#busy) return;
 		const name = raw.replace(/\s+/g, " ").trim();
 		if (!name || name === (this.#savedName ?? this.#options.name())) {
@@ -250,7 +255,6 @@ export class CompanyBrandView {
 			return;
 		}
 		const signal = this.#options.signal;
-		hold(true);
 		await this.#run(async () => {
 			try {
 				await rewriteStateFile(
@@ -273,10 +277,7 @@ export class CompanyBrandView {
 			this.#editing = false;
 			this.#options.renamed(name);
 		}, phrase("The name could not be saved."));
-		if (this.#editing && !signal.aborted) {
-			hold(false);
-			retry();
-		}
+		if (this.#editing && !signal.aborted) retry();
 	}
 
 	async #run(action: () => Promise<void>, failure: string): Promise<void> {

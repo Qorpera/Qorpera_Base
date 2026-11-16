@@ -79,7 +79,7 @@ export class HubController {
 	#refresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
-	readonly #renames = new Map<string, { name: string; from: string | undefined }>();
+	readonly #renames = new Map<string, { name: string; stale: Set<string>; staleKnown: boolean }>();
 
 	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
@@ -141,8 +141,13 @@ export class HubController {
 
 	renamed(profileId: string, name: string): void {
 		if (this.#disposed) return;
-		const from = this.store.get().profiles.find((profile) => profile.profileId === profileId)?.profileName;
-		this.#renames.set(profileId, { name, from: this.#renames.get(profileId)?.from ?? from });
+		const earlier = this.#renames.get(profileId);
+		const shown = this.store.get().profiles.find((profile) => profile.profileId === profileId)?.profileName;
+		const stale = new Set(earlier?.stale);
+		if (earlier) stale.add(earlier.name);
+		else if (shown !== undefined) stale.add(shown);
+		stale.delete(name);
+		this.#renames.set(profileId, { name, stale, staleKnown: earlier?.staleKnown ?? shown !== undefined });
 		this.store.set(({ profiles }) => ({ profiles: this.#withRenames(profiles) }));
 		void this.#settleRename(profileId, name);
 	}
@@ -152,7 +157,15 @@ export class HubController {
 		return profiles.map((profile) => {
 			const rename = this.#renames.get(profile.profileId);
 			if (!rename) return profile;
-			if (profile.profileName === rename.name || profile.profileName !== rename.from) {
+			if (profile.profileName === rename.name) {
+				this.#renames.delete(profile.profileId);
+				return profile;
+			}
+			if (!rename.staleKnown) {
+				rename.stale.add(profile.profileName);
+				rename.staleKnown = true;
+			}
+			if (!rename.stale.has(profile.profileName)) {
 				this.#renames.delete(profile.profileId);
 				return profile;
 			}

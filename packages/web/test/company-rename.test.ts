@@ -283,6 +283,34 @@ describe("the company list after a rename", () => {
 		hub.dispose();
 	});
 
+	it("ends on the last name after two renames in a row, while the cloud still has the middle one", async () => {
+		vi.useFakeTimers();
+		const { api } = fakeHubApi(["A", "A", "B", "B", "C"]);
+		const hub = new HubController(api);
+		await hub.refresh();
+		const shown = () => hub.store.get().profiles[0]?.profileName;
+		hub.renamed(COMPANY, "B");
+		hub.renamed(COMPANY, "C");
+		expect(shown()).toBe("C");
+		await vi.advanceTimersByTimeAsync(1500 + 2500);
+		expect(shown()).toBe("C");
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(shown()).toBe("C");
+		hub.dispose();
+	});
+
+	it("keeps the new name when the company was not listed yet at the rename", async () => {
+		vi.useFakeTimers();
+		const { api } = fakeHubApi(["Nordlys", "Nordlys", "Nordlys Studio"]);
+		const hub = new HubController(api);
+		hub.renamed(COMPANY, "Nordlys Studio");
+		await hub.refresh();
+		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys Studio");
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys Studio");
+		hub.dispose();
+	});
+
 	it("takes the cloud's name once it is neither the old nor the new one", async () => {
 		vi.useFakeTimers();
 		const { api } = fakeHubApi(["Nordlys", "Nordlys", "Nordlys Kaffe"]);
