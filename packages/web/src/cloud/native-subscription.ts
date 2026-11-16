@@ -158,6 +158,12 @@ export function parseAccountLogins(value: unknown): WebAccountLogins {
 	return { enabled: input.enabled === true, logins };
 }
 
+function sessionCount(value: unknown): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+		throw new Error("Invalid conversation account response.");
+	return value;
+}
+
 /** A ChatGPT plan login: its member alone turns on work while away (Sign in with ChatGPT). */
 export const planLogin = (connection: WebMemberConnection): boolean => connection.loginKind === "chatgpt_plan";
 
@@ -173,6 +179,8 @@ export interface WebNativeSubscription {
 	/** The member picks a conversation's login by hand (20260930059000): the only way a
 	 * conversation moves to another login, offered once its own login was disconnected. */
 	chooseSessionAccount?(sessionId: string, connectionId: string, signal?: AbortSignal): Promise<string>;
+	countSessionsOnAccount?(connectionId: string, signal?: AbortSignal): Promise<number>;
+	chooseSessionsAccount?(fromConnectionId: string, connectionId: string, signal?: AbortSignal): Promise<number>;
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
 	createMemberSponsor(
@@ -845,6 +853,27 @@ export function createWebNativeSubscription(
 			);
 			if (value !== connectionId) throw new Error("Invalid conversation account response.");
 			return value;
+		},
+		countSessionsOnAccount: async (connectionId, signal) => {
+			if (!UUID_PATTERN.test(connectionId)) throw new Error("Invalid conversation account request.");
+			return sessionCount(
+				await rpc(
+					"qorpera_count_member_sessions_on_account",
+					{ p_profile_id: profileId, p_connection_id: connectionId },
+					signal,
+				),
+			);
+		},
+		chooseSessionsAccount: async (fromConnectionId, connectionId, signal) => {
+			if (!UUID_PATTERN.test(fromConnectionId) || !UUID_PATTERN.test(connectionId))
+				throw new Error("Invalid conversation account request.");
+			return sessionCount(
+				await rpc(
+					"qorpera_choose_member_sessions_account",
+					{ p_profile_id: profileId, p_from_connection_id: fromConnectionId, p_connection_id: connectionId },
+					signal,
+				),
+			);
 		},
 		listSessionTurnProvenance: (sessionId, signal) => client(signal, sessionId).listSessionTurnProvenance(sessionId),
 		requestSessionTurn: (input, signal) => client(signal, input.sessionId).requestSessionTurn(input),
