@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+- A Claude Code worker's commands and file changes on the agent's machine get the same per-action review as Codex's
+  (the founder, 16 Nov 2026, "Same check"; lanes/agent-box-20261113/CLAUDE-HOME-CHECK-BRIEF.md; the runtime bundle only,
+  no migration). The run host reviews each command before it reaches the home's exec channel, and each Write, Edit or
+  NotebookEdit once with its whole change, through a PreToolUse hook the host answers; the SFTP stream refuses any change
+  no approved call accounts for, or reviews it alone. Same gate, rules, cards and records as Codex's `home_command` and
+  `home_change`; reads are not reviewed. The reviewer is a fresh tool-less Claude Code (`haiku`) on the member's own
+  sign-in, in a box without the home.
 - Release v252 (conversation models GPT-6.1 Sol, Fable 5.2 and Opus 5.5, #1877; the move of all of a member's chats
   waiting on a used-up login, #1876, merged in the release branch; and master since v251): runtime bundle 252
   `ac0e54611d0dbf9ca095972482ebe4ed36ff93c428f019e5a29a513040ceb206` (activation `20260929025299`, previous 251
