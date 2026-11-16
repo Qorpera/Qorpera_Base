@@ -38,13 +38,13 @@ describe("conversation model transport", () => {
 			version: 0,
 		});
 		f.fetch.mockResolvedValueOnce(
-			Response.json({ ...model, model_id: "gpt-6-sol", reasoning_effort: "high", version: 1 }),
+			Response.json({ ...model, model_id: "gpt-6.1-sol", reasoning_effort: "high", version: 1 }),
 		);
 		expect(
-			await f.control.set(session.sessionId, { modelId: "gpt-6-sol", reasoningEffort: "high" }, 0, f.view.signal),
+			await f.control.set(session.sessionId, { modelId: "gpt-6.1-sol", reasoningEffort: "high" }, 0, f.view.signal),
 		).toEqual({
 			sessionId: session.sessionId,
-			modelId: "gpt-6-sol",
+			modelId: "gpt-6.1-sol",
 			reasoningEffort: "high",
 			version: 1,
 		});
@@ -55,7 +55,7 @@ describe("conversation model transport", () => {
 		expect(new Headers(request?.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(JSON.parse(request?.body as string)).toEqual({
 			p_session_id: session.sessionId,
-			p_model_id: "gpt-6-sol",
+			p_model_id: "gpt-6.1-sol",
 			p_expected_version: 0,
 			p_reasoning_effort: "high",
 		});
@@ -134,7 +134,7 @@ describe("conversation model transport", () => {
 		await expect(
 			f.control.set(session.sessionId, { serviceTier: "fast", reasoningEffort: "high" }, 2),
 		).rejects.toThrow("Refresh");
-		await expect(f.control.set(session.sessionId, { serviceTier: "fast", modelId: "gpt-6-sol" }, 2)).rejects.toThrow(
+		await expect(f.control.set(session.sessionId, { serviceTier: "fast", modelId: "gpt-6.1-sol" }, 2)).rejects.toThrow(
 			"Refresh",
 		);
 		expect(f.fetch).toHaveBeenCalledTimes(3);
@@ -149,14 +149,14 @@ describe("conversation model transport", () => {
 			modelId: "gpt-6-astra",
 			version: 0,
 		});
-		f.fetch.mockResolvedValueOnce(Response.json({ ...older, model_id: "gpt-6-luna", version: 1 }));
-		expect(await f.control.set(session.sessionId, { modelId: "gpt-6-luna" }, 0)).toMatchObject({
-			modelId: "gpt-6-luna",
+		f.fetch.mockResolvedValueOnce(Response.json({ ...older, model_id: "gpt-6.1-sol", version: 1 }));
+		expect(await f.control.set(session.sessionId, { modelId: "gpt-6.1-sol" }, 0)).toMatchObject({
+			modelId: "gpt-6.1-sol",
 			version: 1,
 		});
 		expect(JSON.parse(f.fetch.mock.calls[1]![1]?.body as string)).toEqual({
 			p_session_id: session.sessionId,
-			p_model_id: "gpt-6-luna",
+			p_model_id: "gpt-6.1-sol",
 			p_expected_version: 0,
 		});
 	});
@@ -175,7 +175,7 @@ describe("conversation model transport", () => {
 		for (const retired of ["gpt-5.6-sol", "gpt-5.6-terra"])
 			await expect(f.control.set(session.sessionId, { modelId: retired }, 5)).rejects.toThrow("Refresh");
 		await expect(
-			f.control.set(session.sessionId, { modelId: "gpt-6-sol", reasoningEffort: "xhigh" }, 5),
+			f.control.set(session.sessionId, { modelId: "gpt-6.1-sol", reasoningEffort: "xhigh" }, 5),
 		).rejects.toThrow("Refresh");
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
@@ -198,6 +198,11 @@ describe("conversation model transport", () => {
 		{ version: -1 },
 		{ version: 0.5 },
 		{ version: Number.MAX_SAFE_INTEGER + 1 },
+		{ models: "gpt-6-astra" },
+		{ models: [""] },
+		{ models: [7] },
+		{ models: ["x".repeat(257)] },
+		{ models: Array.from({ length: 33 }, (_, index) => `model-${index}`) },
 	])("rejects an invalid response %j", async (invalid) => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json({ ...model, ...invalid }));
@@ -205,17 +210,46 @@ describe("conversation model transport", () => {
 	});
 
 	it.each([
-		{ model_id: "gpt-6-sol", reasoning_effort: "medium", version: 0 },
+		{ model_id: "gpt-6.1-sol", reasoning_effort: "medium", version: 0 },
 		{ model_id: "gpt-6-astra", reasoning_effort: "medium", version: 1 },
-		{ model_id: "gpt-6-sol", reasoning_effort: "medium", version: 2 },
-		{ model_id: "gpt-6-sol", reasoning_effort: "low", version: 1 },
-		{ model_id: "gpt-6-sol", reasoning_effort: undefined, version: 1 },
+		{ model_id: "gpt-6.1-sol", reasoning_effort: "medium", version: 2 },
+		{ model_id: "gpt-6.1-sol", reasoning_effort: "low", version: 1 },
+		{ model_id: "gpt-6.1-sol", reasoning_effort: undefined, version: 1 },
 	])("does not confirm a different model, effort or revision after saving %j", async (invalid) => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json({ ...model, ...invalid }));
 		await expect(
-			f.control.set(session.sessionId, { modelId: "gpt-6-sol", reasoningEffort: "medium" }, 0),
+			f.control.set(session.sessionId, { modelId: "gpt-6.1-sol", reasoningEffort: "medium" }, 0),
 		).rejects.toThrow("Refresh");
+	});
+
+	it("reads the models the cloud offers this member, keeping ones it does not list", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, models: ["gpt-6-astra", "claude-fable-5-2", "gpt-6-astra", "gpt-7-terra"] }),
+		);
+		expect(await f.control.read(session.sessionId)).toMatchObject({
+			models: ["gpt-6-astra", "claude-fable-5-2", "gpt-7-terra"],
+		});
+	});
+
+	it.each([
+		{ modelId: "gpt-6-sol" },
+		{ modelId: "claude-opus-5-5", reasoningEffort: "ultra" },
+	])("refuses a selection the client does not offer %j", async (selection) => {
+		const f = setup();
+		await expect(f.control.set(session.sessionId, selection, 0)).rejects.toThrow();
+		expect(f.fetch).not.toHaveBeenCalled();
+	});
+
+	it("saves a Claude model with an effort only Claude has", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, model_id: "claude-opus-5-5", reasoning_effort: "max", version: 1 }),
+		);
+		expect(
+			await f.control.set(session.sessionId, { modelId: "claude-opus-5-5", reasoningEffort: "max" }, 0),
+		).toMatchObject({ modelId: "claude-opus-5-5", reasoningEffort: "max" });
 	});
 
 	it("refuses a switched account before dispatch", async () => {
@@ -282,7 +316,7 @@ describe("conversation model transport", () => {
 		f.fetch.mockResolvedValueOnce(
 			Response.json({ code: "QRC01", message: "Conversation model changed; refresh first." }, { status: 409 }),
 		);
-		const sol = { modelId: "gpt-6-sol" };
+		const sol = { modelId: "gpt-6.1-sol" };
 		await expect(f.control.set(session.sessionId, sol, 0)).rejects.toMatchObject({ code: "QRC01" });
 		f.fetch.mockResolvedValueOnce(new Response(null, { status: 403 }));
 		await expect(f.control.set(session.sessionId, sol, 0)).rejects.toBeInstanceOf(CloudRpcError);
