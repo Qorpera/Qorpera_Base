@@ -134,9 +134,9 @@ describe("conversation model transport", () => {
 		await expect(
 			f.control.set(session.sessionId, { serviceTier: "fast", reasoningEffort: "high" }, 2),
 		).rejects.toThrow("Refresh");
-		await expect(f.control.set(session.sessionId, { serviceTier: "fast", modelId: "gpt-6.1-sol" }, 2)).rejects.toThrow(
-			"Refresh",
-		);
+		await expect(
+			f.control.set(session.sessionId, { serviceTier: "fast", modelId: "gpt-6.1-sol" }, 2),
+		).rejects.toThrow("Refresh");
 		expect(f.fetch).toHaveBeenCalledTimes(3);
 	});
 
@@ -233,14 +233,14 @@ describe("conversation model transport", () => {
 		});
 	});
 
-	it.each([
-		{ modelId: "gpt-6-sol" },
-		{ modelId: "claude-opus-5-5", reasoningEffort: "ultra" },
-	])("refuses a selection the client does not offer %j", async (selection) => {
-		const f = setup();
-		await expect(f.control.set(session.sessionId, selection, 0)).rejects.toThrow();
-		expect(f.fetch).not.toHaveBeenCalled();
-	});
+	it.each([{ modelId: "gpt-6-sol" }, { modelId: "claude-opus-5-5", reasoningEffort: "ultra" }])(
+		"refuses a selection the client does not offer %j",
+		async (selection) => {
+			const f = setup();
+			await expect(f.control.set(session.sessionId, selection, 0)).rejects.toThrow();
+			expect(f.fetch).not.toHaveBeenCalled();
+		},
+	);
 
 	it("saves a Claude model with an effort only Claude has", async () => {
 		const f = setup();
