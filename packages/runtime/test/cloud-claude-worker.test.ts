@@ -234,7 +234,34 @@ describe("the stream", () => {
 		expect(stream.limit).toBeNull();
 	});
 
-	it("names other tools than the eight, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
+	it("says what each of the box's other tools was asked, in the run's steps", () => {
+		const stream = new ClaudeWorkerStream(() => 0);
+		stream.push(init());
+		const calls: [string, unknown][] = [
+			["Monitor", { command: "tail -f /var/log/app.log\nmore", description: "watch" }],
+			["Monitor", { ws: { url: "wss://example.com/feed" }, description: "feed" }],
+			["Task", { subagent_type: "general-purpose", description: "sort the notes", prompt: "long" }],
+			["WebSearch", { query: "danish vat rules" }],
+			["Skill", { skill: "pdf" }],
+			["EnterWorktree", { name: "fix-1" }],
+			["TaskCreate", { subject: "s", description: "d" }],
+		];
+		calls.forEach(([name, input], index) => {
+			stream.push(use(`w${index}`, name, input));
+			stream.push(answer(`w${index}`));
+		});
+		expect(stream.steps.map((step) => step.what)).toEqual([
+			"tail -f /var/log/app.log",
+			"wss://example.com/feed",
+			"general-purpose: sort the notes",
+			"danish vat rules",
+			"pdf",
+			"fix-1",
+			"",
+		]);
+	});
+
+	it("names other tools than the box's, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
 		const other = new ClaudeWorkerStream();
 		other.push(init([...CLAUDE_BOX_TOOLS, "WebFetch"]));
 		expect(other.toolsAsAllowed()).toBe(false);

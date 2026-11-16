@@ -148,12 +148,21 @@ function stepWhat(tool: string, input: unknown): string {
 		for (const name of names) if (typeof fields[name] === "string" && fields[name]) return fields[name] as string;
 		return "";
 	};
-	const what =
-		tool === "Bash"
-			? (first("command").split("\n")[0] ?? "")
-			: tool === "Grep" || tool === "Glob"
-				? [first("pattern"), first("path")].filter(Boolean).join(" in ")
-				: first("file_path", "notebook_path", "path", "task_id", "shell_id");
+	const socket = fields.ws && typeof fields.ws === "object" ? (fields.ws as Record<string, unknown>).url : undefined;
+	const search = (): string => [first("pattern"), first("path")].filter(Boolean).join(" in ");
+	const byTool: Readonly<Record<string, () => string>> = {
+		Bash: () => first("command").split("\n")[0] ?? "",
+		Monitor: () => first("command").split("\n")[0] || (typeof socket === "string" ? socket : ""),
+		Grep: search,
+		Glob: search,
+		Task: () => [first("subagent_type"), first("description")].filter(Boolean).join(": "),
+		WebSearch: () => first("query"),
+		Skill: () => first("skill"),
+		EnterWorktree: () => first("name", "path"),
+	};
+	const what = Object.hasOwn(byTool, tool)
+		? byTool[tool]()
+		: first("file_path", "notebook_path", "path", "task_id", "shell_id");
 	return oneLine(what, WHAT_CHARS);
 }
 
@@ -197,7 +206,6 @@ export class ClaudeWorkerStream {
 	limit: { readonly words: string; toolsAfter: number } | null = null;
 	/** Claude Code said its sign-in failed. */
 	signedOut = false;
-	/** A tool use or result came before the init line: the tools were never shown to be the eight. */
 	beforeInit = false;
 
 	constructor(now: () => number = () => performance.now()) {

@@ -159,9 +159,6 @@ export const CLAUDE_BOX_TOOLS = Object.freeze([
 	"TaskUpdate",
 	"ReportFindings",
 	"Monitor",
-	"CronCreate",
-	"CronDelete",
-	"CronList",
 	"EnterWorktree",
 	"ExitWorktree",
 ] as const);
@@ -171,6 +168,10 @@ export const CLAUDE_BOX_TOOLS_KEPT_OUT = Object.freeze({
 	ListAgents: "it lists the member's other Claude sessions, outside this run",
 	SendMessage: "it writes to the member's other Claude sessions, outside this run",
 	ScheduleWakeup: "a wakeup keeps Claude Code running after its report, prompting itself again on the member's plan",
+	CronCreate:
+		"a durable job is written into the company folder, where every member's later runs start; a run's own never fires",
+	CronDelete: "it goes with CronCreate",
+	CronList: "it goes with CronCreate",
 });
 export type ClaudeBoxTool = (typeof CLAUDE_BOX_TOOLS)[number];
 

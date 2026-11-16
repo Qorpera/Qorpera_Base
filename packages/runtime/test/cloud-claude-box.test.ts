@@ -94,7 +94,7 @@ it("starts Claude Code in print mode with settings from the box alone", () => {
 		"user",
 		"--strict-mcp-config",
 		"--tools",
-		"Bash,Read,Edit,Write,NotebookEdit,Grep,Glob,TaskStop,Task,WebSearch,Skill,ToolSearch,TaskCreate,TaskGet,TaskList,TaskUpdate,ReportFindings,Monitor,CronCreate,CronDelete,CronList,EnterWorktree,ExitWorktree",
+		"Bash,Read,Edit,Write,NotebookEdit,Grep,Glob,TaskStop,Task,WebSearch,Skill,ToolSearch,TaskCreate,TaskGet,TaskList,TaskUpdate,ReportFindings,Monitor,EnterWorktree,ExitWorktree",
 	]);
 	expect(claudeBoxArguments({ tools: ["Bash", "Read"] }).slice(-2)).toEqual(["--tools", "Bash,Read"]);
 	for (const tools of [[], ["Bash", "Bash"], ["Bash", "WebFetch"], ["Workflow"], ["SendMessage"], ["default"]])
@@ -114,7 +114,7 @@ it("starts Claude Code in print mode with settings from the box alone", () => {
 	expect(claudeBoxArguments()).not.toContain("--effort");
 });
 
-it("offers every built-in tool of Claude Code 2.1.325's print mode but the five that reach past the box or the run", () => {
+it("offers every built-in tool of Claude Code 2.1.325's print mode but the eight that reach past the box or the run", () => {
 	const printMode = [
 		"Task",
 		"Bash",
@@ -146,7 +146,16 @@ it("offers every built-in tool of Claude Code 2.1.325's print mode but the five 
 		"Write",
 	];
 	const keptOut = Object.keys(CLAUDE_BOX_TOOLS_KEPT_OUT);
-	expect(keptOut.sort()).toEqual(["ListAgents", "ScheduleWakeup", "SendMessage", "WebFetch", "Workflow"]);
+	expect(keptOut.sort()).toEqual([
+		"CronCreate",
+		"CronDelete",
+		"CronList",
+		"ListAgents",
+		"ScheduleWakeup",
+		"SendMessage",
+		"WebFetch",
+		"Workflow",
+	]);
 	expect([...CLAUDE_BOX_TOOLS, ...keptOut].sort()).toEqual(printMode.sort());
 	for (const tool of keptOut)
 		expect(() => claudeBoxArguments({ tools: [tool as never] })).toThrow("Invalid Claude tools");
