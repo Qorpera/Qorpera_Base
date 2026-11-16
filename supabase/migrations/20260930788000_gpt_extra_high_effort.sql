@@ -66,8 +66,7 @@ select pg_temp.gx_replace('public.qorpera_execution_runtime_manifest(public.qorp
 	$new$		or (v_manifest -> 'modelPolicy') - array['schema','effort','overrides','allowed','fastMode','unattended','claudeChoice',
 			'threadEfforts'] <> '{}'::jsonb
 		or ((v_manifest -> 'modelPolicy') ? 'threadEfforts' and (
-			v_manifest #>> '{modelPolicy,overrides}' is distinct from 'routine-and-thread'
-			or jsonb_typeof(v_manifest #> '{modelPolicy,threadEfforts}') is distinct from 'array'
+			jsonb_typeof(v_manifest #> '{modelPolicy,threadEfforts}') is distinct from 'array'
 			or exists (select 1 from jsonb_array_elements(v_manifest #> '{modelPolicy,threadEfforts}') thread_effort
 				where thread_effort.value is distinct from '"xhigh"'::jsonb)))$new$);
 

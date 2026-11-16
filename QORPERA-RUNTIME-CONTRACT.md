@@ -2373,8 +2373,9 @@ on a GPT model may pick effort `xhigh`; `max` stays Claude only, and `xhigh`
 needs a model (never no model). The setter takes `xhigh` on GPT only while the
 active bundle's model policy declares `threadEfforts: ["xhigh"]` (otherwise
 22023, as before). `threadEfforts` lists efforts that only a member's turn may
-take from its conversation; the kernel's manifest check accepts it only with
-`overrides: routine-and-thread`, as an array whose only value is `xhigh`.
+take from its conversation, and only under `overrides: routine-and-thread`;
+the kernel's manifest check accepts it as an array whose only value is
+`xhigh`.
 `allowed` is unchanged (low, medium, high), so routines, the agent.md effort,
 chains and every run no member waits on keep exactly their efforts: their
 check (`qorpera_manifest_allows_reasoning_effort`) is unchanged. A member's

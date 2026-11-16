@@ -273,7 +273,7 @@ begin
 	for v_case in select * from (values ('xhigh', '["xhigh"]'::jsonb, null::text, true), ('empty', '[]', null, true),
 		('absent', null, null, true), ('max', '["max"]', null, false), ('high', '["high"]', null, false),
 		('string', '"xhigh"', null, false), ('object', '{"xhigh":true}', null, false), ('json-null', 'null', null, false),
-		('routine-only', '["xhigh"]', 'routine', false)) as c(name, value, overrides, valid) loop
+		('routine-only', '["xhigh"]', 'routine', true)) as c(name, value, overrides, valid) loop
 		v_manifest := case when v_case.value is null then v_active #- '{modelPolicy,threadEfforts}'
 			else jsonb_set(v_active, '{modelPolicy,threadEfforts}', v_case.value) end;
 		if v_case.overrides is not null then
