@@ -110,15 +110,24 @@ end $$;
 rollback to savepoint revoked;
 
 do $$
-declare v_pass jsonb; v_codex uuid; v_claim jsonb;
+declare v_result jsonb; v_codex uuid; v_claim jsonb; v_first public.qorpera_execution_runs; v_next public.qorpera_execution_runs;
 begin
 	perform public.qorpera_set_runner_orchestrator_dispatch_role('92400000-0000-4000-8000-000000000092', null);
 	perform public.qorpera_set_runner_orchestrator_dispatch_role('12830000-0000-4000-8000-0000000000a1', null);
-	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031', 'Work');
-	v_pass := pg_temp.base_materialize();
-	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1,
-		'5: the post is a run: ' || v_pass::text);
-	v_codex := (v_pass -> 'run_ids' ->> 0)::uuid;
+	v_result := pg_temp.c4_dispatch(pg_temp.c4_alice(), 'cs-dispatch-codex', 'QorperaOS/agents/alice/todos/onboarding/notes',
+		pg_temp.c4_brief('12830000-0000-4000-8000-0000000000b2', null, 'Write the notes'));
+	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '5: the Codex dispatch: ' || v_result::text);
+	perform pg_temp.c4_drain();
+	perform pg_temp.base_materialize();
+	select wake.run_id into v_codex from public.qorpera_wake_occurrences wake
+	where wake.source_kind = 'worker-dispatch' and wake.source_id = '12830000-0000-4000-8000-0000000000b2';
+	select * into strict v_first from public.qorpera_execution_runs where id = pg_temp.cs_run();
+	select * into strict v_next from public.qorpera_execution_runs where id = v_codex;
+	perform pg_temp.base_assert((public.qorpera_run_worker(v_codex)).harness is null
+		and not public.qorpera_run_member_waits(v_first) and not public.qorpera_run_member_waits(v_next)
+		and (select job.created_at from public.qorpera_runner_jobs job where job.id = v_first.job_id)
+			< (select job.created_at from public.qorpera_runner_jobs job where job.id = v_next.job_id),
+		'5: a Codex worker''s run is queued behind the Claude Code worker''s, in the claim''s own order');
 	v_claim := pg_temp.cs_claim('12830000-0000-4000-8000-0000000000a1');
 	perform pg_temp.base_assert(v_claim #>> '{work,run_id}' = v_codex::text,
 		'5: the same orchestrator takes any other run, past the Claude Code worker''s: ' || coalesce(v_claim::text, 'none'));
