@@ -2293,7 +2293,10 @@ only after durable storage.
   `apply`, 512 KiB for `watch` (up to 24 question texts of 16 KiB each), 64 KiB for `query` and `describe`. Answers
   are JSON with `cache-control: no-store`, passed back with their status. A watch is held up to 20 s by the data
   gateway after its own reads; the bridge allows it 30 s, the others the default 25 s. Behind the member company
-  gateway, which reads a body only for a signed-in member.
+  gateway, which reads a body only for a signed-in member. The Data list (§5a) adds `/rows` (a page of a table),
+  `/edit` (a member's add, change or remove of a row), `/change` (a named change) and `/changes` (what changed, from
+  the record of who changed what), the same way: at most 1 MiB for `rows`, `edit` and `changes` (they may carry the
+  question texts the list's rule reads), 64 KiB for `change`.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read

@@ -24,7 +24,7 @@ const TOML_PATH = /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/;
 /** A database folder's own login: the company's database, then o (owner), w (write) or r (read) and the folder's number. */
 const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
 /** Connections each login may hold: a folder's role holds as many as its CONNECTION LIMIT allows. */
-const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin: 1, qorpera_data_watch: 1 };
+const POOL_SIZE = { o: 1, w: 2, r: 3, qorpera_data_keeper: 2, qorpera_data_admin: 1, qorpera_data_watch: 1, record: 1 };
 /** Connections a company's database takes, all logins together. */
 const COMPANY_CONNECTIONS = 24;
 /** What a member's yes to a held step is for (§3): the step, the hash of its text, and the hash of what it would
@@ -116,6 +116,10 @@ export const LIMITS = Object.freeze({
 	sweepMs: 3_600_000,
 	pageRows: 200,
 	pageRowsUsual: 100,
+	recordDays: 30,
+	changesWrites: 25,
+	changesWindow: 5_000,
+	changesDays: 14,
 });
 
 const NEAR_SHARE = 0.8;
@@ -131,6 +135,42 @@ const SETTLE =
 const UNROWED =
 	"delete from qorpera_data.change_log c where pg_catalog.txid_visible_in_snapshot(c.txid, pg_catalog.txid_current_snapshot()) " +
 	"and not exists (select 1 from qorpera_data.row_changes r where r.txid <= c.txid)";
+const FORGET = "select qorpera_data.forget_record(pg_catalog.now() - pg_catalog.make_interval(days => $1::int)) as lines";
+const ZONE = /^[A-Za-z][A-Za-z0-9_+-]{0,30}(?:\/[A-Za-z0-9_+-]{1,30}){0,2}$/;
+const CHANGES_LINES = 3;
+const CHANGES_VALUE_BYTES = 2_048;
+const CHANGES_COUNTED = 10_000;
+const CHANGES_TABLES = 50;
+const CHANGES_COLUMNS = 100;
+const CHANGES_PAGE =
+	"with seen as (select r.txid, r.seq from qorpera_data.row_changes r where r.schema = $1 and ($2::bigint is null or r.seq < $2) " +
+	"order by r.seq desc limit $3), " +
+	"writes as (select g.txid, g.newest from (select s.txid, max(s.seq) as newest from seen s group by s.txid) g " +
+	"where $2::bigint is null or (select max(x.seq) from qorpera_data.row_changes x where x.txid = g.txid and x.schema = $1) < $2 " +
+	"order by g.newest desc limit $4) " +
+	"select w.txid::text as txid, w.newest::text as newest, pg_catalog.to_char(c.at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as at, " +
+	"c.by_kind, c.by_id, c.via, " +
+	"(select pg_catalog.jsonb_build_object('tables', pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('table', t.relation, 'op', t.op, 'rows', t.rows) " +
+	"order by t.first) filter (where t.place <= $8), 'cut', count(*) > $8) from " +
+	"(select x.relation, x.op, sum(x.rows)::bigint as rows, min(x.seq) as first, pg_catalog.row_number() over (order by min(x.seq)) as place from " +
+	"(select y.relation, y.op, y.rows, y.seq from qorpera_data.row_changes y where y.txid = w.txid and y.schema = $1 order by y.seq limit $7) x " +
+	"group by x.relation, x.op) t) as counted, " +
+	"(select count(*) > $7 from (select 1 from qorpera_data.row_changes y where y.txid = w.txid and y.schema = $1 order by y.seq limit $7 + 1) m) as uncounted, " +
+	"(select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('table', l.relation, 'op', l.op, 'rows', l.rows, " +
+	"'key', case when pg_catalog.octet_length(l.key::text) <= $6 then l.key end, " +
+	"'before', case when pg_catalog.octet_length(l.before::text) <= $6 then l.before end, " +
+	"'after', case when pg_catalog.octet_length(l.after::text) <= $6 then l.after end, " +
+	"'columns', (select pg_catalog.jsonb_agg(n.name order by n.name) from (select o.name from pg_catalog.jsonb_object_keys(coalesce(l.after, l.before)) o(name) " +
+	"order by o.name limit $9) n)) order by l.seq) from " +
+	"(select x.* from qorpera_data.row_changes x where x.txid = w.txid and x.schema = $1 order by x.seq limit $5) l) as lines, " +
+	"(select count(*) > $5 from (select 1 from qorpera_data.row_changes x where x.txid = w.txid and x.schema = $1 order by x.seq limit $5 + 1) m) as cut, " +
+	"z.looked, z.lowest from (select count(*) as looked, min(s.seq)::text as lowest from seen s) z " +
+	"left join writes w on true left join qorpera_data.change_log c on c.txid = w.txid order by w.newest desc nulls last";
+const CHANGES_DAYS =
+	"select pg_catalog.to_char(c.at at time zone $2, 'YYYY-MM-DD') as day, c.by_kind, c.by_id, sum(r.rows)::bigint as rows " +
+	"from qorpera_data.change_log c join qorpera_data.row_changes r on r.txid = c.txid and r.schema = $1 " +
+	"where c.at >= (pg_catalog.date_trunc('day', pg_catalog.now() at time zone $2) - pg_catalog.make_interval(days => $3::int - 1)) at time zone $2 " +
+	"group by 1, 2, 3 order by 1, 2, 3";
 const RECORD_SIZE = ["row_changes", "change_log", "record_bytes"]
 	.map((table) => `coalesce(pg_catalog.pg_total_relation_size(pg_catalog.to_regclass('qorpera_data.${table}')), 0)`)
 	.join(" + ");
@@ -360,6 +400,7 @@ export class Platform {
 				? !ENVIRONMENT.test(answer.viewId ?? "") || !ENVIRONMENT.test(answer.machineId ?? "") || (answer.allow ?? null) !== null
 				: !ENVIRONMENT.test(answer.runId ?? "")) ||
 			!ENVIRONMENT.test(answer.requesterUserId ?? "") ||
+			!ENVIRONMENT.test(answer.staffAgentId ?? "") ||
 			(answer.database !== null && !DATABASE_NAME.test(answer.database ?? "")) ||
 			!files ||
 			(answer.allow !== undefined && answer.allow !== null && !(typeof answer.allow === "string" && TICKET.test(answer.allow))) ||
@@ -374,6 +415,7 @@ export class Platform {
 			runId: machine ? null : answer.runId,
 			machineId: machine ? answer.machineId : null,
 			requesterUserId: answer.requesterUserId,
+			agentId: answer.staffAgentId,
 			database: answer.database,
 			files: new Map(files.map((file) => [file.path, { sha256: file.sha256, bytes: file.bytes }])),
 			// The held step a member said yes to on its card, which this run used (20260930764000), or none.
@@ -539,10 +581,10 @@ export class Gateway {
 	 * session is a member of nothing and can switch to no other role. Each folder's logins have their own connections,
 	 * so a company with many folders can reach its database's connection limit with connections that only wait: then
 	 * the idle ones of its other logins are given back and the call tries again. */
-	#pool(database, user) {
-		const key = `${user}@${database}`;
-		let door = this.#pools.get(key);
-		if (!door) {
+	#pool(database, user, door = user) {
+		const key = `${door}@${database}`;
+		let opened = this.#pools.get(key);
+		if (!opened) {
 			const kind = FOLDER_LOGIN.exec(user)?.[1];
 			const pool = new pg.Pool({
 				host: this.#store.host,
@@ -550,7 +592,7 @@ export class Gateway {
 				user,
 				password: this.#password(user),
 				database,
-				max: POOL_SIZE[kind ?? user],
+				max: POOL_SIZE[kind ?? door],
 				// A step's login holds one connection, and steps are rare: it is given back soon.
 				idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
 				connectionTimeoutMillis: CONNECT_MS,
@@ -576,10 +618,10 @@ export class Gateway {
 					this.#letGo(client);
 				}
 			};
-			door = { pool, query: (...args) => roomy(() => pool.query(...args)), connect };
-			this.#pools.set(key, door);
+			opened = { pool, query: (...args) => roomy(() => pool.query(...args)), connect };
+			this.#pools.set(key, opened);
 		}
-		return door;
+		return opened;
 	}
 
 	/** Marks a backend as sent a cancel. `sending`: the cancel on its way, if the gateway sends it. */
@@ -1041,6 +1083,112 @@ export class Gateway {
 		return { ...(await this.#page(ready)), asOf: new Date().toISOString() };
 	}
 
+	async changes(caller, environmentId, body) {
+		const { database: name, after = null, zone = null } = body;
+		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		if (after !== null && (typeof after !== "string" || !/^[1-9][0-9]{0,18}$/.test(after))) refuse(400, "after is the next a page gave");
+		if (zone !== null && (typeof zone !== "string" || !ZONE.test(zone))) refuse(400, "zone is a time zone's name");
+		const right = await this.#mayList(caller, environmentId, name, body.texts);
+		if (right.need) return { need: right.need };
+		if (!right.list) refuse(403, `The tables of ${name} are shown to those who may change it`);
+		const database = companyDatabase(environmentId);
+		if ((await this.#folder(database, name)) === null) refuse(409, `The database ${name} has no applied step yet`);
+		return { ...(await this.#record(database, name, after, after === null ? zone : null)), asOf: new Date().toISOString() };
+	}
+
+	async #record(database, name, after, zone) {
+		const client = await inTime(this.#pool(database, "qorpera_data_keeper", "record").connect(), Date.now() + CONNECT_MS - 1_000).catch((error) => {
+			throw storeProblem(error);
+		});
+		let lost;
+		const until = Date.now() + this.#limits.questionMs;
+		try {
+			await client.query(
+				`begin transaction read only; set local statement_timeout = ${Math.max(1, Math.floor(this.#limits.questionMs))}; ` +
+					"set local timezone = 'UTC'; set local datestyle = 'ISO'",
+			);
+			const found = await client.query({
+				text: CHANGES_PAGE,
+				values: [
+					name,
+					after,
+					this.#limits.changesWindow,
+					this.#limits.changesWrites + 1,
+					CHANGES_LINES,
+					CHANGES_VALUE_BYTES,
+					CHANGES_COUNTED,
+					CHANGES_TABLES,
+					CHANGES_COLUMNS,
+				],
+				types: TEXT_TYPES,
+			});
+			const picked = found.rows.filter((row) => row.txid !== null);
+			const writes = [];
+			let bytes = 0;
+			let full = false;
+			for (const row of picked.slice(0, this.#limits.changesWrites)) {
+				const counted = JSON.parse(row.counted);
+				const write = {
+					at: row.at,
+					by: row.by_kind,
+					id: row.by_id,
+					via: row.via,
+					tables: (counted.tables ?? []).map((one) => ({ table: one.table, op: one.op, rows: Number(one.rows) })),
+					lines: JSON.parse(row.lines ?? "[]").map((one) => ({
+						table: one.table,
+						op: one.op,
+						rows: Number(one.rows),
+						key: one.key ?? null,
+						before: one.before ?? null,
+						after: one.after ?? null,
+						columns: one.columns ?? null,
+					})),
+					...(row.cut === "t" ? { more: true } : {}),
+					...(row.uncounted === "t" || counted.cut ? { many: true } : {}),
+				};
+				bytes += Buffer.byteLength(JSON.stringify(write)) + 1;
+				if (bytes > this.#limits.questionBytes && writes.length > 0) {
+					full = true;
+					break;
+				}
+				writes.push({ write, newest: row.newest });
+			}
+			const [stats] = found.rows;
+			const next =
+				full || picked.length > this.#limits.changesWrites
+					? writes.at(-1).newest
+					: Number(stats.looked) >= this.#limits.changesWindow
+						? stats.lowest
+						: null;
+			let days;
+			if (zone !== null) {
+				await client.query(`savepoint days; set local statement_timeout = ${Math.max(1, Math.floor(until - Date.now()))}`);
+				try {
+					const counted = await client.query({ text: CHANGES_DAYS, values: [name, zone, this.#limits.changesDays], types: TEXT_TYPES });
+					days = counted.rows.map((row) => ({ day: row.day, by: row.by_kind, id: row.by_id, rows: Number(row.rows) }));
+				} catch (error) {
+					if (error?.code === "22023") refuse(400, `No time zone ${zone}`);
+					if (error?.code !== "57014") throw error;
+					await client.query("rollback to savepoint days");
+					days = null;
+				}
+			}
+			await client.query("rollback");
+			return {
+				writes: writes.map((one) => one.write),
+				more: next !== null,
+				...(next === null ? {} : { next }),
+				...(days === undefined ? {} : { days }),
+			};
+		} catch (error) {
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			else lost = error;
+			throw storeProblem(error);
+		} finally {
+			this.#release(client, lost);
+		}
+	}
+
 	async query(caller, environmentId, body) {
 		const ready = await this.#named("question", caller, environmentId, body, body.texts);
 		if (ready.need) return { need: [ready.need] };
@@ -1123,8 +1271,8 @@ export class Gateway {
 	}
 
 	#actor(caller, via) {
-		if (caller.machineId) return { kind: "machine", id: caller.machineId, via };
-		if (caller.run) return { kind: "agent", id: caller.runId, via };
+		if (caller.machineId) return { kind: "machine", id: caller.agentId, via };
+		if (caller.run) return { kind: "agent", id: caller.agentId, via };
 		return { kind: "member", id: caller.userId, via };
 	}
 
@@ -1654,7 +1802,7 @@ export class Gateway {
 			}
 			const outcome = await this.#step(database, name, n, step, texts.get(step.name), {
 				allow: caller.allow ?? null,
-				actor: { kind: "step", id: caller.machineId ?? caller.runId ?? caller.userId, via: step.name },
+				actor: { kind: "step", id: caller.run ? caller.agentId : caller.userId, via: step.name },
 			});
 			results.push(outcome);
 			if (outcome.state !== "applied") break;
@@ -2024,13 +2172,14 @@ export class Gateway {
 				if (whole - record >= this.#limits.companyBytes) full.add(row.database);
 			}
 			this.#full = full;
-			await this.#settle(sizes.rows.map((row) => row.database));
+			const unforgotten = await this.#settle(sizes.rows.map((row) => row.database));
 			return {
 				ended: ended.rows
 					.filter((row) => row.ended)
 					.map((row) => ({ pid: row.pid, login: row.login, database: row.database, how: row.terminated ? "terminated" : "cancelled" })),
 				full: [...this.#full],
 				near,
+				unforgotten,
 			};
 		} catch (error) {
 			throw storeProblem(error);
@@ -2039,6 +2188,7 @@ export class Gateway {
 
 	async #settle(databases) {
 		const now = Date.now();
+		const unforgotten = [];
 		for (const database of databases) {
 			const sweep = now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs;
 			const waiting = [...(this.#unsettled.get(database) ?? [])];
@@ -2047,7 +2197,12 @@ export class Gateway {
 			const looked = await keeper
 				.query(SETTLE, [sweep ? null : waiting])
 				.then(async (answer) => {
-					if (sweep) await keeper.query(UNROWED);
+					if (sweep) {
+						await keeper.query(FORGET, [this.#limits.recordDays]).catch((error) => {
+							if (error?.code !== "42883") unforgotten.push(database);
+						});
+						await keeper.query(UNROWED);
+					}
 					return answer;
 				})
 				.catch(() => null);
@@ -2061,11 +2216,12 @@ export class Gateway {
 			else this.#unsettled.set(database, unsettled);
 		}
 		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!databases.includes(database)) known.delete(database);
+		return unforgotten;
 	}
 
 	/** A member's request, begun as that member. */
 	async handle(method, path, headers, read, gone) {
-		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit)$/.exec(path);
+		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit|changes)$/.exec(path);
 		if (!route) refuse(404, "Not a call the data gateway answers");
 		if (method !== "POST") refuse(405, "Use POST");
 		const token = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(headers.authorization ?? "")?.[1];
@@ -2104,6 +2260,8 @@ export class Gateway {
 				return this.rows(caller, environmentId, body);
 			case "edit":
 				return this.edit(caller, environmentId, body, { gone });
+			case "changes":
+				return this.changes(caller, environmentId, body);
 			default:
 				return this.describe(caller, environmentId, body);
 		}
@@ -2136,6 +2294,7 @@ export class Gateway {
 			userId: kept.requesterUserId,
 			runId: kept.runId,
 			machineId: kept.machineId,
+			agentId: kept.agentId,
 			key: `run:${sha256(body.pass)}`,
 			files: kept.files,
 			allow: kept.allow,
@@ -2171,7 +2330,8 @@ export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefin
 		if (looking) return;
 		looking = true;
 		try {
-			await gateway.watchOnce();
+			const looked = await gateway.watchOnce();
+			if (looked.unforgotten.length > 0) failed(new Error(`the record kept lines past their days in ${looked.unforgotten.length} company databases`));
 		} catch (error) {
 			failed(error);
 		} finally {

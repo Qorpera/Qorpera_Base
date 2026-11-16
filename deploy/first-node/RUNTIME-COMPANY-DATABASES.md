@@ -532,6 +532,44 @@ text above:
   cast to the column's type. An edit names only the columns the member changed: a JSON number past a double's digits
   and a `json` value's own spacing reach the page as JavaScript reads them, so they would not survive being sent back.
 
+**Part f as built** (`deploy/company-data/`, `supabase/functions/member-company-gateway/`). Where it differs from the
+text above:
+
+- **`changes` pages by write, not by line.** A page is up to 25 writes (transactions), each placed by its newest line:
+  who and when from its actor's line, the rows it added, changed and removed in each table, and its first three
+  lines. `next` is the newest line of the last write given; a write whose lines cross another's is given once. Each
+  read looks at no more than 5,000 lines, and a write's rows are counted over its first 10,000 lines and its first 50
+  tables (`many` says it has more), so a write of many lines makes a page of fewer writes, never a slow one: beside a
+  write of 300,000 lines a page answered well within a question's 2 s, also deep inside it. A line's `key`, `before`
+  and `after` are left out past 2 KiB each; its `columns` still name the first 100 columns that changed. The record's
+  index by txid is now by txid and line (`row_changes_txid_seq_idx`), and `change_log` gains one by `at`.
+- **The days come with the first page.** With `zone` (the member's time zone), the first page also counts the rows
+  each actor changed on each of the last 14 days, so "What changed" draws its two weeks without reading them all.
+  When counting takes past the question's time, `days` is null and the page still answers. These two (`zone`, `days`)
+  are not in the text above.
+- **The reader's own connection.** `changes` reads on a keeper connection of its own (one per company's database), so
+  a member reading what changed never holds up a write's actor's line; a page and its days together take at most a
+  question's 2 s.
+- **The actor names the agent.** An agent's and a machine's line, and a step an agent applied, carry the agent's own id
+  (the data pass's `staffAgentId`), not the run's or the machine's, so the web names the agent from the list it holds.
+  Part c wrote the run's id and the machine's id; a pass without an agent's id is refused (503).
+- **Kept 30 days, built.** At the watcher's hourly sweep the keeper calls `qorpera_data.forget_record` (the record's
+  own role, which now reads the actors' lines): the newest line of every write older than 30 days goes, with every
+  line before it (at most 50,000 a sweep), and their bytes come off the 100 MiB. The actors' lines then go as before.
+  A row line with no actor's line goes once a later write is forgotten. A sweep that cannot forget still settles the
+  actors' lines, and the watcher says so in its log.
+- **The edge function** lets `changes` through, with 1 MiB, as `rows` (it may carry the question texts the list's rule
+  reads).
+- **The web's view** (part f2, on part e): a "What changed" button beside a database's tabs, for a member who gets its
+  list. It draws the last two weeks as the canvas does, in three bands: the member's agents (an agent's or a
+  machine's write, and a step an agent applied), the member, and the company's other members. A band counts the rows
+  changed that day. Under it, the chosen day's writes (the latest day with changes at first), each one sentence with
+  who and when: "Product changed State and Work on Batavus Finez", "You added Winther Kangaroo to Repairs". The canvas's
+  sentences read the meaning of a change ("marked Emma's Gazelle ready"); the view says what the record holds: the
+  columns set and their new values, a row named by its list title when the record or the open list holds it, else
+  "row 3 of Repairs", and a named change's name after a dot. The canvas's third band, the webshop, waits for public
+  changes (§8); its place holds the other members.
+
 ## 6. Agents
 
 | Tool | What |
