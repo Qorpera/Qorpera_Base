@@ -1,4 +1,6 @@
 import {
+	MODELS_BEFORE_LIST,
+	modelName,
 	modelProvider,
 	PROVIDER_EFFORTS,
 	type SESSION_EFFORTS,
@@ -34,7 +36,8 @@ export function effortName(effort: string): string {
 }
 
 /** How much faster Fast runs each model, from the provider's model catalog. */
-const FAST_SPEEDS: Record<string, number> = { "gpt-6-astra": 2, "gpt-6-sol": 1.5, "gpt-6-luna": 1.5 };
+const FAST_SPEEDS: Record<string, number> = { "gpt-6-astra": 2, "gpt-6.1-sol": 2, "gpt-6-sol": 1.5, "gpt-6-luna": 1.5 };
+const FAST_USES_MORE_OF_PLAN: ReadonlySet<string> = new Set(["gpt-6-astra", "gpt-6.1-sol"]);
 
 /** The caption under the Fast switch for the conversation's model: "1.5x
  * speed", or "1,5x hastighed" in Danish. */
@@ -42,8 +45,7 @@ function fastCaption(modelId: string | undefined): string {
 	const factor = modelId && Object.hasOwn(FAST_SPEEDS, modelId) ? FAST_SPEEDS[modelId] : undefined;
 	if (!factor) return t("Faster replies");
 	const speed = `${new Intl.NumberFormat(presentationLocale() === "da" ? "da-DK" : "en-GB").format(factor)}x`;
-	// The catalog lists Astra's Fast tier as using more of the plan.
-	return modelId === "gpt-6-astra"
+	return modelId !== undefined && FAST_USES_MORE_OF_PLAN.has(modelId)
 		? t("{speed} speed, uses more of your plan", { speed })
 		: t("{speed} speed", { speed });
 }
@@ -289,8 +291,14 @@ export class ComposerModels {
 		return modelProvider(this.#observed?.modelId);
 	}
 
-	#offered(): Set<SessionProvider> {
-		return new Set<SessionProvider>(["openai", ...(this.#observed?.providers ?? [])]);
+	#accepted(): ReadonlySet<string> {
+		if (this.#observed && this.#observed.reasoningEffort === undefined) return new Set([SESSION_MODEL_BEFORE_EFFORT]);
+		return new Set(this.#observed?.models ?? MODELS_BEFORE_LIST);
+	}
+
+	#firstOf(provider: SessionProvider): string | undefined {
+		const accepted = this.#accepted();
+		return SESSION_MODELS.find((model) => model.provider === provider && accepted.has(model.id))?.id;
 	}
 
 	#toggleList(): void {
@@ -305,8 +313,8 @@ export class ComposerModels {
 
 	#switchProvider(): void {
 		const to: SessionProvider = this.#provided() === "openai" ? "anthropic" : "openai";
-		const first = SESSION_MODELS.find((model) => model.provider === to);
-		if (first) void this.#save(this.#selection(first.id), this.#provider);
+		const first = this.#firstOf(to);
+		if (first) void this.#save(this.#selection(first), this.#provider);
 	}
 
 	#selection(modelId: string): SessionModelSelection {
@@ -446,7 +454,7 @@ export class ComposerModels {
 		const id = this.#observed?.modelId;
 		// A group chat with no model chosen runs each agent on its own model; nothing is ticked.
 		const name = id
-			? (SESSION_MODELS.find((item) => item.id === id)?.name ?? id)
+			? modelName(id)
 			: this.#observed
 				? t("Each agent's own")
 				: undefined;
@@ -455,7 +463,6 @@ export class ComposerModels {
 		const tier = this.#observed?.serviceTier;
 		const fast = tier === "fast";
 		const provided = this.#provided();
-		const offered = this.#offered();
 		const summary = name && [name, effort, provided === "openai" && fast && t("Fast")].filter(Boolean).join(" · ");
 		this.button.disabled = this.#locked || !this.#canRead();
 		this.#label.textContent = this.pending
@@ -486,8 +493,9 @@ export class ComposerModels {
 		this.#pick.setAttribute("aria-label", name ? t("Choose model ({name})", { name }) : t("Choose model"));
 
 		const other: SessionProvider = provided === "openai" ? "anthropic" : "openai";
-		this.#provider.hidden = !offered.has("anthropic") && provided !== "anthropic";
-		this.#provider.disabled = unavailable || this.#provider.hidden || !offered.has(other);
+		const switchable = this.#firstOf(other) !== undefined;
+		this.#provider.hidden = !switchable && provided !== "anthropic";
+		this.#provider.disabled = unavailable || this.#provider.hidden || !switchable;
 		const switchTo = other === "anthropic" ? t("Switch to Claude") : t("Switch to GPT");
 		this.#provider.setAttribute("aria-label", switchTo);
 		this.#provider.title =
@@ -498,20 +506,13 @@ export class ComposerModels {
 		this.#providerMark.style.setProperty("mask-image", `url("${PROVIDER_MARKS[provided]}")`);
 		this.#providerMark.style.setProperty("-webkit-mask-image", `url("${PROVIDER_MARKS[provided]}")`);
 
-		// A cloud that does not honour per-conversation effort omits it, and
-		// accepts only GPT-6 Astra of the listed models. Hidden choices stay
-		// disabled so arrow keys skip them.
-		const beforeEffort = this.#observed !== undefined && effortId === undefined;
+		const accepted = this.#accepted();
 		this.#list.hidden = !this.#listOpen;
 		for (const [index, choice] of this.#choices.entries()) {
 			const model = SESSION_MODELS[index]!;
-			choice.hidden = model.provider !== provided;
+			choice.hidden = model.provider !== provided || !accepted.has(model.id);
 			choice.setAttribute("aria-checked", String(model.id === id));
-			choice.disabled =
-				unavailable ||
-				choice.hidden ||
-				this.#list.hidden ||
-				(beforeEffort && model.id !== SESSION_MODEL_BEFORE_EFFORT);
+			choice.disabled = unavailable || choice.hidden || this.#list.hidden;
 		}
 
 		const efforts = this.#efforts();
