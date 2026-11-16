@@ -97,6 +97,7 @@ begin
 	return v_binding;
 end $$;
 
+select pg_temp.cm_activate(false) \g /dev/null
 insert into public.qorpera_claude_sign_in_members(user_id) values (pg_temp.cm_owner());
 select pg_temp.c4_login('12810000-0000-4000-8000-0000000000c1', pg_temp.cm_owner()) \g /dev/null
 

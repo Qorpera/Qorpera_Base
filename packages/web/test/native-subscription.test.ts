@@ -93,6 +93,35 @@ describe("native subscription browser transport", () => {
 		);
 		expect(f.fetch).toHaveBeenCalledTimes(2);
 	});
+	it("counts the member's chats on a login and moves them all to another of their logins only as asked", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json(3));
+		expect(await f.client.countSessionsOnAccount!(id(94), f.view.signal)).toBe(3);
+		const [countUrl, count] = f.fetch.mock.calls[0]!;
+		expect(countUrl).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_count_member_sessions_on_account");
+		expect(JSON.parse(String(count?.body))).toEqual({ p_profile_id: profileA.profileId, p_connection_id: id(94) });
+		expect(count).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
+		f.fetch.mockResolvedValueOnce(Response.json(2));
+		expect(await f.client.chooseSessionsAccount!(id(94), id(95), f.view.signal)).toBe(2);
+		const [moveUrl, move] = f.fetch.mock.calls[1]!;
+		expect(moveUrl).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_choose_member_sessions_account");
+		expect(JSON.parse(String(move?.body))).toEqual({
+			p_profile_id: profileA.profileId,
+			p_from_connection_id: id(94),
+			p_connection_id: id(95),
+		});
+		f.fetch.mockResolvedValueOnce(Response.json("2"));
+		await expect(f.client.chooseSessionsAccount!(id(94), id(95))).rejects.toThrow(
+			"Invalid conversation account response",
+		);
+		f.fetch.mockResolvedValueOnce(Response.json(-1));
+		await expect(f.client.countSessionsOnAccount!(id(94))).rejects.toThrow("Invalid conversation account response");
+		await expect(f.client.chooseSessionsAccount!("invalid", id(95))).rejects.toThrow(
+			"Invalid conversation account request",
+		);
+		await expect(f.client.countSessionsOnAccount!("invalid")).rejects.toThrow("Invalid conversation account request");
+		expect(f.fetch).toHaveBeenCalledTimes(4);
+	});
 	it("rejects malformed account selections and does not send after an account switch", async () => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json({ access_token: "private" }));
