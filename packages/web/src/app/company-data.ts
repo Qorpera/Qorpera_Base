@@ -1,5 +1,7 @@
 import type {
 	CloudMemberDataAnswer,
+	CloudMemberDataChanges,
+	CloudMemberDataChangesAsked,
 	CloudMemberDataDescription,
 	CloudMemberDataEdit,
 	CloudMemberDataEdited,
@@ -18,6 +20,7 @@ export interface CompanyDataCalls {
 	): Promise<CloudMemberDataPage>;
 	query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer>;
 	edit(edit: CloudMemberDataEdit, signal: AbortSignal): Promise<CloudMemberDataEdited>;
+	changes(asked: CloudMemberDataChangesAsked, signal: AbortSignal): Promise<CloudMemberDataChanges>;
 	watchTables(watches: readonly CloudMemberDataWatched[], signal: AbortSignal): Promise<CloudMemberDataWatchedAnswer>;
 }
 

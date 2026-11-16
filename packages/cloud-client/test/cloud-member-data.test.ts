@@ -4,6 +4,7 @@ import {
 	CloudMemberData,
 	CloudMemberDataError,
 	parseCloudMemberDataAnswer,
+	parseCloudMemberDataChanges,
 	parseCloudMemberDataDescription,
 	parseCloudMemberDataPage,
 } from "../src/cloud-member-data.ts";
@@ -504,6 +505,72 @@ describe("a member's questions to the company's databases", () => {
 					"an answer this page does not know",
 				);
 			expect(parseCloudMemberDataPage({ ...page, rows: [], tooLarge: true })).toMatchObject({ tooLarge: true });
+		});
+
+		it("reads what changed, page by page, with the days counted in the member's time zone", async () => {
+			const write = {
+				at: "2026-11-15T10:00:00.000Z",
+				by: "agent",
+				id: "63000000-0000-4000-8000-0000000000a1",
+				via: "close",
+				tables: [{ table: "orders", op: "change", rows: 1 }],
+				lines: [
+					{
+						table: "orders",
+						op: "change",
+						rows: 1,
+						key: { id: 1 },
+						before: { state: "open" },
+						after: { state: "done" },
+						columns: ["state"],
+					},
+				],
+			};
+			const changes = {
+				writes: [write, { ...write, by: null, id: null, via: null, lines: [], more: true, many: true }],
+				more: true,
+				next: "42",
+				days: [{ day: "2026-11-15", by: "agent", id: write.id, rows: 1 }],
+				asOf: "2026-11-15T10:00:01.000Z",
+			};
+			const { fetch, sent } = fakeFetch([
+				[200, { need: [{ path: "data/shop/database.toml", sha256: sha(toml) }] }],
+				[200, changes],
+				[200, { writes: [], more: false, asOf: "2026-11-15T10:00:02.000Z" }],
+			]);
+			const data = client(fetch, { "data/shop/database.toml": toml }).data;
+			expect(await data.changes({ database: "shop", zone: "Europe/Copenhagen" }, signal())).toEqual(changes);
+			expect(sent[0]?.url.endsWith(`/v1/company-data/${env}/changes`)).toBe(true);
+			expect(sent[0]?.body).toEqual({ database: "shop", zone: "Europe/Copenhagen" });
+			expect(sent[1]?.body).toEqual({ database: "shop", zone: "Europe/Copenhagen", texts: { [sha(toml)]: toml } });
+			expect(await data.changes({ database: "shop", after: "42" }, signal())).toEqual({
+				writes: [],
+				more: false,
+				asOf: "2026-11-15T10:00:02.000Z",
+			});
+			expect(sent[2]?.body).toEqual({ database: "shop", after: "42" });
+			expect(parseCloudMemberDataChanges({ ...changes, days: null }).days).toBeNull();
+			await expect(data.changes({ database: "shop", after: "0" }, signal())).rejects.toThrow("after is the next");
+			await expect(data.changes({ database: "shop", zone: "../x" }, signal())).rejects.toThrow("time zone");
+			await expect(data.changes({ database: "Shop" }, signal())).rejects.toThrow("Name a database");
+			for (const odd of [
+				{ ...changes, next: undefined },
+				{ ...changes, more: false },
+				{ ...changes, next: "x" },
+				{ ...changes, writes: [{ ...write, by: "someone" }] },
+				{ ...changes, writes: [{ ...write, at: "never" }] },
+				{ ...changes, writes: [{ ...write, more: false }] },
+				{ ...changes, writes: [{ ...write, many: 1 }] },
+				{ ...changes, writes: [{ ...write, tables: [{ table: "orders", op: "drop", rows: 1 }] }] },
+				{ ...changes, writes: [{ ...write, lines: [{ ...write.lines[0], before: [1] }] }] },
+				{ ...changes, writes: [{ ...write, lines: [{ ...write.lines[0], extra: 1 }] }] },
+				{ ...changes, days: [{ day: "15 Nov", by: "agent", id: null, rows: 1 }] },
+				{ ...changes, days: [{ day: "2026-11-15", by: null, id: null, rows: 1 }] },
+				{ ...changes, extra: true },
+			])
+				expect(() => parseCloudMemberDataChanges(odd), JSON.stringify(odd).slice(0, 120)).toThrow(
+					"an answer this page does not know",
+				);
 		});
 
 		it("writes an edit and says a row changed since in plain words, with the row as it is now", async () => {
