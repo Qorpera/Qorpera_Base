@@ -157,7 +157,7 @@ export class CodeDownload {
 						? [
 								{
 									label: t("The whole folder"),
-									hint: t("Everything in this folder, in one file"),
+									hint: t("The files and the change records, in one file"),
 									icon: "folder",
 									select: () => this.#wholeFolder(),
 								},

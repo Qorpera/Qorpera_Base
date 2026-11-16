@@ -563,7 +563,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		).toEqual([
 			["The files", "Everything as it is now, in one file"],
 			["With full history", "For a developer"],
-			["The whole folder", "Everything in this folder, in one file"],
+			["The whole folder", "The files and the change records, in one file"],
 		]);
 		// The files are the choice a key press takes.
 		expect(document.activeElement).toBe(rows[0]);
@@ -879,7 +879,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 			expect(rows.map((row) => row.textContent)).toEqual([
 				"FilerneAlt, som det er nu, i én fil",
 				"Med hele historikkenTil en udvikler",
-				"Hele mappenAlt i denne mappe, i én fil",
+				"Hele mappenFilerne og ændringerne, i én fil",
 			]);
 			rows.find((row) => row.textContent?.startsWith(label))!.click();
 			await settle();
