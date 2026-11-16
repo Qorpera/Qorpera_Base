@@ -81,7 +81,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-16",
 		title: "The company's databases from a machine",
-		text: "A program on a company machine can now reach the company's databases with the command data: data describe, data query (a question, or --sql with one select), data change (a named change) and data apply, each printing JSON, as data_describe, data_query, data_change and data_apply do and with the same limits. A script, a build or a small server on a machine can read and change rows itself. A machine made before the command existed does not have it: start a new one for that work.",
+		text: "A program on a company machine can now reach the company's databases with the command data: data describe, data query (a question, or --sql with one select), data change (a named change) and data apply, each printing JSON. It acts as the machine's own company folder: the databases its /company shows, with :viewer the member the machine was started for. A script, a build or a small server on a machine can read and change rows itself. A machine made before the command existed does not have it: start a new one for that work.",
 	},
 	{
 		id: "claude-in-conversations",

@@ -306,7 +306,11 @@ ${sentences(
 		? "data_apply applies waiting steps, data_describe shows what a database holds, data_query asks. A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card."
 		: "data_describe shows what a database holds, and data_query asks.",
 	has("machine_run") &&
-		"A program on a company machine reaches these databases with the command data, as these tools do and with your limits: data describe [<database>], data query <database> <question> name=value (or --sql '<one select>'), data change <database> <change> name=value and data apply <database>; it prints JSON, name:=<JSON> gives a number, true, false or null, and a step that waits for a member's yes still goes through data_apply. A machine made before the command existed answers data: command not found: start a new machine for that work.",
+		`A program on a company machine reaches these databases with the command data, as the machine's own company folder: the databases its /company shows (never one in a member's private folder), and :viewer is the member the machine was started for. ${
+			has("data_apply")
+				? "data describe [<database>], data query <database> <question> name=value (or --sql '<one select>'), data change <database> <change> name=value and data apply <database> print JSON; name:=<JSON> gives a number, true, false or null, and a step that waits for a member's yes still goes through data_apply."
+				: "data describe [<database>] and data query <database> <question> name=value (or --sql '<one select>') print JSON; name:=<JSON> gives a number, true, false or null. Changing rows is for the agent that sent you."
+		} A machine made before the command existed answers data: command not found: start a new machine for that work.`,
 	'Members see a database\'s whole tables when they may read its folder, and change rows there when they may write it; a database whose rows are private to each member (its questions name :viewer) says members = "writers" under [list] in its database.toml, so only those who may write the folder see whole tables.',
 	"Never put a secret in a step, a query, a change or a row.",
 	member &&
