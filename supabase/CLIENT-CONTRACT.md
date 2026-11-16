@@ -225,6 +225,27 @@ opens it. Clients never call it; anything but a live, unredeemed pass answers nu
   usage last. `qorpera_list_member_native_execution_connections` reports each
   login's `recent_turns` (`{refused, completed}`), so a client orders its own list
   the same way.
+- `qorpera_count_member_sessions_on_account(p_profile_id, p_connection_id)` and
+  `qorpera_choose_member_sessions_account(p_profile_id, p_from_connection_id,
+  p_connection_id)` (20260930783000, one click for every chat on a login; Jonas,
+  16 Nov 2026): count answers how many of the caller's own open conversations
+  that they can read pay with that login of theirs now (0 for a login that is not
+  theirs), as select names a conversation's login (the login of their oldest turn
+  waiting there at a usage limit, else the one saved for it). Choose moves each
+  of those that pay with `from` to
+  `p_connection_id`, through choose's own pick for that conversation, so the same
+  rules hold (one of the caller's own logins that could pay now, whatever its
+  usage; the conversation's waiting turns go with it, never onto or off a ChatGPT
+  plan), and answers how many it moved: 0 when none is left on `from`, or when
+  `from` is `p_connection_id`. It takes the conversations' rows in id order and
+  decides each again under its lock, so a pick made meanwhile in another tab
+  stands and two such calls never move a conversation twice. 22023 "This login
+  cannot pay for your conversation" for any other login (checked before anything
+  moves), 42501 without a signed-in member. Other members' conversations, closed
+  ones and agents' routine runs are never touched. Nothing moves without the
+  member's click: the web offers it under a conversation whose own login is at
+  its limit or cannot pay, once another of their conversations waits on the same
+  login.
 - At a usage limit (20260930575000) the conversation still keeps its login, and a
   client may send on it: the message waits queued and goes on by itself, on the
   same login, once the limit resets or a usage reading shows room. The usage-limit notice (`provider_usage_limit`) also

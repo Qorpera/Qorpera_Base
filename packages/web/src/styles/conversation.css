@@ -213,6 +213,8 @@
 .session-execution > p, .session-execution > .notice, .session-execution > details { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
 .session-execution details { max-height: 180px; overflow-y: auto; }
 .session-execution summary { cursor: pointer; }
+.session-execution-all { margin-top: 6px; }
+.session-execution-all .btn { max-width: 100%; padding-block: 4px; white-space: normal; text-align: start; overflow-wrap: anywhere; }
 .composer { flex: none; width: 100%; padding: 8px 16px 10px; }
 .composer[hidden] { display: none; }
 /* The thread's placeholder (ui/skeleton.ts): one-line bubbles on the real bubbles'

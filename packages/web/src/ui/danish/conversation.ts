@@ -399,6 +399,12 @@ export const CONVERSATION: Record<string, string> = {
 	"{count} h": "{count} t.",
 	"{count} days": "{count} dage",
 	"Use {account}": "Brug {account}",
+	"Use {account} for all {count} chats waiting on this login":
+		"Brug {account} til alle {count} chats, der venter på dette login",
+	"{count} chats now use {account}.": "{count} chats bruger nu {account}.",
+	"{count} chat now uses {account}.": "{count} chat bruger nu {account}.",
+	"No chats were waiting on that login any more.": "Ingen chats ventede længere på det login.",
+	"The chats could not be moved. Try again.": "Chattene kunne ikke flyttes. Prøv igen.",
 	"Model account {number}": "Modelkonto {number}",
 
 	// The Login page of the composer's menu (app/views/composer-logins.ts)

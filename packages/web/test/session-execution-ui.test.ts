@@ -93,6 +93,7 @@ function setup(
 	selectSessionAccount?: WebNativeSubscription["selectSessionAccount"],
 	refreshAccountMetadata?: WebNativeSubscription["refreshAccountMetadata"],
 	chooseSessionAccount?: WebNativeSubscription["chooseSessionAccount"],
+	more: Pick<WebNativeSubscription, "countSessionsOnAccount" | "chooseSessionsAccount"> = {},
 ) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
@@ -118,6 +119,7 @@ function setup(
 		...(selectSessionAccount ? { selectSessionAccount } : {}),
 		...(refreshAccountMetadata ? { refreshAccountMetadata } : {}),
 		...(chooseSessionAccount ? { chooseSessionAccount } : {}),
+		...more,
 		requestSessionTurn: vi.fn(),
 		createMemberSponsor: vi.fn(),
 		revokeConnection: vi.fn(),
@@ -965,6 +967,111 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
 		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("moves every chat waiting on the exhausted login to another of the member's logins with one click", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const countSessionsOnAccount = vi.fn(async () => 3);
+		const moving = deferred<number>();
+		const chooseSessionsAccount = vi.fn(() => moving.promise);
+		const f = setup(true, withUsage([80, 40]), select, undefined, choose, {
+			countSessionsOnAccount,
+			chooseSessionsAccount,
+		});
+		await settle();
+		expect(countSessionsOnAccount).not.toHaveBeenCalled();
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		expect(countSessionsOnAccount).toHaveBeenCalledWith(id(90), expect.any(AbortSignal));
+		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
+		expect(buttonNamed(f.view, "Use Model account 1")).toBeDefined();
+		const all = buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")!;
+		expect(all.disabled).toBe(false);
+		expect(chooseSessionsAccount).not.toHaveBeenCalled();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(false);
+		select.mockResolvedValue(id(91));
+		all.click();
+		await settle();
+		expect(chooseSessionsAccount).toHaveBeenCalledExactlyOnceWith(id(90), id(91), expect.any(AbortSignal));
+		expect(buttonNamed(f.view, "Use Model account 1")).toBeUndefined();
+		expect(buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")).toBeUndefined();
+		expect(f.send().disabled).toBe(true);
+		moving.resolve(3);
+		await settle();
+		expect(choose).not.toHaveBeenCalled();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.view.el.textContent).toContain("3 chats now use Model account 1.");
+		expect(f.view.el.textContent).not.toContain("Or use another of your logins now.");
+		expect(buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")).toBeUndefined();
+		expect(f.send().disabled).toBe(false);
+	});
+
+	it("offers no move of all chats while no other chat waits on the login", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const countSessionsOnAccount = vi.fn(async () => 1);
+		const chooseSessionsAccount = vi.fn(async () => 1);
+		const f = setup(true, withUsage([80, 40]), select, undefined, choose, {
+			countSessionsOnAccount,
+			chooseSessionsAccount,
+		});
+		await settle();
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		expect(countSessionsOnAccount).toHaveBeenCalledOnce();
+		expect(buttonNamed(f.view, "Use Model account 1")).toBeDefined();
+		expect(f.view.el.textContent).not.toContain("chats waiting on this login");
+		countSessionsOnAccount.mockResolvedValue(2);
+		refresh();
+		await settle();
+		expect(buttonNamed(f.view, "Use Model account 1 for all 2 chats waiting on this login")).toBeDefined();
+		expect(chooseSessionsAccount).not.toHaveBeenCalled();
+	});
+
+	it("says so when the chats could not be moved, and keeps the chat's login", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const countSessionsOnAccount = vi.fn(async () => 2);
+		const chooseSessionsAccount = vi.fn(async (): Promise<number> => {
+			throw new Error("Cloud execution response was unavailable.");
+		});
+		const f = setup(true, withUsage([80, 40]), select, undefined, choose, {
+			countSessionsOnAccount,
+			chooseSessionsAccount,
+		});
+		await settle();
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		buttonNamed(f.view, "Use Model account 1 for all 2 chats waiting on this login")!.click();
+		await settle();
+		expect(chooseSessionsAccount).toHaveBeenCalledOnce();
+		expect(f.view.el.textContent).toContain("The chats could not be moved. Try again.");
+		expect(f.view.el.textContent).not.toContain("now use");
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(choose).not.toHaveBeenCalled();
+	});
+
+	it("says so when no chat was left on the login to move", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const f = setup(true, withUsage([80, 40]), select, undefined, vi.fn(), {
+			countSessionsOnAccount: vi.fn(async () => 2),
+			chooseSessionsAccount: vi.fn(async () => 0),
+		});
+		await settle();
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		select.mockResolvedValue(id(91));
+		buttonNamed(f.view, "Use Model account 1 for all 2 chats waiting on this login")!.click();
+		await settle();
+		expect(f.view.el.textContent).toContain("No chats were waiting on that login any more.");
 	});
 
 	it("names no account of the conversation once the cloud gives it none", async () => {

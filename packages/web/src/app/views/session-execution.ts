@@ -123,6 +123,9 @@ export class SessionExecutionView {
 	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Account reads that failed in a row; the next read waits by ACCOUNT_RETRY_DELAYS_MS. */
 	#failures = 0;
+	#sameLogin: { connectionId: string; count: number } | undefined;
+	#countRequest: AbortController | undefined;
+	#moved: string | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -274,6 +277,7 @@ export class SessionExecutionView {
 		this.#busy = false;
 		this.#request = undefined;
 		this.#choose();
+		void this.#countSameLogin();
 		this.#render();
 		this.#changed();
 		this.#scheduleRefresh(
@@ -578,6 +582,47 @@ export class SessionExecutionView {
 		return !this.#lifetime.signal.aborted && this.#own() === connectionId && this.canSend;
 	}
 
+	#stuckLogin(): string | undefined {
+		const own = this.#own();
+		const available = this.#available();
+		if (
+			!own ||
+			!this.#serverSelection ||
+			!this.#native.chooseSessionAccount ||
+			!this.#native.countSessionsOnAccount ||
+			!this.#native.chooseSessionsAccount ||
+			!this.#observed?.connections.some((connection) => connection.connectionId === own) ||
+			available.includes(own) ||
+			!available.length
+		)
+			return undefined;
+		return own;
+	}
+
+	async #countSameLogin(): Promise<void> {
+		this.#countRequest?.abort();
+		this.#countRequest = undefined;
+		const own = this.#stuckLogin();
+		if (!own || !this.#native.countSessionsOnAccount) {
+			this.#sameLogin = undefined;
+			return;
+		}
+		this.#moved = undefined;
+		const request = new AbortController();
+		this.#countRequest = request;
+		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+		let count: number | undefined;
+		try {
+			count = await this.#native.countSessionsOnAccount(own, signal);
+		} catch {
+			count = undefined;
+		}
+		if (signal.aborted) return;
+		this.#countRequest = undefined;
+		this.#sameLogin = count === undefined ? undefined : { connectionId: own, count };
+		this.#render();
+	}
+
 	/** The conversation's own login: the cloud's choice where the cloud chooses, else the one it keeps. */
 	#own(): string | undefined {
 		return this.#serverSelection
@@ -605,6 +650,7 @@ export class SessionExecutionView {
 	 * taken; the cloud's choice has been read again by then. */
 	async #pick(connectionId: string): Promise<boolean> {
 		if (this.#lifetime.signal.aborted || this.#busy || !this.#observed) return false;
+		this.#moved = undefined;
 		if (!this.#serverSelection) {
 			let picked = false;
 			try {
@@ -639,6 +685,36 @@ export class SessionExecutionView {
 		return picked;
 	}
 
+	async #pickAll(fromConnectionId: string, connectionId: string, account: string): Promise<void> {
+		if (this.locked || this.#lifetime.signal.aborted || !this.#native.chooseSessionsAccount) return;
+		this.#busy = true;
+		this.#moved = undefined;
+		this.#render();
+		this.#changed();
+		let moved: number | undefined;
+		try {
+			moved = await this.#native.chooseSessionsAccount(fromConnectionId, connectionId, this.#lifetime.signal);
+		} catch {
+			this.#error = t("The chats could not be moved. Try again.");
+		} finally {
+			this.#busy = false;
+		}
+		if (this.#lifetime.signal.aborted) return;
+		if (moved === undefined) {
+			this.#render();
+			this.#changed();
+			return;
+		}
+		this.#sameLogin = undefined;
+		this.#moved =
+			moved === 0
+				? t("No chats were waiting on that login any more.")
+				: moved === 1
+					? t("{count} chat now uses {account}.", { count: moved, account })
+					: t("{count} chats now use {account}.", { count: moved, account });
+		await this.refresh();
+	}
+
 	#render(): void {
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		const canWrite = this.#canWrite();
@@ -657,6 +733,8 @@ export class SessionExecutionView {
 			conversation.sending,
 			Boolean(conversation.retrySend),
 			this.canSend,
+			this.#sameLogin,
+			this.#moved,
 		]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
@@ -664,6 +742,7 @@ export class SessionExecutionView {
 		replace(
 			this.el,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
+			this.#moved ? h("p", { class: "muted", role: "status" }, this.#moved) : null,
 			conversation.retrySend
 				? h(
 						"div",
@@ -745,7 +824,8 @@ export class SessionExecutionView {
 		if (this.#serverSelection && !this.#native.chooseSessionAccount) return null;
 		const available = this.#available();
 		const others = available.filter((connectionId) => connectionId !== own);
-		if (!others.length) return null;
+		const [first] = others;
+		if (!first) return null;
 		return h(
 			"div",
 			{ class: "session-execution-choice" },
@@ -757,6 +837,21 @@ export class SessionExecutionView {
 					() => void this.#pick(connectionId),
 					{ small: true, disabled },
 				),
+			),
+			this.#allChats(own, first, this.#account(observed, first, available), disabled),
+		);
+	}
+
+	#allChats(own: string, connectionId: string, account: string, disabled: boolean): HTMLElement | null {
+		const count = this.#sameLogin?.connectionId === own ? this.#sameLogin.count : 0;
+		if (count < 2 || this.#stuckLogin() !== own) return null;
+		return h(
+			"div",
+			{ class: "session-execution-all" },
+			button(
+				t("Use {account} for all {count} chats waiting on this login", { account, count }),
+				() => void this.#pickAll(own, connectionId, account),
+				{ small: true, disabled },
 			),
 		);
 	}
