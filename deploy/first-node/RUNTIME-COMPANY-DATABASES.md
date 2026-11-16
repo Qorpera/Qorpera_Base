@@ -560,6 +560,15 @@ text above:
   actors' lines, and the watcher says so in its log.
 - **The edge function** lets `changes` through, with 1 MiB, as `rows` (it may carry the question texts the list's rule
   reads).
+- **The web's view** (part f2, on part e): a "What changed" button beside a database's tabs, for a member who gets its
+  list. It draws the last two weeks as the canvas does, in three bands: the member's agents (an agent's or a
+  machine's write, and a step an agent applied), the member, and the company's other members. A band counts the rows
+  changed that day. Under it, the chosen day's writes (the latest day with changes at first), each one sentence with
+  who and when: "Product changed State and Work on Batavus Finez", "You added Winther Kangaroo to Repairs". The canvas's
+  sentences read the meaning of a change ("marked Emma's Gazelle ready"); the view says what the record holds: the
+  columns set and their new values, a row named by its list title when the record or the open list holds it, else
+  "row 3 of Repairs", and a named change's name after a dot. The canvas's third band, the webshop, waits for public
+  changes (§8); its place holds the other members.
 
 ## 6. Agents
 
