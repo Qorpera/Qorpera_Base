@@ -310,7 +310,7 @@ ${sentences(
 			has("data_apply")
 				? "data describe [<database>], data query <database> <question> name=value (or --sql '<one select>'), data change <database> <change> name=value and data apply <database> print JSON; name:=<JSON> gives a number, true, false or null, and a step that waits for a member's yes still goes through data_apply."
 				: "data describe [<database>] and data query <database> <question> name=value (or --sql '<one select>') print JSON; name:=<JSON> gives a number, true, false or null. Changing rows is for the agent that sent you."
-		} A machine made before the command existed answers data: command not found, and a start of the same size takes such a machine again (its answer says reused): start one of another size, or delete the old one first when nothing on its disk is needed.`,
+		} A machine made before the command existed answers data: command not found, and a start with the same cpus and memory and no larger disk takes such a machine again (its answer says reused): start one with other cpus or memory or a larger disk, or delete each old one the answer names when nothing on its disk is needed.`,
 	'Members see a database\'s whole tables when they may read its folder, and change rows there when they may write it; a database whose rows are private to each member (its questions name :viewer) says members = "writers" under [list] in its database.toml, so only those who may write the folder see whole tables.',
 	"Never put a secret in a step, a query, a change or a row.",
 	member &&

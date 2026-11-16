@@ -940,7 +940,7 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	);
 	expect(full).toContain("data change <database> <change> name=value and data apply <database> print JSON");
 	expect(full).toContain(
-		"a start of the same size takes such a machine again (its answer says reused): start one of another size, or delete the old one first when nothing on its disk is needed.",
+		"a start with the same cpus and memory and no larger disk takes such a machine again (its answer says reused): start one with other cpus or memory or a larger disk, or delete each old one the answer names when nothing on its disk is needed.",
 	);
 	expect(noMachines).not.toContain("the command data");
 	expect(noMachines).toContain("\n# Company databases\n");
@@ -2106,7 +2106,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "421b1de3f717fc0ff56993d35a425029115c299820836a727cc0ec7aef41d54b",
+			instructions: "cc6891e6e4af79dd12f1398b671114113b34592163983c36cd6b700f71de0e7b",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2114,7 +2114,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "eb7b3613c80f5239e2df6d9fb20fdbfc67777b932f36ae070856333dcb4c8687",
+			instructions: "32386b9661d6e8b9fb58662ad918852b70b019b1306c5d23af50260a02a83664",
 			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
@@ -2122,7 +2122,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "421b1de3f717fc0ff56993d35a425029115c299820836a727cc0ec7aef41d54b",
+			instructions: "cc6891e6e4af79dd12f1398b671114113b34592163983c36cd6b700f71de0e7b",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
