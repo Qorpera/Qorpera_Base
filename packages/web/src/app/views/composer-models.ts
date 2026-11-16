@@ -30,7 +30,6 @@ const PROVIDER_MARKS: Record<SessionProvider, string> = {
 
 const EFFORT_SETTLE_MS = 450;
 
-/** An effort's name in the interface language; one without a name here (xhigh, max) reads as its id. */
 export function effortName(effort: string): string {
 	return Object.hasOwn(EFFORT_NAMES, effort) ? t(EFFORT_NAMES[effort as keyof typeof EFFORT_NAMES]) : effort;
 }
@@ -304,11 +303,9 @@ export class ComposerModels {
 	#toggleList(): void {
 		this.#listOpen = !this.#listOpen;
 		this.#render();
-		if (this.#listOpen)
-			(
-				this.#choices.find((choice) => choice.getAttribute("aria-checked") === "true" && !choice.hidden) ??
-				this.#choices.find((choice) => !choice.hidden && !choice.disabled)
-			)?.focus();
+		if (!this.#listOpen) return;
+		const usable = this.#choices.filter((choice) => !choice.hidden && !choice.disabled);
+		(usable.find((choice) => choice.getAttribute("aria-checked") === "true") ?? usable[0] ?? this.#pick).focus();
 	}
 
 	#switchProvider(): void {
@@ -506,9 +503,9 @@ export class ComposerModels {
 		this.#list.hidden = !this.#listOpen;
 		for (const [index, choice] of this.#choices.entries()) {
 			const model = SESSION_MODELS[index]!;
-			choice.hidden = model.provider !== provided || !accepted.has(model.id);
+			choice.hidden = model.provider !== provided || (!accepted.has(model.id) && model.id !== id);
 			choice.setAttribute("aria-checked", String(model.id === id));
-			choice.disabled = unavailable || choice.hidden || this.#list.hidden;
+			choice.disabled = unavailable || choice.hidden || this.#list.hidden || !accepted.has(model.id);
 		}
 
 		const efforts = this.#efforts();

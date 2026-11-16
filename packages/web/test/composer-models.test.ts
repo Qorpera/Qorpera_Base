@@ -479,6 +479,34 @@ describe("composer model selector", () => {
 			localStorage.clear();
 		}
 	});
+	it("keeps a Claude conversation's model in the list, not pickable, once the member lost Claude", async () => {
+		const f = await setup();
+		f.models.set(session.sessionId, {
+			sessionId: session.sessionId,
+			modelId: "claude-opus-5-5",
+			reasoningEffort: "max",
+			models: GPT_OFFERED,
+			version: 0,
+		});
+		const panel = await open(f.view);
+		expect(part(panel, "pick").textContent).toBe("Opus 5.5");
+		const provider = part(panel, "provider") as HTMLButtonElement;
+		expect(provider.hidden).toBe(false);
+		expect(provider.disabled).toBe(false);
+		part(panel, "pick").click();
+		expect(listed(panel)).toEqual(["Opus 5.5"]);
+		expect(choice(panel, "Opus 5.5").getAttribute("aria-checked")).toBe("true");
+		expect(choice(panel, "Opus 5.5").disabled).toBe(true);
+		expect(document.activeElement).toBe(part(panel, "pick"));
+		provider.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ modelId: "gpt-6-astra", reasoningEffort: "high" },
+			0,
+			expect.any(AbortSignal),
+		);
+	});
 	it("shows no Claude switch where the cloud names no models", async () => {
 		const f = await setup();
 		f.read.mockImplementation(async (sessionId: string) => ({
