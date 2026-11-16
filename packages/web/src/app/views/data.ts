@@ -659,6 +659,7 @@ class DataListView {
 	}
 
 	#drawTop(): void {
+		if (this.#changing && !this.#current()?.list) this.#changing = false;
 		const described = this.#described;
 		const databases = described?.databases ?? [];
 		const database = this.#current();

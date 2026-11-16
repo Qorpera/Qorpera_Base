@@ -342,6 +342,48 @@ describe("a kept question that takes values", () => {
 		]);
 	});
 
+	it("hides its fields while What changed is open, and gives them back with their values", async () => {
+		const { container } = await open({ send: vi.fn() });
+		tab(container, "Handed in since").click();
+		await settle();
+		const [since] = [...container.querySelectorAll<HTMLInputElement>(".data-param-input")];
+		fill(since!, "2026-10-01", "change");
+		await settle();
+		expect(container.querySelector<HTMLElement>(".data-params")?.hidden).toBe(false);
+		container.querySelector<HTMLButtonElement>(".data-changes-open")?.click();
+		await settle();
+		expect(container.querySelector(".data-changes")).not.toBeNull();
+		expect(container.querySelector<HTMLElement>(".data-params")?.hidden).toBe(true);
+		expect(container.querySelector<HTMLElement>(".data-ask-box")?.hidden).toBe(true);
+		tab(container, "Handed in since").click();
+		await settle();
+		expect(container.querySelector(".data-changes")).toBeNull();
+		expect(container.querySelector<HTMLElement>(".data-params")?.hidden).toBe(false);
+		expect([...container.querySelectorAll<HTMLInputElement>(".data-param-input")].map((one) => one.value)).toEqual([
+			"2026-10-01",
+			"",
+		]);
+		expect(container.querySelector<HTMLElement>(".data-ask-box")?.hidden).toBe(false);
+	});
+
+	it("gives a question its fields and Ask back when What changed closes because the list went away", async () => {
+		const { container, controller } = await open({ send: vi.fn() });
+		tab(container, "Handed in since").click();
+		await settle();
+		container.querySelector<HTMLButtonElement>(".data-changes-open")?.click();
+		await settle();
+		expect(container.querySelector<HTMLElement>(".data-params")?.hidden).toBe(true);
+		const now = described();
+		controller.store.set({
+			companyData: { ...now, databases: now.databases.map((one) => ({ ...one, list: false })) },
+		});
+		await settle();
+		expect(container.querySelector(".data-changes")).toBeNull();
+		expect(container.querySelector<HTMLElement>(".data-params")?.hidden).toBe(false);
+		expect(container.querySelectorAll(".data-param-input")).toHaveLength(2);
+		expect(container.querySelector<HTMLElement>(".data-ask-box")?.hidden).toBe(false);
+	});
+
 	it("asks with the list's values in what the note is about", async () => {
 		const send: DataAskSend = vi.fn(async () => ({ sent: true, href: "#/c/x" }));
 		const { container } = await open({ send });
