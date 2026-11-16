@@ -589,13 +589,14 @@ label > input, label > select { font-weight: 400; }
  * thread caption share one clock (agent-activity.ts), so they move together;
  * the caption rebuilds its letters when shown (conversation.css pauses it while hidden). */
 .status-wave-word { display: inline-block; max-width: 100%; }
-.status-wave-letter { display: inline-block; color: inherit; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); }
+.status-wave-letter { position: relative; display: inline-block; color: inherit; }
+.status-wave-letter::after { content: attr(data-letter); content: attr(data-letter) / ""; position: absolute; top: 0; left: 0; color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; opacity: 0; pointer-events: none; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); }
 .rail-row.active, .rail-pin.active, .cofounder-home.active { --status-crest: #fff; }
 @keyframes status-ink-wave {
-	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent; }
-	30% { color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
+	0%, 10%, 50%, 100% { opacity: 0; }
+	30% { opacity: 1; }
 }
-@media (prefers-reduced-motion: reduce) { .status-wave-letter { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .status-wave-letter::after { animation: none; } }
 /* RailLayout sets rail-compact only where the rail stands beside the page, never on the drawer. */
 .rail-compact .rail { padding-inline: 7px; }
 .rail-compact .rail-toolbar { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }

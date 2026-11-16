@@ -1006,9 +1006,16 @@ function advance(clock: Clock, activity: Activity, passed: number, now: number):
 }
 /** How long a one-play act waits for its figure to come on screen before it is dropped, in milliseconds. */
 const MOMENT_WAITS = 2000;
+// WHY: 13 ms, not 1000/60: the motion has 60 frames a second, so a 120-165 Hz screen draws every 2nd or 3rd
+// refresh, while a 60 Hz screen's slightly early refreshes still pass.
+const FIGURE_FRAME_GAP_MS = 13;
 function tick(now: number): void {
 	frame = 0;
 	if (document.hidden) return;
+	if (now - last < FIGURE_FRAME_GAP_MS) {
+		frame = requestAnimationFrame(tick);
+		return;
+	}
 	const elapsed = (now - last) / 1000;
 	last = now;
 	const advanced = new Set<LiveMotion["clock"]>();
