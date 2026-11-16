@@ -623,6 +623,78 @@ test("desktop key presses no xdotool command word, whatever its case, by the ins
 	assert.match(read("deploy/machine/desktop"), /if \[\[ \$skipped == \*"No such key name"\* \]\]; then\n\t\tfail "no such key: /);
 });
 
+test("the image carries fill_company_account's fill helper as its own file, desktop open's DevTools port, and checks both", async () => {
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-account-fill-main\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-account-fill\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-account-fill-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The runtime imports the helper's module (its codes), and every service bundle with it: loading it runs nothing.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-account-fill.ts"), /process\.(argv|stdin|exitCode|exit)\b|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-account-fill-main.ts"), /^runMachineAccountFillCli\(/m);
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-account-fill.mjs"'));
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-account-fill.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-account-fill.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-account-fill.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	// The desktop's browser (desktop open, desktop start TARGET) starts with the profile the helper reads and a DevTools port
+	// the kernel picks on the loopback.
+	const desktop = read("deploy/machine/desktop");
+	assert.match(desktop, /\nPROFILE=\/home\/desktop\/\.config\/qorpera-chromium\nbrowser\(\) \{\n\tlocal flags=\(--user-data-dir="\$PROFILE" --remote-debugging-port=0 /);
+	assert.doesNotMatch(desktop, /remote-debugging-address|remote-allow-origins/);
+	const helperSource = read("packages/runtime/src/cloud-machine-account-fill.ts");
+	assert.match(helperSource, /MACHINE_CHROMIUM_PROFILE = "\/home\/desktop\/\.config\/qorpera-chromium"/);
+	assert.match(helperSource, /MACHINE_CHROMIUM = "\/usr\/lib\/qorpera-chromium\/chrome"/);
+	assert.match(imageScript, /mv \/tmp\/chromium\/chrome-linux64 \/usr\/lib\/qorpera-chromium\n/);
+	// The build's own check: a made-up password filled into a local page's password box, never printed; another site,
+	// another boot and a "Just a moment..." page refused by code; desktop open's port on the loopback only.
+	for (const line of [
+		'spawn("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-account-fill.mjs"]',
+		'fail("the fill helper printed the value")',
+		'"the page did not get the value whole"',
+		'await refusal(["example.org"], "FILL_WRONG_SITE");',
+		'await refusal(["fill-check.test"], "MACHINE_BOOT_CHANGED", { boot: id() });',
+		'await refusal(["fill-check.test"], "SITE_STOP_HUMAN_CHECK");',
+		'echo "the DevTools port is not on the loopback"',
+		'echo "the DevTools port listens beyond the loopback"',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// Both checks' scripts sit in the build's single-quoted script: they hold no single quote.
+	const fill = imageScript.slice(
+		imageScript.indexOf("# fill_company_account (20260930781000): the fill helper types"),
+		imageScript.indexOf("# Nothing of these checks stays in the desktop account"),
+	);
+	assert.ok(fill.length > 0 && !fill.includes("'"));
+	// The helper's deadline fits the executor's: the exec's own is longer, and both inside the command service's 30 s.
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const helperMs = Number(helperSource.match(/\nexport const MACHINE_ACCOUNT_FILL_MS = ([0-9_]+);\n/)[1].replaceAll("_", ""));
+	const execMs = Number(hostSource.match(/\nconst ACCOUNT_FILL_MS = (\d+);\n/)[1]);
+	assert.ok(helperMs + 2000 <= execMs && execMs <= 26000, `${helperMs} ms in the helper against ${execMs} ms`);
+	assert.match(hostSource, /COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs"/);
+	// Built with the packager's options, the guest helper holds none of it; the fill helper bundles no browser driver.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-account-fill-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-account-fill-main.ts")], outfile: join(temporary, "fill.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "fill.mjs"), "utf8");
+		assert.doesNotMatch(guest, /account-fill|Input\.insertText/);
+		// The value is set inside the checked document (Runtime.callFunctionOn on the checked box), never typed at the tab.
+		assert.match(helper, /"Runtime\.callFunctionOn"/);
+		assert.doesNotMatch(helper, /Input\.insertText/);
+		assert.match(helper, /\/json\/version/);
+		assert.doesNotMatch(helper, /playwright/);
+		assert.ok(helper.length < 131072, `the fill helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+
 test("a desktop is asked for: small machines refuse it, chosen files open on it, and pages work without a screen too", () => {
 	// deploy/machine/README.md, "The desktop" (10 Nov 2026: Jonas's shape, and the audit's fixes).
 	const command = read("deploy/machine/desktop");
@@ -792,6 +864,42 @@ test("the agent's home: Codex's own home folder is the agent account's, where th
 		),
 		"the image's own check",
 	);
+});
+
+test("the agent's home: Claude Code's file channel has sftp-server on every machine, at the path the executor runs", () => {
+	// lanes/agent-box-20261113, slice C1 (P4: Claude Code's Read/Edit/Write on the home went through OpenSSH's sftp-server
+	// in a unit of the machines' slice, as the agent's account). The executor refuses a file channel on a machine without
+	// it (HOME_SFTP_MISSING), so the image must carry it.
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	assert.ok(apt.includes("openssh-sftp-server"), "apt installs openssh-sftp-server");
+	// No daemon: nothing listens for SFTP on a machine; only the executor's unit starts it.
+	assert.ok(!apt.includes("openssh-server"), "no sshd");
+	assert.ok(read("packages/contracts/src/cloud-machine.ts").includes('\tsftpServer: "/usr/lib/openssh/sftp-server",\n'));
+	assert.ok(
+		read("packages/runner-orchestrator/src/company-machine-host.ts").includes("[CLOUD_MACHINE_HOME.sftpServer]"),
+		"the executor's unit runs that path, with no argument and no shell",
+	);
+	const check = [
+		'\t{ printf "\\000\\000\\000\\005\\001\\000\\000\\000\\003"; sleep 1; } | runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out\n',
+		'\t[[ $(head -c 9 /tmp/sftp-check.out | od -An -tx1 | tr -d " \\n") == ????????0200000003 ]] ||\n',
+	];
+	for (const line of check) assert.ok(imageScript.includes(line), line);
+	// The image's own check, run here against this computer's sftp-server where it has one (without the account
+	// switch): an SFTP version 3 answer passes it, and a program that answers anything else fails it.
+	const run = (program) =>
+		spawnSync(
+			"bash",
+			[
+				"-euo",
+				"pipefail",
+				"-c",
+				`out=$(mktemp); ${check[0].trim().replace("runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out", `${program} >"$out"`)}
+				[[ $(head -c 9 "$out" | od -An -tx1 | tr -d " \\n") == ????????0200000003 ]]; rc=$?; rm -f "$out"; exit $rc`,
+			],
+			{ encoding: "utf8" },
+		);
+	if (existsSync("/usr/lib/openssh/sftp-server")) assert.equal(run("/usr/lib/openssh/sftp-server").status, 0);
+	assert.notEqual(run("cat").status, 0);
 });
 
 test("the agent's home: every image carries the pinned Codex, and the desktop account keeps its uid", async () => {
@@ -2495,7 +2603,7 @@ test("a press on the dock can steer nothing but which of three programs starts (
 	);
 	assert.match(
 		code,
-		/\nbrowser\(\) \{\n\tlocal flags=\(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
+		/\nbrowser\(\) \{\n\tlocal flags=\(--user-data-dir="\$PROFILE" --remote-debugging-port=0 --start-maximized --no-first-run\n\t\t--no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
 	);
 	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);

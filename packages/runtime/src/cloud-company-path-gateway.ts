@@ -29,6 +29,8 @@ export type CloudCompanyPathRpc =
 	// The agent's home: whether this run has one, and which machine it is (20260930752000).
 	| "qorpera_company_home_available"
 	| "qorpera_close_home_session"
+	// A Claude Code worker's run: its member's name and what it changed (20260930772000).
+	| "qorpera_claude_worker_run_facts"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"
@@ -60,6 +62,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_good_will_agent_mark"
 	| "qorpera_cofounder_crew"
 	| "qorpera_offer_agents_to_member"
+	// The Co-Founder's senses: plain facts about the whole company for its company runs (20260930765000).
+	| "qorpera_describe_company_senses"
+	// Whether the run has a receipt under a key: end_role tells a repeat from a new call on an ended role (20260930766000).
+	| "qorpera_folder_run_receipt_exists"
 	// Machines agents start (2026-09-28).
 	| "qorpera_native_machine_start"
 	| "qorpera_native_machine_manage"

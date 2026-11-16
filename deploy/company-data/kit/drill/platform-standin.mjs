@@ -38,6 +38,7 @@ http
 					kind: "run",
 					environmentId: folder.environment,
 					runId: folder.run,
+					staffAgentId: folder.agent,
 					requesterUserId: folder.member,
 					database,
 					files,

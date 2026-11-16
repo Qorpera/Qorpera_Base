@@ -861,7 +861,7 @@ begin
 			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
 			where namespace.nspname = 'public' and proc.prosrc ~ 'qorpera_company_machines' and proc.prosrc ~ 'last_used_at\s*=') = array[
 			'qorpera_admit_company_machine', 'qorpera_authorize_home_session', 'qorpera_authorize_machine_command', 'qorpera_authorize_machine_screen',
-			'qorpera_mark_company_machine_running', 'qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_act_begin',
+			'qorpera_fill_company_account_on_machine', 'qorpera_mark_company_machine_running', 'qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_act_begin',
 			'qorpera_member_machine_desktop_pointer_authority', 'qorpera_member_machine_desktop_share_begin',
 			'qorpera_member_machine_desktop_start_begin', 'qorpera_member_machine_screen_authority',
 			'qorpera_member_manage_company_machine', 'qorpera_member_take_machine_desktop', 'qorpera_native_machine_start',

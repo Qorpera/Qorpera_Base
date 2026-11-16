@@ -31,7 +31,12 @@ import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
+import {
+	type CloudPlatformUpdatesContext,
+	cloudPlatformUpdatesContext,
+	PLATFORM_UPDATES,
+} from "@qorpera/runtime/cloud-platform-updates";
+import { cloudCoFounderPlanningRun, cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
@@ -150,6 +155,8 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		"actions/<name>.sql (its changes: one insert, update, delete or merge each, :name for a value, -- lines on top that say in a member's words what it does, such as -- Mark order :id as shipped)",
 		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
 		"A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card.",
+		"Members see a database's whole tables when they may read its folder, and change rows there when they may write it;",
+		'a database whose rows are private to each member (its questions name :viewer) says members = "writers" under [list] in its database.toml, so only those who may write the folder see whole tables.',
 		"Never put a secret in a step, a query, a change or a row.",
 	])
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
@@ -722,6 +729,8 @@ const STAFF_TOOLS = [
 	"good_will_mark",
 	"crew_and_members",
 	"offer_agents_to_member",
+	"record_reflection",
+	"update_reading",
 	"list_hooks",
 	"read_event",
 	"send_mail",
@@ -745,6 +754,7 @@ const STAFF_TOOLS = [
 	"update_skill",
 	"hire_agent",
 	"create_group_chat",
+	"end_role",
 	"manage_todo",
 	"manage_worker",
 	"manage_code",
@@ -868,7 +878,7 @@ it("gives every wake of one agent the same shared part, and varies only what fol
 	expect(stable).not.toContain("# Changes waiting for review");
 	// The planning run follows the head, in the routine runs only.
 	for (const instructions of compiled)
-		expect(instructions.includes("\n# Your planning run\nIn a planning run, read the vision")).toBe(
+		expect(instructions.includes("\n# Your planning run\nWhen your context has updates")).toBe(
 			instructions.includes("# This run: your routine"),
 		);
 	// No sentence says a tool may not be there.
@@ -912,11 +922,36 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	);
 	expect(compile(without("manage_worker"))).not.toContain("# Code projects");
 	expect(compile(without("manage_worker"))).not.toContain("- Bigger work or many files");
+	expect(compile(without("manage_worker"))).not.toContain("- Work a member asks Claude Code to do");
 	expect(compile(without("manage_code"))).not.toContain("manage_code");
 	expect(compile(without("hire_agent"))).not.toContain("hire one when no agent fits");
 	expect(compile(without("manage_hook"))).not.toContain("open the company's email");
 	expect(compile(without("manage_hook"))).toContain("Say in a few lines who you hired and what each finds out first.");
 	expect(compile(without("offer_agents_to_member"))).not.toContain("offer_agents_to_member");
+	// The reading and its senses are the Co-Founder's in the company runs that keep it (update_reading); end_role is named
+	// only to a run that has it.
+	expect(full).toContain("Keep the company's reading of itself, QorperaOS/vision/reading.md");
+	expect(full).toContain("\n- senses: the platform's facts about the whole company as this run started");
+	for (const gone of ["update_reading", "Keep the company's reading of itself", "- senses:"])
+		expect(compile(without("update_reading"))).not.toContain(gone);
+	const planning = (tools: Set<string>) =>
+		compileCloudNativeCompanyInstructions(
+			context,
+			situationWake("routine", "schedule", "optional", { routine: { dynamic: false } }),
+			{ head: "# Head", tools },
+		);
+	expect(planning(all)).toContain("whose work is over (end the role with end_role and say why)");
+	expect(planning(without("end_role"))).toContain("whose work is over (end the role and say why)");
+	expect(planning(without("end_role"))).not.toContain("end_role");
+	expect(planning(without("update_reading"))).not.toContain("decide the team for where the company stands now");
+	expect(planning(without("update_reading"))).toContain("Start with your context's senses");
+	// The company's map is the Co-Founder's own app, in its planning run when it can save one (overlay v18).
+	expect(planning(all)).toContain("Keep the company's map as your own posted app, named company");
+	expect(planning(without("save_app"))).not.toContain("Keep the company's map");
+	expect(planning(without("save_app"))).toContain(
+		"An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason.",
+	);
+	expect(full).toContain("and the founders see it as the first layer of the company's map");
 	// Until the vision is agreed the founding section is there; after, only what still applies.
 	expect(full).toContain("\n# Founding the company\n");
 	expect(full).toContain("Your first job is to build it with the founders until every founder agrees");
@@ -1966,29 +2001,39 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // Master 01c90ff7a merged up through T3-2 for landing (15 November 2026): the render frames and a database's changes said in one voice; measured once more.
 // Master 01c90ff7a merged up through T3-3 for landing (15 November 2026) under no-wall: the staff pairs measured once more.
 // Master 01c90ff7a merged up through T3-5 into T3-6 for landing (15 November 2026): the staff pairs measured once more.
+// The company's reading of itself (overlay v18, 14 November 2026; the founder: "It should feel like the company is
+// conscious almost"): the head's words name the reading (every run, a worker's too), a staff run's context names
+// senses where it keeps the reading, the Co-Founder's and the owner's roles take their new sentences, and every prompt
+// names overlay v18. All three were measured once more.
+// The stack's new head (no-wall 9ecf100fe, master and v247's release) merged in (15 November 2026): all three
+// measured once more on node 1's test machine.
+// The company's map (the founder, 15 November 2026: "Use a map kit"): the reading is its first layer, the planning run
+// keeps it with save_app's map kit, and a retired interface stays retired; the staff instructions measured once more.
+// With a line on handing work a member asks Claude Code to do to a worker with harness claude-code (20260930770000,
+// 14 November 2026; staff runs only), the conversation's and the private conversation's instructions moved.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "34901b4114be3e43705dfd5d3a9b008778a1fb9360b9b1df67ddb9c21dd3234b",
-			prompt: "b8777eb081e7a5e65c7856e93cd5d690de45ebb37438716459ecdbaaa23a7bb5",
+			instructions: "b83cea836544021b3c4e8b04fb01603a28839fbdb4de4ec2f44e9980623e5474",
+			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "0cf90b5ffeb3c5d1e8601c487cc7d0e2398b02456faf929efd2bb66ba2e255b2",
-			prompt: "28ad297bf4b4ac59bc82cc15e387e30cffe46da8c888d462f1f3518924469c91",
+			instructions: "4ecdde26333cfc305d263663ad41c07578885ea56214b993c8c1b9d9e1b1989b",
+			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "34901b4114be3e43705dfd5d3a9b008778a1fb9360b9b1df67ddb9c21dd3234b",
-			prompt: "7b4f53450f0bdfd6edecd2d93a1f6f6aadc1ac4ec408a6e34163c63418a1d57e",
+			instructions: "b83cea836544021b3c4e8b04fb01603a28839fbdb4de4ec2f44e9980623e5474",
+			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -2308,7 +2353,26 @@ it("has an interface app show a thing to see and handle, never a document or a s
 	expect(cofounder).toContain(
 		"when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit",
 	);
-	expect(cofounder).toContain("Keep one posted app of your own, named company, that shows the plan as a picture");
+	// The Co-Founder's own company app is the company's map, made with the map kit, the reading its first layer, and
+	// an interface a member retired stays retired (overlay v18; the founder, 15 November 2026: "Use a map kit").
+	expect(cofounder).not.toContain("Keep one posted app of your own, named company");
+	expect(cofounder).toContain(
+		"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer",
+	);
+	expect(cofounder).toContain(
+		"tell the owner of that work to make one. An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.",
+	);
+	expect(employee).toContain(
+		"no app is better than a page of text. When save_app refuses an interface because a member retired it, leave it as it is and show that work in a file.",
+	);
+	// Without save_app, neither the map nor the owner's apps are there; the retired interface stays in the planning run.
+	const noApps = { has: (tool: string) => tool !== "save_app", visionAgreed: true };
+	expect(cloudRuntimeHireBehavior("employee", noApps)).not.toContain("retired");
+	expect(cloudCoFounderPlanningRun(noApps)).not.toContain("Keep the company's map");
+	expect(cloudCoFounderPlanningRun(noApps)).toContain(
+		"organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.",
+	);
+	expect(cloudCoFounderPlanningRun({ ...noApps, has: () => true })).toContain("Keep the company's map");
 });
 
 it("holds changes until a member says yes, and puts a repository's website live only from What's new", () => {
@@ -2327,17 +2391,22 @@ it("holds changes until a member says yes, and puts a repository's website live 
 		// What "live" means, so the rule holds back a release and nothing else.
 		"A change goes live when people outside the team meet it: an update to a published site, a new version of the product, a new price, a mail or post to many. Until then it is ready, and it goes live on a member's yes, because customers cannot unsee it.",
 		// Step 4's live proof (11 November 2026): an agent read "nothing ready" seconds after a change went in, and spent a
-		// turn on it.
-		"A website from a repository kept in Qorpera goes live only in What's new, where each change that passes its checks appears within a minute and a member puts it live",
-		"tell them in one line that it waits there; never publish it yourself or ask about it on a card.",
+		// turn on it. Step 5.1 (v247) and web #1848: the change also shows under the agent's thread, an owner or admin may
+		// look at it first, and the agent's one line says what changes for customers, not where it waits.
+		"A website from a repository kept in Qorpera goes live only when an owner or admin puts it live: each change that passes its checks shows within a minute under your thread and in What's new, where they can look at it first.",
+		"Tell them in one line what changes for customers; never publish it yourself or ask about it on a card.",
 		"Anything else: one question card that shows what changes, with Put it live and Not yet. On yes, put it live in that run; on not yet, ask what to change.",
 		"A fix for something broken for customers right now goes live at once, and you tell the members that day.",
+		// Only an owner or admin puts a version live or goes back (the kernel answers anyone else 42501; review r1 of #1851).
+		"For a repository's website, ask an owner or admin at once to put the fix live, or to press Go back in What's new.",
 	]) {
 		expect(instructions).toContain(rule);
 		expect(worker).not.toContain(rule);
 	}
-	// The app agents kept for it, and its rundown and buttons, are gone.
+	// The app agents kept for it, and its rundown and buttons, are gone; so is the line that said only where it waits.
 	for (const gone of [
+		"tell them in one line that it waits there",
+		"ask a member at once to put the fix live",
 		"whats-new",
 		"(publish_site on a live site)",
 		"show them together as one rundown",
@@ -2452,6 +2521,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"When asked, answer at once from what you and the files already know",
 		"- One file: write it yourself, where it belongs, and link it.",
 		"- Bigger work or many files: a worker, with saveTo set to the folder for the results.",
+		"- Work a member asks Claude Code to do: a worker with harness claude-code, which runs on that member's own Claude sign-in.",
 		"a machine, with the results saved in the company's files",
 		"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository; its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to
@@ -3125,4 +3195,49 @@ it("tells an agent to ask what its work waits for on a card that says what is st
 	])
 		expect(instructions).toContain(rule);
 	expect(instructions).not.toContain("put a new question you ask them on it");
+});
+
+// The company's reading of itself (the founder, 14 November 2026: "It should feel like the company is conscious
+// almost"): the Co-Founder's company runs carry the platform's facts about the company, senses, next to openWork, as
+// qorpera_describe_company_senses answers them; null when that read failed; no key at all in any other run.
+it("puts the senses next to open work when the run has them, null when their read failed, and nowhere else", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.agentKind = "cofounder";
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const openWork = { todos: { open: 1, blocked: 0 }, workers: { active: 0, blocked: 0 } };
+	const senses = {
+		schema: "qorpera.company-senses/v1",
+		runId: f.binding.runId,
+		agents: [{ handle: "co-founder", todos: { open: 3, blocked: 1, doneLast7d: 0 } }],
+		questions: { count: 1, oldest: [] },
+	};
+	const prompt = (value?: JsonValue | null, updates?: CloudPlatformUpdatesContext) =>
+		JSON.parse(
+			composeCloudNativeCompanyPrompt(
+				context,
+				null,
+				undefined,
+				undefined,
+				openWork,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				[],
+				updates,
+				value,
+			),
+		);
+	const keys = Object.keys(prompt(senses));
+	expect(keys.indexOf("senses")).toBe(keys.indexOf("openWork") + 1);
+	const both = Object.keys(prompt(senses, cloudPlatformUpdatesContext(PLATFORM_UPDATES)));
+	expect(both.slice(both.indexOf("openWork"), both.indexOf("openWork") + 3)).toEqual([
+		"openWork",
+		"updates",
+		"senses",
+	]);
+	expect(prompt(senses).senses).toEqual(senses);
+	expect(prompt(null)).toHaveProperty("senses", null);
+	expect(prompt()).not.toHaveProperty("senses");
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(context, null))).not.toHaveProperty("senses");
 });

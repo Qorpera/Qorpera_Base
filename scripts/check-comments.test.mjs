@@ -109,6 +109,17 @@ test("SQL: strings and data bodies are not comments; function bodies are read", 
 		"in a do block",
 	]);
 	assert.deepEqual(problems("m.sql", "-- WHY: the index must exist before the backfill reads it\n"), [null]);
+	assert.deepEqual(
+		problems(
+			"t.test.sql",
+			[
+				'-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"',
+				"select 1;",
+				"-- @fixture without its file",
+			].join("\n"),
+		),
+		[null, "plain"],
+	);
 });
 
 test("Rust: lifetimes, characters and raw strings do not start or hide comments", () => {

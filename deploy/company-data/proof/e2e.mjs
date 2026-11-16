@@ -279,11 +279,16 @@ grant anon, authenticated, service_role to authenticator;`);
 	check("the shop's two steps are applied from the folder's files", applied.value.applied === true && applied.value.results.map((result) => result.state).join() === "applied,applied", JSON.stringify(applied.value).slice(0, 300));
 	const again = await ask(viewer, "apply", { database: "shop" });
 	check("applying again applies nothing twice", again.value.applied === true && again.value.results.every((result) => result.state === "already"));
-	const described = await call(viewer, "describe", { database: "shop" });
-	check("the database is there as its files say", described.value.tables?.map((table) => table.name).join() === "order_totals,orders" && described.value.applied?.length === 2, JSON.stringify(described.value).slice(0, 300));
+	const described = await ask(viewer, "describe", { database: "shop" });
+	const shop = described.value.databases?.[0];
+	check(
+		"the database is there with its questions, and its tables are its writers' alone, since a question names :viewer",
+		shop?.list === false && shop.tables === undefined && shop.questions?.some((question) => question.name === "mine"),
+		JSON.stringify(described.value).slice(0, 300),
+	);
 	const store = companyDatabase(ENV);
 	const triggers = await withAdmin(store, (db) => db.query("select count(*)::int as n from pg_trigger where tgrelid = 'shop.orders'::regclass and tgname like 'qorpera_%' and not tgisinternal"));
-	check("the new table carries Qorpera's three triggers", triggers.rows[0].n === 3, `${triggers.rows[0].n}`);
+	check("the new table carries Qorpera's six triggers", triggers.rows[0].n === 6, `${triggers.rows[0].n}`);
 
 	// ---- questions, with the viewer's own rights
 	const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();

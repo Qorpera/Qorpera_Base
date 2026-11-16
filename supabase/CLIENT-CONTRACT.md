@@ -1045,6 +1045,12 @@ by their keys, never with a lowercase literal.
 - `qorpera_member_folder_read_many(environment, paths)` (`20260930722000`): `{schema: "qorpera.folder-read-many/v1",
   reads}`, `reads[i]` what `qorpera_member_folder_read(environment, paths[i])` answers, for 1 to 64 paths, in one
   snapshot; an invalid path refuses the whole call. A client that finds it missing reads each path alone.
+- `qorpera_member_folder_may_write(environment, path)` (`20260930779000`): `{schema: "qorpera.member-folder-may-write/v1",
+  path, write}`, whether the folder core lets the signed-in member write `path` now (the path's resource and the
+  member's place in it; a name the folder never holds, such as `trail/`, is no write). The path is checked as the
+  core checks every path, with one trailing `/` allowed. A member of the company only (42501), not while it is being deleted or paused (55000); an
+  invalid path is 22023. It changes nothing. The data gateway asks it before a member's row edit (company databases
+  §5a).
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
@@ -2287,7 +2293,10 @@ only after durable storage.
   `apply`, 512 KiB for `watch` (up to 24 question texts of 16 KiB each), 64 KiB for `query` and `describe`. Answers
   are JSON with `cache-control: no-store`, passed back with their status. A watch is held up to 20 s by the data
   gateway after its own reads; the bridge allows it 30 s, the others the default 25 s. Behind the member company
-  gateway, which reads a body only for a signed-in member.
+  gateway, which reads a body only for a signed-in member. The Data list (§5a) adds `/rows` (a page of a table),
+  `/edit` (a member's add, change or remove of a row), `/change` (a named change) and `/changes` (what changed, from
+  the record of who changed what), the same way: at most 1 MiB for `rows`, `edit` and `changes` (they may carry the
+  question texts the list's rule reads), 64 KiB for `change`.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read

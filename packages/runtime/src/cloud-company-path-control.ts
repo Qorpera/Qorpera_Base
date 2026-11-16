@@ -91,6 +91,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
 			"qorpera_begin_native_company_execution_v3",
 			"qorpera_bind_native_company_context",
+			// A Claude Code worker's run: its member's name and what its home changed (20260930772000).
+			"qorpera_claude_worker_run_facts",
 			"qorpera_describe_company_run_context",
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
@@ -119,6 +121,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_good_will_agent_mark",
 			"qorpera_cofounder_crew",
 			"qorpera_offer_agents_to_member",
+			// The Co-Founder's senses (20260930765000).
+			"qorpera_describe_company_senses",
+			// Whether the run has a receipt under a key (20260930766000).
+			"qorpera_folder_run_receipt_exists",
 			// Machines agents start (2026-09-28).
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",

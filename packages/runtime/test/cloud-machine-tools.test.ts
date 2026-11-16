@@ -4,8 +4,10 @@ import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
 import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
+import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "../src/cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import {
+	CloudMachineAccountFillRefusal,
 	CloudMachineCodingValueRefusal,
 	type CloudMachineCommandGateway,
 	CloudMachineCommandRefusal,
@@ -39,6 +41,7 @@ function fixture(
 	codingValues?: CloudMachineCodingValues,
 	/** The gateway runs machine_screen's helper (20260930708000). */
 	screens = false,
+	accountFills = false,
 ) {
 	const { authority, binding } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
@@ -130,6 +133,11 @@ function fixture(
 				ciphertext: "c",
 			},
 		})),
+		accountFill: vi.fn<NonNullable<CloudMachineCommandGateway["accountFill"]>>(async (_scope, input) => ({
+			schema: "qorpera.machine-account-fill/v1",
+			commandId: input.commandId,
+			filled: true,
+		})),
 	};
 	const screen = vi.fn<NonNullable<CloudMachineCommandGateway["screen"]>>(async (_scope, input) => ({
 		schema: "qorpera.machine-screen-answer/v1",
@@ -166,6 +174,7 @@ function fixture(
 		gateway,
 		worker,
 		...(codingValues ? { codingValues } : {}),
+		...(accountFills ? { accountFills } : {}),
 	});
 	const run = new AbortController();
 	const boundary = new CloudNativeToolBoundary({
@@ -2210,6 +2219,201 @@ describe("machine tools", () => {
 			try {
 				const result = await asleep.boundary.invoke("v4", "qorpera", "save_coding_value", args);
 				expect(result.contentItems[0]!.text).toContain("MACHINE_NOT_RUNNING");
+				expect(asleep.execute).not.toHaveBeenCalled();
+			} finally {
+				asleep.boundary.close();
+			}
+		});
+	});
+	describe("fill_company_account", () => {
+		const account = "6f1c2c1e-3a51-4b9e-9a3e-0d2f6f1b7a10";
+		const args = { operationKey: "npm-login-1", machine: "build-a", account, field: "password" };
+		/** How every result ends (reviews of #1644). */
+		const NO_SCREENSHOT =
+			"Take no screenshot of this tab until it is closed (desktop key ctrl+w) or has gone to another page: a page can copy a value the vault typed into it at any time, and screenshots are kept in the company folder.";
+
+		it("is offered to a company agent's run on a host with the vault's accounts, never to a worker or without them", () => {
+			const agent = fixture(undefined, false, undefined, false, true);
+			const helper = fixture(undefined, true, undefined, false, true);
+			const without = fixture();
+			try {
+				expect(agent.tools.map((tool) => tool.name).at(-1)).toBe("fill_company_account");
+				expect(helper.tools.map((tool) => tool.name)).not.toContain("fill_company_account");
+				expect(without.tools.map((tool) => tool.name)).not.toContain("fill_company_account");
+				expect(CLOUD_RUNTIME_TOOL_OPERATIONS).toContain("fill_company_account");
+				const fill = agent.tools.find((tool) => tool.name === "fill_company_account")!;
+				expect(Buffer.byteLength(fill.description)).toBeLessThanOrEqual(4096);
+				for (const words of [
+					"The vault types it: you never see, pass, say or write a password",
+					"desktop open",
+					"desktop click into the field",
+					"company_account open makes the account first",
+					"find_mail",
+					"over https",
+					"not a frame inside it",
+					"Never type, paste, read aloud, write down or screenshot a password",
+					"stop at once and never retry: set the account needs_person",
+					"give every call a new operationKey",
+				])
+					expect(fill.description).toContain(words);
+				expect(fill.inputSchema).toMatchObject({
+					additionalProperties: false,
+					required: ["operationKey", "machine", "account", "field"],
+				});
+				expect(Object.keys(fill.inputSchema.properties as object).sort()).toEqual([
+					"account",
+					"field",
+					"machine",
+					"operationKey",
+				]);
+				const properties = fill.inputSchema.properties as Record<string, { enum?: unknown; description?: string }>;
+				expect(properties.field?.enum).toEqual(["login", "password", "code"]);
+				expect(properties.field?.description).toContain("authenticator");
+				expect(properties.account?.description).toContain("company_account find or open");
+			} finally {
+				for (const f of [agent, helper, without]) f.boundary.close();
+			}
+		});
+
+		it("takes the machine, the account and the field, never a value", () => {
+			const f = fixture(undefined, false, undefined, false, true);
+			try {
+				const fill = f.tools.find((tool) => tool.name === "fill_company_account")!;
+				expect(fill.parseArguments(args)).toEqual(args);
+				for (const field of ["login", "code"])
+					expect(fill.parseArguments({ ...args, field })).toMatchObject({ field });
+				for (const bad of [
+					{ ...args, value: "hunter2" },
+					{ ...args, password: "hunter2" },
+					{ ...args, field: "new_password" },
+					{ ...args, field: "signing_secret" },
+					{ ...args, account: account.toUpperCase() },
+					{ ...args, account: "npm" },
+					{ ...args, machine: "Build A" },
+					{ ...args, operationKey: "" },
+					(({ field: _field, ...rest }) => rest)(args),
+				])
+					expect(() => fill.parseArguments(bad), JSON.stringify(bad)).toThrow();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("types through one receipt: the machine's executor, bound to this call, answers filled and nothing else", async () => {
+			const f = fixture(undefined, false, undefined, false, true);
+			try {
+				const result = await f.boundary.invoke("f1", "qorpera", "fill_company_account", args);
+				expect(result.success).toBe(true);
+				// Even filled, the page may copy the value at any time: no screenshot until the tab is closed or gone elsewhere.
+				expect(f.content(result as never)).toEqual({
+					filled: { machine: "build-a", account, field: "password" },
+					next: NO_SCREENSHOT,
+				});
+				const operation = f.execute.mock.calls[0]![0].operation;
+				expect(operation).toEqual({
+					tool: "fill_company_account",
+					toolVersion: "qorpera.machine-tools/v1",
+					logicalOperationKey: "npm-login-1",
+					arguments: args,
+					target: { realm: "company_machine", machineId: f.listed[0]!.machineId },
+					requiresCompanyRevision: false,
+				});
+				expect(f.gateway.accountFill).toHaveBeenCalledWith(
+					{ machineId: f.listed[0]!.machineId },
+					{
+						commandId: f.receiptId,
+						envelope: cloudNativeToolOperationEnvelope(f.identity, operation),
+						idempotencyKey: "b".repeat(64),
+					},
+					expect.any(AbortSignal),
+				);
+				expect(f.gateway.start).not.toHaveBeenCalled();
+			} finally {
+				f.boundary.close();
+			}
+		});
+
+		it("answers the machine's and the vault's refusals in words, and a stopped machine with no receipt", async () => {
+			for (const code of [
+				"FILL_WRONG_SITE",
+				"FILL_IN_FRAME",
+				"FILL_WRONG_BOX",
+				"NO_FOCUSED_PAGE",
+				"BROWSER_NOT_OPEN",
+				"ACCOUNTS_SWITCHED_OFF",
+				"MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS",
+				"FILL_PAGE_CHANGED",
+				"FILL_EXPIRED",
+				"BROWSER_NOT_ANSWERING",
+				"FILL_LOST",
+			] as const) {
+				const f = fixture(undefined, false, undefined, false, true);
+				try {
+					f.gateway.accountFill.mockRejectedValueOnce(new CloudMachineAccountFillRefusal(code));
+					const result = await f.boundary.invoke("f2", "qorpera", "fill_company_account", args);
+					expect(result.success).toBe(true);
+					const answer = f.content(result as never) as {
+						filled: boolean;
+						refused: { reason: string; message: string };
+					};
+					expect(answer.filled).toBe(false);
+					expect(answer.refused.reason).toBe(code);
+					expect(answer.refused.message.length).toBeGreaterThan(20);
+					// Reviews of #1644: a page can copy a value at any time, so no result suggests a screenshot, and every one
+					// says to close the tab or let it go to another page first; FILL_LOST also says needs_person if unsure.
+					expect(answer.refused.message).not.toMatch(/desktop shot|--shot/);
+					expect(answer.refused.message.endsWith(NO_SCREENSHOT)).toBe(true);
+					if (code === "FILL_LOST") {
+						expect(answer.refused.message).toContain("may still be on the page");
+						expect(answer.refused.message).toContain("ctrl+w");
+						expect(answer.refused.message).toContain("needs_person");
+					}
+				} finally {
+					f.boundary.close();
+				}
+			}
+			// A bot check: stop, never retry, needs_person.
+			const stopped = fixture(undefined, false, undefined, false, true);
+			try {
+				stopped.gateway.accountFill.mockRejectedValueOnce(new CloudMachineAccountFillRefusal("SITE_STOP_CAPTCHA"));
+				const result = await stopped.boundary.invoke("f3", "qorpera", "fill_company_account", args);
+				const answer = stopped.content(result as never) as { refused: { message: string } };
+				expect(answer.refused.message).toContain("never retry");
+				expect(answer.refused.message).toContain("needs_person");
+				expect(answer.refused.message).toBe(
+					`${COMPANY_COMPUTER_SITE_STOP_MESSAGE.replace(/\.$/, "")}. ${NO_SCREENSHOT}`,
+				);
+			} finally {
+				stopped.boundary.close();
+			}
+			// The vault's own words.
+			const vault = fixture(undefined, false, undefined, false, true);
+			try {
+				vault.gateway.accountFill.mockRejectedValueOnce(
+					new CloudMachineAccountFillRefusal("VAULT_REFUSED", "The company has no such open account"),
+				);
+				const result = await vault.boundary.invoke("f4", "qorpera", "fill_company_account", args);
+				expect(vault.content(result as never)).toEqual({
+					filled: false,
+					refused: { reason: "VAULT_REFUSED", message: `The company has no such open account. ${NO_SCREENSHOT}` },
+				});
+			} finally {
+				vault.boundary.close();
+			}
+			// An answer that is no refusal fails the call: its outcome is unconfirmed, never "filled".
+			const lost = fixture(undefined, false, undefined, false, true);
+			try {
+				lost.gateway.accountFill.mockRejectedValueOnce(new CloudMachineCommandUnanswered());
+				const result = await lost.boundary.invoke("f5", "qorpera", "fill_company_account", args);
+				expect(JSON.stringify(result)).not.toContain('"filled":{');
+			} finally {
+				lost.boundary.close();
+			}
+			const asleep = fixture([{ name: "build-a", state: "stopped" }], false, undefined, false, true);
+			try {
+				const result = await asleep.boundary.invoke("f6", "qorpera", "fill_company_account", args);
+				expect(result.contentItems[0]!.text).toContain("MACHINE_NOT_RUNNING");
+				expect(result.contentItems[0]!.text).toContain("Take no screenshot of this tab");
 				expect(asleep.execute).not.toHaveBeenCalled();
 			} finally {
 				asleep.boundary.close();

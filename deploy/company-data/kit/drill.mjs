@@ -41,6 +41,7 @@ const BARE = { PATH: process.env.PATH, HOME: process.env.HOME ?? "/root" };
 const ENV = "64000000-0000-4000-8000-000000000001";
 const MEMBER = "64000000-0000-4000-8000-000000000002";
 const RUN_ID = "64000000-0000-4000-8000-000000000003";
+const AGENT_ID = "64000000-0000-4000-8000-000000000004";
 // The one name every provider host dials (lib.sh RUN_DOOR_NAMES): the drill checks the cert against it.
 const RUN_DOOR_NAME = "10.41.0.1";
 const newPass = () => randomBytes(32).toString("base64url");
@@ -260,7 +261,7 @@ try {
 	mkdirSync(FOLDER, { mode: 0o755 });
 	writeFileSync(
 		join(FOLDER, "folder.json"),
-		JSON.stringify({ member: MEMBER, environment: ENV, run: RUN_ID, files: FILES, passes: Object.fromEntries([...PASSES.a, ...PASSES.b].map((pass) => [pass, "shop"])) }),
+		JSON.stringify({ member: MEMBER, environment: ENV, run: RUN_ID, agent: AGENT_ID, files: FILES, passes: Object.fromEntries([...PASSES.a, ...PASSES.b].map((pass) => [pass, "shop"])) }),
 		{ mode: 0o644 },
 	);
 	const link = run("docker", ["network", "create", "--internal", "--label", `cdkit.run=${RUN}`, LINK]);

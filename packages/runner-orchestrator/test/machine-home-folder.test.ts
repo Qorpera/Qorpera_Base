@@ -53,7 +53,7 @@ describe("the executor's ask for a home session (20260930754000)", () => {
 });
 
 /** A gate over a release the test answers by hand, on a clock it moves. */
-function gated(spacingMs = 0, limitBytes = 1024) {
+function gated(spacingMs = 0, limitBytes = 1024, burst?: number) {
 	const passed: string[] = [];
 	const failed: string[] = [];
 	const releases: { resolve(held: string | undefined): void; reject(error: Error): void }[] = [];
@@ -68,6 +68,7 @@ function gated(spacingMs = 0, limitBytes = 1024) {
 		fail: (why) => failed.push(why),
 		spacingMs,
 		limitBytes,
+		...(burst === undefined ? {} : { burst }),
 		now: () => now,
 		sleep: async (ms) => {
 			sleeps.push(ms);
@@ -85,7 +86,16 @@ function gated(spacingMs = 0, limitBytes = 1024) {
 		advance: (ms: number) => {
 			now += ms;
 		},
+		now: () => now,
 	};
+}
+
+/** Answers every release out there that nobody answered yet, as released, and lets the gate go on. */
+async function answerAll(g: ReturnType<typeof gated>, answered: { count: number }): Promise<void> {
+	for (let i = 0; i < 4; i++) {
+		await g.turn();
+		while (answered.count < g.releases.length) g.releases[answered.count++]!.resolve(undefined);
+	}
 }
 
 describe("a home's output waits for the company folder (20260930754000)", () => {
@@ -189,5 +199,151 @@ describe("a home's output waits for the company folder (20260930754000)", () => 
 		await g.gate.drained();
 		expect(g.passed).toEqual([]);
 		expect(g.failed).toEqual([]);
+	});
+});
+
+describe("a home's exec output: a few releases in hand, a stream still bounded (C2's measurement, 14 Nov 2026)", () => {
+	it("lets a shell command's three messages 20 ms apart out with no wait", async () => {
+		const g = gated(200, 1024, 4);
+		const answered = { count: 0 };
+		for (const part of ["start", "output", "exit"]) {
+			g.gate.push(Buffer.from(part));
+			await answerAll(g, answered);
+			g.advance(20);
+		}
+		await g.gate.drained();
+		expect(g.passed).toEqual(["start", "output", "exit"]);
+		expect(g.releases).toHaveLength(3);
+		expect(g.sleeps).toEqual([]);
+	});
+
+	it("holds a stream of 50 chunks over 2 s to the burst and one release per spacing", async () => {
+		// The stream comes on its own clock, 40 ms apart, whatever the gate does: a sleep ends only when the clock passes
+		// it, and each release answers at once.
+		let now = 0;
+		const sleepers: { until: number; wake(): void }[] = [];
+		const passed: string[] = [];
+		let releases = 0;
+		const gate = new HomeOutputGate({
+			release: async () => {
+				releases++;
+				return undefined;
+			},
+			pass: (chunk) => passed.push(chunk.toString()),
+			fail: () => undefined,
+			spacingMs: 200,
+			burst: 4,
+			limitBytes: 1024,
+			now: () => now,
+			sleep: (ms) => new Promise<void>((wake) => sleepers.push({ until: now + ms, wake })),
+		});
+		const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+		const tick = async (ms: number) => {
+			for (let i = 0; i < ms; i++) {
+				now++;
+				for (const sleeper of sleepers.splice(0))
+					if (sleeper.until <= now) sleeper.wake();
+					else sleepers.push(sleeper);
+				await turn();
+			}
+		};
+		for (let i = 0; i < 50; i++) {
+			gate.push(Buffer.from(`${i},`));
+			await turn();
+			await tick(40);
+		}
+		while (!passed.includes("49,")) await tick(10);
+		await gate.drained();
+		expect(passed.join("")).toBe(Array.from({ length: 50 }, (_, i) => `${i},`).join(""));
+		// Four in hand, then one per 200 ms of the stream's time: about 14 for 2 s, never one per chunk.
+		expect(releases).toBeLessThanOrEqual(4 + Math.floor(now / 200));
+		expect(releases).toBeGreaterThanOrEqual(4);
+		expect(releases).toBeLessThan(20);
+	});
+
+	it("has its whole burst again after a quiet spell, and waits only past it", async () => {
+		const g = gated(200, 1024, 4);
+		const answered = { count: 0 };
+		const four = async () => {
+			for (let i = 0; i < 4; i++) {
+				g.gate.push(Buffer.from("x"));
+				await answerAll(g, answered);
+			}
+		};
+		await four();
+		expect(g.sleeps).toEqual([]);
+		// Quiet for the time four releases take to come back.
+		g.advance(800);
+		await four();
+		expect(g.sleeps).toEqual([]);
+		// The fifth in a row waits for one to come back.
+		g.gate.push(Buffer.from("y"));
+		await answerAll(g, answered);
+		await g.gate.drained();
+		expect(g.sleeps).toEqual([200]);
+		expect(g.releases).toHaveLength(9);
+	});
+
+	it("waits no longer than one spacing when the clock is set back", async () => {
+		const g = gated(200, 1024, 4);
+		const answered = { count: 0 };
+		// The burst is spent, then the clock goes back a minute (the executor's clock stepped by its time service).
+		for (let i = 0; i < 4; i++) {
+			g.gate.push(Buffer.from("x"));
+			await answerAll(g, answered);
+		}
+		g.advance(-60_000);
+		g.gate.push(Buffer.from("y"));
+		await answerAll(g, answered);
+		await g.gate.drained();
+		expect(g.passed.join("")).toBe("xxxxy");
+		expect(g.sleeps).toEqual([200]);
+		// And with one release in hand (the default), as the gate was before the burst.
+		const one = gated(200);
+		const seen = { count: 0 };
+		one.gate.push(Buffer.from("a"));
+		await answerAll(one, seen);
+		one.advance(-60_000);
+		one.gate.push(Buffer.from("b"));
+		await answerAll(one, seen);
+		await one.gate.drained();
+		expect(one.passed.join("")).toBe("ab");
+		expect(one.sleeps).toEqual([200]);
+	});
+
+	it("still ends at a release that holds, burst or not", async () => {
+		const g = gated(200, 1024, 4);
+		g.gate.push(Buffer.from("seen"));
+		await g.turn();
+		g.releases[0]!.resolve(undefined);
+		await g.turn();
+		g.gate.push(Buffer.from("secret"));
+		await g.turn();
+		g.releases[1]!.resolve("held: no longer readable");
+		await g.gate.drained();
+		g.gate.push(Buffer.from("after"));
+		await g.gate.drained();
+		expect(g.passed).toEqual(["seen"]);
+		expect(g.failed).toEqual(["held: no longer readable"]);
+		expect(g.releases).toHaveLength(2);
+	});
+
+	it("lets nothing out before a release that began after it came, with releases in hand", async () => {
+		const g = gated(200, 1024, 4);
+		g.gate.push(Buffer.from("a"));
+		await g.turn();
+		expect(g.releases).toHaveLength(1);
+		// b comes while the first release is out: that release does not cover it.
+		g.gate.push(Buffer.from("b"));
+		g.releases[0]!.resolve(undefined);
+		await g.turn();
+		expect(g.passed).toEqual(["a"]);
+		expect(g.releases).toHaveLength(2);
+		await g.turn();
+		expect(g.passed).toEqual(["a"]);
+		g.releases[1]!.resolve(undefined);
+		await g.gate.drained();
+		expect(g.passed).toEqual(["a", "b"]);
+		expect(g.sleeps).toEqual([]);
 	});
 });

@@ -59,6 +59,9 @@ begin
 	-- 20260930698000 adds describing what the key is derived from, bound the same way.
 	-- The company's days by kind (20260930769000) add recording the leased bank sync's days, on the company's own
 	-- authority.
+	-- A Claude Code worker's run (20260930771000) adds opening its member's Claude login for that run, the vault's own
+	-- re-open of it for a seal-back, and sealing the credentials file back, each bound to the run's exact lease, its
+	-- worker and its member's Claude Code lease.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -101,6 +104,7 @@ begin
 		'qorpera_describe_model_login_sign_in_v2(uuid,text,uuid,text)',
 		'qorpera_digital_post_held_among(uuid,text,uuid,bigint,uuid,jsonb)',
 		'qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)',
+		'qorpera_fill_company_account_on_machine(uuid,text,jsonb,uuid,text,text,text,uuid,uuid,text)',
 		'qorpera_fill_event_hook_secret(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_finish_bank_sync(uuid,text,uuid,bigint,uuid,text,jsonb,timestamp with time zone,text,text)',
 		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
@@ -124,6 +128,8 @@ begin
 		'qorpera_model_login_broker_company(uuid,text)',
 		'qorpera_model_logins_without_account(uuid,text)',
 		'qorpera_native_binding_proven(jsonb,text)',
+		'qorpera_open_claude_login_for_run(uuid,text,jsonb)',
+		'qorpera_open_claude_login_for_seal_back(uuid,text,jsonb)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)',
@@ -133,6 +139,7 @@ begin
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',
 		'qorpera_release_account_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
 		'qorpera_release_model_login_renewal(uuid,text,uuid,uuid,bigint,boolean,text)',
+		'qorpera_seal_claude_login_back(uuid,text,jsonb,uuid,bigint,text,text,text,text)',
 		'qorpera_seal_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid)',
 		'qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)',
 		'qorpera_stage_digital_post_chunk(uuid,text,uuid,bigint,uuid,uuid,integer,integer,bytea)',

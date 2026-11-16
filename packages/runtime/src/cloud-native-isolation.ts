@@ -27,7 +27,8 @@ export const CHATGPT_PLAN_TOKEN_ENVIRONMENT = "QORPERA_CHATGPT_PLAN_ACCESS_TOKEN
  * run reaches OpenAI's API alone. */
 export type NativeChatGptPlanAccess = { readonly directory: string } | { readonly accessToken: string };
 
-async function rootOwnedFile(path: string): Promise<void> {
+/** A root-owned file no one else may write, every folder above it root's too (also the Claude Code box's check). */
+export async function rootOwnedFile(path: string): Promise<void> {
 	if (!isAbsolute(path) || path !== resolve(path) || (await realpath(path)) !== path)
 		throw new Error("Native isolation requires physical absolute artifacts");
 	let current = path;
@@ -45,7 +46,8 @@ async function rootOwnedFile(path: string): Promise<void> {
 	}
 }
 
-async function privateDirectory(path: string): Promise<void> {
+/** A folder of this account's own that no one else may enter (also the Claude Code box's check). */
+export async function privateDirectory(path: string): Promise<void> {
 	const metadata = await lstat(path);
 	if (
 		!isAbsolute(path) ||

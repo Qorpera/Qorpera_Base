@@ -706,6 +706,9 @@ export async function folderWriterFixture(
 					replay: false,
 				};
 			}
+			// Whether the run has a receipt under a key (20260930766000), read from the receipt ledger below.
+			if (method === "qorpera_folder_run_receipt_exists")
+				return ledger.has((args.p_logical_operation_key as string).trim());
 			const answer = options.rpc?.(method, args);
 			if (answer !== undefined) return answer;
 			throw new Error(`Unexpected ${method}`);

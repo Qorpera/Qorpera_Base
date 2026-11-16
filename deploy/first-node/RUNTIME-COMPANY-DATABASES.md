@@ -453,13 +453,122 @@ member or the agent from the lists it already holds.
 
 | Part | What | Tests |
 | --- | --- | --- |
-| a | The platform: the page `data`, `qorpera_member_folder_may_write` (one migration) | an SQL test |
+| a | The platform: `qorpera_member_folder_may_write` (one migration) | an SQL test |
 | b | The store and the gateway, reading: the record's tables and trigger, `describe` for a member, `rows`, a table's `watch`, who gets the list | the gateway's tests against a real PostgreSQL: a reader of a `:viewer` database gets no table by any road; no folder login reads the record, in its own folder or another's; a company whose record holds more than its free room still writes, also with the record's tables larger than 100 MiB, and its agents are told at 80 % of its own data, not the record's; a record past its 100 MiB keeps its newest lines; what the trigger costs a statement, against P2's |
 | c | Writing: `edit`, the actor's line for every write road, the edge function's routes | the gateway's and the function's tests |
 | d | The agents' instructions: what `[list]` is, and that a database with private rows says `"writers"` | the runtime's pin tests |
-| e | The web: the page, the list, a row, an edit, a removal. It goes live only after b, c and d are | web tests; pictures at several widths, both themes |
+| e | The web, and the page `data` in the platform's page lists (a migration), added with the web that knows it, since today's web refuses a page it does not know: the page, the list, a row, an edit, a removal. It goes live only after b, c and d are | web tests; pictures at several widths, both themes |
 | f | What changed: `changes`, and its view | the gateway's and web tests |
 | g | Ask from the list, and "Keep as a list" | runtime and web tests |
+
+**Part b as built** (`deploy/company-data/`, its README says each call's shape). Where it differs from the text above:
+
+- **Three record triggers, not one.** PostgreSQL refuses transition tables on a trigger with more than one event, so
+  the model carries `qorpera_record_add` (after insert), `qorpera_record_change` (after update) and
+  `qorpera_record_remove` (after delete), each once a statement on its transition tables, all calling one function;
+  the guard holds them as it holds the others (every table carries all six of the model's triggers, given by
+  `qorpera_data.give_triggers` from the model itself). A `truncate` has no transition table and leaves no line; in a
+  step it is held as before.
+- **Where the 100 MiB is kept.** Each writing backend adds its lines' bytes to its own row of
+  `qorpera_data.record_bytes` (no two sessions wait on one row). When a backend has written another 1/1024 of the
+  limit, the statement sums the rows, and past the limit it removes the oldest lines until the sum fits, never the
+  newest line. The limit is `qorpera_data.record_limit`, which no folder login reads or writes.
+- **Whose rights the record runs with.** Not the store's: `qorpera_data.recorded()` and `keep_record()` belong to
+  `qorpera_data_recorder`, which logs in nowhere and reads and writes only the record's lines and counters, since
+  building a row's JSON can call code a company wrote (a cast to json). And every new cast to `json` or `jsonb` is
+  refused (`qorpera_no_json_cast`); `update.sql` stops on a store that holds one, and runs as one transaction.
+- **A change pairs rows by place.** An update's old and new rows are paired in the order PostgreSQL captured them; a
+  change that changes no column leaves no line.
+- **`describe` with a database** answers the same shape as without one, narrowed to it. `rows` also takes `desc`, and
+  its answer names the `key`. `seen` is the sha256 of the row's text (`row::text`, UTC, ISO dates), so part c can
+  compare it in the statement that writes. A row larger than a page gives an empty page with `tooLarge` and the
+  `next` past it.
+- **Who gets the list, at its edges.** A `[list] members` value other than `"readers"` counts as `"writers"`, and so
+  does a `database.toml` that is not one key, one header or one comment a line with every value on its line (a
+  multi-line string or array, an escaped key: the gateway reads that much of TOML and no more), a `database.toml` or a
+  question file too large to read,
+  and a `queries/` listing that does not fit the platform's one page of 1,000 entries. The gateway sees only the question files the member
+  may list: a question hidden from a member by a path resource does not make the database writers-only for them.
+  Until part a is live, the platform has no write check (404) and a writers' list is shown to nobody.
+- **The 80 % warning.** The watcher's look answers `near` (companies past 80 % of their own data) beside `full`;
+  agents read the same own size in `data_describe`'s `companyBytes`. Nothing else tells them yet.
+- **Granted now for parts c and f:** the keeper reads `row_changes` and reads, adds and removes `change_log` lines, so
+  the store is updated once. Keeping lines 30 days is not built.
+
+**Part c as built** (`deploy/company-data/`, `supabase/functions/member-company-gateway/`). Where it differs from the
+text above:
+
+- **The edge function** lets `rows`, `edit` and `change` through, with 1 MiB for `rows` and `edit` (they may carry the
+  question texts the list's rule reads) and 64 KiB for `change`. `changes` stays refused until part f builds it.
+- **What cannot be changed** answers 400: a view (also for an add: an updatable view would take one), and a change or
+  a removal in a table without a primary key, whose rows can still be added. A trigger of the company's that keeps a
+  changed row as it was answers 409 in its own words; one that keeps an added row out, 400.
+- **A value is cast to its column's type without its length or precision** (`varchar`, not `varchar(4)`): an explicit
+  cast cuts a value that is too long where storing it refuses it, so the column's own rule decides.
+- **The same row prints the same text.** `rows` and `edit` both set `intervalstyle`, `extra_float_digits`,
+  `bytea_output` and `lc_monetary` beside UTC and ISO dates, because the write login may give itself other defaults
+  (a role sets its own, through a function a step made and a change that calls it), and `seen` must not change with
+  the login that reads the row. Questions and named changes keep the database's own settings.
+- **The answers.** An add or a change answers `{ columns, key, row: { values, seen } }`, a removal `row: null`; a
+  refusal for a row changed or gone since is 409 `{ error, row }` with the row as it is now, or null. A row larger
+  than a question's 256 KiB answers its `seen` with `values: null` and `tooLarge`.
+- **The actor's line is written when the write's transaction has begun**, before its statement runs, so a write that
+  runs long has its actor all the while; a write that is refused after that leaves an aborted line for the watcher. A
+  step's line names in `by_id` whoever's `apply` ran it (the member, the run or the machine); a held step's dry run
+  (`check`) writes none.
+- **How the watcher finds aborted lines.** At each look it reads the lines of the writes this gateway began and has
+  not seen end; once an hour, and at its first look on a company's database, it reads every line, so a line left by a
+  gateway that stopped is removed too, and one it finds running is read again at the next look.
+- **How an actor's line goes with its rows' lines.** At the same hourly look, the line of a write that has ended (its
+  transaction is over in the look's own snapshot, so its row lines are visible to it) goes once the record holds no
+  line of its txid or an older one. So the lines kept are those no older than the record's oldest line: a write older
+  than the record's first line, or any ended write while the record is empty, loses its line at that look, and a
+  write that changed no rows keeps its line only while an older line of the record is kept.
+- **A write's room** is what the watcher last found, as for a named change before: an edit does not read the record's
+  size on its keeper connection (the bullet "Bounded" above says it would). The watcher's look subtracts the record
+  wherever it reads a company's size, so a write's room never counts the record.
+- **A value for a `json` or `jsonb` column** (or a domain over one) is the JSON value itself, as `rows` gives it, and
+  is written as JSON; a string there is a JSON string. Every other value is text, a number, `true`, `false` or null,
+  cast to the column's type. An edit names only the columns the member changed: a JSON number past a double's digits
+  and a `json` value's own spacing reach the page as JavaScript reads them, so they would not survive being sent back.
+
+**Part f as built** (`deploy/company-data/`, `supabase/functions/member-company-gateway/`). Where it differs from the
+text above:
+
+- **`changes` pages by write, not by line.** A page is up to 25 writes (transactions), each placed by its newest line:
+  who and when from its actor's line, the rows it added, changed and removed in each table, and its first three
+  lines. `next` is the newest line of the last write given; a write whose lines cross another's is given once. Each
+  read looks at no more than 5,000 lines, and a write's rows are counted over its first 10,000 lines and its first 50
+  tables (`many` says it has more), so a write of many lines makes a page of fewer writes, never a slow one: beside a
+  write of 300,000 lines a page answered well within a question's 2 s, also deep inside it. A line's `key`, `before`
+  and `after` are left out past 2 KiB each; its `columns` still name the first 100 columns that changed. The record's
+  index by txid is now by txid and line (`row_changes_txid_seq_idx`), and `change_log` gains one by `at`.
+- **The days come with the first page.** With `zone` (the member's time zone), the first page also counts the rows
+  each actor changed on each of the last 14 days, so "What changed" draws its two weeks without reading them all.
+  When counting takes past the question's time, `days` is null and the page still answers. These two (`zone`, `days`)
+  are not in the text above.
+- **The reader's own connection.** `changes` reads on a keeper connection of its own (one per company's database), so
+  a member reading what changed never holds up a write's actor's line; a page and its days together take at most a
+  question's 2 s.
+- **The actor names the agent.** An agent's and a machine's line, and a step an agent applied, carry the agent's own id
+  (the data pass's `staffAgentId`), not the run's or the machine's, so the web names the agent from the list it holds.
+  Part c wrote the run's id and the machine's id; a pass without an agent's id is refused (503).
+- **Kept 30 days, built.** At the watcher's hourly sweep the keeper calls `qorpera_data.forget_record` (the record's
+  own role, which now reads the actors' lines): the newest line of every write older than 30 days goes, with every
+  line before it (at most 50,000 a sweep), and their bytes come off the 100 MiB. The actors' lines then go as before.
+  A row line with no actor's line goes once a later write is forgotten. A sweep that cannot forget still settles the
+  actors' lines, and the watcher says so in its log.
+- **The edge function** lets `changes` through, with 1 MiB, as `rows` (it may carry the question texts the list's rule
+  reads).
+- **The web's view** (part f2, on part e): a "What changed" button beside a database's tabs, for a member who gets its
+  list. It draws the last two weeks as the canvas does, in three bands: the member's agents (an agent's or a
+  machine's write, and a step an agent applied), the member, and the company's other members. A band counts the rows
+  changed that day. Under it, the chosen day's writes (the latest day with changes at first), each one sentence with
+  who and when: "Product changed State and Work on Batavus Finez", "You added Winther Kangaroo to Repairs". The canvas's
+  sentences read the meaning of a change ("marked Emma's Gazelle ready"); the view says what the record holds: the
+  columns set and their new values, a row named by its list title when the record or the open list holds it, else
+  "row 3 of Repairs", and a named change's name after a dot. The canvas's third band, the webshop, waits for public
+  changes (§8); its place holds the other members.
 
 ## 6. Agents
 
@@ -693,6 +802,7 @@ or a node.
 | --- | --- | --- |
 | P1 | one gateway of our own against a PostgREST per company, 50 company databases | ours: a call p50 1.5 ms, p95 2.8 ms, 142 MiB for all 50, idle connections given back. PostgREST: p50 1.1 ms, 36 to 55 MiB and 3 held connections for each company |
 | P2 | a notice | commit to a new answer at the page p50 1.7 ms, p99 2.9 ms over 200 rows, every answer right; 10,000 rows in a statement give one notice; the trigger costs a writer about 10 microseconds |
+| P2b | what the record's triggers cost a statement (slice 10 part b, `gateway.test.mjs`, a fresh database from the template, 15 November 2026) | a statement on a table with all six triggers against one with the two of before (notice, deleted rows) and one with none, in microseconds a statement: one row inserted 101 / 13 / 10, changed 151 / 22 / 24, removed 167 / 29 / 12; 100 rows inserted 766 / 181 / 97, changed 1,412 / 349 / 185, removed 673 / 62 / 38. So the record costs a statement about 90 to 150 microseconds and a row about 6 to 11 more, linear in its rows up to the 1,000-row cut |
 | P3 | limits and walls, 135 checks | all pass. No company reaches another's database, role or statements. Inside a company, a session logged in as one folder's read, write or owner role cannot take another folder's role, read or write its rows, or reach it through `set_config` and a function of its own (39 tries, all refused, the other folder's rows unchanged). Connection, time and temp file limits hold. A read cannot write. A step that disables, drops, renames or replaces one of Qorpera's triggers, makes an unlogged table or says `commit` fails and leaves the rows as they were; deleted rows (also by a cascade, by `merge`, inside a function and by a deferred trigger), an emptied table and a dropped column, table or schema (also a column that goes with its type or domain) are recorded, so the step is held, and it lands after a yes. A deferred trigger that queues a second one to delete after the check aborts the commit; a step whose deferred work only inserts lands |
 | P4 | the snapshot of a 1,020 MiB database, written to files and loaded back, 29 checks | 932 MiB in 60 parts in 7.1 s, one given-up lock wait and two restarts included (a quiet night: 4.5 s), while another connection committed 1,071 transactions (new rows, keys moved from a late part into an early one, deletes): the database made from the files alone equals what the export's own transaction saw and what a second connection counted at that moment, each moved row in it once at its old key. The export holds its tables: a truncate, a rewrite and a drop by another session each waited until it was done, then completed, and the files hold those tables' rows as of the moment; a table made between the list and the locks makes the export start again. A truncate queued before the shape was read did not lock the export: `pg_dump` gave up its lock wait after 2.1 s, the export let go, the truncate went through 6 ms later, and the next try's snapshot holds that table empty. A table without a key of 102 MiB came back whole from 8 parts read by their place on disk. Every sequence gives next what the source gives next (after `setval` with and without `is_called`, never used, an identity's, one no column owns). A usual day changes 2 of 51 parts of an append-mostly table (3 %), the worst day 50 of 51; loaded back in 14 s |
 | E2E | the whole road for a member (`proof/e2e.mjs`, which arrives with the gateway's slice): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 44 of 44 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |

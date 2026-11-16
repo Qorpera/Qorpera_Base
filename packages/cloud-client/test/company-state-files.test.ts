@@ -1476,9 +1476,30 @@ describe("connections, rules, todos and worker files", () => {
 						head(`species: coding\nharness: codex\nrepository: "github.com/a/b"\nbase_branch: "${branch}"`),
 					),
 				).toEqual([expect.objectContaining({ key: "base_branch" })]);
+			// A plain brief names a harness only for Claude Code (20260930770000): codex is its unsaid default.
 			expect(refused(PATH, head("species: in-house\nharness: codex"))).toEqual([
-				expect.objectContaining({ key: "harness", message: "harness belongs to a coding session's brief" }),
+				expect.objectContaining({
+					key: "harness",
+					message: 'harness must be one of: claude-code (found "codex")',
+				}),
 			]);
+			expect(refused(PATH, head('species: in-house\nrepository: "github.com/a/b"'))).toEqual([
+				expect.objectContaining({ key: "repository", message: "repository belongs to a coding session's brief" }),
+			]);
+		});
+
+		it("names Claude Code on a plain brief, and only claude-code (20260930770000)", () => {
+			const claude: Omit<WorkerBriefFile, "kind"> = { ...brief, harness: "claude-code" };
+			const text = writeWorkerBriefFile(claude);
+			expect(text).toContain("species: in-house\nharness: claude-code\n");
+			// The parse is the one the database checks: the harness key only when it is named.
+			expect(ok(PATH, text)).toEqual({ kind: "worker-brief", ...claude });
+			expect(ok(PATH, appendWorkerFollowUp(PATH, text, "Use the new logo.", "2026-10-03T09:00:00Z"))).toMatchObject({
+				species: "in-house",
+				harness: "claude-code",
+				followUps: 1,
+			});
+			expect(Object.keys(ok(PATH, writeWorkerBriefFile(brief)) as object)).not.toContain("harness");
 		});
 
 		it("refuses a brief's missing, misplaced and unbalanced sections", () => {
