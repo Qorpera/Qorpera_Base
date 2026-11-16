@@ -56,12 +56,46 @@ export async function* cloudHomeChannelWithoutKeepAlive(lines: AsyncIterable<str
 	for await (const line of lines) if (line !== CLOUD_HOME_CHANNEL_KEEPALIVE) yield line;
 }
 
-/** The first line the run's host writes: whose channel this is, and which machine it wants. */
+/**
+ * What a channel carries (Claude Code on the home, slice C1). `exec`: `codex exec-server --listen stdio`, JSON-RPC lines
+ * (Codex's own tools, and Claude Code's shell through its CLAUDE_CODE_SHELL_PREFIX bridge). `sftp`: OpenSSH's
+ * `sftp-server`, whose byte stream travels as lines of standard base64 (cloudHomeSftpLines, cloudHomeSftpBytes), so
+ * every hop of the channel (the ingress, a forwarding peer, the keep-alive) stays as it is for both. A handshake without
+ * a kind is `exec`, so a run's host from before this kind existed is unchanged; the same session authorizes both.
+ */
+export const CLOUD_HOME_CHANNEL_KINDS = ["exec", "sftp"] as const;
+export type CloudHomeChannelKind = (typeof CLOUD_HOME_CHANNEL_KINDS)[number];
+
+/** The most of the SFTP stream one line carries, before base64 (1 MiB of text a line, far below the line bound). */
+export const CLOUD_HOME_SFTP_PIECE_BYTES = 768 * 1024;
+/** Standard base64 with its padding, checked with the length (a multiple of 4) and without a backtracking group. */
+const BASE64_LINE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/** An `sftp` channel's bytes as its lines: each chunk, in order, cut at CLOUD_HOME_SFTP_PIECE_BYTES, as base64. */
+export async function* cloudHomeSftpLines(chunks: AsyncIterable<Buffer | Uint8Array>): AsyncGenerator<string> {
+	for await (const chunk of chunks) {
+		const bytes = Buffer.from(chunk);
+		for (let at = 0; at < bytes.byteLength; at += CLOUD_HOME_SFTP_PIECE_BYTES)
+			yield bytes.subarray(at, at + CLOUD_HOME_SFTP_PIECE_BYTES).toString("base64");
+	}
+}
+
+/** One line of an `sftp` channel as its bytes. Anything but nonempty standard base64 (padded, no other character) is not
+ * the stream, and ends the channel: Node's own decoder would skip what it cannot read and pass the rest on. */
+export function cloudHomeSftpBytes(line: string): Buffer {
+	if (line.length % 4 !== 0 || line.length > CLOUD_HOME_CHANNEL_LINE_BYTES || !BASE64_LINE.test(line))
+		throw new Error("Home sftp line invalid");
+	return Buffer.from(line, "base64");
+}
+
+/** The first line the run's host writes: whose channel this is, which machine it wants, and what the channel carries. */
 export interface CloudHomeChannelHandshake {
 	schema: typeof CLOUD_HOME_CHANNEL_PROTOCOL;
 	binding: CloudNativeToolBinding;
 	machineId: string;
 	sessionId: string;
+	/** Absent: `exec`. */
+	kind?: CloudHomeChannelKind;
 }
 
 /** The ingress's one line back, before any byte of the machine's: the session, or why there is none. */
@@ -88,6 +122,8 @@ export interface CloudHomeChannelRequest {
 	readonly binding: CloudNativeToolBinding;
 	/** The run's holder as its own ingress read it; a peer listener takes none (only executors hold its token). */
 	readonly holder: string | undefined;
+	/** What the channel carries, as the handshake named it (`exec` when it named none). */
+	readonly kind: CloudHomeChannelKind;
 }
 
 export type CloudHomeSessionAnswer =
@@ -142,14 +178,21 @@ export function cloudHomeChannelHandshake(input: {
 	binding: CloudNativeToolBinding;
 	machineId: string;
 	sessionId: string;
+	kind?: CloudHomeChannelKind;
 }): string {
-	if (!POSTGRES_UUID_PATTERN.test(input.machineId) || !POSTGRES_UUID_PATTERN.test(input.sessionId))
+	if (
+		!POSTGRES_UUID_PATTERN.test(input.machineId) ||
+		!POSTGRES_UUID_PATTERN.test(input.sessionId) ||
+		(input.kind !== undefined && !CLOUD_HOME_CHANNEL_KINDS.includes(input.kind))
+	)
 		throw new Error("Invalid home session identity");
+	// An exec channel names no kind, so an executor from before the kind existed still takes it.
 	return JSON.stringify({
 		schema: CLOUD_HOME_CHANNEL_PROTOCOL,
 		binding: input.binding,
 		machineId: input.machineId,
 		sessionId: input.sessionId,
+		...(input.kind === "sftp" ? { kind: input.kind } : {}),
 	} satisfies CloudHomeChannelHandshake);
 }
 
@@ -163,8 +206,10 @@ export function parseCloudHomeChannelHandshake(line: string): CloudHomeChannelHa
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const record = value as Record<string, unknown>;
+	const keys = Object.keys(record).sort().join();
 	if (
-		Object.keys(record).sort().join() !== "binding,machineId,schema,sessionId" ||
+		(keys !== "binding,machineId,schema,sessionId" && keys !== "binding,kind,machineId,schema,sessionId") ||
+		(record.kind !== undefined && !(CLOUD_HOME_CHANNEL_KINDS as readonly unknown[]).includes(record.kind)) ||
 		record.schema !== CLOUD_HOME_CHANNEL_PROTOCOL ||
 		typeof record.machineId !== "string" ||
 		!POSTGRES_UUID_PATTERN.test(record.machineId) ||
@@ -180,5 +225,6 @@ export function parseCloudHomeChannelHandshake(line: string): CloudHomeChannelHa
 		binding: record.binding as CloudNativeToolBinding,
 		machineId: record.machineId,
 		sessionId: record.sessionId,
+		kind: (record.kind as CloudHomeChannelKind | undefined) ?? "exec",
 	};
 }

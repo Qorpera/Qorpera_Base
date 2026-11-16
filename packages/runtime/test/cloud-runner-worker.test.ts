@@ -507,6 +507,7 @@ describe("ephemeral cloud runner worker", () => {
 			["NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED", false],
 			["NATIVE_CODING_SESSION:TIMEOUT", false],
 			["NATIVE_CODING_SESSION:TRANSPORT_UNAVAILABLE", false],
+			["NATIVE_CLAUDE_WORKER:UNKNOWN", false],
 			["AGENT_TURN_ENDED_WITHOUT_FINAL_SEND", false],
 		] as const) {
 			const service = new RunnerService();

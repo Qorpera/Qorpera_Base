@@ -607,6 +607,52 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	it("hands a plain worker to Claude Code only by name, and drops codex as the unsaid default (20260930770000)", async () => {
+		const f = await fixture();
+		try {
+			const claude = await f.boundary.invoke("cc1", "qorpera", "manage_worker", {
+				...dispatch,
+				operationKey: "cc1",
+				workerKey: "onboarding-pdf",
+				harness: "claude-code",
+			});
+			expect(body(claude).status).toBe("ok");
+			const request = f.folderWorkers.change.mock.calls.at(-1)?.[0];
+			expect(request).toMatchObject({ action: "dispatch", harness: "claude-code" });
+			expect(request).not.toHaveProperty("species");
+			const codex = await f.boundary.invoke("cc2", "qorpera", "manage_worker", {
+				...dispatch,
+				operationKey: "cc2",
+				workerKey: "onboarding-notes",
+				harness: "codex",
+			});
+			expect(body(codex).status).toBe("ok");
+			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0]).not.toHaveProperty("harness");
+			// A repository stays a coding session's.
+			const calls = f.writerCalls();
+			const repository = await f.boundary.invoke("cc3", "qorpera", "manage_worker", {
+				...dispatch,
+				operationKey: "cc3",
+				workerKey: "onboarding-repo",
+				harness: "claude-code",
+				repository: { host: "qorpera", owner: "company", name: "site", baseBranch: "main" },
+			});
+			expect(body(repository).status).toBe("denied");
+			expect(f.writerCalls()).toBe(calls);
+			const tool = (
+				f.boundary.specification as unknown as {
+					tools: { name: string; inputSchema: { properties: { harness: { description: string } } } }[];
+				}
+			).tools.find((candidate) => candidate.name === "manage_worker");
+			expect(tool?.inputSchema.properties.harness.description).toContain(
+				"claude-code: Claude Code does the work instead of a run of you",
+			);
+			expect(Buffer.byteLength(JSON.stringify(tool?.inputSchema))).toBeLessThan(4600);
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("ends the worker's turn when its report is saved, and only then", async () => {
 		const f = await fixture(workerWake);
 		try {

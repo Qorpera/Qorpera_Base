@@ -31,7 +31,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join, posix } from "node:path";
 import { CLOUD_MACHINE_HOME, type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
-import { CloudHomeChannelRefused, cloudHomeChannelLines } from "./cloud-home-channel.ts";
+import { type CloudHomeChannelKind, CloudHomeChannelRefused, cloudHomeChannelLines } from "./cloud-home-channel.ts";
 import type { CloudRunLog } from "./cloud-run-log.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -87,7 +87,7 @@ export const CLOUD_HOME_NO_RECORD =
 export function cloudHomeRefusalWords(reason: string | undefined): string {
 	if (reason === "MACHINE_NOT_RUNNING") return CLOUD_HOME_NOT_RUNNING;
 	if (reason === "MACHINE_BUSY_WITH_OTHER_WORK") return CLOUD_HOME_BUSY;
-	if (reason === "HOME_CODEX_NOT_PINNED") return CLOUD_HOME_OUTDATED;
+	if (reason === "HOME_CODEX_NOT_PINNED" || reason === "HOME_SFTP_MISSING") return CLOUD_HOME_OUTDATED;
 	return CLOUD_HOME_UNAVAILABLE;
 }
 
@@ -159,7 +159,8 @@ export interface CloudCodexHomeStream {
 /** How the runtime reaches the run's home: the coding executor authorizes the session and starts the exec-server. */
 export interface CloudCodexHomeChannel {
 	open(
-		input: { readonly sessionId: string; readonly machineId: string },
+		/** `kind` absent: the exec-server's lines (Codex's own tools). `sftp`: the file channel's (Claude Code, slice C1). */
+		input: { readonly sessionId: string; readonly machineId: string; readonly kind?: CloudHomeChannelKind },
 		signal: AbortSignal,
 	): Promise<CloudCodexHomeStream>;
 }

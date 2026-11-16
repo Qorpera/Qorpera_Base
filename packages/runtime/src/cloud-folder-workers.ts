@@ -188,6 +188,9 @@ export class CloudFolderWorkers {
 				species === "coding" && request.harness !== undefined && request.repository !== undefined
 					? { harness: request.harness, repository: request.repository }
 					: undefined;
+			// A plain worker Claude Code does (20260930770000): its brief names the harness, and the database checks the
+			// member's Claude sign-in and this agent's machine with the dispatch.
+			const plainHarness = species === "in-house" && request.harness === "claude-code" ? request.harness : undefined;
 			const id = hashedId("qorpera.folder-worker/v1", this.#identity.runId, request.operationKey);
 			const access = request.access ?? "read";
 			const revival = request.revival ?? "batch";
@@ -201,6 +204,7 @@ export class CloudFolderWorkers {
 					title: request.title ?? "",
 					species,
 					...coding,
+					...(plainHarness ? { harness: plainHarness } : {}),
 					access,
 					revival,
 					dispatchedAt: now,
