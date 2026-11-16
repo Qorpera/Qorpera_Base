@@ -15,6 +15,7 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import { CloudControlRefusalRelay, type CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import { isCloudRuntimeClaudeChoice } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_WAKE_SCHEMA = "qorpera.wake-envelope/v1";
 export const CLOUD_WAKE_POLICY_SCHEMA = "qorpera.wake-policy/v1";
@@ -545,6 +546,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		const coding = (payloadBody as { species?: unknown } | null)?.species === "coding";
 		// A plain worker Claude Code does names its harness (20260930770000); a Codex worker never does.
 		const harnessNamed = !!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "harness");
+		const claudeNamed = !!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "claude");
 		const work = closed(payloadBody, [
 			"schema",
 			"workerId",
@@ -559,6 +561,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			"dispatch",
 			...(coding ? ["coding"] : []),
 			...(harnessNamed ? ["harness"] : []),
+			...(claudeNamed ? ["claude"] : []),
 		]);
 		const dispatch = closed(work.dispatch, [
 			"goal",
@@ -579,6 +582,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(work.access !== "read" && work.access !== "write") ||
 			(coding && (work.access !== "read" || !codingScope(work.coding, work.sequence))) ||
 			(harnessNamed && (coding || work.harness !== "claude-code")) ||
+			(claudeNamed && (!harnessNamed || !isCloudRuntimeClaudeChoice(work.claude))) ||
 			!Number.isSafeInteger(work.sequence) ||
 			(work.sequence as number) < 1 ||
 			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||

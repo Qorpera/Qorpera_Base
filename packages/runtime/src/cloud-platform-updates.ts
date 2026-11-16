@@ -76,6 +76,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Workers on Claude Code",
 		text: "When a member asks for Claude Code to do work, a worker can run on it: manage_worker with harness claude-code and access write hands the work to Claude Code, which works on your own machine and in the company's files with your rights there, on that member's own Claude sign-in, one at a time for that member, and reports back like any worker. A member without a Claude sign-in is refused at the dispatch, in words that say what to do; if their sign-in ends before the run, the worker comes back blocked.",
 	},
+	{
+		id: "claude-in-conversations",
+		kind: "model",
+		date: "2026-11-16",
+		title: "Claude and GPT-6.1 Sol in a conversation's Model menu",
+		text: "A member can pick GPT-6.1 Sol for a conversation, and your turns there run on it. A member who can run Claude Code can pick Claude (Fable 5.2 or Opus 5.5) instead: you still answer in that conversation, but the real work there (building, writing, research) goes to a Claude Code worker, which runs on the model and effort they picked (manage_worker with harness claude-code); light replies, machines and hiring stay with you.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

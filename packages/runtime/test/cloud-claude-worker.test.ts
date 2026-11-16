@@ -112,6 +112,22 @@ describe("what Claude Code is told", () => {
 		).toEqual({ ...brief, context: null, sources: ["notes/onboarding.md"] });
 	});
 
+	it("reads the member's Claude pick from the worker's wake, and nothing else in its place", () => {
+		const payload = {
+			title: brief.title,
+			outputFolder: brief.outputFolder,
+			dispatch: { goal: brief.goal, definitionOfDone: brief.doneWhen, sources: [], followUp: null },
+		};
+		expect(claudeWorkerBrief({ ...payload, claude: { model: "claude-fable-5-2", effort: "xhigh" } }).claude).toEqual({
+			model: "claude-fable-5-2",
+			effort: "xhigh",
+		});
+		expect(claudeWorkerBrief(payload)).not.toHaveProperty("claude");
+		expect(
+			claudeWorkerBrief({ ...payload, claude: { model: "claude-fable-5-2", effort: "ultra" } }),
+		).not.toHaveProperty("claude");
+	});
+
 	it("has a short system note with no Qorpera tool names, which the box appends from a read-only file", () => {
 		expect(CLAUDE_WORKER_SYSTEM_NOTE).toBe(
 			[
@@ -413,6 +429,31 @@ describe("a Claude Code worker's run", () => {
 		expect(v.state.seals).toEqual([]);
 		expect(await readdir(runRoot)).toEqual([]);
 		await rm(runRoot, { recursive: true });
+	});
+
+	it("starts Claude Code on the member's pick when the worker carries one, and on its own default when not", async () => {
+		const launched: { model?: string; effort?: string }[] = [];
+		for (const claude of [{ model: "claude-opus-5-5", effort: "max" } as const, undefined]) {
+			const box = standInBox(OK);
+			const runRoot = await root();
+			const outcome = await runClaudeWorker({
+				brief: { ...brief, ...(claude ? { claude } : {}) },
+				member: "Ada",
+				logins: vault().logins,
+				launch: async (options) => {
+					launched.push({ model: options.model, effort: options.effort });
+					return box.launch(options);
+				},
+				root: runRoot,
+				signal: new AbortController().signal,
+			});
+			expect(outcome.outcome).toBe("succeeded");
+			await rm(runRoot, { recursive: true });
+		}
+		expect(launched).toEqual([
+			{ model: "claude-opus-5-5", effort: "max" },
+			{ model: undefined, effort: undefined },
+		]);
 	});
 
 	it("seals the renewed credentials early, then again at the end only when they changed again", async () => {

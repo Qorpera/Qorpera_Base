@@ -670,6 +670,27 @@ describe("worker dispatch and completion envelopes", () => {
 		).toThrow();
 		expect(Object.hasOwn(parseCloudWakeEnvelope(wake, identity).payload, "harness")).toBe(false);
 	});
+	it("admits the member's Claude pick on a Claude Code worker's wake alone (20260930784000)", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const pick = { model: "claude-opus-5-5", effort: "max" };
+		const claude = { ...wake, payload: { ...wake.payload, harness: "claude-code", claude: pick } };
+		expect(parseCloudWakeEnvelope(claude, identity).payload.claude).toEqual(pick);
+		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, claude: pick } }, identity)).toThrow(
+			"Invalid worker dispatch wake",
+		);
+		for (const bad of [
+			null,
+			"claude-opus-5-5",
+			{ model: "claude-sonnet-5-5", effort: "high" },
+			{ model: "gpt-6.1-sol", effort: "high" },
+			{ model: "claude-fable-5-2", effort: "ultra" },
+			{ model: "claude-fable-5-2" },
+			{ ...pick, extra: true },
+		])
+			expect(() =>
+				parseCloudWakeEnvelope({ ...claude, payload: { ...claude.payload, claude: bad } }, identity),
+			).toThrow("Invalid worker dispatch wake");
+	});
 	it("admits a completion as an internal continuation that may speak in its parent's conversation", () => {
 		const { identity, wake } = workerWakeFixture("worker-completion");
 		const parsed = parseCloudWakeEnvelope(wake, identity);

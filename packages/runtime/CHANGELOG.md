@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Claude in a conversation (contract 17, the 2026-11-16 amendment; migration `20260930784000`, SQL test 1281). The Model menu's models are `gpt-6-astra`, `gpt-6.1-sol`, `claude-fable-5-2` and `claude-opus-5-5`; xhigh and max only with Claude; the answers name `models`. The model policy declares `claudeChoice: "thread"`. Under a bundle that declares it, a member's turn by a member who may run Claude Code pins the conversation's Claude pick on its run, a run carrying on its chain keeps it, the run's context names `claude: {model, effort}`, and the turn instructions hand real work to a Claude Code worker; the GPT front runs on its default model and effort. A Claude Code worker records the pick, its dispatch wake carries `claude`, and the box starts Claude Code with `--model` and `--effort`. Deploy order: apply `20260930784000` before any bundle that declares `claudeChoice` activates (an older kernel refuses that manifest, so no run of it could start); the activation guards on `qorpera_execution_runs.claude_model` or `qorpera_pin_execution_claude_choice()`. The migration alone offers GPT-6.1 Sol and no Claude.
 - Release v251 (the Claude Code box's scratch root beside the run's root, #1873; and master since v250: the Data list,
   company databases slice 10, and the folder service's data role and the folder program's `data` command, slice 8a):
   runtime bundle 251 `27a9118662d860eecae26f6b94168adaea1c75e5279a62c0e5c06e23a83bae72` (activation `20260929025199`,

@@ -32,7 +32,13 @@ import {
 	cloudRuntimeHireBehavior,
 } from "./cloud-runtime-hire-overlays.ts";
 import { type CloudRuntimeToolOperation, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
-import { type CloudRuntimeServiceTier, isCloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
+import {
+	CLOUD_RUNTIME_CLAUDE_MODELS,
+	type CloudRuntimeClaudeChoice,
+	type CloudRuntimeServiceTier,
+	isCloudRuntimeClaudeChoice,
+	isCloudRuntimeServiceTier,
+} from "./cloud-runtime-policy.ts";
 import { type CloudAgentSkillsBlock, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import { type CloudWakeEnvelope, cloudWakeIsOwnThread } from "./cloud-wake-bus.ts";
 import type { CloudAgentOpenWork } from "./cloud-worker-tools.ts";
@@ -579,6 +585,7 @@ export interface CloudNativeCompanyContext {
 	/** Named only for runs admitted under a bundle with fast mode. It travels
 	 * here, not in the shared tool identity, which company computers also read. */
 	serviceTier?: CloudRuntimeServiceTier;
+	claude?: CloudRuntimeClaudeChoice;
 	/** Every company run is on the company folder (folder-v2, workstream F2), whose agents' folders are
 	 * named: this agent's folder name, and its listed coworkers' by id. */
 	folder: CloudCompanyContextFolders;
@@ -759,8 +766,10 @@ export function parseCloudNativeCompanyContext(
 		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 	const tiered = record !== null && Object.hasOwn(record, "serviceTier");
 	const originated = record !== null && Object.hasOwn(record, "origin");
-	const { serviceTier, origin: originValue, ...always } = record ?? {};
+	const picked = record !== null && Object.hasOwn(record, "claude");
+	const { serviceTier, origin: originValue, claude: claudeValue, ...always } = record ?? {};
 	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
+	if (picked && !isCloudRuntimeClaudeChoice(claudeValue)) throw new Error("Invalid cloud company context");
 	const data = closed(record ? always : value, [
 		"schema",
 		"identity",
@@ -876,6 +885,9 @@ export function parseCloudNativeCompanyContext(
 		jobSpecification,
 		continuation,
 		...(tiered ? { serviceTier: serviceTier as CloudRuntimeServiceTier } : {}),
+		...(isCloudRuntimeClaudeChoice(claudeValue)
+			? { claude: { model: claudeValue.model, effort: claudeValue.effort } }
+			: {}),
 		folder,
 		...(origin ? { origin } : {}),
 	};
@@ -1210,7 +1222,26 @@ export function compileCloudNativeCompanyInstructions(
 			cloudOfferedTools(parts?.tools),
 			situation && context.agentKind === "cofounder" && !worker ? cloudCoFounderPlanningRun(situation) : undefined,
 		),
+		...(context.claude && !worker && cloudOfferedTools(parts?.tools)("manage_worker")
+			? [cloudClaudeChoiceInstructions(context.claude)]
+			: []),
 		...closingReminder(context, wake),
+	].join("\n");
+}
+
+const CLAUDE_EFFORT_WORDS: Readonly<Record<CloudRuntimeClaudeChoice["effort"], string>> = {
+	low: "low effort",
+	medium: "medium effort",
+	high: "high effort",
+	xhigh: "extra high effort",
+	max: "max effort",
+};
+
+export function cloudClaudeChoiceInstructions(choice: CloudRuntimeClaudeChoice): string {
+	return [
+		"\n# Claude for this conversation",
+		`The member picked Claude for this conversation: ${CLOUD_RUNTIME_CLAUDE_MODELS[choice.model]}, ${CLAUDE_EFFORT_WORDS[choice.effort]}. That pick is the member asking for Claude Code, so hand the real work to a Claude Code worker: building, writing, research, anything that takes more than a quick reply (manage_worker with harness claude-code and access write; it runs on that pick).`,
+		"Do the front work yourself: answer light messages and questions, set up machines, hire agents, ask the member what you need, and tell them what the worker found.",
 	].join("\n");
 }
 

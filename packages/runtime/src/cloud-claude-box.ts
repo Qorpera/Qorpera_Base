@@ -44,6 +44,7 @@ import {
 	startNativeCodexEgress,
 } from "./cloud-native-egress.ts";
 import { privateDirectory, rootOwnedFile } from "./cloud-native-isolation.ts";
+import { CLOUD_RUNTIME_CLAUDE_EFFORTS } from "./cloud-runtime-policy.ts";
 
 /** The Claude Code this box runs: deploy/first-node/native-claude/linux-x64-artifact.json (a test keeps them equal).
  * Never older than 2.1.311 (P2: 2.1.231 reads /proc/self/environ through a link). */
@@ -161,10 +162,12 @@ export type ClaudeBoxTool = (typeof CLAUDE_BOX_TOOLS)[number];
 /** Claude Code's arguments: print mode, its prompt on stdin, its stream as JSON lines, settings from the box only, and
  * the tools named, no others. */
 export function claudeBoxArguments(
-	options: { model?: string; tools?: readonly ClaudeBoxTool[]; systemNote?: boolean } = {},
+	options: { model?: string; effort?: string; tools?: readonly ClaudeBoxTool[]; systemNote?: boolean } = {},
 ): string[] {
 	if (options.model !== undefined && !/^[A-Za-z0-9._:[\]-]{1,128}$/.test(options.model))
 		throw new Error("Invalid Claude model");
+	if (options.effort !== undefined && !(CLOUD_RUNTIME_CLAUDE_EFFORTS as readonly string[]).includes(options.effort))
+		throw new Error("Invalid Claude effort");
 	const tools = options.tools ?? CLAUDE_BOX_TOOLS;
 	if (
 		tools.length === 0 ||
@@ -188,6 +191,7 @@ export function claudeBoxArguments(
 		tools.join(","),
 		...(options.systemNote ? ["--append-system-prompt-file", CLAUDE_BOX_PATHS.systemNote] : []),
 		...(options.model ? ["--model", options.model] : []),
+		...(options.effort ? ["--effort", options.effort] : []),
 	];
 }
 
@@ -282,6 +286,7 @@ export function claudeBoxInvocation(options: {
 	weakening?: ClaudeBoxProofWeakening;
 	extraCa?: string;
 	model?: string;
+	effort?: string;
 	tools?: readonly ClaudeBoxTool[];
 	/** The run wrote a system note (scratch `system-note.md`): bound read-only and appended to the system prompt. */
 	systemNote?: boolean;
@@ -385,7 +390,12 @@ export function claudeBoxInvocation(options: {
 		`${CLAUDE_BOX_PATHS.entryPoint}${extname(c.entryPoint)}`,
 		options.relayPath,
 		CLAUDE_BOX_PATHS.binary,
-		...claudeBoxArguments({ model: options.model, tools: options.tools, systemNote: options.systemNote }),
+		...claudeBoxArguments({
+			model: options.model,
+			effort: options.effort,
+			tools: options.tools,
+			systemNote: options.systemNote,
+		}),
 	);
 	return {
 		command: c.namespaceHelper,
@@ -473,6 +483,7 @@ export interface ClaudeCodeBoxOptions {
 	/** A short note appended to Claude Code's own system prompt (at most 16 KiB), read-only in the box. */
 	systemNote?: string;
 	model?: string;
+	effort?: string;
 	/** The tools Claude Code offers, no others (default and slice 1: CLAUDE_BOX_TOOLS). */
 	tools?: readonly ClaudeBoxTool[];
 	signal: AbortSignal;
@@ -547,7 +558,7 @@ async function startBox(
 	if (token !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(token)) throw new Error("Invalid Claude sign-in token");
 	// The model and the tools are checked before anything of the home opens: a start that fails on them has used
 	// nothing of the caller's one session (review r2, F3).
-	claudeBoxArguments({ model: options.model, tools: options.tools });
+	claudeBoxArguments({ model: options.model, effort: options.effort, tools: options.tools });
 	if (options.systemNote !== undefined && (!options.systemNote || Buffer.byteLength(options.systemNote) > 16_384))
 		throw new Error("Invalid Claude system note");
 	progress.stage = "scratch";
@@ -656,6 +667,7 @@ async function startBox(
 			weakening: options.proof?.weakening,
 			extraCa: options.proof?.extraCa,
 			model: options.model,
+			effort: options.effort,
 			tools: options.tools,
 			systemNote: options.systemNote !== undefined,
 		});

@@ -30,6 +30,7 @@ import { sha256 } from "./cloud-company-folder-client.ts";
 import { CloudHomeChannelRefused } from "./cloud-home-channel.ts";
 import { claudeLoginFile } from "./cloud-model-login-sign-in.ts";
 import type { ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
+import { type CloudRuntimeClaudeChoice, isCloudRuntimeClaudeChoice } from "./cloud-runtime-policy.ts";
 import { type ClaudeLoginRunClient, openClaudeLoginForRun, sealClaudeLoginBack } from "./cloud-secret-broker-http.ts";
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -57,6 +58,7 @@ export interface ClaudeWorkerBrief {
 	readonly followUp: string | null;
 	/** On a follow-up: the summary of the worker's last report (the follow-up removed its results file). */
 	readonly earlier?: string | null;
+	readonly claude?: CloudRuntimeClaudeChoice;
 }
 
 /** The brief of a Claude Code worker's wake (the wake bus checked its shape already). */
@@ -74,6 +76,9 @@ export function claudeWorkerBrief(payload: Readonly<Record<string, unknown>>): C
 			: [],
 		outputFolder: payload.outputFolder,
 		followUp: text(dispatch.followUp) || null,
+		...(isCloudRuntimeClaudeChoice(payload.claude)
+			? { claude: { model: payload.claude.model, effort: payload.claude.effort } }
+			: {}),
 	};
 }
 
@@ -529,7 +534,10 @@ export interface ClaudeWorkerRunOptions {
 	readonly logins: ClaudeWorkerLogins;
 	/** Starts the box (launchClaudeCodeBox, with the run's channel, session and home bound). */
 	readonly launch: (
-		options: Pick<ClaudeCodeBoxOptions, "scratchRoot" | "login" | "prompt" | "systemNote" | "signal">,
+		options: Pick<
+			ClaudeCodeBoxOptions,
+			"scratchRoot" | "login" | "prompt" | "systemNote" | "signal" | "model" | "effort"
+		>,
 	) => Promise<ClaudeCodeBox>;
 	readonly root: string;
 	/** Each step as it finishes, for the run's work log. Never throws back into the run. */
@@ -624,6 +632,9 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 					prompt: claudeWorkerPrompt(options.brief),
 					systemNote: CLAUDE_WORKER_SYSTEM_NOTE,
 					signal,
+					...(options.brief.claude
+						? { model: options.brief.claude.model, effort: options.brief.claude.effort }
+						: {}),
 				});
 			} catch (error) {
 				signal.throwIfAborted();

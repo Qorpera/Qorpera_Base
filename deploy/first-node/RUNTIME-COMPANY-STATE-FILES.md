@@ -2542,7 +2542,8 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   4. one block per worker: the dispatch wake of a row with none (a worker with `harness: claude-code` first takes its
      member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: one
      Claude Code run per member at a time; a take lost to another drain is `skipped`, and the worker starts on a later
-     pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries); a dispatch wake that is refused,
+     pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries, and, when the worker recorded
+     its conversation's Claude pick, `claude: {model, effort}`, 20260930784000); a dispatch wake that is refused,
      cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
      (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
      without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
