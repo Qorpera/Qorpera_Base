@@ -44,7 +44,10 @@ export function modelProvider(modelId: string | undefined): SessionProvider {
 	return SESSION_MODELS.find((model) => model.id === modelId)?.provider ?? "openai";
 }
 
-export function modelEfforts(observed: SessionModel | undefined, modelId: string | undefined): readonly SessionEffort[] {
+export function modelEfforts(
+	observed: SessionModel | undefined,
+	modelId: string | undefined,
+): readonly SessionEffort[] {
 	const provider = modelProvider(modelId);
 	const listed = modelId !== undefined && observed?.efforts ? observed.efforts[modelId] : undefined;
 	const offered = listed ? PROVIDER_EFFORTS[provider].filter((effort) => listed.includes(effort)) : [];
@@ -248,7 +251,8 @@ export function createWebSessionModel(
 										!Array.isArray(list) ||
 										list.length > 16 ||
 										list.some(
-											(item) => typeof item !== "string" || !item || new TextEncoder().encode(item).length > 64,
+											(item) =>
+												typeof item !== "string" || !item || new TextEncoder().encode(item).length > 64,
 										),
 								))) ||
 						typeof result.version !== "number" ||
@@ -270,7 +274,10 @@ export function createWebSessionModel(
 						...(efforts && typeof efforts === "object"
 							? {
 									efforts: Object.fromEntries(
-										Object.entries(efforts as Record<string, string[]>).map(([key, list]) => [key, [...new Set(list)]]),
+										Object.entries(efforts as Record<string, string[]>).map(([key, list]) => [
+											key,
+											[...new Set(list)],
+										]),
 									),
 								}
 							: {}),

@@ -245,14 +245,11 @@ describe("conversation model transport", () => {
 		{ modelId: "gpt-6-sol" },
 		{ modelId: "claude-opus-5-5", reasoningEffort: "ultra" },
 		{ modelId: "gpt-6-astra", reasoningEffort: "max" },
-	])(
-		"refuses a selection the client does not offer %j",
-		async (selection) => {
-			const f = setup();
-			await expect(f.control.set(session.sessionId, selection, 0)).rejects.toThrow();
-			expect(f.fetch).not.toHaveBeenCalled();
-		},
-	);
+	])("refuses a selection the client does not offer %j", async (selection) => {
+		const f = setup();
+		await expect(f.control.set(session.sessionId, selection, 0)).rejects.toThrow();
+		expect(f.fetch).not.toHaveBeenCalled();
+	});
 
 	it("reads the efforts the cloud offers with each model and saves extra high on GPT", async () => {
 		const f = setup();
@@ -262,7 +259,10 @@ describe("conversation model transport", () => {
 		};
 		f.fetch.mockResolvedValueOnce(Response.json({ ...model, models: ["gpt-6-astra", "gpt-6.1-sol"], efforts }));
 		expect(await f.control.read(session.sessionId)).toMatchObject({
-			efforts: { "gpt-6-astra": ["low", "medium", "high", "xhigh"], "gpt-6.1-sol": ["low", "medium", "high", "xhigh"] },
+			efforts: {
+				"gpt-6-astra": ["low", "medium", "high", "xhigh"],
+				"gpt-6.1-sol": ["low", "medium", "high", "xhigh"],
+			},
 		});
 		f.fetch.mockResolvedValueOnce(
 			Response.json({ ...model, model_id: "gpt-6.1-sol", reasoning_effort: "xhigh", efforts, version: 1 }),

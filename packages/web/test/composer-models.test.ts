@@ -472,9 +472,16 @@ describe("composer model selector", () => {
 		expect(panel.querySelectorAll(".composer-effort-stops i").length).toBe(4);
 		slider(panel).focus();
 		await slide(panel, "End");
-		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { reasoningEffort: "xhigh" }, 0, expect.any(AbortSignal));
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ reasoningEffort: "xhigh" },
+			0,
+			expect.any(AbortSignal),
+		);
 		expect(part(panel, "title").textContent).toBe("Extra high");
-		expect(button(f.view.el, "Model: GPT-6 Astra, Extra high effort").textContent).toContain("GPT-6 Astra · Extra high");
+		expect(button(f.view.el, "Model: GPT-6 Astra, Extra high effort").textContent).toContain(
+			"GPT-6 Astra · Extra high",
+		);
 		await choose(panel, "GPT-6.1 Sol");
 		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { modelId: "gpt-6.1-sol" }, 1, expect.any(AbortSignal));
 		const provider = part(panel, "provider") as HTMLButtonElement;
@@ -504,7 +511,12 @@ describe("composer model selector", () => {
 		expect(slider(panel).getAttribute("aria-valuemax")).toBe("2");
 		slider(panel).focus();
 		await slide(panel, "End");
-		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { reasoningEffort: "high" }, 0, expect.any(AbortSignal));
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ reasoningEffort: "high" },
+			0,
+			expect.any(AbortSignal),
+		);
 	});
 	it("names a conversation's earlier model and offers only the current ones", async () => {
 		const f = await setup();
