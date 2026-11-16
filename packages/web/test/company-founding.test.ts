@@ -1716,8 +1716,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(field.placeholder).toBe("Name your company");
 		box.value = "A webshop with ceramics. We ship from Aarhus.";
 		box.dispatchEvent(new Event("input"));
-		// Empty, it says the name the idea gives.
-		expect(field.placeholder).toBe("A webshop with ceramics");
+		expect(field.placeholder).toBe("Name your company");
 		// Enter in the name goes on to the idea and starts nothing.
 		field.focus();
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));

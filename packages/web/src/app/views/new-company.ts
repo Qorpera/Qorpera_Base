@@ -262,8 +262,6 @@ class NewCompanyView {
 
 	#changed(): void {
 		this.#resize();
-		const idea = this.#idea.value.trim();
-		this.#name.placeholder = idea ? companyNameFromIdea(idea) : t("Name your company");
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 	}
