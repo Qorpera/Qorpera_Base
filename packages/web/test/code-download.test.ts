@@ -1014,7 +1014,9 @@ describe("a GitHub project's working copy, named on its folder in Storage", () =
 			expect(line().getAttribute("role")).toBe("status");
 			expect(line().querySelectorAll("*")).toHaveLength(1);
 			expect(visibleText(downloads())).toBe("");
-			expect(host.querySelectorAll(".storage-toolbar > button:not([hidden])")).toHaveLength(0);
+			expect(
+				host.querySelectorAll(".storage-toolbar > button:not([hidden], .storage-download-button)"),
+			).toHaveLength(0);
 			expect(button()?.hidden).toBe(true);
 			// A founder reads it: no path, branch, commit or repository.
 			expect(line().textContent).not.toMatch(/\/|branch|commit|repositor|git(?!hub)/i);

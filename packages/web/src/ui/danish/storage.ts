@@ -58,6 +58,23 @@ export const STORAGE: Record<string, string> = {
 		"Koden er hentet mange gange i dag. Prøv igen i morgen.",
 	"The code could not be made ready just now. Try again.": "Koden kunne ikke gøres klar lige nu. Prøv igen.",
 	"The code could not be downloaded just now. Try again.": "Koden kunne ikke hentes lige nu. Prøv igen.",
+	"Download this folder": "Hent denne mappe",
+	"Getting {name} ready…": "Gør {name} klar…",
+	"Downloading {name}…": "Henter {name}…",
+	"{name} could not be read just now. Try again.": "{name} kunne ikke læses lige nu. Prøv igen.",
+	"{path} could not be read, so nothing was downloaded. Try again.":
+		"{path} kunne ikke læses, så intet blev hentet. Prøv igen.",
+	"The folder's links are not in it.": "Mappens links er ikke med.",
+	"{name} has {count} files ({size}), more than a download here can hold ({files} files).":
+		"{name} har {count} filer ({size}), flere end en hentning her kan rumme ({files} filer).",
+	"{name} has over {count} files (over {size}), more than a download here can hold ({files} files).":
+		"{name} har over {count} filer (over {size}), flere end en hentning her kan rumme ({files} filer).",
+	"{name} is {size}, more than a download here can hold ({limit}).":
+		"{name} fylder {size}, mere end en hentning her kan rumme ({limit}).",
+	"{name} is over {size}, more than a download here can hold ({limit}).":
+		"{name} fylder over {size}, mere end en hentning her kan rumme ({limit}).",
+	"{name} has more than {count} folders, more than a download here can go through.":
+		"{name} har mere end {count} mapper, flere end en hentning her kan gå igennem.",
 
 	// "Bring code in", and the line under the top line of the code's folders (app/views/code-import.ts): what a folder
 	// is, how an import stands, and why one was not brought in. No path, branch, commit or repository in either language.
