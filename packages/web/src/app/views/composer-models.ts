@@ -26,7 +26,6 @@ const PROVIDER_MARKS: Record<SessionProvider, string> = {
 	anthropic: "./assets/provider-claude.svg",
 };
 
-
 const EFFORT_SETTLE_MS = 450;
 
 /** An effort's name in the interface language; one without a name here (xhigh, max) reads as its id. */
@@ -298,9 +297,10 @@ export class ComposerModels {
 		this.#listOpen = !this.#listOpen;
 		this.#render();
 		if (this.#listOpen)
-			(this.#choices.find((choice) => choice.getAttribute("aria-checked") === "true" && !choice.hidden) ??
-				this.#choices.find((choice) => !choice.hidden && !choice.disabled))
-				?.focus();
+			(
+				this.#choices.find((choice) => choice.getAttribute("aria-checked") === "true" && !choice.hidden) ??
+				this.#choices.find((choice) => !choice.hidden && !choice.disabled)
+			)?.focus();
 	}
 
 	#switchProvider(): void {
@@ -432,9 +432,7 @@ export class ComposerModels {
 
 	#unusable(control: HTMLElement): boolean {
 		if (control.hidden || control.closest("[hidden]")) return true;
-		return control instanceof HTMLButtonElement
-			? control.disabled
-			: control.getAttribute("aria-disabled") === "true";
+		return control instanceof HTMLButtonElement ? control.disabled : control.getAttribute("aria-disabled") === "true";
 	}
 
 	#notify(): void {
@@ -521,9 +519,7 @@ export class ComposerModels {
 			this.#pending?.reasoningEffort !== undefined && this.#pending.modelId === undefined
 				? efforts.indexOf(this.#pending.reasoningEffort as (typeof efforts)[number])
 				: -1;
-		const at =
-			this.#sliding ??
-			(pendingAt >= 0 ? pendingAt : efforts.indexOf(effortId as (typeof efforts)[number]));
+		const at = this.#sliding ?? (pendingAt >= 0 ? pendingAt : efforts.indexOf(effortId as (typeof efforts)[number]));
 		const share = at >= 0 && efforts.length > 1 ? at / (efforts.length - 1) : 0;
 		const atName = at >= 0 ? effortName(efforts[at]!) : (effort ?? "");
 		this.#title.textContent = atName;
@@ -543,7 +539,10 @@ export class ComposerModels {
 		this.#slider.setAttribute("aria-valuemax", String(efforts.length - 1));
 		this.#slider.setAttribute("aria-valuenow", String(Math.max(0, at)));
 		this.#slider.setAttribute("aria-valuetext", atName);
-		this.#slider.setAttribute("aria-disabled", String((unavailable && this.#sliding === undefined) || this.#slider.hidden));
+		this.#slider.setAttribute(
+			"aria-disabled",
+			String((unavailable && this.#sliding === undefined) || this.#slider.hidden),
+		);
 		this.#slider.tabIndex = this.#slider.hidden ? -1 : 0;
 
 		const scope = this.#group ? t("Every agent in this group chat. Applies from your next message.") : "";

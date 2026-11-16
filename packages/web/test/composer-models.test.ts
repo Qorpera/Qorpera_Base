@@ -92,9 +92,16 @@ function listed(panel: HTMLElement): string[] {
 		(item) => item.textContent ?? "",
 	);
 }
+function choice(panel: HTMLElement, name: string): HTMLButtonElement {
+	const found = [...panel.querySelectorAll<HTMLButtonElement>(".composer-model-choice")].find(
+		(item) => item.textContent === name,
+	);
+	if (!found) throw new Error(`Missing model: ${name}`);
+	return found;
+}
 async function choose(panel: HTMLElement, name: string): Promise<void> {
 	part(panel, "pick").click();
-	button(panel, name).click();
+	choice(panel, name).click();
 	await settle();
 }
 async function open(view: ConversationView, label = "Model: GPT-6 Astra, Low effort"): Promise<HTMLElement> {
@@ -178,14 +185,14 @@ describe("composer model selector", () => {
 		expect(part(panel, "fast").hidden).toBe(true);
 		expect(document.activeElement).toBe(part(panel, "pick"));
 		part(panel, "pick").click();
-		expect(button(panel, "GPT-6 Sol").disabled).toBe(true);
-		expect(button(panel, "GPT-6 Luna").disabled).toBe(true);
-		expect(document.activeElement).toBe(button(panel, "GPT-6 Astra"));
+		expect(choice(panel, "GPT-6 Sol").disabled).toBe(true);
+		expect(choice(panel, "GPT-6 Luna").disabled).toBe(true);
+		expect(document.activeElement).toBe(choice(panel, "GPT-6 Astra"));
 		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
-		expect(document.activeElement).toBe(button(panel, "GPT-6 Astra"));
+		expect(document.activeElement).toBe(choice(panel, "GPT-6 Astra"));
 		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
 		expect(document.activeElement).toBe(part(panel, "pick"));
-		button(panel, "GPT-6 Astra").click();
+		choice(panel, "GPT-6 Astra").click();
 		await settle();
 		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-astra" }, 0, expect.any(AbortSignal));
 	});
@@ -209,7 +216,7 @@ describe("composer model selector", () => {
 		expect(panel.textContent).not.toContain("Only this conversation");
 		part(panel, "pick").click();
 		expect(listed(panel)).toEqual(["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"]);
-		expect(button(panel, "GPT-6 Astra").getAttribute("aria-checked")).toBe("true");
+		expect(choice(panel, "GPT-6 Astra").getAttribute("aria-checked")).toBe("true");
 		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(part(panel, "pick").getAttribute("aria-expanded")).toBe("false");
 		expect(document.activeElement).toBe(part(panel, "pick"));
@@ -227,7 +234,7 @@ describe("composer model selector", () => {
 		f.company.conversation(session.sessionId).set({ draft: "Continue" });
 		const panel = await open(f.view);
 		part(panel, "pick").click();
-		button(panel, "GPT-6 Sol").click();
+		choice(panel, "GPT-6 Sol").click();
 		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-sol" }, 0, expect.any(AbortSignal));
 		expect(button(f.view.el, "Send message").disabled).toBe(true);
 		expect(panel.textContent).toContain("Saving model");
@@ -358,7 +365,7 @@ describe("composer model selector", () => {
 		f.set.mockReturnValueOnce(saved.promise);
 		const panel = await open(f.view);
 		part(panel, "pick").click();
-		button(panel, "GPT-6 Sol").click();
+		choice(panel, "GPT-6 Sol").click();
 		const signal = f.set.mock.calls[0]![3];
 		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
 		await settle();
@@ -381,7 +388,7 @@ describe("composer model selector", () => {
 		expect(part(panel, "title").textContent).toBe("Medium");
 		part(panel, "pick").click();
 		expect(panel.querySelectorAll('.composer-model-choice[aria-checked="true"]').length).toBe(0);
-		expect(button(panel, "GPT-6 Astra").disabled).toBe(false);
+		expect(choice(panel, "GPT-6 Astra").disabled).toBe(false);
 		part(panel, "pick").click();
 		expect(f.set).not.toHaveBeenCalled();
 		await slide(panel, "ArrowRight");
@@ -423,7 +430,7 @@ describe("composer model selector", () => {
 		expect(slider(panel).getAttribute("aria-valuemax")).toBe("4");
 		part(panel, "pick").click();
 		expect(listed(panel)).toEqual(["Opus 5.5", "Sonnet 5.5", "Haiku 5.5"]);
-		button(panel, "Sonnet 5.5").click();
+		choice(panel, "Sonnet 5.5").click();
 		await settle();
 		expect(f.set).toHaveBeenLastCalledWith(
 			session.sessionId,
