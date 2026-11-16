@@ -75,29 +75,52 @@ $$;
 revoke all on function public.qorpera_active_bundle_claude_choice()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
+create function public.qorpera_resolve_run_claude_choice(p_run public.qorpera_execution_runs, p_manifest jsonb)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_choice public.qorpera_session_models%rowtype; v_origin public.qorpera_execution_runs%rowtype;
+begin
+	if p_manifest #>> '{modelPolicy,claudeChoice}' is distinct from 'thread' then return null; end if;
+	if p_run.source_kind in ('session_turn','room_delivery') and p_run.session_id is not null then
+		select * into v_choice from public.qorpera_session_models choice where choice.session_id = p_run.session_id;
+		if v_choice.model_id in ('claude-fable-5-2','claude-opus-5-5')
+			and public.qorpera_member_may_pick_claude(p_run.profile_id,
+				coalesce(p_run.requested_by_user_id, p_run.created_by_user_id)) then
+			return jsonb_build_object('model', v_choice.model_id,
+				'effort', coalesce(v_choice.reasoning_effort, p_manifest #>> '{modelPolicy,effort}', 'low'));
+		end if;
+		return null;
+	end if;
+	if p_run.source_kind = 'wake' then
+		select origin.* into v_origin
+		from public.qorpera_wake_occurrences wake
+		join public.qorpera_execution_runs origin on origin.id = wake.origin_run_id
+		where wake.id = p_run.source_id and wake.source_kind is distinct from 'worker-dispatch'
+			and origin.profile_id = p_run.profile_id and origin.environment_id = p_run.environment_id
+			and origin.staff_agent_id = p_run.staff_agent_id and origin.claude_model is not null;
+		if v_origin.id is not null
+			and public.qorpera_member_may_pick_claude(p_run.profile_id, v_origin.requested_by_user_id) then
+			return jsonb_build_object('model', v_origin.claude_model, 'effort', v_origin.claude_effort);
+		end if;
+	end if;
+	return null;
+end
+$$;
+revoke all on function public.qorpera_resolve_run_claude_choice(public.qorpera_execution_runs, jsonb)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 create function public.qorpera_pin_execution_claude_choice()
 returns trigger language plpgsql security definer set search_path = '' as $$
-declare v_choice public.qorpera_session_models%rowtype; v_manifest jsonb;
+declare v_choice jsonb;
 begin
 	if tg_op = 'UPDATE' then
 		if (new.claude_model, new.claude_effort) is distinct from (old.claude_model, old.claude_effort) then
 			raise exception 'Execution Claude choice is immutable' using errcode = '42501'; end if;
 		return new;
 	end if;
-	new.claude_model := null;
-	new.claude_effort := null;
-	if new.source_kind in ('session_turn','room_delivery') and new.session_id is not null then
-		v_manifest := public.qorpera_execution_runtime_manifest(new);
-		if v_manifest #>> '{modelPolicy,claudeChoice}' = 'thread' then
-			select * into v_choice from public.qorpera_session_models choice where choice.session_id = new.session_id;
-			if v_choice.model_id in ('claude-fable-5-2','claude-opus-5-5')
-				and public.qorpera_member_may_pick_claude(new.profile_id,
-					coalesce(new.requested_by_user_id, new.created_by_user_id)) then
-				new.claude_model := v_choice.model_id;
-				new.claude_effort := coalesce(v_choice.reasoning_effort, v_manifest #>> '{modelPolicy,effort}', 'low');
-			end if;
-		end if;
-	end if;
+	v_choice := case when new.source_kind in ('session_turn','room_delivery','wake')
+		then public.qorpera_resolve_run_claude_choice(new, public.qorpera_execution_runtime_manifest(new)) end;
+	new.claude_model := v_choice ->> 'model';
+	new.claude_effort := v_choice ->> 'effort';
 	return new;
 end
 $$;

@@ -71,6 +71,32 @@ create function pg_temp.cm_default_model(p_staff uuid) returns text language sql
 			and mapping.provider = 'openai'), 'provider-default')
 $$;
 
+create function pg_temp.cm_carried(p_run uuid, p_source text, p_origin uuid) returns jsonb language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set source_kind = p_source, origin_run_id = p_origin where run_id = p_run;
+	set local session_replication_role = origin;
+	return public.qorpera_resolve_run_claude_choice(run, bundle.manifest)
+	from public.qorpera_execution_runs run join public.qorpera_runtime_bundles bundle on bundle.id = run.runtime_bundle_id
+	where run.id = p_run;
+end $$;
+create function pg_temp.cm_start_only(p_run uuid) returns jsonb language plpgsql as $$
+declare v_other uuid;
+begin
+	for v_other in select job.run_id from public.qorpera_runner_jobs job where job.status = 'queued' and job.run_id <> p_run loop
+		perform pg_temp.c4_end_job(v_other, 'cancelled');
+	end loop;
+	return pg_temp.base_start(p_run);
+end $$;
+create function pg_temp.cm_bob(p_key text) returns jsonb language plpgsql as $$
+declare v_run public.qorpera_execution_runs := pg_temp.cm_turn('92400000-0000-4000-8000-000000000031', 'Hand Carol the note.');
+	v_binding jsonb;
+begin
+	v_binding := pg_temp.base_start(v_run.id);
+	perform pg_temp.base_public_send(v_binding, 'progress', p_key || '-ack');
+	return v_binding;
+end $$;
+
 insert into public.qorpera_claude_sign_in_members(user_id) values (pg_temp.cm_owner());
 select pg_temp.c4_login('12810000-0000-4000-8000-0000000000c1', pg_temp.cm_owner()) \g /dev/null
 
@@ -252,6 +278,51 @@ begin
 end $$;
 rollback to savepoint cm_old_bundle;
 
+savepoint cm_carry_on;
+do $$
+declare v_carol uuid := '92400000-0000-4000-8000-000000000032'; v_member public.qorpera_execution_runs; v_bob jsonb;
+	v_message jsonb; v_run public.qorpera_execution_runs;
+begin
+	perform pg_temp.cm_set(pg_temp.cm_owner(), v_carol, 'claude-opus-5-5', 'max');
+	v_member := pg_temp.cm_turn(v_carol, 'Build the onboarding PDF.');
+	perform pg_temp.base_assert(v_member.claude_model = 'claude-opus-5-5' and v_member.claude_effort = 'max',
+		'3b: fixture: the member turn is pinned: ' || to_jsonb(v_member)::text);
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(),
+		last_error = 'Fixture: the member turn ends' where run_id = v_member.id;
+	perform pg_temp.cm_speed(pg_temp.cm_owner(), v_carol, 'standard');
+	perform pg_temp.cm_set(pg_temp.cm_owner(), v_carol, 'gpt-6-astra', 'low');
+	v_bob := pg_temp.cm_bob('cm-carry');
+	v_message := public.qorpera_send_coworker_message(v_bob, v_carol, 'cm-carry-note', 'The worker reported.');
+	perform pg_temp.base_materialize();
+	select run.* into v_run from public.qorpera_execution_runs run
+	join public.qorpera_wake_occurrences wake on wake.run_id = run.id where wake.id = (v_message ->> 'occurrenceId')::uuid;
+	perform pg_temp.base_assert(v_run.id is not null and v_run.claude_model is null,
+		'3b: a coworker''s message starts no chain of the member''s: ' || to_jsonb(v_run)::text);
+	perform pg_temp.base_assert(pg_temp.cm_carried(v_run.id, 'worker-completion', v_member.id)
+		= '{"model":"claude-opus-5-5","effort":"max"}'::jsonb, '3b: a worker report on the member''s chain keeps the pick');
+	perform pg_temp.base_assert(pg_temp.cm_carried(v_run.id, 'machine-event', v_member.id)
+		= '{"model":"claude-opus-5-5","effort":"max"}'::jsonb, '3b: a machine event on the chain keeps it');
+	perform pg_temp.base_assert(pg_temp.cm_carried(v_run.id, 'worker-dispatch', v_member.id) is null,
+		'3b: never on a worker''s own run');
+	perform pg_temp.base_assert(pg_temp.cm_carried(v_run.id, 'worker-completion', null) is null,
+		'3b: a chain whose first run is unknown carries none');
+	perform pg_temp.base_assert(pg_temp.cm_carried(v_run.id, 'worker-completion', (v_bob ->> 'runId')::uuid) is null,
+		'3b: another agent''s run is no first run of this chain');
+	set local session_replication_role = replica;
+	update public.qorpera_execution_runs set claude_model = null, claude_effort = null where id = v_member.id;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(pg_temp.cm_carried(v_run.id, 'worker-completion', v_member.id) is null,
+		'3b: a carry-on from an unpinned chain carries none');
+	set local session_replication_role = replica;
+	update public.qorpera_execution_runs set claude_model = 'claude-opus-5-5', claude_effort = 'max' where id = v_member.id;
+	set local session_replication_role = origin;
+	update public.qorpera_claude_logins set status = 'revoked', revoked_at = statement_timestamp(), key_id = null,
+		encrypted_envelope = null, envelope_sha256 = null where owner_user_id = pg_temp.cm_owner() and status = 'active';
+	perform pg_temp.base_assert(pg_temp.cm_carried(v_run.id, 'worker-completion', v_member.id) is null,
+		'3b: a carry-on whose member has since lost Claude carries none');
+end $$;
+rollback to savepoint cm_carry_on;
+
 set local session_replication_role = replica;
 update public.qorpera_execution_runs set claude_model = 'claude-opus-5-5', claude_effort = 'xhigh'
 where id = (pg_temp.c4_alice() ->> 'runId')::uuid;
@@ -320,6 +391,33 @@ begin
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved' and w.sequence = 3
 		and w.claude_model = 'claude-fable-5-2' and w.claude_effort = 'high',
 		'4: a follow-up from a run with a pick takes that pick: ' || v_result::text || ' ' || to_jsonb(w)::text);
+end $$;
+
+do $$
+declare v_alice jsonb := pg_temp.c4_alice(); v_worker_run uuid; v_worker jsonb; v_result jsonb; v_wake public.qorpera_wake_occurrences;
+	v_run public.qorpera_execution_runs; v_binding jsonb; v_context jsonb; v_pass jsonb;
+begin
+	v_worker_run := (select run_id from public.qorpera_wake_occurrences
+		where id = (pg_temp.c4_worker('12810000-0000-4000-8000-0000000000b2')).occurrence_id);
+	v_worker := pg_temp.cm_start_only(v_worker_run);
+	v_result := pg_temp.c4_results(v_worker, 'cm-report', 'QorperaOS/agents/alice/todos/onboarding/notes');
+	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '4b: the worker reports: ' || v_result::text);
+	perform pg_temp.c4_end_job(v_worker_run, 'completed');
+	perform pg_temp.c4_end_job((v_alice ->> 'runId')::uuid, 'failed');
+	perform pg_temp.c4_drain();
+	v_pass := pg_temp.base_materialize();
+	select * into v_wake from public.qorpera_wake_occurrences
+	where staff_agent_id = '92400000-0000-4000-8000-000000000030' and source_kind = 'worker-completion'
+	order by created_at desc limit 1;
+	select * into v_run from public.qorpera_execution_runs where id = v_wake.run_id;
+	perform pg_temp.base_assert(v_run.id is not null and v_wake.origin_run_id = (v_alice ->> 'runId')::uuid
+		and v_run.claude_model = 'claude-fable-5-2' and v_run.claude_effort = 'high' and v_run.model_id not like 'claude-%',
+		'4b: the worker''s report wakes the agent on its chain, with the chain''s Claude pick: ' || v_pass::text || ' '
+		|| coalesce((to_jsonb(v_wake) - 'payload')::text, 'no wake') || ' ' || coalesce(to_jsonb(v_run)::text, 'no run'));
+	v_binding := pg_temp.cm_start_only(v_run.id);
+	v_context := public.qorpera_describe_company_run_context(v_binding);
+	perform pg_temp.base_assert(v_context -> 'claude' = '{"model":"claude-fable-5-2","effort":"high"}'::jsonb,
+		'4b: and its context carries it: ' || (v_context - 'history' - 'currentInputs')::text);
 end $$;
 
 do $$
