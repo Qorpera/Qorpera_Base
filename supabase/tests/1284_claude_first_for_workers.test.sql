@@ -198,6 +198,23 @@ begin
 	v_binding := pg_temp.cf_start_next();
 	perform pg_temp.cf_saved(pg_temp.c4_results(v_binding, 'claude-first-claude-report', v_folder), '4: Claude Code reports');
 	perform pg_temp.c4_end_job((v_binding ->> 'runId')::uuid, 'completed');
+	begin
+		update public.qorpera_runtime_workers set requested_by_user_id = (select m.user_id from public.qorpera_profile_members m
+			where m.profile_id = '92400000-0000-4000-8000-000000000010' and m.user_id <> pg_temp.c4_owner_id()
+			order by m.user_id limit 1)
+		where id = w.id;
+		perform pg_temp.base_assert((pg_temp.c4_worker(w.id)).harness = 'claude-code', '4: on Claude Code before another''s word');
+		perform pg_temp.cf_saved(pg_temp.c4_followup(v_alice, 'claude-first-followup-other', v_folder, 'Add the logo.'),
+			'4: another member''s follow-up of a default is not refused');
+		w := pg_temp.c4_worker(w.id);
+		perform pg_temp.base_assert(w.harness is null and w.claude_login_id is null and w.claude_model is null,
+			'4: it never runs on the asker''s Claude plan: ' || to_jsonb(w)::text);
+		perform pg_temp.c4_drain();
+		perform pg_temp.base_assert(not ((pg_temp.cf_wake(w.id)).payload ? 'harness'), '4: and starts on Codex');
+		raise exception 'claude-first-undo';
+	exception when raise_exception then if sqlerrm <> 'claude-first-undo' then raise; end if;
+	end;
+	w := pg_temp.c4_worker(w.id);
 	update public.qorpera_claude_logins set status = 'revoked', revoked_at = statement_timestamp(), key_id = null,
 		encrypted_envelope = null, envelope_sha256 = null where id = '12840000-0000-4000-8000-0000000000c1';
 	perform pg_temp.cf_saved(pg_temp.c4_followup(v_alice, 'claude-first-followup-2', v_folder, 'Add the dates.'),

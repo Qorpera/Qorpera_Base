@@ -504,7 +504,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				wake.payload.harness === "claude-code"
 			) {
 				stage = "claude-worker";
-				if (!this.#claudeWorker || !this.#homeChannel) throw new Error(CLAUDE_WORKER_NOT_CARRIED);
+				if (!this.#claudeWorker || !this.#homeChannel) {
+					if (!(await this.#claudeWorkerFellBack(binding, "could_not_start", [], signal)))
+						throw new Error(CLAUDE_WORKER_NOT_CARRIED);
+					composition.finish("succeeded", { outputBytes: 0 });
+					return {
+						providerSessionId: claudeWorkerSessionId({ boxFailure: "not-carried" }),
+						delivery: { messageCount: 0, finalMessageId: null },
+					};
+				}
 				const outputFolder = wake.payload.outputFolder;
 				if (typeof outputFolder !== "string") throw new Error("Invalid worker dispatch wake");
 				return await this.#claudeCodeWorker(identityRoot, signal, {

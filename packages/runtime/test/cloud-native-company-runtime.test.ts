@@ -1806,6 +1806,12 @@ it("asks a worker whose turn ended without its report for it, once", async () =>
 // stage, before anything of the company is read for a prompt and before Codex starts.
 it("refuses a Claude Code worker's run here, never running it on Codex", async () => {
 	const f = await fixture("company-claude-worker");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) =>
+		method === "qorpera_claude_worker_fall_back"
+			? { schema: "qorpera.claude-worker-fallback/v1", state: "kept" }
+			: original(method, args, signal),
+	);
 	const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
 		() => null,
 		(thrown: unknown) => thrown,
@@ -1815,6 +1821,32 @@ it("refuses a Claude Code worker's run here, never running it on Codex", async (
 	expect(nativeProviderFailureCode(error)).toBe("NATIVE_CLAUDE_WORKER:UNKNOWN");
 	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_claude_worker_fall_back")).toEqual([
+		[
+			"qorpera_claude_worker_fall_back",
+			{ p_binding: f.binding, p_reason: "could_not_start", p_changed: [] },
+			expect.anything(),
+		],
+	]);
+});
+
+it("hands a defaulted worker's run on a node without Claude Code back to Codex, with nothing of the company read", async () => {
+	const f = await fixture("company-claude-worker");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) =>
+		method === "qorpera_claude_worker_fall_back"
+			? { schema: "qorpera.claude-worker-fallback/v1", state: "fell_back" }
+			: original(method, args, signal),
+	);
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result).toMatchObject({
+		providerSessionId: "claude-code/2.1.325/none/none/not-carried",
+		delivery: { messageCount: 0, finalMessageId: null },
+	});
+	const calls = f.pathCall.mock.calls.map(([method]) => method);
+	expect(calls).not.toContain("qorpera_describe_agent_open_work");
+	expect(calls).not.toContain("qorpera_begin_native_company_execution_v3");
+	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 });
 
 // The same run on a node that carries the Claude Code worker's composition (slice C4c): the divert takes it there. It is

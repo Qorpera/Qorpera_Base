@@ -88,7 +88,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-16",
 		title: "Coding and design work goes to Claude Code first",
-		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
+		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
 	},
 ]);
 
