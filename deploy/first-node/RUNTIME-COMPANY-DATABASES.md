@@ -686,9 +686,12 @@ data change <database> <change> [name=value ...]
 
 It does what the agents' tools do (§6, §8), with an agent's limits, and prints the gateway's answer as JSON. A value
 is text; `name:=<JSON>` gives a number, `true`, `false` or `null`. It ends 0 with an answer, 1 with a refusal (its
-words on standard error), 2 for a call it cannot read, and 3 when the databases cannot be reached from this machine.
-A script, a build or a server on the machine calls it as it calls any program. No database login and no key is in
-the machine. A step that is held is held here too: its yes is asked through `data_apply` (§3), never from a machine.
+words on standard error: nothing ran), 2 for a call it cannot read, and 3 when the databases cannot be reached from
+this machine, no answer came or the answer could not be printed (an apply or a change may then have run).
+A script, a build or a server on the machine calls it as it calls any program, as root or as the agent's account
+(`qorpera-agent`, whose shell Codex's tools use): run by another account than root, `/usr/local/bin/data` runs
+itself through `sudo -n`, the agent account's own way to root, since the view's file is root's. The desktop's
+account has no sudo and no `data`. No database login and no key is in the machine. A step that is held is held here too: its yes is asked through `data_apply` (§3), never from a machine.
 `data change` is slice 7's named change (§8): this slice comes after slice 7 is on the store, and until then the
 command has the other three verbs.
 
@@ -790,7 +793,7 @@ folder service calls the provider hosts' origin and needs no forward of its own.
 | --- | --- | --- |
 | 1 | The machine's pass and its redeem (one migration); the gateway takes a `machine` pass | an SQL test, with a paused company's pass refused; the gateway's tests against a real PostgreSQL |
 | 2 | The folder service's `data` role: the hello's check, the limits, the reads it records, the run door's client, the two credentials | the folder service's tests, with a stand-in door |
-| 3 | The folder program's `data` subcommand and its build record; the machine image with `/usr/local/bin/data`; one sentence in the agents' instructions | the program's tests; the image script's own checks |
+| 3 | The folder program's `data` subcommand and its build record; the machine image with `/usr/local/bin/data`. The one sentence in the agents' instructions comes in a change of its own, once every machine that can start has that image: an agent is told of no command its machine may lack | the program's tests, with the built program against the folder service; the image script's own checks |
 | 4 | A proof on a test machine: a machine in a nested VM asks, changes and applies; a second machine with another view is refused; a `machine_run` whose output holds rows takes the database's read into its run | `scripts/` proof, on a test machine |
 
 The parts build on slice 7: `change`, and the proof's change, need slice 7's gateway on the store. A release rolls the
