@@ -1868,7 +1868,11 @@ it("takes a Claude Code worker's run into its own composition, never Codex", asy
 	expect(calls).toContain("qorpera_claude_worker_run_facts");
 	expect(calls).not.toContain("qorpera_describe_agent_open_work");
 	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_claude_worker_fall_back")).toEqual([
-		["qorpera_claude_worker_fall_back", { p_binding: f.binding, p_reason: "could_not_start", p_changed: [] }, expect.anything()],
+		[
+			"qorpera_claude_worker_fall_back",
+			{ p_binding: f.binding, p_reason: "could_not_start", p_changed: [] },
+			expect.anything(),
+		],
 	]);
 	// No Codex, no box, no sign-in.
 	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();

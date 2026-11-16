@@ -318,7 +318,9 @@ it("dispatches a plain worker Claude Code does: its brief and request name the h
 
 it("dispatches a plain worker a member asked Codex for: its brief and request name codex", async () => {
 	const f = await fixture({ files: { [TODO]: todoText() } });
-	const result = parse(await f.workers().change({ ...DISPATCH, operationKey: "codex-1", harness: "codex" }, f.context));
+	const result = parse(
+		await f.workers().change({ ...DISPATCH, operationKey: "codex-1", harness: "codex" }, f.context),
+	);
 	expect(result).toMatchObject({ action: "dispatch", outcome: "saved" });
 	expect(f.workerRequests).toEqual([expect.objectContaining({ action: "dispatch", harness: "codex" })]);
 	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");

@@ -854,7 +854,11 @@ describe("review round 1 of #1835", () => {
 				root: join(runRoot, "missing", "deeper"),
 				signal: new AbortController().signal,
 			}),
-		).toMatchObject({ outcome: "blocked", needs: CLAUDE_WORKER_WORDS.openFailed("Ada"), claudeSide: "could_not_start" });
+		).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.openFailed("Ada"),
+			claudeSide: "could_not_start",
+		});
 		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
 		expect(launch).not.toHaveBeenCalled();
 		const stopped = new AbortController();

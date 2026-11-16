@@ -690,9 +690,9 @@ describe("worker dispatch and completion envelopes", () => {
 			`worker-dispatch:${wake.source.id}:1:codex:codex`,
 			`worker-dispatch:${randomUUID()}:1:codex`,
 		])
-			expect(() =>
-				parseCloudWakeEnvelope({ ...wake, source: { ...wake.source, occurrenceKey } }, identity),
-			).toThrow("Invalid worker dispatch wake");
+			expect(() => parseCloudWakeEnvelope({ ...wake, source: { ...wake.source, occurrenceKey } }, identity)).toThrow(
+				"Invalid worker dispatch wake",
+			);
 	});
 	it("admits the member's Claude pick on a Claude Code worker's wake alone (20260930784000)", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");
