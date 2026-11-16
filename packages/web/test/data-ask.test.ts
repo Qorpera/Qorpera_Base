@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
-import type { CloudMemberDataDescription, CloudMemberDataPage } from "@qorpera/cloud-client/cloud-member-data";
+import type {
+	CloudMemberDataAnswer,
+	CloudMemberDataDescription,
+	CloudMemberDataPage,
+} from "@qorpera/cloud-client/cloud-member-data";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyDatabases, type CompanyDataCalls } from "../src/app/company-data.ts";
@@ -65,7 +69,15 @@ const calls = () =>
 	({
 		describe: vi.fn(async () => described()),
 		rows: vi.fn(async () => page),
-		query: vi.fn(async () => ({ columns: ["bike"], rows: [["Trek FX 2"]], more: false, etag, asOf })),
+		query: vi.fn(
+			async (): Promise<CloudMemberDataAnswer> => ({
+				columns: ["bike"],
+				rows: [["Trek FX 2"]],
+				more: false,
+				etag,
+				asOf,
+			}),
+		),
 		edit: vi.fn(async () => {
 			throw new Error("no edits here");
 		}),
