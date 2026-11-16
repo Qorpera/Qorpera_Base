@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
+import { assertNativeSocketPath } from "./cloud-native-egress.ts";
 
 /** The socket the box's prefix reaches, in the run's own scratch root. */
 export const CLOUD_CLAUDE_SHELL_SOCKET_NAME = "shell.sock";
@@ -148,6 +149,7 @@ export class CloudClaudeHomeShell {
 	async listen(root: string): Promise<void> {
 		if (!isAbsolute(root)) throw new Error("Invalid shell root");
 		const path = join(root, CLOUD_CLAUDE_SHELL_SOCKET_NAME);
+		assertNativeSocketPath(path, "The home's shell");
 		const server = createServer((socket) => void this.#serve(socket));
 		server.on("error", () => undefined);
 		await new Promise<void>((resolve, reject) => {

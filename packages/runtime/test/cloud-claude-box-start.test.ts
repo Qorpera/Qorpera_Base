@@ -3,8 +3,9 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLAUDE_BOX_CONFIGURATION, startClaudeCodeBox } from "@qorpera/runtime/cloud-claude-box";
+import { CLAUDE_BOX_CONFIGURATION, claudeBoxStartStage, startClaudeCodeBox } from "@qorpera/runtime/cloud-claude-box";
 import type { CloudClaudeHomeChannel } from "@qorpera/runtime/cloud-claude-home-shell";
+import { claudeBoxFailureCode } from "@qorpera/runtime/cloud-claude-worker";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
@@ -102,6 +103,53 @@ describe.skipIf(process.platform !== "linux")("the box's start", () => {
 			),
 		).rejects.toThrow("refused");
 		expect(ended).toEqual([]);
+	});
+
+	it("refuses a scratch root whose sockets would not fit before anything of the home opens, and names the stage", async () => {
+		const base = mkdtempSync(join(tmpdir(), "claude-box-start-"));
+		roots.push(base);
+		const root = join(base, "r".repeat(Math.max(1, 101 - base.length)));
+		await mkdir(root, { mode: 0o700 });
+		const { channel, opened } = home();
+		const failure = await startClaudeCodeBox(
+			{
+				configuration: CLAUDE_BOX_CONFIGURATION,
+				scratchRoot: root,
+				login: { token: "sk-ant-oat01-test" },
+				channel,
+				sessionId: SESSION,
+				machineId: MACHINE,
+				prompt: "hi",
+				signal: new AbortController().signal,
+			},
+			standIn,
+		).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(String(failure)).toContain("The Claude Code box's socket path too long");
+		expect(claudeBoxStartStage(failure)).toBe("socket-path");
+		expect(claudeBoxFailureCode(failure)).toBe("box-socket-path");
+		expect(opened).toEqual([]);
+		expect(readdirSync(root)).toEqual([]);
+		const refused = home(true);
+		const closedChannel = await startClaudeCodeBox(
+			{
+				configuration: CLAUDE_BOX_CONFIGURATION,
+				scratchRoot: await scratch(),
+				login: { token: "sk-ant-oat01-test" },
+				channel: refused.channel,
+				sessionId: SESSION,
+				machineId: MACHINE,
+				prompt: "hi",
+				signal: new AbortController().signal,
+			},
+			standIn,
+		).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(claudeBoxFailureCode(closedChannel)).toBe("box-files-channel");
 	});
 
 	it("refuses a tool or a model it does not know before anything of the home opens (review round 2, F3)", async () => {

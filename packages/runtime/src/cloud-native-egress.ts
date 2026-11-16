@@ -20,6 +20,12 @@ export const NATIVE_CLAUDE_CODE_EGRESS_HOSTS = Object.freeze(["api.anthropic.com
  * API (`OPENAI_REALTIME_API_BASE_URL`, Codex 0.155.1). A Codex login's relay passes it only while a call is open
  * (`allowRealtime`); the call's sound never passes the relay. */
 export const NATIVE_CODEX_REALTIME_EGRESS_HOSTS = Object.freeze(["api.openai.com"]);
+export const NATIVE_EGRESS_SOCKET_NAME = "egress.sock";
+export const NATIVE_SOCKET_PATH_BYTES = 100;
+
+export function assertNativeSocketPath(path: string, what: string): void {
+	if (Buffer.byteLength(path) > NATIVE_SOCKET_PATH_BYTES) throw new Error(`${what} socket path too long`);
+}
 const MAX_HELLO_BYTES = 65_536;
 // Bounds per connection only: 8 at once, 5 s to connect and 30 s idle. A run's relay counts no bytes and no connections
 // over its life (no caps on runs, 5 Oct 2026; it stopped a run after 64 MiB or 128 connections until then).
@@ -181,8 +187,8 @@ export async function startNativeCodexEgress(options: {
 		(metadata.mode & 0o077) !== 0
 	)
 		throw new Error("Unsafe native egress root");
-	const path = join(options.root, "egress.sock");
-	if (Buffer.byteLength(path) > 100) throw new Error("Native egress socket path too long");
+	const path = join(options.root, NATIVE_EGRESS_SOCKET_NAME);
+	assertNativeSocketPath(path, "Native egress");
 	const transport = options.transport ?? {
 		resolve: resolveNativeHost,
 		connect: (address: string) => createConnection({ host: address, port: 443, family: 4 }),

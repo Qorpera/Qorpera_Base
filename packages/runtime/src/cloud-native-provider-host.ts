@@ -48,6 +48,11 @@ const CHATGPT_PLAN_CREDENTIAL_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 export type NativeHarnessKind = "codex-cli" | "claude-code";
+
+export function nativeRunRootPrefix(temporaryRoot: string, runId: string): string {
+	return join(temporaryRoot, `qorpera-native-run-${runId}-`);
+}
+
 export type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
 
 export interface NativeProviderLoginRequest {
@@ -1544,7 +1549,7 @@ export class NativeProviderHost {
 					await this.#wipeRoot(warm.root);
 				}
 				stage = "temporary-workspace";
-				root ??= await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+				root ??= await mkdtemp(nativeRunRootPrefix(this.#temporaryRoot, authority.runId));
 				stage = "credential-opening";
 				if ("loginKind" in login ? login.accessToken !== null : login.authJson !== null) {
 					if ("loginKind" in login) await writeChatGptPlanToken(root, login.accessToken as string);
@@ -1591,7 +1596,7 @@ export class NativeProviderHost {
 						await this.#wipeRoot(warm.root);
 					}
 					stage = "temporary-workspace";
-					root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+					root = await mkdtemp(nativeRunRootPrefix(this.#temporaryRoot, authority.runId));
 					stage = "credential-opening";
 					await openNativeCredentialCapsule(
 						capsule,
