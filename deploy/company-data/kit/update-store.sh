@@ -14,7 +14,7 @@ running data-db || die "the store does not run on this machine"
 companies=$(qc "select datname from pg_database where datname ~ '^c_[0-9a-f]{32}\$' order by 1")
 n=0
 for database in qorpera_company_template $companies; do
-	q -d "$database" -f - <"$STORE/update.sql" >/dev/null || die "store/update.sql did not run in $database"
+	q -d "$database" -1 -f - <"$STORE/update.sql" >/dev/null || die "store/update.sql did not run in $database"
 	n=$((n + 1))
 done
 echo "update-store: the template and $((n - 1)) companies' databases are as store/template.sql makes them"

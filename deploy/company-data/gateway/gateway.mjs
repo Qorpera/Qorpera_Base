@@ -113,7 +113,109 @@ export const LIMITS = Object.freeze({
 	companyBytes: 1024 ** 3,
 	/** Counting the rows of the tables one describe call shows: all its counts together. */
 	countMs: 1_500,
+	pageRows: 200,
+	pageRowsUsual: 100,
 });
+
+const NEAR_SHARE = 0.8;
+const RECORD_SIZE = ["row_changes", "change_log", "record_bytes"]
+	.map((table) => `coalesce(pg_catalog.pg_total_relation_size(pg_catalog.to_regclass('qorpera_data.${table}')), 0)`)
+	.join(" + ");
+const OWN_SIZE = `select pg_catalog.pg_database_size(pg_catalog.current_database()) - (${RECORD_SIZE}) as bytes`;
+const RELATION =
+	"select a.attname as name, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.relkind as kind, " +
+	"(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key " +
+	"from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1 " +
+	"join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped " +
+	"left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary " +
+	"where c.relname = $2 and c.relkind in ('r', 'p', 'v', 'm') order by a.attnum";
+
+const TOML_KEY = `(?:[A-Za-z0-9_-]+|"[^"\\\\\\n]*"|'[^'\\n]*')`;
+const TOML_KEYS = `${TOML_KEY}(?:\\s*\\.\\s*${TOML_KEY})*`;
+const TOML_STRING = /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/g;
+const TOML_HEADER = new RegExp(`^\\s*\\[\\s*(${TOML_KEYS})\\s*\\]\\s*(?:#.*)?$`);
+const TOML_PAIR = new RegExp(`^\\s*(${TOML_KEYS})\\s*=(.*)$`);
+const TOML_HEAD = /^(?:[^"'#]|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')*/;
+const TOML_SCALAR = /^(?:"(?:[^"\\]|\\.)*"|'[^']*'|[-+0-9A-Za-z_.:]+)$/;
+const LIST_VALUE = /^(?:"(readers|writers)"|'(readers|writers)')$/;
+const LIST_INLINE = /^\{\s*(?:members|"members"|'members')\s*=\s*("[^"\\]*"|'[^']*')\s*\}$/;
+
+function tomlParts(text) {
+	return [...text.matchAll(new RegExp(TOML_KEY, "g"))].map((part) => (/^["']/.test(part[0]) ? part[0].slice(1, -1) : part[0]));
+}
+
+function tomlValue(text) {
+	if (/"""|'''/.test(text)) return null;
+	const head = TOML_HEAD.exec(text)[0];
+	const rest = text.slice(head.length);
+	if (rest !== "" && !rest.startsWith("#")) return null;
+	const value = head.trim();
+	if (TOML_SCALAR.test(value)) return value;
+	const plain = value.replace(TOML_STRING, '""');
+	const balanced = (open, close) => plain.split(open).length === plain.split(close).length;
+	return /^[[{].*[\]}]$/.test(plain) && balanced("[", "]") && balanced("{", "}") ? value : null;
+}
+
+function listLine(toml) {
+	let table = [];
+	let found = null;
+	for (const line of toml.split(/\r?\n/)) {
+		if (/^\s*(?:#.*)?$/.test(line)) continue;
+		const header = TOML_HEADER.exec(line);
+		if (header) {
+			table = tomlParts(header[1]);
+			if (table[0] === "list" && table.length > 1) return "writers";
+			continue;
+		}
+		const pair = TOML_PAIR.exec(line);
+		const value = pair ? tomlValue(pair[2]) : null;
+		if (value === null) return "writers";
+		const key = [...table, ...tomlParts(pair[1])];
+		if (key[0] !== "list") continue;
+		const said =
+			key.length === 2 && key[1] === "members"
+				? LIST_VALUE.exec(value)
+				: key.length === 1 && LIST_INLINE.test(value)
+					? LIST_VALUE.exec(LIST_INLINE.exec(value)[1])
+					: null;
+		if (found !== null || !said) return "writers";
+		found = (said[1] ?? said[2]) === "readers" ? "readers" : "writers";
+	}
+	return found;
+}
+
+function namesViewer(text) {
+	if (text === null) return true;
+	const statement = readStatement(text);
+	return statement.ok ? statement.parameters.includes(VIEWER) : new RegExp(`(?<![:A-Za-z0-9_]):${VIEWER}(?![A-Za-z0-9_])`).test(text);
+}
+
+export function listMembers(toml, questions, cut = false) {
+	if (toml === null) return "writers";
+	if (cut && listLine(toml) === null) return "writers";
+	return listLine(toml) ?? (questions.some(namesViewer) ? "writers" : "readers");
+}
+
+function tomlWord(toml, key) {
+	const found = new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")\\s*(#.*)?$`, "m").exec(toml ?? "")?.[1];
+	try {
+		return found === undefined ? null : JSON.parse(found);
+	} catch {
+		return null;
+	}
+}
+
+function namedFiles(files) {
+	return files.map(({ name, text }) => {
+		const statement = text === null ? null : readStatement(text);
+		return {
+			name,
+			words: text === null ? null : leadingWords(text).join(" "),
+			parameters: statement?.ok ? statement.parameters : null,
+			...(statement && !statement.ok ? { problem: statement.problem } : {}),
+		};
+	});
+}
 
 /** How long past its door's limit the watcher lets a statement run before it ends it. */
 const OVERRUN_MS = 2_000;
@@ -150,7 +252,7 @@ export class Platform {
 		this.#key = publishableKey;
 		this.#fetch = fetch;
 	}
-	async #rpc(token, name, args) {
+	async #rpc(token, name, args, refusedAs = undefined) {
 		let response;
 		try {
 			response = await this.#fetch(`${this.#url}/rest/v1/rpc/${name}`, {
@@ -163,8 +265,24 @@ export class Platform {
 			refuse(503, "The company folder did not answer");
 		}
 		if (response.status === 401) refuse(401, "Sign in again");
+		if (refusedAs !== undefined && (response.status === 403 || response.status === 404)) return refusedAs;
 		if (!response.ok) refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
 		return response.json();
+	}
+	async memberFolders(token, environmentId, parent, limit) {
+		const answer = await this.#rpc(token, "qorpera_member_folder_list", {
+			p_environment_id: environmentId,
+			p_parent: parent,
+			p_after: null,
+			p_limit: limit,
+		});
+		return (Array.isArray(answer?.entries) ? answer.entries : [])
+			.filter((entry) => entry.kind === "folder" && typeof entry.path === "string")
+			.map((entry) => entry.path.slice(entry.path.lastIndexOf("/") + 1));
+	}
+	async memberMayWrite(token, environmentId, path) {
+		const answer = await this.#rpc(token, "qorpera_member_folder_may_write", { p_environment_id: environmentId, p_path: path }, null);
+		return answer?.write === true;
 	}
 	/** Each path's live file as the member may read it: `{ sha256, bytes }`, or null when it is not there for them. */
 	async memberReads(token, environmentId, paths) {
@@ -177,15 +295,26 @@ export class Platform {
 	}
 	/** The files directly in a folder, as the member may list it. */
 	async memberList(token, environmentId, parent, limit) {
+		return (await this.memberListPage(token, environmentId, parent, limit)).files;
+	}
+	async memberListPage(token, environmentId, parent, limit) {
 		const answer = await this.#rpc(token, "qorpera_member_folder_list", {
 			p_environment_id: environmentId,
 			p_parent: parent,
 			p_after: null,
 			p_limit: limit,
 		});
-		return (Array.isArray(answer?.entries) ? answer.entries : [])
+		const files = (Array.isArray(answer?.entries) ? answer.entries : [])
 			.filter((entry) => entry.kind === "file" && SHA.test(entry.fileSha256 ?? ""))
 			.map((entry) => ({ name: entry.path.slice(entry.path.lastIndexOf("/") + 1), sha256: entry.fileSha256, bytes: entry.bytes }));
+		if (typeof answer?.next !== "string") return { files, more: false };
+		const after = await this.#rpc(token, "qorpera_member_folder_list", {
+			p_environment_id: environmentId,
+			p_parent: parent,
+			p_after: answer.next,
+			p_limit: 1,
+		});
+		return { files, more: !Array.isArray(after?.entries) || after.entries.length > 0 };
 	}
 	async redeemPass(pass) {
 		const headers = { apikey: this.#key, "content-type": "application/json" };
@@ -539,13 +668,17 @@ export class Gateway {
 
 	/** The files directly in a folder that the caller may list: a member's from the platform, a run's from its pass. */
 	async #listed(caller, environmentId, parent, limit) {
-		if (!caller.files) return this.#platform.memberList(caller.token, environmentId, parent, limit);
+		return (await this.#listedPage(caller, environmentId, parent, limit)).files;
+	}
+
+	async #listedPage(caller, environmentId, parent, limit) {
+		if (!caller.files) return this.#platform.memberListPage(caller.token, environmentId, parent, limit);
 		const prefix = `${parent}/`;
-		return [...caller.files]
+		const files = [...caller.files]
 			.filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
 			.sort(([a], [b]) => (a < b ? -1 : 1))
-			.slice(0, limit)
 			.map(([path, file]) => ({ name: path.slice(prefix.length), sha256: file.sha256, bytes: file.bytes }));
+		return { files: files.slice(0, limit), more: files.length > limit };
 	}
 
 	/** A statement's values in its parameters' order. `:viewer` is the member looking; a run, which may read everything in
@@ -617,7 +750,7 @@ export class Gateway {
 	 * must be over, its wait for a connection included: with none free by then it is refused (the read role's
 	 * connections are few, and a call would else wait for one as long as the pool lets it), and the statement gets
 	 * what is left of the time. */
-	async #ask(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null } = {}) {
+	async #reading(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null }, work) {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
@@ -648,6 +781,26 @@ export class Gateway {
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
 			);
+			const answer = await work(client, { maxRows, maxBytes });
+			await client.query("rollback");
+			return answer;
+		} catch (error) {
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			else lost = error;
+			throw storeProblem(error);
+		} finally {
+			gone?.removeEventListener("abort", cancel);
+			if (agent) {
+				const left = (this.#agentReads.get(pid) ?? 1) - 1;
+				if (left > 0) this.#agentReads.set(pid, left);
+				else this.#agentReads.delete(pid);
+			}
+			this.#release(client, lost);
+		}
+	}
+
+	async #ask(ready, options = {}) {
+		return this.#reading(ready, options, async (client, { maxRows, maxBytes }) => {
 			// As a subquery, so only something that gives rows runs, and once: one statement whatever the answer. No more
 			// rows than the answer may hold are made, and the store itself stops handing rows over once they pass the
 			// answer's size: a question whose rows are huge cannot fill the gateway's memory. There is always one row at
@@ -681,7 +834,6 @@ export class Gateway {
 			for (const row of given) for (let index = 0; index < width; index++) this.taken.bytes += row[index]?.length ?? 0;
 			this.taken.rows += given.length;
 			let more = made > maxRows || given.length < Math.min(made, maxRows);
-			await client.query("rollback");
 			const columns = fields.map((field) => field.name);
 			const rows = [];
 			let bytes = 0;
@@ -696,20 +848,179 @@ export class Gateway {
 			}
 			const answer = { columns, rows, more };
 			return { ...answer, etag: sha256(JSON.stringify(answer)).slice(0, 32) };
-		} catch (error) {
-			if (!(error instanceof Refusal) && !/^(57P0[123]|08...)$/.test(error?.code ?? "") && error?.code) {
-				await client.query("rollback").catch(() => undefined);
-			} else if (!(error instanceof Refusal)) lost = error;
-			throw storeProblem(error);
-		} finally {
-			gone?.removeEventListener("abort", cancel);
-			if (agent) {
-				const left = (this.#agentReads.get(pid) ?? 1) - 1;
-				if (left > 0) this.#agentReads.set(pid, left);
-				else this.#agentReads.delete(pid);
+		});
+	}
+
+	async #page(ready, options = {}) {
+		return this.#reading(ready, options, async (client, { maxBytes }) => {
+			const shape = await client.query({ text: RELATION, values: [ready.name, ready.table], types: TEXT_TYPES });
+			if (shape.rows.length === 0) refuse(404, `No table ${ready.table} in ${ready.name}`);
+			const columns = shape.rows.map((row, index) => ({ ...row, index }));
+			const key = columns.filter((column) => column.key !== null).sort((a, b) => Number(a.key) - Number(b.key));
+			const by = ready.order === null ? null : columns.find((column) => column.name === ready.order);
+			if (ready.order !== null && !by) refuse(400, `No column ${ready.order} in ${ready.table}`);
+			if (key.length === 0 && ready.after !== null) refuse(400, `${ready.table} has no key: it gives its first page alone`);
+			const tag = randomBytes(8).toString("hex");
+			const [row, asked, sized, madeAs, seen, size, at, bytesSoFar, rowsMade] = ["row", "asked", "sized", "made", "seen", "size", "at", "bytes", "rows"].map(
+				(name) => `qorpera_${name}_${tag}`,
+			);
+			const ref = (column) => `${row}.${quoted(column.name)}`;
+			const placed = by ? [by, ...key] : key;
+			const values = [];
+			const value = (column, text) => {
+				values.push(text);
+				return `$${values.length}::${column.type}`;
+			};
+			let where = "";
+			if (ready.after !== null) {
+				const after = ready.after;
+				if (after.length !== placed.length || !after.every((one, index) => (index === 0 && by ? one === null : false) || typeof one === "string"))
+					refuse(400, "after is the next a page gave, for the same order");
+				const keyAfter = key.length === 0 ? "" : `(${key.map(ref).join(", ")}) ${by || !ready.desc ? ">" : "<"} (${key.map((column, index) => value(column, after[placed.length - key.length + index])).join(", ")})`;
+				if (!by) where = `where ${keyAfter}`;
+				else if (after[0] === null) where = `where ${ref(by)} is null and ${keyAfter}`;
+				else {
+					const from = value(by, after[0]);
+					where = `where (${ref(by)} ${ready.desc ? "<" : ">"} ${from} or (${ref(by)} = ${from} and ${keyAfter}) or ${ref(by)} is null)`;
+				}
 			}
-			this.#release(client, lost);
-		}
+			const order = [
+				...(by ? [`${ref(by)} ${ready.desc ? "desc" : "asc"} nulls last`] : []),
+				...key.map((column) => `${ref(column)} ${!by && ready.desc ? "desc" : "asc"}`),
+			];
+			const result = await client.query({
+				text:
+					`with ${asked} as (select ${row}.*, pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex') as ${seen}, ` +
+					`pg_catalog.octet_length(${row}::text) as ${size} from ${quoted(ready.name)}.${quoted(ready.table)} ${row} ${where} ` +
+					`${order.length > 0 ? `order by ${order.join(", ")}` : ""} limit ${ready.limit + 1}), ` +
+					`${sized} as (select ${asked}.*, row_number() over () as ${at}, ` +
+					`sum(${asked}.${size}) over (rows between unbounded preceding and current row) as ${bytesSoFar} from ${asked}) ` +
+					`select ${sized}.*, ${madeAs}.* from (select count(*) as ${rowsMade}${placed
+						.map((column, index) => `, (select ${asked}.${quoted(column.name)} from ${asked} limit 1) as qorpera_first_${index}_${tag}`)
+						.join("")} from ${asked}) ${madeAs} ` +
+					`left join ${sized} on ${sized}.${bytesSoFar} <= ${maxBytes} order by ${sized}.${at}`,
+				values,
+				rowMode: "array",
+				queryMode: "extended",
+				types: TEXT_TYPES,
+			});
+			const width = columns.length;
+			const fields = result.fields.slice(0, width);
+			const made = Number(result.rows[0][width + 4]);
+			const given = result.rows[0][width + 3] === null ? [] : result.rows;
+			for (const one of given) for (let index = 0; index < width; index++) this.taken.bytes += one[index]?.length ?? 0;
+			this.taken.rows += given.length;
+			let more = made > ready.limit || given.length < Math.min(made, ready.limit);
+			const rows = [];
+			let last = null;
+			let bytes = 0;
+			for (const one of given.slice(0, ready.limit)) {
+				const shapedRow = { values: one.slice(0, width).map((text, index) => shaped(text, fields[index].dataTypeID)), seen: one[width] };
+				bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
+				if (bytes > maxBytes) {
+					more = true;
+					break;
+				}
+				rows.push(shapedRow);
+				last = one;
+			}
+			const tooLarge = rows.length === 0 && made > 0;
+			const next =
+				!more || key.length === 0
+					? null
+					: last !== null
+						? placed.map((column) => last[column.index])
+						: placed.map((_, index) => result.rows[0][width + 5 + index]);
+			const answer = {
+				columns: columns.map((column) => column.name),
+				key: key.map((column) => column.name),
+				rows,
+				more,
+				...(next === null ? {} : { next }),
+				...(tooLarge ? { tooLarge: true } : {}),
+			};
+			return { ...answer, etag: sha256(JSON.stringify(answer)).slice(0, 32) };
+		});
+	}
+
+	async #mayWrite(caller, environmentId, name) {
+		const key = `${caller.key}|${environmentId}|write:data/${name}`;
+		const kept = this.#proofs.get(key);
+		if (kept && Date.now() - kept.at < this.#limits.proofMs) return kept.value;
+		const value = await this.#platform.memberMayWrite(caller.token, environmentId, `data/${name}`);
+		this.#proofs.set(key, { at: Date.now(), value });
+		return value;
+	}
+
+	async #folderFiles(caller, environmentId, name, texts, database, toml, { changes = true } = {}) {
+		const root = `data/${name}`;
+		const [questions, actions] = await Promise.all([
+			this.#listedPage(caller, environmentId, `${root}/queries`, 1000),
+			changes ? this.#listed(caller, environmentId, `${root}/actions`, 1000) : [],
+		]);
+		const need = [];
+		const read = async (path, file) => {
+			if (file.bytes > this.#limits.questionTextBytes) return null;
+			const text = await this.#text(database, file.sha256, texts, this.#limits.questionTextBytes);
+			if (text === null) need.push({ path, sha256: file.sha256 });
+			return text;
+		};
+		const each = (folder, files) =>
+			Promise.all(
+				files
+					.filter((file) => file.name.endsWith(".sql"))
+					.map(async (file) => ({ name: file.name.slice(0, -4), text: await read(`${root}/${folder}/${file.name}`, file) })),
+			);
+		const found = {
+			toml: await read(`${root}/database.toml`, toml),
+			questions: await each("queries", questions.files),
+			changes: await each("actions", actions),
+			cut: questions.more,
+		};
+		return need.length > 0 ? { need } : found;
+	}
+
+	async #mayList(caller, environmentId, name, texts) {
+		const key = `${caller.key}|${environmentId}|list:${name}`;
+		const kept = this.#proofs.get(key);
+		if (kept && Date.now() - kept.at < this.#limits.proofMs) return kept.value;
+		const path = `data/${name}/database.toml`;
+		const toml = (await this.#proven(caller, environmentId, [path])).get(path);
+		if (!toml) refuse(404, `No database ${name} that you may read`);
+		const found = await this.#folderFiles(caller, environmentId, name, texts, companyDatabase(environmentId), toml, { changes: false });
+		if (found.need) return found;
+		const members = listMembers(
+			found.toml,
+			found.questions.map((question) => question.text),
+			found.cut,
+		);
+		const value = { list: members === "readers" || (await this.#mayWrite(caller, environmentId, name)) };
+		this.#proofs.set(key, { at: Date.now(), value });
+		return value;
+	}
+
+	async #table(caller, environmentId, asked, texts, { first = false } = {}) {
+		if (!asked || typeof asked !== "object" || Array.isArray(asked)) refuse(400, "Name a table");
+		const { database: name, table, order = null, desc = false, limit = this.#limits.pageRowsUsual, after = null } = asked;
+		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		if (typeof table !== "string" || table === "" || Buffer.byteLength(table) > 63 || table.includes("\0")) refuse(400, "Name a table");
+		if (order !== null && (typeof order !== "string" || order === "" || Buffer.byteLength(order) > 63)) refuse(400, "order names a column");
+		if (typeof desc !== "boolean") refuse(400, "desc is true or false");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.#limits.pageRows) refuse(400, `A page holds 1 to ${this.#limits.pageRows} rows`);
+		if (after !== null && (first || !Array.isArray(after) || after.length > 33)) refuse(400, first ? "A watched table is its first page" : "after is the next a page gave");
+		const right = await this.#mayList(caller, environmentId, name, texts);
+		if (right.need) return right;
+		if (!right.list) refuse(403, `The tables of ${name} are shown to those who may change it`);
+		const database = companyDatabase(environmentId);
+		const n = await this.#folder(database, name);
+		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		return { database, name, n, table, order, desc, limit, after };
+	}
+
+	async rows(caller, environmentId, body) {
+		const ready = await this.#table(caller, environmentId, body, body.texts);
+		if (ready.need) return { need: ready.need };
+		return { ...(await this.#page(ready)), asOf: new Date().toISOString() };
 	}
 
 	async query(caller, environmentId, body) {
@@ -956,7 +1267,7 @@ export class Gateway {
 	async #watching(caller, environmentId, body, stop, deadline, holdUntil, found) {
 		const watches = body.watches;
 		const paths = watches
-			.filter((watched) => watched && typeof watched === "object" && typeof watched.database === "string" && typeof watched.question === "string")
+			.filter((watched) => watched && typeof watched === "object" && typeof watched.database === "string" && typeof watched.question === "string" && watched.table === undefined)
 			.map((watched) => `data/${watched.database}/queries/${watched.question}.sql`)
 			.filter((path) => /^data\/[a-z][a-z0-9_]{0,39}\/queries\/[a-z0-9-]{1,60}\.sql$/.test(path));
 		const proofs = await this.#proven(caller, environmentId, [...new Set(paths)]);
@@ -964,13 +1275,17 @@ export class Gateway {
 		const need = [];
 		for (const watched of watches) {
 			if (stop.aborted) return { same: true, partial: true };
-			const one = await this.#named("question", caller, environmentId, watched, body.texts, proofs);
-			if (one.need) need.push(one.need);
+			if (watched?.table !== undefined && watched.question !== undefined) refuse(400, "A watch names a question or a table");
+			const one =
+				watched?.table !== undefined
+					? await this.#table(caller, environmentId, watched, body.texts, { first: true })
+					: await this.#named("question", caller, environmentId, watched, body.texts, proofs);
+			if (one.need) need.push(...[one.need].flat());
 			ready.push(one);
 		}
 		if (need.length > 0) return { need };
 		// Where the last call for these questions stopped, if it ran out of time.
-		const place = sha256(JSON.stringify([caller.userId, environmentId, watches.map((watched) => [watched.database, watched.question, watched.params ?? {}])]));
+		const place = sha256(JSON.stringify([caller.userId, environmentId, watches.map((watched) => [watched.database, watched.question ?? null, watched.table ?? null, watched.params ?? {}, watched.order ?? null, watched.desc ?? false, watched.limit ?? null])]));
 		const now = Date.now();
 		for (const [key, kept] of this.#resume) if (now - kept.at > 300_000) this.#resume.delete(key);
 		let start = this.#resume.get(place)?.start ?? 0;
@@ -988,7 +1303,7 @@ export class Gateway {
 					const left = deadline - Date.now();
 					if (left <= 0) return;
 					try {
-						const answer = await this.#ask(ready[index], { ms: left, gone: stop });
+						const answer = await (ready[index].table === undefined ? this.#ask : this.#page).call(this, ready[index], { ms: left, gone: stop });
 						asked.add(index);
 						if (answer.etag !== watches[index].etag) {
 							changed.push({ index, answer: { ...answer, asOf: new Date().toISOString() } });
@@ -1314,20 +1629,57 @@ export class Gateway {
 
 	/** A database folder as it stands in the store: its tables and columns, its applied steps, its size. */
 	async describe(caller, environmentId, body) {
-		const name = body.database;
-		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
-		const path = `data/${name}/database.toml`;
-		if (!(await this.#proven(caller, environmentId, [path])).get(path)) refuse(404, `No database ${name} that you may read`);
+		const asked = body.database ?? null;
+		if (asked !== null && (typeof asked !== "string" || !DATABASE_NAME.test(asked))) refuse(400, "Name a database");
+		const names =
+			asked !== null
+				? [asked]
+				: (await this.#platform.memberFolders(caller.token, environmentId, "data", 1000)).filter((name) => DATABASE_NAME.test(name)).sort();
+		const tomls = await this.#proven(
+			caller,
+			environmentId,
+			names.map((name) => `data/${name}/database.toml`),
+		);
+		const readable = names.filter((name) => tomls.get(`data/${name}/database.toml`));
+		if (asked !== null && readable.length === 0) refuse(404, `No database ${asked} that you may read`);
 		const database = companyDatabase(environmentId);
-		const n = await this.#folder(database, name);
-		if (n === null) return { database: name, applied: [], tables: [] };
-		const stored = await this.#stored(database, name, n, Date.now() + this.#limits.countMs);
-		return {
-			database: name,
-			applied: stored.applied.map((step) => ({ name: step.name, at: step.at })),
-			tables: stored.tables,
-			companyBytes: stored.companyBytes,
-		};
+		const exists = await this.#companyExists(database);
+		const found = [];
+		const need = [];
+		for (const name of readable) {
+			const files = await this.#folderFiles(caller, environmentId, name, body.texts, exists ? database : null, tomls.get(`data/${name}/database.toml`));
+			if (files.need) need.push(...files.need);
+			else found.push([name, files]);
+		}
+		if (need.length > 0) return { need };
+		const countUntil = Date.now() + this.#limits.countMs;
+		const databases = [];
+		for (const [name, files] of found) {
+			const write = await this.#mayWrite(caller, environmentId, name);
+			const list = write || listMembers(files.toml, files.questions.map((question) => question.text), files.cut) === "readers";
+			const n = list && exists ? await this.#folder(database, name) : null;
+			const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
+			databases.push({
+				database: name,
+				name: tomlWord(files.toml, "name"),
+				about: tomlWord(files.toml, "about"),
+				write,
+				list,
+				...(list ? { applied: stored.applied.map((step) => ({ name: step.name, at: step.at })), tables: stored.tables } : {}),
+				questions: namedFiles(files.questions),
+				changes: namedFiles(files.changes),
+			});
+		}
+		return { databases, companyBytes: exists ? await this.#ownBytes(database) : 0, limitBytes: this.#limits.companyBytes };
+	}
+
+	async #ownBytes(database) {
+		const size = await this.#pool(database, "qorpera_data_keeper")
+			.query(OWN_SIZE)
+			.catch((error) => {
+				throw storeProblem(error);
+			});
+		return Number(size.rows[0].bytes);
 	}
 
 	/** A database folder's applied steps (with their hashes), tables and columns, and the company database's size.
@@ -1343,27 +1695,35 @@ export class Gateway {
 			pool.query("select name, sha256, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
 			pool.query(
 				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type,
-					c.relkind as kind, c.relpages as pages, c.reltuples::bigint as estimate
+					c.relkind as kind, c.relpages as pages, c.reltuples::bigint as estimate,
+					a.attgenerated <> '' or a.attidentity = 'a' as fixed,
+					(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key
 				from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1
 				join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+				left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary
 				where c.relkind in ('r', 'p', 'v', 'm') order by c.relname, a.attnum`,
 				[name],
 			),
-			pool.query("select pg_database_size(current_database()) as bytes"),
+			pool.query(OWN_SIZE),
 		]).catch((error) => {
 			throw storeProblem(error);
 		});
 		const tables = new Map();
 		for (const row of columns.rows) {
 			if (!tables.has(row.table))
-				tables.set(row.table, { name: row.table, kind: row.kind, pages: Number(row.pages), estimate: Number(row.estimate), counted: null, columns: [] });
-			tables.get(row.table).columns.push({ name: row.column, type: row.type });
+				tables.set(row.table, { name: row.table, kind: row.kind, pages: Number(row.pages), estimate: Number(row.estimate), counted: null, key: [], columns: [] });
+			const table = tables.get(row.table);
+			const settable = (table.kind === "r" || table.kind === "p") && !row.fixed;
+			table.columns.push({ name: row.column, type: row.type, settable });
+			if (row.key !== null) table.key[Number(row.key) - 1] = row.column;
 		}
 		await this.#count(database, name, n, [...tables.values()], until);
 		return {
 			applied: steps.rows.map((row) => ({ name: row.name, sha256: row.sha256, at: row.applied_at.toISOString() })),
 			tables: [...tables.values()].map((table) => ({
 				name: table.name,
+				kind: table.kind === "r" || table.kind === "p" ? "table" : "view",
+				key: table.key,
 				// A view holds no rows of its own, so PostgreSQL's number for it says nothing.
 				...(table.counted !== null
 					? { rows: table.counted }
@@ -1439,15 +1799,7 @@ export class Gateway {
 		const databases = [];
 		let companyBytes = 0;
 		if (exists)
-			companyBytes = Number(
-				(
-					await this.#pool(database, "qorpera_data_keeper")
-						.query("select pg_database_size(current_database()) as bytes")
-						.catch((error) => {
-							throw storeProblem(error);
-						})
-				).rows[0].bytes,
-			);
+			companyBytes = await this.#ownBytes(database);
 		// One call's counts share one time, however many databases it shows.
 		const countUntil = Date.now() + this.#limits.countMs;
 		for (const name of wanted) {
@@ -1478,18 +1830,10 @@ export class Gateway {
 						};
 					})
 					.sort((a, b) => (a.name < b.name ? -1 : 1));
-			const word = (key) => {
-				const found = new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")\\s*(#.*)?$`, "m").exec(toml)?.[1];
-				try {
-					return found === undefined ? null : JSON.parse(found);
-				} catch {
-					return null;
-				}
-			};
 			databases.push({
 				database: name,
-				name: word("name"),
-				about: word("about"),
+				name: tomlWord(toml, "name"),
+				about: tomlWord(toml, "about"),
 				steps: {
 					applied: stored.applied.filter((step) => live.get(step.name) === step.sha256).map((step) => ({ name: step.name, at: step.at })),
 					waiting: steps.filter((step) => !applied.has(step.name)).map((step) => step.name),
@@ -1545,12 +1889,25 @@ export class Gateway {
 			const sizes = await watch.query(
 				"select datname::text as database, pg_catalog.pg_database_size(oid) as bytes from pg_catalog.pg_database where datname ~ '^c_[0-9a-f]{32}$'",
 			);
-			this.#full = new Set(sizes.rows.filter((row) => Number(row.bytes) >= this.#limits.companyBytes).map((row) => row.database));
+			const near = [];
+			const full = new Set();
+			for (const row of sizes.rows) {
+				const whole = Number(row.bytes);
+				if (whole < NEAR_SHARE * this.#limits.companyBytes) continue;
+				const record = await this.#pool(row.database, "qorpera_data_keeper")
+					.query(`select ${RECORD_SIZE} as bytes`)
+					.then((answer) => Number(answer.rows[0].bytes))
+					.catch(() => 0);
+				if (whole - record >= NEAR_SHARE * this.#limits.companyBytes) near.push(row.database);
+				if (whole - record >= this.#limits.companyBytes) full.add(row.database);
+			}
+			this.#full = full;
 			return {
 				ended: ended.rows
 					.filter((row) => row.ended)
 					.map((row) => ({ pid: row.pid, login: row.login, database: row.database, how: row.terminated ? "terminated" : "cancelled" })),
 				full: [...this.#full],
+				near,
 			};
 		} catch (error) {
 			throw storeProblem(error);
@@ -1559,7 +1916,7 @@ export class Gateway {
 
 	/** A member's request, begun as that member. */
 	async handle(method, path, headers, read, gone) {
-		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change)$/.exec(path);
+		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows)$/.exec(path);
 		if (!route) refuse(404, "Not a call the data gateway answers");
 		if (method !== "POST") refuse(405, "Use POST");
 		const token = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(headers.authorization ?? "")?.[1];
@@ -1594,6 +1951,8 @@ export class Gateway {
 				return this.apply(caller, environmentId, body);
 			case "change":
 				return this.change(caller, environmentId, body, { gone });
+			case "rows":
+				return this.rows(caller, environmentId, body);
 			default:
 				return this.describe(caller, environmentId, body);
 		}

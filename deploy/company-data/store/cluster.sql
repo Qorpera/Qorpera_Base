@@ -23,6 +23,7 @@ grant set on parameter log_min_messages, log_error_verbosity, log_min_error_stat
 create role qorpera_data_keeper login noinherit password :'keeper_password';
 -- Reads sizes and running statements, and ends what runs too long.
 create role qorpera_data_watch login password :'watch_password' in role pg_signal_backend, pg_read_all_stats;
+create role qorpera_data_recorder nologin;
 
 revoke connect on database postgres from public;
 grant connect on database postgres to qorpera_data_admin, qorpera_data_watch;

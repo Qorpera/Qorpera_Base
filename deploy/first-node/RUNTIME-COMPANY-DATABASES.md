@@ -461,6 +461,40 @@ member or the agent from the lists it already holds.
 | f | What changed: `changes`, and its view | the gateway's and web tests |
 | g | Ask from the list, and "Keep as a list" | runtime and web tests |
 
+**Part b as built** (`deploy/company-data/`, its README says each call's shape). Where it differs from the text above:
+
+- **Three record triggers, not one.** PostgreSQL refuses transition tables on a trigger with more than one event, so
+  the model carries `qorpera_record_add` (after insert), `qorpera_record_change` (after update) and
+  `qorpera_record_remove` (after delete), each once a statement on its transition tables, all calling one function;
+  the guard holds them as it holds the others (every table carries all six of the model's triggers, given by
+  `qorpera_data.give_triggers` from the model itself). A `truncate` has no transition table and leaves no line; in a
+  step it is held as before.
+- **Where the 100 MiB is kept.** Each writing backend adds its lines' bytes to its own row of
+  `qorpera_data.record_bytes` (no two sessions wait on one row). When a backend has written another 1/1024 of the
+  limit, the statement sums the rows, and past the limit it removes the oldest lines until the sum fits, never the
+  newest line. The limit is `qorpera_data.record_limit`, which no folder login reads or writes.
+- **Whose rights the record runs with.** Not the store's: `qorpera_data.recorded()` and `keep_record()` belong to
+  `qorpera_data_recorder`, which logs in nowhere and reads and writes only the record's lines and counters, since
+  building a row's JSON can call code a company wrote (a cast to json). And every new cast to `json` or `jsonb` is
+  refused (`qorpera_no_json_cast`); `update.sql` stops on a store that holds one, and runs as one transaction.
+- **A change pairs rows by place.** An update's old and new rows are paired in the order PostgreSQL captured them; a
+  change that changes no column leaves no line.
+- **`describe` with a database** answers the same shape as without one, narrowed to it. `rows` also takes `desc`, and
+  its answer names the `key`. `seen` is the sha256 of the row's text (`row::text`, UTC, ISO dates), so part c can
+  compare it in the statement that writes. A row larger than a page gives an empty page with `tooLarge` and the
+  `next` past it.
+- **Who gets the list, at its edges.** A `[list] members` value other than `"readers"` counts as `"writers"`, and so
+  does a `database.toml` that is not one key, one header or one comment a line with every value on its line (a
+  multi-line string or array, an escaped key: the gateway reads that much of TOML and no more), a `database.toml` or a
+  question file too large to read,
+  and a `queries/` listing that does not fit the platform's one page of 1,000 entries. The gateway sees only the question files the member
+  may list: a question hidden from a member by a path resource does not make the database writers-only for them.
+  Until part a is live, the platform has no write check (404) and a writers' list is shown to nobody.
+- **The 80 % warning.** The watcher's look answers `near` (companies past 80 % of their own data) beside `full`;
+  agents read the same own size in `data_describe`'s `companyBytes`. Nothing else tells them yet.
+- **Granted now for parts c and f:** the keeper reads `row_changes` and reads, adds and removes `change_log` lines, so
+  the store is updated once. Keeping lines 30 days is not built.
+
 ## 6. Agents
 
 | Tool | What |
@@ -689,6 +723,7 @@ or a node.
 | --- | --- | --- |
 | P1 | one gateway of our own against a PostgREST per company, 50 company databases | ours: a call p50 1.5 ms, p95 2.8 ms, 142 MiB for all 50, idle connections given back. PostgREST: p50 1.1 ms, 36 to 55 MiB and 3 held connections for each company |
 | P2 | a notice | commit to a new answer at the page p50 1.7 ms, p99 2.9 ms over 200 rows, every answer right; 10,000 rows in a statement give one notice; the trigger costs a writer about 10 microseconds |
+| P2b | what the record's triggers cost a statement (slice 10 part b, `gateway.test.mjs`, a fresh database from the template, 15 November 2026) | a statement on a table with all six triggers against one with the two of before (notice, deleted rows) and one with none, in microseconds a statement: one row inserted 101 / 13 / 10, changed 151 / 22 / 24, removed 167 / 29 / 12; 100 rows inserted 766 / 181 / 97, changed 1,412 / 349 / 185, removed 673 / 62 / 38. So the record costs a statement about 90 to 150 microseconds and a row about 6 to 11 more, linear in its rows up to the 1,000-row cut |
 | P3 | limits and walls, 135 checks | all pass. No company reaches another's database, role or statements. Inside a company, a session logged in as one folder's read, write or owner role cannot take another folder's role, read or write its rows, or reach it through `set_config` and a function of its own (39 tries, all refused, the other folder's rows unchanged). Connection, time and temp file limits hold. A read cannot write. A step that disables, drops, renames or replaces one of Qorpera's triggers, makes an unlogged table or says `commit` fails and leaves the rows as they were; deleted rows (also by a cascade, by `merge`, inside a function and by a deferred trigger), an emptied table and a dropped column, table or schema (also a column that goes with its type or domain) are recorded, so the step is held, and it lands after a yes. A deferred trigger that queues a second one to delete after the check aborts the commit; a step whose deferred work only inserts lands |
 | P4 | the snapshot of a 1,020 MiB database, written to files and loaded back, 29 checks | 932 MiB in 60 parts in 7.1 s, one given-up lock wait and two restarts included (a quiet night: 4.5 s), while another connection committed 1,071 transactions (new rows, keys moved from a late part into an early one, deletes): the database made from the files alone equals what the export's own transaction saw and what a second connection counted at that moment, each moved row in it once at its old key. The export holds its tables: a truncate, a rewrite and a drop by another session each waited until it was done, then completed, and the files hold those tables' rows as of the moment; a table made between the list and the locks makes the export start again. A truncate queued before the shape was read did not lock the export: `pg_dump` gave up its lock wait after 2.1 s, the export let go, the truncate went through 6 ms later, and the next try's snapshot holds that table empty. A table without a key of 102 MiB came back whole from 8 parts read by their place on disk. Every sequence gives next what the source gives next (after `setval` with and without `is_called`, never used, an identity's, one no column owns). A usual day changes 2 of 51 parts of an append-mostly table (3 %), the worst day 50 of 51; loaded back in 14 s |
 | E2E | the whole road for a member (`proof/e2e.mjs`, which arrives with the gateway's slice): the platform's database as the migrations build it with a test company's folder, a real PostgREST in front of it, the store, the gateway | 44 of 44 checks: database folders committed through the folder core, steps applied from the files by hash, members asking named questions with their own tokens (a stranger, a forged token and a folder private to another member refused), steps that destroy, fail or try to end the transaction not landing, a changed file used at the next read, and a held watch call answering a new row in 0.9 ms (p50) at the gateway. A model kit page with two bound values showed each new row without a reload |
