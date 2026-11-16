@@ -21,7 +21,7 @@
     "wakeAndSilence": "d0cb66384099994e8e22a3744faff8566a0ebc309177b85d88a038bbfdc2aa73",
     "contextComposer": "383ee29aaeace7058853d944224a3ba79155568211816e586db399598817935d",
     "providerBootstrap": "2dade220d3b4952a082553a004660e8ef35123b4eb8e3b6c1cf026534c6355fa",
-    "authorization": "f9872ca29e4f9ba05a268269d2a19e6e2ed2f5e5c274f67df2084d2437fc4eda",
+    "authorization": "3b44742c44fa4cfc21264eb9d27c03c0a1d3f42a0b0056d37cdb55b1152e89a3",
     "inboundSafety": "ccb99fa7dc56df615fe7e0f6985ccc8ce32097598d991baadecfb142c24fb0c6",
     "outboundSafety": "e967524fb379d61c03bf016c3f6dd8de5a8147312b4c1040a678894ce120120b",
     "interactionSurfaces": "5d508a71aebb920a6a8f65eddff89a0e8ce8290314ae0c9cd3cf5c76c697f625",
@@ -995,7 +995,7 @@
     "packages/runtime/src/native-provider-account.ts": "1bab05c1f06759927ed4696d4310eb17319570d567446043582cd150e94f60d2",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "8d1589d301ebb86de3e19dc1a16013726bca73ec6dabf5dd75fd5652f9b388b7",
+    "scripts/generate-cloud-runtime-bundle.mjs": "437391648d6a11ffb843b9a0ed9eb0988667f050fce5a2bd98993e80a2ab678c",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "51263597763a7a79dbe96d77bd2b4c29fd95a8a451b0f21e8e1802e29a3eaf60",
     "scripts/package-coding-guest-agent.mjs": "5950b5d0fd1c7295fcc5eec53866bccc9b04d3afc0ad5e6a2a1375f272c88978",
@@ -2077,6 +2077,7 @@
     "supabase/migrations/20260930780000_record_reflection_tool.sql": "3a07689b4c207d076fa13fd7754e3cb8aed059b19bab32490c616f4be0e8c31b",
     "supabase/migrations/20260930781000_machine_account_fill.sql": "af0de29748865b32cf27de9bf522afa1c3f8ca32ca95001116ca6ce40c5ee2b5",
     "supabase/migrations/20260930782000_interface_page_data.sql": "526dd14f65cfe0b73bf115e2c3e401f9fbfa420d4a5684e16789dea36d467c37",
-    "supabase/migrations/20260930784000_conversation_claude_models.sql": "41701185084f1a5fec3a0d261566fbf952c3524bf462efd4d674823f96b9efa5"
+    "supabase/migrations/20260930784000_conversation_claude_models.sql": "41701185084f1a5fec3a0d261566fbf952c3524bf462efd4d674823f96b9efa5",
+    "supabase/migrations/20260930785000_move_all_chats_to_another_login.sql": "3337bb43230bb4608465f6cf466b0cbb58e124aa93746f4dba09e76dbc6a0dcd"
   }
 }
