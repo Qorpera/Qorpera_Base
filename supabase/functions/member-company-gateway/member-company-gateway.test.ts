@@ -316,7 +316,7 @@ describe("public member Company File gateway", () => {
 		],
 		["a pointer of one id", request(`/v1/member-machine-screens/${id}/pointer`, { method: "POST", body: "{}" }), 404],
 		["a pointer with a tail", request(`/v1/member-machine-screens/${id}/${id}/pointer/1`, { method: "POST", body: "{}" }), 404],
-		...(["query", "watch", "apply", "describe"] as const).flatMap((verb) => {
+		...(["query", "watch", "apply", "describe", "rows", "edit", "change"] as const).flatMap((verb) => {
 			const path = `/v1/company-data/${id}/${verb}`;
 			return [
 				[`a company data ${verb} read`, request(path), 405],
@@ -350,6 +350,8 @@ describe("public member Company File gateway", () => {
 			] as const;
 		}),
 		["a company data drop", request(`/v1/company-data/${id}/drop`, { method: "POST", body: "{}" }), 404],
+		["a company data changes", request(`/v1/company-data/${id}/changes`, { method: "POST", body: "{}" }), 404],
+		["a company data edit read", request(`/v1/company-data/${id}/edit`), 405],
 		["a company data call without a verb", request(`/v1/company-data/${id}`, { method: "POST", body: "{}" }), 404],
 		["a company data call of no environment", request("/v1/company-data/query", { method: "POST", body: "{}" }), 404],
 		[
@@ -385,6 +387,21 @@ describe("public member Company File gateway", () => {
 		[
 			"a company data apply past 1 MiB",
 			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data rows past 1 MiB",
+			request(`/v1/company-data/${id}/rows`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data edit past 1 MiB",
+			request(`/v1/company-data/${id}/edit`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
+			413,
+		],
+		[
+			"a company data change past 64 KiB",
+			request(`/v1/company-data/${id}/change`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
 			413,
 		],
 	] as const)
@@ -1072,7 +1089,8 @@ describe("public member Company File gateway", () => {
 		};
 		const body = JSON.stringify({ name: "shop/sales-this-month", params: { since: "2026-11-01" } });
 		const length = new TextEncoder().encode(body).byteLength;
-		for (const verb of ["query", "watch", "apply", "describe"]) {
+		const verbs = ["query", "watch", "apply", "describe", "rows", "edit", "change"];
+		for (const verb of verbs) {
 			const path = `/v1/company-data/${id}/${verb}`;
 			const done = await forward(
 				request(path, {
@@ -1090,12 +1108,12 @@ describe("public member Company File gateway", () => {
 		}
 		assert.deepEqual(
 			seen,
-			["query", "watch", "apply", "describe"].map(
+			verbs.map(
 				(verb) =>
 					`POST ${upstreamUrl}/v1/company-data/${id}/${verb} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
 			),
 		);
-		assert.deepEqual(bodies, [body, body, body, body]);
+		assert.deepEqual(bodies, verbs.map(() => body));
 		// A refusal passes back as the data gateway gave it, a held step with what it would destroy.
 		answer = () =>
 			Response.json(
@@ -1133,9 +1151,23 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(watchDown.status, 503);
 		assert.match(await watchDown.text(), /Company data is unavailable just now/);
-		assert.equal(seen.length, 7);
+		for (const verb of ["edit", "change"]) {
+			const editDown = await forward(request(`/v1/company-data/${id}/${verb}`, { method: "POST", body: "{}" }), {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(editDown.status, 503);
+			assert.match(await editDown.text(), /A change sent may still apply/);
+		}
+		const rowsDown = await forward(request(`/v1/company-data/${id}/rows`, { method: "POST", body: "{}" }), {
+			upstreamUrl,
+			fetchImplementation,
+		});
+		assert.equal(rowsDown.status, 503);
+		assert.doesNotMatch(await rowsDown.text(), /may still apply/);
+		assert.equal(seen.length, verbs.length + 6);
 	});
-	it("bounds a company data call's body: 64 KiB for a question or a look, 512 KiB for a watch, 1 MiB for steps", async () => {
+	it("bounds a company data call's body: 64 KiB for a question, a look or a change, 512 KiB for a watch, 1 MiB for steps, rows and an edit", async () => {
 		const sizes: number[] = [];
 		const fetchImplementation: typeof fetch = async (_url, init) => {
 			sizes.push((init?.body as Uint8Array).byteLength);
@@ -1146,6 +1178,9 @@ describe("public member Company File gateway", () => {
 			["watch", 512 * 1024],
 			["describe", 64 * 1024],
 			["apply", 1024 * 1024],
+			["rows", 1024 * 1024],
+			["edit", 1024 * 1024],
+			["change", 64 * 1024],
 		] as const) {
 			const path = `/v1/company-data/${id}/${verb}`;
 			const full = await forward(request(path, { method: "POST", body: "x".repeat(limit) }), {
@@ -1159,11 +1194,11 @@ describe("public member Company File gateway", () => {
 			});
 			assert.equal(over.status, 413, verb);
 		}
-		assert.deepEqual(sizes, [64 * 1024, 512 * 1024, 64 * 1024, 1024 * 1024]);
+		assert.deepEqual(sizes, [64 * 1024, 512 * 1024, 64 * 1024, 1024 * 1024, 1024 * 1024, 1024 * 1024, 64 * 1024]);
 	});
 	it("reads a company data call's body only for a signed-in member, a watch too", async () => {
 		const fetchImplementation = async () => assert.fail("unchecked company data call forwarded");
-		for (const verb of ["query", "watch", "apply", "describe"])
+		for (const verb of ["query", "watch", "apply", "describe", "rows", "edit", "change"])
 			for (const [memberSignedIn, status] of [
 				[async () => false, 401],
 				[
@@ -1203,7 +1238,7 @@ describe("public member Company File gateway", () => {
 	});
 	it("answers a company data call's preflight for POST with the token and the content type alone", async () => {
 		const fetchImplementation = async () => assert.fail("preflight forwarded");
-		for (const verb of ["query", "watch", "apply", "describe"]) {
+		for (const verb of ["query", "watch", "apply", "describe", "rows", "edit", "change"]) {
 			const preflight = (method: string, headers: string, origin = "https://app.qorpera.com") =>
 				forward(
 					request(`/v1/company-data/${id}/${verb}`, {
@@ -1239,7 +1274,7 @@ describe("public member Company File gateway", () => {
 			return original.call(AbortSignal, ms);
 		};
 		try {
-			for (const verb of ["watch", "query", "apply", "describe"]) {
+			for (const verb of ["watch", "query", "apply", "describe", "rows", "edit", "change"]) {
 				const response = await forward(
 					request(`/v1/company-data/${id}/${verb}`, { method: "POST", body: "{}" }),
 					{ upstreamUrl, fetchImplementation: async () => Response.json({ same: true }) },
@@ -1249,7 +1284,7 @@ describe("public member Company File gateway", () => {
 		} finally {
 			AbortSignal.timeout = original;
 		}
-		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000]);
+		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000, 25_000, 25_000, 25_000]);
 	});
 	it("supports the governed folder object read route", async () => {
 		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;

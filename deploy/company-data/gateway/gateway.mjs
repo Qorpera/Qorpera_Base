@@ -113,18 +113,34 @@ export const LIMITS = Object.freeze({
 	companyBytes: 1024 ** 3,
 	/** Counting the rows of the tables one describe call shows: all its counts together. */
 	countMs: 1_500,
+	sweepMs: 3_600_000,
 	pageRows: 200,
 	pageRowsUsual: 100,
 });
 
 const NEAR_SHARE = 0.8;
+const ROW_TEXT =
+	"; set local intervalstyle = 'postgres'; set local extra_float_digits = 1; set local bytea_output = 'hex'; set local lc_monetary = 'C'";
+const SEEN = (row) => `pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex')`;
+const EDITS = ["add", "change", "remove"];
+const SETTLE =
+	"with looked as (select c.txid, pg_catalog.txid_status(c.txid) as status from qorpera_data.change_log c " +
+	"where $1::bigint[] is null or c.txid = any ($1::bigint[])), " +
+	"gone as (delete from qorpera_data.change_log c using looked l where c.txid = l.txid and l.status = 'aborted' returning c.txid) " +
+	"select l.txid::text as txid from looked l where l.status = 'in progress'";
+const UNROWED =
+	"delete from qorpera_data.change_log c where pg_catalog.txid_visible_in_snapshot(c.txid, pg_catalog.txid_current_snapshot()) " +
+	"and not exists (select 1 from qorpera_data.row_changes r where r.txid <= c.txid)";
 const RECORD_SIZE = ["row_changes", "change_log", "record_bytes"]
 	.map((table) => `coalesce(pg_catalog.pg_total_relation_size(pg_catalog.to_regclass('qorpera_data.${table}')), 0)`)
 	.join(" + ");
 const OWN_SIZE = `select pg_catalog.pg_database_size(pg_catalog.current_database()) - (${RECORD_SIZE}) as bytes`;
 const RELATION =
 	"select a.attname as name, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, c.relkind as kind, " +
-	"(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key " +
+	"(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key, " +
+	"pg_catalog.format_type(a.atttypid, -1) as base, c.relkind in ('r', 'p') and a.attgenerated = '' and a.attidentity <> 'a' as settable, " +
+	"(with recursive d(oid) as (select a.atttypid union all select t.typbasetype from d join pg_catalog.pg_type t on t.oid = d.oid and t.typtype = 'd') " +
+	"select bool_or(d.oid in ('pg_catalog.json'::pg_catalog.regtype, 'pg_catalog.jsonb'::pg_catalog.regtype)) from d) as json " +
 	"from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1 " +
 	"join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped " +
 	"left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary " +
@@ -496,6 +512,8 @@ export class Gateway {
 	#agentReads = new Map();
 	/** Company databases this gateway has seen exist. */
 	#exists = new Set();
+	#unsettled = new Map();
+	#swept = new Map();
 	/** What questions have taken from the store so far: rows, and the characters of their values. */
 	taken = { rows: 0, bytes: 0 };
 
@@ -750,7 +768,7 @@ export class Gateway {
 	 * must be over, its wait for a connection included: with none free by then it is refused (the read role's
 	 * connections are few, and a call would else wait for one as long as the pool lets it), and the statement gets
 	 * what is left of the time. */
-	async #reading(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null }, work) {
+	async #reading(ready, { ms = Number.POSITIVE_INFINITY, gone = null, agent = false, until = null, settings = "" }, work) {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
@@ -779,7 +797,7 @@ export class Gateway {
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
-					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}${settings}`,
 			);
 			const answer = await work(client, { maxRows, maxBytes });
 			await client.query("rollback");
@@ -852,7 +870,7 @@ export class Gateway {
 	}
 
 	async #page(ready, options = {}) {
-		return this.#reading(ready, options, async (client, { maxBytes }) => {
+		return this.#reading(ready, { ...options, settings: ROW_TEXT }, async (client, { maxBytes }) => {
 			const shape = await client.query({ text: RELATION, values: [ready.name, ready.table], types: TEXT_TYPES });
 			if (shape.rows.length === 0) refuse(404, `No table ${ready.table} in ${ready.name}`);
 			const columns = shape.rows.map((row, index) => ({ ...row, index }));
@@ -890,7 +908,7 @@ export class Gateway {
 			];
 			const result = await client.query({
 				text:
-					`with ${asked} as (select ${row}.*, pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(${row}::text, 'UTF8')), 'hex') as ${seen}, ` +
+					`with ${asked} as (select ${row}.*, ${SEEN(row)} as ${seen}, ` +
 					`pg_catalog.octet_length(${row}::text) as ${size} from ${quoted(ready.name)}.${quoted(ready.table)} ${row} ${where} ` +
 					`${order.length > 0 ? `order by ${order.join(", ")}` : ""} limit ${ready.limit + 1}), ` +
 					`${sized} as (select ${asked}.*, row_number() over () as ${at}, ` +
@@ -1031,75 +1049,41 @@ export class Gateway {
 		return { ...answer, asOf: new Date().toISOString() };
 	}
 
-	/** Runs a ready change as the database folder's write role, in a transaction of its own: one statement, a change's
-	 * time. What it did is judged after it ran and before anything is kept:
-	 * - a statement that is no insert, update, delete, merge or select is rolled back (a `set`, a `copy`, a `do`);
-	 * - so is one that dropped or emptied a table or dropped a column, which the write role can only do through a
-	 *   function a step made: that is a step's work, which waits for a member. Deleting rows is the change's own
-	 *   defined act and runs (§8). The statement's deferred work runs before this check. The transaction is not
-	 *   sealed as a step's is: a seal is a row kept for good, one for every change a company ever runs, and a change
-	 *   may delete rows anyway. So work that a step's function defers a second time, past this check to the commit,
-	 *   is not seen; it can reach only the folder's own tables, whose every row a change may delete as it is;
-	 * - so is one that left a table without Qorpera's triggers;
-	 * - a company at its size limit runs only what writes nothing, so it can make room: a delete. That is judged by
-	 *   what the transaction wrote, as PostgreSQL counted it (`WRITTEN`, read before the statement and after: rows
-	 *   added or changed in any table, a `with` part's and a function's too), not by the statement's word: a delete
-	 *   can carry an insert.
-	 * Unlike a question, a change is committed, so what its statement left on its session (a setting, a session
-	 * advisory lock) would meet the next change on that connection: the connection is given back only after
-	 * `discard all`.
-	 * A write is no subquery, so the statement cannot be wrapped as a question's is, and what it sends back is counted
-	 * as it arrives: past `changeBytes` the connection is closed under it, which rolls the change back (it was never
-	 * committed), so one company's `returning *` cannot fill the gateway's memory. The rows it gives back are cut at an
-	 * answer's rows and bytes, with `more`; the change itself ran whole. `gone`: a caller that left before the change
-	 * began gets none; once begun it runs to its end. */
-	async #act(ready, { agent = false, gone = null } = {}) {
-		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
-		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
+	async #actorLine(database, txid, actor) {
+		await this.#pool(database, "qorpera_data_keeper")
+			.query("insert into qorpera_data.change_log (txid, by_kind, by_id, via) values ($1::bigint, $2, $3, $4)", [txid, actor.kind, actor.id, actor.via])
+			.catch((error) => {
+				throw storeProblem(error);
+			});
+		if (!this.#unsettled.has(database)) this.#unsettled.set(database, new Set());
+		this.#unsettled.get(database).add(txid);
+	}
+
+	async #writing(ready, actor, { gone = null, settings = "", room }, work) {
 		const ms = this.#limits.changeMs;
-		// The write role holds two connections: a call waits for one a change's time at most, and less than the pool does.
 		const client = await inTime(
 			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(),
 			Date.now() + Math.min(ms, CONNECT_MS - 1_000),
 		).catch((error) => {
 			throw storeProblem(error);
 		});
-		const stream = client.connection.stream;
+		const held = { cut: false };
 		let lost;
-		let cut = false;
-		let taken = 0;
-		const counting = (piece) => {
-			taken += piece.length;
-			if (taken <= this.#limits.changeBytes || cut) return;
-			// Given back as broken: the pool ends it at once, under the statement, and the client says nothing of it.
-			cut = true;
-			this.#letGo(client, true);
-		};
-		const undone = async (status, message) => {
+		const undone = async (status, message, extra) => {
 			await client.query("rollback");
-			refuse(status, message);
+			refuse(status, message, extra);
 		};
 		try {
 			if (gone?.aborted) refuse(499, "The caller went away");
 			await client.query(
 				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
-					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}`,
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}${settings}`,
 			);
-			// Whether the company is at its limit is what the watcher last found, as this change began.
+			const { txid } = (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0];
+			await this.#actorLine(ready.database, txid, actor);
 			const full = this.#full.has(ready.database);
 			const before = full ? Number((await client.query(WRITTEN)).rows[0].rows) : 0;
-			let result;
-			stream.on("data", counting);
-			try {
-				// The extended protocol: PostgreSQL refuses a second statement in the text.
-				result = await client.query({ text: ready.sql, values: ready.values, rowMode: "array", queryMode: "extended", types: TEXT_TYPES });
-			} finally {
-				stream.off("data", counting);
-			}
-			// The whole answer may have come in one piece, counted after the statement was read as done.
-			if (cut) throw new Error("The change gave back too much");
-			if (!CHANGE_COMMANDS.includes(result.command))
-				await undone(400, "A change is one insert, update, delete or merge, or a select that calls a function: nothing was changed");
+			const answer = await work(client, undone, held);
 			await client.query("set constraints all immediate");
 			const effects = (await client.query("select kind, object, rows from qorpera_data.effects()")).rows;
 			const beyond = effects.filter((effect) => effect.kind !== "deleted rows");
@@ -1115,40 +1099,20 @@ export class Gateway {
 					`A change may not remove or switch off Qorpera's triggers (${unwatched.map((row) => `${row.table_name} ${row.problem}`).join("; ")}): nothing was changed`,
 				);
 			if (full && Number((await client.query(WRITTEN)).rows[0].rows) > before)
-				await undone(
-					507,
-					`This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: only a change that deletes rows and writes none runs until there is room`,
-				);
+				await undone(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: ${room}`);
 			await client.query("commit");
-			// How many rows the statement itself wrote, as PostgreSQL counts them; a select says none.
-			const answer = result.command === "SELECT" ? {} : { changed: result.rowCount ?? 0 };
-			if (result.fields.length === 0) return answer;
-			const rows = [];
-			let bytes = 0;
-			let more = result.rows.length > maxRows;
-			for (const row of result.rows.slice(0, maxRows)) {
-				const shapedRow = row.map((value, index) => shaped(value, result.fields[index].dataTypeID));
-				bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
-				if (bytes > maxBytes) {
-					more = true;
-					break;
-				}
-				rows.push(shapedRow);
-			}
-			return { ...answer, columns: result.fields.map((field) => field.name), rows, more };
+			return answer;
 		} catch (error) {
-			if (cut)
+			if (held.cut)
 				throw new Refusal(
 					400,
 					`The change gives back more than ${amount(this.#limits.changeBytes)}, so it was stopped and nothing was changed: give back less, such as only an id`,
 				);
-			if (!(error instanceof Refusal) && !/^(57P0[123]|08...)$/.test(error?.code ?? "") && error?.code) {
-				await client.query("rollback").catch(() => undefined);
-			} else if (!(error instanceof Refusal)) lost = error;
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code))) await client.query("rollback").catch(() => undefined);
+			else lost = error;
 			throw storeProblem(error);
 		} finally {
-			if (!cut) {
-				// Nothing of this change stays on the session for the next one; a connection that cannot be cleaned is closed.
+			if (!held.cut) {
 				if (!lost)
 					await client.query("discard all").catch((error) => {
 						lost = error;
@@ -1156,6 +1120,58 @@ export class Gateway {
 				this.#release(client, lost);
 			}
 		}
+	}
+
+	#actor(caller, via) {
+		if (caller.machineId) return { kind: "machine", id: caller.machineId, via };
+		if (caller.run) return { kind: "agent", id: caller.runId, via };
+		return { kind: "member", id: caller.userId, via };
+	}
+
+	async #act(ready, actor, { agent = false, gone = null } = {}) {
+		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
+		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
+		const result = await this.#writing(
+			ready,
+			actor,
+			{ gone, room: "only a change that deletes rows and writes none runs until there is room" },
+			async (client, undone, held) => {
+				const stream = client.connection.stream;
+				let taken = 0;
+				const counting = (piece) => {
+					taken += piece.length;
+					if (taken <= this.#limits.changeBytes || held.cut) return;
+					held.cut = true;
+					this.#letGo(client, true);
+				};
+				let result;
+				stream.on("data", counting);
+				try {
+					result = await client.query({ text: ready.sql, values: ready.values, rowMode: "array", queryMode: "extended", types: TEXT_TYPES });
+				} finally {
+					stream.off("data", counting);
+				}
+				if (held.cut) throw new Error("The change gave back too much");
+				if (!CHANGE_COMMANDS.includes(result.command))
+					await undone(400, "A change is one insert, update, delete or merge, or a select that calls a function: nothing was changed");
+				return result;
+			},
+		);
+		const answer = result.command === "SELECT" ? {} : { changed: result.rowCount ?? 0 };
+		if (result.fields.length === 0) return answer;
+		const rows = [];
+		let bytes = 0;
+		let more = result.rows.length > maxRows;
+		for (const row of result.rows.slice(0, maxRows)) {
+			const shapedRow = row.map((value, index) => shaped(value, result.fields[index].dataTypeID));
+			bytes += Buffer.byteLength(JSON.stringify(shapedRow)) + 1;
+			if (bytes > maxBytes) {
+				more = true;
+				break;
+			}
+			rows.push(shapedRow);
+		}
+		return { ...answer, columns: result.fields.map((field) => field.name), rows, more };
 	}
 
 	/** A named change (§8): its file read as the caller, one statement run as the database folder's write role.
@@ -1179,7 +1195,109 @@ export class Gateway {
 			};
 		}
 		if (body.sha256 !== undefined && body.sha256 !== ready.sha256) refuse(409, "The change's file was changed since it was shown: ask again");
-		return { ...(await this.#act(ready, { agent, gone })), asOf: new Date().toISOString() };
+		return { ...(await this.#act(ready, this.#actor(caller, body.change), { agent, gone })), asOf: new Date().toISOString() };
+	}
+
+	async edit(caller, environmentId, body, { gone = null } = {}) {
+		const { database: name, table, op, key, values = {}, seen } = body;
+		const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		if (typeof table !== "string" || table === "" || Buffer.byteLength(table) > 63 || table.includes("\0")) refuse(400, "Name a table");
+		if (!EDITS.includes(op)) refuse(400, "op is add, change or remove");
+		if (!plain(values)) refuse(400, "values are the columns to set, by name");
+		if (op === "add" && (key !== undefined || seen !== undefined)) refuse(400, "An add names no key and no seen");
+		if (op !== "add" && (!plain(key) || typeof seen !== "string" || !SHA.test(seen)))
+			refuse(400, `A ${op} names the row's whole key and the seen it was read with`);
+		if (op === "remove" && Object.keys(values).length > 0) refuse(400, "A remove sets no values");
+		if (op === "change" && Object.keys(values).length === 0) refuse(400, "A change sets at least one column");
+		const right = await this.#mayList(caller, environmentId, name, body.texts);
+		if (right.need) return { need: right.need };
+		if (!right.list || !(await this.#mayWrite(caller, environmentId, name)))
+			refuse(403, `The rows of ${name} are changed by those who may change its folder`);
+		const database = companyDatabase(environmentId);
+		const n = await this.#folder(database, name);
+		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const answer = await this.#writing(
+			{ database, name, n },
+			{ kind: "member", id: caller.userId, via: "list" },
+			{ gone, settings: ROW_TEXT, room: "only removing a row runs until there is room" },
+			(client, undone) => this.#edited(client, undone, { name, table, op, key, values, seen }),
+		);
+		return { ...answer, asOf: new Date().toISOString() };
+	}
+
+	async #edited(client, undone, { name, table, op, key, values, seen }) {
+		const columns = (await client.query({ text: RELATION, values: [name, table], types: TEXT_TYPES })).rows;
+		if (columns.length === 0) await undone(404, `No table ${table} in ${name}`);
+		if (columns[0].kind !== "r" && columns[0].kind !== "p") await undone(400, `${table} is a view: the list changes no rows of it`);
+		const keyed = columns.filter((column) => column.key !== null).sort((a, b) => Number(a.key) - Number(b.key));
+		if (op !== "add" && keyed.length === 0) await undone(400, `${table} has no key: its rows are added here, never changed or removed`);
+		const named = new Map(columns.map((column) => [column.name, column]));
+		const setting = Object.entries(values);
+		for (const [column] of setting) {
+			if (!named.has(column)) await undone(400, `No column ${column} in ${table}`);
+			if (named.get(column).settable !== "t") await undone(400, `${column} is kept by the store: an edit does not set it`);
+		}
+		if (op !== "add" && (Object.keys(key).length !== keyed.length || !keyed.every((column) => Object.hasOwn(key, column.name) && key[column.name] !== null)))
+			await undone(400, `A ${op} names the whole key of ${table}: ${keyed.map((column) => column.name).join(", ")}`);
+		const tag = randomBytes(8).toString("hex");
+		const [row, written, seenAs, size] = ["row", "written", "seen", "size"].map((part) => `qorpera_${part}_${tag}`);
+		const relation = `${quoted(name)}.${quoted(table)}`;
+		const maxBytes = this.#limits.questionBytes;
+		const kept = `${row}.*, ${SEEN(row)} as ${seenAs}, pg_catalog.octet_length(${row}::text) as ${size}`;
+		const asked = (statement) => {
+			const params = [];
+			const param = (column, value) => {
+				params.push(
+					value === null
+						? null
+						: column?.json === "t" || typeof value === "object"
+							? JSON.stringify(value)
+							: typeof value === "string"
+								? value
+								: String(value),
+				);
+				return column ? `$${params.length}::${column.base}` : `$${params.length}`;
+			};
+			const atKey = () =>
+				`(${keyed.map((column) => `${row}.${quoted(column.name)}`).join(", ")}) = (${keyed.map((column) => param(column, key[column.name])).join(", ")})`;
+			const text =
+				`with ${written} as (${statement(param, atKey)}) ` +
+				`select ${columns.map((column) => `case when ${written}.${size} <= ${maxBytes} then ${written}.${quoted(column.name)} end`).join(", ")}, ` +
+				`${written}.${seenAs}, ${written}.${size} from ${written}`;
+			return client.query({ text, values: params, rowMode: "array", queryMode: "extended", types: TEXT_TYPES });
+		};
+		const asRow = (result) => {
+			const one = result.rows[0];
+			const width = columns.length;
+			if (Number(one[width + 1]) > maxBytes) return { values: null, seen: one[width], tooLarge: true };
+			return { values: one.slice(0, width).map((value, index) => shaped(value, result.fields[index].dataTypeID)), seen: one[width] };
+		};
+		const result = await asked((param, atKey) => {
+			if (op === "add")
+				return `insert into ${relation} as ${row} ${
+					setting.length === 0
+						? "default values"
+						: `(${setting.map(([column]) => quoted(column)).join(", ")}) values (${setting.map(([column, value]) => param(named.get(column), value)).join(", ")})`
+				} returning ${kept}`;
+			const sets = setting.map(([column, value]) => `${quoted(column)} = ${param(named.get(column), value)}`).join(", ");
+			const where = `${atKey()} and ${SEEN(row)} = ${param(null, seen)}`;
+			return op === "change"
+				? `update ${relation} as ${row} set ${sets} where ${where} returning ${kept}`
+				: `delete from ${relation} as ${row} where ${where} returning ${kept}`;
+		});
+		if (result.rows.length === 0 && op === "add") await undone(400, "The table's own trigger kept the row out");
+		if (result.rows.length === 0) {
+			const now = await asked((_, atKey) => `select ${kept} from ${relation} ${row} where ${atKey()}`);
+			if (now.rows.length === 0) await undone(409, "The row is gone: it was removed since it was read", { row: null });
+			const current = asRow(now);
+			await undone(
+				409,
+				current.seen === seen ? "The table's own trigger kept the row as it was" : "The row was changed since it was read: it is as it is now",
+				{ row: current },
+			);
+		}
+		return { columns: columns.map((column) => column.name), key: keyed.map((column) => column.name), row: op === "remove" ? null : asRow(result) };
 	}
 
 	/** One connection that listens on a company's database, shared by every watch call on it, open only while one is. */
@@ -1534,7 +1652,10 @@ export class Gateway {
 				for (const left of waiting.slice(index)) results.push({ name: left.name, state: "waiting" });
 				return { applied: false, more: true, results };
 			}
-			const outcome = await this.#step(database, name, n, step, texts.get(step.name), { allow: caller.allow ?? null });
+			const outcome = await this.#step(database, name, n, step, texts.get(step.name), {
+				allow: caller.allow ?? null,
+				actor: { kind: "step", id: caller.machineId ?? caller.runId ?? caller.userId, via: step.name },
+			});
 			results.push(outcome);
 			if (outcome.state !== "applied") break;
 		}
@@ -1544,13 +1665,14 @@ export class Gateway {
 	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing, or if what
 	 * it destroyed is exactly what `allow` says a member said yes to (the step, its text's hash, and the hash of what it
 	 * destroys). `dry`: nothing is kept; the answer says what the step would destroy, with the `allow` for it. */
-	async #step(database, name, n, step, text, { allow = null, dry = false } = {}) {
+	async #step(database, name, n, step, text, { allow = null, dry = false, actor = null } = {}) {
 		const client = await this.#pool(database, `${database}_o${n}`).connect();
 		try {
 			await client.query(
 				`begin; set local lock_timeout = ${this.#limits.stepLockMs}; set local statement_timeout = ${this.#limits.stepMs}; ` +
 					`set local search_path = ${quoted(name)}`,
 			);
+			if (!dry) await this.#actorLine(database, (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0].txid, actor);
 			try {
 				await client.query({ text: "select qorpera_data.apply_step($1)", values: [text], queryMode: "extended" });
 			} catch (error) {
@@ -1902,6 +2024,7 @@ export class Gateway {
 				if (whole - record >= this.#limits.companyBytes) full.add(row.database);
 			}
 			this.#full = full;
+			await this.#settle(sizes.rows.map((row) => row.database));
 			return {
 				ended: ended.rows
 					.filter((row) => row.ended)
@@ -1914,9 +2037,35 @@ export class Gateway {
 		}
 	}
 
+	async #settle(databases) {
+		const now = Date.now();
+		for (const database of databases) {
+			const sweep = now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs;
+			const waiting = [...(this.#unsettled.get(database) ?? [])];
+			if (!sweep && waiting.length === 0) continue;
+			const keeper = this.#pool(database, "qorpera_data_keeper");
+			const looked = await keeper
+				.query(SETTLE, [sweep ? null : waiting])
+				.then(async (answer) => {
+					if (sweep) await keeper.query(UNROWED);
+					return answer;
+				})
+				.catch(() => null);
+			if (looked === null) continue;
+			if (sweep) this.#swept.set(database, now);
+			const running = new Set(looked.rows.map((line) => line.txid));
+			const unsettled = this.#unsettled.get(database) ?? new Set();
+			for (const txid of waiting) if (!running.has(txid)) unsettled.delete(txid);
+			for (const txid of running) unsettled.add(txid);
+			if (unsettled.size === 0) this.#unsettled.delete(database);
+			else this.#unsettled.set(database, unsettled);
+		}
+		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!databases.includes(database)) known.delete(database);
+	}
+
 	/** A member's request, begun as that member. */
 	async handle(method, path, headers, read, gone) {
-		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows)$/.exec(path);
+		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit)$/.exec(path);
 		if (!route) refuse(404, "Not a call the data gateway answers");
 		if (method !== "POST") refuse(405, "Use POST");
 		const token = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(headers.authorization ?? "")?.[1];
@@ -1953,6 +2102,8 @@ export class Gateway {
 				return this.change(caller, environmentId, body, { gone });
 			case "rows":
 				return this.rows(caller, environmentId, body);
+			case "edit":
+				return this.edit(caller, environmentId, body, { gone });
 			default:
 				return this.describe(caller, environmentId, body);
 		}
@@ -1980,7 +2131,15 @@ export class Gateway {
 			refuse(400, "Texts are given by their hash");
 		const kept = await this.#platform.redeemPass(body.pass);
 		if (!kept) refuse(401, "Not allowed");
-		const caller = { run: true, userId: kept.requesterUserId, key: `run:${sha256(body.pass)}`, files: kept.files, allow: kept.allow };
+		const caller = {
+			run: true,
+			userId: kept.requesterUserId,
+			runId: kept.runId,
+			machineId: kept.machineId,
+			key: `run:${sha256(body.pass)}`,
+			files: kept.files,
+			allow: kept.allow,
+		};
 		switch (route[1]) {
 			case "query":
 				return this.runQuery(caller, kept.environmentId, body);

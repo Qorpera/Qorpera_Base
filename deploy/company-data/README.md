@@ -69,6 +69,23 @@ the record's tables with their indexes and TOAST, wherever it is read: `describe
 record's tables on the keeper's connection only for a company whose whole database is past 80 % of its limit. So a
 record can never close a company's writes.
 
+**Who changed what.** Every write the gateway makes has one line in `qorpera_data.change_log(txid, at, by_kind, by_id,
+via)`: a member's `edit` (`member`, the member's user id, `list`), a named change (`member`, `agent` or `machine`, with
+the member's user id, the run's id or the machine's id, and the change's name) and an applied step (`step`, the id of
+the member, run or machine whose `apply` ran it, and the step's name). The gateway reads the writing transaction's txid in that
+transaction before its statement (`txid_current()`) and writes the line on its keeper connection, committed at once,
+before the write commits; the actor is never read from the transaction that writes rows, and no folder login may
+write the table, so a statement cannot name another actor. The row lines of that write carry the same txid. A write
+that rolls back leaves a line the store calls aborted (`txid_status`), and the watcher removes those lines and no
+others: at each look the lines of the writes this gateway began that it has not seen end yet, and once an hour
+(`sweepMs`), and at its first look on a company's database, every line, so a line a gateway that went away left is
+removed too. A line whose write is still running is kept. A dry run of a held step (`check`) writes no line. The same
+hourly look lets a line go with its rows' lines: once no line of the record has its txid or an older one, the actor's
+line of a write that has ended (its transaction is seen as over by the look itself) goes too. So the actor's lines
+kept are those no older than the record's oldest line: a write older than the record's first line, or any ended write
+while the record is empty, loses its line at that look, and a write that changed no rows keeps its line only while an
+older line of the record is kept.
+
 ## The gateway
 
 `new Gateway({ store: { host, port, logins: { admin, keeper, watch, folderKey } }, platform, limits, runs })`, where
@@ -88,9 +105,10 @@ answers `{ need: [{ path, sha256 }] }`, and the caller sends the same body again
 | `watch` | `{ watches: [{ database, question, params?, etag }` or `{ database, table, order?, desc?, limit?, etag }], wait? }` | `{ changed: [{ index, answer }] }` when an answer differs, else `{ same: true }` after the wait. A table is its first page, as `rows` gives it, on the same rule |
 | `apply` | `{ database }` | `{ applied, more?, results: [{ name, state, detail?, destroys?, allow?, destroyed? }] }`; a state is `applied`, `already`, `failed`, `held`, `changed`, `missing` or `waiting`. A `held` step would destroy data: `destroys` says what, and `allow` is what a member's yes is for (below). A call starts no step once 45 s have passed since it began: it answers `more: true`, the steps it did not start `waiting`, and the next call goes on. A call so lasts at most about 105 s (45 s and one step's 60 s) |
 | `describe` | `{ database? }` | `{ databases: [{ database, name, about, write, list, applied?, tables?, questions: [{ name, words, parameters }], changes }], companyBytes, limitBytes }`, every database the member may read (from their own listing of `data/`) or the one named. A table is `{ name, kind, key, rows?, rowsAbout?, columns: [{ name, type, settable }] }`: `kind` `table` or `view`, `key` the primary key's columns, `settable` whether a member's edit may set the column (a table's column, not generated, not an identity kept by the store). `write` is whether the member may write `data/<database>/`; `list` whether they get whole tables (below). A member without the list gets no `applied` and no `tables`. `companyBytes` is the company's own data, without the record |
-| `rows` | `{ database, table, order?, desc?, limit?, after? }` | `{ columns, key, rows: [{ values, seen }], more, next?, etag, asOf }`: one page of a relation in the database's own schema, as its read login, within a question's time and bytes; 100 rows unless `limit` says (1 to 200). Ordered by `order` (nulls last, `desc` for the other way) and then by the key, or by the key alone; `next` is where the following page starts, passed back as `after` with the same order. `seen` is the sha256 of the row's text as it was read (`row::text`, UTC, ISO dates). A row larger than a page's bytes gives a page with no rows, `tooLarge: true` and the `next` past it. A relation with no key gives its first page alone, with `more` and no `next`. 403 for a member who does not get the list |
+| `rows` | `{ database, table, order?, desc?, limit?, after? }` | `{ columns, key, rows: [{ values, seen }], more, next?, etag, asOf }`: one page of a relation in the database's own schema, as its read login, within a question's time and bytes; 100 rows unless `limit` says (1 to 200). Ordered by `order` (nulls last, `desc` for the other way) and then by the key, or by the key alone; `next` is where the following page starts, passed back as `after` with the same order. `seen` is the sha256 of the row's text as it was read (`row::text` with the output settings the gateway sets for `rows` and `edit` alike: UTC, ISO dates, `intervalstyle` postgres, `extra_float_digits` 1, `bytea_output` hex, `lc_monetary` C). A row larger than a page's bytes gives a page with no rows, `tooLarge: true` and the `next` past it. A relation with no key gives its first page alone, with `more` and no `next`. 403 for a member who does not get the list |
 | `change` | `{ database, change, params?, sha256? }` | `{ changed?, columns?, rows?, more?, asOf }`: `changed` is how many rows the statement wrote (a select says none); `columns`, `rows` and `more` are there when the statement gives rows back |
 | `change` | `{ database, change, params?, preview: true }` | `{ words, values, sha256 }`, and nothing runs |
+| `edit` | `{ database, table, op: "add", values? }`, or `{ database, table, op: "change", key, seen, values }`, or `{ database, table, op: "remove", key, seen }` | `{ columns, key, row: { values, seen }, asOf }` (`row` null for a remove): the row as written, with its new `seen`. One statement the gateway builds from the catalog (names quoted, each value a parameter cast to its column's type without its length or precision, so the column's own check refuses a value too long; a value is text, a number, `true`, `false` or null, and for a `json` or `jsonb` column (or a domain over one) the JSON value itself, as `rows` gives it: the string `"hi"` is stored as a JSON string. `values` names the columns the member changed and no others: a JSON number past a double's digits, and a `json` value's own spacing and repeated keys, reach the page as JavaScript reads them, so sending such a value back unchanged would store what JavaScript read), run as the database folder's write login with a change's rules: 5 s, Qorpera's triggers, the company's size (507: only a remove runs). `values` names columns that `describe` calls `settable`; `key` names every column of the primary key; `seen` is the row's `seen` as `rows` gave it, compared inside the writing statement, so a change or a remove touches exactly the row that was read. A row changed or gone since is refused, 409 `{ error, row }` with the row as it is now or null. A view, and a change or a remove of a table without a primary key, are refused (400). 403 for a member who does not get the list or may not write `data/<database>/`. A row past a question's bytes answers `values: null` and `tooLarge: true` |
 
 ### A change
 
@@ -186,10 +204,15 @@ runs an agent's read on it, known by its pid.
 `qorpera_member_folder_may_write` (it answers 404) lets nobody write, so a list for writers is shown to nobody.
 
 A refusal is `{ error }` with its status: 400 (the call or the SQL), 401 (sign in), 403 (a table of a database whose
-list is not the member's), 404 (no such question, change, table or
+list is not the member's, or an edit by a member who may not write its folder), 404 (no such question, change, table or
 database that you may read), 405 (not POST), 408 (past the time limit, or no connection of the login's own came free in
-it), 409 (no step applied yet, or a change's file is not the one that was shown), 413 (body too large), 429 (the
-database's connections are taken), 507 (the company's database is at its size limit).
+it), 409 (no step applied yet, a change's file is not the one that was shown, or an edit's row changed or gone since it
+was read, with `row`), 413 (body too large), 429 (the database's connections are taken), 507 (the company's database
+is at its size limit).
+
+The edge function `member-company-gateway` passes a member's `query`, `watch`, `apply`, `describe`, `rows`, `edit` and
+`change` (bodies of 64 KiB, 512 KiB for a watch, 1 MiB for `apply`, `rows` and `edit`), and nothing else: `changes`
+comes with its own part.
 
 ### Limits (`LIMITS`)
 
@@ -202,6 +225,8 @@ database's connections are taken), 507 (the company's database is at its size li
 | A file | a question or a change 16 KiB, a step 64 KiB, 500 steps a database |
 | A watch | 24 questions or tables, held 20 s, asked again at most every 500 ms |
 | A page of `rows` | 100 rows, at most 200 (`pageRows`), within a question's 2 s and 256 KiB |
+| An edit | a change's 5 s; the row it answers within a question's 256 KiB |
+| The watcher's look at every actor's line | once an hour (`sweepMs`), and at its first look on a company's database |
 | A member's folder read | kept 10 s |
 | A body | 1 MiB |
 | A company's database | 1 GiB of its own data (without the record): the watcher closes its steps and its changes that write, questions still answer; `watchOnce` names a company past 80 % in `near` |
