@@ -980,9 +980,6 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("after-stop", r5.ok && (login()?.version ?? 0) > after3 && (r5.stub?.authTags ?? []).includes("RFR"),
 			`the next run opened version ${after3} and sealed ${login()?.version}: ${r5.providerSessionId ?? r5.error}`);
 
-		// 5b. Codex's check, for Claude Code's work on the home: each command and each file change is reviewed on the host
-		// before it reaches the home, with the stub as the reviewer's model; a refused one never happens there, and Claude
-		// Code is told why in the review's own words.
 		drain();
 		const w8 = "c4c00000-0000-4000-8000-0000000000b8";
 		dispatch("checked", w8, "Checked work");
