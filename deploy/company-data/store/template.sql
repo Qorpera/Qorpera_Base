@@ -102,7 +102,7 @@ create table qorpera_data.row_changes (
 	rows bigint not null check (rows > 0),
 	bytes bigint not null check (bytes >= 0)
 );
-create index row_changes_txid_idx on qorpera_data.row_changes (txid);
+create index row_changes_txid_seq_idx on qorpera_data.row_changes (txid, seq);
 create index row_changes_schema_seq_idx on qorpera_data.row_changes (schema, seq);
 
 create table qorpera_data.change_log (
@@ -112,6 +112,7 @@ create table qorpera_data.change_log (
 	by_id text,
 	via text
 );
+create index change_log_at_idx on qorpera_data.change_log (at);
 
 create table qorpera_data.record_limit (
 	only_row boolean primary key default true check (only_row),

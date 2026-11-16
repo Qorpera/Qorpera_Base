@@ -139,24 +139,31 @@ const FORGET = "select qorpera_data.forget_record(pg_catalog.now() - pg_catalog.
 const ZONE = /^[A-Za-z][A-Za-z0-9_+-]{0,30}(?:\/[A-Za-z0-9_+-]{1,30}){0,2}$/;
 const CHANGES_LINES = 3;
 const CHANGES_VALUE_BYTES = 2_048;
+const CHANGES_COUNTED = 10_000;
+const CHANGES_TABLES = 50;
+const CHANGES_COLUMNS = 100;
 const CHANGES_PAGE =
 	"with seen as (select r.txid, r.seq from qorpera_data.row_changes r where r.schema = $1 and ($2::bigint is null or r.seq < $2) " +
 	"order by r.seq desc limit $3), " +
-	"writes as (select s.txid, max(s.seq) as newest from seen s where $2::bigint is null or not exists " +
-	"(select 1 from qorpera_data.row_changes x where x.txid = s.txid and x.seq >= $2) group by s.txid order by newest desc limit $4) " +
+	"writes as (select g.txid, g.newest from (select s.txid, max(s.seq) as newest from seen s group by s.txid) g " +
+	"where $2::bigint is null or (select max(x.seq) from qorpera_data.row_changes x where x.txid = g.txid) < $2 order by g.newest desc limit $4) " +
 	"select w.txid::text as txid, w.newest::text as newest, pg_catalog.to_char(c.at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as at, " +
 	"c.by_kind, c.by_id, c.via, " +
-	"(select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('table', t.relation, 'op', t.op, 'rows', t.rows) order by t.first) from " +
-	"(select x.relation, x.op, sum(x.rows)::bigint as rows, min(x.seq) as first from qorpera_data.row_changes x " +
-	"where x.txid = w.txid and x.schema = $1 group by x.relation, x.op) t) as tables, " +
+	"(select pg_catalog.jsonb_build_object('tables', pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('table', t.relation, 'op', t.op, 'rows', t.rows) " +
+	"order by t.first) filter (where t.place <= $8), 'cut', count(*) > $8) from " +
+	"(select x.relation, x.op, sum(x.rows)::bigint as rows, min(x.seq) as first, pg_catalog.row_number() over (order by min(x.seq)) as place from " +
+	"(select y.relation, y.op, y.rows, y.seq from qorpera_data.row_changes y where y.txid = w.txid and y.schema = $1 order by y.seq limit $7) x " +
+	"group by x.relation, x.op) t) as counted, " +
+	"(select count(*) > $7 from (select 1 from qorpera_data.row_changes y where y.txid = w.txid and y.schema = $1 order by y.seq limit $7 + 1) m) as uncounted, " +
 	"(select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('table', l.relation, 'op', l.op, 'rows', l.rows, " +
 	"'key', case when pg_catalog.octet_length(l.key::text) <= $6 then l.key end, " +
 	"'before', case when pg_catalog.octet_length(l.before::text) <= $6 then l.before end, " +
 	"'after', case when pg_catalog.octet_length(l.after::text) <= $6 then l.after end, " +
-	"'columns', (select pg_catalog.jsonb_agg(k order by k) from pg_catalog.jsonb_object_keys(coalesce(l.after, l.before)) k)) order by l.seq) from " +
+	"'columns', (select pg_catalog.jsonb_agg(n.name order by n.name) from (select o.name from pg_catalog.jsonb_object_keys(coalesce(l.after, l.before)) o(name) " +
+	"order by o.name limit $9) n)) order by l.seq) from " +
 	"(select x.* from qorpera_data.row_changes x where x.txid = w.txid and x.schema = $1 order by x.seq limit $5) l) as lines, " +
-	"(select count(*) > $5 from (select 1 from qorpera_data.row_changes x where x.txid = w.txid and x.schema = $1 limit $5 + 1) m) as cut, " +
-	"k.looked, k.lowest from (select count(*) as looked, min(s.seq)::text as lowest from seen s) k " +
+	"(select count(*) > $5 from (select 1 from qorpera_data.row_changes x where x.txid = w.txid and x.schema = $1 order by x.seq limit $5 + 1) m) as cut, " +
+	"z.looked, z.lowest from (select count(*) as looked, min(s.seq)::text as lowest from seen s) z " +
 	"left join writes w on true left join qorpera_data.change_log c on c.txid = w.txid order by w.newest desc nulls last";
 const CHANGES_DAYS =
 	"select pg_catalog.to_char(c.at at time zone $2, 'YYYY-MM-DD') as day, c.by_kind, c.by_id, sum(r.rows)::bigint as rows " +
@@ -1100,7 +1107,17 @@ export class Gateway {
 			);
 			const found = await client.query({
 				text: CHANGES_PAGE,
-				values: [name, after, this.#limits.changesWindow, this.#limits.changesWrites + 1, CHANGES_LINES, CHANGES_VALUE_BYTES],
+				values: [
+					name,
+					after,
+					this.#limits.changesWindow,
+					this.#limits.changesWrites + 1,
+					CHANGES_LINES,
+					CHANGES_VALUE_BYTES,
+					CHANGES_COUNTED,
+					CHANGES_TABLES,
+					CHANGES_COLUMNS,
+				],
 				types: TEXT_TYPES,
 			});
 			const picked = found.rows.filter((row) => row.txid !== null);
@@ -1108,12 +1125,13 @@ export class Gateway {
 			let bytes = 0;
 			let full = false;
 			for (const row of picked.slice(0, this.#limits.changesWrites)) {
+				const counted = JSON.parse(row.counted);
 				const write = {
 					at: row.at,
 					by: row.by_kind,
 					id: row.by_id,
 					via: row.via,
-					tables: JSON.parse(row.tables ?? "[]").map((one) => ({ table: one.table, op: one.op, rows: Number(one.rows) })),
+					tables: (counted.tables ?? []).map((one) => ({ table: one.table, op: one.op, rows: Number(one.rows) })),
 					lines: JSON.parse(row.lines ?? "[]").map((one) => ({
 						table: one.table,
 						op: one.op,
@@ -1124,6 +1142,7 @@ export class Gateway {
 						columns: one.columns ?? null,
 					})),
 					...(row.cut === "t" ? { more: true } : {}),
+					...(row.uncounted === "t" || counted.cut ? { many: true } : {}),
 				};
 				bytes += Buffer.byteLength(JSON.stringify(write)) + 1;
 				if (bytes > this.#limits.questionBytes && writes.length > 0) {
@@ -1149,6 +1168,7 @@ export class Gateway {
 					if (error?.code === "22023") refuse(400, `No time zone ${zone}`);
 					if (error?.code !== "57014") throw error;
 					await client.query("rollback to savepoint days");
+					days = null;
 				}
 			}
 			await client.query("rollback");
@@ -2150,13 +2170,14 @@ export class Gateway {
 				if (whole - record >= this.#limits.companyBytes) full.add(row.database);
 			}
 			this.#full = full;
-			await this.#settle(sizes.rows.map((row) => row.database));
+			const unforgotten = await this.#settle(sizes.rows.map((row) => row.database));
 			return {
 				ended: ended.rows
 					.filter((row) => row.ended)
 					.map((row) => ({ pid: row.pid, login: row.login, database: row.database, how: row.terminated ? "terminated" : "cancelled" })),
 				full: [...this.#full],
 				near,
+				unforgotten,
 			};
 		} catch (error) {
 			throw storeProblem(error);
@@ -2165,6 +2186,7 @@ export class Gateway {
 
 	async #settle(databases) {
 		const now = Date.now();
+		const unforgotten = [];
 		for (const database of databases) {
 			const sweep = now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs;
 			const waiting = [...(this.#unsettled.get(database) ?? [])];
@@ -2174,7 +2196,9 @@ export class Gateway {
 				.query(SETTLE, [sweep ? null : waiting])
 				.then(async (answer) => {
 					if (sweep) {
-						await keeper.query(FORGET, [this.#limits.recordDays]).catch(() => undefined);
+						await keeper.query(FORGET, [this.#limits.recordDays]).catch((error) => {
+							if (error?.code !== "42883") unforgotten.push(database);
+						});
 						await keeper.query(UNROWED);
 					}
 					return answer;
@@ -2190,6 +2214,7 @@ export class Gateway {
 			else this.#unsettled.set(database, unsettled);
 		}
 		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!databases.includes(database)) known.delete(database);
+		return unforgotten;
 	}
 
 	/** A member's request, begun as that member. */
@@ -2303,7 +2328,8 @@ export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefin
 		if (looking) return;
 		looking = true;
 		try {
-			await gateway.watchOnce();
+			const looked = await gateway.watchOnce();
+			if (looked.unforgotten.length > 0) failed(new Error(`the record kept lines past their days in ${looked.unforgotten.length} company databases`));
 		} catch (error) {
 			failed(error);
 		} finally {

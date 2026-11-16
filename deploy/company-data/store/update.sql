@@ -55,7 +55,8 @@ create table if not exists qorpera_data.row_changes (
 	rows bigint not null check (rows > 0),
 	bytes bigint not null check (bytes >= 0)
 );
-create index if not exists row_changes_txid_idx on qorpera_data.row_changes (txid);
+drop index if exists qorpera_data.row_changes_txid_idx;
+create index if not exists row_changes_txid_seq_idx on qorpera_data.row_changes (txid, seq);
 create index if not exists row_changes_schema_seq_idx on qorpera_data.row_changes (schema, seq);
 
 create table if not exists qorpera_data.change_log (
@@ -65,6 +66,7 @@ create table if not exists qorpera_data.change_log (
 	by_id text,
 	via text
 );
+create index if not exists change_log_at_idx on qorpera_data.change_log (at);
 
 create table if not exists qorpera_data.record_limit (
 	only_row boolean primary key default true check (only_row),

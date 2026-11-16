@@ -3277,6 +3277,28 @@ create trigger nap before update on slowed for each row execute function nap();
 			await actor(base + 3, "step", "009-fill");
 			for (const [txid, id] of [[base + 1, 101], [base + 2, 102], [base + 1, 103], [base + 1, 104]]) await line(txid, id);
 			for (let n = 0; n < 6; n++) await inE("insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes) values ($1::bigint, 'journal', 'entries', 'add', 2000, 10)", [base + 3]);
+			await actor(base + 4, "step", "010-many");
+			await actor(base + 5, "step", "011-wide");
+			await inE("insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes) select $1::bigint, 'journal', 'entries', 'remove', 1, 10 from generate_series(1, 10001)", [base + 4]);
+			await inE(
+				`insert into qorpera_data.row_changes (txid, schema, relation, op, after, rows, bytes)
+				select $1::bigint, 'journal', 't' || lpad(g::text, 2, '0'), 'add', (select jsonb_object_agg('c' || lpad(c::text, 3, '0'), c) from generate_series(1, 120) c), 1, 10
+				from generate_series(1, 51) g`,
+				[base + 5],
+			);
+			await withGateway({ limits: { ...LIMITS_HERE, questionBytes: 256 * 1024 } }, async () => {
+				const bounded = await ask(contributor, "changes", { database: "journal" }, ENV_E);
+				assert.equal(bounded.status, 200, JSON.stringify(bounded.value).slice(0, 300));
+				const [wide, many] = bounded.value.writes;
+				assert.deepEqual(
+					[wide.via, wide.tables.length, wide.tables.at(-1), wide.many, wide.more, wide.lines[0].columns.length, wide.lines[0].columns.at(-1)],
+					["011-wide", 50, { table: "t50", op: "add", rows: 1 }, true, true, 100, "c100"],
+					"a write of more than 50 tables names the first 50, and a line names at most 100 columns",
+				);
+				assert.deepEqual([many.via, many.tables, many.many], ["010-many", [{ table: "entries", op: "remove", rows: 10000 }], true], "a write is counted over its first 10,000 lines");
+				assert.ok(Buffer.byteLength(JSON.stringify(bounded.value)) < 256 * 1024, "the bounds keep a page small");
+			});
+			await inE("delete from qorpera_data.row_changes where txid in ($1::bigint, $2::bigint)", [base + 4, base + 5]);
 			await withGateway({ limits: { ...LIMITS_HERE, changesWrites: 1, changesWindow: 4 } }, async () => {
 				const writes = [];
 				let after = null;
@@ -3304,6 +3326,41 @@ create trigger nap before update on slowed for each row execute function nap();
 		} finally {
 			await inE("delete from qorpera_data.row_changes where txid >= $1::bigint", [base]);
 			await inE("delete from qorpera_data.change_log where txid >= $1::bigint", [base]);
+		}
+	});
+
+	it("answers what changed within a question's time beside a write of 300,000 lines, on its first page and deep inside it", async () => {
+		const big = 9_100_000_000;
+		try {
+			await inE("insert into qorpera_data.change_log (txid, at, by_kind, via) values ($1::bigint, now(), 'step', '012-big')", [big]);
+			await inE(
+				"insert into qorpera_data.row_changes (txid, schema, relation, op, key, after, rows, bytes) select $1::bigint, 'journal', 'entries', 'add', jsonb_build_object('id', g), jsonb_build_object('id', g, 'title', 'big ' || g), 1, 40 from generate_series(1, 300000) g",
+				[big],
+			);
+			await inE("analyze qorpera_data.row_changes");
+			const [{ middle }] = await inE("select (min(seq) + (max(seq) - min(seq)) / 2)::text as middle from qorpera_data.row_changes where txid = $1::bigint", [big]);
+			await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, questionBytes: 256 * 1024 } }, async () => {
+				const timed = async (body) => {
+					const began = Date.now();
+					const page = await ask(contributor, "changes", { database: "journal", ...body }, ENV_E);
+					return { page, ms: Date.now() - began };
+				};
+				const first = await timed({ zone: "Europe/Copenhagen" });
+				assert.equal(first.page.status, 200, JSON.stringify(first.page.value).slice(0, 300));
+				assert.deepEqual([first.page.value.writes[0].via, first.page.value.writes[0].many, first.page.value.writes[0].tables[0].rows], ["012-big", true, 10000]);
+				assert.ok(Array.isArray(first.page.value.days) || first.page.value.days === null, "days, or null when they took too long");
+				const next = await timed({ after: first.page.value.next });
+				const deep = await timed({ after: middle });
+				for (const one of [next, deep]) {
+					assert.equal(one.page.status, 200, JSON.stringify(one.page.value).slice(0, 300));
+					assert.ok(!one.page.value.writes.some((write) => write.via === "012-big"), "the big write is given once");
+				}
+				console.log(`what changed beside 300,000 lines: first page ${first.ms} ms (days ${first.page.value.days === null ? "left out" : "counted"}), the next ${next.ms} ms, deep inside ${deep.ms} ms`);
+				for (const one of [first, next, deep]) assert.ok(one.ms < 2_000, `${one.ms} ms`);
+			});
+		} finally {
+			await inE("delete from qorpera_data.row_changes where txid = $1::bigint", [big]);
+			await inE("delete from qorpera_data.change_log where txid = $1::bigint", [big]);
 		}
 	});
 
@@ -3362,6 +3419,22 @@ create trigger nap before update on slowed for each row execute function nap();
 				[{ lines: 0, counted: 0 }],
 			);
 			assert.deepEqual(await asAdmin(scratch, "select qorpera_data.forget_record(now())::int as lines"), [{ lines: 0 }], "an empty record forgets nothing");
+			await asAdmin(scratch, "revoke execute on function qorpera_data.forget_record(timestamptz) from qorpera_data_keeper");
+			const rolledBack = connect(scratch);
+			await rolledBack.connect();
+			try {
+				await rolledBack.query("begin");
+				const { txid } = (await rolledBack.query("select txid_current()::text as txid")).rows[0];
+				await asAdmin(scratch, "insert into qorpera_data.change_log (txid, by_kind, via) values ($1::bigint, 'member', 'rolled back')", [txid]);
+				await rolledBack.query("rollback");
+			} finally {
+				await rolledBack.end();
+			}
+			await withGateway({}, async (other) => {
+				const looked = await other.watchOnce();
+				assert.ok(looked.unforgotten.includes(scratch), JSON.stringify(looked.unforgotten));
+				assert.deepEqual(await asAdmin(scratch, "select via from qorpera_data.change_log where via = 'rolled back'"), [], "a record that cannot forget still settles");
+			});
 		} finally {
 			await asAdmin("postgres", `drop database ${scratch} with (force)`);
 		}
