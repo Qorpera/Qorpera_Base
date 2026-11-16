@@ -1057,6 +1057,32 @@ describe("conversation execution account", () => {
 		expect(f.view.el.querySelector(".usage-wall")).toBeNull();
 	});
 
+	it("never shows the moved card again after the new login ran out while no other login could pay", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const countSessionsOnAccount = vi.fn(async () => 3);
+		const chooseSessionsAccount = vi.fn(async () => 3);
+		const f = setup(true, withUsage([0, 40]), select, undefined, choose, {
+			countSessionsOnAccount,
+			chooseSessionsAccount,
+		});
+		await settle();
+		select.mockResolvedValue(id(91));
+		buttonNamed(f.view, "All 3 chats")!.click();
+		await settle();
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe("3 chats moved to Model account 1");
+		f.listConnections.mockResolvedValue(withUsage([0, 0]));
+		refresh();
+		await settle();
+		expect(f.view.el.textContent).not.toContain("moved to");
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.view.el.textContent).not.toContain("moved to");
+		expect(f.view.el.querySelector(".usage-wall")).toBeNull();
+	});
+
 	it("offers no move of all chats while no other chat waits on the login, and asks again only when it is stuck anew", async () => {
 		const select = vi.fn(async (): Promise<string | undefined> => id(90));
 		const choose = vi.fn(async (_session: string, connection: string) => connection);

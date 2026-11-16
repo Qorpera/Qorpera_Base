@@ -950,7 +950,10 @@ export class SessionExecutionView {
 		const moved = this.#moved;
 		if (!moved) return;
 		const stuck = this.#stuckLogin();
-		if (moved.login !== this.#own() || (moved.stuck ? stuck !== moved.login : stuck !== undefined))
+		if (
+			moved.login !== this.#own() ||
+			(moved.stuck ? stuck !== moved.login : stuck !== undefined || !this.canSend || this.#waiting() !== undefined)
+		)
 			this.#moved = undefined;
 	}
 
