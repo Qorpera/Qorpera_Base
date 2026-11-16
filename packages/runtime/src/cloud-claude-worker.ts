@@ -775,6 +775,24 @@ export function claudeWorkerLogins(client: ClaudeLoginRunClient, binding: ModelL
 	};
 }
 
+const CLAUDE_CODE_TEMPORARY_FILE = /^(.+)\.tmp\.[1-9][0-9]{0,9}\.[0-9a-f]{12}$/;
+
+export function claudeWorkerReportedOutputs(paths: unknown, resultsFile: string): string[] {
+	const listed = (Array.isArray(paths) ? paths : []).filter(
+		(path): path is string =>
+			typeof path === "string" &&
+			path === path.trim() &&
+			!/[\r\n]/.test(path) &&
+			Buffer.byteLength(path) <= 256 &&
+			path !== resultsFile,
+	);
+	const written = new Set(listed);
+	return listed.filter((path) => {
+		const file = CLAUDE_CODE_TEMPORARY_FILE.exec(path)?.[1];
+		return file === undefined || !written.has(file);
+	});
+}
+
 /**
  * The files the run's machine view wrote, once they stand still. The home's window closes when its channel ends, and the
  * view's last boundary (what its quiet period still held) commits after that, credited to the run for two minutes

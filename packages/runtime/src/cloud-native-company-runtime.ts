@@ -33,6 +33,7 @@ import {
 	claudeWorkerBrief,
 	claudeWorkerLogins,
 	claudeWorkerPrompt,
+	claudeWorkerReportedOutputs,
 	claudeWorkerSessionId,
 	claudeWorkerSettledOutputs,
 	runClaudeWorker,
@@ -1856,14 +1857,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								{ p_binding: binding },
 								readSignal,
 							)) as { outputs?: unknown };
-							return (Array.isArray(after?.outputs) ? after.outputs : []).filter(
-								(path): path is string =>
-									typeof path === "string" &&
-									path === path.trim() &&
-									!/[\r\n]/.test(path) &&
-									Buffer.byteLength(path) <= 256 &&
-									path !== `${input.outputFolder}/results.md`,
-							);
+							return claudeWorkerReportedOutputs(after?.outputs, `${input.outputFolder}/results.md`);
 						}, runSignal)
 					).slice(0, 4)
 				: [];
