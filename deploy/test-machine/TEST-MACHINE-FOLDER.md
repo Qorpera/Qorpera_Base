@@ -15,6 +15,12 @@ whose starter does not read the root, the reverse (a boot-time service dropped
 with the unchecked disk), a starter narrowed while its machine runs, and the
 host's vsock ports as a guest sees them.
 
+Company databases slice 8a part 4 (`RUNTIME-COMPANY-DATABASES.md` §9a) adds
+step 8b: the machine's `data` command applies, changes, asks and describes a
+database through the boot's view, a step that would destroy data is held, a
+second machine with the first's view file is refused, and a `machine_run` whose
+output holds rows takes the database's read into its run.
+
 The path is the product's own, from the gateway call down:
 
 1. the machine command gateway's HTTP call (`createHttpCloudMachineCommandGateway`)
@@ -31,7 +37,12 @@ The path is the product's own, from the gateway call down:
    with the real `qorpera-folder bridge` on vsock port 5250, serving a
    `test_machine` view (6a);
 5. the folder core in Postgres: every migration of the tree, applied by the
-   hosted database harness.
+   hosted database harness;
+6. for step 8b, behind the folder service's `data` role: the data gateway's run
+   door (`serveRuns`, over TLS with a throwaway CA, the service's
+   `httpsDataDoor`), the real `Gateway` on a throwaway store, and the gateway's
+   redeem of each pass (`qorpera_data_pass_redeem`) in the same database as in
+   (5).
 
 The callers' runs are real: three runs of the 924 base company (Alice, Bob and
 Carol, as SQL test 628 sets them up), each made by the folder materializer and
@@ -57,8 +68,11 @@ The wrapper:
 - builds the folder program and requires its sha256 to match
   `deploy/folder-service/folder-program-linux-x64.json`, then packages the
   machine guest with it (`scripts/package-machine-guest.mjs`);
-- builds the stand-in image (below) in that project, from `ubuntu:26.04`, and
-  publishes it there;
+- builds the stand-in image (below) in that project, from `ubuntu:26.04`, with
+  `/usr/local/bin/data` written and checked as `build-machine-image.sh` does
+  (exit 2 with no verb, exit 3 with no view, and the agent account
+  `qorpera-agent`, with its sudo rule from the guest package, reaching it as
+  root through `sudo -n`), and publishes it there;
 - runs `scripts/test-test-machine-folder.mjs --execute` against the project.
 
 Its trap deletes only what it created: every VM and image in its own project,
@@ -206,6 +220,40 @@ they end. At most two VMs run at once.
    power-off (the LXD stop request). Alice's run then starts `p4` again: a new
    boot, a new view, and `/company` reads the files the first boot wrote and
    S's last line.
+8b. **`data`**, on the second boot, before K. Before the folder service is
+   made, the proof starts the store, the gateway and its run door (below), and
+   the service gets `dataDoor: httpsDataDoor({url, ca, token})`.
+   - A command of Alice's writes database `p4desk` (`database.toml`, step
+     `tables/001-tickets.sql`, question `queries/open.sql`, change
+     `actions/add-ticket.sql`) to a copy on the machine's disk, then copies it
+     into `/company/data/p4desk/`. The proof waits until SQL has the four files.
+     Each command that writes starts only once SQL has the ends of 8b's
+     earlier commands and their windows are closed, as M does in step 9: a
+     change made while an ended command's window is still open is credited to
+     it too and refused `command_ended` (run 3 lost the held step's file so).
+   - Alice's commands run `data apply p4desk` (001 applied), `data change
+     p4desk add-ticket title=Second points:=3` (one row, printed), `data query
+     p4desk open` (both rows printed), `data describe` and `data describe
+     p4desk`. Each command prints `data-exit <code>`, then what `data`
+     printed (a receipt keeps only so much output).
+   - The read: the proof reads the view's read records and Bob's run's. Then
+     Bob's command runs `data --root /root/p4-data query p4desk open`: the
+     texts the gateway asks for come from the copy, not from `/company`, so only
+     the data role can record a read of the question's file. Once Bob's output
+     is read (the boundary, then the host's take-in), Bob's run's read records
+     must hold `data/p4desk/database.toml` and `data/p4desk/queries/open.sql`.
+   - The held step: `tables/002-drop-points.sql` drops the column `points`.
+     `data apply p4desk` answers it held, with what it would drop and its
+     `allow`, twice with the same `allow`. `data apply p4desk <allow>` is a
+     usage error (exit 2) that makes no call. The store still has the column,
+     both rows and only 001 applied, and no machine pass in SQL carries an
+     `allow`.
+   - A command runs `sync`, and the proof reads p4's whole root disk image on
+     the test machine (`grep -F`) for the marker the first command wrote and
+     for each of the run's secrets whose name starts with `data` (below).
+   - In step 9, the second VM is given p4's view file (read from p4 and handed
+     over on stdin, never logged) and runs `data --view-file … describe
+     p4desk`. Then Alice's command asks `data query p4desk open` once more.
 9. **`refusals`**, on the second boot.
    - Carol's command M writes `m.txt`, which is committed credited `[M]`. M
      starts only after SQL has the earlier commands' ends: a command's window
@@ -310,8 +358,14 @@ they end. At most two VMs run at once.
 | `noRootRead` | grants were revoked and SQL says Bob's agent does not read the root; the outcome is `FOLDER_NONE:REFUSED`; SQL refused the open 42501 "Folder view needs the company-wide view" without the new-disk detail; no view of the machine; the placement is marked unchecked; the look found no `/company` mount and 0 entries; its start and receipt say `company: none` with the refusal's `why` |
 | `reverse` | the unit and its marker were installed; the grants were given back and SQL says Bob's agent reads the root; the stop was `done`; the next open was refused "used without the folder check" with the new-disk detail; the old placement is retired (`FOLDER_RETIRED:UNCHECKED`, reason `unchecked`); the machine mounted on a new v2 placement, where the look found `/company` with the seed, no unit and no marker, and its receipt says `mounted` |
 | `narrowed` | `p4-narrow` mounted and Alice's read said `mounted`; Carol's grants were revoked and SQL says her agent does not read the root; Carol's new command, read and cancel were refused, with at least three 42501 "Machine needs the company-wide view" from SQL, and her command has no receipt; Alice's read was answered; the host restarted for the closed view; Alice's read of the ended boot says `none` with the host's `why` and `heldBack`; the old placement is retired (`FOLDER_RETIRED:STARTER`, reason `starter`) after an open refused with the new-disk detail; the grants were given back and the machine mounted on a new placement; `a-long` is `lost` (`restart_view_closed` or `moved_starter`), and Alice's read of it is refused `MACHINE_COMMAND_ENDED` with that `folderLost` and `lost` words (the host's for a restart); the new disk has `/company` |
+| `dataStoreAndDoor` | the store was made from `store/cluster.sql` and `template.sql` and has the expected locale; the run door is `https:` with the throwaway CA (its fingerprint kept); a call with a token that is not the node's got 401, and one without the CA pinned failed the TLS check; every redeem the gateway made sent the publishable key alone (no bearer), was run as `anon`, and answered a `machine` pass of the second boot's view for `p4desk` (or for all, a describe); the door answered at least one call 200; every `data` hello from p4 was taken for that view |
+| `dataCommand` | the files' command exited 0 and SQL has the four files; `data apply` answered `001-tickets applied`; `data change` answered `changed: 1` with the new row; `data query` printed both rows; both describes answered (the database, its table) |
+| `dataReadTakenIn` | Bob's command took its texts from the copy (`--root /root/p4-data`), exited 0 and printed both rows; before it, the view's read records had no `queries/open.sql` and Bob's run's had neither file; after its output was read, Bob's run's and the view's read records hold `database.toml` and `queries/open.sql` |
+| `dataHeld` | SQL has the step's file; `data apply` answered `applied: false` with `002-drop-points` held, an `allow` of the form `<step>.<sha256>.<sha256>` and a destroy `dropped table column … tickets.points`; asked again, the same `allow`; `data apply p4desk <allow>` exited 2 without a call to the door; a query after shows the column and both rows; the store has applied `001-tickets` only, has the column and 2 rows; no machine pass in SQL carries an `allow` |
+| `dataOtherMachineRefused` | on the second VM with p4's view file, `data` exited 3 with no output and the words "cannot be reached from this machine now: … did not match"; every data hello the service saw meanwhile came from that VM for the second boot's view, was found in LXD and refused `VIEW_REFUSED`; no pass was asked for, no pass redeemed and no request reached the run door; p4's next `data query` printed the rows |
+| `dataSecretsNotOnMachine` | the scan of p4's root disk image ran (grep exit 0) and found the marker; it found none of the run door's token, the CA's key, the door's key (each whole and line by line), the store's passwords or any data pass |
 | `serviceClean` | no step raised, no host pass failed or threw, no SQL call deadlocked (the executor's, the folder core's, the object authority's or the keeper's; each deadlock is listed in `deadlocks` with its time, the function called, the PL/pgSQL functions it was raised in, the SQLSTATE, both waits and the row lock it was taking), every cleanup closed, and the folder bridge did not exit on its own (the host waits up to 900 s for a nested guest to answer; see "Stood in") |
-| `noSecretsInEvidence` | no holder token, view pass (of either boot) or service token of the run appears in the record (the record the wrapper prints) |
+| `noSecretsInEvidence` | no holder token, view pass (of either boot), service token, run door token, CA or door key, store password or data pass of the run appears in the record (the record the wrapper prints) |
 
 ## Stood in
 
@@ -321,7 +375,10 @@ they end. At most two VMs run at once.
   so the stand-in is `ubuntu:26.04` with no NIC, the test machine's Node binary
   as `/usr/bin/node`, 6c's guest package (the helper, the slice, the watchdog
   units, the folder program and its unit) pushed in at the image's paths,
-  `/company` made, and the watchdog timer enabled. Docker, fuse3, the toolbox
+  `/company` made, the agent account `qorpera-agent` with its sudo rule,
+  `/usr/local/bin/data` written, and the watchdog timer enabled. Step 8b's
+  commands run as root (`machine_run`); the agent account's road to `data`
+  through `sudo -n` is proven only by the image's check, run on the stand-in. Docker, fuse3, the toolbox
   and apt's masks are not in it. The image's bootstrap sha is that of the
   wrapper and the guest package's manifest.
 - **The NIC and the plug.** A machine's only card is on the agents' bridge
@@ -409,9 +466,26 @@ they end. At most two VMs run at once.
   them on its own clock from the fastest of five `lxc exec date` calls, within
   half that call's time (plus 50 ms in the checks).
 - **The vsock probe.** It runs with the image's `python3`.
+- **The data store and the gateway (8b).** As `gateway.test.mjs` makes them:
+  `POSTGRES_IMAGE` in Docker on a loopback port (2 CPUs, 4 GiB), with
+  `store/cluster.sql` and `store/template.sql`, and the real `Gateway` with
+  its default limits in this process, not the kit's compose project on the
+  store's machine. Removed at the end.
+- **The run door (8b).** `serveRuns` on `127.0.0.1` with a certificate for that
+  address from a throwaway CA (openssl, P-256, in the work directory), not the
+  node's `qorpera0` forward and node 1's mux. The folder service is given the
+  door's URL, the CA and the token as options, not as its two systemd
+  credentials.
+- **The gateway's platform (8b).** The gateway's `Platform` with a fetch that
+  runs `qorpera_data_pass_redeem` in this run's database in one psql session
+  as PostgREST would for the publishable key alone: `set local role anon` and
+  the anon claims. Any other call is answered 400.
 
 Tokens, holders and view passes are made per run, held in memory and never
-printed. Each view pass is added to the run's secrets the moment its hand-over
+printed. Step 8b's secrets are the run door's token, the CA's and the door's
+keys (whole and each line), the store's passwords and every data pass the
+gateway redeemed; the keys are in the work directory (0700), which the wrapper
+removes. Each view pass is added to the run's secrets the moment its hand-over
 is seen, before the guest is asked, so every boot's pass is looked for, in a
 run that fails early too. `noSecretsInEvidence` checks the record for every one
 of them, and the record is written with them redacted if one slipped in.
@@ -440,3 +514,18 @@ of them, and the record is written with them redacted if one slipped in.
   where the host takes his reads in, as it does Carol's. The notify
   continuation's take-in (6d-3c, `20260930500000`) is a SQL path, tested
   in SQL test 519, not here.
+- On the shared test machine (load 1 to 24 on 10 CPUs at the runs' starts, 15
+  November 2026) the older timing checks fail now and then, also without step
+  8b (baseline run
+  `20261115T131521-54867-69a80e44`, from the part 3 tree): `loop` when no
+  read's boundary lands after a tick's write, or when the read's boundary saves
+  the file between its truncate and its write (an empty version), or when the
+  TERM trap's `date` is killed with the command (`<n> last ` with no time);
+  `stopWhileRunning` by that same trap; `overlapCredited` when Carol's append
+  lands while an ended command's window is open (`command_ended`). None of
+  them runs any part of 8b.
+- Step 8b does not exercise: a held step's yes (that is `data_apply` and a
+  member's card, never a machine's), the service's limits (4 calls at once,
+  120 a minute), a paused company's refusal (SQL test 1273), an answer past
+  1 MiB, or the node's forward to the store's machine. The disk scan reads the
+  machine's disk, not its memory.
