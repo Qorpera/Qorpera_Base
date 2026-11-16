@@ -799,7 +799,7 @@ describe("hub with founding tables", () => {
 		renderHub(hub, container);
 		// No company yet: the new-company box is the hub, with the seat Bo saved under it.
 		expect(container.querySelector(".hub-welcome")).not.toBeNull();
-		expect(visibleText(container)).toContain("From idea to company.");
+		expect(container.querySelector(".hero-idea")).not.toBeNull();
 		expect(visibleText(container)).toContain("Bo saved you a seat at Havn.");
 		expect(container.querySelector<HTMLAnchorElement>(".hero-invitation")?.getAttribute("data-href")).toBe(
 			`#/found/${id(902)}`,
@@ -1120,7 +1120,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 
 	describe("the arrow alone starts the company by itself", () => {
 		/** A table with only you at it, and what Ready and Start did to it. */
-		function soloTable(connected: () => boolean) {
+		function soloTable(connected: () => boolean, companyReady = () => false) {
 			const calls: string[] = [];
 			let ready = false;
 			let started = false;
@@ -1134,7 +1134,12 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 						seats: [{ ...(wire().seats as Wire[])[0], ready: false }],
 						waitingFor: [],
 						me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
-						start: { startedAt: "2026-11-09T18:00:00Z", startedByUserId: me, revision: 5, companyReady: false },
+						start: {
+							startedAt: "2026-11-09T18:00:00Z",
+							startedByUserId: me,
+							revision: 5,
+							companyReady: companyReady(),
+						},
 					});
 				return wire({
 					seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: connected(), ready }],
@@ -1171,13 +1176,34 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			// The table's page never showed: no idea box, no Start button.
 			expect(container.querySelector("textarea.founding-vision")).toBeNull();
 			expect(container.querySelector(".founding-start")).toBeNull();
-			expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+			expect(container.querySelector(".founding-starting")).not.toBeNull();
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
+			expect(visibleText(container)).not.toContain("is starting");
 			expect(controller.store.get().autoStart).toBe(false);
+			expect(controller.store.get().startedAlone).toBe(true);
 			// Done: a reload opens the started page, and starts nothing again.
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
 		});
 
-		it("asks for ChatGPT first, on its own page, and starts once it is connected", async () => {
+		it("offers Open on the same scene once the company is ready, should the way into it not come", async () => {
+			const { api, cloud } = fixture();
+			const solo = soloTable(
+				() => true,
+				() => true,
+			);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			setFoundingIntent(table, { start: true });
+			open(api);
+			await settle();
+			await settle();
+			expect(container.querySelector(".founding-starting")).not.toBeNull();
+			const offered = [...container.querySelectorAll<HTMLButtonElement>(".founding-start-open")];
+			expect(offered.map((button) => button.textContent)).toEqual(["Open Nordlys Kaffe"]);
+			offered[0]!.click();
+			expect(location.hash).toBe(routeHash({ name: "company", profileId: table, section: "home" }));
+		});
+
+		it("waits for the account login a few seconds before it asks for ChatGPT", async () => {
 			const { api, cloud } = fixture();
 			let connected = false;
 			const solo = soloTable(() => connected);
@@ -1185,6 +1211,34 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			setFoundingIntent(table, { start: true });
 			const controller = open(api);
 			await settle();
+			expect(controller.store.get().connectOpen).toBeFalsy();
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
+			connected = true;
+			await controller.refresh();
+			await settle();
+			await settle();
+			expect(controller.store.get().connectOpen).toBeFalsy();
+			expect(solo.calls).toContain("qorpera_start_company_founding");
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
+		});
+
+		it("asks for ChatGPT on the same page once the wait is over, and starts once it is connected", async () => {
+			const { api, cloud } = fixture();
+			let connected = false;
+			const solo = soloTable(() => connected);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			setFoundingIntent(table, { start: true });
+			const opened = Date.now();
+			const controller = open(api);
+			await settle();
+			expect(controller.store.get().connectOpen).toBeFalsy();
+			const later = vi.spyOn(Date, "now").mockReturnValue(opened + 9000);
+			try {
+				await controller.refresh();
+				await settle();
+			} finally {
+				later.mockRestore();
+			}
 			expect(controller.store.get().connectOpen).toBe(true);
 			expect(container.querySelector(".founding-starting .founding-connect")?.hasAttribute("hidden")).toBe(false);
 			expect(visibleText(container)).toContain("Connect your ChatGPT account, and Nordlys Kaffe starts.");
@@ -1196,7 +1250,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			await settle();
 			await settle();
 			expect(solo.calls).toContain("qorpera_start_company_founding");
-			expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
 		});
 
 		it("never starts over an invitation sent while Ready was out: the table shows", async () => {
@@ -1258,8 +1312,6 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		expect(box.value).toBe("En webshop med keramik");
 		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(false);
-		const pressed = [...container.querySelectorAll<HTMLButtonElement>(".hero-kind[aria-pressed='true']")];
-		expect(pressed.map((kind) => kind.textContent)).toEqual(["Webshop"]);
 		// Read once: a later visit starts empty, and your own words replace the website's note.
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		expect(sessionStorage.getItem("qorpera:website-idea")).toBeNull();
@@ -1566,22 +1618,20 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(sessionStorage.getItem(key)).toBeNull();
 	});
 
-	it("draws the new-company box again in a new language, keeping the idea and the kind", () => {
+	it("draws the new-company box again in a new language, keeping the idea and the name", () => {
 		const { api } = fixture();
 		const hub = new HubController(api, me);
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
-		[...container.querySelectorAll<HTMLButtonElement>(".hero-kind")]
-			.find((kind) => kind.textContent === "Trades")!
-			.click();
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		box.value = "A roofing company in Odense";
+		container.querySelector<HTMLInputElement>(".hero-name")!.value = "Tagfolk";
 		setLanguagePreference("da");
 		try {
 			relabelNewCompany(hub);
 			renderNewCompany(hub, container, { userId: me, name: "Anna" });
-			expect(visibleText(container)).toContain("Fra idé til virksomhed.");
+			expect(visibleText(container)).toContain("Idéen");
 			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("A roofing company in Odense");
-			expect(container.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Håndværk");
+			expect(container.querySelector<HTMLInputElement>(".hero-name")?.value).toBe("Tagfolk");
 		} finally {
 			setLanguagePreference("system");
 			hub.dispose();
@@ -1625,19 +1675,17 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		hub.dispose();
 	});
 
-	it("starts the company from the box with the arrow, and fills an empty box from a kind of company", async () => {
+	it("starts the company from the box with the arrow, and never from an empty box", async () => {
 		const { api } = fixture();
 		const hub = new HubController(api, me);
 		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue(false);
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
-		// An empty box does not start anything.
 		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
 		expect(start).not.toHaveBeenCalled();
-		[...container.querySelectorAll<HTMLButtonElement>(".hero-kind")]
-			.find((kind) => kind.textContent === "Café and restaurant")!
-			.click();
-		expect(box.value).toBe("A café with takeaway");
+		expect(container.querySelector(".hero-kind")).toBeNull();
+		box.value = "A café with takeaway";
+		box.dispatchEvent(new Event("input"));
 		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
 		expect(start).toHaveBeenCalledWith("A café with takeaway", "start", "");
 		[...container.querySelectorAll<HTMLButtonElement>("button")]
@@ -1759,6 +1807,12 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			vi.advanceTimersByTime(600 + 70 * 4);
 			expect(box.placeholder).toBe("A web");
 			expect(box.value).toBe("");
+			const name = container.querySelector<HTMLInputElement>(".hero-name")!;
+			name.value = "Lerværket";
+			name.dispatchEvent(new Event("input"));
+			expect(box.placeholder).toBe("A web");
+			vi.advanceTimersByTime(70);
+			expect(box.placeholder).toBe("A webs");
 			box.dispatchEvent(new KeyboardEvent("keydown", { key: "A", bubbles: true }));
 			box.value = "A Danish webshop";
 			box.dispatchEvent(new Event("input"));
@@ -1888,7 +1942,6 @@ describe("founding table in the app", () => {
 		await vi.advanceTimersByTimeAsync(60);
 		expect(root.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("En webshop med keramik");
 		expect(visibleText(root)).toContain("Your idea from qorpera.com");
-		expect(root.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Webshop");
 	});
 
 	it("sends a member back from a sign-in at the app's root to the box with qorpera.com's idea", async () => {
