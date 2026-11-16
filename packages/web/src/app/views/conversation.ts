@@ -667,7 +667,6 @@ export class ConversationView {
 			actions.sessionModel,
 			this.#notificationSignal,
 			() => this.#setSubmenu(this.#models, true),
-			() => this.#setSubmenu(this.#models, false),
 			() => this.update(),
 		);
 		this.#logins = this.#execution
