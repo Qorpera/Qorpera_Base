@@ -1,18 +1,24 @@
-import type {
-	CloudMemberDatabase,
-	CloudMemberDataColumn,
-	CloudMemberDataDescription,
-	CloudMemberDataPage,
-	CloudMemberDataRow,
-	CloudMemberDataTable,
-	CloudMemberDataWatched,
+import {
+	CLOUD_MEMBER_DATA_QUESTION,
+	type CloudMemberDatabase,
+	type CloudMemberDataColumn,
+	type CloudMemberDataDescription,
+	type CloudMemberDataNamed,
+	type CloudMemberDataPage,
+	type CloudMemberDataRow,
+	type CloudMemberDataTable,
+	type CloudMemberDataWatched,
 } from "@qorpera/cloud-client/cloud-member-data";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { CompanyDatabases, CompanyDataCalls } from "../company-data.ts";
+import type { DataAskPlace, DataAskSend } from "../data-ask.ts";
+import { takeWantedDataList } from "../data-page.ts";
+import { DataAskBox } from "./data-ask.ts";
 import { DataChanges } from "./data-changes.ts";
+import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
 const WATCH_GAP_MS = 500;
@@ -37,6 +43,7 @@ interface ListRead {
 	readonly tab: Tab;
 	readonly order: string | undefined;
 	readonly desc: boolean;
+	readonly params: Readonly<Record<string, string>>;
 	columns: readonly string[];
 	key: readonly string[];
 	rows: Row[];
@@ -195,7 +202,7 @@ function tableOf(database: CloudMemberDatabase | undefined, name: string): Cloud
 
 function questionTabs(database: CloudMemberDatabase): Tab[] {
 	return database.questions
-		.filter((question) => question.parameters?.every((name) => name === "viewer") === true)
+		.filter((question) => question.parameters !== null && CLOUD_MEMBER_DATA_QUESTION.test(question.name))
 		.map((question) => ({ kind: "question", name: question.name }));
 }
 
@@ -244,6 +251,9 @@ class DataListView {
 	readonly #bar = h("section", { class: "app-ask data-ask", role: "group", hidden: true });
 	readonly #top = h("div", { class: "data-top" });
 	readonly #body = h("div", { class: "data-body" });
+	readonly #params = new DataParams();
+	readonly #ask: DataAskBox;
+	readonly #values = new Map<string, Record<string, string>>();
 	readonly #lifetime = new AbortController();
 	#described: CloudMemberDataDescription | null | undefined;
 	#database: string | undefined;
@@ -258,15 +268,16 @@ class DataListView {
 	readonly #changes: DataChanges;
 	#changing = false;
 
-	constructor(company: CompanyController, databases: CompanyDatabases) {
+	constructor(company: CompanyController, databases: CompanyDatabases, send: DataAskSend | undefined) {
 		this.company = company;
 		this.#databases = databases;
+		this.#ask = new DataAskBox(company, send);
 		this.#changes = new DataChanges(
 			company,
 			() => this.#calls(),
 			(database, table, key) => this.#listedTitle(database, table, key),
 		);
-		replace(this.el, this.#bar, this.#top, this.#body);
+		replace(this.el, this.#bar, this.#top, this.#params.el, this.#body, this.#ask.el);
 		company.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		databases.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		this.el.addEventListener("keydown", (event) => {
@@ -299,12 +310,74 @@ class DataListView {
 		this.#described = described;
 		if (fresh) this.#counted.clear();
 		const databases = described?.databases ?? [];
+		const wanted = described ? takeWantedDataList(this.company.profile.profileId) : undefined;
+		if (wanted !== undefined) this.#want(databases, wanted);
 		if (!databases.some((one) => one.database === this.#database)) this.#database = databases[0]?.database;
 		const database = this.#current();
 		const tabs = database ? tabsOf(database) : [];
 		if (!tabs.some((tab) => tab.kind === this.#tab?.kind && tab.name === this.#tab?.name)) this.#tab = tabs[0];
 		this.#ensureList();
 		this.#draw();
+	}
+
+	#want(databases: readonly CloudMemberDatabase[], at: string): void {
+		const cut = at.search(/[.:]/);
+		const database = databases.find((one) => one.database === (cut < 0 ? at : at.slice(0, cut)));
+		if (!database) return;
+		this.#database = database.database;
+		this.#close();
+		if (cut < 0) return;
+		const kind = at[cut] === "." ? "table" : "question";
+		const name = at.slice(cut + 1);
+		const tab = tabsOf(database).find((one) => one.kind === kind && one.name === name);
+		if (tab) this.#tab = tab;
+	}
+
+	#question(): CloudMemberDataNamed | undefined {
+		const tab = this.#tab;
+		return tab?.kind === "question" ? this.#current()?.questions.find((one) => one.name === tab.name) : undefined;
+	}
+
+	#asks(): string[] {
+		return (this.#question()?.parameters ?? []).filter((name) => name !== "viewer");
+	}
+
+	#given(): Record<string, string> {
+		const tab = this.#tab;
+		if (!this.#database || tab?.kind !== "question") return {};
+		const values = this.#values.get(`${this.#database}/${tab.name}`) ?? {};
+		return Object.fromEntries(this.#asks().map((name) => [name, values[name] ?? ""]));
+	}
+
+	#filled(): boolean {
+		return Object.values(this.#given()).every((value) => value !== "");
+	}
+
+	#give(name: string, value: string): void {
+		const tab = this.#tab;
+		if (!this.#database || tab?.kind !== "question") return;
+		const place = `${this.#database}/${tab.name}`;
+		const values = { ...(this.#values.get(place) ?? {}) };
+		if ((values[name] ?? "") === value.trim()) return;
+		values[name] = value.trim();
+		this.#values.set(place, values);
+		this.#ensureList();
+		this.#draw();
+	}
+
+	#place(): DataAskPlace | undefined {
+		const database = this.#current();
+		const tab = this.#tab;
+		if (!database || !tab || this.#open || this.#changing) return undefined;
+		if (database.questions.some((question) => question.parameters?.includes("viewer"))) return undefined;
+		return {
+			database: database.database,
+			databaseName: database.name ?? humanName(database.database),
+			kind: tab.kind,
+			name: tab.name,
+			title: humanName(tab.name),
+			values: Object.values(this.#given()).filter((value) => value !== ""),
+		};
 	}
 
 	#current(): CloudMemberDatabase | undefined {
@@ -338,6 +411,7 @@ class DataListView {
 
 	#listId(): string | undefined {
 		if (!this.#database || !this.#tab) return undefined;
+		if (!this.#filled()) return undefined;
 		const order = this.#orders.get(`${this.#database}/${this.#tab.name}`);
 		return JSON.stringify([
 			this.#database,
@@ -345,6 +419,7 @@ class DataListView {
 			this.#tab.name,
 			order?.column ?? null,
 			order?.desc ?? false,
+			this.#given(),
 		]);
 	}
 
@@ -362,6 +437,7 @@ class DataListView {
 			tab: this.#tab,
 			order: order?.column,
 			desc: order?.desc ?? false,
+			params: this.#given(),
 			...(before &&
 			before.database === this.#database &&
 			before.tab.kind === this.#tab.kind &&
@@ -395,7 +471,7 @@ class DataListView {
 		try {
 			if (read.tab.kind === "question") {
 				const answer = await this.#calls().query(
-					{ database: read.database, question: read.tab.name, params: {} },
+					{ database: read.database, question: read.tab.name, params: read.params },
 					signal,
 				);
 				if (signal.aborted) return;
@@ -472,7 +548,7 @@ class DataListView {
 			if (signal.aborted) return;
 			const watched: CloudMemberDataWatched =
 				read.tab.kind === "question"
-					? { database: read.database, question: read.tab.name, params: {}, etag: read.etag ?? "" }
+					? { database: read.database, question: read.tab.name, params: read.params, etag: read.etag ?? "" }
 					: { ...this.#asked(read), etag: read.etag ?? "" };
 			const call = new AbortController();
 			const hidden = () => document.visibilityState === "hidden" && call.abort();
@@ -583,9 +659,21 @@ class DataListView {
 	}
 
 	#drawTop(): void {
+		if (this.#changing && !this.#current()?.list) this.#changing = false;
 		const described = this.#described;
 		const databases = described?.databases ?? [];
 		const database = this.#current();
+		const question = this.#question();
+		this.#params.show(
+			this.#open || this.#changing || !this.#database || !question
+				? undefined
+				: `${this.#database}/${question.name}`,
+			this.#asks(),
+			this.#given(),
+			humanName,
+			(name, value) => this.#give(name, value),
+		);
+		this.#ask.update(this.#place());
 		if (this.#open || !database) {
 			replace(this.#top);
 			this.#top.hidden = true;
@@ -649,7 +737,10 @@ class DataListView {
 		);
 		const strip = this.#top.querySelector<HTMLElement>(".data-tabs");
 		if (!strip) return;
-		const cut = () => strip.classList.toggle("is-cut", strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1);
+		const cut = () => {
+			strip.classList.toggle("is-cut", strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1);
+			strip.classList.toggle("is-cut-start", strip.scrollLeft > 1);
+		};
 		strip.addEventListener("scroll", cut, { passive: true });
 		requestAnimationFrame(() => {
 			strip
@@ -733,6 +824,17 @@ class DataListView {
 				t("Only those who may change this database see its tables."),
 			);
 		if (!this.#tab) return this.#empty(t("No tables yet"), t("Its tables show here once an agent makes them."));
+		if (!this.#filled())
+			return this.#empty(
+				this.#question()?.words ?? humanName(this.#tab.name),
+				t("Fill in {names} to see the list.", {
+					names: new Intl.ListFormat(presentationLocale() === "da" ? "da" : "en", { type: "conjunction" }).format(
+						this.#asks()
+							.filter((name) => this.#given()[name] === "")
+							.map(humanName),
+					),
+				}),
+			);
 		const read = this.#list;
 		if (!read || (read.loading && read.pages === 0 && read.rows.length === 0 && read.columns.length === 0))
 			return this.#skeleton();
@@ -766,16 +868,11 @@ class DataListView {
 
 	#listEl(read: ListRead): HTMLElement {
 		const columns = shownColumns(read.columns, read.key);
-		const kinds = columns.map((name) =>
-			read.tab.kind === "question" &&
-			read.rows.length > 0 &&
-			read.rows.every((row) => {
-				const value = row.values[read.columns.indexOf(name)];
-				return value === null || typeof value === "number";
-			}) &&
-			read.rows.some((row) => typeof row.values[read.columns.indexOf(name)] === "number")
-				? "number"
-				: this.#kindOf(name),
+		const kinds = columns.map(
+			(name) =>
+				(read.tab.kind === "question"
+					? answerKind(read.rows.map((row) => row.values[read.columns.indexOf(name)]))
+					: undefined) ?? this.#kindOf(name),
 		);
 		const template = columns
 			.map((_, index) =>
@@ -1519,17 +1616,30 @@ function saving(open: OpenRow, name: string, by: number): void {
 	else open.saving.delete(name);
 }
 
+function answerKind(values: readonly unknown[]): Kind | undefined {
+	const given = values.filter((value) => value !== null && value !== undefined);
+	if (given.length === 0) return undefined;
+	if (given.every((value) => typeof value === "number")) return "number";
+	if (given.every((value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value))) return "date";
+	return undefined;
+}
+
 function hasValues(row: CloudMemberDataRow): row is CloudMemberDataRow & { values: readonly unknown[] } {
 	return row.values !== null;
 }
 
 const views = new WeakMap<HTMLElement, DataListView>();
 
-export function renderData(container: HTMLElement, company: CompanyController, databases: CompanyDatabases): void {
+export function renderData(
+	container: HTMLElement,
+	company: CompanyController,
+	databases: CompanyDatabases,
+	send?: DataAskSend,
+): void {
 	let view = views.get(container);
 	if (!view || view.el.parentElement !== container || view.company !== company || view.databases !== databases) {
 		view?.dispose();
-		view = new DataListView(company, databases);
+		view = new DataListView(company, databases, send);
 		views.set(container, view);
 		replace(container, view.el);
 	}

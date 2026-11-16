@@ -1,5 +1,19 @@
 export const DATA_PAGE = "data";
 
+const WANTED_MS = 15_000;
+
+let wanted: { readonly profileId: string; readonly at: string; readonly until: number } | undefined;
+
+export function wantDataList(profileId: string, at: string | undefined): void {
+	wanted = at === undefined ? undefined : { profileId, at, until: Date.now() + WANTED_MS };
+}
+
+export function takeWantedDataList(profileId: string): string | undefined {
+	const taken = wanted;
+	wanted = undefined;
+	return taken?.profileId === profileId && Date.now() <= taken.until ? taken.at : undefined;
+}
+
 export const DATA_INTERFACE = `format = "qorpera.interface/v0"
 
 [interface]

@@ -352,7 +352,7 @@ export function renderInterface(
 	}
 	const databases = entry.name === DATA_PAGE ? writes?.data?.() : undefined;
 	if (databases) {
-		renderData(container, company, databases);
+		renderData(container, company, databases, writes?.dataAsk);
 		return;
 	}
 	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the page was switched

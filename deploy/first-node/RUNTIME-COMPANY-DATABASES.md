@@ -462,6 +462,46 @@ member or the agent from the lists it already holds.
 - On a narrow page the list is two lines a row, with no column heads.
 - The member's own drawer takes `page:data`. Agents' `organize_apps` does not know it yet.
 
+**Part g as built** (Ask, and kept questions that take values):
+
+- **Who is asked.** The Co-Founder, while it is at work; with none, or for a member who may not send messages, there is
+  no line to ask on. Nothing records who made a database (`database.toml` names no maker and a folder entry names no
+  writer), so its maker cannot be asked; `app/tell-agent.ts` `noteReceiver` already answers an app with no owner
+  with the Co-Founder, and the Ask goes the same way.
+- **No Ask on private rows.** A database whose questions name `:viewer` shows each member their own rows, and the
+  Co-Founder's thread is the company's: every member reads an answer there. So such a database has no line to ask on,
+  on any of its lists. A database in a folder only some members may read cannot be told from the web (it sees only
+  what this member may read), and an agent cannot see a folder's readers either (`data_describe` answers its own
+  view): the agent's words hold back such rows only when it knows the folder is restricted, from a member or from
+  `:viewer`. Today no member can make such a folder from the product, so it can come only from outside it. Once
+  members can, asking about rows that are not everyone's needs a thread only that member reads, or the folder's
+  readers given to the agent: the owner's open decision.
+- **The road.** The line under the list sends the member's own message through `tellAgent`, the road an app's note
+  and the Mailbox take: sent from the page when the Co-Founder's thread has nothing drafted, otherwise it waits in that
+  thread's composer. Either way the page opens that conversation, where the answer comes as the Co-Founder's message.
+  A thread whose draft already answers another page's or app's note takes nothing, and the words stay in the line
+  with a link to it. The member presses once; the line is held while the thread opens and has no spinner.
+- **What travels.** The message opens with `> page:data#<database>.<table> · <about>` (`#<database>:<question>` for a
+  kept question; `#<database>` alone when the name is no id), `about` being the database's and the list's names in
+  words and the values filled in, at most 60 characters. The conversation draws that line as the Data page's card
+  (its drawers, "Data", `about`), which opens that list; the composer shows it above the field while it waits. The
+  sort and the page in view do not travel: the agent reads the database itself, and the question is about rows, not
+  how they were laid out. `page:` names the web's own pages (only `data` is read), so an agent's app that is named
+  `data` keeps `app:data`.
+- **Keep as a list.** The staff runs' "Company databases" paragraph gains a sentence: such a message was asked on that
+  list, and every member may read that conversation; answer it from rows every member may read, the number or the
+  few rows first, never the SQL (for a database only some members may read, or one whose questions name `:viewer`,
+  say in one line that the list itself shows them); offer Keep as a list on a question card, and on yes write the
+  question as `data/<database>/queries/<name>.sql` (at most 60 characters of `a-z` and `0-9`, a `-` only between
+  them, as the gateway takes a question's name) with `--` lines in the member's words.
+  The Data page lists it beside the tables at its next read of `describe`. A worker's words do not change.
+- **Kept questions that take values** are tabs too: a field a value above the list (`:viewer` stays Qorpera's), and
+  the list reads once each is filled in, each value as text, which PostgreSQL types from the statement as for any
+  caller. A filled value stays while the page is open. A question whose name the gateway would refuse (not `a-z`,
+  `0-9` and `-` between them, or past 60 characters) is no tab.
+- Left out: the answer drawn on the Data page itself (the board shows it there; it comes in the conversation), and
+  "Show how it was counted" (an answer never shows SQL).
+
 ### Parts
 
 | Part | What | Tests |

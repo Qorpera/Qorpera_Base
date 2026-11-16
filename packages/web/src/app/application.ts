@@ -42,7 +42,7 @@ import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
-import { DATA_PAGE } from "./data-page.ts";
+import { DATA_PAGE, wantDataList } from "./data-page.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
 import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
@@ -307,6 +307,14 @@ export function mountApplication(
 	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
 	// card, in a message or in a choice, opens the app's page.
 	function onFolderLink(event: MouseEvent): void {
+		const page = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-open-page]") : null;
+		if (page?.dataset.openPage && company && !event.defaultPrevented) {
+			event.preventDefault();
+			const profileId = company.profile.profileId;
+			wantDataList(profileId, page.dataset.openAt);
+			navigate({ name: "company", profileId, section: "interface", id: page.dataset.openPage });
+			return;
+		}
 		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
 		if (app?.dataset.appName && !event.defaultPrevented) {
 			event.preventDefault();
@@ -523,6 +531,7 @@ export function mountApplication(
 		CompanyController,
 		{ readonly notes: Map<string, HeldNote>; readonly back: Map<string, () => void> }
 	>();
+	const askAccounts = new WeakMap<CompanyController, TellAccounts>();
 	/** Each company's reading of itself for its app pages that read `reading` (the map kit), while the company is open. */
 	const appReading = new WeakMap<CompanyController, CompanyReading>();
 	let newConversation: NewConversationView | undefined;
@@ -2364,6 +2373,20 @@ export function mountApplication(
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
 					openSettings: (tab) => openSettings(tab),
 					data: () => companyDatabases,
+					dataAsk: (agentId, note) => {
+						let accounts = askAccounts.get(controller);
+						if (!accounts) {
+							accounts = createWebNativeSubscription(
+								cloud,
+								controller.profile.profileId,
+								controller.userId,
+								controller.signal,
+								companyCurrent,
+							);
+							askAccounts.set(controller, accounts);
+						}
+						return tellAgent(controller, accounts, agentId, note);
+					},
 				});
 				return;
 			case "sites": {

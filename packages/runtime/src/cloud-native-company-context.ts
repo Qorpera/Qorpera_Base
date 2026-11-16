@@ -289,7 +289,7 @@ For history, run git log, show and diff in /company/code/<owner>/<name>/main on 
 }
 
 /** Company databases (slice 5): a run that can read one; applying steps needs data_apply. */
-function databaseSection(has: CloudOfferedTool): string {
+function databaseSection(has: CloudOfferedTool, member = false): string {
 	return `
 # Company databases
 ${sentences(
@@ -301,6 +301,8 @@ ${sentences(
 		: "data_describe shows what a database holds, and data_query asks.",
 	'Members see a database\'s whole tables when they may read its folder, and change rows there when they may write it; a database whose rows are private to each member (its questions name :viewer) says members = "writers" under [list] in its database.toml, so only those who may write the folder see whole tables.',
 	"Never put a secret in a step, a query, a change or a row.",
+	member &&
+		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app, and every member may read that conversation: answer it from rows every member may read, the number or the few rows first, never the SQL (for a database only some members may read, or one whose questions name :viewer, say in one line that the list itself shows them), then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql (at most 60 characters of a-z and 0-9, a - only between them) with -- lines in their words, and it shows beside the tables.',
 )}`;
 }
 
@@ -337,7 +339,7 @@ function situationSections(has: CloudOfferedTool, worker: boolean): string[] {
 		...(has("save_app") ? [`${appsSection(has)}\n${APPS_FOR_MEMBERS}`, CONCEPTS] : []),
 		...(has("save_app") && has("manage_worker") ? [IDEAS] : []),
 		...(has("manage_worker") ? [codeSection(has)] : []),
-		...(has("data_query") ? [databaseSection(has)] : []),
+		...(has("data_query") ? [databaseSection(has, true)] : []),
 		BANK,
 		...(has("manage_routine") ? [STANDING_WORK] : []),
 		...(has("manage_todo") && has("manage_worker") ? [OPEN_WORK] : []),

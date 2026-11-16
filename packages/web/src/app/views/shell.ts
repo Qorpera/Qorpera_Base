@@ -2108,6 +2108,12 @@ const PAGE_COLOURS: Record<string, string> = { mailbox: "blue", members: "purple
 function pageEmblem(name: string, emblem: Emblem | null): Emblem | null {
 	return name === "bank" ? "bank" : name === "data" ? "drawers" : emblem;
 }
+
+export function pageLook(name: string): AppLook {
+	const colour = colourHex(PAGE_COLOURS[name]);
+	const emblem = pageEmblem(name, null);
+	return { key: JSON.stringify([emblem, colour ?? ""]), colour, emblem: () => interfaceEmblem(emblem, 34) };
+}
 function colourHex(colour: string | undefined): string | undefined {
 	return colour && colour !== "charcoal" ? colourNameHex(colour) : undefined;
 }

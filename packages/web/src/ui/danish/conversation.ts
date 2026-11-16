@@ -329,6 +329,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Your note waits in {name}'s thread": "Din besked venter i tråden med {name}",
 	"Write your note first.": "Skriv din besked først.",
 	"Leave the app out": "Udelad appen",
+	"Leave the page out": "Udelad siden",
 	"Your note could not be sent. Try again.": "Din besked kunne ikke sendes. Prøv igen.",
 	"{name}'s thread has a message started. Send or clear it there, then send this note.":
 		"Der er en besked i gang i tråden med {name}. Send eller ryd den dér, og send så denne besked.",

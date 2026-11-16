@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { appNoteAbout, appNoteHeader, appNoteText, splitReply, withReply } from "../src/cloud/wall-reply.ts";
+import {
+	appNoteAbout,
+	appNoteHeader,
+	appNoteText,
+	pageNoteLine,
+	splitAppNote,
+	splitReply,
+	withReply,
+} from "../src/cloud/wall-reply.ts";
 
 /* A message that opens with a quoted line. Members answered the questions on an agent's wall so until the web dropped
  * the wall (Jonas, 14 Nov 2026); those messages stay in the threads and are read back the same. */
@@ -49,6 +57,21 @@ describe("a note from an app's page", () => {
 			"see app:orders-board · Lund",
 		])
 			expect(appNoteHeader(line), line).toBeUndefined();
+	});
+
+	it("reads a question asked on the Data page's list as a note from that page, and no other page", () => {
+		const line = pageNoteLine("data", "workshop.repairs", "Workshop · Repairs");
+		expect(line).toBe("page:data#workshop.repairs · Workshop · Repairs");
+		expect(appNoteHeader(line)).toEqual({
+			app: "data",
+			at: "workshop.repairs",
+			about: "Workshop · Repairs",
+			page: true,
+		});
+		expect(appNoteHeader("page:data · Workshop")).toEqual({ app: "data", at: null, about: "Workshop", page: true });
+		expect(splitAppNote(`> ${line}\n\nHow many waited?`)?.rest).toBe("How many waited?");
+		for (const other of ["page:mailbox · Inbox", "page:Data · Workshop", "page:data#-x · Workshop", "page:data"])
+			expect(appNoteHeader(other), other).toBeUndefined();
 	});
 
 	it("makes what it is about one line that names nobody, quotes nothing and turns no text around", () => {
