@@ -936,9 +936,12 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(noMachines).not.toContain("- Commands (");
 	expect(noMachines).not.toContain("Playwright's addInitScript");
 	expect(full).toContain(
-		"A program on a company machine reaches these databases with the command data, as the machine's own company folder: the databases its /company shows (never one in a member's private folder), and :viewer is the member the machine was started for.",
+		"A program on a company machine reaches these databases with the command data, as the machine's own company folder: the databases its /company shows (never one in a member's private folder), and :viewer is the member the machine was started for unless a call gives viewer=<member id>.",
 	);
 	expect(full).toContain("data change <database> <change> name=value and data apply <database> print JSON");
+	expect(full).toContain(
+		"a start of the same size takes such a machine again (its answer says reused): start one of another size, or delete the old one first when nothing on its disk is needed.",
+	);
 	expect(noMachines).not.toContain("the command data");
 	expect(noMachines).toContain("\n# Company databases\n");
 	const reading = compile(without("data_apply", "data_change"));
@@ -2103,7 +2106,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "9542f7bbf4b5f394c76ddd2110bd38874e3e28f9589788c6178dfc5bc4eb9b26",
+			instructions: "421b1de3f717fc0ff56993d35a425029115c299820836a727cc0ec7aef41d54b",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2111,7 +2114,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "392c78608bb3f431616363f7be4093550cd0f1893978d3c78ab0a897c18a49f3",
+			instructions: "eb7b3613c80f5239e2df6d9fb20fdbfc67777b932f36ae070856333dcb4c8687",
 			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
@@ -2119,7 +2122,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "9542f7bbf4b5f394c76ddd2110bd38874e3e28f9589788c6178dfc5bc4eb9b26",
+			instructions: "421b1de3f717fc0ff56993d35a425029115c299820836a727cc0ec7aef41d54b",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
