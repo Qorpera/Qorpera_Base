@@ -191,7 +191,7 @@ describe("Ask under the list", () => {
 		expect(field.value).toBe("Which bikes are ready?");
 		const said = container.querySelector<HTMLElement>(".data-ask-said");
 		expect(said?.hidden).toBe(false);
-		expect(said?.textContent).toContain("Kaya already has a note from another page waiting.");
+		expect(said?.textContent).toContain("Kaya already has a note of yours waiting.");
 		expect(said?.querySelector("a")?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 	});
 
@@ -317,6 +317,29 @@ describe("a kept question that takes values", () => {
 			quotes: [],
 			header: "page:data#workshop:handed-in-since · Workshop · Handed in since · 2026-10-01 · Ready",
 		});
+	});
+});
+
+describe("a kept question's answer", () => {
+	it("shows a column of days as the table's days show", async () => {
+		const { container, calls } = await open();
+		calls.query.mockResolvedValueOnce({
+			columns: ["bike", "handed_in"],
+			rows: [
+				["Trek FX 2", "2026-11-12"],
+				["Puch Classic", null],
+			],
+			more: false,
+			etag,
+			asOf,
+		});
+		tab(container, "Waited over a week").click();
+		await settle();
+		const days = [...container.querySelectorAll(".data-row:not(.data-row-head)")].map(
+			(row) => row.querySelectorAll(".data-cell")[1]?.textContent,
+		);
+		expect(days[0]).toMatch(/12 Nov 2026/);
+		expect(days[1]).toBe("");
 	});
 });
 

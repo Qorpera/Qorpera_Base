@@ -481,8 +481,10 @@ member or the agent from the lists it already holds.
   how they were laid out. `page:` names the web's own pages (only `data` is read), so an agent's app that is named
   `data` keeps `app:data`.
 - **Keep as a list.** The staff runs' "Company databases" paragraph gains a sentence: such a message was asked on that
-  list; answer it from the rows (the number or the few rows first, never the SQL), offer Keep as a list on a question
-  card, and on yes write the question as `data/<database>/queries/<name>.sql` with `--` lines in the member's words.
+  list; answer it from the rows that member may see (in a database whose questions name `:viewer`, only their own,
+  as the list itself would show them; the thread is the company's), the number or the few rows first, never the SQL;
+  offer Keep as a list on a question card, and on yes write the question as `data/<database>/queries/<name>.sql`
+  (`a-z`, `0-9` and `-`, as every question's name) with `--` lines in the member's words.
   The Data page lists it beside the tables at its next read of `describe`. A worker's words do not change.
 - **Kept questions that take values** are tabs too: a field a value above the list (`:viewer` stays Qorpera's), and
   the list reads once each is filled in, each value as text, which PostgreSQL types from the statement as for any

@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import { takeWantedDataList } from "../src/app/data-page.ts";
 import { tellAgent } from "../src/app/tell-agent.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
+import { pageNoteCard } from "../src/app/views/page-note.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
@@ -1236,6 +1238,18 @@ describe("account and route ownership", () => {
 		expect(texts()).toEqual([
 			"Please draw 3 new icons for Sales board (apps/sales-board), from its name and what it shows.",
 		]);
+	});
+
+	it("opens the Data page at the list a question was asked on, from its card in the conversation", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const card = pageNoteCard("data", "workshop:waited-over-a-week", "Workshop · Waited over a week");
+		f.root.querySelector(".thread")!.append(card);
+		card.click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/i/data`);
+		expect(takeWantedDataList(profileA.profileId)).toBe("workshop:waited-over-a-week");
+		expect(takeWantedDataList(profileA.profileId)).toBeUndefined();
 	});
 
 	it("leads back to the conversation from a card whose app is gone", async () => {

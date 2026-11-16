@@ -74,7 +74,7 @@ export class DataAskBox {
 			const result = await this.#send(agent.id, { text: words, quotes: [], header: dataAskLine(place) });
 			if (result.held)
 				this.#say(
-					t("{name} already has a note from another page waiting.", {
+					t("{name} already has a note of yours waiting.", {
 						name: agent.displayName,
 					}),
 					result.href,

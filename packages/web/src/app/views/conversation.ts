@@ -1969,7 +1969,7 @@ export class ConversationView {
 		else this.#answerEmblem.style.removeProperty("--app-colour");
 		this.#answerLabel.textContent = note ? (app?.name ?? note.app) : t("Answering");
 		this.#answerQuestion.textContent = note ? note.about : (answering ?? "");
-		const stop = note ? t("Leave the app out") : t("Stop answering");
+		const stop = note?.page ? t("Leave the page out") : note ? t("Leave the app out") : t("Stop answering");
 		this.#answerStop.setAttribute("aria-label", stop);
 		this.#answerStop.title = stop;
 		this.#composer.placeholder = answering && !note ? t("Your answer…") : t("Message…");

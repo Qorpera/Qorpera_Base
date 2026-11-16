@@ -301,7 +301,7 @@ ${sentences(
 		: "data_describe shows what a database holds, and data_query asks.",
 	"Never put a secret in a step, a query, a change or a row.",
 	member &&
-		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app: answer it in your message from the rows (the number or the few rows first, never the SQL), then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql with -- lines in their words, and it shows beside the tables.',
+		'A member\'s message whose first line is "> page:data#<database>.<table> · <about>" (or #<database>:<question>) was asked on that list in the Data app: answer it in your message from the rows that member may see (in a database whose questions name :viewer, only their own), the number or the few rows first, never the SQL, then offer Keep as a list on a question card; when they keep it, write the question as data/<database>/queries/<name>.sql (a-z, 0-9 and -) with -- lines in their words, and it shows beside the tables.',
 )}`;
 }
 

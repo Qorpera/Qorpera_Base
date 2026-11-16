@@ -311,7 +311,7 @@ export function mountApplication(
 		if (page?.dataset.openPage && company && !event.defaultPrevented) {
 			event.preventDefault();
 			const profileId = company.profile.profileId;
-			if (page.dataset.openAt) wantDataList(profileId, page.dataset.openAt);
+			wantDataList(profileId, page.dataset.openAt);
 			navigate({ name: "company", profileId, section: "interface", id: page.dataset.openPage });
 			return;
 		}
