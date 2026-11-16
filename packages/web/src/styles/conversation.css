@@ -213,6 +213,29 @@
 .session-execution > p, .session-execution > .notice, .session-execution > details { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
 .session-execution details { max-height: 180px; overflow-y: auto; }
 .session-execution summary { cursor: pointer; }
+.usage-wall { display: flex; align-items: center; gap: 10px; flex-basis: 100%; min-width: 0; padding: 2px 0; }
+.usage-wall-ring { flex: none; width: 22px; height: 22px; }
+.usage-wall-ring circle { fill: none; stroke-width: 2.4; }
+.usage-wall-ring .track { stroke: var(--border-strong); }
+.usage-wall-ring .fill { stroke: var(--accent); stroke-dasharray: 56.55; stroke-dashoffset: 0; transform: rotate(-90deg); transform-origin: center; }
+.usage-wall-ring.done .track { stroke: var(--accent); }
+.usage-wall-ring .tick { fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.usage-wall-text { flex: 1 1 auto; min-width: 0; }
+.usage-wall-text p { margin: 0; overflow-wrap: anywhere; }
+.usage-wall-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.usage-wall-sub { font-size: 12px; color: var(--text-muted); }
+.usage-wall-actions { display: flex; flex: none; gap: 6px; }
+.usage-wall-actions .btn { justify-content: center; }
+.session-execution > .usage-wall-more { padding-left: 32px; font-size: 12px; color: var(--text-muted); }
+.usage-wall-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
+.usage-wall-link:hover:not(:disabled) { color: var(--text); }
+.usage-wall-link:disabled { opacity: .6; cursor: default; }
+@media (max-width: 520px) {
+	.usage-wall { flex-wrap: wrap; }
+	.usage-wall-text { flex-basis: calc(100% - 32px); }
+	.usage-wall-actions { flex-basis: 100%; padding-left: 32px; }
+	.usage-wall-actions .btn { flex: 1; }
+}
 .composer { flex: none; width: 100%; padding: 8px 16px 10px; }
 .composer[hidden] { display: none; }
 /* The thread's placeholder (ui/skeleton.ts): one-line bubbles on the real bubbles'
