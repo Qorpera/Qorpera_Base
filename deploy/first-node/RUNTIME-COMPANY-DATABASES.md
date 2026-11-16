@@ -548,7 +548,8 @@ text above:
   When counting takes past the question's time, `days` is null and the page still answers. These two (`zone`, `days`)
   are not in the text above.
 - **The reader's own connection.** `changes` reads on a keeper connection of its own (one per company's database), so
-  a member reading what changed never holds up a write's actor's line; it reads within a question's 2 s.
+  a member reading what changed never holds up a write's actor's line; a page and its days together take at most a
+  question's 2 s.
 - **The actor names the agent.** An agent's and a machine's line, and a step an agent applied, carry the agent's own id
   (the data pass's `staffAgentId`), not the run's or the machine's, so the web names the agent from the list it holds.
   Part c wrote the run's id and the machine's id; a pass without an agent's id is refused (503).

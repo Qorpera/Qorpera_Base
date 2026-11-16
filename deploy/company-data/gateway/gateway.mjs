@@ -146,7 +146,8 @@ const CHANGES_PAGE =
 	"with seen as (select r.txid, r.seq from qorpera_data.row_changes r where r.schema = $1 and ($2::bigint is null or r.seq < $2) " +
 	"order by r.seq desc limit $3), " +
 	"writes as (select g.txid, g.newest from (select s.txid, max(s.seq) as newest from seen s group by s.txid) g " +
-	"where $2::bigint is null or (select max(x.seq) from qorpera_data.row_changes x where x.txid = g.txid) < $2 order by g.newest desc limit $4) " +
+	"where $2::bigint is null or (select max(x.seq) from qorpera_data.row_changes x where x.txid = g.txid and x.schema = $1) < $2 " +
+	"order by g.newest desc limit $4) " +
 	"select w.txid::text as txid, w.newest::text as newest, pg_catalog.to_char(c.at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as at, " +
 	"c.by_kind, c.by_id, c.via, " +
 	"(select pg_catalog.jsonb_build_object('tables', pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('table', t.relation, 'op', t.op, 'rows', t.rows) " +
@@ -1100,6 +1101,7 @@ export class Gateway {
 			throw storeProblem(error);
 		});
 		let lost;
+		const until = Date.now() + this.#limits.questionMs;
 		try {
 			await client.query(
 				`begin transaction read only; set local statement_timeout = ${Math.max(1, Math.floor(this.#limits.questionMs))}; ` +
@@ -1160,7 +1162,7 @@ export class Gateway {
 						: null;
 			let days;
 			if (zone !== null) {
-				await client.query("savepoint days");
+				await client.query(`savepoint days; set local statement_timeout = ${Math.max(1, Math.floor(until - Date.now()))}`);
 				try {
 					const counted = await client.query({ text: CHANGES_DAYS, values: [name, zone, this.#limits.changesDays], types: TEXT_TYPES });
 					days = counted.rows.map((row) => ({ day: row.day, by: row.by_kind, id: row.by_id, rows: Number(row.rows) }));

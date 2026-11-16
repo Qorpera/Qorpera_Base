@@ -3277,6 +3277,7 @@ create trigger nap before update on slowed for each row execute function nap();
 			await actor(base + 3, "step", "009-fill");
 			for (const [txid, id] of [[base + 1, 101], [base + 2, 102], [base + 1, 103], [base + 1, 104]]) await line(txid, id);
 			for (let n = 0; n < 6; n++) await inE("insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes) values ($1::bigint, 'journal', 'entries', 'add', 2000, 10)", [base + 3]);
+			await inE("insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes) values ($1::bigint, 'elsewhere', 'other', 'add', 1, 10)", [base + 2]);
 			await actor(base + 4, "step", "010-many");
 			await actor(base + 5, "step", "011-wide");
 			await inE("insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes) select $1::bigint, 'journal', 'entries', 'remove', 1, 10 from generate_series(1, 10001)", [base + 4]);
