@@ -83,6 +83,18 @@ test("packages and pins the shared execution service", async () => {
 		assert.match(hostUnit, /^InaccessiblePaths=\/var\/lib\/qorpera\/identities /m);
 		assert.match(hostUnit, /^RestrictNamespaces=user mnt pid net ipc uts cgroup$/m);
 		assert.match(hostUnit, /^Restart=no$/m);
+		// The Claude Code box's mount (slice C2): the FUSE device alone joins the slot's private /dev, and only where the
+		// host has it (the dash: a host without it still starts its runs); nothing else of the unit's hardening moves.
+		assert.match(hostUnit, /^PrivateDevices=yes$/m);
+		assert.match(hostUnit, /^DeviceAllow=\/dev\/fuse rw$/m);
+		assert.match(hostUnit, /^BindPaths=-\/dev\/fuse$/m);
+		assert.deepEqual(hostUnit.match(/^(?:DeviceAllow|BindPaths|BindReadOnlyPaths|DevicePolicy)=.*$/gm), [
+			"DeviceAllow=/dev/fuse rw",
+			"BindPaths=-/dev/fuse",
+		]);
+		for (const line of ["NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=", "ProtectSystem=strict"])
+			assert.ok(hostUnit.split("\n").includes(line), line);
+		assert.doesNotMatch(runnerUnit, /\/dev\/fuse/);
 		assert.match(runnerUnit, /^User=qorpera-shared-runner-%i$/m);
 		assert.match(runnerUnit, /^BindsTo=qorpera-shared-run-host@%i\.service$/m);
 		assert.match(
@@ -119,6 +131,9 @@ test("packages and pins the shared execution service", async () => {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}
 		assert.ok(installer.includes("useradd --system --no-create-home"));
+		// Only the slot's host account joins the box's group, and only on an image that has it.
+		assert.ok(installer.includes('usermod -aG qorpera-claude-box "qorpera-shared-host-${slot}"'));
+		assert.ok(!installer.includes("usermod -aG qorpera-claude-box \"qorpera-shared-runner"));
 		assert.ok(installer.includes("Nothing starts here"));
 		assert.ok(installer.includes('verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"'));
 		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-folder-mount/.test(installer), "no mount starts at install");

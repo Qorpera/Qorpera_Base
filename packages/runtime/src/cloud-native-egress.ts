@@ -12,6 +12,10 @@ export const NATIVE_CHATGPT_PLAN_EGRESS_HOSTS = Object.freeze(["api.openai.com"]
 /** A member's Claude sign-in in the vault's helper: the official Claude Code exchanges Anthropic's code there and reads
  * the account it signed in. */
 export const NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS = Object.freeze(["platform.claude.com", "api.anthropic.com"]);
+/** A Claude Code box (slice C2) with its sign-in as a token on a descriptor: Anthropic's API alone. A box with Claude
+ * Code's own login files also needs the sign-in's token host, where Claude Code renews its token
+ * (NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS). */
+export const NATIVE_CLAUDE_CODE_EGRESS_HOSTS = Object.freeze(["api.anthropic.com"]);
 /** A voice call's control connection: Codex makes the call at chatgpt.com, then joins it over a websocket at OpenAI's
  * API (`OPENAI_REALTIME_API_BASE_URL`, Codex 0.155.1). A Codex login's relay passes it only while a call is open
  * (`allowRealtime`); the call's sound never passes the relay. */
@@ -165,7 +169,8 @@ export async function startNativeCodexEgress(options: {
 	if (
 		hosts !== NATIVE_CODEX_EGRESS_HOSTS &&
 		hosts !== NATIVE_CHATGPT_PLAN_EGRESS_HOSTS &&
-		hosts !== NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS
+		hosts !== NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS &&
+		hosts !== NATIVE_CLAUDE_CODE_EGRESS_HOSTS
 	)
 		throw new Error("Unsupported native egress hosts");
 	const metadata = await lstat(options.root);

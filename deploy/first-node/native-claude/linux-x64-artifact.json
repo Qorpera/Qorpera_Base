@@ -1,0 +1,21 @@
+{
+  "schema": "qorpera.native-claude-artifact/v1",
+  "source": {
+    "registry": "https://registry.npmjs.org",
+    "package": "@anthropic-ai/claude-code-linux-x64",
+    "version": "2.1.325",
+    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.325.tgz",
+    "integrity": "sha512-BqZzMvP/zgLLL34S+7OzbG+cyoFp7gwWHU5koVwsyMlTAz+0zZAmbY+UkzvtN2RXxp6AcMenbYIjQJxoXfUY3w==",
+    "tarballBytes": 169350881
+  },
+  "artifact": {
+    "file": "claude",
+    "path": "package/claude",
+    "bytes": 365842960,
+    "sha256": "0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf",
+    "target": "x86_64-unknown-linux-gnu",
+    "modified": false
+  },
+  "minimumVersion": "2.1.311",
+  "cloudAcceptance": "not_performed"
+}

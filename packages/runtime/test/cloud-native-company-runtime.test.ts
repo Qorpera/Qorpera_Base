@@ -11,6 +11,7 @@ import {
 	CloudAgentNoFinalSend,
 	type CloudAgentSendReceipt,
 } from "@qorpera/runtime/cloud-agent-mouth";
+import { CLAUDE_WORKER_CATALOG } from "@qorpera/runtime/cloud-claude-worker";
 import {
 	type CloudCompanyComputerSessionFactory,
 	createCloudCompanyComputerSession,
@@ -26,9 +27,9 @@ import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-
 import { CloudControlRpcEnded } from "@qorpera/runtime/cloud-control-errors";
 import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/runtime/cloud-light-ask";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
-import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
+import { CLAUDE_WORKER_NOT_CARRIED, CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
-import { NativeHostDispatch } from "@qorpera/runtime/cloud-native-host-dispatch";
+import { NATIVE_HOST_CALLS, NativeHostDispatch } from "@qorpera/runtime/cloud-native-host-dispatch";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type NativeCompanyExecutionRequest,
@@ -130,11 +131,12 @@ async function fixture(
 	/** `home`: the host has the home's channel (it asks for the run's home); `dispatch`: the path control reaches SQL
 	 * as on a real host, through the native host's dispatch and its entry point, with a stand-in only below `fetch`. */
 	wiring: { home?: boolean; dispatch?: boolean } = {},
+	extra: Partial<ConstructorParameters<typeof CloudNativeCompanyRuntime>[0]> = {},
 ) {
 	const f = nativeCompanyContextFixture();
 	// A light ask's run (the fake Codex's compactor modes: only side threads answer there) has no conversation either.
 	const light = mode.startsWith("compact");
-	if (mode === "company-silent" || mode === "company-worker" || light) {
+	if (mode === "company-silent" || mode === "company-worker" || mode === "company-claude-worker" || light) {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
 		f.authority = { ...f.authority, identity: { ...f.authority.identity, sessionId: null } };
 	}
@@ -497,7 +499,15 @@ async function fixture(
 				return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
 			}
 			if (method === "qorpera_read_native_wake")
-				return structuredClone(mode === "company-worker" ? workerWake : light ? lightWake : wake);
+				return structuredClone(
+					mode === "company-worker"
+						? workerWake
+						: mode === "company-claude-worker"
+							? { ...workerWake, payload: { ...workerWake.payload, harness: "claude-code" } }
+							: light
+								? lightWake
+								: wake,
+				);
 			if (method === "qorpera_native_light_ask_answer") {
 				expect(Object.keys(args).sort()).toEqual(["p_answer", "p_binding"]);
 				lightAnswers.push(args.p_answer);
@@ -782,6 +792,7 @@ async function fixture(
 			},
 		},
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		...extra,
 		// A relay socket only offers the search here; this suite never searches.
 		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
 		// The data gateway's run door only offers the data tools here; this suite never asks it.
@@ -1789,6 +1800,178 @@ it("asks a worker whose turn ended without its report for it, once", async () =>
 	expect(corrected.turns).toBe(2);
 	expect(corrected.turn.input[0].text).toContain("Your turn ended without report_work");
 	expect(corrected.turn.input[0].text).not.toContain("send_message");
+});
+
+// A plain worker Claude Code does (20260930770000) on a node without its composition: refused at the divert, in its own
+// stage, before anything of the company is read for a prompt and before Codex starts.
+it("refuses a Claude Code worker's run here, never running it on Codex", async () => {
+	const f = await fixture("company-claude-worker");
+	const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect((error as Error).message).toBe(CLAUDE_WORKER_NOT_CARRIED);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "claude-worker", category: "unknown" });
+	expect(nativeProviderFailureCode(error)).toBe("NATIVE_CLAUDE_WORKER:UNKNOWN");
+	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
+});
+
+// The same run on a node that carries the Claude Code worker's composition (slice C4c): the divert takes it there. It is
+// admitted with Claude Code's own tools as its catalog and its brief as its context, Codex never starts, and with no
+// machine for the run no box starts and no sign-in is opened: its outcome is the home's words, which this suite cannot
+// save (it saves no file), so the run fails in its own stage after them.
+it("takes a Claude Code worker's run into its own composition, never Codex", async () => {
+	const launched = vi.fn();
+	const fetched = vi.fn(async () => new Response(null, { status: 500 }));
+	const f = await fixture(
+		"company-claude-worker",
+		false,
+		undefined,
+		false,
+		false,
+		10_000,
+		false,
+		{},
+		{
+			homeChannel: () => ({ open: launched }) as never,
+			claudeWorker: {
+				logins: {
+					origin: "https://vault.example",
+					runtimeToken: "t".repeat(43),
+					companyId: randomUUID(),
+					holder: () => "holder",
+					fetch: fetched,
+				},
+			},
+		},
+	);
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
+		if (method === "qorpera_claude_worker_run_facts")
+			return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+		return original(method, args, signal);
+	});
+	const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect((error as Error).message).not.toBe(CLAUDE_WORKER_NOT_CARRIED);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "claude-worker" });
+	const calls = f.pathCall.mock.calls.map(([method]) => method);
+	const begin = f.pathCall.mock.calls.find(([method]) => method === "qorpera_begin_native_company_execution_v3");
+	expect(JSON.parse(String(begin?.[1].p_tool_catalog_text))).toEqual(CLAUDE_WORKER_CATALOG);
+	expect(calls).toContain("qorpera_bind_native_company_context");
+	expect(calls).toContain("qorpera_claude_worker_run_facts");
+	expect(calls).not.toContain("qorpera_describe_agent_open_work");
+	// No Codex, no box, no sign-in.
+	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	expect(launched).not.toHaveBeenCalled();
+	expect(fetched).not.toHaveBeenCalled();
+});
+
+it.each([
+	["an internal error (XX000)", "XX000", false],
+	["a statement timeout (57014)", "57014", true],
+] as const)(
+	"takes a Claude Code worker's home ask that ended on %s as the home's rule says",
+	async (_, sqlstate, lost) => {
+		const journal = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const launched = vi.fn();
+		const ended = new CloudControlRpcEnded("Native control-plane RPC failed (500)", sqlstate);
+		const f = await fixture(
+			"company-claude-worker",
+			false,
+			undefined,
+			false,
+			false,
+			10_000,
+			false,
+			{},
+			{
+				homeChannel: () => ({ open: launched }) as never,
+				claudeWorker: {
+					logins: {
+						origin: "https://vault.example",
+						runtimeToken: "t".repeat(43),
+						companyId: randomUUID(),
+						holder: () => "holder",
+						fetch: vi.fn(async () => new Response(null, { status: 500 })),
+					},
+				},
+			},
+		);
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_company_home_available") throw ended;
+			if (method === "qorpera_claude_worker_run_facts")
+				return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+			return original(method, args, signal);
+		});
+		const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
+			() => null,
+			(thrown: unknown) => thrown,
+		);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "claude-worker" });
+		expect(error === ended).toBe(!lost);
+		expect(journal.mock.calls.some(([line]) => String(line).startsWith("The agent's home was not asked"))).toBe(lost);
+		expect(launched).not.toHaveBeenCalled();
+		journal.mockRestore();
+	},
+);
+
+// Every database call the Claude Code worker's run makes through the runtime's path control is one a real host can make:
+// in HttpCloudCompanyPathControl's list and in the native host dispatch's (NATIVE_HOST_CALLS). The suite's stand-in path
+// control takes any name, so this asks the real two.
+it("makes only calls a real host can make, through the path control and the native host dispatch", async () => {
+	const f = await fixture(
+		"company-claude-worker",
+		false,
+		undefined,
+		false,
+		false,
+		10_000,
+		false,
+		{},
+		{
+			homeChannel: () => ({ open: vi.fn() }) as never,
+			claudeWorker: {
+				logins: {
+					origin: "https://vault.example",
+					runtimeToken: "t".repeat(43),
+					companyId: randomUUID(),
+					holder: () => "h",
+				},
+			},
+		},
+	);
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
+		if (method === "qorpera_claude_worker_run_facts")
+			return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+		return original(method, args, signal);
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).catch(() => undefined);
+	const names = [...new Set(f.pathCall.mock.calls.map(([method]) => String(method)))];
+	expect(names).toContain("qorpera_claude_worker_run_facts");
+	expect(names).toContain("qorpera_begin_native_company_execution_v3");
+	const real = new HttpCloudCompanyPathControl({
+		supabaseUrl: "https://authority.example/",
+		serviceRoleKey: "synthetic-service-key",
+		fetch: async () => Response.json({}),
+	});
+	for (const name of names) {
+		await expect(
+			real.call(name as CloudCompanyPathRpc, {}, AbortSignal.timeout(5000)).then(
+				() => "listed",
+				(error: Error) => error.message,
+			),
+			name,
+		).resolves.not.toBe("Unknown Company File control operation");
+		expect(NATIVE_HOST_CALLS.has(name), name).toBe(true);
+	}
 });
 
 it("asks a reply's save again while its answer is lost, by the same key", async () => {
@@ -3771,6 +3954,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// test machine.
 	// The company's map (the founder, 15 November 2026: "Use a map kit"): update_reading's description says the founders see
 	// the reading as the first layer of the company's map, so both moved again.
+	// On 14 November 2026 manage_worker's harness field says when a worker is Claude Code's (a plain worker on a member's
+	// Claude sign-in, 20260930770000); the names and descriptions are as before, so only the catalog text moved.
+	// The same day that field also says to give Claude Code write access and what it means: the agent's own rights on its
+	// machine and in the company's files, its output folder where its files go and not a limit (20260930772000).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3832,7 +4019,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"80180de307c2a44745b9be9cff1add9808ffd5c8f4e720dff2ac3757c24e2812",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"e9f29cb466f7925818fc145c6b93692625c065f9ff05615e49e5485f3296cbe4",
+		"897b39bf66cadc21033e802e377e5d5f2665ec72e1edf57a107a6891fedceee8",
 	);
 });
 
