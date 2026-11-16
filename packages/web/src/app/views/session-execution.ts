@@ -10,7 +10,7 @@ import type {
 } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { withReply } from "../../cloud/wall-reply.ts";
-import { button, h, replace } from "../../ui/dom.ts";
+import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { RunPayer } from "../../ui/run-failure.ts";
 import type { CompanyController } from "../company.ts";
@@ -81,6 +81,47 @@ function compareRanks(a: readonly number[], b: readonly number[]): number {
 	return 0;
 }
 
+const SVG = "http://www.w3.org/2000/svg";
+
+function usageRing(done: boolean): SVGSVGElement {
+	const ring = document.createElementNS(SVG, "svg");
+	ring.setAttribute("class", done ? "usage-wall-ring done" : "usage-wall-ring");
+	ring.setAttribute("viewBox", "0 0 24 24");
+	ring.setAttribute("aria-hidden", "true");
+	const shapes: [string, Record<string, string>][] = [
+		["circle", { cx: "12", cy: "12", r: "9", class: "track" }],
+		done
+			? ["path", { d: "m8 12.5 2.6 2.6L16 9.6", class: "tick" }]
+			: ["circle", { cx: "12", cy: "12", r: "9", class: "fill" }],
+	];
+	for (const [tag, attributes] of shapes) {
+		const shape = document.createElementNS(SVG, tag);
+		for (const [attribute, value] of Object.entries(attributes)) shape.setAttribute(attribute, value);
+		ring.append(shape);
+	}
+	return ring;
+}
+
+function usageCard(
+	title: string,
+	detail: string | undefined,
+	done: boolean,
+	actions: readonly HTMLElement[],
+): HTMLElement {
+	return h(
+		"div",
+		{ class: "usage-wall" },
+		usageRing(done),
+		h(
+			"div",
+			{ class: "usage-wall-text" },
+			h("p", { class: "usage-wall-title" }, title),
+			detail ? h("p", { class: "usage-wall-sub" }, detail) : null,
+		),
+		actions.length ? h("div", { class: "usage-wall-actions" }, ...actions) : null,
+	);
+}
+
 /** The waits before reading the accounts again after a read failed: 2 s, 5 s, 10 s, 30 s, then every minute. Coming
  * back to the window or online reads at once. (3 Nov 2026: the composer stayed locked on "Model accounts are
  * unavailable" until the page was reloaded.) */
@@ -126,7 +167,7 @@ export class SessionExecutionView {
 	#sameLogin: { connectionId: string; count: number } | undefined;
 	#countedFor: string | undefined;
 	#countRequest: AbortController | undefined;
-	#moved: { login: string | undefined; stuck: boolean; text: string } | undefined;
+	#moved: { login: string | undefined; stuck: boolean; done: boolean; title: string; detail?: string } | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -712,22 +753,31 @@ export class SessionExecutionView {
 		if (this.#lifetime.signal.aborted) return;
 		const login = this.#own();
 		const stuck = login === fromConnectionId;
-		const others =
+		const title =
 			moved === 0
-				? undefined
+				? stuck
+					? this.#outOfUsage(fromConnectionId)
+					: t("No chats were waiting on that login any more.")
 				: stuck
 					? moved === 1
-						? t("{count} other chat now uses {account}.", { count: moved, account })
-						: t("{count} other chats now use {account}.", { count: moved, account })
+						? t("{count} other chat moved to {account}", { count: moved, account })
+						: t("{count} other chats moved to {account}", { count: moved, account })
 					: moved === 1
-						? t("{count} chat now uses {account}.", { count: moved, account })
-						: t("{count} chats now use {account}.", { count: moved, account });
-		const text = stuck
-			? [others, t("This chat stays on its login: the work waiting in it can't move to {account}.", { account })]
-					.filter(Boolean)
-					.join(" ")
-			: (others ?? t("No chats were waiting on that login any more."));
-		this.#moved = { login, stuck, text };
+						? t("{count} chat moved to {account}", { count: moved, account })
+						: t("{count} chats moved to {account}", { count: moved, account });
+		this.#moved = {
+			login,
+			stuck,
+			done: moved > 0 || !stuck,
+			title,
+			...(stuck
+				? {
+						detail: t("This chat stays on its login: the work waiting in it can't move to {account}.", {
+							account,
+						}),
+					}
+				: {}),
+		};
 		this.#render();
 	}
 
@@ -758,7 +808,6 @@ export class SessionExecutionView {
 		replace(
 			this.el,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
-			this.#movedNote(),
 			conversation.retrySend
 				? h(
 						"div",
@@ -788,29 +837,15 @@ export class SessionExecutionView {
 							{ small: true, disabled: conversation.sending || !canWrite },
 						),
 					)
-				: this.#observed && !this.#error && this.canSend && !this.#busy && this.#waiting() !== undefined
-					? h(
-							"div",
-							null,
-							h(
-								"p",
-								{ class: "muted" },
-								t(
-									"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.",
-								),
-							),
-							this.#otherLogins(this.#observed, locked),
-						)
-					: this.#observed && !this.#error && !this.canSend && !this.#busy
-						? this.#unchosen(this.#available())
-							? this.#choice(this.#observed, !canWrite)
-							: h(
-									"div",
-									null,
-									h("p", { class: "muted" }, this.#unavailableReason(this.#observed)),
-									this.#otherLogins(this.#observed, locked),
-								)
-						: null,
+				: (this.#movedCard() ??
+						(this.#observed && !this.#error && this.canSend && !this.#busy && this.#waiting() !== undefined
+							? this.#usageWall(this.#observed, locked, true)
+							: this.#observed && !this.#error && !this.canSend && !this.#busy
+								? this.#unchosen(this.#available())
+									? this.#choice(this.#observed, !canWrite)
+									: (this.#usageWall(this.#observed, locked, false) ??
+										h("p", { class: "muted" }, this.#unavailableReason(this.#observed)))
+								: null)),
 		);
 	}
 
@@ -831,61 +866,97 @@ export class SessionExecutionView {
 		);
 	}
 
-	/** The conversation's own login can't pay now (its usage limit, or disabled): the member may move the
-	 * conversation to another of their logins that can. Only their click moves it; nothing moves on its own. */
-	#otherLogins(observed: NativeExecutionConnections, disabled: boolean): HTMLElement | null {
-		const own = this.#own();
-		// Only under the conversation's own account's reason, and only where the member's pick reaches the cloud.
-		if (!own || !observed.connections.some((connection) => connection.connectionId === own)) return null;
-		if (this.#serverSelection && !this.#native.chooseSessionAccount) return null;
-		const available = this.#available();
-		const others = available.filter((connectionId) => connectionId !== own);
-		const [first] = others;
-		if (!first) return null;
-		return h(
-			"div",
-			{ class: "session-execution-choice" },
-			h("p", { class: "muted" }, t("Or use another of your logins now.")),
-			// Numbered as "Choose a login to continue" numbers them.
-			...others.map((connectionId) =>
-				button(
-					t("Use {account}", { account: this.#account(observed, connectionId, available) }),
-					() => void this.#pick(connectionId),
-					{ small: true, disabled },
-				),
-			),
-			this.#allChats(own, first, this.#account(observed, first, available), disabled),
-		);
+	#outOfUsage(connectionId: string): string {
+		const connection = this.#observed?.connections.find((candidate) => candidate.connectionId === connectionId);
+		const reset = connection ? this.payer(connection.sponsorBindingId).resetsAt : undefined;
+		return reset ? t("Out of usage until {time}", { time: fmtTime(reset) }) : t("Out of usage");
 	}
 
-	#movedNote(): HTMLElement | null {
+	#usageWall(observed: NativeExecutionConnections, disabled: boolean, waiting: boolean): HTMLElement[] | null {
+		const own = this.#own();
+		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
+		if (!own || !connection || !this.#keeps(own)) return null;
+		const atLimit = remainingAllowance(connection, Date.now()) === 0;
+		const available = this.#available();
+		const name = (connectionId: string) => this.#account(observed, connectionId, available);
+		const [first, ...rest] =
+			this.#serverSelection && !this.#native.chooseSessionAccount
+				? []
+				: available.filter((connectionId) => connectionId !== own);
+		const count = this.#sameLogin?.connectionId === own ? this.#sameLogin.count : 0;
+		const actions = !first
+			? []
+			: count > 1 && this.#stuckLogin() === own
+				? [
+						button(t("All {count} chats", { count }), () => void this.#pickAll(own, first, name(first)), {
+							small: true,
+							primary: true,
+							disabled,
+							title: t("Use {account} for all {count} chats waiting on this login", {
+								account: name(first),
+								count,
+							}),
+						}),
+						button(t("Just this one"), () => void this.#pick(first), {
+							small: true,
+							disabled,
+							title: t("Use {account}", { account: name(first) }),
+						}),
+					]
+				: [
+						button(t("Continue"), () => void this.#pick(first), {
+							small: true,
+							primary: true,
+							disabled,
+							title: t("Use {account}", { account: name(first) }),
+						}),
+					];
+		const detail = first
+			? t("Keep going with {account}", { account: name(first) })
+			: atLimit
+				? waiting
+					? t("A message you send now goes on when it resets.")
+					: t("Sending resumes when it resets.")
+				: undefined;
+		const [before = "", after = ""] = t("Or use {accounts}").split("{accounts}");
+		return [
+			usageCard(atLimit ? this.#outOfUsage(own) : this.#unavailableReason(observed), detail, false, actions),
+			rest.length
+				? h(
+						"p",
+						{ class: "usage-wall-more" },
+						before,
+						...rest.flatMap((connectionId, index) => [
+							index ? ", " : null,
+							h(
+								"button",
+								{
+									type: "button",
+									class: "usage-wall-link",
+									disabled,
+									onclick: () => void this.#pick(connectionId),
+								},
+								name(connectionId),
+							),
+						]),
+						after,
+					)
+				: null,
+		].filter((element): element is HTMLElement => element !== null);
+	}
+
+	#movedCard(): HTMLElement | null {
 		const moved = this.#moved;
 		if (!moved || moved.login !== this.#own() || (moved.stuck && this.#stuckLogin() !== moved.login)) return null;
-		return h("p", { class: "muted", role: "status" }, moved.text);
+		const card = usageCard(moved.title, moved.detail, moved.done, []);
+		card.setAttribute("role", "status");
+		return card;
 	}
 
-	#allChats(own: string, connectionId: string, account: string, disabled: boolean): HTMLElement | null {
-		const count = this.#sameLogin?.connectionId === own ? this.#sameLogin.count : 0;
-		if (count < 2 || this.#stuckLogin() !== own || (this.#moved?.stuck && this.#moved.login === own)) return null;
-		return h(
-			"div",
-			{ class: "session-execution-all" },
-			button(
-				t("Use {account} for all {count} chats waiting on this login", { account, count }),
-				() => void this.#pickAll(own, connectionId, account),
-				{ small: true, disabled },
-			),
-		);
-	}
-
-	/** Why sending is off. A conversation's own account at its limit is named first: the
-	 * conversation waits for it and never moves to another account on its own. */
 	#unavailableReason(observed: NativeExecutionConnections): string {
 		const now = Date.now();
 		const own = this.#own();
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
-		if (own && atLimit.some((connection) => connection.connectionId === own))
-			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
 		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).
 		if (own && this.#keeps(own))
 			return t(

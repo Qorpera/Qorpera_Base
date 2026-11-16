@@ -36,7 +36,7 @@ function connections(count = 2): NativeExecutionConnections {
 			createdAt: timestamp,
 			updatedAt: timestamp,
 		},
-		connections: [80, 81].slice(0, count).map((n) => ({
+		connections: [80, 81, 82].slice(0, count).map((n) => ({
 			connectionId: id(n + 10),
 			clientConnectionId: id(n + 110),
 			connectionVersion: 1,
@@ -62,7 +62,7 @@ function selector(): HTMLSelectElement | null {
 	return document.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]');
 }
 function withUsage(remaining: readonly (number | undefined)[]): NativeExecutionConnections {
-	const observed = connections();
+	const observed = connections(Math.max(2, remaining.length));
 	return {
 		...observed,
 		connections: observed.connections.map((connection, index) => ({
@@ -166,6 +166,7 @@ function buttonNamed(view: ConversationView, label: string): HTMLButtonElement |
 	return [...view.el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label);
 }
 const CONNECT_HINT = "Connect a model account in Settings → AI subscriptions to send messages.";
+const OUT_OF_USAGE = `Out of usage until ${fmtTime("2099-01-01T00:00:00.000Z")}`;
 
 describe("reading the accounts", () => {
 	const showing = (state: DocumentVisibilityState) =>
@@ -519,7 +520,7 @@ describe("conversation execution account", () => {
 		type(f.view, "Hello");
 		await settle();
 		expect(f.send().disabled).toBe(false);
-		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit");
+		expect(f.view.el.textContent).toContain(OUT_OF_USAGE);
 		expect(f.view.el.textContent).not.toContain("Your model accounts have reached");
 		expect(f.view.el.textContent).not.toContain("Choose a login to continue.");
 		// The member disconnected that account: the cloud gives the conversation no account until the member picks one.
@@ -867,9 +868,8 @@ describe("conversation execution account", () => {
 		type(f.view, "Hello");
 		await settle();
 		expect(f.send().disabled).toBe(false);
-		expect(f.view.el.textContent).toContain(
-			"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.",
-		);
+		expect(f.view.el.textContent).toContain(OUT_OF_USAGE);
+		expect(f.view.el.textContent).toContain("Keep going with Model account 1");
 		f.listConnections.mockResolvedValue(withUsage([30, 40]));
 		refresh();
 		await settle();
@@ -914,14 +914,14 @@ describe("conversation execution account", () => {
 		type(f.view, "Hello");
 		await settle();
 		expect(f.send().disabled).toBe(false);
-		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
-		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
-		expect(buttonNamed(f.view, "Use Model account 2")).toBeUndefined();
-		buttonNamed(f.view, "Use Model account 1")!.click();
+		expect(f.view.el.textContent).toContain(OUT_OF_USAGE);
+		expect(f.view.el.textContent).toContain("Keep going with Model account 1");
+		expect(f.view.el.querySelector(".usage-wall-more")).toBeNull();
+		buttonNamed(f.view, "Continue")!.click();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.send().disabled).toBe(false);
-		expect(f.view.el.textContent).not.toContain("Or use another of your logins now.");
+		expect(f.view.el.querySelector(".usage-wall")).toBeNull();
 	});
 
 	it("offers the member's other login when the conversation's own login is disabled", async () => {
@@ -933,9 +933,11 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("This conversation's model account can't be used right now.");
-		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
-		buttonNamed(f.view, "Use Model account 1")!.click();
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe(
+			"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.",
+		);
+		expect(f.view.el.textContent).toContain("Keep going with Model account 1");
+		buttonNamed(f.view, "Continue")!.click();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
 	});
@@ -947,8 +949,29 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit.");
-		expect(f.view.el.textContent).not.toContain("Or use another of your logins now.");
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe(OUT_OF_USAGE);
+		expect(f.view.el.querySelector(".usage-wall-sub")?.textContent).toBe(
+			"A message you send now goes on when it resets.",
+		);
+		expect(f.view.el.querySelector(".usage-wall-actions")).toBeNull();
+	});
+
+	it("offers the first other login in the row and the rest as names under it", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(true, withUsage([80, 40, 60]), select, undefined, choose);
+		await settle();
+		f.listConnections.mockResolvedValue(withUsage([0, 40, 60]));
+		refresh();
+		await settle();
+		expect(f.view.el.querySelector(".usage-wall-sub")?.textContent).toBe("Keep going with Model account 1");
+		expect(f.view.el.querySelector(".usage-wall-more")?.textContent).toBe("Or use Model account 2");
+		expect(buttonNamed(f.view, "Continue")!.title).toBe("Use Model account 1");
+		select.mockResolvedValue(id(91));
+		buttonNamed(f.view, "Model account 2")!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 	});
 
 	it("moves an exhausted conversation through the cloud's choice only on the member's click", async () => {
@@ -960,10 +983,10 @@ describe("conversation execution account", () => {
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
+		expect(f.view.el.textContent).toContain("Keep going with Model account 1");
 		expect(choose).not.toHaveBeenCalled();
 		select.mockResolvedValue(id(91));
-		buttonNamed(f.view, "Use Model account 1")!.click();
+		buttonNamed(f.view, "Continue")!.click();
 		await settle();
 		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
 		expect(f.sponsor()?.connectionId).toBe(id(91));
@@ -988,9 +1011,12 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(countSessionsOnAccount).toHaveBeenCalledOnce();
-		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
-		expect(buttonNamed(f.view, "Use Model account 1")).toBeDefined();
-		const all = buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")!;
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe(OUT_OF_USAGE);
+		expect(f.view.el.querySelector(".usage-wall-sub")?.textContent).toBe("Keep going with Model account 1");
+		expect(buttonNamed(f.view, "Just this one")!.title).toBe("Use Model account 1");
+		expect(buttonNamed(f.view, "Continue")).toBeUndefined();
+		const all = buttonNamed(f.view, "All 3 chats")!;
+		expect(all.title).toBe("Use Model account 1 for all 3 chats waiting on this login");
 		expect(all.disabled).toBe(false);
 		expect(chooseSessionsAccount).not.toHaveBeenCalled();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
@@ -1001,16 +1027,17 @@ describe("conversation execution account", () => {
 		all.click();
 		await settle();
 		expect(chooseSessionsAccount).toHaveBeenCalledExactlyOnceWith(id(90), id(91), expect.any(AbortSignal));
-		expect(buttonNamed(f.view, "Use Model account 1")).toBeUndefined();
-		expect(buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")).toBeUndefined();
+		expect(buttonNamed(f.view, "Just this one")).toBeUndefined();
+		expect(buttonNamed(f.view, "All 3 chats")).toBeUndefined();
 		expect(f.send().disabled).toBe(true);
 		moving.resolve(3);
 		await settle();
 		expect(choose).not.toHaveBeenCalled();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
-		expect(f.view.el.textContent).toContain("3 chats now use Model account 1.");
-		expect(f.view.el.textContent).not.toContain("Or use another of your logins now.");
-		expect(buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")).toBeUndefined();
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe("3 chats moved to Model account 1");
+		expect(f.view.el.querySelector(".usage-wall-ring.done")).not.toBeNull();
+		expect(f.view.el.querySelector(".usage-wall-sub")).toBeNull();
+		expect(f.view.el.querySelector(".session-execution")!.querySelectorAll("button").length).toBe(0);
 		expect(f.send().disabled).toBe(false);
 	});
 
@@ -1028,13 +1055,13 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(countSessionsOnAccount).toHaveBeenCalledOnce();
-		expect(buttonNamed(f.view, "Use Model account 1")).toBeDefined();
-		expect(f.view.el.textContent).not.toContain("chats waiting on this login");
+		expect(buttonNamed(f.view, "Continue")).toBeDefined();
+		expect(buttonNamed(f.view, "Just this one")).toBeUndefined();
 		countSessionsOnAccount.mockResolvedValue(2);
 		refresh();
 		await settle();
 		expect(countSessionsOnAccount).toHaveBeenCalledOnce();
-		expect(f.view.el.textContent).not.toContain("chats waiting on this login");
+		expect(buttonNamed(f.view, "All 2 chats")).toBeUndefined();
 		f.listConnections.mockResolvedValue(withUsage([80, 40]));
 		refresh();
 		await settle();
@@ -1043,7 +1070,7 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(countSessionsOnAccount).toHaveBeenCalledTimes(2);
-		expect(buttonNamed(f.view, "Use Model account 1 for all 2 chats waiting on this login")).toBeDefined();
+		expect(buttonNamed(f.view, "All 2 chats")).toBeDefined();
 		expect(chooseSessionsAccount).not.toHaveBeenCalled();
 	});
 
@@ -1059,16 +1086,16 @@ describe("conversation execution account", () => {
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		refresh();
 		await settle();
-		buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")!.click();
+		buttonNamed(f.view, "All 3 chats")!.click();
 		await settle();
 		expect(chooseSessionsAccount).toHaveBeenCalledOnce();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain(
-			"2 other chats now use Model account 1. This chat stays on its login: the work waiting in it can't move to Model account 1.",
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe("2 other chats moved to Model account 1");
+		expect(f.view.el.querySelector(".usage-wall-sub")?.textContent).toBe(
+			"This chat stays on its login: the work waiting in it can't move to Model account 1.",
 		);
-		expect(f.view.el.textContent).not.toContain("2 chats now use");
-		expect(f.view.el.textContent).not.toContain("chats waiting on this login");
-		expect(buttonNamed(f.view, "Use Model account 1")).toBeDefined();
+		expect(f.view.el.querySelectorAll(".usage-wall").length).toBe(1);
+		expect(f.view.el.querySelector(".session-execution")!.querySelectorAll("button").length).toBe(0);
 	});
 
 	it("says so when the chats could not be moved, and keeps the chat's login", async () => {
@@ -1086,11 +1113,11 @@ describe("conversation execution account", () => {
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		refresh();
 		await settle();
-		buttonNamed(f.view, "Use Model account 1 for all 2 chats waiting on this login")!.click();
+		buttonNamed(f.view, "All 2 chats")!.click();
 		await settle();
 		expect(chooseSessionsAccount).toHaveBeenCalledOnce();
 		expect(f.view.el.textContent).toContain("The chats could not be moved. Try again.");
-		expect(f.view.el.textContent).not.toContain("now use");
+		expect(f.view.el.textContent).not.toContain("moved to");
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(choose).not.toHaveBeenCalled();
 	});
@@ -1106,7 +1133,7 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		select.mockResolvedValue(id(91));
-		buttonNamed(f.view, "Use Model account 1 for all 2 chats waiting on this login")!.click();
+		buttonNamed(f.view, "All 2 chats")!.click();
 		await settle();
 		expect(f.view.el.textContent).toContain("No chats were waiting on that login any more.");
 	});
@@ -1636,7 +1663,7 @@ describe("conversation execution account", () => {
 		expect(selector()).toBeNull();
 		// Releasing the request is not a choice of another account: the exhausted account stays (20260930059000).
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit");
+		expect(f.view.el.textContent).toContain(OUT_OF_USAGE);
 		expect(f.sendMessage).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
 	});
