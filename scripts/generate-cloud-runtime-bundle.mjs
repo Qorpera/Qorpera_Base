@@ -7,50 +7,20 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025099_runtime_bundle_activation_v250.sql";
-const activationVersion = 250;
-const previousActivationVersion = 249;
-const previousActivationSha256 = "049019cdd704d376c49d9c09a1c38d219d74c936f9d412a0b8d847fc44c4eb0b";
+const activation = "supabase/migrations/20260929025199_runtime_bundle_activation_v251.sql";
+const activationVersion = 251;
+const previousActivationVersion = 250;
+const previousActivationSha256 = "78618f12bdb6cb3c275809c9c55d13e3877dfa374c62ab14bcd5a501b1f1e097";
 const activationRequires = Object.freeze([
 	[
-		"20260930766000_company_reading_tools",
-		"the company's reading (#1819, on master): update_reading and end_role; end_role asks qorpera_folder_run_receipt_exists through the native host's entry point, which answers only a listed call",
-		"to_regprocedure('public.qorpera_folder_run_receipt_exists(uuid,jsonb,text)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_folder_run_receipt_exists')",
+		"20260930779000_member_folder_may_write",
+		"the Data list (slice 10 part a, on master): a member's write check for the Data app; the member bridge's rows, edit and changes routes reach the data gateway, which asks it",
+		"to_regprocedure('public.qorpera_member_folder_may_write(uuid,text)') is not null",
 	],
 	[
-		"20260930770000_claude_code_worker_dispatch",
-		"Claude Code workers (#1832): a plain worker's brief may name harness claude-code, checked at the dispatch; without this migration this bundle's manage_worker and wake fail",
-		"to_regclass('public.qorpera_claude_worker_leases') is not null",
-	],
-	[
-		"20260930771000_claude_login_for_a_run",
-		"a Claude login for one run (#1833): the vault opens a member's sealed Claude sign-in for a worker run and seals it back",
-		"exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_seal_claude_login_back')",
-	],
-	[
-		"20260930772000_claude_code_worker_on_home",
-		"Claude Code workers on the home (#1835): the worker asks qorpera_claude_worker_run_facts through the native host's entry point, which answers only a listed call",
-		"to_regprocedure('public.qorpera_claude_worker_run_facts(jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_claude_worker_run_facts')",
-	],
-	[
-		"20260930773000_owed_views_senses",
-		"the views a company is owed (#1836, on master): the Co-Founder's senses list them",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_describe_company_senses(jsonb)') and strpos(prosrc, '20260930773000') > 0)",
-	],
-	[
-		"20260930775000_machine_data_pass",
-		"a company machine's data pass (#1841, on master); no code in this bundle calls it yet",
-		"to_regprocedure('public.qorpera_machine_data_pass(uuid,jsonb,text)') is not null",
-	],
-	[
-		"20260930780000_record_reflection_tool",
-		"the reflection hook (#1860, on master): record_reflection is a tool operation a run's observations may name",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)') and strpos(prosrc, '20260930780000') > 0)",
-	],
-	[
-		"20260930781000_machine_account_fill",
-		"machine sign-ins (#1644, on master): an agent fills a company account into its machine's browser; switched off until its lead's step after the machine image",
-		"to_regprocedure('public.qorpera_authorize_machine_account_fill(jsonb,jsonb,uuid,text)') is not null",
+		"20260930782000_interface_page_data",
+		"the Data list (slice 10 part e, on master): the page data in the platform's page lists; the web shows the Data page only once the platform lists it",
+		"exists (select 1 from pg_catalog.pg_constraint where conname = 'qorpera_interface_pages_page_check' and pg_catalog.pg_get_constraintdef(oid) like '%''data''%')",
 	],
 ]);
 const activationRequiresSql = activationRequires
