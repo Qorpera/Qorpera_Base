@@ -17,6 +17,11 @@ const activationRequires = Object.freeze([
 		"conversation models (#1877): bundle 252 declares modelPolicy.claudeChoice, which an older kernel's manifest check refuses; 784000 makes the check take it and pins a member's Claude pick on the run",
 		"to_regprocedure('public.qorpera_pin_execution_claude_choice()') is not null",
 	],
+	[
+		"20260930785000_move_all_chats_to_another_login",
+		"#1876 (the founder's go for v252): one click moves all of a member's chats waiting on a used-up login to another of their own logins; its web, merged in this release, calls the two new functions",
+		"to_regprocedure('public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)') is not null",
+	],
 ]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
