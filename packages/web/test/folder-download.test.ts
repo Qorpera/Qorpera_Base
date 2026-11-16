@@ -8,7 +8,7 @@ import type {
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyFolderBrowser, type CompanyFolderSource } from "../src/app/views/company-folder.ts";
-import { FOLDER_DOWNLOAD_MAX_LISTINGS } from "../src/app/views/folder-download.ts";
+import { FOLDER_DOWNLOAD_MAX_LISTINGS, sizeBeside, zipSegment } from "../src/app/views/folder-download.ts";
 import { crc32 } from "../src/app/views/folder-zip.ts";
 import type { CodeDownload, CodeImportAnswer, CodeRepositories } from "../src/cloud/code-downloads.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -140,11 +140,11 @@ function folderFake() {
 	};
 }
 
-function callsFake() {
+function callsFake(canDownload = true) {
 	return {
 		list: vi.fn(
 			async (_signal: AbortSignal): Promise<CodeRepositories> => ({
-				canDownload: true,
+				canDownload,
 				repositories: [{ owner: "qorpera", name: "shop" }],
 				githubCopies: [],
 			}),
@@ -198,14 +198,14 @@ async function until(done: () => boolean): Promise<void> {
 	expect(done()).toBe(true);
 }
 
-async function storage(fake = folderFake(), options: { code?: boolean } = {}) {
+async function storage(fake = folderFake(), options: { code?: boolean; canDownload?: boolean } = {}) {
 	const stop = new AbortController();
 	const source: CompanyFolderSource = {
 		signal: stop.signal,
 		current: () => stop.signal.throwIfAborted(),
 		folder: () => fake.client,
 		folderHints: () => ({ close: async () => {} }),
-		...(options.code ? { codeDownloads: () => callsFake() } : {}),
+		...(options.code ? { codeDownloads: () => callsFake(options.canDownload) } : {}),
 	};
 	const host = document.createElement("section");
 	document.body.append(host);
@@ -330,7 +330,11 @@ describe("downloading a folder from Storage (app/views/folder-download.ts)", () 
 		await page.go("Edge");
 		await page.press();
 		await until(() => !page.line().querySelector(".spinner-dot") && page.line().textContent !== "");
-		expect(page.line().textContent).toMatch(/^Edge is .+, more than a download here can hold \(256 MiB\)\.$/);
+		expect(page.line().textContent).toBe("Edge is 256.1 MiB, more than a download here can hold (256 MiB).");
+		expect(sizeBeside(256 * MIB, 256 * MIB)).toBe("256 MiB");
+		expect(sizeBeside(300 * MIB, 256 * MIB)).toBe("300 MiB");
+		expect(sizeBeside(256 * MIB + 1, 256 * MIB)).toBe("256.1 MiB");
+		expect(sizeBeside(4 * MIB + 1, 4 * MIB)).toBe("4.01 MiB");
 		expect(fake.client.readFilePieces).not.toHaveBeenCalled();
 		await page.go("Fits");
 		await page.press();
@@ -407,27 +411,54 @@ describe("downloading a folder from Storage (app/views/folder-download.ts)", () 
 		expect(saved).toEqual([]);
 	});
 
-	it("leaves a code project's repo.git, worktrees and downloads out, beside Download the code", async () => {
+	it("is the third choice of Download the code on a code project's folder, which leaves repo.git, worktrees and downloads out", async () => {
 		const fake = folderFake();
 		fake.file("code/qorpera/shop/main/README.md", "# Shop\n");
 		fake.file("code/qorpera/shop/changes/1.md", "# 1\n");
 		fake.file("code/qorpera/shop/repo.git/HEAD", "ref: refs/heads/main\n");
 		fake.file("code/qorpera/shop/worktrees/one/README.md", "# Shop\n");
 		fake.file("code/qorpera/shop/downloads/shop.zip", "PK");
+		fake.holding.set("code/qorpera/shop/changes/1.md", { after: 0, signals: [] });
 		const page = await storage(fake, { code: true });
 		await page.go("code");
 		await page.go("code/qorpera");
+		expect(page.download().hidden).toBe(false);
 		await page.go("code/qorpera/shop");
-		await until(() => page.host.querySelector<HTMLElement>(".storage-code-button")?.hidden === false);
-		const toolbar = [...page.host.querySelector(".storage-toolbar")!.children].map((each) => each.className);
-		expect(toolbar).toEqual([
-			"storage-title",
-			"storage-code-button",
-			"storage-code-button storage-import-button",
-			"storage-download-button",
-			"storage-controls",
-		]);
-		await page.press();
+		const code = () =>
+			page.host.querySelector<HTMLButtonElement>(".storage-code-button:not(.storage-import-button)")!;
+		await until(() => code().hidden === false);
+		expect(page.download().hidden).toBe(true);
+		const visible = [...page.host.querySelectorAll<HTMLElement>(".storage-toolbar > button:not([hidden])")];
+		expect(visible).toEqual([code()]);
+		const choose = async (label: string) => {
+			code().click();
+			const rows = [...document.querySelectorAll<HTMLElement>(".context-menu [role=menuitem]")];
+			expect(rows.map((row) => row.querySelector(".context-menu-label")?.textContent)).toEqual([
+				"The files",
+				"With full history",
+				"The whole folder",
+			]);
+			rows.find((row) => row.querySelector(".context-menu-label")?.textContent === label)!.click();
+			await settle();
+		};
+		fake.client.list.mockClear();
+		await choose("The whole folder");
+		await until(() => fake.holding.get("code/qorpera/shop/changes/1.md")!.signals.length === 1);
+		expect(page.line().textContent).toBe("Downloading shop…Cancel");
+		expect(code().getAttribute("aria-disabled")).toBe("true");
+		code().click();
+		expect(document.querySelector(".context-menu")).toBeNull();
+		const cancel = [...page.line().querySelectorAll("button")].find((each) => each.textContent === "Cancel")!;
+		cancel.focus();
+		cancel.click();
+		await until(() => page.line().textContent === "");
+		expect(code().hasAttribute("aria-disabled")).toBe(false);
+		expect(document.activeElement).toBe(code());
+		expect(saved).toEqual([]);
+		fake.holding.clear();
+		fake.client.list.mockClear();
+		fake.client.readFilePieces.mockClear();
+		await choose("The whole folder");
 		const entries = await page.zip();
 		expect(saved[0]!.name).toBe("shop.zip");
 		expect(entries.map((entry) => entry.name)).toEqual([
@@ -439,6 +470,47 @@ describe("downloading a folder from Storage (app/views/folder-download.ts)", () 
 		]);
 		expect(fake.listed()).toEqual(["code/qorpera/shop", "code/qorpera/shop/changes", "code/qorpera/shop/main"]);
 		expect(fake.read()).toEqual(["code/qorpera/shop/changes/1.md", "code/qorpera/shop/main/README.md"]);
+		await until(() => /is ready/.test(page.line().textContent ?? ""));
+		expect(page.line().textContent).toBe("shop.zip is ready: your browser saves it in your downloads.");
+	});
+
+	it("keeps its own button with its word on a code project's folder for a member who may not download the code", async () => {
+		const fake = folderFake();
+		fake.file("code/qorpera/shop/main/README.md", "# Shop\n");
+		const page = await storage(fake, { code: true, canDownload: false });
+		await page.go("code/qorpera/shop");
+		await settle();
+		expect(page.host.querySelector<HTMLElement>(".storage-code-button:not(.storage-import-button)")!.hidden).toBe(
+			true,
+		);
+		expect(page.download().hidden).toBe(false);
+		expect(page.download().querySelector("span")!.textContent).toBe("Download");
+		await page.press();
+		await page.zip();
+		expect(saved[0]!.name).toBe("shop.zip");
+	});
+
+	it("writes a name that is . or .. as _, so nothing in the zip walks out of its top folder", async () => {
+		expect(zipSegment(".")).toBe("_");
+		expect(zipSegment("..")).toBe("_");
+		expect(zipSegment("...")).toBe("...");
+		expect(zipSegment(".env")).toBe(".env");
+		expect(zipSegment("a\\b")).toBe("a_b");
+		const fake = folderFake();
+		fake.file("Work/../escape.txt", "x");
+		fake.file("Work/./here.txt", "y");
+		const page = await storage(fake);
+		await page.go("Work");
+		await page.press();
+		const entries = await page.zip();
+		expect(entries.map((entry) => entry.name)).toEqual([
+			"Work/",
+			"Work/_/",
+			"Work/_/",
+			"Work/_/here.txt",
+			"Work/_/escape.txt",
+		]);
+		expect(entries.every((entry) => entry.name.split("/").every((part) => part !== "." && part !== ".."))).toBe(true);
 	});
 
 	it("leaves each project's internals out when a folder above the code is downloaded", async () => {

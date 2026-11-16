@@ -476,6 +476,8 @@ export class CompanyFolderBrowser {
 				folder: () => client,
 				shown: (path) => !this.#import?.hidden(path),
 				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
+				menu: () => (this.#code && !this.#code.button.hidden ? this.#code.button : null),
+				changed: () => this.#code?.redraw(),
 			});
 		if (calls)
 			this.#code ??= new CodeDownload({
@@ -484,6 +486,9 @@ export class CompanyFolderBrowser {
 				calls,
 				folder: () => client,
 				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
+				wholeFolder: () => this.#folderDownload?.start(),
+				folderBusy: () => this.#folderDownload?.running === true,
+				drawn: () => this.#folderDownload?.redraw(),
 			});
 		if (calls && this.#code)
 			this.#import ??= new CodeImport({

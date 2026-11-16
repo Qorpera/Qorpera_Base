@@ -16,6 +16,8 @@ export interface FolderDownloadHost {
 	folder(): Folder;
 	shown(path: string): boolean;
 	offer(name: string, pieces: readonly Blob[], bytes: number): void;
+	menu(): HTMLElement | null;
+	changed(): void;
 }
 
 export const FOLDER_DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024;
@@ -31,8 +33,25 @@ export function projectInternal(path: string): boolean {
 	);
 }
 
-function safeName(name: string): string {
-	return name.replace(/[\u0000-\u001f\u007f\\/]/gu, "_");
+export function zipSegment(name: string): string {
+	const safe = name.replace(/[\u0000-\u001f\u007f\\/]/gu, "_");
+	return safe === "." || safe === ".." ? "_" : safe;
+}
+
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+export function sizeBeside(bytes: number, limit: number): string {
+	const size = fmtBytes(bytes);
+	if (size !== fmtBytes(limit) || bytes <= limit) return size;
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+		value /= 1024;
+		unit++;
+	}
+	const digits = value >= 100 ? 1 : 2;
+	const scale = 10 ** digits;
+	return `${(Math.ceil(value * scale) / scale).toFixed(digits)} ${BYTE_UNITS[unit]}`;
 }
 
 type Item =
@@ -73,11 +92,23 @@ export class FolderDownload {
 				class: "storage-download-button",
 				title: t("Download this folder"),
 				"aria-label": t("Download this folder"),
-				onclick: () => void this.#download(this.#dir, this.#name),
+				onclick: () => this.start(),
 			},
 			icon("download"),
 			h("span", null, t("Download")),
 		);
+	}
+
+	get running(): boolean {
+		return this.#job !== null;
+	}
+
+	start(): void {
+		void this.#download(this.#dir, this.#name);
+	}
+
+	redraw(): void {
+		this.button.hidden = this.#host.menu() !== null;
 	}
 
 	enter(dir: string, name: string): void {
@@ -88,6 +119,7 @@ export class FolderDownload {
 	}
 
 	#draw(): void {
+		this.redraw();
 		if (this.#job) {
 			this.button.setAttribute("aria-disabled", "true");
 			this.button.setAttribute("aria-busy", "true");
@@ -118,6 +150,7 @@ export class FolderDownload {
 		this.#job = job;
 		this.#ended = null;
 		this.#draw();
+		this.#host.changed();
 		const signal = AbortSignal.any([this.#host.signal, job.signal]);
 		const inLine = () => this.line.contains(document.activeElement);
 		let ending: string | null = null;
@@ -131,12 +164,13 @@ export class FolderDownload {
 		if (this.#host.signal.aborted) return;
 		this.#ended = ending;
 		this.#draw();
-		if (focused && !inLine()) this.button.focus();
+		this.#host.changed();
+		if (focused && !inLine()) (this.#host.menu() ?? this.button).focus();
 	}
 
 	async #make(dir: string, name: string, signal: AbortSignal): Promise<string> {
 		this.#working(t("Getting {name} ready…", { name }));
-		const top = safeName(name) || t("Folder");
+		const top = zipSegment(name) || t("Folder");
 		const walk = await this.#walk(dir, top, signal);
 		const refusal = this.#refusal(name, walk);
 		if (refusal) return refusal;
@@ -192,7 +226,11 @@ export class FolderDownload {
 					);
 		}
 		if (walk.zipBytes > FOLDER_DOWNLOAD_MAX_BYTES) {
-			const words = { name, size, limit: fmtBytes(FOLDER_DOWNLOAD_MAX_BYTES) };
+			const words = {
+				name,
+				size: sizeBeside(walk.zipBytes, FOLDER_DOWNLOAD_MAX_BYTES),
+				limit: fmtBytes(FOLDER_DOWNLOAD_MAX_BYTES),
+			};
 			return walk.complete
 				? t("{name} is {size}, more than a download here can hold ({limit}).", words)
 				: t("{name} is over {size}, more than a download here can hold ({limit}).", words);
@@ -241,7 +279,7 @@ export class FolderDownload {
 			walk.links++;
 			return null;
 		}
-		const name = `${parent}/${safeName(entry.path.slice(entry.path.lastIndexOf("/") + 1))}`;
+		const name = `${parent}/${zipSegment(entry.path.slice(entry.path.lastIndexOf("/") + 1))}`;
 		const modified = new Date(entry.updatedAt);
 		const keep = walk.files <= FOLDER_DOWNLOAD_MAX_FILES && walk.zipBytes <= FOLDER_DOWNLOAD_MAX_BYTES;
 		if (entry.kind === "folder") {

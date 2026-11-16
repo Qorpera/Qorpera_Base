@@ -46,6 +46,8 @@ export const STORAGE: Record<string, string> = {
 	"Everything as it is now, in one file": "Alt, som det er nu, i én fil",
 	"With full history": "Med hele historikken",
 	"For a developer": "Til en udvikler",
+	"The whole folder": "Hele mappen",
+	"Everything in this folder, in one file": "Alt i denne mappe, i én fil",
 	"Getting the code ready…": "Gør koden klar…",
 	"Downloading the code…": "Henter koden…",
 	"{percent}%": "{percent}%",

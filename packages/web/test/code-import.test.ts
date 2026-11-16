@@ -830,9 +830,9 @@ describe("Bring code in, in Storage", () => {
 		await go("code/qorpera/saml-storefront");
 		expect(visibleText(line())).toBe("Copy of the GitHub project saml-storefront");
 		expect(button().hidden).toBe(true);
-		expect(host.querySelectorAll(".storage-toolbar > button:not([hidden], .storage-download-button)")).toHaveLength(
-			0,
-		);
+		expect(
+			[...host.querySelectorAll(".storage-toolbar > button:not([hidden])")].map((each) => each.className),
+		).toEqual(["storage-download-button"]);
 		// It asked once on the way into the code, and asks no more by itself: no polling, nothing sent.
 		const asked = calls.list.mock.calls.length;
 		await vi.advanceTimersByTimeAsync(5 * 60_000);

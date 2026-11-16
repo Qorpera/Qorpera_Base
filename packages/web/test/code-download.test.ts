@@ -563,6 +563,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		).toEqual([
 			["The files", "Everything as it is now, in one file"],
 			["With full history", "For a developer"],
+			["The whole folder", "Everything in this folder, in one file"],
 		]);
 		// The files are the choice a key press takes.
 		expect(document.activeElement).toBe(rows[0]);
@@ -878,6 +879,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 			expect(rows.map((row) => row.textContent)).toEqual([
 				"FilerneAlt, som det er nu, i én fil",
 				"Med hele historikkenTil en udvikler",
+				"Hele mappenAlt i denne mappe, i én fil",
 			]);
 			rows.find((row) => row.textContent?.startsWith(label))!.click();
 			await settle();
@@ -1015,8 +1017,8 @@ describe("a GitHub project's working copy, named on its folder in Storage", () =
 			expect(line().querySelectorAll("*")).toHaveLength(1);
 			expect(visibleText(downloads())).toBe("");
 			expect(
-				host.querySelectorAll(".storage-toolbar > button:not([hidden], .storage-download-button)"),
-			).toHaveLength(0);
+				[...host.querySelectorAll(".storage-toolbar > button:not([hidden])")].map((each) => each.className),
+			).toEqual(["storage-download-button"]);
 			expect(button()?.hidden).toBe(true);
 			// A founder reads it: no path, branch, commit or repository.
 			expect(line().textContent).not.toMatch(/\/|branch|commit|repositor|git(?!hub)/i);
