@@ -970,6 +970,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Ask {name} about {database}…": "Spørg {name} om {database}…",
 	"Fill in {names} to see the list.": "Udfyld {names} for at se listen.",
 	"Open the conversation": "Åbn samtalen",
-	"Your conversation with {name} already holds a note from another page. Send it first.":
-		"Din samtale med {name} har allerede en besked fra en anden side. Send den først.",
+	"{name} already has a note from another page waiting.":
+		"{name} har allerede en besked fra en anden side, der venter.",
 };

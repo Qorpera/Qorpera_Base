@@ -720,7 +720,10 @@ class DataListView {
 		);
 		const strip = this.#top.querySelector<HTMLElement>(".data-tabs");
 		if (!strip) return;
-		const cut = () => strip.classList.toggle("is-cut", strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1);
+		const cut = () => {
+			strip.classList.toggle("is-cut", strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1);
+			strip.classList.toggle("is-cut-start", strip.scrollLeft > 1);
+		};
 		strip.addEventListener("scroll", cut, { passive: true });
 		requestAnimationFrame(() => {
 			strip
@@ -772,7 +775,7 @@ class DataListView {
 					names: new Intl.ListFormat(presentationLocale() === "da" ? "da" : "en", { type: "conjunction" }).format(
 						this.#asks()
 							.filter((name) => this.#given()[name] === "")
-							.map((name) => humanName(name).toLocaleLowerCase()),
+							.map(humanName),
 					),
 				}),
 			);
@@ -809,16 +812,11 @@ class DataListView {
 
 	#listEl(read: ListRead): HTMLElement {
 		const columns = shownColumns(read.columns, read.key);
-		const kinds = columns.map((name) =>
-			read.tab.kind === "question" &&
-			read.rows.length > 0 &&
-			read.rows.every((row) => {
-				const value = row.values[read.columns.indexOf(name)];
-				return value === null || typeof value === "number";
-			}) &&
-			read.rows.some((row) => typeof row.values[read.columns.indexOf(name)] === "number")
-				? "number"
-				: this.#kindOf(name),
+		const kinds = columns.map(
+			(name) =>
+				(read.tab.kind === "question"
+					? answerKind(read.rows.map((row) => row.values[read.columns.indexOf(name)]))
+					: undefined) ?? this.#kindOf(name),
 		);
 		const template = columns
 			.map((_, index) =>
@@ -1560,6 +1558,14 @@ function saving(open: OpenRow, name: string, by: number): void {
 	const now = (open.saving.get(name) ?? 0) + by;
 	if (now > 0) open.saving.set(name, now);
 	else open.saving.delete(name);
+}
+
+function answerKind(values: readonly unknown[]): Kind | undefined {
+	const given = values.filter((value) => value !== null && value !== undefined);
+	if (given.length === 0) return undefined;
+	if (given.every((value) => typeof value === "number")) return "number";
+	if (given.every((value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value))) return "date";
+	return undefined;
 }
 
 function hasValues(row: CloudMemberDataRow): row is CloudMemberDataRow & { values: readonly unknown[] } {

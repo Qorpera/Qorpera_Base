@@ -177,7 +177,11 @@ describe("Ask under the list", () => {
 	});
 
 	it("keeps the words and says where they wait when the conversation holds another page's note", async () => {
-		const send: DataAskSend = vi.fn(async () => ({ sent: false, href: `#/c/${profileA.profileId}`, held: true }));
+		const send: DataAskSend = vi.fn(async () => ({
+			sent: false,
+			href: `#/c/${profileA.profileId}`,
+			held: true as const,
+		}));
 		const { container } = await open({ send });
 		const field = container.querySelector<HTMLInputElement>(".data-ask-field")!;
 		fill(field, "Which bikes are ready?");
@@ -187,7 +191,7 @@ describe("Ask under the list", () => {
 		expect(field.value).toBe("Which bikes are ready?");
 		const said = container.querySelector<HTMLElement>(".data-ask-said");
 		expect(said?.hidden).toBe(false);
-		expect(said?.textContent).toContain("Your conversation with Kaya already holds a note from another page.");
+		expect(said?.textContent).toContain("Kaya already has a note from another page waiting.");
 		expect(said?.querySelector("a")?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 	});
 
@@ -257,12 +261,12 @@ describe("a kept question that takes values", () => {
 		const labels = [...container.querySelectorAll(".data-param-label")].map((one) => one.textContent);
 		expect(labels).toEqual(["Since", "State"]);
 		expect(container.querySelector(".data-empty h1")?.textContent).toBe("Repairs handed in since a day.");
-		expect(container.querySelector(".data-empty p")?.textContent).toBe("Fill in since and state to see the list.");
+		expect(container.querySelector(".data-empty p")?.textContent).toBe("Fill in Since and State to see the list.");
 		const [since, state] = [...container.querySelectorAll<HTMLInputElement>(".data-param-input")];
 		fill(since!, " 2026-10-01 ", "change");
 		await settle();
 		expect(calls.query).not.toHaveBeenCalled();
-		expect(container.querySelector(".data-empty p")?.textContent).toBe("Fill in state to see the list.");
+		expect(container.querySelector(".data-empty p")?.textContent).toBe("Fill in State to see the list.");
 		expect(container.querySelector<HTMLInputElement>(".data-param-input")).toBe(since);
 		state!.value = "Ready";
 		state!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));

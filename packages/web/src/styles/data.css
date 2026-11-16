@@ -22,6 +22,8 @@
 }
 .data-tabs::-webkit-scrollbar { display: none; }
 .data-tabs.is-cut { mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.data-tabs.is-cut-start { mask-image: linear-gradient(to right, transparent, #000 40px); }
+.data-tabs.is-cut.is-cut-start { mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
 .data-tab {
 	flex: none; padding: 0; border: 0; background: transparent; color: var(--text-soft);
 	font: 650 22px/1.45 var(--font-display);
@@ -189,7 +191,7 @@ textarea.data-field-input { field-sizing: content; min-height: 42px; max-height:
 .data-ask-said { margin: 7px 20px 0; color: var(--danger); font-size: 12.5px; font-weight: 600; }
 .data-ask-said.is-held { color: var(--text-muted); font-weight: 500; }
 .data-ask-said[hidden] { display: none; }
-.data-ask-open { margin-left: 6px; color: var(--text); font-weight: 600; }
+.data-ask-open { margin-left: 6px; color: var(--text); font-weight: 600; white-space: nowrap; }
 
 @container data-page (max-width: 46em) {
 	.data-top { padding: 18px 16px 0; }
