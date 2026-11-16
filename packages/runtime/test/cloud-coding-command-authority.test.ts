@@ -9,7 +9,10 @@ function fixture(timeoutMs: number | null = 1000, reasoningEffort?: "xhigh" | "m
 	const fixed = nativeToolAuthorityFixture();
 	const { binding } = fixed;
 	const authority = reasoningEffort
-		? { ...fixed.authority, identity: { ...fixed.authority.identity, reasoningEffort } }
+		? {
+				...fixed.authority,
+				identity: { ...fixed.authority.identity, reasoningEffort } as typeof fixed.authority.identity,
+			}
 		: fixed.authority;
 	const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
 	const operationKey = "build:1";
