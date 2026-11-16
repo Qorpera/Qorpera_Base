@@ -175,7 +175,7 @@ describe("conversation model transport", () => {
 		for (const retired of ["gpt-5.6-sol", "gpt-5.6-terra"])
 			await expect(f.control.set(session.sessionId, { modelId: retired }, 5)).rejects.toThrow("Refresh");
 		await expect(
-			f.control.set(session.sessionId, { modelId: "gpt-6.1-sol", reasoningEffort: "xhigh" }, 5),
+			f.control.set(session.sessionId, { modelId: "gpt-6.1-sol", reasoningEffort: "max" }, 5),
 		).rejects.toThrow("Refresh");
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
@@ -203,6 +203,14 @@ describe("conversation model transport", () => {
 		{ models: [7] },
 		{ models: ["x".repeat(257)] },
 		{ models: Array.from({ length: 33 }, (_, index) => `model-${index}`) },
+		{ efforts: null },
+		{ efforts: ["low"] },
+		{ efforts: { "gpt-6-astra": "low" } },
+		{ efforts: { "gpt-6-astra": [""] } },
+		{ efforts: { "gpt-6-astra": [7] } },
+		{ efforts: { "gpt-6-astra": ["x".repeat(65)] } },
+		{ efforts: { ["x".repeat(257)]: ["low"] } },
+		{ efforts: Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`model-${index}`, ["low"]])) },
 	])("rejects an invalid response %j", async (invalid) => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json({ ...model, ...invalid }));
@@ -233,14 +241,42 @@ describe("conversation model transport", () => {
 		});
 	});
 
-	it.each([{ modelId: "gpt-6-sol" }, { modelId: "claude-opus-5-5", reasoningEffort: "ultra" }])(
-		"refuses a selection the client does not offer %j",
-		async (selection) => {
-			const f = setup();
-			await expect(f.control.set(session.sessionId, selection, 0)).rejects.toThrow();
-			expect(f.fetch).not.toHaveBeenCalled();
-		},
-	);
+	it.each([
+		{ modelId: "gpt-6-sol" },
+		{ modelId: "claude-opus-5-5", reasoningEffort: "ultra" },
+		{ modelId: "gpt-6-astra", reasoningEffort: "max" },
+	])("refuses a selection the client does not offer %j", async (selection) => {
+		const f = setup();
+		await expect(f.control.set(session.sessionId, selection, 0)).rejects.toThrow();
+		expect(f.fetch).not.toHaveBeenCalled();
+	});
+
+	it("reads the efforts the cloud offers with each model and saves extra high on GPT", async () => {
+		const f = setup();
+		const efforts = {
+			"gpt-6-astra": ["low", "medium", "high", "xhigh"],
+			"gpt-6.1-sol": ["low", "medium", "high", "xhigh", "xhigh"],
+		};
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, models: ["gpt-6-astra", "gpt-6.1-sol"], efforts }));
+		expect(await f.control.read(session.sessionId)).toMatchObject({
+			efforts: {
+				"gpt-6-astra": ["low", "medium", "high", "xhigh"],
+				"gpt-6.1-sol": ["low", "medium", "high", "xhigh"],
+			},
+		});
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, model_id: "gpt-6.1-sol", reasoning_effort: "xhigh", efforts, version: 1 }),
+		);
+		expect(
+			await f.control.set(session.sessionId, { modelId: "gpt-6.1-sol", reasoningEffort: "xhigh" }, 0),
+		).toMatchObject({ modelId: "gpt-6.1-sol", reasoningEffort: "xhigh" });
+		expect(JSON.parse(f.fetch.mock.calls[1]![1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_model_id: "gpt-6.1-sol",
+			p_expected_version: 0,
+			p_reasoning_effort: "xhigh",
+		});
+	});
 
 	it("saves a Claude model with an effort only Claude has", async () => {
 		const f = setup();
