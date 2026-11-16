@@ -248,6 +248,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	navigation: ["M7.75 3.75v12.5"],
 	interfaces: ["M3 12h4l3-7 4 14 3-7h4"],
 	check: ["m5 12 4 4L19 6"],
+	bolt: ["M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z"],
 	appearance: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 3v18", "M12 7h7M12 12h9M12 17h7"],
 	image: ["M3 3h18v18H3Z", "m3 16 5-5 4 4 3-3 6 6", "M15 7h.01"],
 	camera: [

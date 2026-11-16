@@ -667,7 +667,6 @@ export class ConversationView {
 			actions.sessionModel,
 			this.#notificationSignal,
 			() => this.#setSubmenu(this.#models, true),
-			() => this.#setSubmenu(this.#models, false),
 			() => this.update(),
 		);
 		this.#logins = this.#execution
@@ -727,8 +726,12 @@ export class ConversationView {
 			) {
 				event.preventDefault();
 				const page = open?.el ?? this.#menuMain;
-				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
-				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+				const controls = [
+					...page.querySelectorAll<HTMLElement>(
+						'button:not(:disabled):not([hidden]), [role="slider"][tabindex="0"]:not([aria-disabled="true"])',
+					),
+				];
+				const current = controls.indexOf(document.activeElement as HTMLElement);
 				const index = matchesKey(event, "first")
 					? 0
 					: matchesKey(event, "last")
