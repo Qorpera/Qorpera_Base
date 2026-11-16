@@ -196,15 +196,15 @@ begin
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code','QRC01',
 			'message','Conversation model changed; refresh before retrying','details',null,'hint',null)::text,
 			detail = '{"status":409,"headers":{}}'; end if;
-	if p_model_id in ('claude-fable-5-2','claude-opus-5-5') and not (public.qorpera_active_bundle_claude_choice()
+	v_model := coalesce(p_model_id, v_choice.model_id);
+	v_effort := coalesce(p_reasoning_effort, v_choice.reasoning_effort);
+	if v_model in ('claude-fable-5-2','claude-opus-5-5') and not (public.qorpera_active_bundle_claude_choice()
 		and public.qorpera_member_may_pick_claude(
 			(select session.profile_id from public.qorpera_shared_sessions session where session.id = p_session_id), v_user)) then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code','QRC02',
 			'message','Claude is not open for you in this company: sign in to Claude in Settings, Model accounts',
 			'details',null,'hint',null)::text,
 			detail = '{"status":403,"headers":{}}'; end if;
-	v_model := coalesce(p_model_id, v_choice.model_id);
-	v_effort := coalesce(p_reasoning_effort, v_choice.reasoning_effort);
 	if v_effort in ('xhigh','max') and coalesce(v_model not in ('claude-fable-5-2','claude-opus-5-5'), true) then
 		raise exception 'Conversation effort % needs a Claude model', v_effort using errcode = '22023'; end if;
 	insert into public.qorpera_session_models(session_id,model_id,reasoning_effort,version,updated_by_user_id)

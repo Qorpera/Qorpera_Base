@@ -172,8 +172,18 @@ begin
 	v_result := pg_temp.cm_get(pg_temp.cm_owner(), '92400000-0000-4000-8000-000000000032');
 	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6-luna', '2: an earlier model still reads: ' || v_result::text);
 
+	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, 'claude-opus-5-5', 'high');
+	perform pg_temp.base_assert(v_result ->> 'model_id' = 'claude-opus-5-5', '2: fixture: Bob''s thread on Opus 5.5: ' || v_result::text);
 	update public.qorpera_claude_logins set status = 'revoked', revoked_at = statement_timestamp(), key_id = null,
 		encrypted_envelope = null, envelope_sha256 = null where id = '12810000-0000-4000-8000-0000000000c1';
+	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, null, 'max');
+	perform pg_temp.base_assert(pg_temp.cm_refused(v_result) = 'QRC02',
+		'2: a writer who may not pick Claude may not change a Claude conversation''s effort: ' || v_result::text);
+	perform pg_temp.base_assert((select reasoning_effort from public.qorpera_session_models
+		where session_id = pg_temp.cm_session(v_bob)) = 'high', '2: and the effort stays as it was');
+	v_result := pg_temp.cm_set(pg_temp.cm_owner(), v_bob, 'gpt-6-astra', 'medium');
+	perform pg_temp.base_assert(v_result ->> 'model_id' = 'gpt-6-astra' and v_result ->> 'reasoning_effort' = 'medium',
+		'2: but may switch it to GPT: ' || v_result::text);
 	v_result := pg_temp.cm_get(pg_temp.cm_owner(), v_bob);
 	perform pg_temp.base_assert(pg_temp.cm_models(v_result) = 'gpt-6-astra,gpt-6.1-sol',
 		'2: signed out of Claude, the owner is offered GPT only: ' || v_result::text);
@@ -443,6 +453,7 @@ begin
 	end loop;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_function in array array['public.qorpera_member_may_pick_claude(uuid,uuid)',
+			'public.qorpera_resolve_run_claude_choice(public.qorpera_execution_runs,jsonb)',
 			'public.qorpera_active_bundle_claude_choice()', 'public.qorpera_pin_execution_claude_choice()'] loop
 			if has_function_privilege(v_role, v_function, 'execute') then
 				raise exception '5: % may call %', v_role, v_function; end if;

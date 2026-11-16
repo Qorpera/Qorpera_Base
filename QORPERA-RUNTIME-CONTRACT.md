@@ -2290,7 +2290,8 @@ room delivery) runs with it: the model applies to native subscription sponsors,
 the effort to every sponsor. The bundle's model policy declares
 `overrides: routine-and-thread`; bundles that declare `routine` keep thread
 turns at the default. Routines, coworker wakes and other conversations are not
-affected. Superseded: "Attended threads keep the bundle default" above.
+affected. Superseded: "Attended threads keep the bundle default" above. (The
+models and efforts a member may pick are those of the 2026-11-16 amendment.)
 
 2026-09-27 amendment: thread fast mode. A member's turn in a conversation (a
 session turn or a room delivery on a Codex sponsor) runs on the provider's
@@ -2329,6 +2330,42 @@ routine's effort. Work that carries on a chain a member's turn started (a
 worker's report, a machine event or check-in, an office start) runs as a run no
 member waits on: the agent.md's effort, else high. The member's turn itself
 keeps its conversation's Model menu effort (migration 20260930661000).
+
+2026-11-16 amendment: Claude in a conversation (founder, 16 November: "Claude
+should offer Fable 5.2 and Opus 5.5; GPT should offer GPT-6 Astra and GPT-6.1
+Sol", and the GPT front keeps the light work while Claude does the real work).
+A conversation's model is `gpt-6-astra`, `gpt-6.1-sol`, `claude-fable-5-2` or
+`claude-opus-5-5`; a conversation that holds `gpt-6-sol` or `gpt-6-luna` still
+reads and runs with it. Its effort is low, medium or high, and also xhigh or max
+with a Claude model only (the table and the setter refuse xhigh or max on GPT
+or on no model). Every writer may pick the GPT models. A Claude model may be
+picked only while the active bundle's model policy declares
+`claudeChoice: "thread"` and the member may run Claude Code in the company
+(`qorpera_member_may_pick_claude`: on the Claude sign-in list with sign-in
+open, an active Claude login of their own, and the company's home allowed);
+otherwise the save is refused (`QRC02`, 403). That check holds for any save
+that leaves the conversation on a Claude model, an effort alone included; a
+switch to GPT needs no Claude. The model menu's answers name `models`: the
+models this member may pick here. A member's turn under such a bundle, by a
+member who may run Claude Code, pins the pick on its run (`claude_model`,
+`claude_effort`; immutable), and the run's company context names it
+(`claude: {model, effort}`); the GPT front of that turn runs on its default
+path (the agent's model mapping, else the provider default) at the bundle's
+default effort, at the conversation's speed: the picked model and effort never
+reach Codex. The agent hands real work to a Claude Code worker; the pick counts
+as the member asking for Claude Code. Work that carries on a chain whose first
+run was pinned (a worker's report, a machine event or check-in: a wake with an
+origin run, never a worker's own run) keeps that pick while its member may
+still run Claude Code. For the Claude pick only, this narrows the 2026-11-08
+amendment, under which such a run runs as a run no member waits on: its effort
+still follows that amendment, and its Claude pick follows its chain. A Claude
+Code worker records the pick of the run that dispatched it, and its dispatch
+wake carries it; Claude Code starts with `--model` and `--effort`. A follow-up
+takes the pick of the run that follows it up when that run has one, and keeps
+the recorded pick otherwise. A worker with no pick runs on Claude Code's own
+default. Migration 20260930784000. Built, not live: Claude goes live with the
+release cut whose bundle declares `claudeChoice`; GPT-6.1 Sol with the
+migration.
 
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
