@@ -706,7 +706,12 @@ async function runClaudeReviewer(
 		});
 		await exited;
 		signal.throwIfAborted();
-		return claudeReviewerVerdict(out);
+		try {
+			return claudeReviewerVerdict(out);
+		} catch (error) {
+			console.error(`The Claude Code reviewer gave no verdict (exit ${launched.exitCode ?? launched.signalCode})`);
+			throw error;
+		}
 	} finally {
 		signal.removeEventListener("abort", kill);
 		kill();

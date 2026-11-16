@@ -811,6 +811,8 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			return Date.now();
 		})();
 		const r1 = await runWorker(b1, work);
+		say(`run 1 reviews: ${session(`select coalesce(string_agg(r.tool_name || ' ' || r.decision || ' ' || left(r.action ->> 'arguments', 300), ' || '), 'none')
+			from public.qorpera_action_reviews r where r.run_id = '${b1.runId}';`)}`);
 		const boundaryAt = await lastBoundary;
 		// A seal-back AFTER the worker's report, through the vault's own route and the real SQL, while the run's job and the
 		// member's lease are still this run's (the run host does it so when a renewal comes late): the run's composition

@@ -51,6 +51,11 @@ for f in $B/run*.out; do echo "--- $f"; tail -c 3000 "$f"; echo; done
 echo "=== stub logs: kinds"
 for f in $B/stub-*.jsonl; do echo "$f: $(python3 -c 'import json,sys,collections; print(dict(collections.Counter(json.loads(l)["kind"] for l in open(sys.argv[1]))))' "$f")"; done
 
+echo "=== stub logs: requests"
+for f in $B/stub-run1.jsonl $B/stub-run2.jsonl; do echo "$f:"; python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    r=json.loads(l)
+    print(" ", {k: r.get(k) for k in ("kind","path","main","ntools","decision","model","status","name","is_error") if r.get(k) is not None})' "$f" | head -30; done
 echo "=== hunt on the home, as root"
 lxc file push $P/test/hunt.py $H/root/hunt.py --mode 0700 </dev/null >/dev/null
 lxc exec $H -- python3 /root/hunt.py c4c </dev/null | tail -15

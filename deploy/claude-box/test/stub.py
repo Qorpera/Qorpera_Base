@@ -146,6 +146,7 @@ class H(BaseHTTPRequestHandler):
         main = "Bash" in tools or "Read" in tools
         base["main"] = main
         base["ntools"] = len(tools)
+        base["model"] = str(req.get("model", ""))[:60]
         if main and not first_tools:
             first_tools.extend(tools)
             base["tools"] = tools
