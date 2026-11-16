@@ -12,13 +12,15 @@
 // It holds nothing of the run: no descriptor beyond 0-2 reaches it (P4), and it reads no variable but the named ones.
 // Node built-ins only, so the box runs this one file as it is.
 
-import { readlinkSync, realpathSync, writeSync } from "node:fs";
+import { readFileSync, readlinkSync, realpathSync, writeSync } from "node:fs";
 import { connect } from "node:net";
 import { constants } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SOCKET = "/run/qorpera-home/shell.sock";
+export const CLAUDE_HOME_REVIEW_HOOK = "/opt/qorpera/review-hook";
+const HOOK_BYTES = 4 * 1024 * 1024;
 const FORWARDED = [
 	"CLAUDECODE",
 	"CLAUDE_CODE_ENTRYPOINT",
@@ -71,8 +73,23 @@ export function cloudClaudeRipgrepCommand(
 	return `exec rg ${args.map((arg) => `'${homeArgument(arg).replaceAll("'", "'\\''")}'`).join(" ")}`;
 }
 
+function hookInput(): string {
+	try {
+		const bytes = readFileSync(0);
+		return bytes.length <= HOOK_BYTES ? bytes.toString("utf8") : "";
+	} catch {
+		return "";
+	}
+}
+
 function main(): void {
-	const cmd = process.argv[2] === "--rg" ? cloudClaudeRipgrepCommand(process.argv.slice(3)) : (process.argv[2] ?? "");
+	const hook = process.argv[2] === "--hook" || process.argv[2] === CLAUDE_HOME_REVIEW_HOOK;
+	const cmd = hook
+		? CLAUDE_HOME_REVIEW_HOOK
+		: process.argv[2] === "--rg"
+			? cloudClaudeRipgrepCommand(process.argv.slice(3))
+			: (process.argv[2] ?? "");
+	const input = hook ? hookInput() : undefined;
 	const env: Record<string, string> = {};
 	for (const name of FORWARDED) {
 		const text = process.env[name];
@@ -93,7 +110,9 @@ function main(): void {
 		write(2, Buffer.from("HOME_UNAVAILABLE: this agent's machine could not be reached.\n"));
 		process.exit(255);
 	});
-	socket.on("connect", () => socket.write(`${JSON.stringify({ cmd, cwd, env })}\n`));
+	socket.on("connect", () =>
+		socket.write(`${JSON.stringify({ cmd, cwd, env, ...(input === undefined ? {} : { hook: input }) })}\n`),
+	);
 	socket.setEncoding("utf8");
 	socket.on("data", (chunk: string) => {
 		rest += chunk;

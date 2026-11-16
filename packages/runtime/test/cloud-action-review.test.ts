@@ -2377,6 +2377,53 @@ describe("the review step", () => {
 		});
 	});
 
+	it("asks a Claude Code worker's own reviewer model and records that model, by the same rules", async () => {
+		const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];
+		const review = vi.fn<CloudActionReviewer["review"]>(async () => ({
+			decision: "deny",
+			ruleIds: [RULE],
+			builtIn: "none",
+			reason: "A member asked to be asked first.",
+			proposedRule: "",
+		}));
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: {
+				call: async (method, args) => {
+					calls.push({ method, args });
+					return method === "qorpera_begin_action_review"
+						? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, rules: [] }
+						: {
+								reviewId: randomUUID(),
+								decision: "deny",
+								card: false,
+								reason: "A member asked to be asked first.",
+							};
+				},
+			},
+			reviewer: { review },
+			reviewerModel: "haiku",
+			request: "",
+			holdMs: 0,
+		});
+		const result = await instance.check(
+			{
+				tool: tool("home_command"),
+				parsed: { machine: "m", command: "rm -rf /company/x" },
+				argumentsText: '{"machine":"m","command":"rm -rf /company/x"}',
+				argumentSha256: "b".repeat(64),
+				callId: "claude-shell:1",
+			},
+			new AbortController().signal,
+		);
+		expect(result).toMatchObject({ run: false, text: expect.stringMatching(/^REVIEW_DENIED: A member asked/) });
+		expect(review.mock.calls[0][0]).toMatchObject({ model: "haiku", instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS });
+		expect(calls[1]).toMatchObject({
+			method: "qorpera_record_action_review",
+			args: { p_review: { tool: "home_command", effect: "external", reviewerModel: "haiku" } },
+		});
+	});
+
 	it("gives the reviewer everything a call would change when its arguments only name it, and never reviews a part", async () => {
 		const { calls, review } = gate({});
 		const control: CloudActionReviewControl = {

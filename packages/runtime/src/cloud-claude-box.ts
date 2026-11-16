@@ -23,18 +23,27 @@
 // - links resolved on the home (sshfs `follow_symlinks`), so a planted link means what it means on the home;
 // - HOME and CLAUDE_CONFIG_DIR under /slot, never on the home (the shell snapshot's login shell reads HOME).
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, rm, rmdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { CLOUD_ACTION_REVIEW_SPECIFICATION, type CloudActionReviewer } from "./cloud-action-review.ts";
+import {
+	CLAUDE_REVIEW_HOOK_PATH,
+	CLAUDE_REVIEW_HOOK_TOOLS,
+	type ClaudeFileChange,
+	CloudClaudeFilesGate,
+	cloudClaudeFileCall,
+} from "./cloud-claude-home-review.ts";
 import {
 	CLOUD_CLAUDE_SHELL_SOCKET_NAME,
 	type CloudClaudeHomeChannel,
 	CloudClaudeHomeShell,
 	type CloudClaudeHomeStream,
 } from "./cloud-claude-home-shell.ts";
+import type { CloudCodexHomeMachine, CloudCodexHomeReview } from "./cloud-codex-home.ts";
 import {
 	assertNativeSocketPath,
 	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
@@ -75,6 +84,7 @@ export const CLAUDE_BOX_PATHS = Object.freeze({
 	/** The entry and the shell client keep their own file's extension in the box (`.mjs` as the image installs them). */
 	entryPoint: "/opt/qorpera/native-entry",
 	shellPrefix: "/opt/qorpera/home-shell",
+	reviewHook: CLAUDE_REVIEW_HOOK_PATH,
 	/** Ahead of the box's own PATH: `rg`, the bridge that runs ripgrep on the home (Grep and Glob). */
 	searchBin: "/opt/qorpera/bin",
 	settings: "/opt/qorpera/settings.json",
@@ -105,7 +115,9 @@ export interface ClaudeBoxProofWeakening {
 }
 
 /** The settings file the box reads (read-only in the box), as text. */
-export function claudeBoxSettings(weakening?: ClaudeBoxProofWeakening): string {
+export const CLAUDE_REVIEW_HOOK_SECONDS = 600;
+
+export function claudeBoxSettings(weakening?: ClaudeBoxProofWeakening, options: { reviewHook?: boolean } = {}): string {
 	return `${JSON.stringify({
 		permissions: {
 			defaultMode: "bypassPermissions",
@@ -113,6 +125,24 @@ export function claudeBoxSettings(weakening?: ClaudeBoxProofWeakening): string {
 		},
 		sandbox: { enabled: false },
 		attribution: { commit: "", pr: "" },
+		...(options.reviewHook
+			? {
+					hooks: {
+						PreToolUse: [
+							{
+								matcher: CLAUDE_REVIEW_HOOK_TOOLS.join("|"),
+								hooks: [
+									{
+										type: "command",
+										command: CLAUDE_BOX_PATHS.reviewHook,
+										timeout: CLAUDE_REVIEW_HOOK_SECONDS,
+									},
+								],
+							},
+						],
+					},
+				}
+			: {}),
 	})}\n`;
 }
 
@@ -268,34 +298,14 @@ function scratchPaths(root: string) {
 		systemNote: join(root, "system-note.md"),
 		prefix: join(root, "home-shell"),
 		rg: join(root, "rg"),
+		reviewHook: join(root, "review-hook"),
 		passwd: join(root, "passwd"),
 		group: join(root, "group"),
 	};
 }
 
-/** The whole command: the namespace helper, the mount stage, and the box. No file system checks, so its shape can be
- * checked anywhere. */
-export function claudeBoxInvocation(options: {
-	configuration: ClaudeBoxConfiguration;
-	scratchRoot: string;
-	relayPath: string;
-	shellSocket: string;
-	/** The run host's account the box runs as (the mount shows every file as its own). */
-	owner: { uid: number; gid: number };
-	login: "token" | { folder: string };
-	weakening?: ClaudeBoxProofWeakening;
-	extraCa?: string;
-	model?: string;
-	effort?: string;
-	tools?: readonly ClaudeBoxTool[];
-	/** The run wrote a system note (scratch `system-note.md`): bound read-only and appended to the system prompt. */
-	systemNote?: boolean;
-}): { command: string; args: string[] } {
-	const c = options.configuration;
-	const s = scratchPaths(options.scratchRoot);
-	const login = options.login === "token" ? "token" : "folder";
-	const config = options.login === "token" ? s.config : options.login.folder;
-	const box = [
+function claudeBoxSystem(passwd: string, group: string): string[] {
+	return [
 		"--unshare-user",
 		"--unshare-pid",
 		"--unshare-net",
@@ -324,8 +334,6 @@ export function claudeBoxInvocation(options: {
 		"--symlink",
 		"usr/sbin",
 		"/sbin",
-		// A nearly empty /etc of the box's own: what TLS, the loader and a user name need. The home's /etc is read with
-		// the shell (P4 3.6: a Read of the box's /etc would answer for the box, not the home).
 		"--ro-bind",
 		"/etc/ssl/certs",
 		"/etc/ssl/certs",
@@ -333,10 +341,10 @@ export function claudeBoxInvocation(options: {
 		"/etc/ld.so.cache",
 		"/etc/ld.so.cache",
 		"--ro-bind",
-		s.passwd,
+		passwd,
 		"/etc/passwd",
 		"--ro-bind",
-		s.group,
+		group,
 		"/etc/group",
 		"--proc",
 		"/proc",
@@ -344,6 +352,34 @@ export function claudeBoxInvocation(options: {
 		"/dev",
 		"--tmpfs",
 		"/run",
+	];
+}
+
+/** The whole command: the namespace helper, the mount stage, and the box. No file system checks, so its shape can be
+ * checked anywhere. */
+export function claudeBoxInvocation(options: {
+	configuration: ClaudeBoxConfiguration;
+	scratchRoot: string;
+	relayPath: string;
+	shellSocket: string;
+	/** The run host's account the box runs as (the mount shows every file as its own). */
+	owner: { uid: number; gid: number };
+	login: "token" | { folder: string };
+	weakening?: ClaudeBoxProofWeakening;
+	extraCa?: string;
+	model?: string;
+	effort?: string;
+	tools?: readonly ClaudeBoxTool[];
+	/** The run wrote a system note (scratch `system-note.md`): bound read-only and appended to the system prompt. */
+	systemNote?: boolean;
+	reviewHook?: boolean;
+}): { command: string; args: string[] } {
+	const c = options.configuration;
+	const s = scratchPaths(options.scratchRoot);
+	const login = options.login === "token" ? "token" : "folder";
+	const config = options.login === "token" ? s.config : options.login.folder;
+	const box = [
+		...claudeBoxSystem(s.passwd, s.group),
 		"--ro-bind",
 		options.shellSocket,
 		CLAUDE_BOX_PATHS.shellSocket,
@@ -365,6 +401,7 @@ export function claudeBoxInvocation(options: {
 		"--ro-bind",
 		s.rg,
 		`${CLAUDE_BOX_PATHS.searchBin}/rg`,
+		...(options.reviewHook ? ["--ro-bind", s.reviewHook, CLAUDE_BOX_PATHS.reviewHook] : []),
 		"--ro-bind",
 		s.settings,
 		CLAUDE_BOX_PATHS.settings,
@@ -444,6 +481,240 @@ export function checkClaudeCodePin(path: string): Promise<void> {
 	});
 }
 
+export const CLAUDE_ACTION_REVIEW_MODEL = "haiku";
+const REVIEW_OUTPUT_BYTES = 1024 * 1024;
+const VERDICT_SCHEMA = (CLOUD_ACTION_REVIEW_SPECIFICATION as { tools: { inputSchema: unknown }[] }).tools[0]
+	?.inputSchema;
+export const CLAUDE_ACTION_REVIEW_ANSWER = `Here you have no tools, and qorpera.review_verdict is not one you can call: your whole reply is its arguments, exactly one JSON object and nothing before or after it, matching this JSON schema: ${JSON.stringify(VERDICT_SCHEMA)}`;
+
+export function claudeReviewerArguments(model: string): string[] {
+	if (!/^[A-Za-z0-9._:[\]-]{1,128}$/.test(model)) throw new Error("Invalid Claude model");
+	return [
+		"-p",
+		"--output-format",
+		"json",
+		"--max-turns",
+		"1",
+		"--tools",
+		"",
+		"--settings",
+		CLAUDE_BOX_PATHS.settings,
+		"--setting-sources",
+		"user",
+		"--strict-mcp-config",
+		"--system-prompt-file",
+		CLAUDE_BOX_PATHS.systemNote,
+		"--model",
+		model,
+	];
+}
+
+export function claudeReviewerVerdict(stdout: string): unknown {
+	const last = stdout.trim().split("\n").at(-1) ?? "";
+	const result = JSON.parse(last) as { type?: unknown; is_error?: unknown; result?: unknown };
+	if (result.type !== "result" || result.is_error !== false || typeof result.result !== "string")
+		throw new Error("The reviewer gave no verdict");
+	const text = result.result;
+	const start = text.indexOf("{");
+	const end = text.lastIndexOf("}");
+	if (start < 0 || end < start) throw new Error("The reviewer gave no verdict");
+	return JSON.parse(text.slice(start, end + 1));
+}
+
+function reviewerPaths(root: string) {
+	return {
+		home: join(root, "h"),
+		config: join(root, "c"),
+		settings: join(root, "settings.json"),
+		system: join(root, "system.md"),
+		passwd: join(root, "passwd"),
+		group: join(root, "group"),
+	};
+}
+
+export function claudeReviewerInvocation(options: {
+	configuration: ClaudeBoxConfiguration;
+	root: string;
+	relayPath: string;
+	login: "token" | { folder: string };
+	extraCa?: string;
+	model: string;
+}): string[] {
+	const c = options.configuration;
+	const r = reviewerPaths(options.root);
+	const args = [
+		...claudeBoxSystem(r.passwd, r.group),
+		"--ro-bind",
+		options.relayPath,
+		options.relayPath,
+		"--ro-bind",
+		c.binary,
+		CLAUDE_BOX_PATHS.binary,
+		"--ro-bind",
+		c.entryPoint,
+		`${CLAUDE_BOX_PATHS.entryPoint}${extname(c.entryPoint)}`,
+		"--ro-bind",
+		r.settings,
+		CLAUDE_BOX_PATHS.settings,
+		"--ro-bind",
+		r.system,
+		CLAUDE_BOX_PATHS.systemNote,
+		...(options.extraCa ? ["--ro-bind", options.extraCa, CLAUDE_BOX_PATHS.extraCa] : []),
+		"--bind",
+		options.login === "token" ? r.config : options.login.folder,
+		CLAUDE_BOX_PATHS.config,
+		"--bind",
+		r.home,
+		CLAUDE_BOX_PATHS.home,
+	];
+	const login = options.login === "token" ? "token" : "folder";
+	for (const [name, value] of Object.entries(claudeBoxEnvironment({ login, extraCa: Boolean(options.extraCa) })))
+		args.push("--setenv", name, value);
+	args.push(
+		"--chdir",
+		CLAUDE_BOX_PATHS.home,
+		"--remount-ro",
+		"/",
+		"--",
+		c.node,
+		`${CLAUDE_BOX_PATHS.entryPoint}${extname(c.entryPoint)}`,
+		options.relayPath,
+		CLAUDE_BOX_PATHS.binary,
+		...claudeReviewerArguments(options.model),
+	);
+	return args;
+}
+
+type ReviewInput = Parameters<CloudActionReviewer["review"]>[0];
+
+export class ClaudeCodeReviewer implements CloudActionReviewer {
+	readonly #run: (input: ReviewInput, signal: AbortSignal) => Promise<unknown>;
+	readonly #closing = new AbortController();
+	#queue: Promise<unknown> = Promise.resolve();
+	reviews = 0;
+
+	constructor(run: (input: ReviewInput, signal: AbortSignal) => Promise<unknown>) {
+		this.#run = run;
+	}
+
+	review(input: ReviewInput, signal: AbortSignal): Promise<unknown> {
+		const both = AbortSignal.any([signal, this.#closing.signal]);
+		const next = this.#queue.then(() => {
+			both.throwIfAborted();
+			this.reviews += 1;
+			return this.#run(input, both);
+		});
+		this.#queue = next.catch(() => undefined);
+		return next;
+	}
+
+	close(): void {
+		this.#closing.abort();
+	}
+}
+
+async function runClaudeReviewer(
+	options: {
+		configuration: ClaudeBoxConfiguration;
+		scratchRoot: string;
+		login: ClaudeBoxLogin;
+		proof?: ClaudeCodeBoxOptions["proof"];
+		spawnBox: typeof spawn;
+	},
+	input: ReviewInput,
+	signal: AbortSignal,
+): Promise<unknown> {
+	const uid = process.getuid?.() ?? 0;
+	const gid = process.getgid?.() ?? uid;
+	const token = "token" in options.login ? options.login.token : undefined;
+	const root = await mkdtemp(join(options.scratchRoot, "r"));
+	let relay: Awaited<ReturnType<typeof startNativeCodexEgress>> | undefined;
+	let child: ChildProcess | undefined;
+	const kill = (): void => {
+		if (child?.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch {
+			child.kill("SIGKILL");
+		}
+	};
+	try {
+		const r = reviewerPaths(root);
+		await mkdir(r.home, { mode: 0o700 });
+		await writeFile(r.settings, claudeBoxSettings(), { mode: 0o400, flag: "wx" });
+		await writeFile(r.system, `${input.instructions}\n\n${CLAUDE_ACTION_REVIEW_ANSWER}\n`, {
+			mode: 0o400,
+			flag: "wx",
+		});
+		await writeFile(r.passwd, `claude:x:${uid}:${gid}::${CLAUDE_BOX_PATHS.home}:/bin/bash\n`, {
+			mode: 0o400,
+			flag: "wx",
+		});
+		await writeFile(r.group, `claude:x:${gid}:\n`, { mode: 0o400, flag: "wx" });
+		if (token !== undefined) {
+			await mkdir(r.config, { mode: 0o700 });
+			await writeFile(
+				join(r.config, ".claude.json"),
+				`${JSON.stringify({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true })}\n`,
+				{ mode: 0o600, flag: "wx" },
+			);
+		}
+		relay = await startNativeCodexEgress({
+			root,
+			signal,
+			hosts: token !== undefined ? NATIVE_CLAUDE_CODE_EGRESS_HOSTS : NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
+			...(options.proof?.transport ? { transport: options.proof.transport } : {}),
+		});
+		signal.throwIfAborted();
+		const launched = options.spawnBox(
+			options.configuration.bwrap,
+			claudeReviewerInvocation({
+				configuration: options.configuration,
+				root,
+				relayPath: relay.path,
+				login: token !== undefined ? "token" : { folder: (options.login as { folder: string }).folder },
+				...(options.proof?.extraCa ? { extraCa: options.proof.extraCa } : {}),
+				model: input.model,
+			}),
+			{
+				cwd: root,
+				env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
+				stdio: ["pipe", "pipe", "ignore", token !== undefined ? "pipe" : "ignore"],
+				detached: true,
+			},
+		);
+		child = launched;
+		const exited = new Promise<void>((resolve) => {
+			launched.once("error", () => resolve());
+			launched.once("close", () => resolve());
+		});
+		signal.addEventListener("abort", kill, { once: true });
+		const stdio = launched.stdio as unknown as readonly (Readable | Writable | null)[];
+		if (token !== undefined) {
+			const tokenPipe = stdio[3] as Writable;
+			tokenPipe.on("error", () => undefined);
+			tokenPipe.end(token);
+		}
+		const stdin = stdio[0] as Writable;
+		stdin.on("error", () => undefined);
+		stdin.end(input.prompt);
+		let out = "";
+		const stdout = stdio[1] as Readable;
+		stdout.setEncoding("utf8");
+		stdout.on("data", (text: string) => {
+			if (out.length < REVIEW_OUTPUT_BYTES) out += text;
+		});
+		await exited;
+		signal.throwIfAborted();
+		return claudeReviewerVerdict(out);
+	} finally {
+		signal.removeEventListener("abort", kill);
+		kill();
+		await relay?.close().catch(() => undefined);
+		await rm(root, { recursive: true, force: true }).catch(() => undefined);
+	}
+}
+
 /** How long closing the box waits for the session's close in SQL (as CLOUD_HOME_CLOSE_MS). */
 const CLAUDE_BOX_CLOSE_MS = 5_000;
 
@@ -460,6 +731,8 @@ export interface ClaudeCodeBox {
 	/** Claude Code's stderr and the stage's, bounded, for the host's journal. */
 	readonly stderr: () => string;
 	readonly shell: CloudClaudeHomeShell;
+	readonly files?: CloudClaudeFilesGate;
+	readonly reviewer?: ClaudeCodeReviewer;
 	/** Ends the box, the mount, both channels and the egress relay; removes the box's own folders. Idempotent. */
 	close(): Promise<void>;
 }
@@ -487,6 +760,12 @@ export interface ClaudeCodeBoxOptions {
 	/** The tools Claude Code offers, no others (default and slice 1: CLAUDE_BOX_TOOLS). */
 	tools?: readonly ClaudeBoxTool[];
 	signal: AbortSignal;
+	review?: {
+		readonly gate: CloudCodexHomeReview;
+		readonly machine: CloudCodexHomeMachine;
+		readonly attach: (reviewer: CloudActionReviewer | undefined) => void;
+		readonly onLone?: (change: ClaudeFileChange) => void;
+	};
 	/** Proofs only: the egress transport (as startNativeCodexEgress takes it), a CA file the box trusts for the stub's
 	 * TLS, and the positive controls' weaker set-ups. */
 	proof?: { transport?: NativeEgressTransport; extraCa?: string; weakening?: ClaudeBoxProofWeakening };
@@ -574,7 +853,11 @@ async function startBox(
 	const s = scratchPaths(options.scratchRoot);
 	for (const folder of [s.config, s.home, s.mount]) await mkdir(folder, { mode: 0o700 });
 	const gid = process.getgid?.() ?? uid;
-	await writeFile(s.settings, claudeBoxSettings(options.proof?.weakening), { mode: 0o400, flag: "wx" });
+	const review = options.review;
+	await writeFile(s.settings, claudeBoxSettings(options.proof?.weakening, { reviewHook: review !== undefined }), {
+		mode: 0o400,
+		flag: "wx",
+	});
 	if (options.systemNote !== undefined) await writeFile(s.systemNote, options.systemNote, { mode: 0o400, flag: "wx" });
 	await writeFile(s.passwd, `claude:x:${uid}:${gid}::${CLAUDE_BOX_PATHS.home}:/bin/bash\n`, {
 		mode: 0o400,
@@ -591,6 +874,12 @@ async function startBox(
 		`#!/bin/sh\nexec ${configuration.node} ${CLAUDE_BOX_PATHS.shellPrefix}${extname(configuration.shellClient)} --rg "$@"\n`,
 		{ mode: 0o500, flag: "wx" },
 	);
+	if (review)
+		await writeFile(
+			s.reviewHook,
+			`#!/bin/sh\nexec ${configuration.node} ${CLAUDE_BOX_PATHS.shellPrefix}${extname(configuration.shellClient)} --hook\n`,
+			{ mode: 0o500, flag: "wx" },
+		);
 	// Claude Code's own first-run state for a box of its own; a login folder is the caller's and is left as it is.
 	if (token !== undefined)
 		await writeFile(
@@ -607,6 +896,8 @@ async function startBox(
 	// before leaves the caller's id unused, to start again with (review round 1, F3).
 	let filesOpened = false;
 	let shellOf: CloudClaudeHomeShell | undefined;
+	let gate: CloudClaudeFilesGate | undefined;
+	let reviewer: ClaudeCodeReviewer | undefined;
 	const close = (): Promise<void> => {
 		closing ??= (async () => {
 			controller.abort();
@@ -620,7 +911,17 @@ async function startBox(
 					new Promise((resolve) => setTimeout(resolve, CLAUDE_BOX_CLOSE_MS).unref()),
 				]);
 			// The box's own folders: transcripts, Claude Code's state, its big outputs. Never the caller's login folder.
-			for (const path of [s.config, s.home, s.settings, s.systemNote, s.passwd, s.group, s.prefix, s.rg])
+			for (const path of [
+				s.config,
+				s.home,
+				s.settings,
+				s.systemNote,
+				s.passwd,
+				s.group,
+				s.prefix,
+				s.rg,
+				s.reviewHook,
+			])
 				await rm(path, { recursive: true, force: true }).catch(() => undefined);
 			// The mount point stays empty in this namespace (the mount lives in the box's): only an empty folder goes.
 			await rmdir(s.mount).catch(() => undefined);
@@ -634,6 +935,22 @@ async function startBox(
 			sessionId: options.sessionId,
 			machineId: options.machineId,
 			signal,
+			...(review
+				? {
+						review: { gate: review.gate, machine: review.machine },
+						hook: async (text: string, hookSignal: AbortSignal) => {
+							const call = cloudClaudeFileCall(text);
+							if (
+								!call ||
+								!CLAUDE_BOX_HOME_FOLDERS.some(
+									(folder) => call.path === folder || call.path.startsWith(`${folder}/`),
+								)
+							)
+								return undefined;
+							return gate ? await gate.admit(call, hookSignal) : undefined;
+						},
+					}
+				: {}),
 		});
 		progress.stage = "shell-socket";
 		await shell.listen(options.scratchRoot);
@@ -655,6 +972,27 @@ async function startBox(
 			...(options.proof?.transport ? { transport: options.proof.transport } : {}),
 		});
 		cleanups.push(() => relay.close());
+		if (review) {
+			const made = new ClaudeCodeReviewer((input, reviewSignal) =>
+				runClaudeReviewer(
+					{
+						configuration,
+						scratchRoot: options.scratchRoot,
+						login,
+						...(options.proof ? { proof: options.proof } : {}),
+						spawnBox,
+					},
+					input,
+					reviewSignal,
+				),
+			);
+			reviewer = made;
+			review.attach(made);
+			cleanups.push(async () => {
+				review.attach(undefined);
+				made.close();
+			});
+		}
 		signal.throwIfAborted();
 		progress.stage = "spawn";
 		const invocation = claudeBoxInvocation({
@@ -670,6 +1008,7 @@ async function startBox(
 			effort: options.effort,
 			tools: options.tools,
 			systemNote: options.systemNote !== undefined,
+			reviewHook: review !== undefined,
 		});
 		const child = spawnBox(invocation.command, invocation.args, {
 			cwd: options.scratchRoot,
@@ -712,23 +1051,44 @@ async function startBox(
 		const fromMount = stdio[5] as Readable;
 		toMount.on("error", () => undefined);
 		fromMount.on("error", () => undefined);
+		const toHome = (bytes: Buffer): void => {
+			for (let at = 0; at < bytes.length; at += SFTP_PIECE)
+				files.write(bytes.subarray(at, at + SFTP_PIECE).toString("base64"));
+		};
+		if (review) {
+			gate = new CloudClaudeFilesGate({
+				machine: review.machine,
+				review: review.gate,
+				signal,
+				toHome,
+				toMount: (bytes) => void toMount.write(bytes),
+			});
+			if (review.onLone) gate.onLone = review.onLone;
+		}
+		const filesGate = gate;
 		void (async () => {
 			try {
 				for await (const chunk of fromMount) {
-					const bytes = chunk as Buffer;
-					for (let at = 0; at < bytes.length; at += SFTP_PIECE)
-						files.write(bytes.subarray(at, at + SFTP_PIECE).toString("base64"));
+					if (!filesGate) toHome(chunk as Buffer);
+					else {
+						filesGate.fromMount(chunk as Buffer);
+						if (filesGate.broken) break;
+					}
 				}
 			} catch {
 				// The mount ended; the box's close ends the channel.
 			}
+			if (filesGate?.broken) void files.close();
 		})();
 		void (async () => {
 			try {
 				for await (const line of files.lines) {
 					if (!line || !BASE64.test(line)) break;
-					if (!toMount.write(Buffer.from(line, "base64")))
+					const bytes = Buffer.from(line, "base64");
+					if (filesGate) filesGate.fromHome(bytes);
+					if (filesGate ? toMount.writableNeedDrain : !toMount.write(bytes))
 						await new Promise<void>((resolve) => toMount.once("drain", resolve));
+					if (filesGate?.broken) break;
 				}
 			} catch {
 				// The channel ended.
@@ -751,6 +1111,7 @@ async function startBox(
 				rest += chunk as string;
 				let end = rest.indexOf("\n");
 				while (end >= 0) {
+					filesGate?.notice(rest.slice(0, end));
 					yield rest.slice(0, end);
 					rest = rest.slice(end + 1);
 					end = rest.indexOf("\n");
@@ -758,7 +1119,15 @@ async function startBox(
 			}
 			if (rest) yield rest;
 		}
-		return { lines: lines(), exited, stderr: () => stderr, shell, close };
+		return {
+			lines: lines(),
+			exited,
+			stderr: () => stderr,
+			shell,
+			...(filesGate ? { files: filesGate } : {}),
+			...(reviewer ? { reviewer } : {}),
+			close,
+		};
 	} catch (error) {
 		await close();
 		throw error;

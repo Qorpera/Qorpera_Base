@@ -217,7 +217,8 @@ interface RunResult {
 		authTags: string[];
 		attribution: string[];
 		refreshes: number;
-		results: { name: string; isError: boolean }[];
+		results: { name: string; isError: boolean; text?: string }[];
+		reviews?: { decision: string; tool: string; model: string; ntools: number; arguments: string }[];
 	};
 	readonly outputs: string;
 	readonly ms: number;
@@ -979,6 +980,63 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("after-stop", r5.ok && (login()?.version ?? 0) > after3 && (r5.stub?.authTags ?? []).includes("RFR"),
 			`the next run opened version ${after3} and sealed ${login()?.version}: ${r5.providerSessionId ?? r5.error}`);
 
+		// 5b. Codex's check, for Claude Code's work on the home: each command and each file change is reviewed on the host
+		// before it reaches the home, with the stub as the reviewer's model; a refused one never happens there, and Claude
+		// Code is told why in the review's own words.
+		drain();
+		const w8 = "c4c00000-0000-4000-8000-0000000000b8";
+		dispatch("checked", w8, "Checked work");
+		drain();
+		const b8 = leased(start(w8));
+		const r8 = await runWorker(
+			b8,
+			scenario(
+				"checked",
+				[
+					Bash("echo C4C-REFUSE > /company/c4c-refused.txt", "refused-shell"),
+					Bash("echo allowed-on-the-home > /company/c4c-allowed.txt && cat /company/c4c-allowed.txt", "allowed-shell"),
+					T("Write", "refused-write", { file_path: `${out("checked")}/refused.md`, content: "C4C-REFUSE\n" }),
+					T("Write", "allowed-write", { file_path: `${out("checked")}/allowed.md`, content: "fine\n" }),
+					Bash("echo C4C-ASK > /company/c4c-asked.txt", "asked-shell"),
+					T("Read", "read", { file_path: `${out("checked")}/allowed.md` }),
+				],
+				"Checked work done.",
+			),
+		);
+		if (r8.ok && r8.providerSessionId) complete(b8, r8.providerSessionId);
+		const told = (name: string) => (r8.stub?.results ?? []).find((result) => result.name === name);
+		const onHome = spawnSync("lxc", ["exec", PROOF_MACHINE, "--", "sh", "-c",
+			`for f in /company/c4c-refused.txt /company/c4c-allowed.txt /company/c4c-asked.txt ${out("checked")}/refused.md ${out("checked")}/allowed.md; do [ -e "$f" ] && echo "there $f" || echo "absent $f"; done`],
+			{ encoding: "utf8" }).stdout;
+		const reviews8 = sessionJson<{ tool: string; decision: string; model: string; arguments: string }[]>(
+			`select coalesce(jsonb_agg(jsonb_build_object('tool', r.tool_name, 'decision', r.decision, 'model', r.reviewer_model,
+				'arguments', left(r.action ->> 'arguments', 400)) order by r.created_at), '[]')::text
+				from public.qorpera_action_reviews r where r.run_id = '${b8.runId}';`,
+		);
+		say(`checked run: reviews ${JSON.stringify(reviews8)}; stub reviews ${JSON.stringify(r8.stub?.reviews)}; results ${JSON.stringify(r8.stub?.results)}; home ${onHome.replaceAll("\n", " | ")}`);
+		check("review-run", r8.ok && resultsText("checked")?.includes("Checked work done.") === true, `the checked run: ${r8.providerSessionId ?? r8.error}`);
+		check("review-refused-shell", told("refused-shell")?.isError === true && (told("refused-shell")?.text ?? "").includes("REVIEW_DENIED: The proof refuses this action.")
+			&& onHome.includes("absent /company/c4c-refused.txt"),
+			`a refused command never ran on the home, and Claude Code read why: ${JSON.stringify(told("refused-shell"))}`);
+		check("review-allowed-shell", told("allowed-shell")?.isError === false && (told("allowed-shell")?.text ?? "").includes("allowed-on-the-home")
+			&& onHome.includes("there /company/c4c-allowed.txt"),
+			`an allowed command ran on the home: ${JSON.stringify(told("allowed-shell"))}`);
+		check("review-refused-write", told("refused-write")?.isError === true && (told("refused-write")?.text ?? "").includes("REVIEW_DENIED")
+			&& onHome.includes(`absent ${out("checked")}/refused.md`),
+			`a refused file change never reached the home, and Claude Code read why: ${JSON.stringify(told("refused-write"))}`);
+		check("review-allowed-write", told("allowed-write")?.isError === false && onHome.includes(`there ${out("checked")}/allowed.md`)
+			&& told("read")?.isError === false,
+			`an allowed file change reached the home: ${JSON.stringify(told("allowed-write"))}`);
+		check("review-asked", told("asked-shell")?.isError === true && /APPROVAL_(PENDING|UNAVAILABLE_HERE)/.test(told("asked-shell")?.text ?? "")
+			&& onHome.includes("absent /company/c4c-asked.txt"),
+			`a command that asks a member first waits, in words, and the run goes on: ${JSON.stringify(told("asked-shell"))}`);
+		check("review-records", reviews8.filter((r) => r.tool === "home_command").map((r) => r.decision).join() === "deny,allow,ask"
+			&& reviews8.filter((r) => r.tool === "home_change").map((r) => r.decision).join() === "deny,allow"
+			&& reviews8.every((r) => r.model === "haiku"),
+			`the run's reviews as members see Codex's: ${JSON.stringify(reviews8.map((r) => [r.tool, r.decision, r.model]))}`);
+		check("review-reviewer", (r8.stub?.reviews ?? []).length === reviews8.length && (r8.stub?.reviews ?? []).every((r) => r.ntools === 0),
+			`each review was one tool-less request of Claude Code's: ${JSON.stringify(r8.stub?.reviews?.map((r) => [r.decision, r.model, r.ntools]))}`);
+
 		// 6. A revoked sign-in: the worker was dispatched on it; the run opens nothing and ends blocked in its words.
 		drain();
 		const w4 = "c4c00000-0000-4000-8000-0000000000b4";
@@ -1191,7 +1249,12 @@ async function runProcess(): Promise<void> {
 					...new Set(lines.filter((line) => line.kind === "request").flatMap((line) => (line.attribution as string[]) ?? [])),
 				].sort(),
 				refreshes: lines.filter((line) => line.kind === "refresh").length,
-				results: lines.filter((line) => line.kind === "result").map((line) => ({ name: line.name, isError: line.is_error })),
+				results: lines
+					.filter((line) => line.kind === "result")
+					.map((line) => ({ name: line.name, isError: line.is_error, text: String(line.text ?? "").slice(0, 600) })),
+				reviews: lines
+					.filter((line) => line.kind === "review")
+					.map((line) => ({ decision: line.decision, tool: line.tool, model: line.model, ntools: line.ntools, arguments: line.arguments })),
 			},
 			outputs: "",
 		})}`,

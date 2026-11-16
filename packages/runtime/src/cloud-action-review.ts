@@ -1739,11 +1739,13 @@ export class CloudActionReviewGate {
 	readonly #offlineShells: ReadonlySet<string>;
 	readonly #facts: CloudActionFacts;
 	readonly #observability?: CloudRuntimeObservability;
+	readonly #reviewerModel: string;
 
 	constructor(options: {
 		binding: CloudNativeToolBinding;
 		control: CloudActionReviewControl;
 		reviewer: CloudActionReviewer;
+		reviewerModel?: string;
 		request: string;
 		/** What the agent works for (cloudActionReviewMandate): what a run no member started is judged by. */
 		mandate?: string;
@@ -1768,6 +1770,7 @@ export class CloudActionReviewGate {
 		this.#offlineShells = options.offlineShells ?? new Set();
 		this.#facts = options.facts ?? {};
 		this.#observability = options.observability;
+		this.#reviewerModel = options.reviewerModel ?? CLOUD_ACTION_REVIEW_MODEL;
 	}
 
 	async check(call: CloudActionCall, signal: AbortSignal): Promise<CloudActionGateResult> {
@@ -1846,7 +1849,7 @@ export class CloudActionReviewGate {
 					{
 						instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 						prompt,
-						model: CLOUD_ACTION_REVIEW_MODEL,
+						model: this.#reviewerModel,
 						effort: CLOUD_ACTION_REVIEW_EFFORT,
 					},
 					deadline,
@@ -1895,7 +1898,7 @@ export class CloudActionReviewGate {
 						builtIn: verdict.builtIn,
 						reason: verdict.reason,
 						proposedRule: verdict.proposedRule,
-						reviewerModel: CLOUD_ACTION_REVIEW_MODEL,
+						reviewerModel: this.#reviewerModel,
 					},
 				},
 				signal,

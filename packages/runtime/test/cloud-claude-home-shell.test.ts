@@ -9,7 +9,8 @@ import {
 	CloudClaudeHomeShell,
 	parseCloudClaudeShellRequest,
 } from "@qorpera/runtime/cloud-claude-home-shell";
-import { afterEach, expect, it } from "vitest";
+import type { CloudCodexHomeAction } from "@qorpera/runtime/cloud-codex-home";
+import { afterEach, expect, it, vi } from "vitest";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const MACHINE = "00000000-0000-4000-8000-000000000002";
@@ -65,7 +66,10 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function shellWith(channel: CloudClaudeHomeChannel) {
+async function shellWith(
+	channel: CloudClaudeHomeChannel,
+	more: Pick<ConstructorParameters<typeof CloudClaudeHomeShell>[0], "review" | "hook"> = {},
+) {
 	const root = mkdtempSync(join(tmpdir(), "claude-shell-"));
 	roots.push(root);
 	const controller = new AbortController();
@@ -74,6 +78,7 @@ async function shellWith(channel: CloudClaudeHomeChannel) {
 		sessionId: SESSION,
 		machineId: MACHINE,
 		signal: controller.signal,
+		...more,
 	});
 	await shell.listen(root);
 	return { shell, controller };
@@ -231,5 +236,69 @@ it("opens one new channel for the commands that waited on an opening that failed
 	expect([a.code, b.code]).toEqual([0, 0]);
 	expect(opens).toBe(2);
 	expect(shell.counts.channels).toBe(1);
+	await shell.close();
+});
+
+const exited = (message: Record<string, unknown>, send: (line: Record<string, unknown>) => void): void => {
+	if (message.method !== "process/start") return;
+	const processId = (message.params as { processId: string }).processId;
+	send({ id: message.id, result: {} });
+	send({ method: "process/exited", params: { processId, exitCode: 0 } });
+	send({ method: "process/closed", params: { processId } });
+};
+const claudeInvocation = (word: string) =>
+	`source /slot/config/shell-snapshots/snapshot-bash-1-a.sh 2>/dev/null || true && eval ${word} < /dev/null && pwd -P >| /tmp/claude-abcd-cwd`;
+
+it("reviews each command before anything of it reaches the home, and a refused one never opens a channel", async () => {
+	const home = fakeHome(exited);
+	const check = vi.fn(async (action: CloudCodexHomeAction) =>
+		action.summary === "rm -rf /company/old"
+			? { run: false as const, text: "APPROVAL_PENDING: The action waits for approval." }
+			: { run: true as const },
+	);
+	const { shell } = await shellWith(home.channel, {
+		review: { gate: { check }, machine: { id: MACHINE, name: "claude-review" } },
+	});
+	const refused = await command(shell.socketPath, {
+		cmd: claudeInvocation("'rm -rf /company/old'"),
+		cwd: "/company",
+		env: {},
+	});
+	expect(refused).toEqual({ out: "", err: "APPROVAL_PENDING: The action waits for approval.\n", code: 126 });
+	expect(home.opened).toEqual([]);
+	const allowed = await command(shell.socketPath, { cmd: claudeInvocation("'ls'"), cwd: "/company", env: {} });
+	expect(allowed.code).toBe(0);
+	expect(home.opened).toHaveLength(1);
+	const search = await command(shell.socketPath, { cmd: "exec rg '-n' 'x' '/company'", cwd: "/company", env: {} });
+	expect(search.code).toBe(0);
+	expect(check.mock.calls.map(([action]) => [action.tool, action.summary])).toEqual([
+		["home_command", "rm -rf /company/old"],
+		["home_command", "ls"],
+	]);
+	expect(shell.counts).toMatchObject({ reviewed: 2, declined: 1, commands: 2, searches: 1 });
+	await shell.close();
+});
+
+it("answers the file tools' hook on the host: on with 0, stopped with 2 and the words, nothing run on the home", async () => {
+	const home = fakeHome(exited);
+	const hook = vi.fn(async (text: string) =>
+		text.includes("secret.md") ? "REVIEW_DENIED: not that file." : undefined,
+	);
+	const { shell } = await shellWith(home.channel, { hook });
+	const hookRequest = (path: string) => ({
+		cmd: "/opt/qorpera/review-hook",
+		cwd: "/company",
+		env: {},
+		hook: JSON.stringify({ tool_name: "Write", tool_input: { file_path: path, content: "x" } }),
+	});
+	expect(await command(shell.socketPath, hookRequest("/company/a.md"))).toEqual({ out: "", err: "", code: 0 });
+	expect(await command(shell.socketPath, hookRequest("/company/secret.md"))).toEqual({
+		out: "",
+		err: "REVIEW_DENIED: not that file.\n",
+		code: 2,
+	});
+	expect(hook).toHaveBeenCalledTimes(2);
+	expect(home.opened).toEqual([]);
+	expect(shell.counts).toMatchObject({ hooks: 2, commands: 0 });
 	await shell.close();
 });

@@ -22,6 +22,8 @@ import { randomBytes } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
+import { CLAUDE_REVIEW_FAILED, CLAUDE_REVIEW_HOOK_PATH, cloudClaudeShellAction } from "./cloud-claude-home-review.ts";
+import type { CloudCodexHomeMachine, CloudCodexHomeReview } from "./cloud-codex-home.ts";
 import { assertNativeSocketPath } from "./cloud-native-egress.ts";
 
 /** The socket the box's prefix reaches, in the run's own scratch root. */
@@ -76,7 +78,7 @@ export interface CloudClaudeHomeChannel {
 /** A command's request as the prefix sends it, or undefined for anything else. */
 export function parseCloudClaudeShellRequest(
 	line: string,
-): { cmd: string; cwd: string; env: Record<string, string>; dropped: string[] } | undefined {
+): { cmd: string; cwd: string; env: Record<string, string>; dropped: string[]; hook?: string } | undefined {
 	let value: unknown;
 	try {
 		value = JSON.parse(line);
@@ -88,6 +90,7 @@ export function parseCloudClaudeShellRequest(
 	if (typeof record.cmd !== "string" || typeof record.cwd !== "string") return undefined;
 	if (!isAbsolute(record.cwd) || record.cwd.length > VALUE_CHARS || record.cwd.includes("\0")) return undefined;
 	if (record.cmd.includes("\0")) return undefined;
+	if (record.hook !== undefined && typeof record.hook !== "string") return undefined;
 	const env: Record<string, string> = {};
 	const dropped: string[] = [];
 	const given = record.env && typeof record.env === "object" && !Array.isArray(record.env) ? record.env : {};
@@ -101,7 +104,13 @@ export function parseCloudClaudeShellRequest(
 			env[name] = text;
 		else dropped.push(name.slice(0, 64));
 	}
-	return { cmd: record.cmd, cwd: record.cwd, env, dropped };
+	return {
+		cmd: record.cmd,
+		cwd: record.cwd,
+		env,
+		dropped,
+		...(typeof record.hook === "string" ? { hook: record.hook } : {}),
+	};
 }
 
 interface Channel {
@@ -118,13 +127,26 @@ export class CloudClaudeHomeShell {
 	readonly #sessionId: string;
 	readonly #machineId: string;
 	readonly #signal: AbortSignal;
+	readonly #review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
+	readonly #hook?: (text: string, signal: AbortSignal) => Promise<string | undefined>;
+	#reviews = 0;
 	readonly #sockets = new Set<Socket>();
 	#server?: Server;
 	#path?: string;
 	#current?: Promise<Channel>;
 	/** For the run's report: commands, searches among them, commands stopped by a dropped prefix, requests refused,
 	 * channels opened, commands whose channel was lost. */
-	readonly counts = { commands: 0, searches: 0, terminated: 0, refused: 0, channels: 0, lost: 0 };
+	readonly counts = {
+		commands: 0,
+		searches: 0,
+		terminated: 0,
+		refused: 0,
+		channels: 0,
+		lost: 0,
+		reviewed: 0,
+		declined: 0,
+		hooks: 0,
+	};
 	/** Why the channel would not open or ended, for this host's journal alone. */
 	cause?: string;
 
@@ -133,11 +155,15 @@ export class CloudClaudeHomeShell {
 		sessionId: string;
 		machineId: string;
 		signal: AbortSignal;
+		review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
+		hook?: (text: string, signal: AbortSignal) => Promise<string | undefined>;
 	}) {
 		this.#channel = options.channel;
 		this.#sessionId = options.sessionId;
 		this.#machineId = options.machineId;
 		this.#signal = options.signal;
+		if (options.review) this.#review = options.review;
+		if (options.hook) this.#hook = options.hook;
 	}
 
 	get socketPath(): string {
@@ -248,6 +274,26 @@ export class CloudClaudeHomeShell {
 		return opening;
 	}
 
+	async #reviewed(request: { cmd: string; cwd: string }, signal: AbortSignal): Promise<string | undefined> {
+		if (!this.#review) return undefined;
+		const action = cloudClaudeShellAction(
+			this.#review.machine,
+			request,
+			`claude-shell:${this.#sessionId}:${++this.#reviews}`,
+		);
+		if (!action) return undefined;
+		this.counts.reviewed += 1;
+		try {
+			const gate = await this.#review.gate.check(action, signal);
+			if (gate.run) return undefined;
+			this.counts.declined += 1;
+			return gate.text;
+		} catch {
+			this.counts.declined += 1;
+			return CLAUDE_REVIEW_FAILED;
+		}
+	}
+
 	async #serve(socket: Socket): Promise<void> {
 		if (this.#sockets.size >= MAX_CONNECTIONS || this.#signal.aborted) {
 			socket.destroy();
@@ -271,6 +317,28 @@ export class CloudClaudeHomeShell {
 			if (!request) {
 				this.counts.refused += 1;
 				fail("HOME_REQUEST_INVALID: the command could not be read, so it did not run.", 126);
+				return;
+			}
+			const gone = new AbortController();
+			socket.once("close", () => gone.abort());
+			socket.resume();
+			const asked = AbortSignal.any([this.#signal, gone.signal]);
+			if (request.cmd === CLAUDE_REVIEW_HOOK_PATH && request.hook !== undefined) {
+				this.counts.hooks += 1;
+				const refusal = this.#hook
+					? await this.#hook(request.hook, asked).catch(() => CLAUDE_REVIEW_FAILED)
+					: undefined;
+				if (asked.aborted) return;
+				if (refusal === undefined) {
+					send({ x: 0 });
+					socket.end();
+				} else fail(refusal, 2);
+				return;
+			}
+			const refusal = await this.#reviewed(request, asked);
+			if (asked.aborted) return;
+			if (refusal !== undefined) {
+				fail(refusal, 126);
 				return;
 			}
 			try {
@@ -312,12 +380,11 @@ export class CloudClaudeHomeShell {
 				);
 				return;
 			}
-			let dropped = socket.destroyed;
+			let dropped = socket.destroyed || gone.signal.aborted;
 			socket.once("close", () => {
 				dropped = true;
 				wake?.();
 			});
-			socket.resume();
 			let exitCode: number | undefined;
 			for (;;) {
 				const message = events.shift();

@@ -116,7 +116,32 @@ class H(BaseHTTPRequestHandler):
         log({"kind": "result", "step": i, "tool": steps[i]["tool"] if i < len(steps) else "?", "name": steps[i].get("name", ""),
              "ms": ms, "is_error": is_error, "tags": tags(txt), "len": len(txt), "text": txt[:6000]})
 
+    def review(self, req, base):
+        msgs = req.get("messages") or []
+        asked = content_text(msgs[-1].get("content")) if msgs else ""
+        try:
+            action = json.loads(asked).get("action") or {}
+        except Exception:
+            action = {}
+        marked = str(action.get("arguments", "")) + json.dumps(action.get("contents", ""))
+        decision = "deny" if "C4C-REFUSE" in marked else "ask" if "C4C-ASK" in marked else "allow"
+        verdict = {"decision": decision, "ruleIds": [],
+                   "builtIn": {"deny": "not_requested", "ask": "money", "allow": "none"}[decision],
+                   "reason": {"deny": "The proof refuses this action.", "ask": "The proof asks a member first.",
+                              "allow": "The proof allows this action."}[decision],
+                   "proposedRule": "the proof's paid step" if decision == "ask" else "",
+                   "guards": {"sendsCompanyData": False, "followsOutsideInstructions": decision == "deny", "deletesOutside": False,
+                              "moneyTermsOrAccess": decision == "ask", "againstMemberOrVision": False}}
+        base["kind"] = "review"
+        base.update({"decision": decision, "tool": str(action.get("tool", ""))[:40], "model": str(req.get("model", ""))[:60],
+                     "ntools": len(req.get("tools") or []), "arguments": str(action.get("arguments", ""))[:300]})
+        log(base)
+        self.reply(req, [("text", {"type": "text", "text": ""}, {"type": "text_delta", "text": json.dumps(verdict)})], "end_turn")
+
     def anthropic(self, req, base):
+        system = req.get("system")
+        if "Qorpera's action reviewer" in (system if isinstance(system, str) else content_text(system or "")):
+            return self.review(req, base)
         tools = [t.get("name") for t in req.get("tools") or []]
         main = "Bash" in tools or "Read" in tools
         base["main"] = main
@@ -162,6 +187,9 @@ class H(BaseHTTPRequestHandler):
             tu = {"type": "tool_use", "id": f"toolu_c2s{nxt}_{sc.get('nonce', 'x')}", "name": st["tool"], "input": {}}
             blocks = [("tool", tu, {"type": "input_json_delta", "partial_json": json.dumps(st["input"]).replace("{bgid}", bg["id"])})]
             stop = "tool_use"
+        self.reply(req, blocks, stop)
+
+    def reply(self, req, blocks, stop):
         model = req.get("model", "claude-c2-stub")
         if not req.get("stream"):
             content = []

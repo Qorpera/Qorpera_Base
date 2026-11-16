@@ -30,7 +30,7 @@ import { chmod, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join, posix } from "node:path";
 import { CLOUD_MACHINE_HOME, type JsonValue, POSTGRES_UUID_PATTERN } from "@qorpera/contracts";
-import type { CloudActionGateResult } from "./cloud-action-review.ts";
+import type { CloudActionCall, CloudActionGateResult } from "./cloud-action-review.ts";
 import { type CloudHomeChannelKind, CloudHomeChannelRefused, cloudHomeChannelLines } from "./cloud-home-channel.ts";
 import type { CloudRunLog } from "./cloud-run-log.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
@@ -51,7 +51,7 @@ export const CLOUD_HOME_CLOSE_MS = 5_000;
  * session's other pipe, so it can come a moment after the change itself). */
 const PATCH_NOTICE_MS = 3_000;
 /** The most of one text the review's identity carries as itself; past it, its head with its size and digest. */
-const IDENTITY_TEXT_BYTES = 32 * 1024;
+export const IDENTITY_TEXT_BYTES = 32 * 1024;
 /** What all of a patch's diffs may take of the identity together, so the whole stays within the gate's 64 KiB. */
 const IDENTITY_PATCH_BYTES = 48 * 1024;
 /** How long a connection whose channel would not open answers in words before it tries again. */
@@ -201,6 +201,33 @@ export interface CloudCodexHomeReview {
 	check(action: CloudCodexHomeAction, signal: AbortSignal): Promise<CloudActionGateResult>;
 }
 
+export function cloudHomeActionReview(
+	review: { check(call: CloudActionCall, signal: AbortSignal): Promise<CloudActionGateResult> } | undefined,
+): CloudCodexHomeReview {
+	return {
+		check: async (action, signal) =>
+			review
+				? await review.check(
+						{
+							tool: {
+								name: action.tool,
+								source: "runtime",
+								...(action.contents === undefined
+									? {}
+									: { reviewContents: () => action.contents as JsonValue }),
+							},
+							parsed: JSON.parse(action.argumentsText) as JsonValue,
+							argumentsText: action.argumentsText,
+							argumentSha256: action.argumentSha256,
+							callId: action.callId,
+							repeat: action.repeat,
+						},
+						signal,
+					)
+				: { run: true },
+	};
+}
+
 const REPEAT_COMMAND =
 	"When you are woken because it was approved, run that exact command again yourself with your own shell, unchanged and in the same folder. There is no tool of yours to call for it: the card names what your shell asked for. Made unchanged, it runs without another review.";
 const REPEAT_CHANGE =
@@ -211,7 +238,7 @@ const digestOf = (text: string): string => createHash("sha256").update(text).dig
 
 /** A text as the identity carries it: whole when it fits, else its head with its size and digest, so every byte of it
  * is still covered and the identity stays within the gate's bound. */
-function bounded(value: string, limit: number): JsonValue {
+export function bounded(value: string, limit: number): JsonValue {
 	const bytes = Buffer.byteLength(value);
 	if (bytes <= limit) return value;
 	const head = new TextDecoder().decode(Buffer.from(value, "utf8").subarray(0, limit)).replace(/�$/, "");
@@ -235,19 +262,19 @@ function machinePath(value: unknown): string | undefined {
 
 /** The company folder's own path for a machine path (`/company/notes/a.md` is `notes/a.md`), as the work log's paths
  * are everywhere else; undefined outside the folder. */
-function folderPath(path: string): string | undefined {
+export function folderPath(path: string): string | undefined {
 	const prefix = `${CLOUD_HOME_CWD}/`;
 	return path.startsWith(prefix) && path.length > prefix.length ? path.slice(prefix.length) : undefined;
 }
 
 /** One path as a step names it: `path` inside the company folder (so erasure and zoom find it), `machinePath`
  * outside it, where the folder's rules do not reach. */
-function stepPath(path: string): Record<string, JsonValue> {
+export function stepPath(path: string): Record<string, JsonValue> {
 	const inFolder = folderPath(path);
 	return inFolder === undefined ? { machinePath: path } : { path: inFolder };
 }
 
-function finishAction(input: {
+export function finishAction(input: {
 	tool: CloudCodexHomeAction["tool"];
 	machine: CloudCodexHomeMachine;
 	summary: string;

@@ -1,6 +1,6 @@
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
-import type { CloudCodexHome, CloudCodexHomeReview } from "./cloud-codex-home.ts";
+import { type CloudCodexHome, type CloudCodexHomeReview, cloudHomeActionReview } from "./cloud-codex-home.ts";
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
@@ -259,34 +259,7 @@ export async function runCloudNativeRunToolSession(options: {
 		// machine command (slice 4), and what it did becomes the run's own steps (slice 2).
 		const review = reviewer && options.actionReview ? options.actionReview(reviewer) : undefined;
 		home = options.home?.({
-			review: {
-				check: async (action, signal) =>
-					review
-						? await review.check(
-								{
-									// Work on a company machine, under its own names (`home_command`, `home_change`), by the
-									// same rule and cards as `machine_run` (cloud-action-review.ts). The identity is what the
-									// model chose for this action; a lone file write also shows the reviewer its text, as a
-									// folder tool's write does.
-									tool: {
-										name: action.tool,
-										source: "runtime",
-										...(action.contents === undefined
-											? {}
-											: { reviewContents: () => action.contents as JsonValue }),
-									},
-									parsed: JSON.parse(action.argumentsText) as JsonValue,
-									argumentsText: action.argumentsText,
-									argumentSha256: action.argumentSha256,
-									callId: action.callId,
-									// A parked card of a home action is answered by doing the thing again on the machine, not
-									// by calling a tool the model does not have (review round 1, F8).
-									repeat: action.repeat,
-								},
-								signal,
-							)
-						: { run: true },
-			},
+			review: cloudHomeActionReview(review),
 			log: adapters.runLog?.log,
 			signal: run.signal,
 		});

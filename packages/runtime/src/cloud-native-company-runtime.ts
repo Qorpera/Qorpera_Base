@@ -5,6 +5,7 @@ import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
+	CloudActionReviewChannel,
 	CloudActionReviewGate,
 	cloudActionEffect,
 	cloudActionReviewMandate,
@@ -19,6 +20,7 @@ import {
 } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import {
+	CLAUDE_ACTION_REVIEW_MODEL,
 	CLAUDE_CODE_PIN,
 	type ClaudeBoxConfiguration,
 	type ClaudeCodeBoxOptions,
@@ -45,6 +47,7 @@ import {
 	type CloudCodexHomeReview,
 	CloudCodexHomeSteps,
 	type CloudCompanyHome,
+	cloudHomeActionReview,
 	cloudHomeRefusalWords,
 	parseCloudCompanyHome,
 } from "./cloud-codex-home.ts";
@@ -104,6 +107,7 @@ import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory 
 import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
 	type CloudCompanyContextSource,
+	type CloudNativeCompanyContext,
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	cloudNativeStableInstructions,
@@ -507,6 +511,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (typeof outputFolder !== "string") throw new Error("Invalid worker dispatch wake");
 				return await this.#claudeCodeWorker(identityRoot, signal, {
 					binding,
+					context,
 					identity: context.identity,
 					handle: context.folder.agent,
 					wake,
@@ -1672,6 +1677,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		signal: AbortSignal,
 		input: {
 			binding: CloudNativeToolBinding;
+			context: CloudNativeCompanyContext;
 			identity: CloudNativeToolIdentity;
 			handle: string;
 			wake: CloudWakeEnvelope;
@@ -1780,6 +1786,37 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const earlier = typeof facts?.earlier === "string" && facts.earlier ? facts.earlier : null;
 			const home = await input.home;
 			const sessionId = randomUUID();
+			const reviewer = new CloudActionReviewChannel();
+			const notebooks = new CloudFolderNotebooks({
+				folder,
+				runId: binding.runId,
+				agentFolder: cloudAgentFolder(
+					identity.companyId,
+					identity.staffAgentId,
+					cloudAgentFolderPlace(input.context),
+				),
+			});
+			const vision = home
+				? await readCloudAgentHeadVision(notebooks.composition, runSignal).catch(() => {
+						runSignal.throwIfAborted();
+						return null;
+					})
+				: null;
+			const review = new CloudActionReviewGate({
+				binding,
+				control: {
+					call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
+				},
+				reviewer,
+				reviewerModel: CLAUDE_ACTION_REVIEW_MODEL,
+				request: cloudActionReviewRequest(input.context, wake),
+				mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null),
+				holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
+				facts: {
+					coworkers: new Map(input.context.coworkers.map((coworker) => [coworker.id, coworker.name])),
+					timeZone: wake.time.timeZone,
+				},
+			});
 			let outcome: ClaudeWorkerOutcome;
 			if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
 			else
@@ -1803,6 +1840,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							channel: channelOf(binding) as CloudClaudeHomeChannel,
 							sessionId,
 							machineId: home.machineId,
+							review: {
+								gate: cloudHomeActionReview(review),
+								machine: { id: home.machineId, name: home.machine },
+								attach: (made) => reviewer.attach(made),
+							},
 							// The run's one home session (both channels) is ended in SQL once both are closed.
 							endSession: async (id, reason) => {
 								await this.#paths.call(
