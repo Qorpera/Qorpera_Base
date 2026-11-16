@@ -614,7 +614,8 @@ export class FoundingView {
 		const name = table?.companyName ?? "";
 		const idea = (table?.vision || this.#founding.pendingVision || "").trim().split(/\r?\n/, 1)[0] ?? "";
 		const shownIdea = idea.toLocaleLowerCase() === name.toLocaleLowerCase() ? "" : idea;
-		this.#startingSlot.show(`${name}\n${shownIdea}\n${connect}`, () =>
+		const ready = table?.start?.companyReady === true;
+		this.#startingSlot.show(`${name}\n${shownIdea}\n${connect}\n${ready}`, () =>
 			h(
 				"header",
 				{ class: "founding-head founding-start-head" },
@@ -628,6 +629,7 @@ export class FoundingView {
 							h("span", { class: "founding-start-bar", "aria-hidden": "true" }, h("i")),
 							h("p", null, t("Your Co-Founder is getting ready")),
 						),
+				ready && table ? openCompanyLater(name, table.profileId) : null,
 			),
 		);
 		if (table) this.#connectPanel(table, connect);
@@ -1150,4 +1152,12 @@ function startsQuietly(table: CompanyFounding): boolean {
 	if (!start?.companyReady) return start?.companySetup !== "failed";
 	const firstRun = start.firstRun ?? null;
 	return !start.firstRunWaitsUntil && (firstRun === null || firstRun === "queued" || firstRun === "started");
+}
+
+function openCompanyLater(name: string, profileId: string): HTMLButtonElement {
+	const open = button(t("Open {name}", { name }), () => navigate({ name: "company", profileId, section: "home" }), {
+		primary: true,
+	});
+	open.classList.add("founding-start-open");
+	return open;
 }

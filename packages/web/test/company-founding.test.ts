@@ -1120,7 +1120,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 
 	describe("the arrow alone starts the company by itself", () => {
 		/** A table with only you at it, and what Ready and Start did to it. */
-		function soloTable(connected: () => boolean) {
+		function soloTable(connected: () => boolean, companyReady = () => false) {
 			const calls: string[] = [];
 			let ready = false;
 			let started = false;
@@ -1134,7 +1134,12 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 						seats: [{ ...(wire().seats as Wire[])[0], ready: false }],
 						waitingFor: [],
 						me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
-						start: { startedAt: "2026-11-09T18:00:00Z", startedByUserId: me, revision: 5, companyReady: false },
+						start: {
+							startedAt: "2026-11-09T18:00:00Z",
+							startedByUserId: me,
+							revision: 5,
+							companyReady: companyReady(),
+						},
 					});
 				return wire({
 					seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: connected(), ready }],
@@ -1178,6 +1183,24 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect(controller.store.get().startedAlone).toBe(true);
 			// Done: a reload opens the started page, and starts nothing again.
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
+		});
+
+		it("offers Open on the same scene once the company is ready, should the way into it not come", async () => {
+			const { api, cloud } = fixture();
+			const solo = soloTable(
+				() => true,
+				() => true,
+			);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			setFoundingIntent(table, { start: true });
+			open(api);
+			await settle();
+			await settle();
+			expect(container.querySelector(".founding-starting")).not.toBeNull();
+			const offered = [...container.querySelectorAll<HTMLButtonElement>(".founding-start-open")];
+			expect(offered.map((button) => button.textContent)).toEqual(["Open Nordlys Kaffe"]);
+			offered[0]!.click();
+			expect(location.hash).toBe(routeHash({ name: "company", profileId: table, section: "home" }));
 		});
 
 		it("waits for the account login a few seconds before it asks for ChatGPT", async () => {
