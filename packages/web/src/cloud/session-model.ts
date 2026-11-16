@@ -2,16 +2,31 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
+export const SESSION_PROVIDERS = ["openai", "anthropic"] as const;
+export type SessionProvider = (typeof SESSION_PROVIDERS)[number];
+
 export const SESSION_MODELS = [
-	{ id: "gpt-6-astra", name: "GPT-6 Astra" },
-	{ id: "gpt-6-sol", name: "GPT-6 Sol" },
-	{ id: "gpt-6-luna", name: "GPT-6 Luna" },
-] as const;
+	{ id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai" },
+	{ id: "gpt-6-sol", name: "GPT-6 Sol", provider: "openai" },
+	{ id: "gpt-6-luna", name: "GPT-6 Luna", provider: "openai" },
+	{ id: "claude-opus-5-5", name: "Opus 5.5", provider: "anthropic" },
+	{ id: "claude-sonnet-5-5", name: "Sonnet 5.5", provider: "anthropic" },
+	{ id: "claude-haiku-5-5", name: "Haiku 5.5", provider: "anthropic" },
+] as const satisfies ReadonlyArray<{ id: string; name: string; provider: SessionProvider }>;
 
 /** The only listed model a cloud without per-conversation effort accepts. */
 export const SESSION_MODEL_BEFORE_EFFORT = "gpt-6-astra";
 
-export const SESSION_EFFORTS = ["low", "medium", "high"] as const;
+export const SESSION_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export const PROVIDER_EFFORTS: Record<SessionProvider, readonly (typeof SESSION_EFFORTS)[number][]> = {
+	openai: ["low", "medium", "high"],
+	anthropic: ["low", "medium", "high", "xhigh", "max"],
+};
+
+export function modelProvider(modelId: string | undefined): SessionProvider {
+	return SESSION_MODELS.find((model) => model.id === modelId)?.provider ?? "openai";
+}
 
 /** Fast is the provider's priority tier; standard turns it off. */
 export const SESSION_SERVICE_TIERS = ["fast", "standard"] as const;
@@ -24,6 +39,7 @@ export interface SessionModel {
 	reasoningEffort?: string;
 	/** Absent while the cloud does not run conversations on the Fast tier. */
 	serviceTier?: string;
+	providers?: readonly SessionProvider[];
 	version: number;
 }
 
@@ -78,7 +94,11 @@ export function createWebSessionModel(
 				selection.serviceTier === undefined) ||
 				(selection.modelId !== undefined && !SESSION_MODELS.some((model) => model.id === selection.modelId)) ||
 				(selection.reasoningEffort !== undefined &&
-					!(SESSION_EFFORTS as readonly string[]).includes(selection.reasoningEffort)) ||
+					!(PROVIDER_EFFORTS[modelProvider(selection.modelId)] as readonly string[]).includes(
+						selection.reasoningEffort,
+					) &&
+					(selection.modelId !== undefined ||
+						!(SESSION_EFFORTS as readonly string[]).includes(selection.reasoningEffort))) ||
 				(selection.serviceTier !== undefined &&
 					(!(SESSION_SERVICE_TIERS as readonly string[]).includes(selection.serviceTier) ||
 						selection.modelId !== undefined ||
@@ -153,6 +173,7 @@ export function createWebSessionModel(
 					const result = value as Record<string, unknown>;
 					const effort = result.reasoning_effort;
 					const tier = result.service_tier;
+					const providers = result.providers;
 					if (response.status !== 200)
 						throw new CloudRpcError(
 							method,
@@ -184,6 +205,10 @@ export function createWebSessionModel(
 								!tier ||
 								tier !== tier.trim() ||
 								new TextEncoder().encode(tier).length > 64)) ||
+						(providers !== undefined &&
+							(!Array.isArray(providers) ||
+								providers.length > SESSION_PROVIDERS.length ||
+								providers.some((item) => !(SESSION_PROVIDERS as readonly unknown[]).includes(item)))) ||
 						typeof result.version !== "number" ||
 						!Number.isSafeInteger(result.version) ||
 						result.version < 0 ||
@@ -199,6 +224,7 @@ export function createWebSessionModel(
 						...(typeof model === "string" ? { modelId: model } : {}),
 						...(typeof effort === "string" ? { reasoningEffort: effort } : {}),
 						...(typeof tier === "string" ? { serviceTier: tier } : {}),
+						...(Array.isArray(providers) ? { providers: [...new Set(providers as SessionProvider[])] } : {}),
 						version: result.version,
 					};
 				} finally {

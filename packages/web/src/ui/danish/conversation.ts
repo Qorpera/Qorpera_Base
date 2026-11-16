@@ -248,6 +248,13 @@ export const CONVERSATION: Record<string, string> = {
 	Low: "Lav",
 	Medium: "Mellem",
 	High: "Høj",
+	"Extra high": "Ekstra høj",
+	Max: "Maks",
+	Provider: "Udbyder",
+	"GPT answers light messages. Claude Code does the work, on your Claude plan.":
+		"GPT svarer på lette beskeder. Claude Code gør arbejdet, på dit Claude-abonnement.",
+	"Pick a GPT model to switch this conversation back to GPT.":
+		"Vælg en GPT-model for at skifte samtalen tilbage til GPT.",
 	Speed: "Hastighed",
 	Fast: "Hurtig",
 	"{model}, Fast": "{model}, hurtig",

@@ -49,6 +49,7 @@ async function setup(groupChat = false) {
 				modelId: selection.modelId ?? previous?.modelId ?? "gpt-6-astra",
 				reasoningEffort: selection.reasoningEffort ?? previous?.reasoningEffort ?? "low",
 				...(serviceTier ? { serviceTier } : {}),
+				...(previous?.providers ? { providers: previous.providers } : {}),
 				version: version + 1,
 			};
 			models.set(sessionId, value);
@@ -74,6 +75,20 @@ function button(root: ParentNode, label: string): HTMLButtonElement {
 	if (!result) throw new Error(`Missing button: ${label}`);
 	return result;
 }
+function slider(panel: HTMLElement): HTMLElement {
+	return panel.querySelector<HTMLElement>('[role="slider"]')!;
+}
+async function slide(panel: HTMLElement, key: string, times = 1): Promise<void> {
+	for (let step = 0; step < times; step++)
+		slider(panel).dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+	await vi.advanceTimersByTimeAsync(450);
+	await settle();
+}
+function shownModels(panel: HTMLElement): string[] {
+	return [...panel.querySelectorAll<HTMLButtonElement>(".composer-model-choice:not([hidden])")].map(
+		(item) => item.textContent ?? "",
+	);
+}
 async function open(view: ConversationView, label = "Model: GPT-6 Astra, Low effort"): Promise<HTMLElement> {
 	button(view.el, "Chat settings and more").click();
 	button(view.el, label).click();
@@ -88,8 +103,8 @@ describe("composer model selector", () => {
 		// Opening the menu reads the conversation again.
 		const panel = await open(f.view);
 		expect(button(f.view.el, "Model: Each agent's own, Low effort").textContent).toContain("Each agent's own");
-		expect(panel.querySelectorAll('[role="menuitemradio"][aria-checked="true"]').length).toBe(1);
-		expect(button(panel, "Low").getAttribute("aria-checked")).toBe("true");
+		expect(panel.querySelectorAll('.composer-model-choice[aria-checked="true"]').length).toBe(0);
+		expect(slider(panel).getAttribute("aria-valuetext")).toBe("Low");
 		for (const name of ["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"])
 			expect(button(panel, name).getAttribute("aria-checked")).toBe("false");
 	});
@@ -126,8 +141,7 @@ describe("composer model selector", () => {
 		button(panel, "GPT-6 Sol").click();
 		await settle();
 		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-sol" }, 0, expect.any(AbortSignal));
-		button(panel, "High").click();
-		await settle();
+		await slide(panel, "End");
 		expect(f.set).toHaveBeenLastCalledWith(
 			session.sessionId,
 			{ reasoningEffort: "high" },
@@ -159,7 +173,7 @@ describe("composer model selector", () => {
 		expect(panel.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')?.disabled).toBe(true);
 		expect(button(panel, "GPT-6 Sol").disabled).toBe(true);
 		expect(button(panel, "GPT-6 Luna").disabled).toBe(true);
-		expect(button(panel, "High").disabled).toBe(true);
+		expect(slider(panel).getAttribute("aria-disabled")).toBe("true");
 		// Arrow keys wrap over the usable choices only: Back and GPT-6 Astra.
 		button(panel, "GPT-6 Astra").focus();
 		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
@@ -184,15 +198,10 @@ describe("composer model selector", () => {
 		expect(document.activeElement).toBe(button(panel, "GPT-6 Astra"));
 		expect(button(panel, "GPT-6 Astra").getAttribute("aria-checked")).toBe("true");
 		expect(panel.textContent).toContain("Only this conversation");
-		expect([...panel.querySelectorAll('[role="menuitemradio"]')].map((item) => item.textContent)).toEqual([
-			"GPT-6 Astra",
-			"GPT-6 Sol",
-			"GPT-6 Luna",
-			"Low",
-			"Medium",
-			"High",
-		]);
-		expect(button(panel, "Low").getAttribute("aria-checked")).toBe("true");
+		expect(shownModels(panel)).toEqual(["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"]);
+		expect(panel.querySelector<HTMLElement>(".composer-provider")?.hidden).toBe(true);
+		expect(slider(panel).getAttribute("aria-valuetext")).toBe("Low");
+		expect(slider(panel).getAttribute("aria-valuemax")).toBe("2");
 		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(panel.hidden).toBe(true);
 		expect(document.activeElement).toBe(button(f.view.el, "Model: GPT-6 Astra, Low effort"));
@@ -219,17 +228,17 @@ describe("composer model selector", () => {
 		expect(button(f.view.el, "Send message").disabled).toBe(false);
 		expect(button(panel, "GPT-6 Sol").getAttribute("aria-checked")).toBe("true");
 		expect(document.activeElement).toBe(button(panel, "GPT-6 Sol"));
-		button(panel, "High").focus();
-		button(panel, "High").click();
-		await settle();
+		slider(panel).focus();
+		await slide(panel, "ArrowRight", 2);
+		expect(f.set).toHaveBeenCalledTimes(2);
 		expect(f.set).toHaveBeenLastCalledWith(
 			session.sessionId,
 			{ reasoningEffort: "high" },
 			1,
 			expect.any(AbortSignal),
 		);
-		expect(button(panel, "High").getAttribute("aria-checked")).toBe("true");
-		expect(document.activeElement).toBe(button(panel, "High"));
+		expect(slider(panel).getAttribute("aria-valuetext")).toBe("High");
+		expect(document.activeElement).toBe(slider(panel));
 		expect(button(panel, "GPT-6 Sol").getAttribute("aria-checked")).toBe("true");
 		expect(f.updateAgent).not.toHaveBeenCalled();
 		expect(f.company.staffById(staff.id)?.model).toBeUndefined();
@@ -365,12 +374,12 @@ describe("composer model selector", () => {
 		});
 		const panel = await open(f.view);
 		expect(button(f.view.el, "Model: custom-model, Medium effort")).toBeTruthy();
-		expect([...panel.querySelectorAll('[aria-checked="true"]')].map((item) => item.textContent)).toEqual(["Medium"]);
+		expect(panel.querySelectorAll('.composer-model-choice[aria-checked="true"]').length).toBe(0);
+		expect(slider(panel).getAttribute("aria-valuetext")).toBe("Medium");
 		expect(button(panel, "GPT-6 Astra").disabled).toBe(false);
 		expect(f.set).not.toHaveBeenCalled();
 		// An effort pick keeps the unlisted model: the cloud keeps what is not sent.
-		button(panel, "High").click();
-		await settle();
+		await slide(panel, "ArrowRight");
 		expect(f.set).toHaveBeenCalledWith(session.sessionId, { reasoningEffort: "high" }, 3, expect.any(AbortSignal));
 		expect(button(f.view.el, "Model: custom-model, High effort")).toBeTruthy();
 		button(f.view.el, "Chat settings and more").click();
@@ -378,6 +387,86 @@ describe("composer model selector", () => {
 		await open(f.view, "Model: custom-model, High effort");
 		expect(button(panel, "GPT-6 Astra").disabled).toBe(true);
 		expect(panel.textContent).toContain("model is unavailable");
+	});
+	it("switches a conversation to Claude where the cloud offers it, with Claude's own efforts", async () => {
+		const f = await setup();
+		f.models.set(session.sessionId, {
+			sessionId: session.sessionId,
+			modelId: "gpt-6-astra",
+			reasoningEffort: "high",
+			serviceTier: "fast",
+			providers: ["openai", "anthropic"],
+			version: 0,
+		});
+		const panel = await open(f.view);
+		const providers = panel.querySelector<HTMLElement>(".composer-provider")!;
+		expect(providers.hidden).toBe(false);
+		expect(button(panel, "GPT").getAttribute("aria-checked")).toBe("true");
+		button(panel, "Claude").click();
+		expect(document.activeElement).toBe(button(panel, "Claude"));
+		expect(shownModels(panel)).toEqual(["Opus 5.5", "Sonnet 5.5", "Haiku 5.5"]);
+		expect(panel.textContent).toContain(
+			"GPT answers light messages. Claude Code does the work, on your Claude plan.",
+		);
+		expect(panel.querySelector<HTMLElement>('[role="group"][aria-label="Effort"]')?.hidden).toBe(true);
+		expect(panel.querySelector<HTMLElement>('[role="group"][aria-label="Speed"]')?.hidden).toBe(true);
+		expect(f.set).not.toHaveBeenCalled();
+		button(panel, "Opus 5.5").click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ modelId: "claude-opus-5-5" },
+			0,
+			expect.any(AbortSignal),
+		);
+		expect(button(panel, "Opus 5.5").getAttribute("aria-checked")).toBe("true");
+		expect(slider(panel).getAttribute("aria-valuemax")).toBe("4");
+		expect(panel.querySelector<HTMLElement>('[role="group"][aria-label="Speed"]')?.hidden).toBe(true);
+		slider(panel).focus();
+		await slide(panel, "End");
+		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { reasoningEffort: "max" }, 1, expect.any(AbortSignal));
+		expect(button(f.view.el, "Model: Opus 5.5, Max effort").textContent).toContain("Opus 5.5 · Max");
+		button(panel, "GPT").click();
+		expect(shownModels(panel)).toEqual(["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"]);
+		expect(panel.textContent).toContain("Pick a GPT model to switch this conversation back to GPT.");
+		button(panel, "GPT-6 Sol").click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ modelId: "gpt-6-sol", reasoningEffort: "high" },
+			2,
+			expect.any(AbortSignal),
+		);
+		expect(button(f.view.el, "Model: GPT-6 Sol, High effort, Fast")).toBeTruthy();
+	});
+	it("keeps the slider's arrow keys out of the menu and moves by pointer", async () => {
+		const f = await setup();
+		const panel = await open(f.view);
+		slider(panel).focus();
+		await slide(panel, "ArrowLeft");
+		expect(panel.hidden).toBe(false);
+		expect(f.set).not.toHaveBeenCalled();
+		vi.spyOn(slider(panel), "getBoundingClientRect").mockReturnValue({
+			left: 100,
+			width: 200,
+			top: 0,
+			height: 30,
+			right: 300,
+			bottom: 30,
+			x: 100,
+			y: 0,
+			toJSON() {},
+		} as DOMRect);
+		slider(panel).dispatchEvent(new PointerEvent("pointerdown", { clientX: 190, button: 0, bubbles: true }));
+		expect(slider(panel).getAttribute("aria-valuetext")).toBe("Medium");
+		slider(panel).dispatchEvent(new PointerEvent("pointermove", { clientX: 295, bubbles: true }));
+		expect(slider(panel).getAttribute("aria-valuetext")).toBe("High");
+		expect(f.set).not.toHaveBeenCalled();
+		slider(panel).dispatchEvent(new PointerEvent("pointerup", { clientX: 295, bubbles: true }));
+		await settle();
+		expect(f.set).toHaveBeenCalledWith(session.sessionId, { reasoningEffort: "high" }, 0, expect.any(AbortSignal));
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+		expect(document.activeElement).toBe(button(panel, "GPT-6 Luna"));
 	});
 });
 
