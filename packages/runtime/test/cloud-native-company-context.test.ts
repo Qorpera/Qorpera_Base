@@ -155,6 +155,8 @@ it("tells an agent when a database is the right home, how its folder is laid out
 		"actions/<name>.sql (its changes: one insert, update, delete or merge each, :name for a value, -- lines on top that say in a member's words what it does, such as -- Mark order :id as shipped)",
 		"To add, change or remove rows, write a change and run it with data_change; the rows a database starts with go in a step.",
 		"A step that would drop a table or column or delete rows waits for a member's yes: tell them what it would destroy, and call data_apply again with the allow its answer gave, which asks them on a card.",
+		"Members see a database's whole tables when they may read its folder, and change rows there when they may write it;",
+		'a database whose rows are private to each member (its questions name :viewer) says members = "writers" under [list] in its database.toml, so only those who may write the folder see whole tables.',
 		"Never put a secret in a step, a query, a change or a row.",
 	])
 		expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(said);
@@ -2014,7 +2016,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "122b203975a874e32ca1abeb07e1b68f16a240ed4706aa4d1d2354ce07ff17ef",
+			instructions: "b83cea836544021b3c4e8b04fb01603a28839fbdb4de4ec2f44e9980623e5474",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2022,7 +2024,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "1b0960ecac63c251691b1a8b7a2875ba8e8d774fd53a387d47c9e65dc4e12e72",
+			instructions: "4ecdde26333cfc305d263663ad41c07578885ea56214b993c8c1b9d9e1b1989b",
 			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
@@ -2030,7 +2032,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "122b203975a874e32ca1abeb07e1b68f16a240ed4706aa4d1d2354ce07ff17ef",
+			instructions: "b83cea836544021b3c4e8b04fb01603a28839fbdb4de4ec2f44e9980623e5474",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],

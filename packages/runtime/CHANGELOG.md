@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Agents' words about company databases say who sees a database's whole tables (the Data list, slice 10 part d; words only, no SQL, the runtime bundle only): members see whole tables when they may read the folder and change rows when they may write it, and a database whose rows are private to each member (its questions name `:viewer`) says `members = "writers"` under `[list]` in its database.toml, so only those who may write the folder see whole tables. The gateway serves that rule from part b (#1865) and the writing from part c (#1866); this goes out only once they are live. Pins: the staff instructions (a conversation and a private conversation) `122b203975a8` → `b83cea836544021b3c4e8b04fb01603a28839fbdb4de4ec2f44e9980623e5474`, the worker's `1b0960ecac63` → `4ecdde26333cfc305d263663ad41c07578885ea56214b993c8c1b9d9e1b1989b`, measured on node 2's test VM on the tree merged with v250's master; the three prompts do not move.
 - Release v250 (the Claude Code worker on the agent's machine: #1821, #1822, #1831, #1832, #1833 and #1835; and master since
   v249): runtime bundle 250 `78618f12bdb6cb3c275809c9c55d13e3877dfa374c62ab14bcd5a501b1f1e097` (activation `20260929025099`,
   previous 249 `049019cdd704`). Its activation requires the release's eight migrations, which the roll's `migrate` runs
