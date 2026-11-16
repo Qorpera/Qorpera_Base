@@ -1190,6 +1190,8 @@ async function runProcess(): Promise<void> {
 			proof: {
 				transport: { resolve: async () => ["93.184.216.34"], connect: () => createConnection({ host: "127.0.0.1", port: config.stubPort }) },
 				extraCa: `${P}/tls/ca.pem`,
+				onLone: (change: { method: string; paths: readonly string[] }) => console.error(`LONE ${change.method} ${change.paths.join(" ")}`),
+				onReviewerFailure: (text: string) => console.error(`REVIEWER ${text.replaceAll("\n", " | ").slice(0, 3000)}`),
 			},
 		},
 	});

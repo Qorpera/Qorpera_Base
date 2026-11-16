@@ -679,7 +679,7 @@ async function runClaudeReviewer(
 			{
 				cwd: root,
 				env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
-				stdio: ["pipe", "pipe", "ignore", token !== undefined ? "pipe" : "ignore"],
+				stdio: ["pipe", "pipe", "pipe", token !== undefined ? "pipe" : "ignore"],
 				detached: true,
 			},
 		);
@@ -699,6 +699,12 @@ async function runClaudeReviewer(
 		stdin.on("error", () => undefined);
 		stdin.end(input.prompt);
 		let out = "";
+		let err = "";
+		const stderr = stdio[2] as Readable;
+		stderr.setEncoding("utf8");
+		stderr.on("data", (text: string) => {
+			err = (err + text).slice(-4096);
+		});
 		const stdout = stdio[1] as Readable;
 		stdout.setEncoding("utf8");
 		stdout.on("data", (text: string) => {
@@ -710,6 +716,7 @@ async function runClaudeReviewer(
 			return claudeReviewerVerdict(out);
 		} catch (error) {
 			console.error(`The Claude Code reviewer gave no verdict (exit ${launched.exitCode ?? launched.signalCode})`);
+			options.proof?.onReviewerFailure?.(`${err}\n${out.slice(-2000)}`);
 			throw error;
 		}
 	} finally {
@@ -769,11 +776,16 @@ export interface ClaudeCodeBoxOptions {
 		readonly gate: CloudCodexHomeReview;
 		readonly machine: CloudCodexHomeMachine;
 		readonly attach: (reviewer: CloudActionReviewer | undefined) => void;
-		readonly onLone?: (change: ClaudeFileChange) => void;
 	};
 	/** Proofs only: the egress transport (as startNativeCodexEgress takes it), a CA file the box trusts for the stub's
 	 * TLS, and the positive controls' weaker set-ups. */
-	proof?: { transport?: NativeEgressTransport; extraCa?: string; weakening?: ClaudeBoxProofWeakening };
+	proof?: {
+		transport?: NativeEgressTransport;
+		extraCa?: string;
+		weakening?: ClaudeBoxProofWeakening;
+		onLone?: (change: ClaudeFileChange) => void;
+		onReviewerFailure?: (stderr: string) => void;
+	};
 }
 
 /**
@@ -1068,7 +1080,7 @@ async function startBox(
 				toHome,
 				toMount: (bytes) => void toMount.write(bytes),
 			});
-			if (review.onLone) gate.onLone = review.onLone;
+			if (options.proof?.onLone) gate.onLone = options.proof.onLone;
 		}
 		const filesGate = gate;
 		void (async () => {

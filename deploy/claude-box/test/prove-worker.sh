@@ -51,6 +51,8 @@ for f in $B/run*.out; do echo "--- $f"; tail -c 3000 "$f"; echo; done
 echo "=== stub logs: kinds"
 for f in $B/stub-*.jsonl; do echo "$f: $(python3 -c 'import json,sys,collections; print(dict(collections.Counter(json.loads(l)["kind"] for l in open(sys.argv[1]))))' "$f")"; done
 
+echo "=== lone file changes and reviewer failures"
+grep -h "^LONE\|^REVIEWER" $B/run*.out 2>/dev/null | cut -c1-1500 | sort | uniq -c | head -40
 echo "=== stub logs: requests"
 for f in $B/stub-run1.jsonl $B/stub-run2.jsonl; do echo "$f:"; python3 -c 'import json,sys
 for l in open(sys.argv[1]):
