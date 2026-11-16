@@ -799,7 +799,7 @@ describe("hub with founding tables", () => {
 		renderHub(hub, container);
 		// No company yet: the new-company box is the hub, with the seat Bo saved under it.
 		expect(container.querySelector(".hub-welcome")).not.toBeNull();
-		expect(visibleText(container)).toContain("What do you want to build?");
+		expect(container.querySelector(".hero-idea")).not.toBeNull();
 		expect(visibleText(container)).toContain("Bo saved you a seat at Havn.");
 		expect(container.querySelector<HTMLAnchorElement>(".hero-invitation")?.getAttribute("data-href")).toBe(
 			`#/found/${id(902)}`,
@@ -1171,13 +1171,16 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			// The table's page never showed: no idea box, no Start button.
 			expect(container.querySelector("textarea.founding-vision")).toBeNull();
 			expect(container.querySelector(".founding-start")).toBeNull();
-			expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+			expect(container.querySelector(".founding-starting")).not.toBeNull();
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
+			expect(visibleText(container)).not.toContain("is starting");
 			expect(controller.store.get().autoStart).toBe(false);
+			expect(controller.store.get().startedAlone).toBe(true);
 			// Done: a reload opens the started page, and starts nothing again.
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
 		});
 
-		it("asks for ChatGPT first, on its own page, and starts once it is connected", async () => {
+		it("waits for the account login a few seconds before it asks for ChatGPT", async () => {
 			const { api, cloud } = fixture();
 			let connected = false;
 			const solo = soloTable(() => connected);
@@ -1185,6 +1188,34 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			setFoundingIntent(table, { start: true });
 			const controller = open(api);
 			await settle();
+			expect(controller.store.get().connectOpen).toBeFalsy();
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
+			connected = true;
+			await controller.refresh();
+			await settle();
+			await settle();
+			expect(controller.store.get().connectOpen).toBeFalsy();
+			expect(solo.calls).toContain("qorpera_start_company_founding");
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
+		});
+
+		it("asks for ChatGPT on the same page once the wait is over, and starts once it is connected", async () => {
+			const { api, cloud } = fixture();
+			let connected = false;
+			const solo = soloTable(() => connected);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			setFoundingIntent(table, { start: true });
+			const opened = Date.now();
+			const controller = open(api);
+			await settle();
+			expect(controller.store.get().connectOpen).toBeFalsy();
+			const later = vi.spyOn(Date, "now").mockReturnValue(opened + 9000);
+			try {
+				await controller.refresh();
+				await settle();
+			} finally {
+				later.mockRestore();
+			}
 			expect(controller.store.get().connectOpen).toBe(true);
 			expect(container.querySelector(".founding-starting .founding-connect")?.hasAttribute("hidden")).toBe(false);
 			expect(visibleText(container)).toContain("Connect your ChatGPT account, and Nordlys Kaffe starts.");
@@ -1196,7 +1227,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			await settle();
 			await settle();
 			expect(solo.calls).toContain("qorpera_start_company_founding");
-			expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
 		});
 
 		it("never starts over an invitation sent while Ready was out: the table shows", async () => {
@@ -1575,7 +1606,6 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		try {
 			relabelNewCompany(hub);
 			renderNewCompany(hub, container, { userId: me, name: "Anna" });
-			expect(visibleText(container)).toContain("Hvad vil du bygge?");
 			expect(visibleText(container)).toContain("Idéen");
 			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("A roofing company in Odense");
 			expect(container.querySelector<HTMLInputElement>(".hero-name")?.value).toBe("Tagfolk");
@@ -1661,20 +1691,10 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		const field = container.querySelector<HTMLInputElement>(`#${label.htmlFor}`)!;
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		expect(field.placeholder).toBe("Named after your idea");
-		const note = container.querySelector<HTMLElement>(".hero-name-note")!;
-		expect(note.hidden).toBe(true);
 		box.value = "A webshop with ceramics. We ship from Aarhus.";
 		box.dispatchEvent(new Event("input"));
 		// Empty, it says the name the idea gives.
 		expect(field.placeholder).toBe("A webshop with ceramics");
-		expect(note.hidden).toBe(false);
-		expect(note.textContent).toBe("Named after your idea until you change it");
-		field.value = "Lerværket";
-		field.dispatchEvent(new Event("input"));
-		expect(note.hidden).toBe(true);
-		field.value = "";
-		field.dispatchEvent(new Event("input"));
-		expect(note.hidden).toBe(false);
 		// Enter in the name goes on to the idea and starts nothing.
 		field.focus();
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));

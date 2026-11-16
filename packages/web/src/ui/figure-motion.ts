@@ -72,6 +72,11 @@ export interface MotionOptions {
 	ask?: Ask;
 	/** Left alone, the figure still blinks, looks around and moves now and then (the rail's figures). */
 	alive?: boolean;
+	gaze?: Gaze;
+}
+export interface Gaze {
+	x: number;
+	y: number;
 }
 export interface FigureMotion {
 	dispose(): void;
@@ -156,6 +161,7 @@ interface LiveMotion {
 	/** The transform on the canvas, so an unchanged pose writes nothing. */
 	posed: string;
 	work?: WorkFrame;
+	gaze?: Gaze;
 	air?: { behind: HTMLCanvasElement; front: HTMLCanvasElement; drawn: boolean };
 	/** Where the effects go (made with the first one). */
 	effects?: HTMLElement;
@@ -363,6 +369,15 @@ const PACE = 0.85;
 
 /** What the figure does this frame, and the effects that go off on the way. `elapsed` is the activity's clock. */
 function acting(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
+	const act = ownAct(entry, elapsed, reduced);
+	const gaze = entry.gaze;
+	if (!gaze || !act.eyes) return act;
+	const [left, right] = act.eyes;
+	const turned = (eye: EyePose): EyePose => ({ ...eye, x: eye.x + gaze.x, y: eye.y + gaze.y });
+	return { ...act, eyes: [turned(left), turned(right)] };
+}
+
+function ownAct(entry: LiveMotion, elapsed: number, reduced: boolean): Act {
 	const { clock, activity } = entry;
 	entry.work = undefined;
 	if (reduced) {
@@ -1097,6 +1112,7 @@ export function mountFigureMotion(
 		boxes: new Map(),
 		ask: options.ask,
 		alive: Boolean(options.alive),
+		...(options.gaze ? { gaze: options.gaze } : {}),
 		cued: clock.elapsed,
 		posed: "",
 	};

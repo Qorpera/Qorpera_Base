@@ -11,6 +11,7 @@ import {
 	type Ask,
 	type FigureArtwork,
 	type FigureMotion,
+	type Gaze,
 	type Moment,
 	mountFigureMotion,
 } from "./figure-motion.ts";
@@ -216,6 +217,7 @@ export interface FigureOptions {
 	ask?: Ask;
 	/** Left alone, the figure still blinks, looks around and moves now and then. */
 	alive?: boolean;
+	gaze?: Gaze;
 }
 
 /** A short act on a figure built here (`figureElement`'s host): "cheer" when its work is done. Nothing happens on

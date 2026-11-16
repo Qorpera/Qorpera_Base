@@ -1,9 +1,9 @@
 import { FOUNDING_NAME_MAX_CHARACTERS } from "../../cloud/company-founding.ts";
-import { figureElement } from "../../ui/avatar.ts";
 import { button, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { IDEA_MAX_CHARACTERS } from "../router.ts";
 import type { HubController } from "./hub.ts";
+import { cheerStartCrown, claimStartCrown } from "./start-crown.ts";
 
 export interface Viewer {
 	userId: string;
@@ -92,14 +92,8 @@ class NewCompanyView {
 	readonly #go: HTMLButtonElement;
 	readonly #invite: HTMLButtonElement;
 	readonly #inviteFace = h("span", { class: "hero-invite-face" });
-	readonly #nameNote = h(
-		"p",
-		{ class: "hero-name-note", hidden: true },
-		t("Named after your idea until you change it"),
-	);
 	readonly #status = h("div", { class: "hero-status" });
 	readonly #invitations = h("div", { class: "hero-invitations" });
-	readonly #figureStage = h("span", { class: "hero-figure" });
 	/** qorpera.com's idea, while the box still holds it. */
 	#carried: string | undefined;
 	#viewerKey = "";
@@ -143,7 +137,6 @@ class NewCompanyView {
 			maxlength: FOUNDING_NAME_MAX_CHARACTERS,
 			autocomplete: "organization",
 			placeholder: t("Named after your idea"),
-			oninput: () => this.#noteName(),
 			onkeydown: (event: KeyboardEvent) => {
 				// Enter goes on to the idea; Enter that ends an IME composition stays.
 				if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -167,14 +160,11 @@ class NewCompanyView {
 		this.el = h(
 			"div",
 			{ class: "hero" },
-			this.#figureStage,
-			h("h1", { class: "hero-title" }, t("What do you want to build?")),
 			h(
 				"div",
 				{ class: "hero-name-field" },
 				h("label", { for: "newCompanyName", class: "hero-name-label" }, t("Company name")),
 				h("div", { class: "hero-name-box" }, this.#name, icon("edit")),
-				this.#nameNote,
 			),
 			h(
 				"form",
@@ -206,9 +196,6 @@ class NewCompanyView {
 		if (document.activeElement === this.#idea) this.#caret = caretOf(this.#idea);
 		container.replaceChildren(h("section", { class: wrapperClass, "data-form-owner": "new-company" }, this.el));
 		this.#restoreCaret();
-		this.#figureStage.replaceChildren(
-			figureElement("crown", undefined, { size: 128, activity: "Working", identity: "new-company" }),
-		);
 		this.#resize();
 		this.#placeholder();
 	}
@@ -251,6 +238,8 @@ class NewCompanyView {
 		}
 		this.#go.disabled = busy || paused;
 		this.#invite.disabled = busy || paused;
+		const leaving = state.creating?.intent === "start";
+		this.el.classList.toggle("is-leaving", leaving);
 		const viewerKey = viewer ? `${viewer.userId}\n${viewer.name}` : "";
 		if (viewerKey !== this.#viewerKey) {
 			this.#viewerKey = viewerKey;
@@ -259,6 +248,7 @@ class NewCompanyView {
 		const statusKey = [
 			state.creating?.name ?? "",
 			busy,
+			leaving,
 			paused,
 			state.error ?? "",
 			state.creationRetry?.name ?? "",
@@ -266,15 +256,8 @@ class NewCompanyView {
 		if (statusKey !== this.#statusKey) {
 			this.#statusKey = statusKey;
 			const parts: HTMLElement[] = [];
-			if (busy)
-				parts.push(
-					spinner(
-						state.creating!.intent === "start"
-							? t("Starting {name}", { name: state.creating!.name })
-							: t("Opening a table for {name}", { name: state.creating!.name }),
-					),
-				);
-			else if (paused) parts.push(notice("warn", t("Creating a company is paused. Try again later.")));
+			if (busy && !leaving) parts.push(spinner(t("Opening a table for {name}", { name: state.creating!.name })));
+			else if (paused && !busy) parts.push(notice("warn", t("Creating a company is paused. Try again later.")));
 			if (state.error) parts.push(notice("danger", state.error));
 			if (state.creationRetry && !busy) {
 				const retry = state.creationRetry;
@@ -301,14 +284,9 @@ class NewCompanyView {
 		this.#resize();
 		const idea = this.#idea.value.trim();
 		this.#name.placeholder = idea ? companyNameFromIdea(idea) : t("Named after your idea");
-		this.#noteName();
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 		this.#placeholder();
-	}
-
-	#noteName(): void {
-		this.#nameNote.hidden = !this.#idea.value.trim() || this.#name.value.trim() !== "";
 	}
 
 	#start(): void {
@@ -317,6 +295,7 @@ class NewCompanyView {
 			this.#idea.focus();
 			return;
 		}
+		cheerStartCrown();
 		void this.#hub.startFromIdea(idea, "start", this.#name.value);
 	}
 
@@ -447,6 +426,7 @@ export function renderNewCompany(
 ): void {
 	const view = viewFor(hub);
 	view.mount(container, options.welcome ? "hub hub-welcome" : "hub hub-new");
+	claimStartCrown();
 	const handoff = takeWebsiteIdea();
 	if (handoff) view.carry(handoff);
 	view.update(viewer, options.invitations ?? []);

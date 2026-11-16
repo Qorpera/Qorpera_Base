@@ -36,8 +36,9 @@
 /* ---- hub ------------------------------------------------------------------- */
 :root[data-theme="dark"] .company-card:is(:hover, :focus-visible) .company-stage { box-shadow: 0 22px 40px -24px rgba(0, 0, 0, 0.75); }
 :root[data-theme="dark"] .company-card:focus-visible .company-stage { box-shadow: 0 0 0 3px var(--ring); }
-:root[data-theme="dark"] .hero-box { box-shadow: 0 0 0 1px var(--border-strong), 0 24px 48px -28px rgba(0, 0, 0, 0.8); }
-:root[data-theme="dark"] .hero-box:focus-within { box-shadow: 0 0 0 2px var(--text), 0 24px 48px -28px rgba(0, 0, 0, 0.8); }
+:root[data-theme="dark"] .hero-box { box-shadow: 0 0 0 1px var(--border-strong), 0 32px 60px -32px rgba(0, 0, 0, 0.8); }
+:root[data-theme="dark"] .hero-box:focus-within { box-shadow: 0 0 0 2px var(--text), 0 32px 60px -32px rgba(0, 0, 0, 0.8); }
+:root[data-theme="dark"] .founding-start-bar i { background: #fcb51b; }
 
 /* ---- first run and the figure picker ---------------------------------------- */
 :root[data-theme="dark"] .meet h1 { color: var(--text); }
