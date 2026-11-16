@@ -319,6 +319,7 @@ export class SessionExecutionView {
 		this.#busy = false;
 		this.#request = undefined;
 		this.#choose();
+		this.#settleMoved();
 		void this.#countSameLogin();
 		this.#render();
 		this.#changed();
@@ -945,9 +946,22 @@ export class SessionExecutionView {
 		].filter((element): element is HTMLElement => element !== null);
 	}
 
+	#settleMoved(): void {
+		const moved = this.#moved;
+		if (!moved) return;
+		const stuck = this.#stuckLogin();
+		if (moved.login !== this.#own() || (moved.stuck ? stuck !== moved.login : stuck !== undefined))
+			this.#moved = undefined;
+	}
+
 	#movedCard(): HTMLElement | null {
 		const moved = this.#moved;
-		if (!moved || moved.login !== this.#own() || (moved.stuck && this.#stuckLogin() !== moved.login)) return null;
+		if (
+			!moved ||
+			moved.login !== this.#own() ||
+			(moved.stuck ? this.#stuckLogin() !== moved.login : !this.canSend || this.#waiting() !== undefined)
+		)
+			return null;
 		const card = usageCard(moved.title, moved.detail, moved.done, []);
 		card.setAttribute("role", "status");
 		return card;

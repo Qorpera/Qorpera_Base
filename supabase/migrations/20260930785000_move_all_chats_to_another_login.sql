@@ -1,12 +1,12 @@
 do $$ begin
+	if to_regprocedure('public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)') is not null then
+		raise exception '20260930785000 is already applied'; end if;
 	if strpos((select prosrc from pg_catalog.pg_proc
 			where oid = 'public.qorpera_choose_member_session_account(uuid,uuid,uuid)'::regprocedure), '20260930580000') = 0 then
 		raise exception '20260930785000 needs the pick that takes waiting turns (20260930580000)'; end if;
 	if to_regprocedure('public.qorpera_member_live_account_bindings(uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_member_session_waiting_turns(uuid,uuid,uuid)') is null then
 		raise exception '20260930785000 needs 20260930580000 and 20260930606000'; end if;
-	if to_regprocedure('public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)') is not null then
-		raise exception '20260930785000 is already applied'; end if;
 end $$;
 
 set local lock_timeout = '3s';

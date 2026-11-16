@@ -1039,6 +1039,22 @@ describe("conversation execution account", () => {
 		expect(f.view.el.querySelector(".usage-wall-sub")).toBeNull();
 		expect(f.view.el.querySelector(".session-execution")!.querySelectorAll("button").length).toBe(0);
 		expect(f.send().disabled).toBe(false);
+		f.listConnections.mockResolvedValue(withUsage([40, 0]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.view.el.textContent).not.toContain("moved to");
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe(OUT_OF_USAGE);
+		expect(f.view.el.querySelector(".usage-wall-sub")?.textContent).toBe("Keep going with Model account 1");
+		expect(countSessionsOnAccount).toHaveBeenLastCalledWith(id(91), expect.any(AbortSignal));
+		expect(buttonNamed(f.view, "All 3 chats")!.title).toBe(
+			"Use Model account 1 for all 3 chats waiting on this login",
+		);
+		expect(buttonNamed(f.view, "Just this one")).toBeDefined();
+		f.listConnections.mockResolvedValue(withUsage([40, 40]));
+		refresh();
+		await settle();
+		expect(f.view.el.querySelector(".usage-wall")).toBeNull();
 	});
 
 	it("offers no move of all chats while no other chat waits on the login, and asks again only when it is stuck anew", async () => {
