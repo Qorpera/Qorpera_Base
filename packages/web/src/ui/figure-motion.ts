@@ -1017,6 +1017,7 @@ function tick(now: number): void {
 		return;
 	}
 	due += (Math.floor((now + FIGURE_FRAME_SLACK_MS - due) / FIGURE_FRAME_MS) + 1) * FIGURE_FRAME_MS;
+	due = Math.min(due, now + FIGURE_FRAME_MS);
 	const elapsed = (now - last) / 1000;
 	last = now;
 	const advanced = new Set<LiveMotion["clock"]>();
