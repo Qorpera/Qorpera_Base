@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+- Release v252 (conversation models GPT-6.1 Sol, Fable 5.2 and Opus 5.5, #1877; the move of all of a member's chats
+  waiting on a used-up login, #1876, merged in the release branch; and master since v251): runtime bundle 252
+  `ac0e54611d0dbf9ca095972482ebe4ed36ff93c428f019e5a29a513040ceb206` (activation `20260929025299`, previous 251
+  `27a9118662d8`). Its activation requires the release's two migrations, which the roll's `migrate` runs before the switch,
+  in this order: `20260930784000` (bundle 252 declares `modelPolicy.claudeChoice`, which an older kernel refuses) and
+  `20260930785000` (#1876's web calls its two functions). The guest moves: the native provider host (`e6f30e63`) alone; the
+  native Codex stays `9c299f88`.
 - Claude in a conversation (contract 17, the 2026-11-16 amendment; migration `20260930784000`, SQL test 1281). The Model menu's models are `gpt-6-astra`, `gpt-6.1-sol`, `claude-fable-5-2` and `claude-opus-5-5`; xhigh and max only with Claude; the answers name `models`. The model policy declares `claudeChoice: "thread"`. Under a bundle that declares it, a member's turn by a member who may run Claude Code pins the conversation's Claude pick on its run, a run carrying on its chain keeps it, the run's context names `claude: {model, effort}`, and the turn instructions hand real work to a Claude Code worker; the GPT front runs on its default model and effort. A Claude Code worker records the pick, its dispatch wake carries `claude`, and the box starts Claude Code with `--model` and `--effort`. Deploy order: apply `20260930784000` before any bundle that declares `claudeChoice` activates (an older kernel refuses that manifest, so no run of it could start); the activation guards on `qorpera_execution_runs.claude_model` or `qorpera_pin_execution_claude_choice()`. The migration alone offers GPT-6.1 Sol and no Claude.
 - Release v251 (the Claude Code box's scratch root beside the run's root, #1873; and master since v250: the Data list,
   company databases slice 10, and the folder service's data role and the folder program's `data` command, slice 8a):

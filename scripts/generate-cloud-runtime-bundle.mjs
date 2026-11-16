@@ -7,20 +7,20 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025199_runtime_bundle_activation_v251.sql";
-const activationVersion = 251;
-const previousActivationVersion = 250;
-const previousActivationSha256 = "78618f12bdb6cb3c275809c9c55d13e3877dfa374c62ab14bcd5a501b1f1e097";
+const activation = "supabase/migrations/20260929025299_runtime_bundle_activation_v252.sql";
+const activationVersion = 252;
+const previousActivationVersion = 251;
+const previousActivationSha256 = "27a9118662d860eecae26f6b94168adaea1c75e5279a62c0e5c06e23a83bae72";
 const activationRequires = Object.freeze([
 	[
-		"20260930779000_member_folder_may_write",
-		"the Data list (slice 10 part a, on master): a member's write check for the Data app; the member bridge's rows, edit and changes routes reach the data gateway, which asks it",
-		"to_regprocedure('public.qorpera_member_folder_may_write(uuid,text)') is not null",
+		"20260930784000_conversation_claude_models",
+		"conversation models (#1877): bundle 252 declares modelPolicy.claudeChoice, which an older kernel's manifest check refuses; 784000 makes the check take it and pins a member's Claude pick on the run",
+		"to_regprocedure('public.qorpera_pin_execution_claude_choice()') is not null",
 	],
 	[
-		"20260930782000_interface_page_data",
-		"the Data list (slice 10 part e, on master): the page data in the platform's page lists; the web shows the Data page only once the platform lists it",
-		"exists (select 1 from pg_catalog.pg_constraint where conname = 'qorpera_interface_pages_page_check' and pg_catalog.pg_get_constraintdef(oid) like '%''data''%')",
+		"20260930785000_move_all_chats_to_another_login",
+		"#1876 (the founder's go for v252): one click moves all of a member's chats waiting on a used-up login to another of their own logins; its web, merged in this release, calls the two new functions",
+		"to_regprocedure('public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

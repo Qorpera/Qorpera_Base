@@ -375,14 +375,9 @@ export const CONVERSATION: Record<string, string> = {
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
 	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
-	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
-		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
 	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":
 		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → AI-abonnementer.",
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
-	"Or use another of your logins now.": "Eller brug et andet af dine logins nu.",
-	"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.":
-		"Samtalens modelkonto har nået sin forbrugsgrænse. En besked, du sender nu, venter og fortsætter af sig selv, når grænsen nulstilles.",
 	"Your login {account} reached its usage limit. Work will go on by itself when it resets (about {time}).":
 		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
 	"Your login reached its usage limit. Work will go on by itself when it resets (about {time}).":
@@ -399,6 +394,24 @@ export const CONVERSATION: Record<string, string> = {
 	"{count} h": "{count} t.",
 	"{count} days": "{count} dage",
 	"Use {account}": "Brug {account}",
+	"Use {account} for all {count} chats waiting on this login":
+		"Brug {account} til alle {count} chats, der venter på dette login",
+	"This chat stays on its login: the work waiting in it can't move to {account}.":
+		"Denne chat bliver på sit login: det arbejde, der venter i den, kan ikke flyttes til {account}.",
+	"Out of usage until {time}": "Forbruget er brugt op indtil {time}",
+	"Out of usage": "Forbruget er brugt op",
+	"Keep going with {account}": "Fortsæt med {account}",
+	"All {count} chats": "Alle {count} chats",
+	"Just this one": "Kun denne",
+	"Or use {accounts}": "Eller brug {accounts}",
+	"A message you send now goes on when it resets.": "En besked, du sender nu, fortsætter, når grænsen nulstilles.",
+	"Sending resumes when it resets.": "Du kan sende igen, når grænsen nulstilles.",
+	"{count} chats moved to {account}": "{count} chats flyttet til {account}",
+	"{count} chat moved to {account}": "{count} chat flyttet til {account}",
+	"{count} other chats moved to {account}": "{count} andre chats flyttet til {account}",
+	"{count} other chat moved to {account}": "{count} anden chat flyttet til {account}",
+	"No chats were waiting on that login any more.": "Ingen chats ventede længere på det login.",
+	"The chats could not be moved. Try again.": "Chattene kunne ikke flyttes. Prøv igen.",
 	"Model account {number}": "Modelkonto {number}",
 
 	// The Login page of the composer's menu (app/views/composer-logins.ts)
