@@ -391,26 +391,21 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 	const runner = repairToken
 		? await DisposableCloudRunner.repair(control, config.runnerId, authorityStore, repairToken)
 		: await DisposableCloudRunner.open(control, config.runnerId, authorityStore, activationToken);
+	const nativeProviderBridge =
+		config.nativeBridgeUrl && config.nativeBridgeBoundary && nativeBridgeToken
+			? new HttpNativeProviderComputerBridge(config.nativeBridgeUrl, nativeBridgeToken, fetch, {
+					signal,
+					executionBoundary: config.nativeBridgeBoundary,
+					publishableKey: config.publishableKey,
+					...(config.nativeIdentityCredential !== undefined
+						? { identityCredential: config.nativeIdentityCredential }
+						: {}),
+				})
+			: undefined;
 	const worker = new EphemeralCloudRunnerWorker({
 		runner,
 		brokerTransport: new SupabaseCloudRunnerBrokerTransport(config.baseUrl, config.publishableKey, fetch, { signal }),
-		...(config.nativeBridgeUrl && config.nativeBridgeBoundary && nativeBridgeToken
-			? {
-					nativeProviderBridge: new HttpNativeProviderComputerBridge(
-						config.nativeBridgeUrl,
-						nativeBridgeToken,
-						fetch,
-						{
-							signal,
-							executionBoundary: config.nativeBridgeBoundary,
-							publishableKey: config.publishableKey,
-							...(config.nativeIdentityCredential !== undefined
-								? { identityCredential: config.nativeIdentityCredential }
-								: {}),
-						},
-					),
-				}
-			: {}),
+		...(nativeProviderBridge ? { nativeProviderBridge } : {}),
 		platform: config.platform,
 		runnerVersion: config.runnerVersion,
 		...(config.limits ? { limits: config.limits } : {}),
@@ -422,6 +417,7 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 		await options.runWorker(worker, signal);
 		return;
 	}
+	await nativeProviderBridge?.waitUntilListening(signal);
 	// Activate before the inbox answers: a provider reports a runner ready once its
 	// inbox is healthy, and the control plane assigns only to an active runner.
 	const activated = !runner.snapshot().active;

@@ -1,4 +1,11 @@
-import { HttpNativeProviderComputerBridge, parseNativeHarnessResult } from "@qorpera/runtime/cloud-native-provider";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import {
+	HttpNativeProviderComputerBridge,
+	NATIVE_BRIDGE_NEVER_LISTENED,
+	NATIVE_BRIDGE_NOT_LISTENING,
+	parseNativeHarnessResult,
+} from "@qorpera/runtime/cloud-native-provider";
 import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
 import { describe, expect, it, vi } from "vitest";
 
@@ -25,6 +32,27 @@ const authority: CloudRunnerNativeAuthority = {
 };
 
 const companyJob = { jobId: "10000000-0000-4000-8000-000000000008", attemptCount: 1 };
+
+async function closedLoopbackPort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = server.address() as AddressInfo;
+	await new Promise<void>((resolve) => server.close(() => resolve()));
+	return port;
+}
+
+function healthServer(port: number): Promise<Server> {
+	const server = createServer((request, response) => {
+		response.writeHead(request.method === "GET" && request.url === "/healthz" ? 200 : 404).end();
+	});
+	return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve(server)));
+}
+
+function refused(): TypeError {
+	return new TypeError("fetch failed", {
+		cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+	});
+}
 
 describe("native provider computer bridge", () => {
 	it("passes only opaque capsule authority to the trusted native boundary", async () => {
@@ -222,6 +250,97 @@ describe("native provider computer bridge", () => {
 				expiresAt: "2099-08-21T12:15:00.000Z",
 			}),
 		).rejects.toThrow("credential boundary");
+	});
+
+	it("names a bridge that refuses the connection with a fixed code the runner may try again", async () => {
+		const port = await closedLoopbackPort();
+		const bridge = new HttpNativeProviderComputerBridge(`http://127.0.0.1:${port}/`, "c".repeat(43), fetch, {
+			executionBoundary: "virtual_machine",
+		});
+		const process = await bridge.startCompany(authority, companyJob);
+		await expect(process.result).rejects.toThrow(NATIVE_BRIDGE_NOT_LISTENING);
+		await process.terminate("deadline_exceeded");
+	});
+
+	it("keeps any other lost connection as it was", async () => {
+		const reset = new TypeError("fetch failed", { cause: Object.assign(new Error("reset"), { code: "ECONNRESET" }) });
+		const bridge = new HttpNativeProviderComputerBridge(
+			"https://native-runner.example.test/",
+			"c".repeat(43),
+			vi.fn<typeof fetch>(async () => {
+				throw reset;
+			}),
+			{ executionBoundary: "virtual_machine" },
+		);
+		const process = await bridge.startCompany(authority, companyJob);
+		await expect(process.result).rejects.toBe(reset);
+	});
+
+	it("waits until the bridge answers its health check", async () => {
+		const port = await closedLoopbackPort();
+		const bridge = new HttpNativeProviderComputerBridge(`http://127.0.0.1:${port}/`, "c".repeat(43), fetch);
+		let server: Server | undefined;
+		const opening = setTimeout(() => {
+			void healthServer(port).then((started) => {
+				server = started;
+			});
+		}, 100);
+		try {
+			await bridge.waitUntilListening(new AbortController().signal, 10_000, 10);
+			expect(server).toBeDefined();
+		} finally {
+			clearTimeout(opening);
+			await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+		}
+	});
+
+	it("asks only for the health check while it waits, and gives up at its deadline", async () => {
+		const fetchImplementation = vi.fn<typeof fetch>(async () => {
+			throw refused();
+		});
+		const bridge = new HttpNativeProviderComputerBridge(
+			"https://native-runner.example.test/",
+			"c".repeat(43),
+			fetchImplementation,
+		);
+		await expect(bridge.waitUntilListening(new AbortController().signal, 30, 5)).rejects.toThrow(
+			NATIVE_BRIDGE_NEVER_LISTENED,
+		);
+		expect(fetchImplementation.mock.calls.length).toBeGreaterThan(1);
+		for (const [url, init] of fetchImplementation.mock.calls) {
+			expect(url).toBe("https://native-runner.example.test/healthz");
+			expect(init?.method).toBe("GET");
+			expect(new Headers(init?.headers).get("authorization")).toBeNull();
+		}
+	});
+
+	it("does not take a refused or failing health check for a listening bridge", async () => {
+		const answers = [refused(), new Response(null, { status: 503 }), new Response('{"ok":true}', { status: 200 })];
+		const fetchImplementation = vi.fn<typeof fetch>(async () => {
+			const answer = answers.shift();
+			if (answer instanceof Error) throw answer;
+			return answer as Response;
+		});
+		const bridge = new HttpNativeProviderComputerBridge(
+			"https://native-runner.example.test/",
+			"c".repeat(43),
+			fetchImplementation,
+		);
+		await bridge.waitUntilListening(new AbortController().signal, 10_000, 1);
+		expect(fetchImplementation).toHaveBeenCalledTimes(3);
+	});
+
+	it("stops waiting when the runner stops", async () => {
+		const controller = new AbortController();
+		const bridge = new HttpNativeProviderComputerBridge(
+			"https://native-runner.example.test/",
+			"c".repeat(43),
+			vi.fn<typeof fetch>(async () => {
+				controller.abort(new Error("runner stopped"));
+				throw refused();
+			}),
+		);
+		await expect(bridge.waitUntilListening(controller.signal, 10_000, 1)).rejects.toThrow("runner stopped");
 	});
 
 	it("rejects expired login capabilities before contacting the bridge", async () => {
