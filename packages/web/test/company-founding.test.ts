@@ -799,7 +799,7 @@ describe("hub with founding tables", () => {
 		renderHub(hub, container);
 		// No company yet: the new-company box is the hub, with the seat Bo saved under it.
 		expect(container.querySelector(".hub-welcome")).not.toBeNull();
-		expect(visibleText(container)).toContain("From idea to company.");
+		expect(visibleText(container)).toContain("What do you want to build?");
 		expect(visibleText(container)).toContain("Bo saved you a seat at Havn.");
 		expect(container.querySelector<HTMLAnchorElement>(".hero-invitation")?.getAttribute("data-href")).toBe(
 			`#/found/${id(902)}`,
@@ -1258,8 +1258,6 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		expect(box.value).toBe("En webshop med keramik");
 		expect(container.querySelector<HTMLElement>(".hero-from")?.hidden).toBe(false);
-		const pressed = [...container.querySelectorAll<HTMLButtonElement>(".hero-kind[aria-pressed='true']")];
-		expect(pressed.map((kind) => kind.textContent)).toEqual(["Webshop"]);
 		// Read once: a later visit starts empty, and your own words replace the website's note.
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		expect(sessionStorage.getItem("qorpera:website-idea")).toBeNull();
@@ -1566,22 +1564,21 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(sessionStorage.getItem(key)).toBeNull();
 	});
 
-	it("draws the new-company box again in a new language, keeping the idea and the kind", () => {
+	it("draws the new-company box again in a new language, keeping the idea and the name", () => {
 		const { api } = fixture();
 		const hub = new HubController(api, me);
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
-		[...container.querySelectorAll<HTMLButtonElement>(".hero-kind")]
-			.find((kind) => kind.textContent === "Trades")!
-			.click();
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		box.value = "A roofing company in Odense";
+		container.querySelector<HTMLInputElement>(".hero-name")!.value = "Tagfolk";
 		setLanguagePreference("da");
 		try {
 			relabelNewCompany(hub);
 			renderNewCompany(hub, container, { userId: me, name: "Anna" });
-			expect(visibleText(container)).toContain("Fra idé til virksomhed.");
+			expect(visibleText(container)).toContain("Hvad vil du bygge?");
+			expect(visibleText(container)).toContain("Idéen");
 			expect(container.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("A roofing company in Odense");
-			expect(container.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Håndværk");
+			expect(container.querySelector<HTMLInputElement>(".hero-name")?.value).toBe("Tagfolk");
 		} finally {
 			setLanguagePreference("system");
 			hub.dispose();
@@ -1625,19 +1622,17 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		hub.dispose();
 	});
 
-	it("starts the company from the box with the arrow, and fills an empty box from a kind of company", async () => {
+	it("starts the company from the box with the arrow, and never from an empty box", async () => {
 		const { api } = fixture();
 		const hub = new HubController(api, me);
 		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue(false);
 		renderNewCompany(hub, container, { userId: me, name: "Anna" });
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
-		// An empty box does not start anything.
 		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
 		expect(start).not.toHaveBeenCalled();
-		[...container.querySelectorAll<HTMLButtonElement>(".hero-kind")]
-			.find((kind) => kind.textContent === "Café and restaurant")!
-			.click();
-		expect(box.value).toBe("A café with takeaway");
+		expect(container.querySelector(".hero-kind")).toBeNull();
+		box.value = "A café with takeaway";
+		box.dispatchEvent(new Event("input"));
 		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
 		expect(start).toHaveBeenCalledWith("A café with takeaway", "start", "");
 		[...container.querySelectorAll<HTMLButtonElement>("button")]
@@ -1666,10 +1661,20 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		const field = container.querySelector<HTMLInputElement>(`#${label.htmlFor}`)!;
 		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
 		expect(field.placeholder).toBe("Named after your idea");
+		const note = container.querySelector<HTMLElement>(".hero-name-note")!;
+		expect(note.hidden).toBe(true);
 		box.value = "A webshop with ceramics. We ship from Aarhus.";
 		box.dispatchEvent(new Event("input"));
 		// Empty, it says the name the idea gives.
 		expect(field.placeholder).toBe("A webshop with ceramics");
+		expect(note.hidden).toBe(false);
+		expect(note.textContent).toBe("Named after your idea until you change it");
+		field.value = "Lerværket";
+		field.dispatchEvent(new Event("input"));
+		expect(note.hidden).toBe(true);
+		field.value = "";
+		field.dispatchEvent(new Event("input"));
+		expect(note.hidden).toBe(false);
 		// Enter in the name goes on to the idea and starts nothing.
 		field.focus();
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
@@ -1888,7 +1893,6 @@ describe("founding table in the app", () => {
 		await vi.advanceTimersByTimeAsync(60);
 		expect(root.querySelector<HTMLTextAreaElement>(".hero-idea")?.value).toBe("En webshop med keramik");
 		expect(visibleText(root)).toContain("Your idea from qorpera.com");
-		expect(root.querySelector(".hero-kind[aria-pressed='true']")?.textContent).toBe("Webshop");
 	});
 
 	it("sends a member back from a sign-in at the app's root to the box with qorpera.com's idea", async () => {
