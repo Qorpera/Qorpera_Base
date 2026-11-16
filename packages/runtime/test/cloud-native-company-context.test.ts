@@ -16,6 +16,7 @@ import {
 	type CloudNativeCompanyContext,
 	type CloudNativeConversationTree,
 	cloudAgentFolderPlace,
+	cloudClaudeChoiceInstructions,
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
 	cloudNativeStableInstructions,
@@ -38,7 +39,7 @@ import {
 } from "@qorpera/runtime/cloud-platform-updates";
 import { cloudCoFounderPlanningRun, cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
-import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
+import { type CloudWakeEnvelope, type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -1740,6 +1741,63 @@ it("carries the run's service tier outside the shared tool identity", () => {
 			f.binding,
 		),
 	).toThrow();
+});
+
+it("carries the member's Claude pick, and tells the agent to hand real work to Claude Code on it (20260930784000)", () => {
+	const f = nativeCompanyContextFixture();
+	const claude = { model: "claude-opus-5-5", effort: "xhigh" } as const;
+	const context = parseCloudNativeCompanyContext({ ...f.context, claude }, f.binding);
+	expect(context.claude).toEqual(claude);
+	expect(Object.hasOwn(context.identity, "claude")).toBe(false);
+	expect(Object.hasOwn(parseCloudNativeCompanyContext(f.context, f.binding), "claude")).toBe(false);
+	for (const bad of [
+		null,
+		"claude-opus-5-5",
+		{ model: "claude-opus-5-5" },
+		{ model: "gpt-6.1-sol", effort: "high" },
+		{ model: "claude-opus-5-5", effort: "ultra" },
+		{ ...claude, extra: 1 },
+	])
+		expect(() => parseCloudNativeCompanyContext({ ...f.context, claude: bad }, f.binding)).toThrow(
+			"Invalid cloud company context",
+		);
+
+	const section = cloudClaudeChoiceInstructions(claude);
+	expect(section).toBe(
+		[
+			"\n# Claude for this conversation",
+			"The member picked Claude for this conversation: Opus 5.5, extra high effort. That pick is the member asking for Claude Code, so hand the real work to a Claude Code worker: building, writing, research, anything that takes more than a quick reply (manage_worker with harness claude-code and access write; it runs on that pick).",
+			"Do the front work yourself: answer light messages and questions, set up machines, hire agents, ask the member what you need, and tell them what the worker found.",
+		].join("\n"),
+	);
+	expect(cloudClaudeChoiceInstructions({ model: "claude-fable-5-2", effort: "max" })).toContain(
+		"picked Claude for this conversation: Fable 5.2, max effort.",
+	);
+	const parts = { head: "# Head\nBo's head.", tools: new Set([...STAFF_TOOLS, "send_message", "ask_member"]) };
+	const picked = compileCloudNativeCompanyInstructions(context, null, parts);
+	expect(picked).toContain(section);
+	expect(picked.indexOf(section)).toBeGreaterThan(picked.indexOf(parts.head));
+	expect(picked.indexOf(section)).toBeLessThan(picked.indexOf("\n# Before you end your turn"));
+	expect(cloudNativeStableInstructions(context, parts)).toBe(
+		cloudNativeStableInstructions(parseCloudNativeCompanyContext(f.context, f.binding), parts),
+	);
+	expect(
+		compileCloudNativeCompanyInstructions(parseCloudNativeCompanyContext(f.context, f.binding), null, parts),
+	).not.toContain("# Claude for this conversation");
+	expect(
+		compileCloudNativeCompanyInstructions(context, null, {
+			...parts,
+			tools: new Set([...parts.tools].filter((tool) => tool !== "manage_worker")),
+		}),
+	).not.toContain("# Claude for this conversation");
+	const workerWake = {
+		kind: "agent",
+		source: { kind: "worker-dispatch", occurrenceKey: "worker-dispatch:x:1" },
+		policy: { final: "forbidden", initial: "forbidden" },
+	} as unknown as CloudWakeEnvelope;
+	expect(compileCloudNativeCompanyInstructions(context, workerWake, parts)).not.toContain(
+		"# Claude for this conversation",
+	);
 });
 
 it("carries a chain's origin for the action review only, never to the model (finding 881f1f21)", () => {

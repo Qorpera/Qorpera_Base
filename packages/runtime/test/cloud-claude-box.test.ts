@@ -101,6 +101,17 @@ it("starts Claude Code in print mode with settings from the box alone", () => {
 		expect(() => claudeBoxArguments({ tools: tools as never })).toThrow("Invalid Claude tools");
 	expect(claudeBoxArguments({ model: "claude-opus-5-5" }).slice(-2)).toEqual(["--model", "claude-opus-5-5"]);
 	expect(() => claudeBoxArguments({ model: "x --settings /tmp/evil" })).toThrow("Invalid Claude model");
+	expect(claudeBoxArguments({ model: "claude-fable-5-2", effort: "xhigh" }).slice(-4)).toEqual([
+		"--model",
+		"claude-fable-5-2",
+		"--effort",
+		"xhigh",
+	]);
+	for (const effort of ["low", "medium", "high", "xhigh", "max"])
+		expect(claudeBoxArguments({ effort }).slice(-2)).toEqual(["--effort", effort]);
+	for (const effort of ["", "ultra", "high --settings /tmp/evil"])
+		expect(() => claudeBoxArguments({ effort })).toThrow("Invalid Claude effort");
+	expect(claudeBoxArguments()).not.toContain("--effort");
 });
 
 it("hands a token in on descriptor 3 only, and keeps HOME and the config folder in the box", () => {
@@ -131,6 +142,13 @@ it("mounts the home with links resolved there, nothing on it runnable, every fil
 		"passive,nosuid,nodev,noexec,uid=997,gid=996",
 	);
 	expect(() => claudeBoxMountOptions({ uid: 0, gid: 0 })).toThrow("Invalid box account");
+});
+
+it("starts Claude Code in the box on the model and effort it is given", () => {
+	expect(
+		claudeBoxInvocation({ ...base, login: "token", model: "claude-opus-5-5", effort: "max" }).args.slice(-4),
+	).toEqual(["--model", "claude-opus-5-5", "--effort", "max"]);
+	expect(claudeBoxInvocation({ ...base, login: "token" }).args).not.toContain("--effort");
 });
 
 it("makes the mount in the run's own namespace and starts the box without a capability", () => {

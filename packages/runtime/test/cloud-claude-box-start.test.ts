@@ -110,6 +110,7 @@ describe.skipIf(process.platform !== "linux")("the box's start", () => {
 			{ tools: ["Bash", "Bash"] },
 			{ tools: [] },
 			{ model: "claude opus --dangerously-skip-permissions" },
+			{ effort: "max --dangerously-skip-permissions" },
 		]) {
 			const { channel, opened } = home();
 			const ended: string[] = [];
@@ -132,7 +133,7 @@ describe.skipIf(process.platform !== "linux")("the box's start", () => {
 					},
 					standIn,
 				),
-			).rejects.toThrow(/Invalid Claude (tools|model)/);
+			).rejects.toThrow(/Invalid Claude (tools|model|effort)/);
 			expect(opened).toEqual([]);
 			expect(ended).toEqual([]);
 			// Nothing of the box was made in the run's folder either.

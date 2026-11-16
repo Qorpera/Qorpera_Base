@@ -25,6 +25,7 @@ export const CLOUD_RUNTIME_MODEL_POLICY = Object.freeze({
 	allowed: CLOUD_RUNTIME_REASONING_EFFORTS,
 	fastMode: "thread",
 	unattended: "high",
+	claudeChoice: "thread",
 } as const);
 
 export const CLOUD_RUNTIME_SERVICE_TIERS = Object.freeze(["fast", "standard"] as const);
@@ -37,4 +38,33 @@ export function isCloudRuntimeServiceTier(value: unknown): value is CloudRuntime
 
 export function isCloudRuntimeReasoningEffort(value: unknown): value is CloudRuntimeReasoningEffort {
 	return typeof value === "string" && (CLOUD_RUNTIME_REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+export const CLOUD_RUNTIME_CLAUDE_MODELS = Object.freeze({
+	"claude-fable-5-2": "Fable 5.2",
+	"claude-opus-5-5": "Opus 5.5",
+} as const);
+
+export type CloudRuntimeClaudeModel = keyof typeof CLOUD_RUNTIME_CLAUDE_MODELS;
+
+export const CLOUD_RUNTIME_CLAUDE_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"] as const);
+
+export type CloudRuntimeClaudeEffort = (typeof CLOUD_RUNTIME_CLAUDE_EFFORTS)[number];
+
+export interface CloudRuntimeClaudeChoice {
+	readonly model: CloudRuntimeClaudeModel;
+	readonly effort: CloudRuntimeClaudeEffort;
+}
+
+export function isCloudRuntimeClaudeChoice(value: unknown): value is CloudRuntimeClaudeChoice {
+	const record =
+		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	return (
+		record !== undefined &&
+		Object.keys(record).length === 2 &&
+		typeof record.model === "string" &&
+		Object.hasOwn(CLOUD_RUNTIME_CLAUDE_MODELS, record.model) &&
+		typeof record.effort === "string" &&
+		(CLOUD_RUNTIME_CLAUDE_EFFORTS as readonly string[]).includes(record.effort)
+	);
 }
