@@ -1764,6 +1764,12 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			vi.advanceTimersByTime(600 + 70 * 4);
 			expect(box.placeholder).toBe("A web");
 			expect(box.value).toBe("");
+			const name = container.querySelector<HTMLInputElement>(".hero-name")!;
+			name.value = "Lerværket";
+			name.dispatchEvent(new Event("input"));
+			expect(box.placeholder).toBe("A web");
+			vi.advanceTimersByTime(70);
+			expect(box.placeholder).toBe("A webs");
 			box.dispatchEvent(new KeyboardEvent("keydown", { key: "A", bubbles: true }));
 			box.value = "A Danish webshop";
 			box.dispatchEvent(new Event("input"));

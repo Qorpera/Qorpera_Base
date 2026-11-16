@@ -143,7 +143,7 @@ class NewCompanyView {
 			maxlength: FOUNDING_NAME_MAX_CHARACTERS,
 			autocomplete: "organization",
 			placeholder: t("Named after your idea"),
-			oninput: () => this.#changed(),
+			oninput: () => this.#noteName(),
 			onkeydown: (event: KeyboardEvent) => {
 				// Enter goes on to the idea; Enter that ends an IME composition stays.
 				if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -301,10 +301,14 @@ class NewCompanyView {
 		this.#resize();
 		const idea = this.#idea.value.trim();
 		this.#name.placeholder = idea ? companyNameFromIdea(idea) : t("Named after your idea");
-		this.#nameNote.hidden = !idea || this.#name.value.trim() !== "";
+		this.#noteName();
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 		this.#placeholder();
+	}
+
+	#noteName(): void {
+		this.#nameNote.hidden = !this.#idea.value.trim() || this.#name.value.trim() !== "";
 	}
 
 	#start(): void {
