@@ -984,7 +984,10 @@ describe("conversation execution account", () => {
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		refresh();
 		await settle();
-		expect(countSessionsOnAccount).toHaveBeenCalledWith(id(90), expect.any(AbortSignal));
+		expect(countSessionsOnAccount).toHaveBeenCalledExactlyOnceWith(id(90), expect.any(AbortSignal));
+		refresh();
+		await settle();
+		expect(countSessionsOnAccount).toHaveBeenCalledOnce();
 		expect(f.view.el.textContent).toContain("Or use another of your logins now.");
 		expect(buttonNamed(f.view, "Use Model account 1")).toBeDefined();
 		const all = buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")!;
@@ -1011,7 +1014,7 @@ describe("conversation execution account", () => {
 		expect(f.send().disabled).toBe(false);
 	});
 
-	it("offers no move of all chats while no other chat waits on the login", async () => {
+	it("offers no move of all chats while no other chat waits on the login, and asks again only when it is stuck anew", async () => {
 		const select = vi.fn(async (): Promise<string | undefined> => id(90));
 		const choose = vi.fn(async (_session: string, connection: string) => connection);
 		const countSessionsOnAccount = vi.fn(async () => 1);
@@ -1030,8 +1033,42 @@ describe("conversation execution account", () => {
 		countSessionsOnAccount.mockResolvedValue(2);
 		refresh();
 		await settle();
+		expect(countSessionsOnAccount).toHaveBeenCalledOnce();
+		expect(f.view.el.textContent).not.toContain("chats waiting on this login");
+		f.listConnections.mockResolvedValue(withUsage([80, 40]));
+		refresh();
+		await settle();
+		expect(countSessionsOnAccount).toHaveBeenCalledOnce();
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		expect(countSessionsOnAccount).toHaveBeenCalledTimes(2);
 		expect(buttonNamed(f.view, "Use Model account 1 for all 2 chats waiting on this login")).toBeDefined();
 		expect(chooseSessionsAccount).not.toHaveBeenCalled();
+	});
+
+	it("says so when this chat stays on its login after the others moved, and does not offer the same move again", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const countSessionsOnAccount = vi.fn(async () => 3);
+		const chooseSessionsAccount = vi.fn(async () => 2);
+		const f = setup(true, withUsage([80, 40]), select, undefined, vi.fn(), {
+			countSessionsOnAccount,
+			chooseSessionsAccount,
+		});
+		await settle();
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		buttonNamed(f.view, "Use Model account 1 for all 3 chats waiting on this login")!.click();
+		await settle();
+		expect(chooseSessionsAccount).toHaveBeenCalledOnce();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).toContain(
+			"2 other chats now use Model account 1. This chat stays on its login: the work waiting in it can't move to Model account 1.",
+		);
+		expect(f.view.el.textContent).not.toContain("2 chats now use");
+		expect(f.view.el.textContent).not.toContain("chats waiting on this login");
+		expect(buttonNamed(f.view, "Use Model account 1")).toBeDefined();
 	});
 
 	it("says so when the chats could not be moved, and keeps the chat's login", async () => {

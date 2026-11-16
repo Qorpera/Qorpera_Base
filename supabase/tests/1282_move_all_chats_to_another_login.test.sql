@@ -15,15 +15,15 @@ select pg_temp.base_materialize() \g /dev/null
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.sw_login',public.qorpera_begin_native_provider_login(
-	'92400000-0000-4000-8000-000000000010','12810000-0000-4000-8000-000000000051','12810000-0000-4000-8000-000000000052',
+	'92400000-0000-4000-8000-000000000010','12820000-0000-4000-8000-000000000051','12820000-0000-4000-8000-000000000052',
 	(current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid,'openai','codex-cli',repeat('c',64),900)::text,true)
 \g /dev/null
 reset role;
 select pg_temp.base_claims('service_role');
 set local role service_role;
 select set_config('qorpera_test.sw_connection',public.qorpera_complete_native_provider_login(
-	(current_setting('qorpera_test.sw_login')::jsonb ->> 'login_id')::uuid,repeat('c',64),'12810000-0000-4000-8000-000000000060',
-	'object://native-capsules/12810000-0000-4000-8000-000000000060',repeat('d',64),'fixture-openai-account-b','personal-subscription',
+	(current_setting('qorpera_test.sw_login')::jsonb ->> 'login_id')::uuid,repeat('c',64),'12820000-0000-4000-8000-000000000060',
+	'object://native-capsules/12820000-0000-4000-8000-000000000060',repeat('d',64),'fixture-openai-account-b','personal-subscription',
 	'qorpera-native-provider-consent/v1',
 	'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}')::text,true)
 \g /dev/null
@@ -36,11 +36,35 @@ where connection_id = (current_setting('qorpera_test.sw_connection')::jsonb ->> 
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.sw_sponsor',public.qorpera_create_member_execution_sponsor(
-	'92400000-0000-4000-8000-000000000010','12810000-0000-4000-8000-000000000061',
+	'92400000-0000-4000-8000-000000000010','12820000-0000-4000-8000-000000000061',
 	(current_setting('qorpera_test.sw_connection')::jsonb ->> 'connection_id')::uuid,2,true)::text,true) \g /dev/null
 reset role;
 select pg_temp.base_claims('service_role');
 select pg_temp.sw_reading((current_setting('qorpera_test.sw_connection')::jsonb ->> 'connection_id')::uuid, 20);
+
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.sw_login_c',public.qorpera_begin_native_provider_login(
+	'92400000-0000-4000-8000-000000000010','12820000-0000-4000-8000-000000000071','12820000-0000-4000-8000-000000000072',
+	(current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid,'openai','codex-cli',repeat('e',64),900)::text,true)
+\g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+set local role service_role;
+select set_config('qorpera_test.sw_connection_c',public.qorpera_complete_native_provider_login(
+	(current_setting('qorpera_test.sw_login_c')::jsonb ->> 'login_id')::uuid,repeat('e',64),'12820000-0000-4000-8000-000000000080',
+	'object://native-capsules/12820000-0000-4000-8000-000000000080',repeat('f',64),'fixture-openai-account-c','personal-subscription',
+	'qorpera-native-provider-consent/v1',
+	'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}')::text,true)
+\g /dev/null
+reset role;
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.sw_sponsor_c',public.qorpera_create_member_execution_sponsor(
+	'92400000-0000-4000-8000-000000000010','12820000-0000-4000-8000-000000000081',
+	(current_setting('qorpera_test.sw_connection_c')::jsonb ->> 'connection_id')::uuid,1,false)::text,true) \g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
 
 select set_config('qorpera_test.sw_' || thread.key, (select room.session_id::text from public.qorpera_company_rooms as room
 	where room.id = pg_temp.base_thread(thread.staff)), false)
@@ -61,6 +85,8 @@ create function pg_temp.sw(p_key text) returns uuid language sql as $$
 		when 'aBinding' then (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid
 		when 'b' then (current_setting('qorpera_test.sw_connection')::jsonb ->> 'connection_id')::uuid
 		when 'bBinding' then (current_setting('qorpera_test.sw_sponsor')::jsonb ->> 'binding_id')::uuid
+		when 'c' then (current_setting('qorpera_test.sw_connection_c')::jsonb ->> 'connection_id')::uuid
+		when 'cBinding' then (current_setting('qorpera_test.sw_sponsor_c')::jsonb ->> 'binding_id')::uuid
 		else current_setting('qorpera_test.sw_' || p_key)::uuid end
 $$;
 create function pg_temp.sw_saved(p_user text, p_session text) returns jsonb language sql as $$
@@ -116,7 +142,8 @@ end $$;
 
 reset role;
 select set_config(name, current_setting(name), false)
-from unnest(array['qorpera_test.base_connection','qorpera_test.base_sponsor','qorpera_test.sw_connection','qorpera_test.sw_sponsor']) name;
+from unnest(array['qorpera_test.base_connection','qorpera_test.base_sponsor','qorpera_test.sw_connection','qorpera_test.sw_sponsor',
+	'qorpera_test.sw_connection_c','qorpera_test.sw_sponsor_c']) name;
 select set_config('qorpera_test.sw_first_xid', xid(pg_current_xact_id())::text, false);
 select dblink_connect('sw_holder', 'dbname=' || current_database());
 select dblink_connect('sw_poll', 'dbname=' || current_database());
@@ -223,7 +250,7 @@ begin
 	perform pg_temp.base_assert(pg_temp.sw_count('member', 'a') = '0',
 		'another member''s chat counts on the owner''s login: ' || pg_temp.sw_count('member', 'a'));
 	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'owner', pg_temp.sw_move_sql(pg_temp.sw('a'),
-			'12810000-0000-4000-8000-000000000099')) = '22023 This login cannot pay for your conversation',
+			'12820000-0000-4000-8000-000000000099')) = '22023 This login cannot pay for your conversation',
 		'a move to a login that is no login of the owner''s was not refused');
 	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'member', pg_temp.sw_move_sql(pg_temp.sw('a'), pg_temp.sw('b')))
 		= '22023 This login cannot pay for your conversation', 'a member moved chats to the owner''s login');
@@ -237,6 +264,25 @@ begin
 		'a move onto the login the chats already have answered a move');
 	perform pg_temp.base_assert(pg_temp.sw_on('owner', 'bob', 'a') and pg_temp.sw_on('owner', 'carol', 'a')
 		and (pg_temp.sw_kickoff()).sponsor_binding_id = pg_temp.sw('aBinding'), 'a refused move changed a chat');
+end $$;
+
+do $$
+declare v_kickoff public.qorpera_session_turn_requests;
+begin
+	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'owner', pg_temp.sw_move_sql(pg_temp.sw('a'), pg_temp.sw('c'))) = '2',
+		'a move onto a login that may not work while the owner is away counted Dana''s chat, whose waiting kickoff stays on A');
+	v_kickoff := pg_temp.sw_kickoff();
+	perform pg_temp.base_assert(v_kickoff.sponsor_binding_id = pg_temp.sw('aBinding')
+		and public.qorpera_sponsor_waits_for_usage_limit(v_kickoff.sponsor_binding_id, v_kickoff.sponsor_version),
+		'Dana''s kickoff, paid by a login that works while the owner is away, moved to one that may not: ' || to_jsonb(v_kickoff)::text);
+	perform pg_temp.base_assert(pg_temp.sw_on('owner', 'bob', 'c') and pg_temp.sw_on('owner', 'carol', 'c'),
+		'Bob''s and Carol''s chats did not move to C');
+	perform pg_temp.base_assert(pg_temp.sw_count('owner', 'a') = '1' and pg_temp.sw_count('owner', 'c') = '2',
+		'Dana''s chat is not still counted on A: A ' || pg_temp.sw_count('owner', 'a') || ', C ' || pg_temp.sw_count('owner', 'c'));
+	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'owner', pg_temp.sw_move_sql(pg_temp.sw('c'), pg_temp.sw('a'))) = '2'
+		and pg_temp.sw_on('owner', 'bob', 'a') and pg_temp.sw_on('owner', 'carol', 'a'), 'the move back from C to A');
+	perform pg_temp.base_assert(pg_temp.sw_count('owner', 'a') = '3' and pg_temp.sw_count('owner', 'c') = '0',
+		'the counts after the move back from C: A ' || pg_temp.sw_count('owner', 'a') || ', C ' || pg_temp.sw_count('owner', 'c'));
 end $$;
 
 do $$
@@ -282,6 +328,23 @@ begin
 		'a move back touched another member''s chat or a closed one');
 end $$;
 
+do $$
+begin
+	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'owner', format(
+			'select public.qorpera_choose_member_session_account(%L,%L,%L)::text', pg_temp.sw('profile'), pg_temp.sw('bob'), pg_temp.sw('c')))
+		= pg_temp.sw('c')::text and pg_temp.sw_count('owner', 'c') = '1', 'the owner''s single pick of C for Bob''s chat');
+	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'owner', format(
+			'select public.qorpera_revoke_native_provider_connection(%L,%L)::text', pg_temp.sw('profile'), pg_temp.sw('c')))
+		!~ '^[0-9A-Z]{5} ', 'the owner could not disconnect C');
+	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'owner', format(
+			'select coalesce(public.qorpera_select_member_session_account(%L,%L)::text, ''none'')', pg_temp.sw('profile'), pg_temp.sw('bob')))
+		= 'none', 'the thread still names the login the owner disconnected');
+	perform pg_temp.base_assert(pg_temp.sw_count('owner', 'c') = '0',
+		'a chat counts on the login the owner disconnected, where the thread names none: ' || pg_temp.sw_count('owner', 'c'));
+	perform pg_temp.base_assert(pg_temp.sw_call('authenticated', 'owner', pg_temp.sw_move_sql(pg_temp.sw('c'), pg_temp.sw('a'))) = '0'
+		and pg_temp.sw_on('owner', 'bob', 'c'), 'a move off the disconnected login moved a chat the thread leaves to the owner''s own pick');
+end $$;
+
 select pg_temp.base_assert(not has_function_privilege('anon', 'public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)', 'execute')
 	and not has_function_privilege('anon', 'public.qorpera_count_member_sessions_on_account(uuid,uuid)', 'execute')
 	and has_function_privilege('authenticated', 'public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)', 'execute')
@@ -289,7 +352,9 @@ select pg_temp.base_assert(not has_function_privilege('anon', 'public.qorpera_ch
 	and not has_function_privilege('authenticated', 'public.qorpera_member_sessions_on_login(uuid,uuid,uuid)', 'execute')
 	and not has_function_privilege('service_role', 'public.qorpera_member_sessions_on_login(uuid,uuid,uuid)', 'execute')
 	and not has_function_privilege('authenticated', 'public.qorpera_member_session_login(uuid,uuid,uuid,uuid[])', 'execute')
-	and not has_function_privilege('service_role', 'public.qorpera_member_session_login(uuid,uuid,uuid,uuid[])', 'execute'),
+	and not has_function_privilege('service_role', 'public.qorpera_member_session_login(uuid,uuid,uuid,uuid[])', 'execute')
+	and not has_function_privilege('authenticated', 'public.qorpera_take_member_session_account(uuid,uuid,uuid,uuid,uuid,bigint,uuid)', 'execute')
+	and not has_function_privilege('service_role', 'public.qorpera_take_member_session_account(uuid,uuid,uuid,uuid,uuid,bigint,uuid)', 'execute'),
 	'the move''s privileges are not the member''s alone');
 
 select pg_temp.sw_cleanup();

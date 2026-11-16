@@ -403,6 +403,10 @@ export const CONVERSATION: Record<string, string> = {
 		"Brug {account} til alle {count} chats, der venter på dette login",
 	"{count} chats now use {account}.": "{count} chats bruger nu {account}.",
 	"{count} chat now uses {account}.": "{count} chat bruger nu {account}.",
+	"{count} other chats now use {account}.": "{count} andre chats bruger nu {account}.",
+	"{count} other chat now uses {account}.": "{count} anden chat bruger nu {account}.",
+	"This chat stays on its login: the work waiting in it can't move to {account}.":
+		"Denne chat bliver på sit login: det arbejde, der venter i den, kan ikke flyttes til {account}.",
 	"No chats were waiting on that login any more.": "Ingen chats ventede længere på det login.",
 	"The chats could not be moved. Try again.": "Chattene kunne ikke flyttes. Prøv igen.",
 	"Model account {number}": "Modelkonto {number}",

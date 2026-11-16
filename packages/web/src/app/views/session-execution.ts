@@ -124,8 +124,9 @@ export class SessionExecutionView {
 	/** Account reads that failed in a row; the next read waits by ACCOUNT_RETRY_DELAYS_MS. */
 	#failures = 0;
 	#sameLogin: { connectionId: string; count: number } | undefined;
+	#countedFor: string | undefined;
 	#countRequest: AbortController | undefined;
-	#moved: string | undefined;
+	#moved: { login: string | undefined; stuck: boolean; text: string } | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -600,14 +601,13 @@ export class SessionExecutionView {
 	}
 
 	async #countSameLogin(): Promise<void> {
+		const own = this.#stuckLogin();
+		if (own === this.#countedFor) return;
 		this.#countRequest?.abort();
 		this.#countRequest = undefined;
-		const own = this.#stuckLogin();
-		if (!own || !this.#native.countSessionsOnAccount) {
-			this.#sameLogin = undefined;
-			return;
-		}
-		this.#moved = undefined;
+		this.#countedFor = own;
+		this.#sameLogin = undefined;
+		if (!own || !this.#native.countSessionsOnAccount) return;
 		const request = new AbortController();
 		this.#countRequest = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
@@ -619,7 +619,8 @@ export class SessionExecutionView {
 		}
 		if (signal.aborted) return;
 		this.#countRequest = undefined;
-		this.#sameLogin = count === undefined ? undefined : { connectionId: own, count };
+		if (count === undefined) this.#countedFor = undefined;
+		else this.#sameLogin = { connectionId: own, count };
 		this.#render();
 	}
 
@@ -706,13 +707,28 @@ export class SessionExecutionView {
 			return;
 		}
 		this.#sameLogin = undefined;
-		this.#moved =
-			moved === 0
-				? t("No chats were waiting on that login any more.")
-				: moved === 1
-					? t("{count} chat now uses {account}.", { count: moved, account })
-					: t("{count} chats now use {account}.", { count: moved, account });
+		this.#countedFor = undefined;
 		await this.refresh();
+		if (this.#lifetime.signal.aborted) return;
+		const login = this.#own();
+		const stuck = login === fromConnectionId;
+		const others =
+			moved === 0
+				? undefined
+				: stuck
+					? moved === 1
+						? t("{count} other chat now uses {account}.", { count: moved, account })
+						: t("{count} other chats now use {account}.", { count: moved, account })
+					: moved === 1
+						? t("{count} chat now uses {account}.", { count: moved, account })
+						: t("{count} chats now use {account}.", { count: moved, account });
+		const text = stuck
+			? [others, t("This chat stays on its login: the work waiting in it can't move to {account}.", { account })]
+					.filter(Boolean)
+					.join(" ")
+			: (others ?? t("No chats were waiting on that login any more."));
+		this.#moved = { login, stuck, text };
+		this.#render();
 	}
 
 	#render(): void {
@@ -742,7 +758,7 @@ export class SessionExecutionView {
 		replace(
 			this.el,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
-			this.#moved ? h("p", { class: "muted", role: "status" }, this.#moved) : null,
+			this.#movedNote(),
 			conversation.retrySend
 				? h(
 						"div",
@@ -842,9 +858,15 @@ export class SessionExecutionView {
 		);
 	}
 
+	#movedNote(): HTMLElement | null {
+		const moved = this.#moved;
+		if (!moved || moved.login !== this.#own() || (moved.stuck && this.#stuckLogin() !== moved.login)) return null;
+		return h("p", { class: "muted", role: "status" }, moved.text);
+	}
+
 	#allChats(own: string, connectionId: string, account: string, disabled: boolean): HTMLElement | null {
 		const count = this.#sameLogin?.connectionId === own ? this.#sameLogin.count : 0;
-		if (count < 2 || this.#stuckLogin() !== own) return null;
+		if (count < 2 || this.#stuckLogin() !== own || (this.#moved?.stuck && this.#moved.login === own)) return null;
 		return h(
 			"div",
 			{ class: "session-execution-all" },
