@@ -4,6 +4,7 @@ import type {
 	CloudMemberDataChanges,
 	CloudMemberDataChangesAsked,
 	CloudMemberDataDescription,
+	CloudMemberDataPage,
 	CloudMemberDataWrite,
 } from "@qorpera/cloud-client/cloud-member-data";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,14 +117,16 @@ function changesCalls(pages: CloudMemberDataChanges[]) {
 	const calls = {
 		describe: vi.fn(async () => described),
 		changes,
-		rows: vi.fn(async () => ({
-			columns: ["id", "bike", "price", "ready"],
-			key: ["id"],
-			rows: [{ values: [1, "Gazelle Orange C7", 450, false], seen: "1".padStart(64, "0") }],
-			more: false,
-			etag,
-			asOf,
-		})),
+		rows: vi.fn(
+			async (): Promise<CloudMemberDataPage> => ({
+				columns: ["id", "bike", "price", "ready"],
+				key: ["id"],
+				rows: [{ values: [1, "Gazelle Orange C7", 450, false], seen: "1".padStart(64, "0") }],
+				more: false,
+				etag,
+				asOf,
+			}),
+		),
 		query: vi.fn(async () => ({ columns: [], rows: [], more: false, etag, asOf })),
 		edit: vi.fn(async () => ({ columns: [], key: [], row: null, asOf })),
 		watchTables: vi.fn(
@@ -174,8 +177,7 @@ function company() {
 	return controller;
 }
 
-async function open(pages: CloudMemberDataChanges[]) {
-	const calls = changesCalls(pages);
+async function open(pages: CloudMemberDataChanges[], calls = changesCalls(pages)) {
 	const controller = company();
 	const databases = new CompanyDatabases(
 		() => calls,
@@ -322,6 +324,26 @@ describe("What changed (app/views/data-changes.ts)", () => {
 			"Nothing has changed in the last two weeks.",
 		);
 		expect(quiet.container.querySelector(".data-changes-chart")).toBeNull();
+	});
+
+	it("keeps the focus on a day while the list's own read lands behind the view", async () => {
+		const calls = changesCalls([{ writes: [added], more: false, asOf }]);
+		let land: (page: CloudMemberDataPage) => void = () => undefined;
+		calls.rows.mockImplementationOnce(
+			() =>
+				new Promise<CloudMemberDataPage>((resolve) => {
+					land = resolve;
+				}),
+		);
+		const { container } = await open([], calls);
+		const day = [...container.querySelectorAll<HTMLButtonElement>(".data-changes-day")][12];
+		day?.focus();
+		expect((document.activeElement as HTMLElement | null)?.dataset.focusKey).toBe(`day:${daysAgo(1)}`);
+		land({ columns: ["id"], key: ["id"], rows: [], more: false, etag, asOf });
+		await settle();
+		expect(calls.rows).toHaveBeenCalled();
+		expect(container.querySelector(".data-changes")).not.toBeNull();
+		expect((document.activeElement as HTMLElement | null)?.dataset.focusKey).toBe(`day:${daysAgo(1)}`);
 	});
 
 	it("reads again without the time zone when the gateway does not know it", async () => {
