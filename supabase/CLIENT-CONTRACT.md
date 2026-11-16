@@ -1045,6 +1045,12 @@ by their keys, never with a lowercase literal.
 - `qorpera_member_folder_read_many(environment, paths)` (`20260930722000`): `{schema: "qorpera.folder-read-many/v1",
   reads}`, `reads[i]` what `qorpera_member_folder_read(environment, paths[i])` answers, for 1 to 64 paths, in one
   snapshot; an invalid path refuses the whole call. A client that finds it missing reads each path alone.
+- `qorpera_member_folder_may_write(environment, path)` (`20260930779000`): `{schema: "qorpera.member-folder-may-write/v1",
+  path, write}`, whether the folder core lets the signed-in member write `path` now (the path's resource and the
+  member's place in it; a name the folder never holds, such as `trail/`, is no write). The path is checked as the
+  core checks every path, with one trailing `/` allowed. A member of the company only (42501), not while it is being deleted or paused (55000); an
+  invalid path is 22023. It changes nothing. The data gateway asks it before a member's row edit (company databases
+  §5a).
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
