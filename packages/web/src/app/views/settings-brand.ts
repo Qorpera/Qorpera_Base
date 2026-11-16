@@ -1,6 +1,11 @@
 import { osPath, writeVisionFile } from "@qorpera/cloud-client/company-state-files";
 import { describeError } from "../../cloud/client.ts";
-import { rewriteStateFile, type WebMemberFolder } from "../../cloud/company-folder-writes.ts";
+import {
+	rewriteStateFile,
+	WebCompanyFolderRejectedError,
+	type WebMemberFolder,
+	withProblems,
+} from "../../cloud/company-folder-writes.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
 import { button, companyLogo, h, icon, notice, replace } from "../../ui/dom.ts";
 import { choosePictureCrop } from "../../ui/picture-cropper.ts";
@@ -12,17 +17,22 @@ export const COMPANY_NAME_LIMIT = 120;
 
 export function renamedVision(text: string, name: string): string {
 	const lines = text.split("\n");
-	const bare = (line: string | undefined) => (line ?? "").replace(/^\uFEFF/, "").replace(/\r$/, "");
-	const settingsEnd =
-		bare(lines[0]) === "---" ? lines.findIndex((line, index) => index > 0 && bare(line) === "---") : -1;
-	const bodyStart = settingsEnd + 1;
+	const bare = (line: string) => line.replace(/^\uFEFF/, "").replace(/\r$/, "");
 	const heading = writeVisionFile(name, "").split("\n")[0]!;
-	const first = lines.findIndex((line, index) => index >= bodyStart && bare(line).trim() !== "");
-	if (first >= 0 && /^# +/.test(bare(lines[first]))) {
-		const bom = first === 0 && lines[0]!.startsWith("\uFEFF") ? "\uFEFF" : "";
+	const first = lines.findIndex((line) => bare(line).trim() !== "");
+	if (first >= 0 && /^# +/.test(bare(lines[first]!))) {
+		const bom = lines[first]!.startsWith("\uFEFF") ? "\uFEFF" : "";
 		lines[first] = `${bom}${heading}${lines[first]!.endsWith("\r") ? "\r" : ""}`;
-	} else lines.splice(bodyStart, 0, heading, "");
+	} else lines.unshift(heading, "");
 	return lines.join("\n");
+}
+
+export function renameFailure(error: unknown): string {
+	if (!(error instanceof WebCompanyFolderRejectedError)) return describeError(error);
+	if (error.outcome === "denied") return t("Only someone who may change the company's files can rename it.");
+	if (error.problems.length) return withProblems(t("The name was not accepted."), error.problems);
+	if (error.outcome === "conflict") return t("The vision kept changing while it was saved. Try again.");
+	return t("Try again.");
 }
 
 export interface CompanyBrandOptions {
@@ -200,8 +210,13 @@ export class CompanyBrandView {
 			autocomplete: "off",
 			"aria-label": t("Company name"),
 		});
-		const save = () => void this.#rename(input.value);
+		const controls: (HTMLInputElement | HTMLButtonElement)[] = [input];
+		const hold = (held: boolean) => {
+			for (const control of controls) control.disabled = held;
+		};
+		const save = () => void this.#rename(input.value, hold, () => input.focus());
 		const cancel = () => {
+			if (this.#busy) return;
 			this.#editing = false;
 			this.update();
 			this.#nameSlot.querySelector<HTMLElement>(".settings-brand-rename")?.focus();
@@ -217,17 +232,16 @@ export class CompanyBrandView {
 				cancel();
 			}
 		};
-		replace(
-			this.#nameSlot,
-			input,
+		controls.push(
 			button(t("Save"), save, { small: true, primary: true }),
 			button(t("Cancel"), cancel, { small: true }),
 		);
+		replace(this.#nameSlot, ...controls);
 		input.focus();
 		input.select();
 	}
 
-	async #rename(raw: string): Promise<void> {
+	async #rename(raw: string, hold: (held: boolean) => void, retry: () => void): Promise<void> {
 		if (this.#busy) return;
 		const name = raw.replace(/\s+/g, " ").trim();
 		if (!name || name === (this.#savedName ?? this.#options.name())) {
@@ -236,23 +250,33 @@ export class CompanyBrandView {
 			return;
 		}
 		const signal = this.#options.signal;
+		hold(true);
 		await this.#run(async () => {
-			await rewriteStateFile(
-				this.#options.folder(),
-				{
-					locate: async () => VISION_PATH,
-					rewrite: (text) => renamedVision(text, name),
-					key: () => `web:company-rename:${crypto.randomUUID()}`,
-					gone: t("The company's vision could not be read."),
-					failure: t("The name could not be saved. Try again."),
-				},
-				signal,
-				() => signal.throwIfAborted(),
-			);
+			try {
+				await rewriteStateFile(
+					this.#options.folder(),
+					{
+						locate: async () => VISION_PATH,
+						rewrite: (text) => renamedVision(text, name),
+						key: () => `web:company-rename:${crypto.randomUUID()}`,
+						gone: t("The company's vision could not be read."),
+						failure: t("The name could not be saved."),
+					},
+					signal,
+					() => signal.throwIfAborted(),
+				);
+			} catch (error) {
+				if (signal.aborted) throw error;
+				throw new Error(renameFailure(error));
+			}
 			this.#savedName = name;
 			this.#editing = false;
 			this.#options.renamed(name);
 		}, phrase("The name could not be saved."));
+		if (this.#editing && !signal.aborted) {
+			hold(false);
+			retry();
+		}
 	}
 
 	async #run(action: () => Promise<void>, failure: string): Promise<void> {

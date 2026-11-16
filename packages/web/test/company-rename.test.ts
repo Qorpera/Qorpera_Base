@@ -32,12 +32,7 @@ describe("the vision's first line", () => {
 
 	it("adds a heading to a vision without one", () => {
 		expect(renamedVision("What we build.\n", "Nordlys")).toBe("# Nordlys\n\nWhat we build.\n");
-	});
-
-	it("leaves a settings block above the heading as it is", () => {
-		const text = "---\nowner: cofounder\n---\n# Old\n\nText\n";
-		const renamed = renamedVision(text, "Ny");
-		expect(renamed).toBe("---\nowner: cofounder\n---\n# Ny\n\nText\n");
+		expect(visionName(renamedVision("What we build.\n", "Nordlys"))).toBe("Nordlys");
 	});
 
 	it("writes names the vision reads back whole, also ones ending in #", () => {
@@ -172,32 +167,67 @@ describe("renaming in Settings → Brand", () => {
 		expect(view.el.querySelector(".settings-brand-name strong")?.textContent).toBe("Nordlys");
 	});
 
-	it("says so when the name could not be saved", async () => {
-		const { folder } = fakeFolder();
-		vi.mocked(folder.commit).mockResolvedValue({
+	function answer(outcome: string, reason: string, problems: { message: string }[] = []) {
+		return {
 			commitId: "x",
 			seq: 2,
 			replay: false,
-			units: [
-				{
-					unit: 1,
-					op: "write",
-					path: VISION_PATH,
-					to: null,
-					version: null,
-					outcome: "refused",
-					reason: "forbidden",
-					problems: [],
-				},
-			],
-		} as unknown as Awaited<ReturnType<WebMemberFolder["commit"]>>);
+			units: [{ unit: 1, op: "write", path: VISION_PATH, to: null, version: null, outcome, reason, problems }],
+		} as unknown as Awaited<ReturnType<WebMemberFolder["commit"]>>;
+	}
+
+	for (const [outcome, reason, problems, said] of [
+		[
+			"denied",
+			"no_grant",
+			[],
+			"The name could not be saved. Only someone who may change the company's files can rename it.",
+		],
+		[
+			"refused",
+			"invalid",
+			[{ message: "the company's name must be at most 120 characters" }],
+			"The name could not be saved. The name was not accepted: the company's name must be at most 120 characters.",
+		],
+		["refused", "hook", [], "The name could not be saved. Try again."],
+	] as const)
+		it(`says why when the save is ${outcome} (${reason}), and keeps what was typed`, async () => {
+			const { folder } = fakeFolder();
+			vi.mocked(folder.commit).mockResolvedValue(answer(outcome, reason, [...problems]));
+			const { view, renamed } = brand({ folder });
+			await rename(view, "Nordlys Studio", "Enter", false);
+			await vi.waitFor(() => expect(view.el.querySelector(".settings-brand-error")?.textContent).toBe(said));
+			expect(renamed).not.toHaveBeenCalled();
+			const input = view.el.querySelector<HTMLInputElement>(".settings-brand-name-input")!;
+			expect(input.value).toBe("Nordlys Studio");
+			expect(input.disabled).toBe(false);
+			expect(document.activeElement).toBe(input);
+		});
+
+	it("holds the field and both buttons while the name is being saved", async () => {
+		const { folder, written } = fakeFolder();
+		let land!: () => void;
+		const landed = new Promise<void>((resolve) => {
+			land = resolve;
+		});
+		const commit = folder.commit;
+		vi.mocked(folder).commit = vi.fn(async (...args: Parameters<WebMemberFolder["commit"]>) => {
+			await landed;
+			return commit(...args);
+		});
 		const { view, renamed } = brand({ folder });
 		await rename(view, "Nordlys Studio", "Enter", false);
-		await vi.waitFor(() =>
-			expect(view.el.querySelector(".settings-brand-error")?.textContent).toContain("The name could not be saved."),
-		);
-		expect(renamed).not.toHaveBeenCalled();
-		expect(view.el.querySelector<HTMLInputElement>(".settings-brand-name-input")?.value).toBe("Nordlys Studio");
+		await vi.waitFor(() => expect(vi.mocked(folder.commit)).toHaveBeenCalled());
+		const slot = view.el.querySelector(".settings-brand-name")!;
+		const controls = [...slot.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button")];
+		expect(controls.map((control) => control.disabled)).toEqual([true, true, true]);
+		const input = controls[0] as HTMLInputElement;
+		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(slot.querySelector(".settings-brand-name-input")).not.toBeNull();
+		land();
+		await vi.waitFor(() => expect(renamed).toHaveBeenCalledWith("Nordlys Studio"));
+		expect(written).toHaveLength(1);
+		expect(view.el.querySelector(".settings-brand-name strong")?.textContent).toBe("Nordlys Studio");
 	});
 });
 
@@ -239,14 +269,30 @@ describe("the company list after a rename", () => {
 		hub.dispose();
 	});
 
-	it("goes back to the cloud's name when the rename never arrives", async () => {
+	it("keeps the new name while the cloud is slow, like the rest of the app", async () => {
 		vi.useFakeTimers();
-		const { api } = fakeHubApi(["Nordlys"]);
+		const { api, listProfiles } = fakeHubApi(["Nordlys"]);
 		const hub = new HubController(api);
 		await hub.refresh();
 		hub.renamed(COMPANY, "Nordlys Studio");
-		await vi.advanceTimersByTimeAsync(60_000);
-		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys");
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys Studio");
+		expect(listProfiles.mock.calls.length).toBeLessThanOrEqual(7);
+		await hub.refresh();
+		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys Studio");
+		hub.dispose();
+	});
+
+	it("takes the cloud's name once it is neither the old nor the new one", async () => {
+		vi.useFakeTimers();
+		const { api } = fakeHubApi(["Nordlys", "Nordlys", "Nordlys Kaffe"]);
+		const hub = new HubController(api);
+		await hub.refresh();
+		hub.renamed(COMPANY, "Nordlys Studio");
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys Studio");
+		await vi.advanceTimersByTimeAsync(2500);
+		expect(hub.store.get().profiles[0]?.profileName).toBe("Nordlys Kaffe");
 		hub.dispose();
 	});
 });

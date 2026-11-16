@@ -23,7 +23,7 @@ import { companyNameFromIdea, renderNewCompany, type Viewer } from "./new-compan
  * switched the lobby off, creating a company is paused. There is no local company list — the cloud is
  * the only registry. */
 
-const RENAME_SETTLE_WAITS_MS = [1500, 2500, 4000, 8000];
+const RENAME_SETTLE_WAITS_MS = [1500, 2500, 4000, 8000, 15000, 30000];
 
 /** A role as the hub names it; the English is the role's own word. */
 const ROLE_LABELS: Record<HostedProfileRole, string> = {
@@ -79,7 +79,7 @@ export class HubController {
 	#refresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
-	readonly #renames = new Map<string, string>();
+	readonly #renames = new Map<string, { name: string; from: string | undefined }>();
 
 	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
@@ -141,7 +141,8 @@ export class HubController {
 
 	renamed(profileId: string, name: string): void {
 		if (this.#disposed) return;
-		this.#renames.set(profileId, name);
+		const from = this.store.get().profiles.find((profile) => profile.profileId === profileId)?.profileName;
+		this.#renames.set(profileId, { name, from: this.#renames.get(profileId)?.from ?? from });
 		this.store.set(({ profiles }) => ({ profiles: this.#withRenames(profiles) }));
 		void this.#settleRename(profileId, name);
 	}
@@ -149,25 +150,23 @@ export class HubController {
 	#withRenames(profiles: HostedProfile[]): HostedProfile[] {
 		if (!this.#renames.size) return profiles;
 		return profiles.map((profile) => {
-			const name = this.#renames.get(profile.profileId);
-			if (name === undefined) return profile;
-			if (profile.profileName === name) {
+			const rename = this.#renames.get(profile.profileId);
+			if (!rename) return profile;
+			if (profile.profileName === rename.name || profile.profileName !== rename.from) {
 				this.#renames.delete(profile.profileId);
 				return profile;
 			}
-			return { ...profile, profileName: name };
+			return { ...profile, profileName: rename.name };
 		});
 	}
 
 	async #settleRename(profileId: string, name: string): Promise<void> {
 		for (const wait of RENAME_SETTLE_WAITS_MS) {
 			await new Promise((resolve) => setTimeout(resolve, wait));
-			if (this.#disposed || this.#renames.get(profileId) !== name) return;
+			if (this.#disposed || this.#renames.get(profileId)?.name !== name) return;
 			await this.refreshAfter();
-			if (this.#renames.get(profileId) !== name) return;
+			if (this.#renames.get(profileId)?.name !== name) return;
 		}
-		this.#renames.delete(profileId);
-		await this.refreshAfter();
 	}
 
 	async companyRemoved(profileId: string): Promise<void> {
