@@ -59,6 +59,8 @@
 .storage-code-button[aria-disabled="true"], .storage-download-button[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 .storage-code-button .icon, .storage-download-button .icon { width: 15px; height: 15px; color: var(--text-muted); }
 .storage-code-button .icon:last-child { width: 12px; height: 12px; stroke-width: 2.2; color: var(--text-soft); }
+.storage-code-button:not([hidden]) ~ .storage-download-button { padding: 0 8px; }
+.storage-code-button:not([hidden]) ~ .storage-download-button span { display: none; }
 .storage-code-line, .storage-download-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: -6px 0 14px; color: var(--text-muted); font-size: 13px; }
 .storage-code-line:empty, .storage-download-line:empty { display: none; }
 .storage-code-line .spinner-dot, .storage-download-line .spinner-dot { flex: none; width: 8px; height: 8px; }
@@ -176,6 +178,9 @@
 	.storage-browser .files-list.is-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px; }
 	.storage-browser .is-grid .files-kind { width: 52px; height: 52px; }
 	.storage-title { flex-basis: 100%; }
+	.storage-toolbar:not(:has(> .storage-code-button:not([hidden]))) > .storage-title { flex-basis: 0; }
+	.storage-download-button { padding: 0 8px; }
+	.storage-download-button span { display: none; }
 	.storage-controls { width: 100%; }
 	.storage-select { flex: 1; max-width: none; min-width: 0; }
 }
