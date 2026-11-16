@@ -491,6 +491,7 @@ describe("the desktop's Chromium", () => {
 		argv?: readonly string[];
 		started?: number;
 		sockets: readonly number[];
+		titled?: boolean;
 	}
 	/** A /proc of processes (exe, real uid, command line, start, socket fds) and the TCP listeners. */
 	async function proc(processes: FakeProcess[], listeners: { port: number; inode: number; address?: string }[]) {
@@ -516,9 +517,10 @@ describe("the desktop's Chromium", () => {
 			await symlink(entry.exe ?? chromium, join(dir, "exe"));
 			const uid = entry.uid ?? 1001;
 			await writeFile(join(dir, "status"), `Name:\tchrome\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+			const words = [chromium, ...(entry.argv ?? [profile, "--remote-debugging-port=0"])];
 			await writeFile(
 				join(dir, "cmdline"),
-				`${[chromium, ...(entry.argv ?? [profile, "--remote-debugging-port=0"])].join("\0")}\0`,
+				entry.titled ? `${words.join(" ")}\0\0\0\0` : `${words.join("\0")}\0`,
 			);
 			// Field 22, the start: the command name may hold spaces and parentheses.
 			await writeFile(
@@ -563,6 +565,37 @@ describe("the desktop's Chromium", () => {
 					],
 				],
 				{ port: 40123 },
+			],
+			[
+				[
+					[
+						{
+							pid: 41,
+							titled: true,
+							argv: ["--enable-unsafe-swiftshader", profile, "--remote-debugging-port=0", "https://fill-check.test/"],
+							sockets: [7001],
+						},
+						{ pid: 42, titled: true, argv: ["--type=renderer", profile, "--remote-debugging-port=0"], sockets: [7002] },
+					],
+					[
+						{ port: 40200, inode: 7002 },
+						{ port: 40123, inode: 7001 },
+					],
+				],
+				{ port: 40123 },
+			],
+			[
+				[
+					[
+						{ pid: 42, started: 50, titled: true, argv: ["--type=renderer", profile], sockets: [7002] },
+						{ pid: 43, titled: true, argv: ["--user-data-dir=/home/desktop/other"], sockets: [7003] },
+					],
+					[
+						{ port: 40200, inode: 7002 },
+						{ port: 40300, inode: 7003 },
+					],
+				],
+				"absent",
 			],
 			// No browser of the desktop's: none at all, root's, another profile, or another program.
 			[[[], [{ port: 40123, inode: 7001 }]], "absent"],

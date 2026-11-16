@@ -8,6 +8,14 @@
   in this order: `20260930784000` (bundle 252 declares `modelPolicy.claudeChoice`, which an older kernel refuses) and
   `20260930785000` (#1876's web calls its two functions). The guest moves: the native provider host (`e6f30e63`) alone; the
   native Codex stays `9c299f88`.
+- Fixed: `fill_company_account`'s helper found no browser on a real machine (`BROWSER_NOT_OPEN`), so every machine image
+  build from master stopped at its fill check (16 Nov 2026, the 8a image). The desktop's Chromium runs sandboxed, and its
+  browser process then rewrites its command line into one string, its arguments joined by spaces (no NUL between them);
+  `machineChromiumPort` read only NUL-separated arguments and so never saw the profile. A command line of one string is
+  now read word by word; the profile, the `--type=` refusal, the pinned binary, the desktop's account and the loopback
+  socket are checked as before. #1644's own proof ran Chromium with `--no-sandbox`, which keeps the arguments apart.
+  Proof on a test machine, the image's desktop in a nested VM with the AppArmor profile loaded, the build's fill check
+  word for word: `deploy/machine/test/prove-account-fill.sh`.
 - Claude in a conversation (contract 17, the 2026-11-16 amendment; migration `20260930784000`, SQL test 1281). The Model menu's models are `gpt-6-astra`, `gpt-6.1-sol`, `claude-fable-5-2` and `claude-opus-5-5`; xhigh and max only with Claude; the answers name `models`. The model policy declares `claudeChoice: "thread"`. Under a bundle that declares it, a member's turn by a member who may run Claude Code pins the conversation's Claude pick on its run, a run carrying on its chain keeps it, the run's context names `claude: {model, effort}`, and the turn instructions hand real work to a Claude Code worker; the GPT front runs on its default model and effort. A Claude Code worker records the pick, its dispatch wake carries `claude`, and the box starts Claude Code with `--model` and `--effort`. Deploy order: apply `20260930784000` before any bundle that declares `claudeChoice` activates (an older kernel refuses that manifest, so no run of it could start); the activation guards on `qorpera_execution_runs.claude_model` or `qorpera_pin_execution_claude_choice()`. The migration alone offers GPT-6.1 Sol and no Claude.
 - Release v251 (the Claude Code box's scratch root beside the run's root, #1873; and master since v250: the Data list,
   company databases slice 10, and the folder service's data role and the folder program's `data` command, slice 8a):
