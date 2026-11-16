@@ -468,6 +468,9 @@ member or the agent from the lists it already holds.
   no line to ask on. Nothing records who made a database (`database.toml` names no maker and a folder entry names no
   writer), so its maker cannot be asked; `app/tell-agent.ts` `noteReceiver` already answers an app with no owner
   with the Co-Founder, and the Ask goes the same way.
+- **No Ask on private rows.** A database whose questions name `:viewer` shows each member their own rows, and the
+  Co-Founder's thread is the company's: every member reads an answer there. So such a database has no line to ask on,
+  on any of its lists. Asking about one's own rows waits for a thread only that member reads.
 - **The road.** The line under the list sends the member's own message through `tellAgent`, the road an app's note
   and the Mailbox take: sent from the page when the Co-Founder's thread has nothing drafted, otherwise it waits in that
   thread's composer. Either way the page opens that conversation, where the answer comes as the Co-Founder's message.
@@ -488,7 +491,8 @@ member or the agent from the lists it already holds.
   The Data page lists it beside the tables at its next read of `describe`. A worker's words do not change.
 - **Kept questions that take values** are tabs too: a field a value above the list (`:viewer` stays Qorpera's), and
   the list reads once each is filled in, each value as text, which PostgreSQL types from the statement as for any
-  caller. A filled value stays while the page is open.
+  caller. A filled value stays while the page is open. A question whose name the gateway would refuse (not `a-z`,
+  `0-9` and `-` between them, or past 60 characters) is no tab.
 - Left out: the answer drawn on the Data page itself (the board shows it there; it comes in the conversation), and
   "Show how it was counted" (an answer never shows SQL).
 

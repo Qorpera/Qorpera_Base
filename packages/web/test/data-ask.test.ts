@@ -19,7 +19,7 @@ import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, 
 const etag = "0123456789abcdef0123456789abcdef";
 const asOf = "2026-11-16T10:00:00.000Z";
 
-const described = (): CloudMemberDataDescription => ({
+const described = (mine = false): CloudMemberDataDescription => ({
 	databases: [
 		{
 			database: "workshop",
@@ -45,9 +45,10 @@ const described = (): CloudMemberDataDescription => ({
 				{
 					name: "handed-in-since",
 					words: "Repairs handed in since a day.",
-					parameters: ["since", "viewer", "state"],
+					parameters: mine ? ["since", "viewer", "state"] : ["since", "state"],
 				},
 				{ name: "broken", words: null, parameters: null, problem: "two statements" },
+				{ name: "Orders_Last", words: "A name the gateway refuses.", parameters: [] },
 			],
 			changes: [],
 		},
@@ -65,9 +66,9 @@ const page: CloudMemberDataPage = {
 	asOf,
 };
 
-const calls = () =>
+const calls = (mine = false) =>
 	({
-		describe: vi.fn(async () => described()),
+		describe: vi.fn(async () => described(mine)),
 		rows: vi.fn(async () => page),
 		query: vi.fn(
 			async (): Promise<CloudMemberDataAnswer> => ({
@@ -102,7 +103,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-async function open(options: { send?: DataAskSend; write?: boolean; cofounder?: boolean } = {}) {
+async function open(options: { send?: DataAskSend; write?: boolean; cofounder?: boolean; mine?: boolean } = {}) {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
 	controller.store.set({
@@ -124,10 +125,10 @@ async function open(options: { send?: DataAskSend; write?: boolean; cofounder?: 
 				{ userId: userA.id, email: "ann@example.invalid", displayName: "Ann", role: "owner", joinedAt: timestamp },
 			],
 		},
-		companyData: described(),
+		companyData: described(options.mine),
 	});
 	cleanup.push(() => controller.stop());
-	const data = calls();
+	const data = calls(options.mine);
 	const databases = new CompanyDatabases(
 		() => data,
 		(next) => controller.store.set({ companyData: next }),
@@ -260,7 +261,20 @@ describe("Ask under the list", () => {
 });
 
 describe("a kept question that takes values", () => {
-	it("is a tab of its own that asks for its values first, leaves :viewer to Qorpera, and reads once they are in", async () => {
+	it("leaves :viewer to Qorpera, and no Ask on a database whose rows are each member's own", async () => {
+		const send: DataAskSend = vi.fn();
+		const { container } = await open({ send, mine: true });
+		expect(container.querySelector<HTMLElement>(".data-ask-box")?.hidden).toBe(true);
+		tab(container, "Handed in since").click();
+		await settle();
+		expect([...container.querySelectorAll(".data-param-label")].map((one) => one.textContent)).toEqual([
+			"Since",
+			"State",
+		]);
+		expect(container.querySelector<HTMLElement>(".data-ask-box")?.hidden).toBe(true);
+	});
+
+	it("is a tab of its own that asks for its values first, and reads once they are in", async () => {
 		const { container, calls } = await open();
 		expect([...container.querySelectorAll(".data-tab")].map((one) => one.textContent)).toEqual([
 			"Repairs",

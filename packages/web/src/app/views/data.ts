@@ -1,12 +1,13 @@
-import type {
-	CloudMemberDatabase,
-	CloudMemberDataColumn,
-	CloudMemberDataDescription,
-	CloudMemberDataNamed,
-	CloudMemberDataPage,
-	CloudMemberDataRow,
-	CloudMemberDataTable,
-	CloudMemberDataWatched,
+import {
+	CLOUD_MEMBER_DATA_QUESTION,
+	type CloudMemberDatabase,
+	type CloudMemberDataColumn,
+	type CloudMemberDataDescription,
+	type CloudMemberDataNamed,
+	type CloudMemberDataPage,
+	type CloudMemberDataRow,
+	type CloudMemberDataTable,
+	type CloudMemberDataWatched,
 } from "@qorpera/cloud-client/cloud-member-data";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -200,7 +201,7 @@ function tableOf(database: CloudMemberDatabase | undefined, name: string): Cloud
 
 function questionTabs(database: CloudMemberDatabase): Tab[] {
 	return database.questions
-		.filter((question) => question.parameters !== null)
+		.filter((question) => question.parameters !== null && CLOUD_MEMBER_DATA_QUESTION.test(question.name))
 		.map((question) => ({ kind: "question", name: question.name }));
 }
 
@@ -359,6 +360,7 @@ class DataListView {
 		const database = this.#current();
 		const tab = this.#tab;
 		if (!database || !tab || this.#open) return undefined;
+		if (database.questions.some((question) => question.parameters?.includes("viewer"))) return undefined;
 		return {
 			database: database.database,
 			databaseName: database.name ?? humanName(database.database),
