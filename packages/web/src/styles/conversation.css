@@ -137,8 +137,8 @@
 .status-caption { visibility: hidden; min-width: 0; overflow: hidden; font-size: 14px; line-height: 1.4; color: var(--text-muted); white-space: nowrap; text-overflow: ellipsis; pointer-events: none; }
 .status-caption-name { color: var(--text); }
 .thread-activity:hover .status-caption, .thread-activity:focus-visible .status-caption { visibility: visible; }
-.thread-activity .status-wave-letter { animation-play-state: paused; }
-.thread-activity:hover .status-wave-letter, .thread-activity:focus-visible .status-wave-letter { animation-play-state: running; }
+.thread-activity .status-wave-letter::after { animation-play-state: paused; }
+.thread-activity:hover .status-wave-letter::after, .thread-activity:focus-visible .status-wave-letter::after { animation-play-state: running; }
 /* A failed run: one quiet line right above the composer, in the same band and shape as a company notice. */
 .thread-run-failure { flex: none; padding: 0 16px; }
 .run-failure { margin-top: 6px; }

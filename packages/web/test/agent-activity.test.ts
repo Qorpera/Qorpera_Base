@@ -307,6 +307,8 @@ describe("shared agent activity", () => {
 			const line = stateLine(AGENT_LOOK[state]) as HTMLElement;
 			expect(line.textContent).toBe(AGENT_LOOK[state].line);
 			expect(line.querySelectorAll(".status-wave-letter")).toHaveLength(7);
+			for (const letter of line.querySelectorAll<HTMLElement>(".status-wave-letter"))
+				expect(letter.dataset.letter).toBe(letter.textContent);
 		}
 	});
 

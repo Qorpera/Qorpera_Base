@@ -124,6 +124,7 @@ const clocks = new Map<string, Clock>();
 const live = new Set<LiveMotion>();
 let frame = 0;
 let last = 0;
+let due = 0;
 /** The timer for the next idle figure's move, while nothing else moves. */
 let wake = 0;
 let media: MediaQueryList | undefined;
@@ -984,7 +985,7 @@ function schedule(): void {
 	if (frame || document.hidden) return;
 	const now = performance.now();
 	if ([...live].some((entry) => entry.ready && entry.visible && moving(entry, now))) {
-		last = now;
+		last = due = now;
 		frame = requestAnimationFrame(tick);
 	} else rest();
 }
@@ -1021,9 +1022,17 @@ function advance(clock: Clock, activity: Activity, passed: number, now: number):
 }
 /** How long a one-play act waits for its figure to come on screen before it is dropped, in milliseconds. */
 const MOMENT_WAITS = 2000;
+const FIGURE_FRAME_MS = 1000 / 60;
+const FIGURE_FRAME_SLACK_MS = 2;
 function tick(now: number): void {
 	frame = 0;
 	if (document.hidden) return;
+	if (now < due - FIGURE_FRAME_SLACK_MS) {
+		frame = requestAnimationFrame(tick);
+		return;
+	}
+	due += (Math.floor((now + FIGURE_FRAME_SLACK_MS - due) / FIGURE_FRAME_MS) + 1) * FIGURE_FRAME_MS;
+	due = Math.min(due, now + FIGURE_FRAME_MS);
 	const elapsed = (now - last) / 1000;
 	last = now;
 	const advanced = new Set<LiveMotion["clock"]>();
