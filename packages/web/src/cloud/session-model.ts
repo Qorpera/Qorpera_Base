@@ -218,8 +218,7 @@ export function createWebSessionModel(
 							(!Array.isArray(models) ||
 								models.length > 32 ||
 								models.some(
-									(item) =>
-										typeof item !== "string" || !item || new TextEncoder().encode(item).length > 256,
+									(item) => typeof item !== "string" || !item || new TextEncoder().encode(item).length > 256,
 								))) ||
 						typeof result.version !== "number" ||
 						!Number.isSafeInteger(result.version) ||

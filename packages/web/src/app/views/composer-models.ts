@@ -453,11 +453,7 @@ export class ComposerModels {
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		const id = this.#observed?.modelId;
 		// A group chat with no model chosen runs each agent on its own model; nothing is ticked.
-		const name = id
-			? modelName(id)
-			: this.#observed
-				? t("Each agent's own")
-				: undefined;
+		const name = id ? modelName(id) : this.#observed ? t("Each agent's own") : undefined;
 		const effortId = this.#observed?.reasoningEffort;
 		const effort = effortId && effortName(effortId);
 		const tier = this.#observed?.serviceTier;

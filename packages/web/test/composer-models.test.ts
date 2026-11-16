@@ -35,11 +35,10 @@ async function setup(groupChat = false) {
 	});
 	const models = new Map<string, SessionModel>();
 	const read = vi.fn(
-		async (sessionId: string): Promise<SessionModel> =>
-			({
-				models: GPT_OFFERED,
-				...(models.get(sessionId) ?? { sessionId, modelId: "gpt-6-astra", reasoningEffort: "low", version: 0 }),
-			}),
+		async (sessionId: string): Promise<SessionModel> => ({
+			models: GPT_OFFERED,
+			...(models.get(sessionId) ?? { sessionId, modelId: "gpt-6-astra", reasoningEffort: "low", version: 0 }),
+		}),
 	);
 	const set = vi.fn(
 		async (
