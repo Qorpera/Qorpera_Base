@@ -547,6 +547,7 @@ class DataListView {
 		if (database === this.#database) return;
 		this.#database = database;
 		const current = this.#current();
+		if (!current?.list) this.#changing = false;
 		this.#tab = current ? tabsOf(current)[0] : undefined;
 		this.#close();
 		this.#ensureList();

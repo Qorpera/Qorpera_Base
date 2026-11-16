@@ -301,11 +301,39 @@ describe("What changed (app/views/data-changes.ts)", () => {
 			"What changed can't be read just now",
 		);
 		document.body.replaceChildren();
-		const quiet = await open([{ writes: [], more: false, days: [], asOf }]);
+		const quiet = await open([
+			{
+				writes: [
+					write("agent", KAYA, new Date(Date.now() - 20 * 86_400_000).toISOString(), {
+						tables: [{ table: "repairs", op: "add", rows: 1 }],
+					}),
+				],
+				more: false,
+				days: [],
+				asOf,
+			},
+		]);
 		expect(quiet.container.querySelector(".data-changes-none")?.textContent).toBe(
 			"Nothing has changed in the last two weeks.",
 		);
 		expect(quiet.container.querySelector(".data-changes-chart")).toBeNull();
+	});
+
+	it("reads again without the time zone when the gateway does not know it", async () => {
+		const page = { writes: [added], more: false, asOf };
+		const calls = changesCalls([page]);
+		calls.changes.mockImplementationOnce(async () => {
+			throw Object.assign(new Error("No time zone"), { status: 400 });
+		});
+		const view = new DataChanges(company(), () => calls);
+		const [shop] = described.databases;
+		if (shop) view.show(shop);
+		await settle();
+		expect(calls.changes.mock.calls.map(([asked]) => asked)).toEqual([
+			{ database: "shop", zone: presentationTimeZone() },
+			{ database: "shop" },
+		]);
+		expect(said(view.el)).toEqual(["You added Raleigh Tourist to Repairs"]);
 	});
 
 	it("names no tab for a database whose tables the member does not get", async () => {
@@ -353,6 +381,14 @@ describe("What changed (app/views/data-changes.ts)", () => {
 			"changed A, B, Bike and 3 other columns on Trek",
 		);
 		expect(one("change", { key: null, columns: ["bike"] })).toBe("changed a row in Repairs");
+		expect(
+			one("change", {
+				key: null,
+				before: { bike: "Trek", price: 1, ready: false },
+				after: { bike: "Trek", price: 2, ready: false },
+				columns: ["bike", "price", "ready"],
+			}),
+		).toBe("set Price to 2 on Trek");
 		expect(one("add", { after: null, key: { id: 3 } })).toBe("added a row to Repairs");
 		expect(
 			view.sentence(

@@ -23,7 +23,7 @@ const GROUPS: readonly ChangesGroup[] = ["agents", "you", "others"];
 
 interface Read {
 	readonly database: string;
-	readonly zone: string;
+	zone: string;
 	readonly days: readonly string[];
 	readonly stop: AbortController;
 	writes: CloudMemberDataWrite[];
@@ -146,8 +146,12 @@ export class DataChanges {
 			read.pages++;
 			read.followed++;
 			read.failed = false;
-		} catch {
+		} catch (error) {
 			if (read.stop.signal.aborted) return;
+			if ((error as { status?: unknown }).status === 400 && read.next === undefined && read.zone) {
+				read.zone = "";
+				return this.#page(read);
+			}
 			read.failed = true;
 		}
 		read.loading = false;
@@ -279,7 +283,14 @@ export class DataChanges {
 					: t("removed a row from {table}", { table: name });
 			}
 			if (table.rows > 1) return t("changed {count} rows in {table}", { count, table: name });
-			const columns = line?.columns ?? [];
+			const columns =
+				line && line.key === null
+					? line.before && line.after
+						? Object.keys(line.after).filter(
+								(name) => JSON.stringify(line.before?.[name]) !== JSON.stringify(line.after?.[name]),
+							)
+						: []
+					: (line?.columns ?? []);
 			if (!thing || columns.length === 0) return t("changed a row in {table}", { table: name });
 			const [only] = columns;
 			if (columns.length === 1 && only !== undefined && line?.after && only in line.after) {
@@ -298,7 +309,13 @@ export class DataChanges {
 	}
 
 	#render(): void {
+		const active = document.activeElement;
+		const focus = active instanceof HTMLElement && this.el.contains(active) ? active.dataset.focusKey : undefined;
 		replace(this.el, ...this.#content());
+		if (focus !== undefined)
+			[...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")]
+				.find((one) => one.dataset.focusKey === focus)
+				?.focus({ preventScroll: true });
 	}
 
 	#content(): HTMLElement[] {
@@ -329,7 +346,10 @@ export class DataChanges {
 			];
 		const totals = this.#totals(read);
 		const shown = GROUPS.filter((group) => read.days.some((day) => (totals.get(day)?.[group] ?? 0) > 0));
-		if (shown.length === 0 && read.writes.length === 0)
+		if (
+			shown.length === 0 &&
+			!read.writes.some((write) => write.at && read.days.includes(this.#dayOf(write.at, read)))
+		)
 			return [
 				head(null),
 				h("p", { class: "data-changes-quiet data-changes-none" }, t("Nothing has changed in the last two weeks.")),
@@ -427,6 +447,7 @@ export class DataChanges {
 				"aria-label": label,
 				"aria-pressed": String(index === chosen),
 				title: label,
+				dataset: { focusKey: `day:${day}` },
 				onclick: () => this.#choose(day),
 			});
 			one.style.setProperty("--at", String(index / (read.days.length - 1)));
