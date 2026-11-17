@@ -115,11 +115,40 @@ returns integer language sql stable security definer set search_path = '' as $$
 			= p_account_key
 $$;
 
-create function public.qorpera_run_borrows_parent_turn(p_run_id uuid)
-returns boolean language sql stable security definer set search_path = '' as $$
-	select exists (select 1 from public.qorpera_wake_occurrences as wake
-		join public.qorpera_runner_jobs as parent on parent.run_id = wake.parent_run_id and parent.status = 'leased'
-		where wake.run_id = p_run_id and wake.source_kind = 'worker-dispatch')
+create function public.qorpera_provider_account_turns()
+returns table (account_key text, turns integer) language sql stable security definer set search_path = '' as $$
+	select public.qorpera_provider_account_key(per_login.provider_connection_id, per_login.provider_connection_version),
+		sum(per_login.turns)::integer
+	from (select sponsor.provider_connection_id, sponsor.provider_connection_version, count(*) as turns
+		from (select job.run_id from public.qorpera_runner_jobs as job where job.status = 'leased' and job.run_id is not null
+			union
+			select claim.run_id from public.qorpera_runner_job_claims as claim where claim.status in ('claimed', 'assigned')) as busy
+		join public.qorpera_execution_runs as run on run.id = busy.run_id
+		join public.qorpera_execution_sponsor_versions as sponsor on sponsor.binding_id = run.sponsor_binding_id
+			and sponsor.version = run.sponsor_version
+		group by 1, 2) as per_login
+	group by 1
+$$;
+
+create function public.qorpera_provider_account_queued_sponsors()
+returns table (binding_id uuid, version bigint, account_key text, open boolean) language sql stable security definer
+set search_path = '' as $$
+	with turns as materialized (select turns.account_key, turns.turns from public.qorpera_provider_account_turns() as turns),
+	sponsors as (select distinct run.sponsor_binding_id, run.sponsor_version, sponsor.provider_connection_id,
+			sponsor.provider_connection_version
+		from public.qorpera_runner_jobs as job
+		join public.qorpera_execution_runs as run on run.id = job.run_id
+		join public.qorpera_execution_sponsor_versions as sponsor on sponsor.binding_id = run.sponsor_binding_id
+			and sponsor.version = run.sponsor_version
+		where job.status = 'queued'),
+	keyed as (select sponsors.sponsor_binding_id, sponsors.sponsor_version,
+			public.qorpera_provider_account_key(sponsors.provider_connection_id, sponsors.provider_connection_version) as account_key
+		from sponsors)
+	select keyed.sponsor_binding_id, keyed.sponsor_version, keyed.account_key,
+		public.qorpera_provider_account_cooling_until(keyed.account_key) is null
+			and coalesce((select turns.turns from turns where turns.account_key = keyed.account_key), 0)
+				< (select settings.max_concurrent_turns from public.qorpera_provider_account_turn_settings as settings)
+	from keyed
 $$;
 
 create function public.qorpera_provider_account_turn_admits(p_run public.qorpera_execution_runs,
@@ -129,7 +158,6 @@ declare v_key text := public.qorpera_run_provider_account_key(p_run.id);
 begin
 	if v_key is null then return true; end if;
 	if public.qorpera_provider_account_cooling_until(v_key) is not null then return false; end if;
-	if public.qorpera_run_borrows_parent_turn(p_run.id) then return true; end if;
 	if p_exact then
 		perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.provider-account-turns:' || v_key, 0));
 	end if;
@@ -198,6 +226,22 @@ returns boolean language sql stable security definer set search_path = '' as $$
 		order by last_event.id desc limit 1), false)
 $$;
 
+create function public.qorpera_routine_turned_away_streak(p_routine_id uuid, p_version bigint)
+returns integer language plpgsql stable security definer set search_path = '' as $$
+declare v_streak integer := 0; v_wake record;
+begin
+	for v_wake in select wake.run_id, wake.status from public.qorpera_wake_occurrences as wake
+		where wake.routine_id = p_routine_id and wake.routine_version = p_version
+			and wake.blocked_reason is distinct from 'Brought forward: open todos of the agent changed and are still open'
+		order by wake.created_at desc, wake.id desc
+	loop
+		exit when v_wake.run_id is null or v_wake.status not in ('failed', 'requires_review')
+			or not public.qorpera_run_rate_limited(v_wake.run_id);
+		v_streak := v_streak + 1;
+	end loop;
+	return v_streak;
+end $$;
+
 create function public.qorpera_routine_turned_away_runs(p_routine_id uuid, p_version bigint)
 returns integer language sql stable security definer set search_path = '' as $$
 	select count(*)::integer from public.qorpera_wake_occurrences as wake
@@ -209,10 +253,12 @@ $$;
 
 revoke all on function public.qorpera_provider_account_key(uuid, bigint), public.qorpera_run_provider_account_key(uuid),
 	public.qorpera_provider_account_cooling_until(text), public.qorpera_provider_account_rate_limited(text, timestamptz),
-	public.qorpera_provider_account_busy_turns(text, uuid), public.qorpera_run_borrows_parent_turn(uuid),
+	public.qorpera_provider_account_busy_turns(text, uuid), public.qorpera_provider_account_turns(),
+	public.qorpera_provider_account_queued_sponsors(),
 	public.qorpera_provider_account_turn_admits(public.qorpera_execution_runs, boolean),
 	public.qorpera_run_had_effect(uuid), public.qorpera_rate_limit_wait_until(uuid), public.qorpera_run_rate_limited(uuid),
-	public.qorpera_run_rate_limit_pause(uuid), public.qorpera_routine_turned_away_runs(uuid, bigint)
+	public.qorpera_run_rate_limit_pause(uuid), public.qorpera_routine_turned_away_runs(uuid, bigint),
+	public.qorpera_routine_turned_away_streak(uuid, bigint)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 select pg_temp.rate_limit_replace('public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)',
@@ -246,7 +292,14 @@ select pg_temp.rate_limit_replace('public.qorpera_resume_run_from_log(uuid,text,
 select pg_temp.rate_limit_replace(
 	'public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)',
 	E'\t\tand public.qorpera_execution_compute_available(run)\n',
-	E'\t\tand public.qorpera_execution_compute_available(run)\n\t\tand public.qorpera_provider_account_turn_admits(run)\n');
+	E'\t\tand public.qorpera_execution_compute_available(run)\n\t\tand coalesce(account.open, true)\n');
+select pg_temp.rate_limit_replace(
+	'public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)',
+	E'\tselect job.* into v_job\n\tfrom public.qorpera_runner_jobs as job\n\tjoin public.qorpera_execution_runs as run on run.id = job.run_id\n\twhere job.status = \'queued\'',
+	E'\twith account as materialized (select * from public.qorpera_provider_account_queued_sponsors())\n'
+	|| E'\tselect job.* into v_job\n\tfrom public.qorpera_runner_jobs as job\n\tjoin public.qorpera_execution_runs as run on run.id = job.run_id\n'
+	|| E'\tleft join account on account.binding_id = run.sponsor_binding_id and account.version = run.sponsor_version\n'
+	|| E'\twhere job.status = \'queued\'');
 select pg_temp.rate_limit_replace(
 	'public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)',
 	E'\tselect run.* into strict v_run from public.qorpera_execution_runs as run where run.id = v_job.run_id;\n',
@@ -282,9 +335,11 @@ select pg_temp.rate_limit_replace('public.qorpera_folder_restore_dynamic_routine
 	|| E'\t\tv_ended := greatest(v_ended - public.qorpera_routine_turned_away_runs(v_routine.id, v_routine.current_version), 0);\n'
 	|| E'\t\tv_at := case when v_ended <= 3 then statement_timestamp()\n'
 	|| E'\t\t\telse statement_timestamp() + least(interval \'15 minutes\' * power(2, least(v_ended - 4, 12)), interval \'1 day\') end;\n'
-	|| E'\t\tif v_last.run_id is not null and public.qorpera_run_rate_limited(v_last.run_id) then\n'
-	|| E'\t\t\tv_at := greatest(v_at, public.qorpera_provider_account_cooling_until(\n'
-	|| E'\t\t\t\tpublic.qorpera_run_provider_account_key(v_last.run_id)));\n'
+	|| E'\t\tif public.qorpera_routine_turned_away_streak(v_routine.id, v_routine.current_version) > 0 then\n'
+	|| E'\t\t\tv_at := greatest(v_at, statement_timestamp() + least(interval \'15 minutes\' * power(2,\n'
+	|| E'\t\t\t\t\tleast(public.qorpera_routine_turned_away_streak(v_routine.id, v_routine.current_version) - 1, 12)),\n'
+	|| E'\t\t\t\tinterval \'1 day\'),\n'
+	|| E'\t\t\t\tpublic.qorpera_provider_account_cooling_until(public.qorpera_run_provider_account_key(v_last.run_id)));\n'
 	|| E'\t\tend if;\n'
 	|| E'\tend if;\n'
 	|| E'\t-- 20260930570000: a run brought forward starts now, as the attempt of the run that gives way to it.\n');
@@ -292,5 +347,11 @@ select pg_temp.rate_limit_replace('public.qorpera_folder_restore_dynamic_routine
 	E'\t\t\twhere routine_id = v_routine.id) >= v_routine.max_occurrences) then\n',
 	E'\t\t\twhere routine_id = v_routine.id\n'
 	|| E'\t\t\t\tand not (run_id is not null and public.qorpera_run_rate_limited(run_id))) >= v_routine.max_occurrences) then\n');
+
+select pg_temp.rate_limit_replace('public.qorpera_routine_occurrence_count(uuid)',
+	E'from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine_id\n',
+	E'from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine_id\n'
+	|| E'\t\tand not (wake.run_id is not null and wake.status in (\'failed\', \'requires_review\')\n'
+	|| E'\t\t\tand public.qorpera_run_rate_limited(wake.run_id))\n');
 
 drop function pg_temp.rate_limit_replace(regprocedure, text, text);

@@ -247,10 +247,13 @@ begin
 		'two turns of the account run, in two companies');
 	perform pg_temp.base_assert(not pg_temp.rl_admits(pg_temp.rl_id(6, 4)) and pg_temp.rl_admits(pg_temp.rl_id(6, 3)),
 		'a full account takes no other turn; another account does');
+	perform pg_temp.rl_run(5, pg_temp.rl_id(1, 2), 1);
 	perform pg_temp.rl_wake(4, jsonb_build_object('source_kind', 'worker-dispatch', 'parent_run_id', pg_temp.rl_id(6, 2)));
-	perform pg_temp.base_assert(pg_temp.rl_admits(pg_temp.rl_id(6, 4)), 'a running parent''s worker borrows its turn');
-	update public.qorpera_provider_account_cooldowns set cool_until = clock_timestamp() + interval '1 minute';
-	perform pg_temp.base_assert(not pg_temp.rl_admits(pg_temp.rl_id(6, 4)), 'but waits while the account cools');
+	perform pg_temp.rl_wake(5, jsonb_build_object('source_kind', 'worker-dispatch', 'parent_run_id', pg_temp.rl_id(6, 2)));
+	perform pg_temp.base_assert(not pg_temp.rl_admits(pg_temp.rl_id(6, 4)) and not pg_temp.rl_admits(pg_temp.rl_id(6, 5)),
+		'a running parent''s two workers wait for a turn like any run');
+	perform pg_temp.base_assert((select turns from public.qorpera_provider_account_turns() where account_key = pg_temp.rl_key()) = 2,
+		'the turns are counted once, by account');
 end
 $$;
 rollback to savepoint rl_cap;
@@ -392,15 +395,97 @@ begin
 	end loop;
 	perform pg_temp.base_assert(public.qorpera_routine_turned_away_runs(v_routine, 1) = 3,
 		'three runs of the routine were turned away');
+	perform pg_temp.base_assert(public.qorpera_routine_turned_away_streak(v_routine, 1) = 3, 'three in a row');
 	update public.qorpera_provider_account_cooldowns set cool_until = clock_timestamp() + interval '5 minutes'
 	returning cool_until into v_until;
+	update public.qorpera_cloud_routines set max_occurrences = 1 where id = v_routine;
 	perform pg_temp.base_claims('service_role');
+	perform set_config('qorpera_test.rl_routine', v_routine::text, true);
+end
+$$;
+savepoint rl_routine_streak;
+do $$
+declare v_routine uuid := current_setting('qorpera_test.rl_routine')::uuid; v_result jsonb; v_wake public.qorpera_wake_occurrences;
+begin
 	v_result := public.qorpera_folder_restore_dynamic_routine_run(v_routine, 1);
 	select * into v_wake from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrence_id')::uuid;
 	perform pg_temp.base_assert(v_result ->> 'status' = 'inserted' and v_wake.occurrence_key = 'once:1:4'
-		and v_wake.payload ->> 'attempt' = '1' and v_wake.not_before = v_until,
-		'the routine''s next run is its first attempt, after the account''s cool-down: ' || v_result::text || ' / '
+		and v_wake.payload ->> 'attempt' = '1' and v_wake.not_before = statement_timestamp() + interval '60 minutes',
+		'turned away three times in a row: its first attempt, not before an hour, and not over its limit: ' || v_result::text
+		|| ' / ' || coalesce(to_jsonb(v_wake)::text, 'none'));
+end
+$$;
+rollback to savepoint rl_routine_streak;
+do $$
+declare v_routine uuid := current_setting('qorpera_test.rl_routine')::uuid; v_result jsonb; v_wake public.qorpera_wake_occurrences;
+	v_until timestamptz;
+begin
+	perform pg_temp.rl_run(24, pg_temp.rl_connection(), 2);
+	perform pg_temp.rl_wake(24, jsonb_build_object('wake_kind', 'routine', 'source_kind', 'schedule',
+		'routine_id', v_routine, 'routine_version', 1, 'trigger_id', 't1', 'occurrence_key', 'once:1:4',
+		'status', 'requires_review', 'finished_at', clock_timestamp(), 'payload', '{}'::jsonb, 'parent_run_id', null,
+		'created_at', clock_timestamp() - interval '6 minutes'));
+	perform pg_temp.rl_run(25, pg_temp.rl_connection(), 2);
+	perform pg_temp.rl_wake(25, jsonb_build_object('wake_kind', 'routine', 'source_kind', 'schedule',
+		'routine_id', v_routine, 'routine_version', 1, 'trigger_id', 't1', 'occurrence_key', 'once:1:5',
+		'status', 'requires_review', 'finished_at', clock_timestamp(), 'payload', '{}'::jsonb, 'parent_run_id', null,
+		'created_at', clock_timestamp() - interval '5 minutes'));
+	set local session_replication_role = replica;
+	insert into public.qorpera_provider_connection_usage_signals(profile_id, run_id, job_id, sponsor_binding_id,
+		sponsor_version, provider_connection_id, provider_connection_version, provider, signal_kind, source, assignment_id)
+	select run.profile_id, run.id, run.job_id, run.sponsor_binding_id, run.sponsor_version, pg_temp.rl_connection(), 2,
+		'openai', 'rate_limited', 'native_adapter', extensions.gen_random_uuid()
+	from public.qorpera_execution_runs as run where run.id = pg_temp.rl_id(6, 25);
+	set local session_replication_role = origin;
+	update public.qorpera_cloud_routines set max_occurrences = 2 where id = v_routine;
+	perform pg_temp.base_assert(public.qorpera_routine_turned_away_streak(v_routine, 1) = 1,
+		'a run that was not turned away ends the streak');
+	select cool_until into v_until from public.qorpera_provider_account_cooldowns where account_key = pg_temp.rl_key();
+	v_result := public.qorpera_folder_restore_dynamic_routine_run(v_routine, 1);
+	select * into v_wake from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrence_id')::uuid;
+	perform pg_temp.base_assert(v_result ->> 'status' = 'inserted' and v_wake.payload ->> 'attempt' = '2'
+		and v_wake.not_before = greatest(statement_timestamp() + interval '15 minutes', v_until),
+		'one turned away after a real attempt: its second attempt, after 15 minutes: ' || v_result::text || ' / '
 		|| coalesce(to_jsonb(v_wake)::text, 'none'));
+end
+$$;
+
+do $$
+declare v_n integer; v_start timestamptz; v_ms numeric; v_queued uuid[] := '{}'; v_count integer;
+begin
+	for v_n in 101..130 loop
+		perform pg_temp.rl_run(v_n, pg_temp.rl_id(1, 2), 1);
+		perform pg_temp.rl_lease(v_n);
+	end loop;
+	for v_n in 201..250 loop
+		v_queued := v_queued || pg_temp.rl_run(v_n, case when v_n % 2 = 0 then pg_temp.rl_id(1, 2) else pg_temp.rl_id(1, 3) end, 1);
+		perform pg_temp.rl_lease(v_n);
+	end loop;
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'queued', runner_id = null, client_lease_id = null, lease_token_sha256 = null,
+		lease_expires_at = null where run_id = any(v_queued);
+	update public.qorpera_execution_runs set sponsor_binding_id = case when right(id::text, 3)::integer % 2 = 0
+		then pg_temp.rl_id(5, 2) else pg_temp.rl_id(5, 3) end
+	where id = any(v_queued);
+	update public.qorpera_execution_runs set sponsor_binding_id = pg_temp.rl_id(5, 2)
+	where id between pg_temp.rl_id(6, 101) and pg_temp.rl_id(6, 130);
+	set local session_replication_role = origin;
+	v_start := clock_timestamp();
+	for v_n in 1..20 loop
+		with account as materialized (select * from public.qorpera_provider_account_queued_sponsors())
+		select count(*) into v_count
+		from public.qorpera_runner_jobs as job
+		join public.qorpera_execution_runs as run on run.id = job.run_id
+		left join account on account.binding_id = run.sponsor_binding_id and account.version = run.sponsor_version
+		where job.status = 'queued' and run.id = any(v_queued) and coalesce(account.open, true);
+	end loop;
+	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000 / 20;
+	raise notice 'rate-limit claim filter: % ms a claim over 50 queued and 30 busy runs, % open', round(v_ms, 2), v_count;
+	perform pg_temp.base_assert(v_count = 25, 'only the other account''s 25 runs may start: ' || v_count);
+	perform pg_temp.base_assert(v_ms < 500, 'the filter stays cheap: ' || v_ms || ' ms');
+	v_start := clock_timestamp();
+	for v_n in 1..20 loop perform pg_temp.rl_claim(); end loop;
+	raise notice 'whole claim with that load: % ms a call', round(extract(epoch from clock_timestamp() - v_start) * 1000 / 20, 2);
 end
 $$;
 

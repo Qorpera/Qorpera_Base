@@ -6944,12 +6944,14 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    the last one cools it longer, and a signal while it already cools changes nothing) or until the provider's reset. No
    run of that account starts in any company while it cools: its job stays queued in order.
 4. **A cap per provider account.** At most `max_concurrent_turns` (6) runs of one provider account hold a turn at once,
-   across companies: a job leased or claimed for a runner holds one. Further runs wait queued, in their order. A worker
-   whose dispatching run still holds a turn borrows that turn, so a run that waits on its own worker never waits on the
-   cap. Both numbers are one platform setting row (`qorpera_provider_account_turn_settings`).
+   across companies: a job leased or claimed for a runner holds one. Further runs wait queued, in their order, workers
+   included: no run waits on its own worker (a parent is told to end its turn when it dispatches one, and the report
+   comes back in a new run), so no run holds a turn the cap needs. Both numbers are one platform setting row
+   (`qorpera_provider_account_turn_settings`).
 5. **Wakes and routines.** A waiting run keeps its wake, so a routine makes no new run meanwhile. A run of an agent's
-   once-routine that ended turned away is no attempt of the routine: it does not count towards the next run's delay,
-   number or limit, and the next run is not due before the account's cool-down ends.
+   once-routine that ended turned away is no attempt of the routine: it counts towards neither its number nor its
+   limit. Turned-away runs in a row still back off: the next run is not due before 15 minutes after the first of them,
+   doubling with each (at most a day), nor before the account's cool-down ends.
 6. **What members read.** A waiting run's activity says `paused_for: "rate_limited"` and is never movable to another
    login; the recovery read of a failed run says `rate_limited`. The thread says ChatGPT got too many requests at once,
    that the work goes on by itself, and that the login is fine; never to check the login.
