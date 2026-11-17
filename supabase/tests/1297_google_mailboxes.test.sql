@@ -403,6 +403,8 @@ select pg_temp.base_assert(pg_temp.g_box('owner@gmail.com') is null
 	'Remove ends the Google sign-in and keeps the mail brought in');
 select set_config('qorpera_test.g_old_box', (select google.mailbox_id::text from public.qorpera_google_mailboxes as google
 	where google.address = 'owner@gmail.com'), true) \g /dev/null
+select set_config('qorpera_test.g_old_hook', (select google.hook_id::text from public.qorpera_google_mailboxes as google
+	where google.address = 'owner@gmail.com'), true) \g /dev/null
 select public.qorpera_purge_event_deliveries(1000) \g /dev/null
 select public.qorpera_claim_company_mail(10, '12970000-0000-4000-8000-000000000c02') \g /dev/null
 select pg_temp.base_assert((select count(*) = 5 from public.qorpera_mail_received as received
@@ -412,25 +414,45 @@ select pg_temp.base_assert((select count(*) = 5 from public.qorpera_mail_receive
 			join public.qorpera_mail_threads as thread on thread.id = received.thread_id
 			where received.received_at < clock_timestamp() - interval '39 days'),
 	'The mail brought in stays after Remove, the purge and the thread clean-up included');
+insert into public.qorpera_event_deliveries (id, hook_id, profile_id, status, delivery_key, event_type, content_type,
+	headers, body, body_bytes, body_sha256, verified_at, received_at)
+select ('12970000-0000-4000-9000-' || lpad(to_hex(n), 12, '0'))::uuid, current_setting('qorpera_test.g_old_hook')::uuid,
+	'92400000-0000-4000-8000-000000000010', 'verified', 'mail:bulk-' || n, 'mail.received', 'application/json', '{}',
+	null, 0, repeat('0', 64), clock_timestamp(), clock_timestamp() - interval '60 days'
+from generate_series(1, 50000) as n;
+insert into public.qorpera_mail_received (delivery_id, thread_id, profile_id, environment_id, mailbox_id, received_at)
+select ('12970000-0000-4000-9000-' || lpad(to_hex(n), 12, '0'))::uuid, 'b' || lpad(n::text, 42, '0'),
+	'92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	current_setting('qorpera_test.g_old_box')::uuid, clock_timestamp() - interval '60 days'
+from generate_series(1, 50000) as n;
+insert into public.qorpera_google_mail_messages (profile_id, address, gmail_id, mailbox_id, delivery_id, imported)
+select '92400000-0000-4000-8000-000000000010', 'owner@gmail.com', 'bulk' || n,
+	current_setting('qorpera_test.g_old_box')::uuid, ('12970000-0000-4000-9000-' || lpad(to_hex(n), 12, '0'))::uuid, true
+from generate_series(1, 50000) as n;
+update public.qorpera_google_mailboxes set brought_in = 50000 where mailbox_id = current_setting('qorpera_test.g_old_box')::uuid;
 update public.qorpera_google_mailboxes set due_at = null where address = 'agents@gmail.com';
 select set_config('qorpera_test.g_back', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
 	'92400000-0000-4000-8000-000000000020')::text, true) \g /dev/null
-select pg_temp.base_assert(pg_temp.g_complete(current_setting('qorpera_test.g_back')::jsonb, 'owner@gmail.com')
-		->> 'outcome' = 'created',
-	'The same company connects the removed address again');
-select pg_temp.base_assert((pg_temp.g_box('owner@gmail.com')).mailbox_id::text <> current_setting('qorpera_test.g_old_box')
-		and (pg_temp.g_box('owner@gmail.com')).brought_in = 2
-		and not exists (select 1 from public.qorpera_google_mailboxes as google
-			where google.mailbox_id = current_setting('qorpera_test.g_old_box')::uuid)
-		and (select count(*) = 5 from public.qorpera_mail_received as received
-			where received.mailbox_id = (pg_temp.g_box('owner@gmail.com')).mailbox_id)
-		and not exists (select 1 from public.qorpera_mail_received as received
+set local statement_timeout = '4s';
+select set_config('qorpera_test.g_backed', pg_temp.g_complete(current_setting('qorpera_test.g_back')::jsonb,
+	'owner@gmail.com')::text, true) \g /dev/null
+set local statement_timeout = 0;
+select pg_temp.base_assert(current_setting('qorpera_test.g_backed')::jsonb ->> 'outcome' = 'relinked'
+		and current_setting('qorpera_test.g_backed')::jsonb ->> 'mailboxId' = current_setting('qorpera_test.g_old_box'),
+	'The same company connects the removed address again, within the vault''s 4 s, however much mail it has');
+select pg_temp.base_assert((pg_temp.g_box('owner@gmail.com')).mailbox_id::text = current_setting('qorpera_test.g_old_box')
+		and (pg_temp.g_box('owner@gmail.com')).hook_id::text = current_setting('qorpera_test.g_old_hook')
+		and (pg_temp.g_box('owner@gmail.com')).state = 'bringing_in'
+		and (select hook.status = 'active' and hook.removed_at is null from public.qorpera_event_hooks as hook
+			where hook.id = current_setting('qorpera_test.g_old_hook')::uuid)
+		and (select mailbox.removed_at is null from public.qorpera_company_mailboxes as mailbox
+			where mailbox.id = current_setting('qorpera_test.g_old_box')::uuid)
+		and (select count(*) = 50005 from public.qorpera_mail_received as received
 			where received.mailbox_id = current_setting('qorpera_test.g_old_box')::uuid)
-		and not exists (select 1 from public.qorpera_mail_threads as thread
-			where thread.mailbox_id = current_setting('qorpera_test.g_old_box')::uuid)
-		and (select count(*) = 5 from public.qorpera_event_deliveries as delivery
-			where delivery.hook_id = (pg_temp.g_box('owner@gmail.com')).hook_id),
-	'The new mailbox takes over the mail brought in before');
+		and pg_temp.g_entry('owner@gmail.com') ->> 'kind' = 'google',
+	'The removed mailbox, its hook and its mail come back in place under the new sign-in');
+delete from public.qorpera_event_deliveries where delivery_key like 'mail:bulk-%';
+delete from public.qorpera_google_mail_messages where gmail_id like 'bulk%';
 select set_config('qorpera_test.g_claim', pg_temp.g_claim()::text, true) \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.g_claim')::jsonb ->> 'address' = 'owner@gmail.com'
 		and pg_temp.g_broker(format('select public.qorpera_google_mail_known_among(%L, %L, %L, %L, %L)',

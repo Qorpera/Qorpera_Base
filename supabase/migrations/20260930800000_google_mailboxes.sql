@@ -253,38 +253,6 @@ revoke all on function public.qorpera_google_mail_outbox_route() from public, an
 create trigger qorpera_google_mail_outbox_route before insert on public.qorpera_company_mail_outbox
 	for each row execute function public.qorpera_google_mail_outbox_route();
 
-create function public.qorpera_google_mailbox_adopt(p_mailbox_id uuid)
-returns void language plpgsql security definer set search_path = '' as $$
-declare
-	v_google public.qorpera_google_mailboxes%rowtype;
-	v_old public.qorpera_google_mailboxes%rowtype;
-begin
-	select google.* into strict v_google from public.qorpera_google_mailboxes as google
-	where google.mailbox_id = p_mailbox_id;
-	for v_old in
-		select google.* from public.qorpera_google_mailboxes as google
-		where google.profile_id = v_google.profile_id and google.environment_id = v_google.environment_id
-			and google.address = v_google.address and google.removed_at is not null
-		order by google.created_at, google.mailbox_id
-		for update
-	loop
-		update public.qorpera_event_deliveries set hook_id = v_google.hook_id where hook_id = v_old.hook_id;
-		update public.qorpera_mail_received set mailbox_id = v_google.mailbox_id where mailbox_id = v_old.mailbox_id;
-		update public.qorpera_mail_threads set mailbox_id = v_google.mailbox_id where mailbox_id = v_old.mailbox_id;
-		update public.qorpera_company_mail_outbox set mailbox_id = v_google.mailbox_id where mailbox_id = v_old.mailbox_id;
-		update public.qorpera_google_mail_messages set mailbox_id = v_google.mailbox_id
-		where mailbox_id = v_old.mailbox_id;
-		update public.qorpera_google_mailboxes
-		set brought_in = greatest(brought_in, v_old.brought_in),
-			total = case when v_old.total is null then total else greatest(coalesce(total, 0), v_old.total) end
-		where mailbox_id = v_google.mailbox_id;
-		delete from public.qorpera_google_mailboxes where mailbox_id = v_old.mailbox_id;
-	end loop;
-end
-$$;
-revoke all on function public.qorpera_google_mailbox_adopt(uuid)
-	from public, anon, authenticated, service_role, qorpera_secret_broker;
-
 create function public.qorpera_begin_google_mailbox(p_environment_id uuid, p_mailbox_id uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -399,6 +367,7 @@ declare
 	v_google public.qorpera_google_mailboxes%rowtype;
 	v_waiting text;
 	v_reused uuid;
+	v_removed public.qorpera_google_mailboxes%rowtype;
 	v_secret_id uuid;
 	v_old_secret uuid;
 	v_domain text;
@@ -474,6 +443,11 @@ begin
 			and secret.owner_kind = 'company' and secret.connector_id = 'gmail' and secret.status = 'active'
 			and secret.id <> v_ticket.secret_id and lower(secret.account_label) = v_address
 		order by secret.created_at, secret.id limit 1;
+		select google.* into v_removed from public.qorpera_google_mailboxes as google
+		where google.profile_id = v_ticket.profile_id and google.environment_id = v_ticket.environment_id
+			and google.address = v_address and google.removed_at is not null
+		order by google.removed_at desc, google.mailbox_id limit 1
+		for update;
 	end if;
 	if v_reused is not null then
 		update public.qorpera_cloud_secret_capture_tickets set status = 'cancelled' where id = v_ticket.id;
@@ -500,6 +474,17 @@ begin
 		end if;
 		v_mailbox_id := v_google.mailbox_id;
 		v_outcome := 'relinked';
+	elsif v_removed.mailbox_id is not null then
+		update public.qorpera_event_hooks set status = 'active', removed_at = null, updated_at = statement_timestamp()
+		where id = v_removed.hook_id;
+		update public.qorpera_company_mailboxes set removed_at = null where id = v_removed.mailbox_id;
+		update public.qorpera_google_mailboxes
+		set removed_at = null, secret_id = v_secret_id, state = 'bringing_in', paused = false, history_id = null,
+			page_token = null, imported_at = null, due_at = clock_timestamp(), lease_id = null, lease_until = null,
+			attempts = 0, last_error = null, updated_at = clock_timestamp()
+		where mailbox_id = v_removed.mailbox_id;
+		v_mailbox_id := v_removed.mailbox_id;
+		v_outcome := coalesce(v_outcome, 'relinked');
 	else
 		insert into public.qorpera_event_hooks (
 			profile_id, environment_id, name, purpose, proof, address, max_body_bytes, per_minute, created_by_user_id
@@ -518,7 +503,6 @@ begin
 			state, due_at, created_by_user_id)
 		values (v_mailbox_id, v_hook.id, v_ticket.profile_id, v_ticket.environment_id, v_address, v_secret_id,
 			'bringing_in', clock_timestamp(), v_ticket.created_by_user_id);
-		perform public.qorpera_google_mailbox_adopt(v_mailbox_id);
 		v_outcome := coalesce(v_outcome, 'created');
 	end if;
 	return jsonb_build_object('schema', 'qorpera.google-mailbox-connected/v1', 'outcome', v_outcome,
