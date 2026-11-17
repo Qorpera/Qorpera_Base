@@ -38,7 +38,6 @@ const FIND_STEP_MS = 3000;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 /** Base64 as the database encodes a body, padded, without line breaks. */
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-/** A hook's and a mailbox's names, as the database checks them (E1's rules): a mailbox's never has two dots in a row. */
 const HOOK_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 const MAILBOX_NAME = /^[a-z0-9]([a-z0-9_-]{0,37}[a-z0-9])?\.[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/;
 /** The site a signed hook's secret may be typed into, as A1's account sites are (E3b). */
