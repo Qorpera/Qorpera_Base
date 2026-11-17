@@ -508,7 +508,7 @@ export function mutationText(
 									? "Nothing was deleted: the deletion needs the automatic review's approval of this call. Call again, and if this repeats tell the member."
 									: tool === "company_move"
 										? "Nothing was moved: the move needs the automatic review's approval of this call. Call again, and if this repeats tell the member."
-										: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, create_group_chat, manage_routine), not with a file write."
+										: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, hire_team, create_group_chat, manage_routine), not with a file write."
 								: unit.outcome === "denied"
 									? "COMPANY_FILE_ACCESS_DENIED: you may not change this path; nothing was written."
 									: layoutAuthoring(unit)

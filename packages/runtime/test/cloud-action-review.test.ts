@@ -197,6 +197,7 @@ describe("which calls are reviewed", () => {
 		["manage_hook", { action: "resume", hook: "site-form", operationKey: "k" }, "internal"],
 		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
 		["hire_agent", {}, "delegation"],
+		["hire_team", { operationKey: "k", hires: [] }, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		// The company's reading of itself (20260930766000): saving it is bookkeeping; ending a role changes who works here.
 		["update_reading", { operationKey: "k", attention: "product" }, "internal"],
@@ -3138,6 +3139,60 @@ describe("company sites (20260930550000)", () => {
 				effect: "Its routines pause and its threads close; its files stay, and a member can bring it back",
 			},
 		});
+		expect(
+			describeCloudAction(tool("hire_team"), {
+				operationKey: "k",
+				hires: [
+					{
+						name: "Market",
+						role: "Market research",
+						jobDescription: "Own the market.",
+						firstAssignment: "Size it.",
+						figure: "acorn",
+					},
+					{
+						name: "Brand",
+						role: "Brand owner",
+						jobDescription: "Own the brand.",
+						firstAssignment: "Name it.\nThen more.",
+					},
+				],
+			}),
+		).toEqual({
+			title: "Hire a team of 2 agents",
+			target: "Market and Brand",
+			details: {
+				"Hire 1: Market": "Market research · first task: Size it. · job: Own the market.",
+				"Hire 2: Brand": "Brand owner · first task: Name it. Then more. · job: Own the brand.",
+			},
+		});
+		const twelve = Array.from({ length: 12 }, (_, n) => ({
+			name: `Area ${n}`,
+			role: "Owner",
+			jobDescription: `Never share the price list. ${"y".repeat(2000)}`,
+			firstAssignment: "x".repeat(900),
+		}));
+		const card = describeCloudAction(tool("hire_team"), { operationKey: "k", hires: twelve });
+		expect(Object.keys(card.details)).toEqual(twelve.map((hire, n) => `Hire ${n + 1}: ${hire.name}`));
+		for (const value of Object.values(card.details)) {
+			expect(Buffer.byteLength(value)).toBeLessThanOrEqual(600);
+			expect(value).toMatch(/^Owner · first task: x+ \[\.\.\.\] · job: Never share the price list\. y+ \[\.\.\.\]$/);
+			const [, task, job] = value.split(" · ");
+			expect(Math.abs(Buffer.byteLength(task ?? "") - Buffer.byteLength(job ?? ""))).toBeLessThan(16);
+		}
+		const reserved = describeCloudAction(tool("hire_team"), {
+			operationKey: "k",
+			hires: [
+				{ name: "path", role: "Paths", jobDescription: "Own paths.", firstAssignment: "Map them." },
+				{ name: "command", role: "Commands", jobDescription: "Own commands.", firstAssignment: "List them." },
+			],
+		});
+		expect(reserved.details).toEqual({
+			"Hire 1: path": "Paths · first task: Map them. · job: Own paths.",
+			"Hire 2: command": "Commands · first task: List them. · job: Own commands.",
+		});
+		for (const key of Object.keys(reserved.details))
+			expect(["path", "name", "title", "subject", "body", "text", "intent", "task", "command"]).not.toContain(key);
 		// One already ended says so on its card (review r1 of #1819: it is answered after its receipt, not refused).
 		expect(
 			describeCloudAction(tool("end_role"), {

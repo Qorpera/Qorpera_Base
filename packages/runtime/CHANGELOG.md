@@ -1,6 +1,23 @@
 # Changelog
 
 ## [Unreleased]
+- The first team in one step (the founder, 17 November 2026: "on 5, I agree with batch hiring, but we should allow for
+  continuous hiring as the company evolves"; contract 14.1, the 2026-11-17 amendment; migration `20260930799000`, SQL
+  test 1296; lanes/mywave-fixes-20261117/DESIGN-B.md). A new runtime tool, `hire_team`, hires 2 to 12 coworkers in one
+  call, each with `hire_agent`'s fields and checks: one automatic review of the call (delegation; one card naming every
+  hire), recorded for all of its new agent folders, and one folder commit, which indexes every new agent in its own
+  transaction, so each first run lists the whole team as coworkers. One `operationKey` per call; each hire's ids come
+  from the run, the key and its place in the list, in namespaces of their own. Names repeated in the call are refused
+  before the review, and handles are numbered past the folders taken and the call's own. A hire whose folder was made
+  meanwhile is that hire's conflict alone, and the answer names each hire's outcome (`partly_saved`). Its arguments are
+  bounded at 90 KiB (the action review row keeps them). `hire_agent` says it is for one hire at any time as the company
+  evolves; the Co-Founder carries both tools in full, an employee opens `hire_team` by more_tools. Catalog: the
+  Co-Founder's grows by `hire_team` (2,506 bytes: description 1,215, schema 1,237) and `hire_agent`'s description (927 to
+  1,040 bytes); the pins moved. A platform update (`hire-team`) tells the Co-Founder. Deploy order: the migration before
+  the bundle's activation (the release's `migrate` runs first). The migration only adds the name where `hire_agent` is
+  named (the runtime observation list, the review recorder's tools and contract 14.1's two checks), so an older runtime
+  is unchanged by it; a runtime with `hire_team` on a database without it would have every team refused at the review
+  recorder, saving nothing.
 - Release v254 (company mail handles and companies with no name yet, #1915 and #1921; a member's message waits at a
   rate limit, #1916; each merged in the release branch at its approved head; and master since v253: pending spectators,
   #1911; long company names in the invitation email, #1901; the kits' pages without a header, #1899; coworker messages
