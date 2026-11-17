@@ -50,6 +50,7 @@ export interface GoogleMail {
 	readonly broughtIn: number;
 	readonly total: number | null;
 	readonly lastWeek: number;
+	readonly capped: boolean;
 }
 
 export interface MailAddress {
@@ -308,6 +309,7 @@ function parseGoogleMail(value: unknown): GoogleMail {
 		broughtIn: absent(item.broughtIn) ? 0 : count(item.broughtIn, "google mail count"),
 		total: absent(item.total) ? null : count(item.total, "google mail total"),
 		lastWeek: absent(item.lastWeek) ? 0 : count(item.lastWeek, "google mail week"),
+		capped: flag(item.capped, "google mail capped"),
 	};
 }
 

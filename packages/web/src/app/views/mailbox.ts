@@ -2032,12 +2032,7 @@ function googleOf(page: Page, hook: EventHook): GoogleMail | undefined {
 
 function googleState(google: GoogleMail): string | null {
 	if (google.state === "paused") return t("Paused");
-	if (
-		google.state === "live" &&
-		google.broughtIn >= GOOGLE_FIRST_IMPORT_LIMIT &&
-		google.total !== null &&
-		google.total > google.broughtIn
-	)
+	if (google.state === "live" && google.capped)
 		return t("The newest {count} messages are here.", { count: count(GOOGLE_FIRST_IMPORT_LIMIT) });
 	return null;
 }

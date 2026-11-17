@@ -518,23 +518,37 @@ describe("Google mail's states", () => {
 		expect(card.querySelector(".connection-actions button")).toBeNull();
 	});
 
-	it("says the newest 50,000 messages are here only when the first import stopped there and Google has more", async () => {
+	it("says the newest 50,000 messages are here exactly while a live mailbox is capped", async () => {
 		const { main, fake, controller, hookIds } = await mailbox((mail) => {
-			mail.addresses.unshift(googleAddress({ state: "live", broughtIn: 50_000, total: 61_250, lastWeek: 4 }));
+			mail.addresses.unshift(
+				googleAddress({ state: "live", broughtIn: 50_000, total: 61_250, lastWeek: 4, capped: true }),
+			);
 		});
 		await addresses(main, 2);
 		const state = () => cardOf(main, hookIds[0]!)!.querySelector(".hook-state")?.textContent ?? null;
 		expect(state()).toBe("The newest 50,000 messages are here.");
-		fake.addresses[0] = googleAddress({ state: "live", broughtIn: 3_000, total: 3_150, lastWeek: 4 });
+		fake.addresses[0] = googleAddress({
+			state: "live",
+			broughtIn: 50_001,
+			total: 61_000,
+			lastWeek: 4,
+			capped: false,
+		});
 		await CompanyMail.of(controller)?.reread();
 		await vi.waitFor(() => expect(state()).toBeNull());
-		fake.addresses[0] = googleAddress({ state: "live", broughtIn: 50_000, total: 61_250, lastWeek: 4 });
+		fake.addresses[0] = googleAddress({ state: "live", broughtIn: 2_000, total: 900, lastWeek: 4, capped: true });
 		await CompanyMail.of(controller)?.reread();
 		await vi.waitFor(() => expect(state()).toBe("The newest 50,000 messages are here."));
-		fake.addresses[0] = googleAddress({ state: "live", broughtIn: 50_000, total: 50_000, lastWeek: 4 });
+		fake.addresses[0] = googleAddress({ state: "live", broughtIn: 50_000, total: 61_250, lastWeek: 4 });
 		await CompanyMail.of(controller)?.reread();
 		await vi.waitFor(() => expect(state()).toBeNull());
-		fake.addresses[0] = googleAddress({ state: "bringing_in", broughtIn: 20_000, total: 61_250, lastWeek: 4 });
+		fake.addresses[0] = googleAddress({
+			state: "bringing_in",
+			broughtIn: 20_000,
+			total: 61_250,
+			lastWeek: 4,
+			capped: true,
+		});
 		await CompanyMail.of(controller)?.reread();
 		await vi.waitFor(() => expect(state()).toBeNull());
 	});
