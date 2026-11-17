@@ -1,22 +1,6 @@
-// A worker that runs on Claude Code (lanes/agent-box-20261113, slice C4c; C4-WORKER-DESIGN.md as the lane's lead ruled
-// it, 14 Nov 2026). An agent hands a plain worker to Claude Code on a member's word (C4a); its run is this composition,
-// not a Codex turn: no Codex starts. The run opens its member's sealed Claude sign-in for this run only (C4b), puts the
-// files in a private login folder of this run, starts unmodified Claude Code in its box beside the agent's own machine
-// (C2, cloud-claude-box.ts: its shell and files are the machine's, as the agent's account), reads what it does from its
-// stream, seals the credentials file back when Claude Code renewed it, and ends with Claude Code's own report. The
-// runtime writes that report as the worker's results (report_work's path) and the worker-completion wake is unchanged.
-//
-// What holds here, by the founder's decisions:
-// - The member's own plan pays and is never switched; nothing falls back to Codex. A failure before the box starts ends
-//   the worker blocked, in words the dispatching agent can act on.
-// - No program of ours renews a token, calls Anthropic with it or reads it for its own use: the files go into the folder
-//   as the vault sealed them, and only `.credentials.json` is read back, for its digest and to send it to the vault.
-// - Nothing of the login is logged, and nothing else Claude Code wrote in its folder is kept or sent: the folder's files
-//   are overwritten and the folder removed, also when the run is stopped or fails.
-// - Members see no step list: each tool call becomes one step of the run's own work log, never shown as a log.
-
-import { lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_CODE_PIN,
@@ -24,14 +8,13 @@ import {
 	type ClaudeCodeBoxOptions,
 	claudeBoxStartStage,
 } from "./cloud-claude-box.ts";
-import type { ClaudeLoginFileName } from "./cloud-claude-login-vault.ts";
+import { type ClaudeLoginFileName, wipeClaudeLoginFolder } from "./cloud-claude-login-renewal.ts";
 import { cloudHomeRefusalWords } from "./cloud-codex-home.ts";
-import { sha256 } from "./cloud-company-folder-client.ts";
 import { CloudHomeChannelRefused } from "./cloud-home-channel.ts";
-import { claudeLoginFile } from "./cloud-model-login-sign-in.ts";
 import type { ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { type CloudRuntimeClaudeChoice, isCloudRuntimeClaudeChoice } from "./cloud-runtime-policy.ts";
-import { type ClaudeLoginRunClient, openClaudeLoginForRun, sealClaudeLoginBack } from "./cloud-secret-broker-http.ts";
+import { type ClaudeLoginRunClient, openClaudeLoginForRun } from "./cloud-secret-broker-http.ts";
+import { CloudSecretBrokerBusyError } from "./cloud-vault-database-failure.ts";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // What Claude Code is told
@@ -319,9 +302,7 @@ export const CLAUDE_WORKER_WORDS = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The login: opened for this run, in a private folder, sealed back when Claude Code changed its credentials
 
-/** The run's opened Claude login, as the vault client gives it (C4b's OpenedClaudeLogin). */
 export interface ClaudeWorkerOpenedLogin {
 	readonly claudeLoginId: string;
 	readonly version: number;
@@ -329,191 +310,83 @@ export interface ClaudeWorkerOpenedLogin {
 	readonly files: ReadonlyMap<ClaudeLoginFileName, Buffer>;
 	readonly fileSha256: Readonly<Partial<Record<ClaudeLoginFileName, string>>>;
 }
-/** The base a seal-back compares and swaps against: what the run opened, or what it sealed since. */
-export type ClaudeWorkerLoginBase = Pick<
-	ClaudeWorkerOpenedLogin,
-	"claudeLoginId" | "version" | "envelopeSha256" | "fileSha256"
->;
-/** A seal-back's answer (C4b's sealClaudeLoginBack). `base` is the version just sealed, when the vault says it. */
-export type ClaudeWorkerSealAnswer =
-	| { readonly state: "unchanged" }
-	| { readonly state: "sealed"; readonly version: number; readonly base?: ClaudeWorkerLoginBase }
-	| { readonly state: "stale"; readonly version: number }
-	| { readonly state: "refused"; readonly reason: "SIGNED_OUT" | "NOT_OPEN" };
 
-/** The vault, for this run (the runtime binds the run's binding and the client). */
 export interface ClaudeWorkerLogins {
-	open(signal: AbortSignal): Promise<ClaudeWorkerOpenedLogin | { readonly refused: "SIGNED_OUT" | "NOT_OPEN" }>;
-	seal(base: ClaudeWorkerLoginBase, credentials: Uint8Array, signal: AbortSignal): Promise<ClaudeWorkerSealAnswer>;
+	open(
+		signal: AbortSignal,
+		knownVersion?: number,
+	): Promise<
+		| ClaudeWorkerOpenedLogin
+		| { readonly refused: "SIGNED_OUT" | "NOT_OPEN" }
+		| { readonly current: true; readonly version: number }
+	>;
 }
 
-/** Overwrites every regular file under `folder` (no link followed) with zeros of its own size, then removes the folder.
- * The run's login folder lives in the run host's own temporary root; whether that is memory or disk, what Claude Code
- * kept there (the credentials, its transcripts, its settings) is overwritten before it is removed. */
-export async function wipeClaudeLoginFolder(folder: string): Promise<void> {
-	const walk = async (dir: string): Promise<void> => {
-		let names: string[];
+export { wipeClaudeLoginFolder };
+
+const BUSY_RETRY_MS = 5_000;
+const BUSY_RETRIES = 6;
+
+async function openWhenRenewed(
+	logins: ClaudeWorkerLogins,
+	signal: AbortSignal,
+	retryMs: number,
+): Promise<Awaited<ReturnType<ClaudeWorkerLogins["open"]>>> {
+	for (let attempt = 0; ; attempt += 1) {
 		try {
-			names = await readdir(dir);
-		} catch {
-			return;
+			return await logins.open(signal);
+		} catch (error) {
+			if (!(error instanceof CloudSecretBrokerBusyError) || attempt >= BUSY_RETRIES) throw error;
+			await delay(retryMs, undefined, { signal });
 		}
-		for (const name of names) {
-			const path = join(dir, name);
-			let metadata: Awaited<ReturnType<typeof lstat>>;
-			try {
-				metadata = await lstat(path);
-			} catch {
-				continue;
-			}
-			if (metadata.isDirectory()) await walk(path);
-			else if (metadata.isFile() && metadata.size > 0) {
-				try {
-					const handle = await open(path, "r+");
-					try {
-						const zeros = Buffer.alloc(Math.min(metadata.size, 1 << 20));
-						for (let at = 0; at < metadata.size; at += zeros.length)
-							await handle.write(zeros, 0, Math.min(zeros.length, metadata.size - at), at);
-						await handle.sync();
-					} finally {
-						await handle.close();
-					}
-				} catch {
-					// Removed below either way.
-				}
-			}
-		}
-	};
-	await walk(folder);
-	await rm(folder, { recursive: true, force: true });
-}
-
-/** The credentials file's state on disk, to tell that Claude Code replaced it (it writes a new file and renames it). */
-async function credentialsStamp(folder: string): Promise<string | null> {
-	try {
-		const metadata = await lstat(join(folder, ".credentials.json"));
-		return metadata.isFile() ? `${metadata.ino}:${metadata.size}:${metadata.mtimeMs}` : null;
-	} catch {
-		return null;
 	}
 }
 
-/** Keeps the run's login in step with the vault: seals `.credentials.json` back once early, when Claude Code replaced it
- * soon after its start (it renews an expired token then), and again at the end when it changed again. */
-class ClaudeWorkerLoginKeeper {
+class ClaudeWorkerLoginRefresher {
 	readonly #logins: ClaudeWorkerLogins;
 	readonly #folder: string;
-	#base: ClaudeWorkerLoginBase;
-	/** The credentials' digest the vault holds as this run's base. */
-	#held: string | undefined;
-	#lost = false;
-	#queue: Promise<void> = Promise.resolve();
-	sealed = 0;
-	stale = 0;
-	refused: "SIGNED_OUT" | "NOT_OPEN" | null = null;
+	#version: number;
+	refreshed = 0;
+	ended = false;
 
-	constructor(logins: ClaudeWorkerLogins, folder: string, opened: ClaudeWorkerOpenedLogin) {
+	constructor(logins: ClaudeWorkerLogins, folder: string, version: number) {
 		this.#logins = logins;
 		this.#folder = folder;
-		this.#base = {
-			claudeLoginId: opened.claudeLoginId,
-			version: opened.version,
-			envelopeSha256: opened.envelopeSha256,
-			fileSha256: { ...opened.fileSha256 },
-		};
-		this.#held = opened.fileSha256[".credentials.json"];
+		this.#version = version;
 	}
 
-	/** Seals the credentials back when they changed since what the vault holds. One at a time. Resolves true when the
-	 * vault holds what the folder holds now (or nothing more can be sealed); rejects when the vault could not be asked. */
-	sync(signal: AbortSignal): Promise<boolean> {
-		const next = this.#queue.then(() => this.#sync(signal));
-		this.#queue = next.then(
-			() => undefined,
-			() => undefined,
-		);
-		return next;
-	}
-
-	async #sync(signal: AbortSignal): Promise<boolean> {
-		if (this.#lost || this.refused) return true;
-		let credentials: Buffer;
-		try {
-			credentials = await claudeLoginFile(join(this.#folder, ".credentials.json"));
-		} catch {
-			// Gone, a link or out of bounds: nothing of it is sent.
-			return true;
+	async refresh(signal: AbortSignal): Promise<void> {
+		if (this.ended) return;
+		const next = await this.#logins.open(signal, this.#version);
+		if ("refused" in next) {
+			this.ended = true;
+			return;
 		}
+		if ("current" in next) return;
 		try {
-			const digest = sha256(credentials);
-			if (digest === this.#held) return true;
-			let answer: ClaudeWorkerSealAnswer;
-			try {
-				answer = await this.#logins.seal(this.#base, credentials, signal);
-			} catch {
-				// A lost answer is asked once more; a seal that did land answers stale with the next version (below).
-				signal.throwIfAborted();
-				answer = await this.#logins.seal(this.#base, credentials, signal);
-			}
-			if (answer.state === "unchanged") {
-				this.#held = digest;
-				return true;
-			}
-			if (answer.state === "refused") {
-				this.refused = answer.reason;
-				return true;
-			}
-			if (answer.state === "sealed") {
-				this.sealed++;
-				this.#held = digest;
-				this.#base = answer.base ?? (await this.#reopened(digest, signal)) ?? this.#base;
-				return true;
-			}
-			// Stale: another seal came first. One version past ours may be our own, its answer lost: the vault's copy
-			// says so when its credentials are the ones sent.
-			if (answer.version === this.#base.version + 1) {
-				const ours = await this.#reopened(digest, signal);
-				if (ours) {
-					this.sealed++;
-					this.#held = digest;
-					this.#base = ours;
-					return true;
-				}
-			}
-			// Another run's renewal won: its token is the member's now, and this run seals nothing more. Not an error.
-			this.stale++;
-			this.#lost = true;
-			return true;
+			const credentials = next.files.get(".credentials.json");
+			if (!credentials || next.version <= this.#version) return;
+			const staged = join(this.#folder, ".credentials.json.qorpera-next");
+			await rm(staged, { force: true });
+			await writeFile(staged, credentials, { mode: 0o600, flag: "wx" });
+			await rename(staged, join(this.#folder, ".credentials.json"));
+			this.#version = next.version;
+			this.refreshed++;
 		} finally {
-			credentials.fill(0);
+			for (const bytes of next.files.values()) bytes.fill(0);
 		}
-	}
-
-	/** The login's newest version as the vault opens it again, when its credentials are `digest`; its files are zeroed at
-	 * once (only their digests are kept). */
-	async #reopened(digest: string, signal: AbortSignal): Promise<ClaudeWorkerLoginBase | undefined> {
-		const opened = await this.#logins.open(signal);
-		if ("refused" in opened) {
-			this.refused = opened.refused;
-			return undefined;
-		}
-		for (const bytes of opened.files.values()) bytes.fill(0);
-		if (opened.fileSha256[".credentials.json"] !== digest) return undefined;
-		return {
-			claudeLoginId: opened.claudeLoginId,
-			version: opened.version,
-			envelopeSha256: opened.envelopeSha256,
-			fileSha256: { ...opened.fileSha256 },
-		};
 	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The run
 
+export type ClaudeWorkerClaudeSide = "signed_out" | "not_open" | "limit" | "could_not_start";
+
 /** How a Claude Code worker's run ended, for its report. */
 export interface ClaudeWorkerOutcome {
 	readonly outcome: "succeeded" | "blocked";
+	readonly claudeSide?: ClaudeWorkerClaudeSide;
 	/** The report's summary: Claude Code's own final message, or the words for why there is none. */
 	readonly summary: string;
 	/** For a blocked worker: what the agent can do. */
@@ -522,8 +395,7 @@ export interface ClaudeWorkerOutcome {
 	readonly model?: string;
 	readonly sessionId?: string;
 	readonly steps: number;
-	/** The login: how many times its credentials were sealed back, and whether another run's seal came first. */
-	readonly login?: { readonly sealed: number; readonly stale: number };
+	readonly login?: { readonly refreshed: number };
 	readonly boxFailure?: string;
 }
 
@@ -543,9 +415,8 @@ export interface ClaudeWorkerRunOptions {
 	/** Each step as it finishes, for the run's work log. Never throws back into the run. */
 	readonly step?: (step: ClaudeWorkerStep | { readonly start: { model: string; sessionId: string } }) => void;
 	readonly signal: AbortSignal;
-	/** How long after the box starts a replaced credentials file is sealed back early (default 120 s). */
-	readonly earlySealMs?: number;
-	readonly pollMs?: number;
+	readonly refreshMs?: number;
+	readonly busyRetryMs?: number;
 }
 
 export function claudeWorkerScratchPrefix(root: string): string {
@@ -593,19 +464,21 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 	signal.throwIfAborted();
 	let opened: Awaited<ReturnType<ClaudeWorkerLogins["open"]>>;
 	try {
-		opened = await options.logins.open(signal);
+		opened = await openWhenRenewed(options.logins, signal, options.busyRetryMs ?? BUSY_RETRY_MS);
 	} catch {
 		// The vault unreachable, or an answer out of shape: nothing of Claude Code ran. Only a stop throws.
 		signal.throwIfAborted();
-		return blocked(CLAUDE_WORKER_WORDS.openFailed(member));
+		return blocked(CLAUDE_WORKER_WORDS.openFailed(member), { claudeSide: "could_not_start" });
 	}
 	if ("refused" in opened)
-		return blocked(
-			opened.refused === "SIGNED_OUT" ? CLAUDE_WORKER_WORDS.signedOut(member) : CLAUDE_WORKER_WORDS.notOpen(member),
-		);
+		return opened.refused === "SIGNED_OUT"
+			? blocked(CLAUDE_WORKER_WORDS.signedOut(member), { claudeSide: "signed_out" })
+			: blocked(CLAUDE_WORKER_WORDS.notOpen(member), { claudeSide: "not_open" });
+	if ("current" in opened) return blocked(CLAUDE_WORKER_WORDS.openFailed(member), { claudeSide: "could_not_start" });
+	const login = opened;
 	const folder = join(options.root, "claude-login");
 	let scratchRoot: string | undefined;
-	let keeper: ClaudeWorkerLoginKeeper | undefined;
+	let refresher: ClaudeWorkerLoginRefresher | undefined;
 	let box: ClaudeCodeBox | undefined;
 	const stream = new ClaudeWorkerStream();
 	let outcome: ClaudeWorkerOutcome;
@@ -614,17 +487,16 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			try {
 				await mkdir(folder, { mode: 0o700 });
 				scratchRoot = await mkdtemp(claudeWorkerScratchPrefix(options.root));
-				for (const [name, bytes] of opened.files)
+				for (const [name, bytes] of login.files)
 					await writeFile(join(folder, name), bytes, { mode: 0o600, flag: "wx" });
 			} catch {
 				// The run's folders could not be made: nothing of Claude Code ran (what was written goes in `finally`).
 				signal.throwIfAborted();
-				return blocked(CLAUDE_WORKER_WORDS.openFailed(member));
+				return blocked(CLAUDE_WORKER_WORDS.openFailed(member), { claudeSide: "could_not_start" });
 			} finally {
-				for (const bytes of opened.files.values()) bytes.fill(0);
+				for (const bytes of login.files.values()) bytes.fill(0);
 			}
-			keeper = new ClaudeWorkerLoginKeeper(options.logins, folder, opened);
-			const before = await credentialsStamp(folder);
+			refresher = new ClaudeWorkerLoginRefresher(options.logins, folder, login.version);
 			try {
 				box = await options.launch({
 					scratchRoot: scratchRoot as string,
@@ -644,28 +516,17 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 					error instanceof CloudHomeChannelRefused
 						? cloudHomeRefusalWords(error.reason)
 						: CLAUDE_WORKER_WORDS.boxFailed,
-					{ boxFailure },
+					{ boxFailure, claudeSide: "could_not_start" },
 				);
 			}
-			// The early seal: a credentials file Claude Code replaced soon after its start (its renewal) goes back at once, so a
-			// run host that dies later leaves the member signed in.
-			const started = performance.now();
 			const watching = new AbortController();
+			const keepFresh = refresher;
 			const watch = (async () => {
-				let seen = before;
-				const until = started + (options.earlySealMs ?? 120_000);
-				while (!watching.signal.aborted && performance.now() < until) {
-					await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 250).unref?.());
-					const now = await credentialsStamp(folder);
-					if (now !== null && now !== seen) {
-						// The early seal is the one that counts for a run that is stopped later (its job's end closes the
-						// vault to it): a failed one is tried again, a few times, while the run goes on.
-						for (let attempt = 0; attempt < 5 && !watching.signal.aborted; attempt++) {
-							if (await (keeper?.sync(signal) ?? Promise.resolve(true)).catch(() => false)) break;
-							await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)).unref?.());
-						}
-						seen = now;
-					}
+				const every = options.refreshMs ?? 60_000;
+				while (!watching.signal.aborted && !keepFresh.ended) {
+					await delay(every, undefined, { signal: watching.signal, ref: false }).catch(() => undefined);
+					if (watching.signal.aborted) break;
+					await keepFresh.refresh(AbortSignal.any([signal, watching.signal])).catch(() => undefined);
 				}
 			})();
 			let toolsWrong = false;
@@ -696,7 +557,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				steps: stream.steps.length + stream.uncounted,
 				...(stream.init ? { model: stream.init.model, sessionId: stream.init.sessionId } : {}),
 			};
-			if (toolsWrong) return blocked(CLAUDE_WORKER_WORDS.toolsWrong, facts);
+			if (toolsWrong) return blocked(CLAUDE_WORKER_WORDS.toolsWrong, { ...facts, claudeSide: "could_not_start" });
 			// A successful result is the report, whatever an earlier message said.
 			if (stream.result && !stream.result.isError)
 				return {
@@ -708,24 +569,29 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 					...facts,
 				};
 			if (stream.limit)
-				return blocked(CLAUDE_WORKER_WORDS.limit(member, stream.limit.words, stream.limit.toolsAfter === 0), facts);
-			if (stream.signedOut) return blocked(CLAUDE_WORKER_WORDS.signedOut(member), facts);
+				return blocked(CLAUDE_WORKER_WORDS.limit(member, stream.limit.words, stream.limit.toolsAfter === 0), {
+					...facts,
+					claudeSide: "limit",
+				});
+			if (stream.signedOut)
+				return blocked(CLAUDE_WORKER_WORDS.signedOut(member), { ...facts, claudeSide: "signed_out" });
 			const result = stream.result;
-			if (!result) return blocked(CLAUDE_WORKER_WORDS.cut(facts.steps > 0), facts);
+			if (!result)
+				return blocked(
+					CLAUDE_WORKER_WORDS.cut(facts.steps > 0),
+					facts.steps > 0 ? facts : { ...facts, claudeSide: "could_not_start" },
+				);
 			return blocked(CLAUDE_WORKER_WORDS.failed(oneLine(result.text || result.subtype, WORDS_CHARS)), facts);
 		})();
 	} finally {
 		await box?.close().catch(() => undefined);
-		// Sealed back before anything else ends, also on a stop or a failure: the credentials Claude Code renewed are the
-		// member's only valid ones. Bounded, so a stopped run still ends.
-		if (keeper) await keeper.sync(AbortSignal.timeout(20_000)).catch(() => undefined);
 		await wipeClaudeLoginFolder(folder).catch(() => undefined);
 		if (scratchRoot)
 			await rm(scratchRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() =>
 				console.error("The Claude Code box's scratch folder was not removed"),
 			);
 	}
-	return keeper ? { ...outcome, login: { sealed: keeper.sealed, stale: keeper.stale } } : outcome;
+	return refresher ? { ...outcome, login: { refreshed: refresher.refreshed } } : outcome;
 }
 
 /** What the run's records say did the work: Claude Code's build and the model its init line named. */
@@ -739,7 +605,7 @@ export function claudeWorkerSessionId(
 
 /** A blocked outcome in these words, before any of Claude Code ran (no machine for the run, for instance). */
 export function claudeWorkerBlocked(words: string): ClaudeWorkerOutcome {
-	return blocked(words);
+	return blocked(words, { claudeSide: "could_not_start" });
 }
 
 /** The run's admitted tool catalog: Claude Code's own tools, under names of its own, and no tool of Qorpera's. The
@@ -756,23 +622,8 @@ export const CLAUDE_WORKER_CATALOG = Object.freeze({
 	})),
 });
 
-/** The run's login through the vault's two routes (C4b's client), for one run's binding. Only `.credentials.json` is
- * sealed back (C2's contract: Claude Code's renewal rewrites it); the vault keeps every other file as the run opened it. */
 export function claudeWorkerLogins(client: ClaudeLoginRunClient, binding: ModelLoginRunBinding): ClaudeWorkerLogins {
-	return {
-		open: (signal) => openClaudeLoginForRun(client, binding, signal),
-		seal: async (base, credentials, signal) => {
-			const answer = await sealClaudeLoginBack(
-				client,
-				{ binding, opened: base, files: new Map([[".credentials.json", credentials]]) },
-				signal,
-			);
-			if (answer.state === "unchanged") return { state: "unchanged" };
-			if (answer.state === "refused") return { state: "refused", reason: answer.reason };
-			if (answer.state === "sealed") return { state: "sealed", version: answer.version, base: answer.opened };
-			return { state: "stale", version: answer.version };
-		},
-	};
+	return { open: (signal, knownVersion) => openClaudeLoginForRun(client, binding, signal, knownVersion) };
 }
 
 /**

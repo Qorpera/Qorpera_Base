@@ -2,6 +2,15 @@ import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
+import {
+	CLAUDE_LOGIN_CHECK_REQUEST_SCHEMA,
+	CLAUDE_LOGIN_CHECK_SCHEMA,
+	type ClaudeLoginCheck,
+	type ClaudeLoginChecker,
+	type ClaudeLoginFiles,
+	claudeLoginCheckFiles,
+	parseClaudeLoginCheck,
+} from "./cloud-claude-login-renewal.ts";
 import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-budget.ts";
 import type {
 	ModelLoginSignInBinding,
@@ -39,6 +48,8 @@ const SIGN_IN_CODE_CLIENT_WAIT_MS = SIGN_IN_CODE_ANSWER_MS + 2_000;
 /** Anthropic's code as Claude Code reads it: one line of printable ASCII. */
 const SIGN_IN_CODE = /^[\x21-\x7e]{8,512}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+const CLAUDE_CHECK_ANSWER_MS = 30_000;
+const CLAUDE_CHECK_CLIENT_WAIT_MS = CLAUDE_CHECK_ANSWER_MS + 5_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
@@ -177,6 +188,7 @@ export class ModelLoginHelperService {
 	readonly #vaultToken: string | undefined;
 	readonly #renewer: ModelLoginRenewer;
 	readonly #signIns: ModelLoginSignInHelper | undefined;
+	readonly #claude: ClaudeLoginChecker | undefined;
 	readonly #concurrency: number;
 	/** Who began each sign-in, and until when that is remembered: a sign-in (and the login it ends with)
 	 * is answered only to the client that began it. */
@@ -193,6 +205,7 @@ export class ModelLoginHelperService {
 		vaultToken?: string;
 		renewer: ModelLoginRenewer;
 		signIns?: ModelLoginSignInHelper;
+		claude?: ClaudeLoginChecker;
 		concurrency?: number;
 	}) {
 		if (!isAbsolute(options.socketPath) || resolve(options.socketPath) !== options.socketPath)
@@ -205,6 +218,7 @@ export class ModelLoginHelperService {
 		this.#vaultToken = options.vaultToken;
 		this.#renewer = options.renewer;
 		this.#signIns = options.signIns;
+		this.#claude = options.claude;
 		this.#concurrency = options.concurrency ?? 4;
 	}
 
@@ -274,6 +288,14 @@ export class ModelLoginHelperService {
 			"/v1/sign-in/code",
 		];
 		const client = this.#client(request.headers.authorization);
+		if (
+			request.method === "POST" &&
+			request.url === "/v1/claude/check" &&
+			this.#claude &&
+			client !== undefined &&
+			request.headers["content-type"] === "application/json"
+		)
+			return this.#checkClaude(request, this.#claude);
 		if (
 			request.method !== "POST" ||
 			!(request.url === "/v1/renew" || (signIns && signInRoutes.includes(request.url ?? ""))) ||
@@ -402,11 +424,41 @@ export class ModelLoginHelperService {
 			this.#running -= 1;
 		}
 	}
+	async #checkClaude(
+		request: IncomingMessage,
+		claude: ClaudeLoginChecker,
+	): Promise<{ status: number; body: Record<string, unknown> }> {
+		let files: ClaudeLoginFiles;
+		try {
+			const input = (await readBody(request)) as Record<string, unknown> | null;
+			if (
+				!input ||
+				typeof input !== "object" ||
+				Object.keys(input).sort().join() !== "files,schema" ||
+				input.schema !== CLAUDE_LOGIN_CHECK_REQUEST_SCHEMA
+			)
+				throw new Error("Login helper request is invalid");
+			files = claudeLoginCheckFiles(input.files);
+		} catch {
+			return { status: 400, body: { schema: "qorpera.model-login-helper-error/v1", error: "invalid" } };
+		}
+		if (this.#running >= this.#concurrency)
+			return { status: 200, body: { schema: CLAUDE_LOGIN_CHECK_SCHEMA, outcome: "failed" } };
+		this.#running += 1;
+		try {
+			const check = await claude.checkClaudeLogin(files, AbortSignal.timeout(CLAUDE_CHECK_ANSWER_MS));
+			return { status: 200, body: { schema: CLAUDE_LOGIN_CHECK_SCHEMA, ...check } };
+		} catch {
+			return { status: 200, body: { schema: CLAUDE_LOGIN_CHECK_SCHEMA, outcome: "failed" } };
+		} finally {
+			this.#running -= 1;
+		}
+	}
 }
 
 /** The broker's side: asks the helper to renew a login, or to run a member's sign-in, over the
  * helper's Unix socket. */
-export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSignInHelper {
+export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSignInHelper, ClaudeLoginChecker {
 	readonly #socketPath: string;
 	readonly #token: string;
 
@@ -416,6 +468,15 @@ export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSign
 		if (!TOKEN.test(options.token)) throw new Error("Login helper token is invalid");
 		this.#socketPath = options.socketPath;
 		this.#token = options.token;
+	}
+
+	checkClaudeLogin(files: ClaudeLoginFiles, signal: AbortSignal): Promise<ClaudeLoginCheck> {
+		return this.#post(
+			"/v1/claude/check",
+			{ schema: CLAUDE_LOGIN_CHECK_REQUEST_SCHEMA, files },
+			parseClaudeLoginCheck,
+			AbortSignal.any([signal, AbortSignal.timeout(CLAUDE_CHECK_CLIENT_WAIT_MS)]),
+		);
 	}
 
 	renew(authJson: string, signal: AbortSignal): Promise<ModelLoginRenewal> {

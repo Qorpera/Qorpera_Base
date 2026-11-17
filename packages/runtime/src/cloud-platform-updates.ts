@@ -83,6 +83,20 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Claude and GPT-6.1 Sol in a conversation's Model menu",
 		text: "A member can pick GPT-6.1 Sol for a conversation, and your turns there run on it. A member who can run Claude Code can pick Claude (Fable 5.2 or Opus 5.5) instead: you still answer in that conversation, but the real work there (building, writing, research) goes to a Claude Code worker, which runs on the model and effort they picked (manage_worker with harness claude-code); light replies, machines and hiring stay with you.",
 	},
+	{
+		id: "claude-first-for-workers",
+		kind: "behaviour",
+		date: "2026-11-16",
+		title: "Coding and design work goes to Claude Code first",
+		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
+	},
+	{
+		id: "claude-code-workers-at-once",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "Claude Code workers side by side",
+		text: "A member's Claude Code workers now run up to four at once instead of one after another; a fifth waits until one of them ends, and still never moves to Codex while it waits. They all work on that member's own Claude sign-in and share their plan's limits, so split work into parts that can go on side by side, and keep to fewer when the member's plan is near its limit.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

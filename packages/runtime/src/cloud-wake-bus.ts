@@ -585,7 +585,10 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(claudeNamed && (!harnessNamed || !isCloudRuntimeClaudeChoice(work.claude))) ||
 			!Number.isSafeInteger(work.sequence) ||
 			(work.sequence as number) < 1 ||
-			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||
+			(source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` &&
+				(coding ||
+					harnessNamed ||
+					source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}:codex`)) ||
 			parentRunId === null ||
 			uuidKey(parentRunId) === uuidKey(identity.runId) ||
 			uuid(work.parentRunId) !== parentRunId ||
