@@ -62,8 +62,6 @@ async function rootOwnedFolders(path: string): Promise<void> {
 	}
 }
 
-/** The file a root-owned program's name leads to, root's and written by no one else, every folder above it root's too.
- * The caller runs that file, never the name. */
 export async function rootOwnedProgram(path: string): Promise<string> {
 	if (!isAbsolute(path) || path !== resolve(path))
 		throw new Error("Native isolation requires physical absolute artifacts");
