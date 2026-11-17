@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
 	ClaudeTerminal,
 	claudeResetAnswer,
@@ -107,6 +108,23 @@ describe("Claude Code's usage, as it reports it", () => {
 		]);
 		expect(claudeUsageFromGetUsage({ rate_limits: null }, NOW)).toBeUndefined();
 		expect(claudeUsageFromGetUsage({ rate_limits: { five_hour: { utilization: "x" } } }, NOW)).toBeUndefined();
+	});
+
+	it("reads a real get_usage answer with no open 5-hour window as 0 % used, with no reset time", () => {
+		const answer = JSON.parse(
+			readFileSync(new URL("./fixtures/claude-get-usage-idle-five-hour.json", import.meta.url), "utf8"),
+		) as Record<string, unknown>;
+		expect(claudeUsageFromGetUsage(answer, NOW)).toEqual({
+			observedAt: NOW.toISOString(),
+			windows: [
+				{ id: "five_hour", label: "5 hours", usedPercent: 0 },
+				{ id: "seven_day", label: "Weekly", usedPercent: 4, resetAt: "2026-11-23T16:00:00.204Z" },
+				{ id: "seven_day_model", label: "Weekly · Fable", usedPercent: 0, resetAt: "2026-11-23T16:00:00.000Z" },
+			],
+		});
+		expect(claudeUsageFromGetUsage({ ...answer, rate_limits_available: false }, NOW)?.windows[0]?.id).toBe(
+			"seven_day",
+		);
 	});
 });
 
