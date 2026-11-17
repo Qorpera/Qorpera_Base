@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+- Release v254 (company mail handles and companies with no name yet, #1915 and #1921, each merged in the release branch
+  at its approved head; and master since v253: pending spectators, #1911; long company names in the invitation email,
+  #1901; the kits' pages without a header, #1899): runtime bundle 254
+  `4b63ee88cd3675f522d8bebeb744cadec06ef68aa4bf173ad25594d78bcd77a5` (activation `20260929025499`, previous 253
+  `ec5969910e64`). Its activation requires `20260930796000` (the kernel's question input `mail_address` and the company
+  mail handles), which the roll's `migrate` runs before the switch, after `20260930794000` (pending spectators). The
+  guest moves: the native provider host (`489f0b13`); the ephemeral runner, the two LXD bootstraps and the native Codex
+  (`9c299f88`) stay.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
