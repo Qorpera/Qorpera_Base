@@ -720,14 +720,17 @@ begin
 	end loop;
 end $$;
 
--- Names: one heading line the seed tree can write. Open refuses a line break, a line separator and a name of spaces
--- only; seed refuses a name the lobby's rename let through (a tab).
 select pg_temp.refused($$select public.qorpera_folder_company_open('85600000-0000-4000-8000-000000000003',
 	'85600000-0000-4000-8000-000000000130', E'Nordlys\nKaffe')$$, '22023');
 select pg_temp.refused(format('select public.qorpera_folder_company_open(%L, %L, %L)', '85600000-0000-4000-8000-000000000003',
 	'85600000-0000-4000-8000-000000000131', 'Nordlys' || chr(8232) || 'Kaffe'), '22023');
-select pg_temp.refused(format('select public.qorpera_folder_company_open(%L, %L, %L)', '85600000-0000-4000-8000-000000000003',
-	'85600000-0000-4000-8000-000000000132', chr(160) || chr(12288)), '22023');
+do $$
+declare v_profile uuid := (public.qorpera_folder_company_open('85600000-0000-4000-8000-000000000003',
+	'85600000-0000-4000-8000-000000000132', chr(160) || chr(12288)) ->> 'profile_id')::uuid;
+begin
+	if (select name from public.qorpera_profiles where id = v_profile) is distinct from 'No name yet' then
+		raise exception 'A name of spaces opens a company with no name yet'; end if;
+end $$;
 do $$
 declare v_profile uuid := (public.qorpera_folder_company_open('85600000-0000-4000-8000-000000000003',
 	'85600000-0000-4000-8000-000000000133', 'Tabbed') ->> 'profile_id')::uuid;

@@ -943,7 +943,7 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(compile(without("manage_worker"))).not.toContain("- Work a member asks Claude Code to do");
 	expect(compile(without("manage_code"))).not.toContain("manage_code");
 	expect(compile(without("hire_agent"))).not.toContain("hire one when no agent fits");
-	expect(compile(without("manage_hook"))).not.toContain("open the company's email");
+	expect(compile(without("manage_hook"))).not.toContain("Never open the company's first email address");
 	expect(compile(without("manage_hook"))).toContain("Say in a few lines who you hired and what each finds out first.");
 	expect(compile(without("offer_agents_to_member"))).not.toContain("offer_agents_to_member");
 	// The reading and its senses are the Co-Founder's in the company runs that keep it (update_reading); end_role is named
@@ -2091,7 +2091,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "9b1756f24709b326d9f2cf131bee1b722db9a7d423727b1042ca0d6a4a515fe3",
+			instructions: "77714000b4b642da7d480b06e68faea203c7142ac8b903266b02d28884967017",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2099,7 +2099,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "4ecdde26333cfc305d263663ad41c07578885ea56214b993c8c1b9d9e1b1989b",
+			instructions: "4a15f2f4940a9d35353659d89f05d204849d77c11cde89126629cfd4050f2593",
 			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
 		},
 	],
@@ -2107,7 +2107,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "9b1756f24709b326d9f2cf131bee1b722db9a7d423727b1042ca0d6a4a515fe3",
+			instructions: "77714000b4b642da7d480b06e68faea203c7142ac8b903266b02d28884967017",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
@@ -2494,15 +2494,34 @@ it("holds changes until a member says yes, and puts a repository's website live 
 		expect(instructions).not.toContain(gone);
 });
 
-it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
-	// Jonas, 10 November: a company should have its email from the start; no company had a mailbox.
+it("has a founder choose the company's email address on a card once it has a name (17 November 2026)", () => {
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
-	expect(cofounder).toContain(
-		"Before your hello, open the company's email: manage_hook, action create, kind mailbox, localPart the company's name in lowercase",
-	);
-	expect(cofounder).toContain(
-		"Give the email address and, in a few lines, who you hired and what each finds out first.",
-	);
+	for (const words of [
+		"Never open the company's first email address yourself: a founder chooses it.",
+		'Once the company has a name and owns no address (list_hooks shows its mailboxes), ask the founder who opened it, in that run, on an address card: a question card with a title such as "Your company\'s email address", allowCustom: true, input {kind: mail_address}',
+		"lowercase, æ as ae, ø as oe, å as aa, other accents dropped, without a leading A, The, En or Et or a trailing ApS, A/S, Inc or Ltd, words joined by hyphens, at most 24 characters cut at a word's end; the whole name first, then shorter (nordlys-studio, then nordlys, for Nordlys Studio ApS).",
+		"While the company has no name, do not ask.",
+		"Say in a few lines who you hired and what each finds out first; when the address card goes out in the same run, raise it last, with your hello as its text.",
+		"While the vision's first line is # No name yet, the company has no name.",
+		"On Not yet carry on without one, and ask again only when something waits for the name: the email address, a logo with lettering, a website's address.",
+		"with no name yet, that first identity is colours and a mark without lettering",
+		"The founding can be agreed with no name: the first line then stays # No name yet.",
+	])
+		expect(cofounder).toContain(words);
+	expect(cofounder).not.toContain("localPart the company's name in lowercase");
+	const role = (visionAgreed: boolean, has: (tool: string) => boolean = () => true) =>
+		cloudRuntimeHireBehavior("cofounder", { has, visionAgreed });
+	const later =
+		"When the company has a name and owns no email address (list_hooks shows its mailboxes), never open one yourself: raise the address card, a question card with";
+	const names = "While the vision's first line is # No name yet, offer names only when something waits for one";
+	expect(role(true)).toContain(later);
+	expect(role(true)).toContain("Raise it in your next run with the founders.");
+	expect(role(true)).toContain(names);
+	expect(role(true)).not.toContain("# Founding the company");
+	expect(role(false)).not.toContain(later);
+	expect(role(false)).not.toContain(names);
+	expect(role(true, (tool) => tool !== "manage_hook")).not.toContain(later);
+	expect(role(true, (tool) => tool !== "manage_hook")).toContain(names);
 });
 
 it("has the finance owner set up the CVR and bank account and keep the Bank page's progress file (10 November 2026)", () => {

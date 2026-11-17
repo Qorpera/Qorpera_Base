@@ -122,6 +122,8 @@ page named into it as `data:` URLs before anything showed.
   or HEAD) answer from the app's file (a file it lacks is a 404, said in the console), an element's `src` or poster
   set to one, `new Audio(path)` and `setAttribute` load it, and `qorpera.file(path)` gives an address the page can use
   (for a worker, a module's `import()`, a model or a font) and `qorpera.bytes(path)` its bytes (an `ArrayBuffer`).
+  `fetch`, `XMLHttpRequest` and `qorpera.bytes` ask the host each time, so a page sees a file that changed; an address
+  an element or `qorpera.file` was given stays for the page's life. A read that failed is asked again next time.
   So a stock 3D, font or audio loader reads its files as anywhere. A relative `src` written by a script into markup
   (`innerHTML`) is read too, after the browser has refused it once.
 - Only relative paths inside the app's folder are read; anything else (`https:`, `/abs`, `..` out of the folder) is
@@ -136,7 +138,8 @@ The page then goes through `framePage` exactly as a Company File page does.
 chat, or Storage's preview) is put together and loads its files the same way, with the folder it stands in as its
 root, and a port that answers `file` alone: it reads only files in its own folder and below (no `..` out of it, no
 company path from the top), never one in a folder the platform keeps (`APP_CLOSED_FOLDERS`; a page standing in one
-reads none), always as the member's own read, and has no live sources, no changes and no links. One that cannot be put
+reads none), always as the member's own read, and has no live sources, no changes and no links. A page that reloads itself is handed its page again with a new port, as Storage did before; an app's page
+that does so stays stopped until Reload, since its port carries the member's live data and requests. One that cannot be put
 together (a page in a platform folder) is shown as before, by itself.
 
 **The base style** (10 November 2026; `packages/web/src/app/interface-app-style.ts`). The host gives every app's page

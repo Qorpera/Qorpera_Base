@@ -63,6 +63,14 @@ const files = await Promise.all(Object.entries(handed).map(async ([token, path])
 const frame = new AppFrame({ html: page, files, base: "" }, "App", "app", async (call) => {
 	if (call.method === "file") {
 		const path = (call.params.base ? call.params.base + "/" : "") + call.params.path.replace(/^\\.\\//, "");
+		if (path === "counter.txt") {
+			window.counted = (window.counted ?? 0) + 1;
+			return { ok: true, value: new Blob([String(window.counted)]) };
+		}
+		if (path === "flaky.txt") {
+			window.flaky = (window.flaky ?? 0) + 1;
+			return window.flaky === 1 ? { ok: false, error: "flaky.txt could not be read now" } : { ok: true, value: new Blob(["steady"]) };
+		}
 		const blob = /^[a-z0-9.-]+$/.test(path) ? await fileOf(path) : null;
 		return blob ? { ok: true, value: blob } : { ok: false, error: path + " is not in the page's folder" };
 	}
@@ -131,6 +139,27 @@ const WORKLET_PROBE = `registerProcessor("probe", class extends AudioWorkletProc
 	}
 	process() { return false; }
 });
+`;
+const PAST_GUARD = `const blob = (text) => URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+const REPORT = "postMessage(Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name) && self[name] !== undefined))";
+const ask = (make) => new Promise((done) => {
+	try {
+		const worker = make(blob(REPORT));
+		worker.onmessage = (event) => done(event.data);
+		worker.onerror = (event) => { event.preventDefault(); done("failed"); };
+	} catch (error) {
+		done("refused: " + error.name);
+	}
+});
+const tryAll = async () => {
+	const first = new Worker(blob("postMessage(1)"));
+	return {
+		viaPrototype: await ask((address) => new Worker.prototype.constructor(address)),
+		viaInstance: await ask((address) => new (Object.getPrototypeOf(first).constructor)(address)),
+		viaReflect: await ask((address) => Reflect.construct(Worker, [address], function Other() {})),
+		viaApply: await ask((address) => Reflect.construct(first.constructor, [address])),
+	};
+};
 `;
 const sorted = (value) =>
 	value && typeof value === "object" && !Array.isArray(value)
@@ -439,6 +468,7 @@ const PROBE = ${JSON.stringify(SHARED_PROBE)};
 			done("refused: " + error.name);
 		}
 	});
+	seen.sharedWorkerName = typeof SharedWorker;
 	seen.serviceWorker = await (async () => {
 		try {
 			if (!navigator.serviceWorker) return "absent";
@@ -468,9 +498,32 @@ const PROBE = ${JSON.stringify(SHARED_PROBE)};
 		wait: 3000,
 		calls: [
 			`read other workers ${JSON.stringify({
-				sharedWorker: "refused: SecurityError",
+				sharedWorker: "refused: TypeError",
+				sharedWorkerName: "undefined",
 				serviceWorker: "refused: SecurityError",
 				audioWorklet: { reaches: [], rtc: [] },
+			})}`,
+		],
+	},
+	"a worker started past the guard, in the page and in a worker": {
+		page: `<!doctype html><p>Past</p><script>
+const PAST = ${JSON.stringify(PAST_GUARD)};
+(async () => {
+	const seen = await new Function(PAST + "return tryAll;")()();
+	const outer = new Worker(URL.createObjectURL(new Blob([PAST + "tryAll().then(postMessage);"], { type: "text/javascript" })));
+	seen.inWorker = await new Promise((done) => { outer.onmessage = (event) => done(event.data); outer.onerror = (event) => done("failed: " + event.message); });
+	qorpera.read("past the guard " + JSON.stringify(seen));
+})();
+</script>`,
+		clicks: [],
+		wait: 2000,
+		calls: [
+			`read past the guard ${JSON.stringify({
+				viaPrototype: [],
+				viaInstance: [],
+				viaReflect: [],
+				viaApply: [],
+				inWorker: { viaPrototype: [], viaInstance: [], viaReflect: [], viaApply: [] },
 			})}`,
 		],
 	},
@@ -503,6 +556,8 @@ const seen = {};
 	const { instance } = await WebAssembly.instantiateStreaming(fetch("add.wasm"));
 	seen.wasm = instance.exports.add(2, 3);
 	seen.missing = (await fetch("missing.bin")).status;
+	seen.fresh = [await (await fetch("counter.txt")).text(), await (await fetch("counter.txt")).text()].join(",");
+	seen.retried = await qorpera.file("flaky.txt").then(() => "first", () => qorpera.file("flaky.txt").then(() => "second", () => "never"));
 	const later = document.getElementById("later");
 	seen.later = await new Promise((done) => {
 		if (later.complete && later.naturalWidth) done(later.naturalWidth);
@@ -516,7 +571,7 @@ const seen = {};
 		clicks: [],
 		wait: 3000,
 		calls: [
-			`read files ${JSON.stringify({ font: 1, sound: true, decoded: true, fetched: "glTF", loaded: "200 glTF", bytes: 24, address: true, worker: "from a worker", wasm: 5, missing: 404, later: 1 })}`,
+			`read files ${JSON.stringify({ font: 1, sound: true, decoded: true, fetched: "glTF", loaded: "200 glTF", bytes: 24, address: true, worker: "from a worker", wasm: 5, missing: 404, fresh: "1,2", retried: "second", later: 1 })}`,
 		],
 		console: ["Qorpera: missing.bin could not be loaded: missing.bin is not in the page's folder"],
 	},

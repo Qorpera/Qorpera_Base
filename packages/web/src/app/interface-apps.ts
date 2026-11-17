@@ -296,6 +296,7 @@ class AppFiles {
 	readonly #warm: WarmBudget | undefined;
 	readonly #files = new Map<string, Promise<CloudMemberFolderFile | null>>();
 	readonly #read = new Map<string, Promise<Uint8Array | null>>();
+	readonly #large = new Map<string, Promise<Blob>>();
 	#active = 0;
 	readonly #waiting: (() => void)[] = [];
 	#asked: {
@@ -325,7 +326,7 @@ class AppFiles {
 	}
 
 	get count(): number {
-		return this.#read.size;
+		return this.#read.size + this.#large.size;
 	}
 
 	#full(path: string): string | null {
@@ -380,6 +381,28 @@ class AppFiles {
 		}
 	}
 
+	async pageBlob(path: string, type: string): Promise<Blob | null> {
+		const file = await this.file(path);
+		if (!file || !this.#inPieces(file)) {
+			const bytes = await this.bytesOf(path);
+			return bytes === null ? null : new Blob(this.#warm ? [] : [bytes as BlobPart], { type });
+		}
+		if (this.#warm) return null;
+		const key = path.toLowerCase();
+		const known = this.#large.get(key);
+		if (known) return known;
+		const reading = (async () => {
+			this.planned += file.bytes;
+			this.onProgress?.();
+			const blob = await this.#pieces(file, type);
+			this.bytes += file.bytes;
+			this.onProgress?.();
+			return blob;
+		})();
+		this.#large.set(key, reading);
+		return reading;
+	}
+
 	async blob(path: string): Promise<Blob | null> {
 		const full = this.#full(path);
 		if (full === null) return null;
@@ -387,11 +410,17 @@ class AppFiles {
 		const file = entry?.kind === "file" ? entry.file : null;
 		if (!file) return null;
 		const type = appMediaType(path);
+		if (this.#inPieces(file)) return this.#pieces(file, type);
+		const bytes = await this.#turn(() => this.#folder.readFile(file, this.#signal, file.bytes, LIVE));
+		return new Blob([bytes as BlobPart], { type });
+	}
+
+	#inPieces(file: CloudMemberFolderFile): boolean {
+		return file.bytes > WHOLE_READ_BYTES && this.#folder.readFilePieces !== undefined;
+	}
+
+	async #pieces(file: CloudMemberFolderFile, type: string): Promise<Blob> {
 		const folder = this.#folder;
-		if (file.bytes <= WHOLE_READ_BYTES || !folder.readFilePieces) {
-			const bytes = await this.#turn(() => folder.readFile(file, this.#signal, file.bytes, LIVE));
-			return new Blob([bytes as BlobPart], { type });
-		}
 		let blob = new Blob([], { type });
 		await this.#turn(() =>
 			folder.readFilePieces!(file, this.#signal, (piece) => {
@@ -517,14 +546,14 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 	};
 	const fileOf = (path: string) => files.file(path).catch(() => null);
 	const hand = async (path: string, type = appMediaType(path)): Promise<string | null> => {
-		const bytes = await files.bytesOf(path).catch(() => null);
+		const blob = await files.pageBlob(path, type).catch(() => null);
 		const file = await fileOf(path);
-		if (bytes === null || file === null) {
+		if (blob === null || file === null) {
 			miss(path);
 			return null;
 		}
 		const token = tokenOf(path, file);
-		if (!files.warm && !handed.has(token)) handed.set(token, new Blob([bytes as BlobPart], { type }));
+		if (!files.warm && !handed.has(token)) handed.set(token, blob);
 		return token;
 	};
 	const css = async (text: string, from: string): Promise<string> => {
