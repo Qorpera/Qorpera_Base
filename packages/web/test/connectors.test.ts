@@ -141,6 +141,40 @@ describe("connector client", () => {
 		expect(location.hash).toBe(`#/c/${id(10)}/i/bank`);
 	});
 
+	it("starts the Mailbox's Google sign-in with the Mailbox's own ticket and the same broker start", async () => {
+		history.replaceState(null, "", `#/c/${id(10)}/i/mailbox`);
+		const cloud = cloudWith(() => ticket);
+		const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json({
+				schema: "qorpera.cloud-connector-oauth-started/v1",
+				connectorId: "gmail",
+				authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${id(10)}.abc`,
+				expiresAt: timestamp,
+			}),
+		);
+		const url = await createWebConnectors(cloud, profile, fetch).beginMailboxSignIn();
+		expect(url).toBe(`https://accounts.google.com/o/oauth2/v2/auth?state=${id(10)}.abc`);
+		expect(cloud.rpc).toHaveBeenCalledTimes(1);
+		expect(cloud.rpc).toHaveBeenCalledWith("qorpera_begin_google_mailbox", { p_environment_id: id(11) });
+		expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/oauth/${id(20)}/start?company=${id(10)}`);
+		const body = JSON.parse(String(fetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+		expect(body).toMatchObject({
+			schema: "qorpera.cloud-connector-oauth-start/v2",
+			captureCapability: "c".repeat(43),
+			returnTo: `${location.origin}/#/c/${id(10)}/i/mailbox`,
+		});
+		expect(body).not.toHaveProperty("bank");
+		const kept = JSON.parse(sessionStorage.getItem("qorpera.connector-sign-in.v1") ?? "{}") as Record<string, string>;
+		expect(kept).toMatchObject({ ticketId: id(20), connectorId: "gmail", companyId: id(10), serviceOrigin: origin });
+		history.replaceState(
+			null,
+			"",
+			`#/c/${id(10)}/i/mailbox?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`,
+		);
+		expect(takeConnectorReturn()).toMatchObject({ connector: "gmail", connection: "confirm" });
+		expect(location.hash).toBe(`#/c/${id(10)}/i/mailbox`);
+	});
+
 	it("returns to the page the sign-in was started on, even when the member moved on meanwhile", async () => {
 		history.replaceState(null, "", `#/c/${id(10)}/i/bank`);
 		const cloud = cloudWith(() => {

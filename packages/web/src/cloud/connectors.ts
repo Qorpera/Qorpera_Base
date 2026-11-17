@@ -413,6 +413,7 @@ export interface WebConnectors {
 		/** The bank the member picked: required for the bank, and only for it. */
 		bank?: WebBankChoice,
 	): Promise<string>;
+	beginMailboxSignIn(signal?: AbortSignal): Promise<string>;
 	/** Finishes a sign-in this tab started: the broker seals the account only
 	 * for the browser that holds the proof. Resolves to the account label. */
 	finishSignIn(outcome: HostedConnectorReturn, signal?: AbortSignal): Promise<string | null>;
@@ -452,6 +453,46 @@ export function createWebConnectors(
 			existingSecretId,
 		});
 	}
+	async function start(
+		connectorId: SignInConnectorId,
+		issued: HostedConnectorCaptureTicket,
+		returnTo: string,
+		signal: AbortSignal | undefined,
+		bank?: WebBankChoice,
+	): Promise<string> {
+		const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+		const started = record(
+			await capture.post(
+				`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
+				{
+					schema: "qorpera.cloud-connector-oauth-start/v2",
+					captureCapability: issued.captureCapability,
+					// The broker returns only to the app's root page; the route is in the hash.
+					returnTo,
+					browserProofSha256: await sha256Hex(browserProof),
+					...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
+				},
+				signal,
+			),
+			"sign-in start",
+		);
+		const url = new URL(text(started.authorizationUrl, "sign-in URL"));
+		if (url.protocol !== "https:") throw new Error("Invalid sign-in URL.");
+		const signIn: HostedConnectorSignIn = {
+			ticketId: issued.ticketId,
+			connectorId,
+			companyId: company,
+			serviceOrigin: issued.serviceOrigin,
+			browserProof,
+			startedAt: Date.now(),
+		};
+		try {
+			sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify(signIn));
+		} catch {
+			throw new Error("This browser does not allow the sign-in to be finished here.");
+		}
+		return url.href;
+	}
 	return {
 		async list(signal) {
 			signal?.throwIfAborted();
@@ -466,41 +507,14 @@ export function createWebConnectors(
 			if ((connectorId === "bank") !== (bank !== undefined)) throw new Error("Invalid bank sign-in.");
 			// The page the sign-in was started on, read now: the member may move on while the ticket is issued.
 			const returnTo = `${location.origin}/${location.hash}`;
-			const issued = await ticket(connectorId, existingSecretId);
-			// This tab's proof: only its hash goes to the broker now; the proof
-			// itself only with the confirmation after the provider sends us back.
-			const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
-			const started = record(
-				await capture.post(
-					`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
-					{
-						schema: "qorpera.cloud-connector-oauth-start/v2",
-						captureCapability: issued.captureCapability,
-						// The broker returns only to the app's root page; the route is in the hash.
-						returnTo,
-						browserProofSha256: await sha256Hex(browserProof),
-						...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
-					},
-					signal,
-				),
-				"sign-in start",
+			return start(connectorId, await ticket(connectorId, existingSecretId), returnTo, signal, bank);
+		},
+		async beginMailboxSignIn(signal) {
+			const returnTo = `${location.origin}/${location.hash}`;
+			const issued = parseTicket(
+				await cloud.rpc("qorpera_begin_google_mailbox", { p_environment_id: profile.environmentId }),
 			);
-			const url = new URL(text(started.authorizationUrl, "sign-in URL"));
-			if (url.protocol !== "https:") throw new Error("Invalid sign-in URL.");
-			const signIn: HostedConnectorSignIn = {
-				ticketId: issued.ticketId,
-				connectorId,
-				companyId: company,
-				serviceOrigin: issued.serviceOrigin,
-				browserProof,
-				startedAt: Date.now(),
-			};
-			try {
-				sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify(signIn));
-			} catch {
-				throw new Error("This browser does not allow the sign-in to be finished here.");
-			}
-			return url.href;
+			return start("gmail", issued, returnTo, signal);
 		},
 		async finishSignIn(outcome, signal) {
 			const signIn = outcome.signIn;

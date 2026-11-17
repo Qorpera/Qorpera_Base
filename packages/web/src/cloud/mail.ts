@@ -41,12 +41,24 @@ export type MailAccount =
 			readonly lastUsedAt?: string;
 	  };
 
+export const GOOGLE_MAIL_STATES = ["bringing_in", "live", "sign_in_again", "paused"] as const;
+export type GoogleMailState = (typeof GOOGLE_MAIL_STATES)[number];
+export const GOOGLE_FIRST_IMPORT_LIMIT = 50_000;
+
+export interface GoogleMail {
+	readonly state: GoogleMailState;
+	readonly broughtIn: number;
+	readonly total: number | null;
+	readonly lastWeek: number;
+}
+
 export interface MailAddress {
 	readonly address: string;
 	readonly status?: string;
 	readonly handledBy: readonly MailAgent[];
 	readonly routines: readonly { readonly routineId: string; readonly title: string; readonly staffAgentId?: string }[];
 	readonly last7Days: number;
+	readonly google?: GoogleMail;
 }
 
 export interface MailCursor {
@@ -286,6 +298,18 @@ function optional<K extends string, T>(key: K, value: T | undefined): { [P in K]
 	return value === undefined ? {} : ({ [key]: value } as { [P in K]?: T });
 }
 
+const count = (value: unknown, label: string) => boundedInteger(value, label, 0, Number.MAX_SAFE_INTEGER);
+
+function parseGoogleMail(value: unknown): GoogleMail {
+	const item = record(value, "google mail");
+	return {
+		state: oneOf(item.state, GOOGLE_MAIL_STATES, "google mail state"),
+		broughtIn: absent(item.broughtIn) ? 0 : count(item.broughtIn, "google mail count"),
+		total: absent(item.total) ? null : count(item.total, "google mail total"),
+		lastWeek: absent(item.lastWeek) ? 0 : count(item.lastWeek, "google mail week"),
+	};
+}
+
 function parseAddress(value: unknown): MailAddress {
 	const item = record(value, "mail address");
 	return {
@@ -303,7 +327,8 @@ function parseAddress(value: unknown): MailAddress {
 				...(absent(routine.staffAgentId) ? {} : { staffAgentId: uuid(routine.staffAgentId, "mail routine agent") }),
 			};
 		}),
-		last7Days: absent(item.last7Days) ? 0 : boundedInteger(item.last7Days, "mail count", 0, Number.MAX_SAFE_INTEGER),
+		last7Days: absent(item.last7Days) ? 0 : count(item.last7Days, "mail count"),
+		...(item.kind === "google" ? { google: parseGoogleMail(item.google) } : {}),
 	};
 }
 
@@ -423,6 +448,10 @@ function parseWaitingItem(value: unknown): MailWaitingItem {
 export async function readMailAddresses(cloud: Cloud, environmentId: string): Promise<MailAddress[]> {
 	const answer = await cloud.rpc("qorpera_member_mail_addresses", { p_environment_id: environmentId });
 	return array(answer, "mail addresses").map(parseAddress);
+}
+
+export async function pauseGoogleMailbox(cloud: Cloud, mailboxId: string, paused: boolean): Promise<void> {
+	await cloud.rpc("qorpera_pause_google_mailbox", { p_mailbox_id: mailboxId, p_paused: paused });
 }
 
 /** A page of threads, newest first. */
