@@ -342,7 +342,8 @@ export class CloudClaudeLoginRenewer {
 	}
 
 	async idle(): Promise<number> {
-		for (const pending of [...this.#pending.values()]) await this.#commitPending(pending);
+		for (const pending of [...this.#pending.values()])
+			if (!this.#inFlight.has(pending.claudeLoginId)) await this.#commitPending(pending);
 		let checked = 0;
 		for (; checked < IDLE_PER_PASS; checked += 1) {
 			const taken = parseTaken(
