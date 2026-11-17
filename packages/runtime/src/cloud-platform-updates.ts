@@ -90,6 +90,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Coding and design work goes to Claude Code first",
 		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
 	},
+	{
+		id: "no-name-and-mail-handles",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "A company with no name yet, and its email address",
+		text: "A company can now start with no name: its vision's first line is then # No name yet. Call it the company and never invent a name; once the idea is clear, offer the founders up to three names once on a question card with a Not yet option. You no longer open the company's first email address: once it has a name and no address, ask the founder on an address card (ask_member with allowCustom and the address input), with handles made from the name as its options. They make the address, such as hello.acme@…, and the handle stays the company's. More addresses with manage_hook are <box>.<handle>, under a handle the company owns.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
