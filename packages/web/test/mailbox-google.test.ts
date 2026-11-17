@@ -342,6 +342,14 @@ describe("Google mail's states", () => {
 		fake.addresses[0] = googleAddress({ state: "bringing_in", broughtIn: 1240, total: null, lastWeek: 0 });
 		await CompanyMail.of(controller)?.reread();
 		await vi.waitFor(() => expect(topLine(main)!.textContent).toBe("Bringing in your mail from Google · 1,240"));
+		fake.addresses[0] = googleAddress({ state: "bringing_in", broughtIn: 1240, total: 61_250, lastWeek: 0 });
+		await CompanyMail.of(controller)?.reread();
+		await vi.waitFor(() =>
+			expect(topLine(main)!.textContent).toBe("Bringing in your mail from Google · 1,240 of 50,000"),
+		);
+		fake.addresses[0] = googleAddress({ state: "bringing_in", broughtIn: 3400, total: 201, lastWeek: 0 });
+		await CompanyMail.of(controller)?.reread();
+		await vi.waitFor(() => expect(topLine(main)!.textContent).toBe("Bringing in your mail from Google · 3,400"));
 		tab(main, "Sent");
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-search")).not.toBeNull());
 		expect(topLine(main)).toBeNull();

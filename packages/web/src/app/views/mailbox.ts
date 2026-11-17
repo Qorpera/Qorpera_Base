@@ -2162,7 +2162,9 @@ function googleLine(page: Page): HTMLElement | null {
 	const coming = google.filter((each) => each.state === "bringing_in");
 	if (!coming.length) return null;
 	const broughtIn = coming.reduce((sum, each) => sum + each.broughtIn, 0);
-	const totals = coming.flatMap((each) => (each.total === null ? [] : [each.total]));
+	const totals = coming.flatMap((each) =>
+		each.total === null || each.total < each.broughtIn ? [] : [Math.min(each.total, GOOGLE_FIRST_IMPORT_LIMIT)],
+	);
 	const total = totals.length === coming.length ? totals.reduce((sum, each) => sum + each, 0) : null;
 	return h(
 		"p",
