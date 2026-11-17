@@ -2338,7 +2338,7 @@ A conversation's model is `gpt-6-astra`, `gpt-6.1-sol`, `claude-fable-5-2` or
 `claude-opus-5-5`; a conversation that holds `gpt-6-sol` or `gpt-6-luna` still
 reads and runs with it. Its effort is low, medium or high, and also xhigh or max
 with a Claude model only (the table and the setter refuse xhigh or max on GPT
-or on no model). Every writer may pick the GPT models. A Claude model may be
+or on no model; xhigh on GPT: the next amendment). Every writer may pick the GPT models. A Claude model may be
 picked only while the active bundle's model policy declares
 `claudeChoice: "thread"` and the member may run Claude Code in the company
 (`qorpera_member_may_pick_claude`: on the Claude sign-in list with sign-in
@@ -2366,6 +2366,30 @@ the recorded pick otherwise. A worker with no pick runs on Claude Code's own
 default. Migration 20260930784000. Built, not live: Claude goes live with the
 release cut whose bundle declares `claudeChoice`; GPT-6.1 Sol with the
 migration.
+
+2026-11-16 amendment: Extra high on GPT (founder, 16 November, asked "Extra
+high only for GPT, or Extra high and Max?": "Extra high only"). A conversation
+on a GPT model may pick effort `xhigh`; `max` stays Claude only, and `xhigh`
+needs a model (never no model). The setter takes `xhigh` on GPT only while the
+active bundle's model policy declares `threadEfforts: ["xhigh"]` (otherwise
+22023, as before). `threadEfforts` lists efforts that only a member's turn may
+take from its conversation, and only under `overrides: routine-and-thread`;
+the kernel's manifest check accepts it as an array whose only value is
+`xhigh`.
+`allowed` is unchanged (low, medium, high), so routines, the agent.md effort,
+chains and every run no member waits on keep exactly their efforts: their
+check (`qorpera_manifest_allows_reasoning_effort`) is unchanged. A member's
+turn (a session turn with a member's message, or a room delivery) under such a
+bundle pins `xhigh` on its run, and Codex runs with
+`model_reasoning_effort="xhigh"`; the native admission and the tool authority
+accept it for those two source kinds only (`qorpera_run_allows_reasoning_effort`),
+and the run table refuses `xhigh` on any other kind. Under a bundle without
+`threadEfforts` (an older bundle, or after a rollback) a conversation saved at
+`xhigh` runs at high (the bundle's default if it allows no high) and keeps its
+choice. The model menu's answers name `efforts`: for each model in `models`,
+the efforts this conversation may pick with it. Migration 20260930788000.
+Built, not live: GPT Extra high goes live with the release cut whose bundle
+declares `threadEfforts`.
 
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
