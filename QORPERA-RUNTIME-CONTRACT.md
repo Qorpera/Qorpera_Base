@@ -6966,11 +6966,13 @@ bundle; no migration, host call or image moves.
    gateway, and gives the reviewer its text in the action's `contents`: each file whole, at most 64 KiB a file, 128 KiB
    and 8 files a command. Files they load or import are not shown, and the contents say so. A command the runtime does
    not recognise as running a file is reviewed as before.
-2. **What it could not read is asked about.** A file that is missing, not a plain file, binary or over the bound, a
-   read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a variable
-   are listed in `contents.notShown`. The reviewer answers the guards from what it can see, never denies for what it
-   could not see alone, and asks. With `notShown`, the fixed machine rule never allows: an ask stays an ask, and a deny
-   with no guard true becomes an ask. A deny with a guard true, a built-in check and a cited Ask first rule stand.
+2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
+   bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
+   variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the
+   request, the mandate, the files shown); a guard nothing visible points to is false, and a file not shown is never on
+   its own a reason to deny or to answer a guard true. It asks only when what it can see gives a real reason to suspect a
+   guard that the unseen file would settle. The fixed machine rule is as before, except that the reviewer's own ask
+   (built-in check none, every guard false) about a command with `notShown` stands instead of becoming an allow.
 3. **What ran is what was reviewed.** The approval's identity (`argumentSha256` at begin and record) is the SHA-256 of
    the call's own digest and each reviewed file's path and digest (or that it was not shown); the card's `call` stays
    the model's own arguments. A woken agent that repeats the identical call has its files read again and matches its
@@ -6978,14 +6980,16 @@ bundle; no migration, host call or image moves.
    `sha256sum -c` of the reviewed bytes, in the same shell: a file changed since its review stops the command with
    exit 125 and says so, and nothing of the command ran.
 4. **A refusal names the next step.** A denial still says not to retry, reword or reach the action another way, and
-   now says: when the work cannot go on without it, a worker reports its work blocked with the reason, and any other
-   agent asks a member on a card (`ask_member`), or in its reply where it has no cards, in one line.
+   that only a member's new message (a card answer does not count) lets the agent make it once more. It now adds: when
+   the work cannot go on without it, a worker reports its work blocked with the reason, and any other agent raises a card
+   (`ask_member`), or says it in its reply where it has no cards, in one line: what stopped, why, and the one thing the
+   work needs (another source, a file, a decision); the card's answer never lets it repeat the refused action.
 5. **A review that cannot run waits first.** A review whose model turn ended at the provider's rate limit, usage limit
    or an overload is asked again after 5, 10, 20, 30 and 30 seconds, within two minutes of the first ask, before the
    call is refused as unavailable. A verdict, an invalid verdict, a timeout or another failure is never asked again. The
    refusal tells the agent to say to a member that the step could not be checked just now, never that a safety review
    was unavailable.
-6. **Not changed.** The agent's home (`home_command`) reads no files for its review; its commands are reviewed as
+6. **Known limit.** The agent's home (`home_command`) reads no files for its review; its commands are reviewed as
    before.
 
 ## 20. Enforcement matrix
