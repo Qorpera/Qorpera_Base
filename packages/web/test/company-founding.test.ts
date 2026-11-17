@@ -1236,7 +1236,10 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
 			let keep!: (emails: string[]) => void;
 			vi.mocked(api.addPendingSpectators).mockImplementation(
-				() => new Promise<string[]>((resolve) => (keep = resolve)),
+				() =>
+					new Promise<string[]>((resolve) => {
+						keep = resolve;
+					}),
 			);
 			setFoundingIntent(table, { start: true, spectators: ["mom@example.test"] });
 			const controller = open(api);
