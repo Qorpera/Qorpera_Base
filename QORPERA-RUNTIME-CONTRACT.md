@@ -6943,7 +6943,7 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    account. A `rate_limited` signal cools the account for 1, 2, 4, 8 or 15 minutes (each signal under 30 minutes after
    the last one cools it longer, and a signal while it already cools changes nothing) or until the provider's reset. No
    run of that account starts in any company while it cools: its job stays queued in order.
-4. **A cap per provider account.** At most `max_concurrent_turns` (6) runs of one provider account hold a turn at once,
+4. **A cap per provider account.** At most `max_concurrent_turns` (12) runs of one provider account hold a turn at once,
    across companies: a job leased or claimed for a runner holds one. Further runs wait queued, in their order, workers
    included: no run waits on its own worker (a parent is told to end its turn when it dispatches one, and the report
    comes back in a new run), so no run holds a turn the cap needs. Both numbers are one platform setting row

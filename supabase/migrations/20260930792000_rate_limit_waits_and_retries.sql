@@ -21,7 +21,7 @@ end $$;
 
 create table public.qorpera_provider_account_turn_settings (
 	singleton boolean primary key default true check (singleton),
-	max_concurrent_turns integer not null default 6 check (max_concurrent_turns between 1 and 64),
+	max_concurrent_turns integer not null default 12 check (max_concurrent_turns between 1 and 64),
 	rate_limit_waits integer not null default 5 check (rate_limit_waits between 0 and 10)
 );
 insert into public.qorpera_provider_account_turn_settings (singleton) values (true);

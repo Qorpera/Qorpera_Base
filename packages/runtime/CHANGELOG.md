@@ -9,7 +9,7 @@
   `rate_limited` signal cools the provider account (`qorpera_provider_account_key`: the account identity the host
   records plus the login's owner, else the model login, else the connection) for 1 to 15 minutes in every company
   (`qorpera_provider_account_cooldowns`); the orchestrator claim starts no run of a cooling account, and at most
-  `max_concurrent_turns` (6) runs of one account hold a turn at once, workers included; the claim keys each queued
+  `max_concurrent_turns` (12) runs of one account hold a turn at once, workers included; the claim keys each queued
   and busy sponsor version once (`qorpera_provider_account_queued_sponsors`). A once-routine's run that still ends
   turned away after its own waits counts towards `max_occurrences` as before; it is no attempt for the next run's
   delay, and turned-away runs in a row back off from 15 minutes, doubling, at most a day, not before the cool-down. The recovery read says `rate_limited`, a waiting

@@ -140,7 +140,7 @@ begin
 		'one account behind two companies'' logins is one key, another account another: ' || coalesce(pg_temp.rl_key(), 'none'));
 	perform pg_temp.base_assert(public.qorpera_provider_account_key(extensions.gen_random_uuid(), 1) like 'connection:%',
 		'a login with no account reading is its own key');
-	perform pg_temp.base_assert((select max_concurrent_turns = 6 and rate_limit_waits = 5
+	perform pg_temp.base_assert((select max_concurrent_turns = 12 and rate_limit_waits = 5
 		from public.qorpera_provider_account_turn_settings), 'the defaults');
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		perform pg_temp.base_assert(
