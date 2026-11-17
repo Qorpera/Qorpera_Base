@@ -2197,7 +2197,7 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 		"answer a member who writes in another language in theirs, and write for outsiders in theirs",
 		"Apart from that acknowledgement, never send only to say that work started, goes on or has not changed",
 		"Say each thing once: a correction goes in one line of your next message",
-		"To a coworker, write what you need, what you hand over or what changed for them",
+		"Write to a coworker when you need something from them, when they wait for something from you, or when what you found changes their work",
 		"pass a member's request on in their own words",
 	])
 		expect(instructions).toContain(rule);

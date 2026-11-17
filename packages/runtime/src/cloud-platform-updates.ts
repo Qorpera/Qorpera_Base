@@ -35,6 +35,13 @@ export const PLATFORM_UPDATE_TEXT_MAX_BYTES = 700;
 
 export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 	{
+		id: "coworker-messages-wake-on-request",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "Wake a coworker only to ask for something",
+		text: "A message that wakes a coworker starts a full run for it, and most of the team's messages were news: a file is ready, input was worked in, a step is done. send_coworker_message now asks each time whether to wake (priority). Wake a coworker only for what it must act on or answer: a request, a question, a handover it waits for, a member's decision that changes its work. Other news worth telling is a note it reads at its next turn, and what the files and todos already show needs no message. Nobody replies to say received, agreed or done. In job descriptions, ask for results in files, not for reports by message.",
+	},
+	{
 		id: "site-addresses",
 		kind: "capability",
 		date: "2026-11-15",
