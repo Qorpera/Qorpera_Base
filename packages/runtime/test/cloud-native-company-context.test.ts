@@ -2091,7 +2091,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "beda60c7d3a9bd03bd8dd945ac5c2292e9a6062bcbdc5747d35e7e8cf7885102",
+			instructions: "85a6503519cf0d9bf03e049ad612d5ce96c6c25e45b68ff6e6c48d6a2028a711",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2107,7 +2107,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "beda60c7d3a9bd03bd8dd945ac5c2292e9a6062bcbdc5747d35e7e8cf7885102",
+			instructions: "85a6503519cf0d9bf03e049ad612d5ce96c6c25e45b68ff6e6c48d6a2028a711",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
@@ -2197,7 +2197,7 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 		"answer a member who writes in another language in theirs, and write for outsiders in theirs",
 		"Apart from that acknowledgement, never send only to say that work started, goes on or has not changed",
 		"Say each thing once: a correction goes in one line of your next message",
-		"To a coworker, write what you need, what you hand over or what changed for them",
+		"Write to a coworker when you need something from them, when they wait for something from you, or when what you found changes their work",
 		"pass a member's request on in their own words",
 	])
 		expect(instructions).toContain(rule);
@@ -2597,6 +2597,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"- One file: write it yourself, where it belongs, and link it.",
 		"- Bigger work or many files: a worker, with saveTo set to the folder for the results.",
 		"- Work a member asks Claude Code to do: a worker with harness claude-code, which runs on that member's own Claude sign-in.",
+		"Otherwise leave harness out unless a member asks for codex: a write worker then runs on Claude Code by itself, one at a time for that member, while that member can use it and your machine runs, else on Codex.",
 		"a machine, with the results saved in the company's files",
 		"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository; its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to

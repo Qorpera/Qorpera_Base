@@ -1613,7 +1613,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"10",
 		"a coworker message coordinates",
-		"To a coworker, write what you need, what you hand over or what changed for them",
+		"Write to a coworker when you need something from them, when they wait for something from you, or when what you found changes their work",
 		STAFF,
 	],
 	[

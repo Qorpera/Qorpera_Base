@@ -192,6 +192,15 @@ export function personAvatar(name: string, identity: string): HTMLElement {
 	return avatar;
 }
 
+export function growToText(field: HTMLTextAreaElement): void {
+	const scrolled: [HTMLElement, number][] = [];
+	for (let at = field.parentElement; at; at = at.parentElement)
+		if (at.scrollTop > 0) scrolled.push([at, at.scrollTop]);
+	field.style.height = "auto";
+	if (field.scrollHeight > 0) field.style.height = `${field.scrollHeight}px`;
+	for (const [at, top] of scrolled) at.scrollTop = top;
+}
+
 export function shortId(id: string): string {
 	return id.slice(0, 8);
 }

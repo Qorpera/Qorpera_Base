@@ -11,6 +11,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
+	CLOUD_COWORKER_PRIORITY_REQUIRED,
 	CLOUD_COWORKER_STARTING,
 	CLOUD_COWORKER_STARTING_WAIT_MS,
 	CLOUD_WAKE_SCHEMA,
@@ -641,6 +642,12 @@ describe("worker dispatch and completion envelopes", () => {
 		expect(parseCloudWakeEnvelope(turn, identity).payload.species).toBe("coding");
 		expect(() =>
 			parseCloudWakeEnvelope(
+				{ ...turn, source: { ...turn.source, occurrenceKey: `${turn.source.occurrenceKey}:codex` } },
+				identity,
+			),
+		).toThrow("Invalid worker dispatch wake");
+		expect(() =>
+			parseCloudWakeEnvelope(
 				{ ...turn, payload: { ...turn.payload, coding: { ...coding, sequence: 2 } } },
 				identity,
 			),
@@ -669,6 +676,24 @@ describe("worker dispatch and completion envelopes", () => {
 			parseCloudWakeEnvelope({ ...claude, payload: { ...claude.payload, species: "coding" } }, identity),
 		).toThrow();
 		expect(Object.hasOwn(parseCloudWakeEnvelope(wake, identity).payload, "harness")).toBe(false);
+	});
+	it("admits a plain Codex worker's wake under the key a Claude Code fallback starts it by, and nothing else", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const codex = `worker-dispatch:${wake.source.id}:1:codex`;
+		const fallback = { ...wake, source: { ...wake.source, occurrenceKey: codex } };
+		expect(parseCloudWakeEnvelope(fallback, identity).source.occurrenceKey).toBe(codex);
+		expect(() =>
+			parseCloudWakeEnvelope({ ...fallback, payload: { ...fallback.payload, harness: "claude-code" } }, identity),
+		).toThrow("Invalid worker dispatch wake");
+		for (const occurrenceKey of [
+			`worker-dispatch:${wake.source.id}:2:codex`,
+			`worker-dispatch:${wake.source.id}:1:claude`,
+			`worker-dispatch:${wake.source.id}:1:codex:codex`,
+			`worker-dispatch:${randomUUID()}:1:codex`,
+		])
+			expect(() => parseCloudWakeEnvelope({ ...wake, source: { ...wake.source, occurrenceKey } }, identity)).toThrow(
+				"Invalid worker dispatch wake",
+			);
 	});
 	it("admits the member's Claude pick on a Claude Code worker's wake alone (20260930784000)", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");
@@ -1550,6 +1575,24 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 				identity,
 			),
 		).toThrow("Invalid held coworker messages");
+	});
+	it("refuses a message that does not say whether it wakes the coworker", async () => {
+		const { run, message, call, bus, createBoundary } = await coworkerFixture();
+		const { priority: _priority, ...undecided } = message;
+		const boundary = createBoundary();
+		try {
+			const response = await boundary.invoke("undecided_1", "qorpera", "send_coworker_message", undecided);
+			expect(response.success).toBe(false);
+			expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: `INVALID_ARGUMENTS: ${CLOUD_COWORKER_PRIORITY_REQUIRED}` },
+			});
+			expect(call).not.toHaveBeenCalled();
+			expect(bus.coworkerTool().inputSchema.required).toContain("priority");
+		} finally {
+			boundary.close();
+			run.close();
+		}
 	});
 	it("sends priority false to the kernel and accepts a held receipt", async () => {
 		const { binding, run, message, call, createBoundary } = await coworkerFixture();

@@ -1806,6 +1806,12 @@ it("asks a worker whose turn ended without its report for it, once", async () =>
 // stage, before anything of the company is read for a prompt and before Codex starts.
 it("refuses a Claude Code worker's run here, never running it on Codex", async () => {
 	const f = await fixture("company-claude-worker");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) =>
+		method === "qorpera_claude_worker_fall_back"
+			? { schema: "qorpera.claude-worker-fallback/v1", state: "kept" }
+			: original(method, args, signal),
+	);
 	const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
 		() => null,
 		(thrown: unknown) => thrown,
@@ -1815,6 +1821,32 @@ it("refuses a Claude Code worker's run here, never running it on Codex", async (
 	expect(nativeProviderFailureCode(error)).toBe("NATIVE_CLAUDE_WORKER:UNKNOWN");
 	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_claude_worker_fall_back")).toEqual([
+		[
+			"qorpera_claude_worker_fall_back",
+			{ p_binding: f.binding, p_reason: "could_not_start", p_changed: [] },
+			expect.anything(),
+		],
+	]);
+});
+
+it("hands a defaulted worker's run on a node without Claude Code back to Codex, with nothing of the company read", async () => {
+	const f = await fixture("company-claude-worker");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) =>
+		method === "qorpera_claude_worker_fall_back"
+			? { schema: "qorpera.claude-worker-fallback/v1", state: "fell_back" }
+			: original(method, args, signal),
+	);
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result).toMatchObject({
+		providerSessionId: "claude-code/2.1.325/none/none/not-carried",
+		delivery: { messageCount: 0, finalMessageId: null },
+	});
+	const calls = f.pathCall.mock.calls.map(([method]) => method);
+	expect(calls).not.toContain("qorpera_describe_agent_open_work");
+	expect(calls).not.toContain("qorpera_begin_native_company_execution_v3");
+	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 });
 
 // The same run on a node that carries the Claude Code worker's composition (slice C4c): the divert takes it there. It is
@@ -1851,6 +1883,8 @@ it("takes a Claude Code worker's run into its own composition, never Codex", asy
 		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
 		if (method === "qorpera_claude_worker_run_facts")
 			return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+		if (method === "qorpera_claude_worker_fall_back")
+			return { schema: "qorpera.claude-worker-fallback/v1", state: "kept" };
 		return original(method, args, signal);
 	});
 	const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
@@ -1865,10 +1899,64 @@ it("takes a Claude Code worker's run into its own composition, never Codex", asy
 	expect(calls).toContain("qorpera_bind_native_company_context");
 	expect(calls).toContain("qorpera_claude_worker_run_facts");
 	expect(calls).not.toContain("qorpera_describe_agent_open_work");
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_claude_worker_fall_back")).toEqual([
+		[
+			"qorpera_claude_worker_fall_back",
+			{ p_binding: f.binding, p_reason: "could_not_start", p_changed: [] },
+			expect.anything(),
+		],
+	]);
 	// No Codex, no box, no sign-in.
 	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
 	expect(launched).not.toHaveBeenCalled();
 	expect(fetched).not.toHaveBeenCalled();
+});
+
+it("ends a Claude Code worker's run without a report when SQL hands the work back to Codex", async () => {
+	const launched = vi.fn();
+	const f = await fixture(
+		"company-claude-worker",
+		false,
+		undefined,
+		false,
+		false,
+		10_000,
+		false,
+		{},
+		{
+			homeChannel: () => ({ open: launched }) as never,
+			claudeWorker: {
+				logins: {
+					origin: "https://vault.example",
+					runtimeToken: "t".repeat(43),
+					companyId: randomUUID(),
+					holder: () => "holder",
+					fetch: vi.fn(async () => new Response(null, { status: 500 })),
+				},
+			},
+		},
+	);
+	const original = f.pathCall.getMockImplementation()!;
+	let lost = 1;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
+		if (method === "qorpera_claude_worker_run_facts")
+			return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+		if (method === "qorpera_claude_worker_fall_back") {
+			if (lost-- > 0) throw new Error("The answer was lost");
+			return { schema: "qorpera.claude-worker-fallback/v1", state: "fell_back" };
+		}
+		return original(method, args, signal);
+	});
+	const journal = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	journal.mockRestore();
+	expect(result).toMatchObject({ delivery: { messageCount: 0, finalMessageId: null } });
+	const calls = f.pathCall.mock.calls.map(([method]) => method);
+	expect(calls.filter((method) => method === "qorpera_claude_worker_fall_back")).toHaveLength(2);
+	expect(calls.some((method) => String(method).startsWith("qorpera_folder_worker_commit"))).toBe(false);
+	await expect(readFile(f.evidence, "utf8")).rejects.toThrow();
+	expect(launched).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -1907,6 +1995,8 @@ it.each([
 			if (method === "qorpera_company_home_available") throw ended;
 			if (method === "qorpera_claude_worker_run_facts")
 				return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+			if (method === "qorpera_claude_worker_fall_back")
+				return { schema: "qorpera.claude-worker-fallback/v1", state: "kept" };
 			return original(method, args, signal);
 		});
 		const error = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).then(
@@ -1951,6 +2041,8 @@ it("makes only calls a real host can make, through the path control and the nati
 		if (method === "qorpera_company_home_available") return { schema: "qorpera.company-home/v1", available: false };
 		if (method === "qorpera_claude_worker_run_facts")
 			return { schema: "qorpera.claude-worker-run-facts/v1", member: "Ada", outputs: [] };
+		if (method === "qorpera_claude_worker_fall_back")
+			return { schema: "qorpera.claude-worker-fallback/v1", state: "kept" };
 		return original(method, args, signal);
 	});
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal).catch(() => undefined);
@@ -4016,10 +4108,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"80180de307c2a44745b9be9cff1add9808ffd5c8f4e720dff2ac3757c24e2812",
+		"4e7cd00fb495cf227a0f91990579f030942eccaa3c049a1e72d673336ca3dc5c",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"70c8bc59a938949bed3ce04b326bbb38b9c803de9b3332c2709381978e9ed409",
+		"4a46c0c2d1d0570ae041d31589f4a0946fe8c84ae88078cd5ec2f51fc14d86ef",
 	);
 });
 

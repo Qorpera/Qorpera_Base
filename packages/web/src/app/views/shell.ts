@@ -1617,6 +1617,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		notices.set(about, entry);
 		return entry.element;
 	};
+	const connectionNotice = () => {
+		if (!state.connectionLost) return null;
+		const text = t("Can't reach Qorpera. Trying again…");
+		const kept = parts.notices.get("connection");
+		const entry = kept?.text === text ? kept : { text, element: notice("neutral", text) };
+		notices.set("connection", entry);
+		return entry.element;
+	};
 	// After Reset sidebar: one line with Undo, until dismissed or the sidebar changes again.
 	const resetNotice = () => {
 		if (!state.sidebarReset) return null;
@@ -1646,10 +1654,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		unassignedRows.length +
 		hiddenCount +
 		sectionGroups.reduce((n, g) => n + g.rows.length, 0);
-	if (!state.loading || state.staff.length) parts.loading = undefined;
+	const waiting = (state.loading || state.connectionLost) && !state.staff.length;
+	if (!waiting) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
 	const empty =
-		!state.loading && !cofounderElement && !anyRows
+		!state.loading && !state.connectionLost && !cofounderElement && !anyRows
 			? railQuery
 				? t("No matching conversations.")
 				: t("No agents yet.")
@@ -1718,6 +1727,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	reconcile(
 		parts.list,
 		[
+			connectionNotice(),
 			errorNotice("sessions", state.sessionsError, () =>
 				button(t("Retry conversations"), () => void company.refreshSessions(), { small: true }),
 			),
