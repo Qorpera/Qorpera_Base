@@ -79,6 +79,8 @@ begin
 		raise exception 'The run resolve accepts file wakes'; end if;
 end $$;
 
+update public.qorpera_folder_file_wake_settings set settle_seconds = 0;
+
 -- 2. Matching: exact and subtree, siblings, moves from and into the watch, a copy at its target, a delete ----------------
 
 do $$

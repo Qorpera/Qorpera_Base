@@ -1,6 +1,16 @@
 # Changelog
 
 ## [Unreleased]
+- A burst of saves wakes a file-change routine once (founder, 17 Nov 2026: "fix the Brooks file storm too"; the
+  2026-11-17 amendment "a burst of saves wakes a file-change routine once"; migration `20260930795000`, SQL test 1292).
+  In Brooks one worker run saved 38 change sets under `strategy/` in 16 minutes, and the Brand agent's routine was woken
+  38 times. The folder listener now folds a matching change set into the routine version's waiting file wake
+  (`payload.folded` names each later change set; `versions` keeps at most 21 paths, newest version each; `more` counts
+  the rest). The wake starts 60 s after its latest change, at most 5 min after its first
+  (`qorpera_folder_file_wake_settings`; settle 0 restores one wake per change set). While one runs, a single follow-up
+  collects what is saved meanwhile. `qorpera_folder_file_wake_changes` reads the folded commits too, so the run's v1
+  file event lists every changed path of the burst; `qorpera_guard_wake_identity` admits only the listener's fold. Old
+  wakes and every live runtime bundle read as before. Deploy: this migration alone, any time.
 - Release v252 (conversation models GPT-6.1 Sol, Fable 5.2 and Opus 5.5, #1877; the move of all of a member's chats
   waiting on a used-up login, #1876, merged in the release branch; and master since v251): runtime bundle 252
   `ac0e54611d0dbf9ca095972482ebe4ed36ff93c428f019e5a29a513040ceb206` (activation `20260929025299`, previous 251
