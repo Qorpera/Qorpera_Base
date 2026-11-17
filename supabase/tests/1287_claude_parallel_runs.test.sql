@@ -201,7 +201,8 @@ begin
 	perform pg_temp.p_back(interval '130 seconds');
 	v := pg_temp.p_take('poll');
 	perform pg_temp.base_assert(pg_temp.p_release(v, 'failed') ->> 'state' = 'released'
-		and (pg_temp.p_login()).refused_version = 2, '3: a failed check keeps the refusal');
+		and (pg_temp.p_login()).refused_version = 2 and (pg_temp.p_login()).checked_at < clock_timestamp() - interval '120 seconds',
+		'3: a failed check keeps the refusal and counts as no check');
 	update public.qorpera_claude_logins set version = 3, encrypted_envelope = convert_to('canary-1287-v3', 'UTF8'),
 		envelope_sha256 = pg_temp.p_sha('canary-1287-v3') where id = '12870000-0000-4000-8000-0000000000c1';
 	perform pg_temp.p_back(interval '130 seconds', interval '10 minutes');
