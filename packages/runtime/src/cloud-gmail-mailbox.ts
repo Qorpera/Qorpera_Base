@@ -105,7 +105,7 @@ export class GmailMailboxApi {
 		signal: AbortSignal,
 		options: {
 			query?: Record<string, string | readonly string[] | undefined>;
-			method?: "GET" | "POST";
+			method?: "GET" | "POST" | "DELETE";
 			body?: string;
 			maximumBytes?: number;
 		} = {},
@@ -275,9 +275,32 @@ export class GmailMailboxApi {
 
 	async sentWith(messageId: string, signal: AbortSignal): Promise<{ id: string; threadId: string | null } | null> {
 		const found = await this.#call("/gmail/v1/users/me/messages", signal, {
-			query: { q: `rfc822msgid:${messageId.slice(1, -1)}`, includeSpamTrash: "true", maxResults: "1" },
+			query: { q: `rfc822msgid:${messageId.slice(1, -1)} in:sent`, includeSpamTrash: "true", maxResults: "1" },
 		});
-		return listed(found.messages)[0] ?? null;
+		const first = listed(found.messages)[0];
+		return first ? this.sentMessage(first.id, signal) : null;
+	}
+
+	async draftWith(messageId: string, signal: AbortSignal): Promise<{ id: string; messageId: string } | null> {
+		const found = await this.#call("/gmail/v1/users/me/drafts", signal, {
+			query: { q: `rfc822msgid:${messageId.slice(1, -1)}`, maxResults: "1" },
+		});
+		const draft = jsonRecord(jsonArray(found.drafts)[0]);
+		const message = jsonRecord(draft.message);
+		return typeof draft.id === "string" &&
+			GOOGLE_ID.test(draft.id) &&
+			typeof message.id === "string" &&
+			GOOGLE_ID.test(message.id)
+			? { id: draft.id, messageId: message.id }
+			: null;
+	}
+
+	async deleteDraft(id: string, signal: AbortSignal): Promise<void> {
+		try {
+			await this.#call(`/gmail/v1/users/me/drafts/${id}`, signal, { method: "DELETE" });
+		} catch (error) {
+			if (!(error instanceof ConnectorRequestError && error.reason === "not_found")) throw error;
+		}
 	}
 
 	async messageId(id: string, signal: AbortSignal): Promise<string | null> {
@@ -1160,14 +1183,16 @@ export class CloudGmailMailboxes {
 			return sent;
 		}
 		if (!draft) {
-			const earlier =
-				claimed.attemptCount > 1 ? await api.sentWith(gmailOwnMessageId(claimed.mailId), signal) : null;
+			const own = gmailOwnMessageId(claimed.mailId);
+			const earlier = claimed.attemptCount > 1 ? await api.sentWith(own, signal) : null;
 			if (earlier) return earlier;
-			const made = await api.createDraft(
-				gmailRawMessage({ ...claimed, date: new Date(this.#now()) }),
-				claimed.gmailThreadId,
-				signal,
-			);
+			const made =
+				(claimed.attemptCount > 1 ? await api.draftWith(own, signal) : null) ??
+				(await api.createDraft(
+					gmailRawMessage({ ...claimed, date: new Date(this.#now()) }),
+					claimed.gmailThreadId,
+					signal,
+				));
 			const recorded = jsonRecord(
 				await this.#authority.recordGoogleMailDraft(
 					{ mailId: claimed.mailId, lease: claimed.lease, draftId: made.id, draftMessageId: made.messageId },
@@ -1178,7 +1203,13 @@ export class CloudGmailMailboxes {
 				throw new GmailMailboxError("the database did not keep the draft");
 			draft = made;
 		}
-		return api.sendDraft(draft.id, signal);
+		try {
+			return await api.sendDraft(draft.id, signal);
+		} catch (error) {
+			if (error instanceof ConnectorRequestError && error.reason === "invalid_request")
+				await api.deleteDraft(draft.id, signal).catch(() => undefined);
+			throw error;
+		}
 	}
 }
 

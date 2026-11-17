@@ -43,6 +43,7 @@ class FakeGmail {
 	historyGone = false;
 	tokenRefused = false;
 	listEstimate: number | null = null;
+	draftSendStatus: number | null = null;
 	readonly sent: { raw: string; threadId: string | null; id: string }[] = [];
 	readonly drafts = new Map<string, { raw: string; threadId: string | null; messageId: string }>();
 	#made = 0;
@@ -74,14 +75,24 @@ class FakeGmail {
 				historyId: this.historyId,
 				messagesTotal: this.messages.length,
 			});
-		if (path === "/messages" && url.searchParams.get("q")?.startsWith("rfc822msgid:")) {
-			const wanted = `Message-ID: <${url.searchParams.get("q")?.slice("rfc822msgid:".length)}>\r\n`;
-			const found = this.sent.find((sent) => sent.raw.includes(wanted));
-			return Response.json(
-				found
-					? { messages: [{ id: found.id, threadId: found.threadId ?? "new-thread" }] }
-					: { resultSizeEstimate: 0 },
-			);
+		if ((path === "/messages" || path === "/drafts") && url.searchParams.get("q")?.startsWith("rfc822msgid:")) {
+			const query = url.searchParams.get("q") ?? "";
+			const wanted = `Message-ID: <${query.slice("rfc822msgid:".length).split(" ")[0]}>\r\n`;
+			const drafts = [...this.drafts].filter(([, draft]) => draft.raw.includes(wanted));
+			if (path === "/drafts")
+				return Response.json({
+					drafts: drafts.map(([id, draft]) => ({
+						id,
+						message: { id: draft.messageId, threadId: draft.threadId },
+					})),
+				});
+			const sent = this.sent
+				.filter((item) => item.raw.includes(wanted))
+				.map((item) => ({ id: item.id, threadId: item.threadId ?? "new-thread" }));
+			const found = query.includes(" in:sent")
+				? sent
+				: [...drafts.map(([, draft]) => ({ id: draft.messageId, threadId: draft.threadId })), ...sent];
+			return Response.json(found.length ? { messages: found.slice(0, 1) } : { resultSizeEstimate: 0 });
 		}
 		if (path === "/messages") {
 			const offset = Number(url.searchParams.get("pageToken") ?? "0");
@@ -128,11 +139,17 @@ class FakeGmail {
 			const { id } = JSON.parse(String(init?.body)) as { id: string };
 			const draft = this.drafts.get(id);
 			if (!draft) return Response.json({ error: { code: 404 } }, { status: 404 });
+			if (this.draftSendStatus !== null)
+				return Response.json({ error: { code: this.draftSendStatus } }, { status: this.draftSendStatus });
 			this.drafts.delete(id);
 			this.sent.push({ raw: draft.raw, threadId: draft.threadId, id: draft.messageId });
 			return Response.json({ id: draft.messageId, threadId: draft.threadId ?? "new-thread" });
 		}
 		const draft = /^\/drafts\/([A-Za-z0-9_-]+)$/.exec(path);
+		if (draft && init?.method === "DELETE") {
+			this.drafts.delete(draft[1] as string);
+			return new Response(null, { status: 204 });
+		}
 		if (draft)
 			return this.drafts.has(draft[1] as string)
 				? Response.json({ id: draft[1] })
@@ -140,10 +157,13 @@ class FakeGmail {
 		const one = /^\/messages\/([A-Za-z0-9_-]+)$/.exec(path);
 		if (one) {
 			const sentMessage = this.sent.find((sent) => sent.id === one[1]);
+			const draftMessage = [...this.drafts.values()].find((item) => item.messageId === one[1]);
 			if (url.searchParams.get("format") === "minimal")
 				return sentMessage
 					? Response.json({ id: sentMessage.id, threadId: sentMessage.threadId, labelIds: ["SENT"] })
-					: Response.json({ error: { code: 404 } }, { status: 404 });
+					: draftMessage
+						? Response.json({ id: draftMessage.messageId, threadId: draftMessage.threadId, labelIds: ["DRAFT"] })
+						: Response.json({ error: { code: 404 } }, { status: 404 });
 			if (url.searchParams.get("format") === "metadata")
 				return Response.json({
 					id: one[1],
@@ -207,6 +227,7 @@ function fixture(options: {
 	sends?: Record<string, unknown>[];
 	messagesPerPass?: number;
 	completionFailures?: number;
+	recordFailures?: number;
 }) {
 	const claims = [...options.claims];
 	const stored = new Map<string, { imported: boolean; message: Record<string, unknown>; receivedAt: string }>();
@@ -218,6 +239,7 @@ function fixture(options: {
 	const drafts: Record<string, unknown>[] = [];
 	let imported = 0;
 	let failedCompletions = 0;
+	let failedRecords = 0;
 	const authority: GmailMailboxAuthority = {
 		claimGoogleMailbox: vi.fn(async () => claims.shift() ?? null),
 		googleMailKnownAmong: vi.fn(async ({ gmailIds }) => ({
@@ -243,6 +265,10 @@ function fixture(options: {
 		}),
 		claimGoogleMailSends: vi.fn(async () => ({ schema: "qorpera.google-mail-sends/v1", sends: options.sends ?? [] })),
 		recordGoogleMailDraft: vi.fn(async (input) => {
+			if ((options.recordFailures ?? 0) > failedRecords) {
+				failedRecords += 1;
+				throw new Error("database answer lost");
+			}
 			drafts.push({ ...input });
 			return { schema: "qorpera.google-mail-draft/v1", recorded: true };
 		}),
@@ -514,6 +540,46 @@ it("sends through a Gmail draft it records first, and a reclaim never sends that
 	await gone.mailboxes.pass(signal);
 	expect(gone.completed).toEqual([]);
 	expect(gone.failed).toEqual([expect.objectContaining({ retryable: false, refused: false })]);
+});
+
+it("finds the draft a lost record left behind and sends it, so one email leaves and no draft stays", async () => {
+	const gmail = new FakeGmail(0);
+	const first = fixture({ claims: [], gmail, sends: [send()], recordFailures: 1 });
+	await first.mailboxes.pass(signal);
+	expect(gmail.sent).toHaveLength(0);
+	expect(gmail.drafts.size).toBe(1);
+	expect(first.completed).toEqual([]);
+	expect(first.failed).toEqual([expect.objectContaining({ retryable: true, refused: false })]);
+	const again = fixture({ claims: [], gmail, sends: [send({ attemptCount: 2 })] });
+	expect((await again.mailboxes.pass(signal)).sent).toBe(1);
+	expect(again.drafts).toEqual([expect.objectContaining({ draftId: "draft1", draftMessageId: "sent1" })]);
+	expect(gmail.sent).toHaveLength(1);
+	expect(gmail.drafts.size).toBe(0);
+	expect(again.completed).toEqual([expect.objectContaining({ gmailId: "sent1" })]);
+});
+
+it("never marks an unsent draft as sent, and deletes a draft Gmail refuses for good", async () => {
+	const gmail = new FakeGmail(0);
+	const lost = fixture({ claims: [], gmail, sends: [send()], recordFailures: 1 });
+	await lost.mailboxes.pass(signal);
+	gmail.draftSendStatus = 500;
+	const unsent = fixture({ claims: [], gmail, sends: [send({ attemptCount: 2 })] });
+	await unsent.mailboxes.pass(signal);
+	expect(unsent.completed).toEqual([]);
+	expect(unsent.failed).toEqual([expect.objectContaining({ retryable: true })]);
+	expect(gmail.sent).toHaveLength(0);
+	expect(gmail.drafts.size).toBe(1);
+	gmail.draftSendStatus = 400;
+	const refused = fixture({
+		claims: [],
+		gmail,
+		sends: [send({ attemptCount: 3, draftId: "draft1", draftMessageId: "sent1" })],
+	});
+	await refused.mailboxes.pass(signal);
+	expect(refused.completed).toEqual([]);
+	expect(refused.failed).toEqual([expect.objectContaining({ retryable: false, refused: false })]);
+	expect(gmail.sent).toHaveLength(0);
+	expect(gmail.drafts.size).toBe(0);
 });
 
 it("holds a send for a new sign-in when Google refuses the token", async () => {
