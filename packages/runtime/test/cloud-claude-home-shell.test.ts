@@ -297,8 +297,13 @@ it("answers the file tools' hook on the host: on with 0, stopped with 2 and the 
 		err: "REVIEW_DENIED: not that file.\n",
 		code: 2,
 	});
+	expect(await command(shell.socketPath, { cmd: "--hook", cwd: "/company", env: {} })).toEqual({
+		out: "",
+		err: "",
+		code: 0,
+	});
 	expect(hook).toHaveBeenCalledTimes(2);
 	expect(home.opened).toEqual([]);
-	expect(shell.counts).toMatchObject({ hooks: 2, commands: 0 });
+	expect(shell.counts).toMatchObject({ hooks: 3, commands: 0 });
 	await shell.close();
 });

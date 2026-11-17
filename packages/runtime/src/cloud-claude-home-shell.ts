@@ -323,11 +323,12 @@ export class CloudClaudeHomeShell {
 			socket.once("close", () => gone.abort());
 			socket.resume();
 			const asked = AbortSignal.any([this.#signal, gone.signal]);
-			if (request.cmd === CLAUDE_REVIEW_HOOK_PATH && request.hook !== undefined) {
+			if (request.cmd === CLAUDE_REVIEW_HOOK_PATH || request.cmd === "--hook") {
 				this.counts.hooks += 1;
-				const refusal = this.#hook
-					? await this.#hook(request.hook, asked).catch(() => CLAUDE_REVIEW_FAILED)
-					: undefined;
+				const refusal =
+					this.#hook && request.hook !== undefined
+						? await this.#hook(request.hook, asked).catch(() => CLAUDE_REVIEW_FAILED)
+						: undefined;
 				if (asked.aborted) return;
 				if (refusal === undefined) {
 					send({ x: 0 });
