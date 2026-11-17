@@ -96,7 +96,7 @@ update public.qorpera_mail_settings set domain = 'inbox.example.test';
 select dblink_exec('fence_one', 'begin');
 select dblink_exec('fence_one', $q$update public.qorpera_mail_settings set domain = 'mail.example.test'$q$);
 select dblink_send_query('fence_two', format('select public.qorpera_create_company_mailbox(%L, %L, %L, %L)::text',
-	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'support', 'Customer support.'));
+	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'support.base', 'Customer support.'));
 do $$
 begin
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'R3: the creation does not wait for the new domain'; end if;
@@ -112,7 +112,7 @@ begin
 	if v_outcome <> 'ok' then raise exception 'R3: the creation: %', v_outcome; end if;
 	c := pg_temp.claim();
 	if c ->> 'subjectKind' is distinct from 'mailbox' or c ->> 'present' <> 'true'
-		or c -> 'settings' ->> 'address' is distinct from 'support@mail.example.test' then
+		or c -> 'settings' ->> 'address' is distinct from 'support.base@mail.example.test' then
 		raise exception 'R3: the new mailbox''s claim shows the new domain: %', c; end if;
 	perform public.qorpera_finish_connection_file('91900000-0000-4000-8000-00000000000a', (c ->> 'secretId')::uuid,
 		(c ->> 'generation')::bigint, null, 'mailbox');

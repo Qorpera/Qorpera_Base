@@ -142,15 +142,18 @@ export function buildProfileInvitationEmail(
 		dateStyle: "long",
 		timeZone: "UTC",
 	}).format(new Date(job.expiresAt));
-	const subject = `${job.invitedByDisplayName} invited you to ${job.profileName} on Qorpera`.replace(/[\r\n]/g, " ");
+	const unnamed = job.profileName === "No name yet";
+	const company = unnamed ? "their new company" : job.profileName;
+	const heading = unnamed ? `${job.invitedByDisplayName}'s new company` : job.profileName;
+	const subject = `${job.invitedByDisplayName} invited you to ${company} on Qorpera`.replace(/[\r\n]/g, " ");
 	const textBody = [
-		`${job.invitedByDisplayName} invited you to join ${job.profileName} on Qorpera.`,
+		`${job.invitedByDisplayName} invited you to join ${company} on Qorpera.`,
 		`You will have ${permission}.`,
 		`Open Qorpera and sign in as ${job.recipientEmail}. Qorpera will show the invitation before you choose whether to accept it.`,
 		`Open Qorpera: ${invitationUrl.href}`,
 		`This invitation expires on ${expiry}.`,
 	].join("\n\n");
-	const html = `<!doctype html><html><body style="margin:0;background:#f4f4f2;color:#171716;font-family:Inter,Arial,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:40px 16px"><table role="presentation" width="560" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border-radius:18px"><tr><td style="padding:36px"><p style="margin:0 0 28px;font-weight:700">Qorpera</p><h1 style="font-size:25px;line-height:1.25;margin:0 0 18px">Join ${escapeHtml(job.profileName)}</h1><p style="font-size:16px;line-height:1.6;margin:0 0 14px">${escapeHtml(job.invitedByDisplayName)} invited you to join their company profile with ${escapeHtml(permission)}.</p><p style="font-size:16px;line-height:1.6;margin:0 0 26px">Sign in as <strong>${escapeHtml(job.recipientEmail)}</strong> to accept.</p><p style="margin:0 0 26px"><a href="${escapeHtml(invitationUrl.href)}" style="display:inline-block;background:#171716;color:#fff;text-decoration:none;border-radius:10px;padding:13px 18px;font-weight:600">Open Qorpera</a></p><p style="font-size:13px;line-height:1.5;color:#686864;margin:0">This invitation expires on ${escapeHtml(expiry)}. If you were not expecting it, you can ignore this email.</p></td></tr></table></td></tr></table></body></html>`;
+	const html = `<!doctype html><html><body style="margin:0;background:#f4f4f2;color:#171716;font-family:Inter,Arial,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:40px 16px"><table role="presentation" width="560" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border-radius:18px"><tr><td style="padding:36px"><p style="margin:0 0 28px;font-weight:700">Qorpera</p><h1 style="font-size:25px;line-height:1.25;margin:0 0 18px">Join ${escapeHtml(heading)}</h1><p style="font-size:16px;line-height:1.6;margin:0 0 14px">${escapeHtml(job.invitedByDisplayName)} invited you to join their company profile with ${escapeHtml(permission)}.</p><p style="font-size:16px;line-height:1.6;margin:0 0 26px">Sign in as <strong>${escapeHtml(job.recipientEmail)}</strong> to accept.</p><p style="margin:0 0 26px"><a href="${escapeHtml(invitationUrl.href)}" style="display:inline-block;background:#171716;color:#fff;text-decoration:none;border-radius:10px;padding:13px 18px;font-weight:600">Open Qorpera</a></p><p style="font-size:13px;line-height:1.5;color:#686864;margin:0">This invitation expires on ${escapeHtml(expiry)}. If you were not expecting it, you can ignore this email.</p></td></tr></table></td></tr></table></body></html>`;
 	return { subject: subject.slice(0, 240), text: textBody, html, invitationUrl: invitationUrl.href };
 }
 

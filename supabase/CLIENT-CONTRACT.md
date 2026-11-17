@@ -611,7 +611,11 @@ charged before it (20260930010000).
 - `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
   a table with the caller's seat; repeat-safe per creation id. Needs a
   confirmed email. A creation id that already belongs to a company that is not
-  a table is refused (`23505`).
+  a table is refused (`23505`). Since 20260930796000 the name may be null,
+  empty or nothing but spaces: the company then opens with no name yet, its
+  name the exact text `No name yet` (in its profile, environment and vision),
+  and a client shows it as unnamed wherever it compares the name to that text.
+  It becomes named when its vision's first line gets another name.
 - `qorpera_read_company_founding(p_profile_id)` → `qorpera.company-founding/v1`:
   `companyName`, `vision` (the description draft), `phase` (`open`,
   `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
@@ -646,7 +650,9 @@ charged before it (20260930010000).
   `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
   A stale revision is `PT412`. A name is refused (`22023`) as Open and the
   seed refuse it: more than 120 characters, a control character or line
-  separator, or nothing but spaces (20260930039000). Ready needs the caller's
+  separator, or nothing but spaces (20260930039000); since 20260930796000 a
+  name of nothing but spaces (or null) is taken as `No name yet` instead.
+  Ready needs the caller's
   own usable ChatGPT
   account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
   for that revision: a change to the name, description, a role or who sits at
@@ -883,6 +889,22 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
   `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
   0A000 before the mail domain is set.
+- Company mail handles (20260930796000): a new mailbox's local part is `<box>.<handle>` (one dot), where the box
+  is 1–39 lowercase letters, digits, hyphens and underscores (letter or digit at both ends) and the handle is the
+  company's part of the address, 2–24 lowercase letters, digits and inner hyphens. Anything else is refused (22023
+  "A new address is a name, a dot and the company's handle, like hello.acme"); the reserved names and names that read
+  as Qorpera are refused for the box and the handle each (22023, the messages above). A handle belongs to one company
+  across the platform and stays its own while the company exists, also when its mailboxes are removed. An owner's or
+  admin's `qorpera_create_company_mailbox` with a free handle claims it for the company; a handle another company
+  owns, or that another company's live mailbox ends in or equals, is 23505 "This address is taken". An agent's
+  `manage_hook` mailbox uses only a handle the company already owns (42501 "Only a member can choose the company's
+  email handle"). Mailboxes made before this (no dot, such as `brooks`) keep working; each such address that is a
+  valid handle became its company's handle.
+- `qorpera_company_mail_handle_status(p_profile_id, p_handle)` → `ours` (the company owns it), `free`, `taken` or
+  `invalid` (not a handle, reserved, or reads as Qorpera); read-only, for a live check while a member types.
+  `qorpera_company_mail_handles(p_profile_id)` → `{domain, handles}`: the mail domain (null before it is set) and the
+  company's handles, oldest first. Any member of the company (42501 "Company mail addresses are unavailable"
+  otherwise).
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
@@ -900,7 +922,9 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's, the sending member's or the company's name or the mailbox
-  reads as Qorpera.
+  reads as Qorpera. Since 20260930796000 an agent's email goes out from "<agent> at <company's short name>" (as a
+  member's, below), or "<agent>" while the company has no name yet, and its AI line names the company's whole name,
+  or "a new company" while it has none.
 - Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
   `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
   served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
@@ -934,7 +958,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `cancelled`) and sends nothing twice. `from` is one of the company's mailbox addresses, or its name alone; `to` is
   1 to 10 plain addresses and `cc` up to 9, 10 together; `subject` is one line of 1 to 200 characters; `text` is 1
   to 20,000 characters of plain text, sent as written. The email goes out from "<member> at <company>" with no AI
-  line, begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
+  line (since 20260930796000 the company's short name: without a trailing legal ending such as ApS or Inc, cut at
+  a word to at most 40 characters with "…"; just "<member>" while the company has no name yet), begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
   unavailable"), a viewer, a mailbox that is not the company's, the company's own mailboxes as recipients, or a
   name that reads as Qorpera; 22023 for a request of another shape; 0A000 while the mailbox is paused or sending is
   switched off; 54000 past the company's hourly or daily limit on recipients, with when the email can go. Show the
@@ -2433,7 +2458,7 @@ renders only these surfaces and never agent-authored HTML:
 
 | `surface` | `payload` (closed object) | Member outcomes | `answer` |
 | --- | --- | --- | --- |
-| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?` | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
+| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?`, `input?` (20260930796000: exactly `{kind: "mail_address"}`, only with `allowCustom: true`; an address card whose options are handle suggestions and whose answer is the created address as a custom value) | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
 | `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81), `repository?` (20260930693000: only with `connectorId: environment`, owner/name in lower case) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer. A coding value (`connectorId: environment`, a name `qorpera_coding_environment_name_allowed` takes) is an environment variable coding sessions get: with `repository`, an owner or admin saves it for the company and gives it to that repository (`qorpera_grant_coding_environment_secret`); otherwise it is the member's own, which reaches their coding sessions in every repository |
 | `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
 | `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |
