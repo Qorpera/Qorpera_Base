@@ -1128,13 +1128,18 @@ export function describeCloudAction(
 		const hires = Array.isArray(args.hires) ? args.hires.map((hire) => record(hire)) : [];
 		title = `Hire a team of ${hires.length} agents`;
 		target = list(hires.map((hire) => text(hire.name)).filter(Boolean)) || null;
-		for (const hire of hires)
+		for (const [index, hire] of hires.entries()) {
+			const role = text(hire.role, 200);
+			const whole = (value: JsonValue | undefined) =>
+				typeof value === "string" ? line(value, Number.MAX_SAFE_INTEGER) : "";
+			const room = DETAIL_BYTES - Buffer.byteLength(`${role} · first task:  · job: `);
+			const task = bounded(whole(hire.firstAssignment), Math.floor(room / 2));
+			const job = bounded(whole(hire.jobDescription), room - Buffer.byteLength(task));
 			add(
-				text(hire.name, 160) || "a hire",
-				[text(hire.role), hire.firstAssignment ? `first task: ${text(hire.firstAssignment)}` : ""]
-					.filter(Boolean)
-					.join(" · "),
+				`Hire ${index + 1}: ${text(hire.name, 160) || "unnamed"}`,
+				[role, task && `first task: ${task}`, job && `job: ${job}`].filter(Boolean).join(" · "),
 			);
+		}
 	} else if (tool.name === "end_role") {
 		// Its prepared arguments (cloud-hiring-tools.ts): the agent's name as its agent.md has it, read before the review.
 		title = "End an agent's role";
