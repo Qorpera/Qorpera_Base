@@ -6964,7 +6964,7 @@ worker's run is claimed only by a shared execution host), never before it.
 > The founder, 17 November 2026, to an item that read "A member's message must never disappear. Fewer notes will make
 > the limit rarer, but your own message still needs a retry or a visible 'didn't go through'": "1-4 straight yes". It
 > builds section 17's "transient rate limiting (retry)" for work a member started, and nothing else: no account
-> cool-down, no cap on turns, no change to claims, routines or file wakes. It goes live with migration `20260930792000`
+> cool-down, no cap on turns, no change to claims, routines or file wakes. It goes live with migration `20260930801000`
 > alone.
 
 1. **What waits.** A run a member started (`session_turn`, a member's message in a conversation, or `room_delivery`, a

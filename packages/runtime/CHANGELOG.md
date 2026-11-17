@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 - A member's own message waits at a ChatGPT rate limit instead of failing (contract 17, the 2026-11-17 amendment "a
-  member's message waits at a rate limit"; migration `20260930792000`, SQL test 1289). On 17 Nov 2026 the founder's
+  member's message waits at a rate limit"; migration `20260930801000`, SQL test 1289). On 17 Nov 2026 the founder's
   "retry" in Produkt's thread (run `e5391a06`, `room_delivery`) failed in 2 s with `rate_limited` and only a failure card
   showed. Now a started `session_turn` or `room_delivery` run turned away with `rate_limited` before any effect pauses on
   the same login (`run_paused`, `pausedFor: "rate_limited"`, no attempt spent) for 1, 2, 4, 8, 15 minutes with jitter,
