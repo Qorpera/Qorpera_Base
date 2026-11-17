@@ -566,6 +566,8 @@ export function claudeReviewerInvocation(options: {
 		"--bind",
 		r.home,
 		CLAUDE_BOX_PATHS.home,
+		"--tmpfs",
+		"/tmp",
 	];
 	const login = options.login === "token" ? "token" : "folder";
 	for (const [name, value] of Object.entries(claudeBoxEnvironment({ login, extraCa: Boolean(options.extraCa) })))
@@ -1079,6 +1081,7 @@ async function startBox(
 				signal,
 				toHome,
 				toMount: (bytes) => void toMount.write(bytes),
+				ownFolder: `/tmp/claude-${uid}`,
 			});
 			if (options.proof?.onLone) gate.onLone = options.proof.onLone;
 		}

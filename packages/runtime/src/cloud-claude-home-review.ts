@@ -30,7 +30,7 @@ const BARE = /^[A-Za-z0-9_/.,:@%+=-]$/;
 const RIPGREP_ARGUMENT = /^'((?:[^']|'\\'')*)'(?: |$)/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 
-const sha256 = (text: string | Uint8Array): string => createHash("sha256").update(text).digest("hex");
+const digestOf = (text: string | Uint8Array): string => createHash("sha256").update(text).digest("hex");
 
 export function cloudClaudeShellWord(text: string): string | undefined {
 	let out = "";
@@ -109,7 +109,7 @@ export function cloudClaudeShellAction(
 		identity: {
 			run: bounded(command, IDENTITY_TEXT_BYTES),
 			cwd: request.cwd,
-			shellSha256: sha256(shape),
+			shellSha256: digestOf(shape),
 		},
 		callId,
 		step: { tool: "claude_code_bash", arguments: { command, workdir: request.cwd }, paths: [] },
@@ -159,7 +159,7 @@ export function cloudClaudeFileAction(machine: CloudCodexHomeMachine, call: Clau
 	let contents: JsonValue | undefined;
 	if (call.tool === "Write") {
 		const content = text(input.content);
-		identity = { data: { bytes: Buffer.byteLength(content), sha256: sha256(content) } };
+		identity = { data: { bytes: Buffer.byteLength(content), sha256: digestOf(content) } };
 		contents = bounded(content, IDENTITY_TEXT_BYTES);
 	} else if (call.tool === "Edit")
 		identity = {
@@ -215,7 +215,7 @@ const EXTENDED_READS = new Set([
 	"users-groups-by-id@openssh.com",
 	"fsync@openssh.com",
 ]);
-const CLAUDE_CODE_OWN_FILES = /^\/tmp\/claude-[0-9a-f]{1,16}-cwd$/;
+const CLAUDE_CODE_CWD_FILE = /^\/tmp\/claude-[0-9a-f]{1,16}-cwd$/;
 
 export interface ClaudeFileChange {
 	readonly method: string;
@@ -313,6 +313,7 @@ export class CloudClaudeFilesGate {
 	readonly #signal: AbortSignal;
 	readonly #toHome: (bytes: Buffer) => void;
 	readonly #toMount: (bytes: Buffer) => void;
+	readonly #ownFolder?: string;
 	readonly #fromMount = new PacketFrames();
 	readonly #fromHome = new PacketFrames();
 	readonly #queue: Buffer[] = [];
@@ -330,12 +331,14 @@ export class CloudClaudeFilesGate {
 		signal: AbortSignal;
 		toHome: (bytes: Buffer) => void;
 		toMount: (bytes: Buffer) => void;
+		ownFolder?: string;
 	}) {
 		this.#machine = options.machine;
 		this.#review = options.review;
 		this.#signal = options.signal;
 		this.#toHome = options.toHome;
 		this.#toMount = options.toMount;
+		if (options.ownFolder) this.#ownFolder = posix.normalize(options.ownFolder);
 	}
 
 	get broken(): boolean {
@@ -432,15 +435,19 @@ export class CloudClaudeFilesGate {
 	}
 
 	async #judge(change: ClaudeFileChange): Promise<string | undefined> {
-		if (
-			change.method === "fs/remove" &&
-			change.paths.length === 1 &&
-			CLAUDE_CODE_OWN_FILES.test(change.paths[0] as string)
-		) {
+		const own = this.#ownFolder;
+		const ownFile =
+			(change.method === "fs/remove" &&
+				change.paths.length === 1 &&
+				CLAUDE_CODE_CWD_FILE.test(change.paths[0] as string)) ||
+			(own !== undefined &&
+				change.paths.length > 0 &&
+				change.paths.every((path) => path === own || path.startsWith(`${own}/`)));
+		const calls = [...this.#calls.values()].reverse().filter((call) => belongsTo(change, call.path));
+		if (ownFile && calls.length === 0) {
 			this.counts.ownFiles += 1;
 			return undefined;
 		}
-		const calls = [...this.#calls.values()].reverse().filter((call) => belongsTo(change, call.path));
 		for (const call of calls) if ((await call.decision) === undefined) return undefined;
 		if (calls.length > 0) return (await (calls[0] as AdmittedCall).decision) ?? undefined;
 		this.counts.lone += 1;

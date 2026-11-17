@@ -166,6 +166,7 @@ function filesGate(decide: (action: CloudCodexHomeAction) => string | undefined)
 		signal: new AbortController().signal,
 		toHome: (bytes) => toHome.push(bytes),
 		toMount: (bytes) => toMount.push(bytes),
+		ownFolder: "/tmp/claude-65534",
 	});
 	gate.onLone = (change) => lone.push(change);
 	const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -242,11 +243,13 @@ it("knows a handle's file, and leaves Claude Code's own working-folder file alon
 	expect(toMount).toEqual([handleReply(1, "H1")]);
 	gate.fromMount(fsetstat(2, "H1"));
 	gate.fromMount(remove(3, "/tmp/claude-5543-cwd"));
+	gate.fromMount(packet(14, 4, encodeString("/tmp/claude-65534"), ATTRS));
+	gate.fromMount(open(5, "/tmp/claude-65534/-company/s1/tasks/b1.output", 0x02 | 0x08));
 	await settle();
 	expect(lone).toEqual([{ method: "fs/setAttributes", paths: ["/company/d.md"] }]);
 	expect(check).toHaveBeenCalledTimes(1);
-	expect(toHome).toHaveLength(3);
-	expect(gate.counts.ownFiles).toBe(1);
+	expect(toHome).toHaveLength(5);
+	expect(gate.counts.ownFiles).toBe(3);
 });
 
 it("stops at a stream that is not the protocol's", () => {
