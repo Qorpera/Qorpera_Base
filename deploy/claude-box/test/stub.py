@@ -6,7 +6,7 @@ token renewal (POST /v1/oauth/token) with a new made-up token pair, and counts e
 /c2-attacker (where planted settings point ANTHROPIC_BASE_URL) as the attacker's.
 Usage: stub.py PORT LOGFILE SCENARIO.json CERT KEY
 Logs: requests (canary tags of the auth and body), results (tags, text head), ms per step. Never forwards anything."""
-import json, os, re, secrets, ssl, sys, threading, time
+import json, re, secrets, ssl, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT, LOG, SCEN, CERT, KEY = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -89,20 +89,6 @@ class H(BaseHTTPRequestHandler):
         if "/oauth/token" in self.path:
             base["kind"] = "refresh"
             base["grant"] = str(req.get("grant_type", ""))[:40]
-            if sc.get("strictRefresh"):
-                given = str(req.get("refresh_token", ""))
-                used = os.path.join(os.path.dirname(LOG), "used-refresh.txt")
-                with lock:
-                    seen_tokens = set(open(used).read().split()) if os.path.exists(used) else set()
-                    reused = not given or given in seen_tokens
-                    if not reused:
-                        with open(used, "a") as f:
-                            f.write(given + "\n")
-                if reused:
-                    base["kind"] = "refresh-refused"
-                    base["given"] = bool(given)
-                    log(base)
-                    return self._send(400, json.dumps({"error": "invalid_grant", "error_description": "Refresh token already used"}))
             log(base)
             new = "sk-ant-oat01-C2CAN" + "ARY-RFR-" + secrets.token_hex(8)
             return self._send(200, json.dumps({"token_type": "Bearer", "access_token": new, "refresh_token": new + "-r",

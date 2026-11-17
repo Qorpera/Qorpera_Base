@@ -39,6 +39,7 @@ for d in $S $S/slots $S/slots/11 $S/journals /var/lib/qorpera /var/lib/qorpera/i
 done
 install -d -o 65534 -g 65534 -m 0700 $SLOT
 MADE+=("$SLOT")
+pkill -f 'deploy/claude-box/test/renewal-(stub|proxy)\.py' || true
 BOOT=$(lxc exec $H -- cat /proc/sys/kernel/random/boot_id </dev/null)
 lxc exec $H -- sh -c 'rm -rf /company/QorperaOS /etc/c4c-root-made' </dev/null
 say "platform: the home's boot $BOOT"

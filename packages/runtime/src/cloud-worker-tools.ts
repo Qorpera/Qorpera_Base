@@ -426,7 +426,7 @@ export function cloudWorkerTools(
 					type: "string",
 					enum: ["codex", "claude-code"],
 					description:
-						"A coding session's agent. On any other worker, claude-code: Claude Code does the work instead of a run of you, on your machine and on the asking member's own Claude sign-in, one at a time for that member; only when a member asks for Claude Code or picked Claude for the conversation. Give it access write: it works with your own rights on your machine and in the company's files, and saveTo is where its files go, not a limit.",
+						"A coding session's agent. On any other worker, claude-code: Claude Code does the work instead of a run of you, on your machine and on the asking member's own Claude sign-in, up to four at once for that member; only when a member asks for Claude Code or picked Claude for the conversation. Give it access write: it works with your own rights on your machine and in the company's files, and saveTo is where its files go, not a limit.",
 				},
 				repository: {
 					type: "object",
@@ -594,9 +594,8 @@ export function cloudWorkerTools(
 						},
 					});
 				} else if (a.repository !== undefined) throw new Error("repository belongs to a coding session");
-				// A plain worker names a harness only for Claude Code (20260930770000); codex is its unsaid default.
-				else if (a.harness === "claude-code") request.harness = "claude-code";
-				else if (a.harness !== undefined && a.harness !== "codex") throw new Error("Invalid worker harness");
+				else if (a.harness === "claude-code" || a.harness === "codex") request.harness = a.harness;
+				else if (a.harness !== undefined) throw new Error("Invalid worker harness");
 			} else if (action === "followup") request.text = text(a.text, 4000);
 			else if (action === "decide") {
 				if (a.decision !== "accept" && a.decision !== "reject") throw new Error("Invalid worker decision");

@@ -58,7 +58,7 @@ begin
 		pg_temp.c4_brief('12700000-0000-4000-8000-0000000000b1'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '0: the Claude Code dispatch: ' || v_result::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'c4c-dispatch-2', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12700000-0000-4000-8000-0000000000b2', null, 'Write the notes'));
+		pg_temp.c4_brief('12700000-0000-4000-8000-0000000000b2', 'codex', 'Write the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '0: the Codex write dispatch: ' || v_result::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'c4c-dispatch-3', 'QorperaOS/agents/alice/todos/onboarding/read',
 		pg_temp.c4c_read_brief('12700000-0000-4000-8000-0000000000b3', null));

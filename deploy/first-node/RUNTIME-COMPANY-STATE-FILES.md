@@ -749,7 +749,7 @@ Not reviewed. Dispatching a worker is reviewed.
 | `id` | the worker's id |
 | `title` | 1–200 bytes |
 | `species` | `in-house` or `coding` |
-| `harness` | a coding session's: `codex` or `claude-code` (C3a); an in-house brief names it only as `claude-code`, for a worker Claude Code does (20260930770000), and Codex is its unsaid default |
+| `harness` | a coding session's: `codex` or `claude-code` (C3a); an in-house brief names it only when a member asked for one: `claude-code` (20260930770000) or `codex` (20260930787000). An in-house brief that names none is resolved by the dispatch, and again by each follow-up (20260930787000, Claude first): Claude Code (`harness_default`) when it has access write and its member can use Claude Code now (`qorpera_claude_worker_problem` answers nothing, and the follow-up's asker is the worker's member), else Codex |
 | `repository` | a coding session's: `github.com/<owner>/<name>` (only in a coding brief) |
 | `base_branch` | a coding session's base branch (only in a coding brief) |
 | `access` | `read` or `write` |
@@ -2540,10 +2540,14 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
   4. one block per worker: the dispatch wake of a row with none (a worker with `harness: claude-code` first takes its
-     member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: one
-     Claude Code run per member at a time; a take lost to another drain is `skipped`, and the worker starts on a later
-     pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries, and, when the worker recorded
-     its conversation's Claude pick, `claude: {model, effort}`, 20260930784000); a dispatch wake that is refused,
+     member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: up to
+     `qorpera_claude_parallel_runs.cap` Claude Code runs per member at once (20260930790000: one slot row per live run,
+     the first free slot up to the cap, under a per-member advisory lock; the cap is 1 until the release sets 4); a take
+     lost to another drain is `skipped`, and the worker starts on a later pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries, and, when the worker recorded
+     its conversation's Claude pick, `claude: {model, effort}`, 20260930784000; a defaulted worker that a Claude Code run
+     handed back with `qorpera_claude_worker_fall_back` (a Claude-side block: signed out, not open, plan limit, could not
+     start; 20260930787000) has no harness and `claude_fallback_sequence` equal to its sequence, and its wake takes the
+     key `worker-dispatch:<id>:<sequence>:codex`, since that sequence's Claude Code wake holds the plain one); a dispatch wake that is refused,
      cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
      (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
      without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
@@ -2610,7 +2614,8 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
 - **C3a (migration 20260930077000, SQL test 928; the parser):**
   - **The brief.** A coding brief names `harness`, `repository` and `base_branch`; an in-house brief names none of
     them (since 20260930770000 an in-house brief may name `harness: claude-code`, for a worker Claude Code does on a
-    member's own Claude sign-in; never a repository or a base branch). The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
+    member's own Claude sign-in, and since 20260930787000 `harness: codex`, when a member asked for Codex; never a
+    repository or a base branch). The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
     for a coding brief only, and the database's parse check holds both to their rules.
   - **The request.** A dispatch may carry `species`, `harness`, `repository` and `owner`. The worker rules check a
     coding dispatch as `qorpera_manage_agent_worker` did, in its order and with its words, as rule refusals that write
