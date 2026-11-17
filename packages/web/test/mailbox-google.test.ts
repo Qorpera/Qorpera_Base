@@ -80,7 +80,7 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 		name: `mail-${n}`,
 		purpose: "Customers write here",
 		proof: "mail",
-		status: "active",
+		status: address.hookPaused ? "paused" : "active",
 		email: String(address.address),
 		createdAt: timestamp,
 	}));
@@ -389,6 +389,24 @@ describe("Google mail's states", () => {
 		button(card(), "Resume")!.click();
 		await vi.waitFor(() => expect(google.pause).toHaveBeenLastCalledWith(hookIds[0], false));
 		expect(manage.hooks.setStatus).not.toHaveBeenCalled();
+	});
+
+	it("shows a Google mailbox paused at its hook as paused, with the hook's own Resume", async () => {
+		const { main, manage, google, hookIds } = await mailbox((mail) => {
+			mail.addresses.unshift({
+				...googleAddress({ state: "bringing_in", broughtIn: 10, total: 900, lastWeek: 1 }),
+				hookPaused: true,
+			});
+		});
+		await addresses(main, 2);
+		const card = () => cardOf(main, hookIds[0]!)!;
+		expect(card().querySelector(".hook-state")?.textContent).toBe("Paused");
+		expect(texts(card(), ".connection-actions button")).toEqual(["Resume", "Remove"]);
+		button(card(), "Resume")!.click();
+		await vi.waitFor(() =>
+			expect(manage.hooks.setStatus).toHaveBeenCalledWith(hookIds[0], "active", expect.any(AbortSignal)),
+		);
+		expect(google.pause).not.toHaveBeenCalled();
 	});
 
 	it("says when pausing failed", async () => {

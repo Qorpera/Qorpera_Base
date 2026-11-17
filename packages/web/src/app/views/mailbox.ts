@@ -828,7 +828,7 @@ function manageOf(page: Page): ManageViews | null {
 				// An address's line says no more than who answers it: a paused one says so.
 				state: (hook) => {
 					const google = googleOf(drawn(), hook);
-					return google ? googleState(google) : hook.status === "paused" ? t("Paused") : null;
+					return hook.status === "paused" ? t("Paused") : google ? googleState(google) : null;
 				},
 				mark: (hook) => (googleOf(drawn(), hook) ? googleMark() : null),
 				note: (hook) =>
@@ -2040,7 +2040,7 @@ function googleState(google: GoogleMail): string | null {
 function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAction | null {
 	const google = googleOf(page, hook);
 	const client = calls.google;
-	if (!google || !client) return null;
+	if (!google || !client || hook.status === "paused") return null;
 	if (google.state === "sign_in_again")
 		return {
 			label: t("Sign in"),
