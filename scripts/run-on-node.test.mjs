@@ -2250,7 +2250,7 @@ test("cleanup removes lane folders nothing was written in for 7 days, by the rea
 	const line = laneTidyLine();
 	assert.ok(pruneScript().split("\n").includes(line));
 	assert.match(line, /^if \[ -z "\$\(find \/home\/tester\/\.lane-tidy -mmin -60 2>\/dev\/null\)" \]; then touch \/home\/tester\/\.lane-tidy; /);
-	assert.match(line, /sudo -n test -e "\$d\/\.keep" && continue;/);
+	assert.match(line, /sudo -n test -e "\$d\/\.keep" 2>\/dev\/null && continue;/);
 	assert.match(line, /sudo -n find "\$d" \\\( -mmin -10080 -o -cmin -10080 \\\) -print -quit/);
 	assert.match(line, /sudo -n rm -rf -- "\$d"; done; fi$/);
 	assert.equal(spawnSync("bash", ["-n", "-c", line]).status, 0);

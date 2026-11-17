@@ -452,7 +452,7 @@ export function laneTidyLine({
 	stamp = LANE_TIDY_STAMP,
 	everyMinutes = LANE_TIDY_EVERY_MINUTES,
 } = {}) {
-	const tidy = `for d in ${lanes}/*/; do d=\${d%/}; [ -d "$d" ] && [ ! -L "$d" ] || continue; ${sudo}test -e "$d/${LANE_KEEP}" && continue; recent=$(${sudo}find "$d" \\( -mmin -${idleMinutes} -o -cmin -${idleMinutes} \\) -print -quit 2>/dev/null) || continue; [ -z "$recent" ] && ${sudo}rm -rf -- "$d"; done`;
+	const tidy = `for d in ${lanes}/*/; do d=\${d%/}; [ -d "$d" ] && [ ! -L "$d" ] || continue; ${sudo}test -e "$d/${LANE_KEEP}" 2>/dev/null && continue; recent=$(${sudo}find "$d" \\( -mmin -${idleMinutes} -o -cmin -${idleMinutes} \\) -print -quit 2>/dev/null) || continue; [ -z "$recent" ] && ${sudo}rm -rf -- "$d"; done`;
 	return `if [ -z "$(find ${stamp} -mmin -${everyMinutes} 2>/dev/null)" ]; then touch ${stamp}; ${tidy}; fi`;
 }
 
