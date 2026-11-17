@@ -496,9 +496,12 @@ begin
 		where id = v_removed.hook_id;
 		update public.qorpera_company_mailboxes set removed_at = null where id = v_removed.mailbox_id;
 		update public.qorpera_google_mailboxes
-		set removed_at = null, secret_id = v_secret_id, state = 'bringing_in', paused = false, history_id = null,
-			page_token = null, imported_at = null, import_count = 0, gap = true, capped = false, due_at = clock_timestamp(), lease_id = null, lease_until = null,
-			attempts = 0, last_error = null, updated_at = clock_timestamp()
+		set removed_at = null, secret_id = v_secret_id, state = 'bringing_in', paused = false,
+			history_id = case when imported_at is null then history_id end,
+			page_token = case when imported_at is null then page_token end,
+			import_count = case when imported_at is null then import_count else 0 end,
+			gap = imported_at is not null, imported_at = null, capped = false, due_at = clock_timestamp(),
+			lease_id = null, lease_until = null, attempts = 0, last_error = null, updated_at = clock_timestamp()
 		where mailbox_id = v_removed.mailbox_id;
 		v_mailbox_id := v_removed.mailbox_id;
 		v_outcome := coalesce(v_outcome, 'relinked');

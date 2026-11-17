@@ -418,6 +418,23 @@ select pg_temp.base_assert(current_setting('qorpera_test.g_linked')::jsonb ->> '
 		and (select ticket.status = 'cancelled' from public.qorpera_cloud_secret_capture_tickets as ticket
 			where ticket.id = (current_setting('qorpera_test.g_reuse')::jsonb ->> 'ticketId')::uuid),
 	'The agents'' Gmail connection of the same account becomes the mailbox''s');
+update public.qorpera_google_mailboxes set import_count = 7, page_token = 'page-9', history_id = '4000'
+where address = 'agents@gmail.com';
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select public.qorpera_set_event_hook_status((pg_temp.g_box('agents@gmail.com')).hook_id, 'removed') \g /dev/null
+select pg_temp.base_claims('service_role');
+select set_config('qorpera_test.g_midway', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
+	'92400000-0000-4000-8000-000000000020')::text, true) \g /dev/null
+select pg_temp.base_assert(pg_temp.g_complete(current_setting('qorpera_test.g_midway')::jsonb, 'agents@gmail.com')
+		->> 'outcome' = 'relinked',
+	'A mailbox removed in the middle of its first import comes back');
+select pg_temp.base_assert((pg_temp.g_box('agents@gmail.com')).state = 'bringing_in'
+		and not (pg_temp.g_box('agents@gmail.com')).gap
+		and (pg_temp.g_box('agents@gmail.com')).import_count = 7
+		and (pg_temp.g_box('agents@gmail.com')).page_token = 'page-9'
+		and (pg_temp.g_box('agents@gmail.com')).history_id = '4000'
+		and (pg_temp.g_box('agents@gmail.com')).imported_at is null,
+	'It resumes its first import where it stopped, on the same limit, not a gap import');
 
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_set_event_hook_status((pg_temp.g_box('owner@gmail.com')).hook_id, 'removed') \g /dev/null
