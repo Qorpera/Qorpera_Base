@@ -35,13 +35,6 @@ export const PLATFORM_UPDATE_TEXT_MAX_BYTES = 700;
 
 export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 	{
-		id: "app-files-uncapped",
-		kind: "capability",
-		date: "2026-11-17",
-		title: "Interface apps hold any file",
-		text: "An interface app no longer has a cap on its files: any number, any size the company folder stores, any kind. Fonts, sound, 3D models, wasm and large scripts such as a 3D library are files in the app's folder, written from a company machine and named by their path. The page opens first and reads each file when it uses it: by a relative path in its markup and styles, and in a script by fetch(path), qorpera.file(path) or qorpera.bytes(path). company_write takes as much text as one call carries. A product can now be shown live in 3D, with its own type and sound.",
-	},
-	{
 		id: "site-addresses",
 		kind: "capability",
 		date: "2026-11-15",
@@ -96,6 +89,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-16",
 		title: "Coding and design work goes to Claude Code first",
 		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
+	},
+	{
+		id: "app-files-uncapped",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "Interface apps hold any file",
+		text: "An interface app no longer has a cap on its files: any number, any size the company folder stores, any kind. Fonts, sound, 3D models, wasm and large scripts such as a 3D library are files in the app's folder, written from a company machine and named by their path. The page opens first and reads each file when it uses it: by a relative path in its markup and styles, and in a script by fetch(path), qorpera.file(path) or qorpera.bytes(path). company_write takes as much text as one call carries. A product can now be shown live in 3D, with its own type and sound.",
 	},
 ]);
 

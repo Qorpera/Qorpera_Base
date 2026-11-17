@@ -42,7 +42,8 @@ const MAX_REFUSED = 300;
 
 export class AppFrame {
 	readonly frame: HTMLIFrameElement;
-	readonly #page: Promise<FramedPage>;
+	#page: FramedPage | undefined;
+	#asked = false;
 	readonly #handle: AppCallHandler;
 	readonly #left: () => void;
 	readonly #lifetime = new AbortController();
@@ -63,7 +64,12 @@ export class AppFrame {
 		handle: AppCallHandler,
 		left: () => void,
 	) {
-		this.#page = Promise.resolve(page);
+		if (page instanceof Promise)
+			void page.then((made) => {
+				this.#page = made;
+				if (this.#asked) this.#handOver();
+			});
+		else this.#page = page;
 		this.#handle = handle;
 		this.#left = left;
 		const frame = document.createElement("iframe");
@@ -83,7 +89,7 @@ export class AppFrame {
 			() => {
 				this.#loads++;
 				if (this.#loads > 2) this.#leave();
-				else if (this.#loads === 1 && this.#ready) void this.#handOver();
+				else if (this.#loads === 1 && this.#ready) this.#handOver();
 			},
 			{ signal },
 		);
@@ -132,14 +138,14 @@ export class AppFrame {
 			return;
 		}
 		this.#ready = true;
-		if (this.#loads >= 1) void this.#handOver();
+		if (this.#loads >= 1) this.#handOver();
 	}
 
-	async #handOver(): Promise<void> {
-		if (this.#handed) return;
+	#handOver(): void {
+		this.#asked = true;
+		if (this.#handed || !this.#page || this.#lifetime.signal.aborted) return;
 		this.#handed = true;
-		const { html, files = [], missing = [], base = "" } = await this.#page;
-		if (this.#lifetime.signal.aborted) return;
+		const { html, files = [], missing = [], base = "" } = this.#page;
 		const channel = new MessageChannel();
 		this.#port = channel.port1;
 		channel.port1.addEventListener("message", (call) => void this.#call(call.data), {

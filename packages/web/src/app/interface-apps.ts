@@ -372,8 +372,8 @@ class AppFiles {
 	}
 
 	async text(path: string): Promise<string | null> {
+		const bytes = await this.bytesOf(path);
 		try {
-			const bytes = await this.bytesOf(path);
 			return bytes === null ? null : TEXT.decode(bytes);
 		} catch {
 			return null;
@@ -547,18 +547,21 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 		const path = resolveAppPath(base, link.getAttribute("href") ?? "");
 		if (path === null) continue;
 		changes.push(
-			files.text(path).then(async (text) => {
-				if (text === null) {
-					miss(path);
-					return () => link.remove();
-				}
-				const inlined = (await css(text, dirOf(path))).replace(/<\/style/gi, "<\\/style");
-				return () => {
-					const style = page.createElement("style");
-					style.textContent = inlined;
-					link.replaceWith(style);
-				};
-			}),
+			files
+				.text(path)
+				.catch(() => null)
+				.then(async (text) => {
+					if (text === null) {
+						miss(path);
+						return () => link.remove();
+					}
+					const inlined = (await css(text, dirOf(path))).replace(/<\/style/gi, "<\\/style");
+					return () => {
+						const style = page.createElement("style");
+						style.textContent = inlined;
+						link.replaceWith(style);
+					};
+				}),
 		);
 	}
 	for (const style of [...page.querySelectorAll("style")])
@@ -577,7 +580,8 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 		if (path === null) continue;
 		changes.push(
 			fileOf(path).then(async (file) => {
-				const js = file !== null && file.bytes <= PAGE_TEXT_INLINE_BYTES ? await files.text(path) : null;
+				const js =
+					file !== null && file.bytes <= PAGE_TEXT_INLINE_BYTES ? await files.text(path).catch(() => null) : null;
 				if (js !== null)
 					return () => {
 						script.removeAttribute("src");
@@ -657,7 +661,7 @@ export class PageFiles {
 	}
 
 	async answer(call: AppCall): Promise<AppAnswer> {
-		if (call.method !== "file") return refuse("A page opened from the folder reads only the files in its own folder");
+		if (call.method !== "file") return refuse("Only an app in apps/ reads the company's data");
 		return this.file(call.params);
 	}
 
