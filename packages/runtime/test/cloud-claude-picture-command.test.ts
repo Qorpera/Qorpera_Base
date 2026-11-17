@@ -117,13 +117,19 @@ describe("the picture's review", () => {
 	});
 });
 
-function fakeHome(place: ClaudePicturePlace = "ok", writes = true) {
+function fakeHome(
+	place: ClaudePicturePlace | "ok" | ((path: string, asked: number) => ClaudePicturePlace) = "ok",
+	writes = true,
+) {
 	const seen: string[] = [];
 	const written: { path: string; png: Buffer }[] = [];
+	let asked = 0;
 	const home: ClaudePictureHome = {
 		place: async (path) => {
 			seen.push(`place ${path}`);
-			return place;
+			asked += 1;
+			if (typeof place === "function") return place(path, asked);
+			return place === "ok" ? { real: path, exists: false } : place;
 		},
 		write: async (path, png) => {
 			seen.push(`write ${path}`);
@@ -140,6 +146,7 @@ async function picture(
 	more: {
 		path?: string;
 		review?: (action: CloudCodexHomeAction) => { run: true } | { run: false; text: string };
+		written?: Set<string>;
 	} = {},
 ) {
 	const reviewed: CloudCodexHomeAction[] = [];
@@ -157,6 +164,7 @@ async function picture(
 		callId: "claude-picture:s:1",
 		pictures,
 		home,
+		written: more.written ?? new Set(),
 		signal: new AbortController().signal,
 	});
 	return { outcome, reviewed };
@@ -185,7 +193,12 @@ describe("one picture", () => {
 		});
 		expect(outcome.out).toContain("Open it with Read");
 		expect(asked).toEqual(["a red chair"]);
-		expect(seen).toEqual(["place /company/designs/chair.png", "make", "write /company/designs/chair.png"]);
+		expect(seen).toEqual([
+			"place /company/designs/chair.png",
+			"make",
+			"place /company/designs/chair.png",
+			"write /company/designs/chair.png",
+		]);
 		expect(written[0]?.png.equals(PNG)).toBe(true);
 		expect(reviewed.map((action) => action.tool)).toEqual(["make_picture"]);
 	});
@@ -244,8 +257,6 @@ describe("one picture", () => {
 		expect(missing.outcome.err).toContain("/company/designs does not exist");
 		const folder = await picture({ make }, fakeHome("folder").home);
 		expect(folder.outcome.err).toContain("is a folder");
-		const link = await picture({ make }, fakeHome("link").home);
-		expect(link.outcome.err).toContain("is a link");
 		const gone = await picture({ make }, fakeHome("unavailable").home);
 		expect(gone.outcome.code).toBe(255);
 		expect(made).toBe(0);
@@ -289,5 +300,72 @@ describe("one picture", () => {
 		expect(tooLarge.outcome.err).toContain("PICTURE_TOO_LARGE");
 		const unwritten = await picture({ make: async () => ({ png: PNG }) }, fakeHome("ok", false).home);
 		expect(unwritten.outcome).toEqual({ err: expect.stringContaining("PICTURE_NOT_SAVED"), code: 1 });
+	});
+
+	it("is checked, reviewed and written at the real place a link leads to, and refused when that is outside", async () => {
+		const into = "/company/apps/shop/pictures/a.png";
+		const owners: string[] = [];
+		const linked = fakeHome(() => ({ real: into, exists: false }));
+		const { outcome, reviewed } = await picture(
+			{
+				make: async () => ({ png: PNG }),
+				foreignOwner: async (path) => {
+					owners.push(path);
+					return true;
+				},
+			},
+			linked.home,
+			{ path: "/company/mine/p/a.png" },
+		);
+		expect(outcome.code).toBe(0);
+		expect(outcome.out).toContain(`Saved a new picture to ${into}`);
+		expect(owners).toEqual(["apps/shop/pictures/a.png"]);
+		const parsed = JSON.parse(reviewed[0]?.argumentsText ?? "{}");
+		expect(parsed).toMatchObject({ path: "apps/shop/pictures/a.png", foreignOwner: true });
+		expect(cloudActionEffect({ name: "make_picture", source: "runtime" }, parsed)).toBe("delegation");
+		expect(linked.written.map((write) => write.path)).toEqual([into]);
+		let made = 0;
+		const make = async () => {
+			made += 1;
+			return { png: PNG };
+		};
+		const outside = await picture({ make }, fakeHome(() => ({ real: "/etc/a.png", exists: false })).home, {
+			path: "/company/mine/p/a.png",
+		});
+		expect(outside.outcome.err).toContain("leads to /etc/a.png on this machine");
+		const icons = await picture(
+			{ make },
+			fakeHome(() => ({ real: "/company/apps/shop/icons/a.png", exists: false })).home,
+		);
+		expect(icons.outcome.err).toBe(CLAUDE_PICTURE_ICONS);
+		expect(outside.reviewed).toEqual([]);
+		expect(made).toBe(0);
+	});
+
+	it("replaces only a picture it saved in this run, and saves nothing when the place changed while it was made", async () => {
+		const there = fakeHome(() => ({ real: "/company/designs/chair.png", exists: true }));
+		const written = new Set<string>();
+		const refused = await picture({ make: async () => ({ png: PNG }) }, there.home, { written });
+		expect(refused.outcome.err).toContain(
+			"PICTURE_EXISTS: nothing was made; /company/designs/chair.png is there already",
+		);
+		expect(there.written).toEqual([]);
+		const fresh = fakeHome();
+		const first = await picture({ make: async () => ({ png: PNG }) }, fresh.home, { written });
+		expect(first.outcome.code).toBe(0);
+		expect([...written]).toEqual(["/company/designs/chair.png"]);
+		const again = await picture({ make: async () => ({ png: PNG }) }, there.home, { written });
+		expect(again.outcome.code).toBe(0);
+		expect(there.written).toHaveLength(1);
+		const swapped = fakeHome((path, asked) => ({
+			real: asked === 1 ? path : "/company/elsewhere/a.png",
+			exists: false,
+		}));
+		const moved = await picture({ make: async () => ({ png: PNG }) }, swapped.home);
+		expect(moved.outcome.err).toContain("PICTURE_PLACE_CHANGED");
+		const appeared = fakeHome((path, asked) => ({ real: path, exists: asked > 1 }));
+		const late = await picture({ make: async () => ({ png: PNG }) }, appeared.home);
+		expect(late.outcome.err).toContain("PICTURE_PLACE_CHANGED");
+		expect([...swapped.written, ...appeared.written]).toEqual([]);
 	});
 });

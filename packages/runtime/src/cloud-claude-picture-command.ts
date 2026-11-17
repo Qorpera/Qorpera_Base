@@ -31,7 +31,7 @@ export const CLAUDE_PICTURE_MAX_BYTES = Math.min(
 const PATH_BYTES = 4096;
 const MB = 1_000_000;
 
-export const CLAUDE_PICTURE_NOTE = `To make a picture (an illustration, a product idea, a scene), run \`picture <file.png under /company> <what to draw, in words>\` as a Bash command of its own, with a timeout of 300000: it is made on the member's own ChatGPT and saved at that path. Then open the file with Read and look at it. If it says no picture can be made, render it in Blender on the machine instead.`;
+export const CLAUDE_PICTURE_NOTE = `To make a picture (an illustration, a product idea, a scene), run \`picture <file.png under /company> <what to draw, in words>\` as a Bash command of its own, with a timeout of 300000: it is made on the member's own ChatGPT and saved at that path, which must be a new file or a picture it saved earlier in this run. Then open the file with Read and look at it. If it says no picture can be made, render it in Blender on the machine instead.`;
 
 export const CLAUDE_PICTURE_USAGE = `PICTURE_USAGE: nothing was made. Run \`picture <file.png under /company> <what to draw, in words>\` as a command of its own: not in a pipe, a script or after &&, with the words written out (no $, backticks, * or ?). For example: picture /company/designs/chair.png "a walnut lounge chair on a plain light grey background, soft daylight"`;
 export const CLAUDE_PICTURE_PATH =
@@ -167,7 +167,12 @@ export interface CloudClaudePictures {
 	readonly foreignOwner?: (path: string, signal: AbortSignal) => Promise<boolean>;
 }
 
-export type ClaudePicturePlace = "ok" | "missing" | "folder" | "link" | "unavailable";
+export type ClaudePicturePlace =
+	| { readonly real: string; readonly exists: boolean }
+	| "missing"
+	| "folder"
+	| "unresolved"
+	| "unavailable";
 
 export interface ClaudePictureHome {
 	place(path: string, signal: AbortSignal): Promise<ClaudePicturePlace>;
@@ -181,6 +186,29 @@ export interface ClaudePictureOutcome {
 	readonly saved?: number;
 }
 
+const HOME_UNAVAILABLE =
+	"HOME_UNAVAILABLE: this agent's machine could not be reached, so no picture was made. Try again.";
+
+function placeRefusal(place: Exclude<ClaudePicturePlace, { readonly real: string }>, path: string): string {
+	if (place === "missing")
+		return `PICTURE_FOLDER_MISSING: nothing was made; the folder ${posix.dirname(path)} does not exist on this machine. Make it with mkdir -p first, or save the picture in a folder that exists.`;
+	if (place === "folder")
+		return `PICTURE_PATH: nothing was made; ${path} is a folder. Give the picture a file's path ending in .png.`;
+	if (place === "unresolved")
+		return `PICTURE_PATH: nothing was made; where ${path} leads could not be worked out on this machine (a loop of links). Choose another path.`;
+	return HOME_UNAVAILABLE;
+}
+
+function picturePathRefusal(real: string, named: string): string | undefined {
+	const inFolder = folderPath(real);
+	if (inFolder === undefined || !real.toLowerCase().endsWith(".png"))
+		return real === named
+			? CLAUDE_PICTURE_PATH
+			: `PICTURE_PATH: nothing was made; ${named} leads to ${real} on this machine, which is not a .png file under /company. Name the picture's real place.`;
+	if (appPath(inFolder)?.inner.toLowerCase().startsWith(`${APP_ICONS_FOLDER}/`)) return CLAUDE_PICTURE_ICONS;
+	return undefined;
+}
+
 export async function runClaudePictureCommand(input: {
 	readonly call: { readonly path: string; readonly prompt: string };
 	readonly command: string;
@@ -190,15 +218,25 @@ export async function runClaudePictureCommand(input: {
 	readonly callId: string;
 	readonly pictures: CloudClaudePictures;
 	readonly home: ClaudePictureHome;
+	readonly written: Set<string>;
 	readonly signal: AbortSignal;
 }): Promise<ClaudePictureOutcome> {
 	const { call, home, signal } = input;
 	const refused = (words: string, code = 1): ClaudePictureOutcome => ({ err: words, code });
 	const make = input.pictures.make;
 	if (!make) return refused(CLAUDE_NO_PICTURES);
+	const before = await home.place(call.path, signal);
+	if (typeof before === "string") return refused(placeRefusal(before, call.path), before === "unavailable" ? 255 : 1);
+	const real = before.real;
+	const wrong = picturePathRefusal(real, call.path);
+	if (wrong !== undefined) return refused(wrong);
+	if (before.exists && !input.written.has(real))
+		return refused(
+			`PICTURE_EXISTS: nothing was made; ${real} is there already, and picture replaces only a picture it saved in this run. Name a new file, or remove the old one first.`,
+		);
 	let foreignOwner = false;
-	const inFolder = folderPath(call.path);
-	if (inFolder !== undefined && appPath(inFolder) && input.pictures.foreignOwner) {
+	const inFolder = folderPath(real) as string;
+	if (appPath(inFolder) && input.pictures.foreignOwner) {
 		try {
 			foreignOwner = await input.pictures.foreignOwner(inFolder, signal);
 		} catch (error) {
@@ -209,7 +247,7 @@ export async function runClaudePictureCommand(input: {
 	if (input.review) {
 		const action = cloudClaudePictureAction(
 			input.machine,
-			{ command: input.command, cwd: input.cwd, path: call.path, prompt: call.prompt },
+			{ command: input.command, cwd: input.cwd, path: real, prompt: call.prompt },
 			foreignOwner,
 			input.callId,
 		);
@@ -222,20 +260,6 @@ export async function runClaudePictureCommand(input: {
 		}
 		if (!gate.run) return refused(gate.text, 126);
 	}
-	const place = await home.place(call.path, signal);
-	if (place === "unavailable")
-		return refused(
-			"HOME_UNAVAILABLE: this agent's machine could not be reached, so no picture was made. Try again.",
-			255,
-		);
-	if (place === "missing")
-		return refused(
-			`PICTURE_FOLDER_MISSING: nothing was made; the folder ${posix.dirname(call.path)} does not exist on this machine. Make it with mkdir -p first, or save the picture in a folder that exists.`,
-		);
-	if (place !== "ok")
-		return refused(
-			`PICTURE_PATH: nothing was made; ${call.path} is a ${place === "folder" ? "folder" : "link"}. Give the picture a file's path ending in .png.`,
-		);
 	let made: CloudPictureMade;
 	try {
 		made = await make({ prompt: call.prompt }, signal);
@@ -249,14 +273,25 @@ export async function runClaudePictureCommand(input: {
 	if (made.png.byteLength > CLAUDE_PICTURE_MAX_BYTES)
 		return refused(claudePictureFailureWords(new CloudPictureFailure("too_large")));
 	if (!isCloudPicturePng(made.png)) return refused(claudePictureFailureWords(new CloudPictureFailure("invalid")));
-	if (!(await home.write(call.path, made.png, signal))) {
+	const after = await home.place(call.path, signal);
+	if (typeof after === "string" || after.real !== real || after.exists !== before.exists) {
 		signal.throwIfAborted();
 		return refused(
-			`PICTURE_NOT_SAVED: the picture was made but could not be written to ${call.path} on this machine; nothing was saved. Run it again into a folder you can write.`,
+			after === "unavailable"
+				? HOME_UNAVAILABLE
+				: `PICTURE_PLACE_CHANGED: the picture was made but not saved; ${call.path} changed on this machine while it was made (it leads elsewhere now, or a file appeared there). Run it again.`,
+			after === "unavailable" ? 255 : 1,
 		);
 	}
+	if (!(await home.write(real, made.png, signal))) {
+		signal.throwIfAborted();
+		return refused(
+			`PICTURE_NOT_SAVED: the picture was made but could not be written to ${real} on this machine; nothing was saved. Run it again into a folder you can write.`,
+		);
+	}
+	input.written.add(real);
 	return {
-		out: `Saved a new picture to ${call.path}: a PNG of ${made.png.byteLength} bytes, made on the member's ChatGPT from your words. Open it with Read and look at it; if it is not what the work needs, run picture again with better words (each picture uses the member's ChatGPT picture allowance).\n`,
+		out: `Saved a new picture to ${real}: a PNG of ${made.png.byteLength} bytes, made on the member's ChatGPT from your words. Open it with Read and look at it; if it is not what the work needs, run picture again with better words (each picture uses the member's ChatGPT picture allowance).\n`,
 		code: 0,
 		saved: made.png.byteLength,
 	};

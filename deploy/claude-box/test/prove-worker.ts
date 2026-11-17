@@ -1103,6 +1103,17 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 					timeout: 300000,
 				}),
 				T("Read", "look", { file_path: pictureAt }),
+				Bash("ln -s c4c-pictures /company/c4c-pictures-link", "picture-link"),
+				T("Bash", "picture-through-link", {
+					command: 'picture /company/c4c-pictures-link/side.png "the same walnut chair from the side"',
+					description: "picture-through-link",
+					timeout: 300000,
+				}),
+				T("Bash", "picture-again", {
+					command: `picture ${pictureAt} "a walnut lounge chair, warmer light"`,
+					description: "picture-again",
+					timeout: 300000,
+				}),
 			], "Picture work done."),
 			{ picture: true },
 		);
@@ -1121,6 +1132,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			`the picture command was answered by the run's host, made on the stub lane and written on the home as the agent: ${JSON.stringify(toldP("picture"))} ${pictureOnHome.replaceAll("\n", " | ")}`);
 		check("picture-read", toldP("look")?.isError === false && (toldP("look")?.text ?? "").includes('"type": "image"'),
 			`Claude Code opened the picture with Read and the model was shown an image: ${JSON.stringify(toldP("look"))}`);
+		check("picture-real-place", (toldP("picture-through-link")?.text ?? "").includes("Saved a new picture to /company/c4c-pictures/side.png")
+			&& (toldP("picture-again")?.text ?? "").includes(`Saved a new picture to ${pictureAt}`),
+			`a picture through a link is written at its real place, and the run replaces a picture it saved itself: ${JSON.stringify([toldP("picture-through-link"), toldP("picture-again")])}`);
 		check("picture-review", reviewsP.every((r) => r.tool !== "make_picture") && reviewsP.some((r) => r.tool === "home_command" && r.decision === "allow")
 			&& (rp.stub?.reviews ?? []).every((r) => !r.arguments.includes("walnut")),
 			`the picture went through the run's gate as Codex's make_picture (internal: no reviewer call, as for Codex), the mkdir as a reviewed command: ${JSON.stringify(reviewsP)}`);

@@ -136,7 +136,7 @@ describe("what Claude Code is told", () => {
 				"Your file tools (Read, Write, Edit, NotebookEdit, Grep, Glob) see only /company, your home folder /var/lib/qorpera-agent and /tmp of that machine: use the shell for everything else on it. A file tool aimed at any other path reads or writes this program's own scratch space, not the machine.",
 				"Never write a password, key or token into /company.",
 				"sudo is yours on the machine.",
-				"To make a picture (an illustration, a product idea, a scene), run `picture <file.png under /company> <what to draw, in words>` as a Bash command of its own, with a timeout of 300000: it is made on the member's own ChatGPT and saved at that path. Then open the file with Read and look at it. If it says no picture can be made, render it in Blender on the machine instead.",
+				"To make a picture (an illustration, a product idea, a scene), run `picture <file.png under /company> <what to draw, in words>` as a Bash command of its own, with a timeout of 300000: it is made on the member's own ChatGPT and saved at that path, which must be a new file or a picture it saved earlier in this run. Then open the file with Read and look at it. If it says no picture can be made, render it in Blender on the machine instead.",
 			].join("\n"),
 		);
 		for (const name of ["manage_worker", "report_work", "company_", "machine_", "send_message", "Qorpera"])

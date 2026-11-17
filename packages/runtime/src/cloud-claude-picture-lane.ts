@@ -1,3 +1,8 @@
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
+import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import { type CloudNativeRunToolAdapters, runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
+import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import {
 	CloudPictureChannel,
 	CloudPictureFailure,
@@ -54,9 +59,14 @@ export class CloudClaudePictureLane {
 		return turn;
 	}
 
-	close(): void {
+	get open(): boolean {
+		return this.#session !== undefined;
+	}
+
+	close(): Promise<void> {
 		this.#closed = true;
 		this.#end(this.#session);
+		return this.#last;
 	}
 
 	async #make(input: CloudPictureInput, signal: AbortSignal): Promise<CloudPictureMade> {
@@ -122,4 +132,52 @@ export class CloudClaudePictureLane {
 		if (this.#session === session) this.#session = undefined;
 		session.stop();
 	}
+}
+
+export async function cloudClaudePictureLaneFor(input: {
+	readonly identityRoot: string;
+	readonly signal: AbortSignal;
+	readonly start: CloudClaudePictureSessionStart;
+	readonly idleMs?: number;
+}): Promise<CloudClaudePictureLane | undefined> {
+	const plan = await lstat(join(input.identityRoot, CHATGPT_PLAN_DIRECTORY)).then(
+		() => true,
+		(error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+	);
+	if (plan) return undefined;
+	const login = await lstat(join(input.identityRoot, "codex", "auth.json")).catch(() => undefined);
+	if (!login?.isFile()) return undefined;
+	return new CloudClaudePictureLane({
+		start: input.start,
+		signal: input.signal,
+		...(input.idleMs === undefined ? {} : { idleMs: input.idleMs }),
+	});
+}
+
+export function cloudClaudePictureSessionStart(options: {
+	readonly binding: CloudNativeToolBinding;
+	readonly controlPlane: Parameters<typeof runCloudNativeRunToolSession>[0]["controlPlane"];
+	readonly adapters: () => CloudNativeRunToolAdapters;
+	readonly command: readonly [string, ...string[]];
+	readonly binarySha256: string;
+	readonly identityRoot: string;
+	readonly isolation?: NativeIsolationConfiguration;
+	readonly timeoutMs?: number;
+}): CloudClaudePictureSessionStart {
+	return ({ pictures, light, signal }) =>
+		runCloudNativeRunToolSession({
+			binding: options.binding,
+			controlPlane: options.controlPlane,
+			beginExecution: async () => undefined,
+			tools: options.adapters,
+			light: async (_ask, lightSignal) => light(lightSignal),
+			pictures,
+			command: options.command,
+			binarySha256: options.binarySha256,
+			identityRoot: options.identityRoot,
+			reusedIdentityRoot: true,
+			...(options.isolation ? { isolation: options.isolation } : {}),
+			signal,
+			...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+		});
 }

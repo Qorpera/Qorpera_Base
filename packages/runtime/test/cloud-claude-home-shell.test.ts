@@ -316,11 +316,16 @@ const PNG = Buffer.from(
 const asClaudeCode = (command: string) =>
 	`source /slot/config/shell-snapshots/snapshot-bash-1700000000000-abc123.sh && eval '${command.replaceAll("'", "'\\''")}' < /dev/null && pwd -P >| /tmp/claude-1a2b-cwd`;
 
-function pictureHome(place = 0) {
+function pictureHome(place = 0, real?: string) {
 	return fakeHome((message, send) => {
 		if (message.method === "process/start") {
-			const processId = (message.params as { processId: string }).processId;
+			const { processId, argv } = message.params as { processId: string; argv: string[] };
 			send({ id: message.id, result: {} });
+			if (place === 0)
+				send({
+					method: "process/output",
+					params: { processId, stream: "stdout", chunk: Buffer.from(`0 ${real ?? argv[4]}`).toString("base64") },
+				});
 			send({ method: "process/exited", params: { processId, exitCode: place } });
 			send({ method: "process/closed", params: { processId } });
 		} else if (message.method === "fs/writeFile") send({ id: message.id, result: {} });
@@ -358,7 +363,8 @@ it("answers a picture command itself: checked as make_picture, made, written on 
 	expect(asked).toEqual(["a red chair, it's walnut"]);
 	expect(reviewed.map((action) => action.tool)).toEqual(["make_picture"]);
 	const started = home.sent.filter((message) => message.method === "process/start");
-	expect(started).toHaveLength(1);
+	expect(started).toHaveLength(2);
+	expect((started[0]?.params as { argv: string[] }).argv[2]).toContain("realpath -m");
 	expect((started[0]?.params as { argv: string[] }).argv.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
 	expect((started[0]?.params as { argv: string[] }).argv.slice(3)).toEqual(["picture", "/company/designs/chair.png"]);
 	expect(JSON.stringify(home.sent)).not.toContain("a red chair");
@@ -409,5 +415,23 @@ it("says the picture's folder is missing on the home before any picture is made"
 	expect(result.code).toBe(1);
 	expect(result.err).toContain("PICTURE_FOLDER_MISSING: nothing was made; the folder /company/new does not exist");
 	expect(made).toBe(0);
+	await shell.close();
+});
+
+it("writes a picture where a link leads on the home, never through the link", async () => {
+	const home = pictureHome(0, "/company/real/chair.png");
+	const { shell } = await shellWith(home.channel, { pictures: { make: async () => ({ png: PNG }) } });
+	const result = await command(shell.socketPath, {
+		cmd: asClaudeCode("picture /company/linked/chair.png red"),
+		cwd: "/company",
+		env: {},
+	});
+	expect(result.code).toBe(0);
+	expect(result.out).toContain("Saved a new picture to /company/real/chair.png");
+	expect(
+		home.sent
+			.filter((message) => message.method === "fs/writeFile")
+			.map((message) => (message.params as { path: string }).path),
+	).toEqual(["file:///company/real/chair.png"]);
 	await shell.close();
 });

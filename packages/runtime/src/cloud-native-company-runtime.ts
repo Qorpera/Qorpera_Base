@@ -28,7 +28,11 @@ import {
 } from "./cloud-claude-box.ts";
 import type { CloudClaudeHomeChannel } from "./cloud-claude-home-shell.ts";
 import type { CloudClaudePictures } from "./cloud-claude-picture-command.ts";
-import { CloudClaudePictureLane } from "./cloud-claude-picture-lane.ts";
+import {
+	type CloudClaudePictureLane,
+	cloudClaudePictureLaneFor,
+	cloudClaudePictureSessionStart,
+} from "./cloud-claude-picture-lane.ts";
 import {
 	CLAUDE_WORKER_CATALOG,
 	CLAUDE_WORKER_SYSTEM_NOTE,
@@ -1667,14 +1671,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
-	/**
-	 * A Claude Code worker's run (slice C4c). Admitted as any plain worker's run (its ordinary binding, C4a), it starts
-	 * no Codex: its admission records Claude Code's own tools as its catalog and its brief as its context; then Claude
-	 * Code works on the agent's machine (runClaudeWorker) and its last message is written as the worker's results
-	 * through report_work's own path, under the run's receipt. The worker-completion wake follows as for any worker.
-	 * A failure before Claude Code started ends the worker blocked, in its words; only a stopped run (or a lost run
-	 * authority) fails the run itself.
-	 */
 	async #claudeCodeWorker(
 		identityRoot: string,
 		signal: AbortSignal,
@@ -1964,47 +1960,40 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				delivery: { messageCount: 0, finalMessageId: null },
 			};
 		} finally {
-			pictureLane?.close();
+			if (pictureLane)
+				await Promise.race([pictureLane.close(), new Promise((resolve) => setTimeout(resolve, 30_000).unref())]);
 			run.close();
 		}
 	}
 
-	async #claudePictureLane(
+	#claudePictureLane(
 		identityRoot: string,
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
 		signal: AbortSignal,
 	): Promise<CloudClaudePictureLane | undefined> {
-		if (await chatGptPlanRun(identityRoot)) return undefined;
-		const login = await lstat(join(identityRoot, "codex", "auth.json")).catch(() => undefined);
-		if (!login?.isFile()) return undefined;
-		return new CloudClaudePictureLane({
+		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		return cloudClaudePictureLaneFor({
+			identityRoot,
 			signal,
-			start: async ({ pictures, light, signal: sessionSignal }) => {
-				const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
-				await runCloudNativeRunToolSession({
-					binding,
-					controlPlane: this.#control,
-					beginExecution: async () => undefined,
-					tools: () => ({
-						tools: [],
-						assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
-						checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
-						recordContextView: (frame, outputs, requestSignal) =>
-							gateway.recordContextView(frame, outputs, requestSignal),
-						fenceContextView: (frame, outputs, requestSignal) =>
-							gateway.fenceContextView(frame, outputs, requestSignal),
-					}),
-					light: async (_ask, lightSignal) => light(lightSignal),
-					pictures,
-					command: this.#command,
-					binarySha256: this.#sha256,
-					identityRoot,
-					isolation: this.#isolation,
-					signal: sessionSignal,
-					timeoutMs: this.#timeoutMs,
-				});
-			},
+			start: cloudClaudePictureSessionStart({
+				binding,
+				controlPlane: this.#control,
+				adapters: () => ({
+					tools: [],
+					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
+					checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
+					recordContextView: (frame, outputs, requestSignal) =>
+						gateway.recordContextView(frame, outputs, requestSignal),
+					fenceContextView: (frame, outputs, requestSignal) =>
+						gateway.fenceContextView(frame, outputs, requestSignal),
+				}),
+				command: this.#command,
+				binarySha256: this.#sha256,
+				identityRoot,
+				...(this.#isolation ? { isolation: this.#isolation } : {}),
+				...(this.#timeoutMs === undefined ? {} : { timeoutMs: this.#timeoutMs }),
+			}),
 		});
 	}
 

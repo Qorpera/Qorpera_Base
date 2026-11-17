@@ -1,9 +1,35 @@
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	CloudClaudePictureLane,
 	type CloudClaudePictureSessionStart,
+	cloudClaudePictureLaneFor,
+	cloudClaudePictureSessionStart,
 } from "@qorpera/runtime/cloud-claude-picture-lane";
 import { CloudPictureFailure, type CloudPictureMade } from "@qorpera/runtime/cloud-picture-channel";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
+
+const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
+const binarySha256 = createHash("sha256")
+	.update(await readFile(process.execPath))
+	.digest("hex");
+const roots: string[] = [];
+afterEach(async () => {
+	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+async function identityRoot(kind: "codex" | "plan" | "none") {
+	const root = await mkdtemp(join(tmpdir(), "claude-picture-lane-"));
+	roots.push(root);
+	await mkdir(join(root, "codex"), { recursive: true, mode: 0o700 });
+	if (kind === "codex") await writeFile(join(root, "codex", "auth.json"), "{}", { mode: 0o600 });
+	if (kind === "plan") await mkdir(join(root, "chatgpt-plan"), { mode: 0o700 });
+	return root;
+}
 
 const PNG = Buffer.from("89504e470d0a1a0a", "hex");
 
@@ -43,8 +69,8 @@ it("starts the member's side session on the first picture only, one picture at a
 	expect(both.map((made) => made.png.equals(PNG))).toEqual([true, true]);
 	expect(s.log).toEqual(["start", "make one", "make two"]);
 	expect(lane.sessions).toBe(1);
-	lane.close();
-	await expect.poll(() => s.log.at(-1)).toBe("end");
+	await lane.close();
+	expect(s.log.at(-1)).toBe("end");
 });
 
 it("ends the session when no picture was asked for a while, and starts a new one only after it ended", async () => {
@@ -88,4 +114,59 @@ it("makes nothing once the run has ended", async () => {
 	run.abort();
 	await expect(lane.make({ prompt: "one" }, new AbortController().signal)).rejects.toBeInstanceOf(CloudPictureFailure);
 	expect(s.log).toEqual([]);
+});
+
+it("gives a lane only to a run whose root holds a Codex login, never a ChatGPT plan's or none", async () => {
+	const start = sessions().start;
+	const signal = new AbortController().signal;
+	expect(await cloudClaudePictureLaneFor({ identityRoot: await identityRoot("none"), signal, start })).toBeUndefined();
+	expect(await cloudClaudePictureLaneFor({ identityRoot: await identityRoot("plan"), signal, start })).toBeUndefined();
+	expect(await cloudClaudePictureLaneFor({ identityRoot: await identityRoot("codex"), signal, start })).toBeInstanceOf(
+		CloudClaudePictureLane,
+	);
+});
+
+it("makes pictures on a light Codex of the run's own root, a later session clearing what an earlier one left", async () => {
+	const f = nativeToolAuthorityFixture();
+	const root = await identityRoot("codex");
+	const evidence = join(await mkdtemp(join(tmpdir(), "claude-picture-evidence-")), "evidence.json");
+	roots.push(join(evidence, ".."));
+	const control = {
+		describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
+		beginToolOperation: vi.fn(async () => {
+			throw new Error("No effects expected");
+		}),
+		completeToolOperation: vi.fn(async () => {
+			throw new Error("No effects expected");
+		}),
+	};
+	const run = new AbortController();
+	const lane = await cloudClaudePictureLaneFor({
+		identityRoot: root,
+		signal: run.signal,
+		idleMs: 20,
+		start: cloudClaudePictureSessionStart({
+			binding: f.binding,
+			controlPlane: control as never,
+			adapters: () => ({
+				tools: [],
+				assertContext: async () => undefined,
+				recordContextView: async () => undefined,
+			}),
+			command: [process.execPath, rpcFixture, "picture-light", evidence],
+			binarySha256,
+			identityRoot: root,
+		}),
+	});
+	const signal = new AbortController().signal;
+	const first = await (lane as CloudClaudePictureLane).make({ prompt: "a red apple" }, signal);
+	expect(first.revisedPrompt).toBe("a red apple");
+	await expect.poll(() => lane?.open).toBe(false);
+	await writeFile(join(root, "codex", "state.sqlite"), "left by Codex");
+	const second = await (lane as CloudClaudePictureLane).make({ prompt: "a red apple" }, signal);
+	expect(second.png.equals(first.png)).toBe(true);
+	expect(lane?.sessions).toBe(2);
+	expect(lane?.failure).toBeUndefined();
+	await lane?.close();
+	expect(await readdir(join(root, "codex"))).not.toContain("state.sqlite");
 });

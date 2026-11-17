@@ -72,7 +72,7 @@ const INITIALIZE_MS = 20_000;
 const PICTURE_PLACE_MS = 30_000;
 const PICTURE_WRITE_MS = 120_000;
 const PICTURE_PLACE =
-	'd=$(dirname -- "$1"); [ -d "$d" ] || exit 3; [ -L "$1" ] && exit 4; [ -d "$1" ] && exit 5; exit 0';
+	't=$(realpath -m -- "$1") || exit 6; [ -d "$(dirname -- "$t")" ] || exit 3; [ -d "$t" ] && exit 5; [ -e "$t" ] && e=1 || e=0; printf "%s %s" "$e" "$t"';
 
 /** The words a command shows when its home is not there; Claude Code shows them to the model as the command's stderr. */
 export const CLOUD_CLAUDE_SHELL_UNAVAILABLE =
@@ -154,6 +154,7 @@ export class CloudClaudeHomeShell {
 	readonly #pictures?: CloudClaudePictures;
 	#reviews = 0;
 	#pictureCalls = 0;
+	readonly #picturesWritten = new Set<string>();
 	readonly #sockets = new Set<Socket>();
 	#server?: Server;
 	#path?: string;
@@ -337,6 +338,7 @@ export class CloudClaudeHomeShell {
 			callId: `claude-picture:${this.#sessionId}:${++this.#pictureCalls}`,
 			pictures,
 			home: this.#pictureHome(),
+			written: this.#picturesWritten,
 			signal,
 		});
 	}
@@ -350,16 +352,12 @@ export class CloudClaudeHomeShell {
 				} catch {
 					return "unavailable";
 				}
-				const code = await quiet(channel, ["/bin/sh", "-c", PICTURE_PLACE, "picture", path], signal);
-				return code === 0
-					? "ok"
-					: code === 3
-						? "missing"
-						: code === 4
-							? "link"
-							: code === 5
-								? "folder"
-								: "unavailable";
+				const ran = await quiet(channel, ["/bin/sh", "-c", PICTURE_PLACE, "picture", path], signal);
+				if (ran?.code === 3) return "missing";
+				if (ran?.code === 5) return "folder";
+				if (ran?.code === 6) return "unresolved";
+				const found = ran?.code === 0 ? /^([01]) (\/[^\0]*)$/.exec(ran.out) : null;
+				return found ? { exists: found[1] === "1", real: found[2] as string } : "unavailable";
 			},
 			write: async (path, png, signal) => {
 				let channel: Channel;
@@ -547,9 +545,14 @@ function aborted(signal: AbortSignal): Promise<undefined> {
 	});
 }
 
-async function quiet(channel: Channel, argv: readonly string[], signal: AbortSignal): Promise<number | undefined> {
+async function quiet(
+	channel: Channel,
+	argv: readonly string[],
+	signal: AbortSignal,
+): Promise<{ code: number | undefined; out: string } | undefined> {
 	const processId = `claude-picture-${randomBytes(6).toString("hex")}`;
 	let exitCode: number | undefined;
+	const out: Buffer[] = [];
 	let lost = false;
 	let closed: () => void = () => undefined;
 	const done = new Promise<void>((resolve) => {
@@ -557,7 +560,9 @@ async function quiet(channel: Channel, argv: readonly string[], signal: AbortSig
 	});
 	channel.processes.set(processId, (message) => {
 		const params = (message.params ?? {}) as Record<string, unknown>;
-		if (message.method === "process/exited" && typeof params.exitCode === "number") exitCode = params.exitCode;
+		if (message.method === "process/output" && params.stream !== "stderr" && typeof params.chunk === "string")
+			out.push(Buffer.from(params.chunk, "base64"));
+		else if (message.method === "process/exited" && typeof params.exitCode === "number") exitCode = params.exitCode;
 		else if (message.method === "process/closed") {
 			lost = message.lost === true;
 			closed();
@@ -580,7 +585,7 @@ async function quiet(channel: Channel, argv: readonly string[], signal: AbortSig
 			if (!channel.closed) await call(channel, "process/terminate", { processId });
 			return undefined;
 		}
-		return lost ? undefined : exitCode;
+		return lost ? undefined : { code: exitCode, out: Buffer.concat(out).toString("utf8") };
 	} finally {
 		channel.processes.delete(processId);
 	}
