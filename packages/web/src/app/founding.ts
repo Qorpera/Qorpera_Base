@@ -90,7 +90,6 @@ export interface FoundingState {
 	/** Opened alone from the new-company box's arrow: the company starts by itself, and the page shows that start (or
 	 * the ChatGPT step before it) instead of the table (Jonas, 9 Nov 2026). */
 	autoStart?: boolean;
-	startedAlone?: boolean;
 	/** What the others are writing: one per person and field, newest first. */
 	liveText?: FounderLive[];
 }
@@ -410,7 +409,6 @@ export class FoundingController {
 		void this.startAlone(table.revision, (now) => now.seats.length === 1).then(() => {
 			this.#autoStarting = false;
 			if (this.disposed) return;
-			if (this.store.get().table?.phase === "started") this.store.set({ startedAlone: true });
 			this.#endAutoStart();
 		});
 	}
