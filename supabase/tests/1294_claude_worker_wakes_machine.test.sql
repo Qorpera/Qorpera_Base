@@ -130,8 +130,21 @@ begin
 			and pg_temp.cw_events(2, 'fell_back') -> 0 ->> 'words'
 				= pg_temp.c4_words('<member>''s machine for Claude Code did not start within 5 minutes'),
 			'2: the record: ' || pg_temp.cw_events(2, 'fell_back')::text);
-		perform pg_temp.base_assert((pg_temp.h1_machine('home-a')).desired_state = 'running',
-			'2: a machine a going run of the agent took stays wanted');
+		perform pg_temp.base_assert((pg_temp.h1_machine('home-a')).desired_state = 'stopped',
+			'2: the machine woken only for it, still not running, is no longer wanted');
+		raise exception 'cw-undo';
+	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;
+	end;
+	begin
+		perform pg_temp.cw_sleep('home-a');
+		perform pg_temp.cw_saved(pg_temp.cw_dispatch(19), '19: the default dispatch');
+		perform pg_temp.c4_drain();
+		update public.qorpera_company_machines set taken_by_run_id = pg_temp.h1_run() where name = 'home-a' and removed_at is null;
+		update public.qorpera_runtime_workers set claude_machine_since = claude_machine_since - interval '301 seconds'
+		where id = pg_temp.cw_id(19);
+		perform pg_temp.c4_drain();
+		perform pg_temp.base_assert((pg_temp.cw_worker(19)).harness is null and (pg_temp.h1_machine('home-a')).desired_state = 'running',
+			'19: a machine a going run of the agent took meanwhile stays wanted');
 		raise exception 'cw-undo';
 	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;
 	end;
@@ -202,6 +215,20 @@ begin
 	end;
 	begin
 		perform pg_temp.cw_sleep('home-a');
+		perform pg_temp.cw_saved(pg_temp.cw_dispatch(9), '9: the default dispatch');
+		perform pg_temp.base_assert((pg_temp.cw_worker(9)).harness = 'claude-code', '9: on Claude Code at the dispatch');
+		delete from public.qorpera_claude_sign_in_members where user_id = pg_temp.c4_owner_id();
+		perform pg_temp.c4_drain();
+		perform pg_temp.base_assert((pg_temp.cw_worker(9)).harness is null and pg_temp.cw_events(9, 'machine_woken') = '[]'::jsonb
+			and pg_temp.cw_events(9, 'fell_back') -> 0 ->> 'machine' = 'member'
+			and pg_temp.cw_events(9, 'fell_back') -> 0 ->> 'words'
+				= pg_temp.c4_words('Claude Code is not open for <member> yet: dispatch this worker without Claude Code'),
+			'9: Claude Code closed for the member by the drain: Codex, in the member''s words: ' || pg_temp.cw_events(9, 'fell_back')::text);
+		raise exception 'cw-undo';
+	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;
+	end;
+	begin
+		perform pg_temp.cw_sleep('home-a');
 		update public.qorpera_company_machines set desired_state = 'deleted' where name = 'home-a' and removed_at is null;
 		perform pg_temp.cw_saved(pg_temp.cw_dispatch(5), '5: the default dispatch');
 		perform pg_temp.c4_drain();
@@ -247,6 +274,43 @@ begin
 		v_binding := pg_temp.base_start(null);
 		perform pg_temp.base_assert(public.qorpera_company_home_available(v_binding) ->> 'machineId' = v_new.id::text,
 			'11: the worker''s run gets that machine as its home: ' || public.qorpera_company_home_available(v_binding)::text);
+		raise exception 'cw-undo';
+	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;
+	end;
+	begin
+		perform pg_temp.cw_gone('home-a');
+		perform pg_temp.cw_saved(pg_temp.cw_dispatch(15), '15: the first default dispatch');
+		perform pg_temp.cw_saved(pg_temp.cw_dispatch(16), '15: the second');
+		perform pg_temp.cw_saved(pg_temp.cw_dispatch(17), '15: the third');
+		perform pg_temp.c4_drain();
+		select * into v_new from pg_temp.cw_agent_machines() limit 1;
+		perform pg_temp.base_assert((select count(*) from public.qorpera_runtime_workers where claude_machine_id = v_new.id) = 3,
+			'15: three wait on one machine');
+		update public.qorpera_runtime_workers set claude_machine_since = claude_machine_since - interval '301 seconds'
+		where id = pg_temp.cw_id(15);
+		perform pg_temp.c4_drain();
+		perform pg_temp.base_assert((pg_temp.cw_worker(15)).harness is null and (pg_temp.h1_machine(v_new.name)).desired_state = 'running',
+			'15: the first to give up leaves the machine to the two still waiting');
+		update public.qorpera_runtime_workers set claude_machine_since = claude_machine_since - interval '301 seconds'
+		where id in (pg_temp.cw_id(16), pg_temp.cw_id(17));
+		perform pg_temp.c4_drain();
+		perform pg_temp.base_assert((pg_temp.cw_worker(16)).harness is null and (pg_temp.cw_worker(17)).harness is null
+			and (pg_temp.h1_machine(v_new.name)).desired_state = 'stopped',
+			'15: once none waits, the machine they made is no longer wanted: ' || to_jsonb(pg_temp.h1_machine(v_new.name))::text);
+		raise exception 'cw-undo';
+	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;
+	end;
+	begin
+		perform pg_temp.cw_gone('home-a');
+		perform pg_temp.cw_saved(pg_temp.cw_dispatch(18), '18: the default dispatch');
+		perform pg_temp.c4_drain();
+		select * into v_new from pg_temp.cw_agent_machines() limit 1;
+		update public.qorpera_company_machines set notify_run_ids = array[pg_temp.h1_run()] where id = v_new.id;
+		update public.qorpera_runtime_workers set claude_machine_since = claude_machine_since - interval '301 seconds'
+		where id = pg_temp.cw_id(18);
+		perform pg_temp.c4_drain();
+		perform pg_temp.base_assert((pg_temp.cw_worker(18)).harness is null and (pg_temp.h1_machine(v_new.name)).desired_state = 'running',
+			'18: a machine a run waits to hear from stays wanted');
 		raise exception 'cw-undo';
 	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;
 	end;
@@ -342,7 +406,7 @@ begin
 			'public.qorpera_claude_worker_machine_for(public.qorpera_runtime_workers)',
 			'public.qorpera_claude_worker_machine_outcome(public.qorpera_runtime_workers)',
 			'public.qorpera_claude_worker_machine_waits(public.qorpera_runtime_workers)',
-			'public.qorpera_claude_worker_machine_fall_back(public.qorpera_runtime_workers,text)',
+			'public.qorpera_claude_worker_machine_fall_back(public.qorpera_runtime_workers,text,text)',
 			'public.qorpera_claude_worker_machine_name(uuid,uuid)',
 			'public.qorpera_claude_worker_machine_wait(public.qorpera_runtime_workers)',
 			'public.qorpera_company_machine_claude_at_work(public.qorpera_company_machines,public.qorpera_company_machine_placements)'] loop

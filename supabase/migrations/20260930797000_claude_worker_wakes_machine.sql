@@ -34,8 +34,7 @@ insert into public.qorpera_home_outdated_images(image_fingerprint) values
 alter table public.qorpera_runtime_workers
 	add column claude_machine_id uuid references public.qorpera_company_machines(id) on delete set null,
 	add column claude_machine_since timestamptz,
-	add constraint qorpera_runtime_workers_claude_machine check ((claude_machine_since is null) = (claude_machine_id is null)
-		and (claude_machine_since is null or harness_default));
+	add constraint qorpera_runtime_workers_claude_machine check (claude_machine_since is null or harness_default);
 
 alter table public.qorpera_runtime_worker_events
 	drop constraint qorpera_runtime_worker_events_kind_check,
@@ -151,11 +150,13 @@ returns boolean language sql stable security definer set search_path = '' as $$
 		and p_worker.claude_machine_since is not null and public.qorpera_claude_worker_machine_outcome(p_worker) is null, false)
 $$;
 
-create function public.qorpera_claude_worker_machine_fall_back(p_worker public.qorpera_runtime_workers, p_outcome text)
+create function public.qorpera_claude_worker_machine_fall_back(p_worker public.qorpera_runtime_workers, p_outcome text,
+	p_words text default null)
 returns void language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_company_machines%rowtype; v_woken jsonb; v_words text;
 begin
-	select * into v_machine from public.qorpera_company_machines where id = p_worker.claude_machine_id;
+	perform pg_advisory_xact_lock(hashtextextended('qorpera.company-machines:' || p_worker.profile_id::text, 0));
+	select * into v_machine from public.qorpera_company_machines where id = p_worker.claude_machine_id for update;
 	select event.body into v_woken from public.qorpera_runtime_worker_events event
 	where event.worker_id = p_worker.id and event.sequence = p_worker.sequence and event.kind = 'machine_woken'
 	order by event.created_at desc limit 1;
@@ -169,11 +170,11 @@ begin
 			and other.claude_machine_id = v_machine.id and public.qorpera_claude_worker_machine_waits(other)) then
 		perform public.qorpera_set_company_machine_desired(v_machine, 'stopped', 'kernel');
 	end if;
-	v_words := format(case p_outcome
+	v_words := coalesce(p_words, format(case p_outcome
 		when 'limit' then '%s''s machine for Claude Code did not start within 5 minutes'
 		when 'hours' then 'the company has no computer hours left to start %s''s machine for Claude Code'
 		else '%s''s machine for Claude Code could not start' end,
-		public.qorpera_claude_worker_member_name(p_worker.profile_id, p_worker.requested_by_user_id));
+		public.qorpera_claude_worker_member_name(p_worker.profile_id, p_worker.requested_by_user_id)));
 	update public.qorpera_runtime_workers
 	set harness = null, claude_login_id = null, claude_model = null, claude_effort = null,
 		claude_fallback_sequence = sequence, updated_at = clock_timestamp()
@@ -212,11 +213,15 @@ declare
 	c_memory_gib constant bigint := 4;
 	c_disk_gib constant bigint := 40;
 	v_outcome text; v_machine public.qorpera_company_machines%rowtype; v_admission jsonb; v_woke boolean := false;
-	v_new boolean := false; v_member text;
+	v_new boolean := false; v_member text; v_problem text;
 begin
 	if p_worker.harness is distinct from 'claude-code' or not p_worker.harness_default or p_worker.occurrence_id is not null then
 		return 'ready'; end if;
 	if p_worker.claude_machine_since is not null then
+		v_outcome := public.qorpera_claude_worker_machine_outcome(p_worker);
+		if v_outcome is null then return 'waiting'; end if;
+		if v_outcome = 'running' then return 'ready'; end if;
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.company-machines:' || p_worker.profile_id::text, 0));
 		v_outcome := public.qorpera_claude_worker_machine_outcome(p_worker);
 		if v_outcome is null then return 'waiting'; end if;
 		if v_outcome = 'running' then return 'ready'; end if;
@@ -228,8 +233,11 @@ begin
 		return 'ready'; end if;
 	perform pg_advisory_xact_lock(hashtextextended('qorpera.company-machines:' || p_worker.profile_id::text, 0));
 	if not public.qorpera_claude_worker_machine_wakeable(p_worker.profile_id, p_worker.staff_agent_id, p_worker.steering_run_id) then
+		v_problem := public.qorpera_claude_worker_member_problem(p_worker.profile_id, p_worker.steering_run_id);
 		perform public.qorpera_claude_worker_machine_fall_back(p_worker,
-			case when public.qorpera_company_at_zero(p_worker.profile_id, clock_timestamp()) then 'hours' else 'unavailable' end);
+			case when v_problem is not null then 'member'
+				when public.qorpera_company_at_zero(p_worker.profile_id, clock_timestamp()) then 'hours' else 'unavailable' end,
+			v_problem);
 		return 'fell_back';
 	end if;
 	begin
@@ -277,7 +285,8 @@ begin
 	where id = p_worker.id;
 	insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, body)
 	values (p_worker.id, p_worker.sequence, 'machine_woken', jsonb_build_object('machineId', v_machine.id, 'machine', v_machine.name,
-		'new', v_new, 'woke', v_woke, 'wantedAt', case when v_woke then v_machine.wanted_at end,
+		'new', v_new, 'woke', v_woke,
+		'wantedAt', case when public.qorpera_company_machine_state(v_machine) <> 'running' then v_machine.wanted_at end,
 		'state', public.qorpera_company_machine_state(v_machine),
 		'waitingFor', case when v_admission ->> 'state' = 'refused' then v_admission ->> 'reason' end));
 	return case when public.qorpera_claude_worker_home(p_worker.profile_id, p_worker.staff_agent_id,
@@ -328,7 +337,7 @@ revoke all on function public.qorpera_company_machine_home_outdated(public.qorpe
 	public.qorpera_claude_worker_machine_for(public.qorpera_runtime_workers),
 	public.qorpera_claude_worker_machine_outcome(public.qorpera_runtime_workers),
 	public.qorpera_claude_worker_machine_waits(public.qorpera_runtime_workers),
-	public.qorpera_claude_worker_machine_fall_back(public.qorpera_runtime_workers, text),
+	public.qorpera_claude_worker_machine_fall_back(public.qorpera_runtime_workers, text, text),
 	public.qorpera_claude_worker_machine_name(uuid, uuid),
 	public.qorpera_claude_worker_machine_wait(public.qorpera_runtime_workers),
 	public.qorpera_company_machine_claude_at_work(public.qorpera_company_machines, public.qorpera_company_machine_placements)
