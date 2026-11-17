@@ -83,6 +83,30 @@ describe("the files a machine command runs", () => {
 		expect(paths("cd /tmp/eeg\npython3 fetch.py")).toEqual(["/tmp/eeg/fetch.py"]);
 	});
 
+	it("keeps the folder unknown across every boundary a cd may or may not have crossed (review r2 of #1924)", () => {
+		const unknown = (file: string) => ({ files: [], notShown: [`${file}: the folder it is in could not be told`] });
+		expect(cloudCommandScripts("test -d b && cd b && (true); python3 run.py")).toEqual(unknown("run.py"));
+		expect(cloudCommandScripts("cd a && cd b && (y); python3 r.py")).toEqual(unknown("r.py"));
+		expect(paths("cd /a && (true) && python3 x.py")).toEqual(["/a/x.py"]);
+		expect(paths("cd /a && python3 x.py & python3 y.py")).toEqual(["/a/x.py", "/root/y.py"]);
+		expect(paths("(cd /a) & python3 z.py")).toEqual(["/root/z.py"]);
+		expect(paths("x; (cd a) && y & python3 z.py")).toEqual(["/root/z.py"]);
+		expect(cloudCommandScripts("cd /a && pushd /b && python3 x.py")).toEqual(unknown("x.py"));
+		expect(cloudCommandScripts("eval 'cd /b'; python3 x.py")).toEqual(unknown("x.py"));
+		expect(cloudCommandScripts("source ./env.sh; python3 x.py")).toEqual({
+			files: [{ path: "/root/env.sh", mentioned: false }],
+			notShown: ["x.py: the folder it is in could not be told"],
+		});
+		expect(cloudCommandScripts("export CDPATH=/srv; cd app && python3 x.py")).toEqual(unknown("x.py"));
+		expect(cloudCommandScripts("shopt -s lastpipe; true | cd /b; python3 x.py")).toEqual(unknown("x.py"));
+		expect(cloudCommandScripts("cd /a && { cd /b; } && python3 x.py")).toEqual(unknown("x.py"));
+		expect(paths("builtin cd /b && python3 x.py; cd -P /c && python3 y.py")).toEqual(["/b/x.py", "/c/y.py"]);
+		expect(paths("cd /a | true; python3 z.py")).toEqual(["/root/z.py"]);
+		expect(paths("bash -c 'cd /b' && python3 x.py")).toEqual(["/root/x.py"]);
+		expect(paths("echo $(cd /b) && python3 x.py")).toEqual(["/root/x.py"]);
+		expect(paths("bash <<'EOF'\ncd /b\nEOF\npython3 x.py")).toEqual(["/root/x.py"]);
+	});
+
 	it("skips a shell's own option values, such as its startup file", () => {
 		expect(paths("bash --rcfile /root/f x.sh; bash --init-file /root/f y.sh")).toEqual(["/root/x.sh", "/root/y.sh"]);
 	});

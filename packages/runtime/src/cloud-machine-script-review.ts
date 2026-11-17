@@ -30,6 +30,7 @@ const PREFIXES: Readonly<Record<string, Prefix>> = {
 	nice: { values: ["-n", "--adjustment"] },
 	ionice: { values: ["-c", "--class", "-n", "--classdata"] },
 	nohup: { values: [] },
+	builtin: { values: [] },
 	exec: { values: ["-a"] },
 	time: { values: ["-f", "--format", "-o", "--output"] },
 	command: { values: [] },
@@ -120,25 +121,31 @@ function lex(command: string): { simples: Simple[] } {
 		current ??= { words: [], inputs: [], outputs: [], heredoc: false, alone: false, piped, joined };
 		return current;
 	};
+	let listStart = 0;
+	const marker = (operator: "(" | ")"): Simple => ({
+		words: [],
+		inputs: [],
+		outputs: [],
+		heredoc: false,
+		alone: false,
+		piped: false,
+		joined: "start",
+		marker: operator,
+	});
 	const end = (operator: string) => {
 		if (current) {
-			current.alone = current.piped || operator === "|" || operator === "|&" || operator === "&";
+			current.alone = current.piped || operator === "|" || operator === "|&";
 			simples.push(current);
+		}
+		if (operator === "&") {
+			simples.splice(listStart, 0, marker("("));
+			simples.push(marker(")"));
 		}
 		if (current || operator !== "\n") joined = operator === "&&" || operator === "||" ? operator : "start";
 		current = undefined;
 		piped = operator === "|" || operator === "|&";
-		if (operator === "(" || operator === ")")
-			simples.push({
-				words: [],
-				inputs: [],
-				outputs: [],
-				heredoc: false,
-				alone: false,
-				piped: false,
-				joined: "start",
-				marker: operator,
-			});
+		if (operator === "(" || operator === ")") simples.push(marker(operator));
+		if (joined === "start" && operator !== "|" && operator !== "|&" && operator !== ")") listStart = simples.length;
 	};
 	let at = 0;
 	const length = command.length;
@@ -326,12 +333,16 @@ function printed(word: Word): boolean {
 	return word.substituted && word.text.trim() === "";
 }
 
-function changeFolder(cwd: string | null, target: Word | undefined): string | null {
+function changeFolder(cwd: string | null, words: readonly Word[], cdpath: boolean): string | null {
+	let index = 1;
+	while (words[index] && /^-[LPe@]+$/.test((words[index] as Word).text)) index += 1;
+	if (words[index]?.text === "--") index += 1;
+	const target = words[index];
 	if (!target) return HOME;
 	if (!target.literal || target.text === "-") return null;
 	const text = target.text === "~" ? HOME : target.text.replace(/^~\//, `${HOME}/`);
 	if (text.startsWith("/")) return posix.resolve(text);
-	return cwd === null ? null : posix.resolve(cwd, text);
+	return cwd === null || cdpath ? null : posix.resolve(cwd, text);
 }
 
 function stripPrefixes(
@@ -407,13 +418,19 @@ function interpreterScript(
 
 export function cloudCommandScripts(command: string, start: string | null = HOME, nested = false): CloudCommandScripts {
 	const { simples } = lex(command);
-	const outer: (string | null)[] = [];
+	const outer: { cwd: string | null; chain: string | null | undefined }[] = [];
+	const cdpath = /\bCDPATH\b/.test(command);
+	const lastpipe = /\blastpipe\b/.test(command);
 	const files: CloudCommandScriptRun[] = [];
 	const notShown = new Set<string>();
 	const written = new Set<string>();
 	let cwd: string | null = start;
 	let chain: string | null | undefined;
 	let depth = 0;
+	const unsettle = () => {
+		cwd = null;
+		if (chain !== undefined) chain = null;
+	};
 	const run = (word: Word, folder: string | null) => {
 		const located = locate(word, folder);
 		if ("why" in located) {
@@ -427,13 +444,15 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 	};
 	for (const simple of simples) {
 		if (simple.marker === "(") {
-			outer.push(chain === undefined ? cwd : chain);
+			outer.push({ cwd: chain === undefined ? cwd : null, chain });
+			if (chain !== undefined) cwd = chain;
 			chain = undefined;
 			continue;
 		}
 		if (simple.marker === ")") {
-			cwd = outer.length > 0 ? (outer.pop() as string | null) : null;
-			chain = undefined;
+			const saved = outer.pop();
+			cwd = saved ? saved.cwd : null;
+			chain = saved ? saved.chain : undefined;
 			continue;
 		}
 		if (simple.joined === "start") chain = undefined;
@@ -459,8 +478,11 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 			continue;
 		}
 		if (name === "cd") {
-			if (simple.alone) continue;
-			const next = changeFolder(chain === undefined ? cwd : chain, words[1]);
+			if (simple.alone) {
+				if (lastpipe) unsettle();
+				continue;
+			}
+			const next = changeFolder(chain === undefined ? cwd : chain, words, cdpath);
 			if (depth === 0 && simple.joined === "start") cwd = next;
 			else {
 				chain = simple.joined === "||" ? null : next;
@@ -469,7 +491,7 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 			continue;
 		}
 		if (name === "pushd" || name === "popd") {
-			cwd = null;
+			unsettle();
 			continue;
 		}
 		if ((name === "cat" || name === "tee") && simple.heredoc) {
@@ -483,6 +505,7 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 		if (name === "eval") {
 			if (words.slice(1).some(printed))
 				notShown.add("eval runs code another program prints, which the review cannot see");
+			unsettle();
 			continue;
 		}
 		if (name === "source" || name === ".") {
@@ -490,6 +513,7 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 			if (file?.literal && !file.text.includes("/"))
 				notShown.add(`${line(file.text)}: the shell looks it up on its program path first`);
 			else if (file) run(file, folder);
+			unsettle();
 			continue;
 		}
 		const interpreter = interpreterOf(name);
