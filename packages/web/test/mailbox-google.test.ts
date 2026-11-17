@@ -350,6 +350,7 @@ describe("Google mail's states", () => {
 		expect(note?.textContent).toBe("Google asked you to sign in again");
 		expect(texts(card, ".settings-copy small")).toEqual(["Google asked you to sign in again"]);
 		expect(texts(card, ".connection-actions button")).toEqual(["Sign in", "Remove"]);
+		expect(card.querySelector(".mailbox-google-week")).toBeNull();
 		expect(button(card, "Sign in")!.classList.contains("hook-add")).toBe(true);
 		button(card, "Sign in")!.click();
 		await vi.waitFor(() => expect(google.go).toHaveBeenCalledWith(SIGN_IN));

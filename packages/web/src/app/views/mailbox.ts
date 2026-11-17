@@ -2228,14 +2228,15 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 				? t("{name} and {count} more", { name: nameOf(first), count: more.length + 1 })
 				: t("{first} and {second}", { first: nameOf(first), second: nameOf(second) });
 	const google = googleOf(page, hook);
-	const week = google
-		? h(
-				"span",
-				{ class: "mailbox-muted mailbox-google-week" },
-				h("strong", { class: "mailbox-week" }, count(google.lastWeek)),
-				` ${t("in the last 7 days")}`,
-			)
-		: null;
+	const week =
+		google && google.state !== "sign_in_again"
+			? h(
+					"span",
+					{ class: "mailbox-muted mailbox-google-week" },
+					h("strong", { class: "mailbox-week" }, count(google.lastWeek)),
+					` ${t("in the last 7 days")}`,
+				)
+			: null;
 	if (!assigns(page, calls))
 		return h(
 			"div",
