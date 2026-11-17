@@ -54,6 +54,7 @@ export interface GoogleMail {
 
 export interface MailAddress {
 	readonly address: string;
+	readonly hookId?: string;
 	readonly status?: string;
 	readonly handledBy: readonly MailAgent[];
 	readonly routines: readonly { readonly routineId: string; readonly title: string; readonly staffAgentId?: string }[];
@@ -314,6 +315,7 @@ function parseAddress(value: unknown): MailAddress {
 	const item = record(value, "mail address");
 	return {
 		address: nonEmptyString(item.address, "mail address", 320),
+		...(absent(item.hookId) ? {} : { hookId: uuid(item.hookId, "mail address hook") }),
 		...optional("status", shownText(item.status, 64)),
 		handledBy: array(item.handledBy ?? [], "mail address agents").flatMap((entry) => {
 			const found = agent(entry, "mail address agent");

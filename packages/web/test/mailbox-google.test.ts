@@ -36,6 +36,7 @@ afterEach(() => {
 function googleAddress(google: Record<string, unknown>): Record<string, unknown> {
 	return {
 		address: GMAIL,
+		hookId: id(950),
 		status: "active",
 		handledBy: [{ staffAgentId: bo.id, name: "Bo" }],
 		routines: [],
@@ -374,7 +375,8 @@ describe("Google mail's states", () => {
 			fake.addresses[0] = googleAddress({ state: "paused", broughtIn: 10, total: 10, lastWeek: 1 });
 		});
 		button(card(), "Pause")!.click();
-		await vi.waitFor(() => expect(google.pause).toHaveBeenCalledWith(hookIds[0], true));
+		expect(fake.addresses[0]!.hookId).toBe(hookIds[0]);
+		await vi.waitFor(() => expect(google.pause).toHaveBeenCalledWith(fake.addresses[0]!.hookId, true));
 		await vi.waitFor(() => expect(texts(card(), ".connection-actions button")).toEqual(["Resume", "Remove"]));
 		expect(card().querySelector(".hook-state")?.textContent).toBe("Paused");
 		button(card(), "Resume")!.click();

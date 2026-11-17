@@ -2029,10 +2029,14 @@ function startRefusal(error: unknown): string {
 		: t("The sign-in at Google could not be started. Try again.");
 }
 
-function googleOf(page: Page, hook: EventHook): GoogleMail | undefined {
+function addressOf(page: Page, hook: EventHook): MailAddress | undefined {
 	const email = hook.email?.toLowerCase();
 	if (!email) return undefined;
-	return page.company.store.get().mail?.addresses.find((address) => address.address.toLowerCase() === email)?.google;
+	return page.company.store.get().mail?.addresses.find((address) => address.address.toLowerCase() === email);
+}
+
+function googleOf(page: Page, hook: EventHook): GoogleMail | undefined {
+	return addressOf(page, hook)?.google;
 }
 
 function googleState(google: GoogleMail): string | null {
@@ -2063,7 +2067,7 @@ function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAc
 		label: paused ? t("Resume") : t("Pause"),
 		failed: (error) =>
 			refusalOf(error) === "not_allowed" ? t(OWNERS_ONLY) : t("It could not be changed. Try again."),
-		run: () => client.pause(hook.id, !paused),
+		run: () => client.pause(addressOf(page, hook)?.hookId ?? hook.id, !paused),
 	};
 }
 
