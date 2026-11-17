@@ -20,16 +20,16 @@
   "components": {
     "kernel": "4158e01434ed9ca52b1f07866ea91754f129b23929873d31afa08cd7abd96ed5",
     "constitution": "b0cda0c2ab6157cbe80df323c5fa21e7cc3edcc7f989a5ba0c4ad9d9e5aacdf3",
-    "toolCatalog": "f8c0a5ebd1921f3f23cd12a649be4e9b13ed31f7d00b60d5ae67aa00289e4175",
-    "wakeAndSilence": "aa2d7606bc1d7dbeb0520fd14a0ffbd5744de5eec0dc0817cb7ee7d7897b1d8d",
-    "contextComposer": "9b268bcf5903d4de5b51f416e26b6f3cd1107f42f5ac1ee1c12f8cf16e1ec9ef",
-    "providerBootstrap": "3d0a273e734b2e2a4030b1ba4ed39379c01eb0602a522bbff13948ef48ae8cfe",
-    "authorization": "1e988f47a94c6f7674ef0e5c73e33470f43823b5f3589f55ed0fb40bc27ae197",
+    "toolCatalog": "0a3d8e5a2007167b2ce4d18693916f4d0c25c6053f9970c74937c42d50da62a9",
+    "wakeAndSilence": "f3504e8f58469846eda95702b6f703e092590c88e8e8c4862343dc87e28b247a",
+    "contextComposer": "43fe12d71811976f458096f3951d040e0760bf658daa4ad9ec4bb3c1c51ee5b3",
+    "providerBootstrap": "96ca10b2534a15dbc0cc26a7acdf73a3dee1398179bfd236e852434db6536d51",
+    "authorization": "b76c549c558937b81c29b1057d6b9e7c41ff5a2474aa3755905598493d972f18",
     "inboundSafety": "ccb99fa7dc56df615fe7e0f6985ccc8ce32097598d991baadecfb142c24fb0c6",
     "outboundSafety": "0939b3289523ba4b5514df58bae94affedc81eac43004954ac8de7a752fc2951",
     "interactionSurfaces": "6b47b75b3298ce9c3f19b91793b91971885c17dcbd8794e76be4f408e73468cd",
     "workerLifecycle": "edab1332e8fd931ab6b1d7fe1aef9e466ae6d56a5cef8a0a0ba9362a111cc863",
-    "memoryAndSkills": "2046a5640912a13210b8b036464fe9a159783e79bab7fac746c4ab0c08740745"
+    "memoryAndSkills": "ee885c7928163c9266b13681945df8cb0bbeae457ddfd00c04901aae0c239108"
   },
   "implementation": {
     "deploy/claude-box/qorpera-claude-box-ns.apparmor": "600638f776a8d2687b2ceab43ec228bf98c245ade07a691314f6890a2416bddf",
@@ -914,7 +914,7 @@
     "packages/runtime/src/cloud-model-login-vault.ts": "9e3c8f84f61e333509161e8cf6f79d58bf1f839009b4fe6e9d075597a9fa07b6",
     "packages/runtime/src/cloud-native-capture-images.ts": "063fa3a75d4ac35298075795462abdbb0c3820e3ca3506749a278b8fb03cea21",
     "packages/runtime/src/cloud-native-coding-runtime.ts": "5e7407a53c8b9c67f543a648aa5cef2bed800e6b54f3f8825711825ca8d4346a",
-    "packages/runtime/src/cloud-native-company-context.ts": "ba2fd753b1926b8c5f3b0a5e8420b3b6e4c6d0ca79e79c1486ac9860c09dc325",
+    "packages/runtime/src/cloud-native-company-context.ts": "23e2945838b63606e665107c8920a0f82d44f184de2d65e178c2ccdfffcda1a6",
     "packages/runtime/src/cloud-native-company-runner.ts": "ebb0eba266926089470ec0dfe4be5708cf1e906fc6dcca6b721c0834d069e701",
     "packages/runtime/src/cloud-native-company-runtime.ts": "28c9efba7e2c4a96c9e9f8c2ceeaba88fdbb6d0fd1d0fdcba0239fdace372406",
     "packages/runtime/src/cloud-native-context-composition.ts": "df57b657412afa5c0574036591f9e2c3803f01f52b1c97edb6660362853eb7ff",
@@ -974,7 +974,7 @@
     "packages/runtime/src/cloud-vault-capture.ts": "a9b87c056b2c43da223413e7d4c90a0f078d6419c0eeb72bbc2055306987aeb3",
     "packages/runtime/src/cloud-vault-database-failure.ts": "58abc3e1d497ecd7938e2613fd0dc1e5468214aa3f65b74262730c2c52f5b52a",
     "packages/runtime/src/cloud-voice-channel.ts": "1551b4a9f661da6c32a97ff836edbbc73e0c9a1c966301db86276da7f7b9ac0d",
-    "packages/runtime/src/cloud-wake-bus.ts": "41969c37521f165cb7fcf96f15939f1b6ba5fd607484acdb0af928fc34451c1e",
+    "packages/runtime/src/cloud-wake-bus.ts": "6fd9b0809f1f820bb715339b41a1364140fe9598889da9fbdcccd54487f52397",
     "packages/runtime/src/cloud-worker-tools.ts": "bfd00d7f5e4b82e8769634791f5ab0953fe83d86440556c9eddc999cc873e5d0",
     "packages/runtime/src/database-ca.ts": "41f20efb7ea882eebb60fc2c7e4c6a9f35596c8d5746f20e254ec6ec9a1c8f0b",
     "packages/runtime/src/digital-post-letter-files.ts": "5f9bfd3d9fa2b16d47f0c9a18064444a6856a031842dcfbd5fbf9f49dd228b7a",
@@ -2090,6 +2090,7 @@
     "supabase/migrations/20260930789000_home_every_company.sql": "d7298fe4e85158f442f9011f192a85464aff10e9b6c6e39ec5687d80e7eefb66",
     "supabase/migrations/20260930794000_pending_spectators.sql": "fa1b87b2f9f38267c1a1990efd24594e041aa533dae17ac8474028173df2ec6c",
     "supabase/migrations/20260930796000_company_mail_handles_and_unnamed.sql": "ee191f1bc8ddfa84ae82383f263671ec81a52eb020cb7cd7824fa1e98888ae07",
+    "supabase/migrations/20260930798000_coworker_wake_fold.sql": "fe057b51ceb3cabf5d7aa2e5ea56f7e5fa2d60c64d51022bdc4276008490a312",
     "supabase/migrations/20260930801000_member_message_rate_limit_wait.sql": "70f0669fb5de2cd5fc3b59e64109b8e9b9aa05d73860745b662a18cf17514ee1"
   }
 }
