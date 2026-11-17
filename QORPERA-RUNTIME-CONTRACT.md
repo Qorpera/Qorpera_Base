@@ -1878,6 +1878,17 @@ company-visible and answerable:
   asked only when it is sent with `priority: true`; the coworker wake's protocol
   tells the answering agent to send it so. No reply says only received, agreed
   or done. The database's default for an absent `p_priority` stays true.
+- Amendment 2026-11-17 (waiting messages arrive together; migration
+  `20260930798000`). An agent's coworker wakes run one at a time in its own
+  thread. When the run of a coworker wake reads its wake, it takes over the
+  other coworker wakes still queued in that thread with the same payer, made
+  no later than the run, oldest first: each passes its own run's checks, its
+  message is delivered to the run in `heldMessages` in full (12 lines and
+  19200 bytes of shown text at most; the rest wait for the next run) and its
+  wake is cancelled as delivered. A lone message, the send and its receipt
+  are unchanged, and there is no cap on chain depth or message count. A taken
+  message whose run fails is offered again to the agent's next run, as a held
+  note is. A held note is shown up to 1600 bytes and is marked when cut.
 - **One Stop ends the chain** (2026-10-22 amendment, item 4). A member's Stop
   of a run in a conversation (7.3) ends that run's whole chain: every live run
   with the same causal root (the other agent's, the agents' workers'), every
