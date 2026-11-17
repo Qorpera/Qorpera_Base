@@ -405,15 +405,21 @@ select set_config('qorpera_test.g_old_box', (select google.mailbox_id::text from
 	where google.address = 'owner@gmail.com'), true) \g /dev/null
 select set_config('qorpera_test.g_old_hook', (select google.hook_id::text from public.qorpera_google_mailboxes as google
 	where google.address = 'owner@gmail.com'), true) \g /dev/null
+update public.qorpera_event_hooks set removed_at = clock_timestamp() - interval '31 days'
+where id = current_setting('qorpera_test.g_old_hook')::uuid;
 select public.qorpera_purge_event_deliveries(1000) \g /dev/null
 select public.qorpera_claim_company_mail(10, '12970000-0000-4000-8000-000000000c02') \g /dev/null
-select pg_temp.base_assert((select count(*) = 5 from public.qorpera_mail_received as received
+select pg_temp.base_assert(exists (select 1 from public.qorpera_event_hooks as hook
+			where hook.id = current_setting('qorpera_test.g_old_hook')::uuid)
+		and exists (select 1 from public.qorpera_company_mailboxes as mailbox
+			where mailbox.id = current_setting('qorpera_test.g_old_box')::uuid)
+		and (select count(*) = 5 from public.qorpera_mail_received as received
 			join public.qorpera_google_mail_messages as known on known.delivery_id = received.delivery_id
 			where known.address = 'owner@gmail.com')
 		and (select count(*) = 1 from public.qorpera_mail_received as received
 			join public.qorpera_mail_threads as thread on thread.id = received.thread_id
 			where received.received_at < clock_timestamp() - interval '39 days'),
-	'The mail brought in stays after Remove, the purge and the thread clean-up included');
+	'The mail brought in stays after Remove, with its hook and mailbox, past the purge and the thread clean-up');
 insert into public.qorpera_event_deliveries (id, hook_id, profile_id, status, delivery_key, event_type, content_type,
 	headers, body, body_bytes, body_sha256, verified_at, received_at)
 select ('12970000-0000-4000-9000-' || lpad(to_hex(n), 12, '0'))::uuid, current_setting('qorpera_test.g_old_hook')::uuid,
