@@ -27,7 +27,8 @@
   the rest wait for the next run, which takes them the same way. A lone message, the send, its receipt and the
   materializer are unchanged; no cap on chain depth or message count. A taken message whose run fails is offered again
   to the next run, and a Stop withdraws it then, as for a held note. Held notes are now cut at 1600 bytes, not 400
-  characters, and a cut one ends ` … [cut: the full message is in your transcript with this coworker]`. The context
+  characters, and a cut one ends ` … [cut: the full message is in your transcript with this coworker]`; a note of the
+  pair whose transcript the wake shows is left out only when that transcript (400 characters a line) shows it whole. The context
   message's heldMessages line says the list also holds messages that waited for this run. Deploy order: either; the
   payload keeps the shape every live bundle parses (`heldMessages`), so the migration works with the bundles live today
   and the runtime text change needs no migration.
