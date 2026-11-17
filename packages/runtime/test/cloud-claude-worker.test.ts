@@ -174,17 +174,12 @@ describe("what Claude Code is told", () => {
 		]);
 	});
 
-	it("admits Claude Code's own eight tools as the run's catalog, and no tool of Qorpera's", () => {
-		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual([
-			"claude_code_bash",
-			"claude_code_read",
-			"claude_code_edit",
-			"claude_code_write",
-			"claude_code_notebookedit",
-			"claude_code_grep",
-			"claude_code_glob",
-			"claude_code_taskstop",
-		]);
+	it("admits Claude Code's own tools as the run's catalog, and no tool of Qorpera's", () => {
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual(
+			CLAUDE_BOX_TOOLS.map((name) => `claude_code_${name.toLowerCase()}`),
+		);
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toContain("claude_code_task");
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).not.toContain("claude_code_webfetch");
 		for (const tool of CLAUDE_WORKER_CATALOG.tools)
 			expect(tool.inputSchema).toEqual({ type: "object", additionalProperties: false });
 		expect(claudeWorkerSessionId({ model: "claude-sonnet-5-5", sessionId: "abc-1" })).toBe(
@@ -241,7 +236,32 @@ describe("the stream", () => {
 		expect(stream.limit).toBeNull();
 	});
 
-	it("names other tools than the eight, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
+	it("says what each of the box's other tools was asked, in the run's steps", () => {
+		const stream = new ClaudeWorkerStream(() => 0);
+		stream.push(init());
+		const calls: [string, unknown][] = [
+			["Monitor", { command: "tail -f /var/log/app.log\nmore", description: "watch" }],
+			["Monitor", { ws: { url: "wss://example.com/feed" }, description: "feed" }],
+			["Task", { subagent_type: "general-purpose", description: "sort the notes", prompt: "long" }],
+			["WebSearch", { query: "danish vat rules" }],
+			["Skill", { skill: "pdf" }],
+			["TaskCreate", { subject: "s", description: "d" }],
+		];
+		calls.forEach(([name, input], index) => {
+			stream.push(use(`w${index}`, name, input));
+			stream.push(answer(`w${index}`));
+		});
+		expect(stream.steps.map((step) => step.what)).toEqual([
+			"tail -f /var/log/app.log",
+			"wss://example.com/feed",
+			"general-purpose: sort the notes",
+			"danish vat rules",
+			"pdf",
+			"",
+		]);
+	});
+
+	it("names other tools than the box's, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
 		const other = new ClaudeWorkerStream();
 		other.push(init([...CLAUDE_BOX_TOOLS, "WebFetch"]));
 		expect(other.toolsAsAllowed()).toBe(false);

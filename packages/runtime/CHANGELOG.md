@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+- The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure
+  they are running with bypass permissions, and all permissions turned ON"; lanes/agent-box-20261113/harness-permissions/
+  AUDIT.md; the runtime bundle only). `CLAUDE_BOX_TOOLS` goes from 8 to 18: Task (sub-agents), WebSearch, Skill,
+  ToolSearch, TaskCreate/TaskGet/TaskList/TaskUpdate, ReportFindings and Monitor join Bash, Read, Edit, Write,
+  NotebookEdit, Grep, Glob and TaskStop. Kept out, with their reasons in `CLAUDE_BOX_TOOLS_KEPT_OUT`: WebFetch and
+  Workflow (the sign-in), EnterWorktree and ExitWorktree (git inside the box, beside the sign-in, on a repository config
+  the agent controls; `git worktree` works in the agent's own shell), ListAgents and SendMessage (the member's own
+  Claude sessions outside the run), ScheduleWakeup (it keeps Claude Code running after its report) and the three cron
+  tools (a durable job lands in the company folder). Task and WebSearch run on the member's own Claude plan, as the run
+  does, and draw more of it. The run's steps say what Monitor, Task, WebSearch and Skill were asked. Codex's start is
+  unchanged.
 - Release v252 (conversation models GPT-6.1 Sol, Fable 5.2 and Opus 5.5, #1877; the move of all of a member's chats
   waiting on a used-up login, #1876, merged in the release branch; and master since v251): runtime bundle 252
   `ac0e54611d0dbf9ca095972482ebe4ed36ff93c428f019e5a29a513040ceb206` (activation `20260929025299`, previous 251
