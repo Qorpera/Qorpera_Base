@@ -1212,13 +1212,16 @@ describe("a kit's page as a concept", () => {
 		return found !== null && getComputedStyle(found).display !== "none";
 	};
 
-	it.each(KITS)("of %s draws its title block and its own padding when the page is no concept", async (kit) => {
+	it.each(KITS)("of %s keeps its title for screen readers only when the page is no concept", async (kit) => {
 		await open(kit, example(kit));
 		drawFrames(3);
 		const root = document.querySelector("main") as HTMLElement;
 		expect(root.className).not.toContain("--bare");
-		expect(shows(BARE[kit].header)).toBe(true);
+		const header = document.querySelector(BARE[kit].header) as Element;
+		expect(getComputedStyle(header).position).toBe("absolute");
+		expect(getComputedStyle(header).width).toBe("1px");
 		expect(document.querySelector("h1")?.textContent).toBe(titleOf(example(kit)));
+		expect(document.querySelector(BARE[kit].kept)).not.toBeNull();
 	});
 
 	it.each(KITS)("of %s draws no title block when the page is a concept, and keeps what a member does", async (kit) => {

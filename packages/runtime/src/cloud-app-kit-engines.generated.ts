@@ -11,7 +11,7 @@ provisional pictures) until the founder drags them or presses "Try an example".
 Write \`model.json\`. Every number comes from the company's files. What is not known is \`"unknown"\`, never a guess.
 
 - \`lang\` (such as "da"), \`title\` (≤40), \`line\` (≤60), \`unit\`: currency word (≤8, "kr"), \`source\`: optional \`folder:\` or
-  \`https:\` link (↗).
+  \`https:\` link. The page draws none of these three: \`title\` is read only by screen readers.
 - \`words\`: optional, the page's words in the company's language: \`example\`, \`hint\` ("{n}" = count), \`hintLast\`,
   \`assumed\`, \`unknown\`, \`known\`, \`yours\`, \`provisional\`, \`reset\`, \`resetOne\`, \`breakEven\`, \`never\`, \`below\`, \`save\`,
   \`saving\`, \`saved\`, \`error\`, \`empty\`, \`tell\`, \`told\`.
@@ -71,7 +71,7 @@ app folder and are named by their path, such as \`pictures/a.webp\`. Text over i
 ## Top level
 
 - \`lang\`: language code, such as \`"da"\`. \`mode\`: \`"scale"\`, \`"choose"\` or \`"wall"\`.
-- \`title\` (40) and \`line\` (60): the page's name and one quiet line. No other text on the page.
+- \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block. No other text on the page.
 - \`words\`: the page's own words in your language. Keys: \`assumed\`, \`unknown\`, \`notKnown\`, \`all\`, \`close\`, \`source\`,
   \`choose\`, \`recommended\`, \`chosen\`, \`saving\`, \`back\`, \`colours\`, \`type\`, \`film\`, \`previous\`, \`next\`, \`keep\`, \`drop\`, \`empty\`,
   \`tell\`, \`told\`.
@@ -144,7 +144,7 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
 ## Fields
 
 - \`lang\`: language code, such as \`"da"\`.
-- \`title\`: up to 40 characters. \`line\`: one quiet line, up to 60.
+- \`title\`: up to 40 characters. \`line\`: up to 60. Both are read only by screen readers; the page draws no title block.
 - \`words\`: the page's own words in your language: \`known\`, \`assumed\`, \`unknown\`, \`total\` ("in all"), \`noMarks\`,
   \`close\`, \`next\`, \`empty\`, \`tell\`, \`told\`.
 - \`markWord\`: what a mark is called, \`{"one": "source", "many": "sources"}\`.
@@ -229,7 +229,7 @@ its name beside it. Big facts sit under it. You write only \`object.json\` and r
 
 ## Fields
 
-- \`lang\`: such as \`"da"\`. \`title\` up to 60. \`line\` up to 60. \`source\`: a \`folder:\` or \`https:\` link (one quiet ↗).
+- \`lang\`: such as \`"da"\`. \`title\` up to 60 and \`line\` up to 60, read only by screen readers. \`source\`: a \`folder:\` or \`https:\` link, not drawn.
 - \`name\` up to 22: the thing's name on its chip when there are variants.
 - \`turntable\`: \`{"picture", "frames", "columns", "frameWidth", "frameHeight"}\`. Or \`picture\` alone: a still that
   does not turn.
@@ -285,7 +285,7 @@ member runs a finger or the pointer along the curve and the big number follows. 
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`unit\` (8): the unit after the big number, such as \`"kr"\` or \`"orders"\`.
 - \`tone\`: the curve's colour, \`"accent"\` (default), \`"good"\`, \`"warn"\` or \`"bad"\`.
 - \`points\`: 2 to 120 in time order, each \`{"label" (12), "value", "band"}\`:
@@ -301,7 +301,7 @@ member runs a finger or the pointer along the curve and the big number follows. 
 - \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points. Default: the value at now.
 - \`words\`: the page's own words in your language: \`now\`, \`safe\`, \`expected\`, \`assumed\`, \`unknown\`, \`between\`
   ("{low} to {high}"), \`empty\`.
-- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
+- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from. The page does not draw it.
 
 A point's \`value\` and the \`headline\`'s may be live from a company database: \`{"query": "<database>/<question>",
 "params": {}, "column": "balance", "example": 62400}\`. Known once it answers, else not known; \`example\` shows only
@@ -355,7 +355,7 @@ with the answer, as in the chat: act on it, then write \`answer\` into the card,
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`cards\`: up to 24 in order, the most urgent first. A card:
   - \`id\`: letters, digits, \`-\`. \`title\` (48): the question, such as "Pay the parts bill?".
   - \`value\`: the number that matters, such as 4200; or a short text (18), such as "Shop v2". \`unit\` (10): "kr".
@@ -412,7 +412,7 @@ gallery: finished things, framed, with the maker's figure. A member taps a thing
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`unit\` (12): the unit after every thing's number, such as \`"in stock"\`. A thing's own \`unit\` wins.
 - \`things\`: 1 to 8 (6 read best), each:
   - \`id\`: letters, digits, \`-\`. \`name\` (24). \`picture\`: a picture file of the app, such as
@@ -471,7 +471,7 @@ in. You write only \`map.json\`; the page finds each agent's figure, and who wor
 - \`lang\`: language code, such as \`"da"\`.
 - \`top\`: the first layer. \`"reading"\` draws the company's own reading of itself (\`QorperaOS/vision/reading.md\`),
   live: the company's map, which the Co-Founder keeps; save_app adds \`reading\` to the app's reads. Or, for a map of
-  your own area: \`title\` (40), \`line\` (60), \`attention\` (the id of the thing drawn biggest, in the middle) and
+  your own area: \`title\` (40) and \`line\` (60), read only by screen readers, \`attention\` (the id of the thing drawn biggest, in the middle) and
   \`things\`, 3 to 7.
 - \`layers\`: what is inside a thing, by the thing's \`id\` (a reading's thing by its \`key\`): \`line\` (60) and \`things\`,
   1 to 12. A thing of a layer may have a layer of its own: four layers deep and 80 things in all at most. A thing
@@ -542,7 +542,7 @@ the pointer round the ring, or the arrow keys, and the middle follows. You write
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`span\`: \`"year"\` (default), \`"month"\` or \`"week"\`. \`start\`: its first day, \`"YYYY-MM-DD"\`, such as a business year
   from \`"2026-07-01"\`. Without it the ring is the calendar year, month or week (from Monday) of today.
 - \`marks\`: up to 12, each \`{"name" (24), "at": "YYYY-MM-DD"}\`, such as a VAT date or a launch.
@@ -557,7 +557,7 @@ the pointer round the ring, or the arrow keys, and the middle follows. You write
 - \`now\`: optional \`"YYYY-MM-DD"\` that holds the hand still on that day. Leave it out: the hand follows the clock.
 - \`words\`: the page's own words in your language: \`days\`, \`day\`, \`today\`, \`to\` ("to {name}"), \`left\`
   ("left of {name}"), \`ago\` ("{n} days ago"), \`assumed\`, \`unknown\`, \`empty\`.
-- \`source\`: an \`https:\` or \`folder:\` link to where the dates come from (a small ↗).
+- \`source\`: an \`https:\` or \`folder:\` link to where the dates come from. The page does not draw it.
 
 A \`value\` of a mark, a wedge or the \`centre\` may be live from a company database: \`{"query":
 "<database>/<question>", "params": {}, "column": "sales", "example": 3900}\`. Known once it answers, else not known;
@@ -607,7 +607,7 @@ band's, with its share. You write only \`flow.json\`.
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`unit\` (8): the unit after every amount, such as \`"kr"\` or \`"people"\`.
 - \`from\`: where it comes from, 1 or more (24 at most), each \`{"id", "name" (20), "value"}\`: \`id\` letters, digits,
   \`-\`; \`value\` the amount, 0 or more. Leave \`value\` out when nobody knows it: the band is drawn open with "?".
@@ -623,7 +623,7 @@ band's, with its share. You write only \`flow.json\`.
 - \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points, such as what was kept.
 - \`words\`: the page's own words in your language: \`total\` (the big number's label, "in all"), \`other\`, \`rest\`
   ("Not accounted for"), \`assumed\`, \`unknown\`, \`empty\`.
-- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
+- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from. The page does not draw it.
 
 A \`value\` of an end, a link or the \`headline\` may be live from a company database: \`{"query": "<database>/<question>",
 "params": {"month": "2026-11"}, "column": "amount", "example": 182000}\`. Known once it answers, else not known;
@@ -1382,6 +1382,9 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk--bare{padding:clamp(12px,1vw,16px)}
 .mk--bare .mk-title,.mk--bare .mk-line{display:none}
 .mk--bare .mk-head{padding-bottom:0}
+.mk .mk-title,.mk .mk-line{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.mk .mk-head{padding-bottom:0}
+.mk .mk-line .mk-src{display:none}
 .mk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .mk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .mk-err{margin:4px 0 0;font-size:13px;color:var(--q-muted)}
@@ -2937,6 +2940,7 @@ body{margin:0}
 .bk--bare{--pad:clamp(12px,1vw,16px)}
 .bk--bare .bk-titles{display:none}
 .bk--bare .bk-head:not(:has(.bk-chips)){display:none}
+.bk .bk-titles,.bk .bk-head:not(:has(.bk-chips)){position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .bk--bare.bk-choose{padding-top:0}
 .bk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .bk-line{margin:3px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
@@ -3058,7 +3062,6 @@ body{margin:0}
 
 /* choose */
 .bk-choose{padding-top:0;padding-bottom:0;gap:clamp(14px,2.2vh,22px)}
-.bk-choose>.bk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .bk-panels{flex:1 1 auto;display:flex;min-height:480px;margin:0 calc(-1 * var(--pad))}
 .bk-panel,.bk-world{--bg:var(--q-surface);--ink:var(--q-text);--soft:color-mix(in srgb,var(--ink) 66%,var(--bg));--faint:color-mix(in srgb,var(--ink) 12%,transparent)}
 .bk-panel{flex:1 1 0;min-width:0;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:16px;padding:clamp(18px,2.3vw,30px) clamp(18px,2.3vw,30px) 0;background:var(--bg);color:var(--ink);text-align:center;overflow:hidden;transition:flex-grow .65s var(--ease),opacity .45s,filter .45s}
@@ -4922,6 +4925,8 @@ body{margin:0}
 .pk--bare .pk-head{display:none}
 .pk--bare .pk-top:not(:has(.pk-figs)){display:none}
 .pk--bare .pk-top:not(:has(.pk-figs))+.pk-map{margin-top:0}
+.pk .pk-head,.pk .pk-top:not(:has(.pk-figs)){position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.pk .pk-top:not(:has(.pk-figs))+.pk-map{margin-top:0}
 .pk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .pk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .pk-figs{display:flex;gap:clamp(24px,4vw,56px);align-items:flex-start}
@@ -6484,6 +6489,8 @@ body{margin:0}
 .ok-head{position:relative;z-index:2}
 .ok--bare{padding:clamp(12px,1vw,16px)}
 .ok--bare .ok-head{display:none}
+.ok .ok-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ok .ok-head .ok-src{display:none}
 .ok-head h1{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .ok-head p{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ok-src{display:inline-flex;align-items:center;justify-content:center;min-width:28px;min-height:28px;margin:-6px 0 -6px 2px;color:var(--q-muted);text-decoration:none;font-size:14px;border-radius:8px;vertical-align:middle}
@@ -7755,7 +7762,9 @@ body{margin:0}
 .ck-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ck--bare{padding:clamp(12px,1vw,16px)}
 .ck--bare .ck-head{display:none}
-.ck-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.ck .ck-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ck .ck-src{display:none}
+.ck-hero{margin-top:0;min-height:calc(clamp(44px,6vw,80px) + 32px)}
 .ck--bare .ck-hero{margin-top:0}
 .ck-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
 .ck-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
@@ -8454,6 +8463,7 @@ body{margin:0}
 .st-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .st--bare{padding:clamp(12px,1vw,16px)}
 .st--bare .st-head{display:none}
+.st .st-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .st-total{text-align:right}
 .st-total-n{font-size:clamp(30px,3.4vw,44px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
 .st-total-n small{margin-left:.25em;font-size:.48em;font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
@@ -9122,6 +9132,7 @@ body{margin:0}
 .sh-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .sh--bare{padding:clamp(12px,1vw,16px)}
 .sh--bare .sh-head{display:none}
+.sh .sh-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .sh-shelf{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;gap:clamp(28px,5vh,56px);padding:clamp(12px,3vh,36px) 0 clamp(8px,2vh,20px)}
 .sh-row{position:relative;display:grid;grid-template-columns:repeat(var(--sh-cols),minmax(0,var(--sh-w)));justify-content:center;column-gap:clamp(12px,2.4vw,40px)}
 .sh-row.planked::before{content:"";position:absolute;left:max(-16px,calc(var(--sh-pad) * -1));right:max(-16px,calc(var(--sh-pad) * -1));top:var(--sh-scene);height:12px;border-radius:6px;background:color-mix(in srgb,var(--q-text) 11%,var(--q-bg));box-shadow:0 7px 0 -2px color-mix(in srgb,var(--q-text) 6%,var(--q-bg))}
@@ -9775,6 +9786,8 @@ body{margin:0}
 .mp-src{font-size:13px;color:var(--q-muted);text-decoration:none}
 .mp-src:hover{color:var(--q-accent)}
 .mp--bare .mp-head{display:none}
+.mp .mp-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.mp .mp-src{display:none}
 .mp-trail{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;padding:18px 43px 0;font-size:13px;line-height:18px;color:var(--q-muted)}
 .mp-trail[hidden]{display:none}
 .mp .mp-crumb{max-width:24em;padding:2px 6px;margin:0 -2px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -10797,6 +10810,8 @@ body{margin:0}
 .rk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .rk--bare{padding:clamp(12px,1vw,16px)}
 .rk--bare .rk-head{display:none}
+.rk .rk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.rk .rk-src{display:none}
 .rk-stage{position:relative;flex:none;margin:auto;outline:none;touch-action:pan-y;border-radius:50%;cursor:pointer}
 .rk-stage:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
 .rk-stage svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}
@@ -11523,7 +11538,9 @@ body{margin:0}
 .fk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .fk--bare{padding:clamp(12px,1vw,16px)}
 .fk--bare .fk-head{display:none}
-.fk-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.fk .fk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.fk .fk-src{display:none}
+.fk-hero{margin-top:0;min-height:calc(clamp(44px,6vw,80px) + 32px)}
 .fk--bare .fk-hero{margin-top:0}
 .fk-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
 .fk-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}

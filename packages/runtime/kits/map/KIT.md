@@ -10,7 +10,7 @@ in. You write only `map.json`; the page finds each agent's figure, and who works
 - `lang`: language code, such as `"da"`.
 - `top`: the first layer. `"reading"` draws the company's own reading of itself (`QorperaOS/vision/reading.md`),
   live: the company's map, which the Co-Founder keeps; save_app adds `reading` to the app's reads. Or, for a map of
-  your own area: `title` (40), `line` (60), `attention` (the id of the thing drawn biggest, in the middle) and
+  your own area: `title` (40) and `line` (60), read only by screen readers, `attention` (the id of the thing drawn biggest, in the middle) and
   `things`, 3 to 7.
 - `layers`: what is inside a thing, by the thing's `id` (a reading's thing by its `key`): `line` (60) and `things`,
   1 to 12. A thing of a layer may have a layer of its own: four layers deep and 80 things in all at most. A thing

@@ -107,6 +107,8 @@ body{margin:0}
 .mp-src{font-size:13px;color:var(--q-muted);text-decoration:none}
 .mp-src:hover{color:var(--q-accent)}
 .mp--bare .mp-head{display:none}
+.mp .mp-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.mp .mp-src{display:none}
 .mp-trail{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;padding:18px 43px 0;font-size:13px;line-height:18px;color:var(--q-muted)}
 .mp-trail[hidden]{display:none}
 .mp .mp-crumb{max-width:24em;padding:2px 6px;margin:0 -2px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

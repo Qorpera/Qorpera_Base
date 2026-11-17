@@ -7,7 +7,7 @@ provisional pictures) until the founder drags them or presses "Try an example".
 Write `model.json`. Every number comes from the company's files. What is not known is `"unknown"`, never a guess.
 
 - `lang` (such as "da"), `title` (≤40), `line` (≤60), `unit`: currency word (≤8, "kr"), `source`: optional `folder:` or
-  `https:` link (↗).
+  `https:` link. The page draws none of these three: `title` is read only by screen readers.
 - `words`: optional, the page's words in the company's language: `example`, `hint` ("{n}" = count), `hintLast`,
   `assumed`, `unknown`, `known`, `yours`, `provisional`, `reset`, `resetOne`, `breakEven`, `never`, `below`, `save`,
   `saving`, `saved`, `error`, `empty`, `tell`, `told`.

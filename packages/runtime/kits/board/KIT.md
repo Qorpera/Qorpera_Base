@@ -6,7 +6,7 @@ app folder and are named by their path, such as `pictures/a.webp`. Text over its
 ## Top level
 
 - `lang`: language code, such as `"da"`. `mode`: `"scale"`, `"choose"` or `"wall"`.
-- `title` (40) and `line` (60): the page's name and one quiet line. No other text on the page.
+- `title` (40) and `line` (60): read only by screen readers; the page draws no title block. No other text on the page.
 - `words`: the page's own words in your language. Keys: `assumed`, `unknown`, `notKnown`, `all`, `close`, `source`,
   `choose`, `recommended`, `chosen`, `saving`, `back`, `colours`, `type`, `film`, `previous`, `next`, `keep`, `drop`, `empty`,
   `tell`, `told`.
