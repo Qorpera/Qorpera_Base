@@ -542,7 +542,8 @@ export function createWebConnectors(
 				answer.value && typeof answer.value === "object" ? (answer.value as Record<string, unknown>) : {};
 			if (answer.status !== 200 || value.schema !== "qorpera.cloud-connector-oauth-confirmed/v1") {
 				const reason = typeof value.reason === "string" ? value.reason : "provider_error";
-				throw Object.assign(new Error("The sign-in could not be finished."), { reason });
+				const address = typeof value.address === "string" && value.address ? { address: value.address } : {};
+				throw Object.assign(new Error("The sign-in could not be finished."), { reason, ...address });
 			}
 			return typeof value.accountLabel === "string" ? value.accountLabel : null;
 		},

@@ -1934,7 +1934,6 @@ const GOOGLE_REFUSALS = [
 	"browser_mismatch",
 	"state_unknown",
 ] as const;
-const SIGNING_IN_AGAIN = "qorpera.google-mailbox-sign-in-again.v1";
 const OWNERS_ONLY = "Only founders and admins can add, pause or remove them.";
 
 function refusalOf(error: unknown): string | undefined {
@@ -1945,15 +1944,9 @@ function refusalOf(error: unknown): string | undefined {
 	return GOOGLE_REFUSALS.find((code) => said.includes(code)) ?? (error.code === "42501" ? "not_allowed" : undefined);
 }
 
-function signingInAgain(address: string | null): string | undefined {
-	try {
-		const before = sessionStorage.getItem(SIGNING_IN_AGAIN) ?? undefined;
-		if (address) sessionStorage.setItem(SIGNING_IN_AGAIN, address);
-		else sessionStorage.removeItem(SIGNING_IN_AGAIN);
-		return before;
-	} catch {
-		return undefined;
-	}
+function refusedAddress(error: unknown): string | undefined {
+	const address = (error as { address?: unknown } | undefined)?.address;
+	return typeof address === "string" && address ? address : undefined;
 }
 
 function googleRefusal(reason: unknown, expected?: string): string {
@@ -1984,7 +1977,6 @@ async function finishGoogle(page: Page): Promise<void> {
 	const google = page.options.manage ? manageOf(page)?.calls.google : undefined;
 	if (!outcome || !google) return;
 	googleReturn = undefined;
-	const expected = signingInAgain(null);
 	const { company, ui } = page;
 	ui.open = null;
 	ui.letter = null;
@@ -1999,7 +1991,7 @@ async function finishGoogle(page: Page): Promise<void> {
 		if (company.signal.aborted) return;
 		ui.tab = "addresses";
 		ui.google = "open";
-		ui.googleError = googleRefusal(refusalOf(error), expected);
+		ui.googleError = googleRefusal(refusalOf(error), refusedAddress(error));
 	}
 	page.redraw();
 	await CompanyMail.of(company)?.reread();
@@ -2010,7 +2002,6 @@ async function startGoogle(page: Page, google: GoogleMailboxCalls): Promise<void
 	ui.google = "starting";
 	ui.googleError = null;
 	page.redraw("google-sign-in");
-	signingInAgain(null);
 	try {
 		const url = await google.begin(company.signal);
 		if (company.signal.aborted) return;
@@ -2057,9 +2048,7 @@ function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAc
 			failed: startRefusal,
 			run: async (signal) => {
 				const url = await client.begin(signal, addressOf(page, hook)?.hookId ?? hook.id);
-				if (signal.aborted || !hook.email) return;
-				signingInAgain(hook.email);
-				client.go(url);
+				if (!signal.aborted) client.go(url);
 			},
 		};
 	const paused = google.state === "paused";

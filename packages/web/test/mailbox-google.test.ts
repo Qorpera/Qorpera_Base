@@ -14,6 +14,7 @@ import { ADDRESS, accountsFake, ada, bo, cofounder, type MailFake, mailFake, sum
 
 const GMAIL = "hello@saml-bands.example";
 const SIGN_IN = "https://accounts.google.com/o/oauth2/v2/auth?state=abc";
+let finishing: () => Promise<unknown> = async () => GMAIL;
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -25,6 +26,7 @@ beforeEach(() => {
 afterEach(() => {
 	for (const dispose of cleanup.splice(0).reverse()) dispose();
 	noteGoogleMailReturn(undefined);
+	finishing = async () => GMAIL;
 	sessionStorage.clear();
 	document.body.replaceChildren();
 	location.hash = "";
@@ -102,7 +104,7 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 		},
 		google: {
 			begin: vi.fn(async () => SIGN_IN),
-			finish: vi.fn(async () => GMAIL),
+			finish: vi.fn(() => finishing()),
 			pause: vi.fn(async () => {}),
 			go: vi.fn(),
 		},
@@ -264,20 +266,25 @@ describe("coming back from Google", () => {
 		document.body.replaceChildren();
 	};
 
-	it("names the address to sign in with when Google was signed in with another account", async () => {
-		const first = await mailbox((mail) => {
-			mail.addresses.unshift(googleAddress({ state: "sign_in_again", broughtIn: 10, total: 10, lastWeek: 1 }));
-		});
-		await addresses(first.main, 2);
-		button(cardOf(first.main, first.hookIds[0]!)!, "Sign in")!.click();
-		await vi.waitFor(() => expect(first.google.go).toHaveBeenCalledWith(SIGN_IN));
-		close();
-		noteGoogleMailReturn(outcome({ connection: "failed", reason: "wrong_account" }));
-		const { main } = await mailbox((mail) => {
-			mail.addresses.unshift(googleAddress({ state: "sign_in_again", broughtIn: 10, total: 10, lastWeek: 1 }));
-		});
-		await vi.waitFor(() => expect(refusal(main)).toBe(`Sign in with ${GMAIL}.`));
-		expect(sessionStorage.length).toBe(0);
+	it("says the broker's confirm refusals, wrong_account with the address the answer names", async () => {
+		const cases: [Record<string, unknown>, string][] = [
+			[{ reason: "wrong_account", address: GMAIL }, `Sign in with ${GMAIL}.`],
+			[{ reason: "wrong_account" }, "Sign in with the Google account this address belongs to."],
+			[{ reason: "address_taken" }, "This address is already brought in by another company."],
+		];
+		for (const [answer, words] of cases) {
+			finishing = async () => {
+				throw Object.assign(new Error("The sign-in could not be finished."), answer);
+			};
+			noteGoogleMailReturn(outcome());
+			const { main, google } = await mailbox((mail) => {
+				mail.addresses.unshift(googleAddress({ state: "sign_in_again", broughtIn: 10, total: 10, lastWeek: 1 }));
+			});
+			await vi.waitFor(() => expect(refusal(main)).toBe(words));
+			expect(google.finish).toHaveBeenCalledTimes(1);
+			expect(main.querySelector('.mailbox-tab[aria-selected="true"]')?.textContent).toBe("Addresses");
+			close();
+		}
 	});
 
 	it("says each of the broker's refusals in the Mailbox's words", async () => {

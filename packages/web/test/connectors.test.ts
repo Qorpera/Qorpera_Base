@@ -246,6 +246,31 @@ describe("connector client", () => {
 				refused,
 			).finishSignIn(outcome!),
 		).rejects.toMatchObject({ reason: "browser_mismatch" });
+		startedHere("gmail");
+		history.replaceState(
+			null,
+			"",
+			`#/c/${id(10)}/i/mailbox?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`,
+		);
+		const mailboxReturn = takeConnectorReturn();
+		const wrongAccount = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json(
+				{
+					schema: "qorpera.cloud-connector-oauth-failed/v1",
+					reason: "wrong_account",
+					address: "hello@saml-bands.example",
+					message: "Sign in with hello@saml-bands.example.",
+				},
+				{ status: 403 },
+			),
+		);
+		await expect(
+			createWebConnectors(
+				cloudWith(() => null),
+				profile,
+				wrongAccount,
+			).finishSignIn(mailboxReturn!),
+		).rejects.toMatchObject({ reason: "wrong_account", address: "hello@saml-bands.example" });
 		// Another company's page never finishes this company's sign-in.
 		await expect(
 			createWebConnectors(
