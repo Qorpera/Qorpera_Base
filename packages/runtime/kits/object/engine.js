@@ -65,7 +65,7 @@ body{margin:0}
 .ok-head{position:relative;z-index:2}
 .ok--bare{padding:clamp(12px,1vw,16px)}
 .ok--bare .ok-head{display:none}
-.ok .ok-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ok .ok-head h1{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .ok .ok-head .ok-src{display:none}
 .ok-head h1{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .ok-head p{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}

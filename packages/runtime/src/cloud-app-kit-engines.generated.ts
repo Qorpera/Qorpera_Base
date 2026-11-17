@@ -11,7 +11,7 @@ provisional pictures) until the founder drags them or presses "Try an example".
 Write \`model.json\`. Every number comes from the company's files. What is not known is \`"unknown"\`, never a guess.
 
 - \`lang\` (such as "da"), \`title\` (≤40), \`line\` (≤60), \`unit\`: currency word (≤8, "kr"), \`source\`: optional \`folder:\` or
-  \`https:\` link. The page draws none of these three: \`title\` is read only by screen readers.
+  \`https:\` link. \`title\` and \`line\` are read only by screen readers; \`source\` is not drawn.
 - \`words\`: optional, the page's words in the company's language: \`example\`, \`hint\` ("{n}" = count), \`hintLast\`,
   \`assumed\`, \`unknown\`, \`known\`, \`yours\`, \`provisional\`, \`reset\`, \`resetOne\`, \`breakEven\`, \`never\`, \`below\`, \`save\`,
   \`saving\`, \`saved\`, \`error\`, \`empty\`, \`tell\`, \`told\`.
@@ -229,7 +229,7 @@ its name beside it. Big facts sit under it. You write only \`object.json\` and r
 
 ## Fields
 
-- \`lang\`: such as \`"da"\`. \`title\` up to 60 and \`line\` up to 60, read only by screen readers. \`source\`: a \`folder:\` or \`https:\` link, not drawn.
+- \`lang\`: such as \`"da"\`. \`title\` up to 60, read only by screen readers. \`line\` up to 60: the one quiet line the page draws, over the thing. \`source\`: a \`folder:\` or \`https:\` link, not drawn.
 - \`name\` up to 22: the thing's name on its chip when there are variants.
 - \`turntable\`: \`{"picture", "frames", "columns", "frameWidth", "frameHeight"}\`. Or \`picture\` alone: a still that
   does not turn.
@@ -471,7 +471,7 @@ in. You write only \`map.json\`; the page finds each agent's figure, and who wor
 - \`lang\`: language code, such as \`"da"\`.
 - \`top\`: the first layer. \`"reading"\` draws the company's own reading of itself (\`QorperaOS/vision/reading.md\`),
   live: the company's map, which the Co-Founder keeps; save_app adds \`reading\` to the app's reads. Or, for a map of
-  your own area: \`title\` (40) and \`line\` (60), read only by screen readers, \`attention\` (the id of the thing drawn biggest, in the middle) and
+  your own area: \`title\` (40) and \`line\` (60), read only by screen readers (a layer's \`line\` is drawn once it is opened), \`attention\` (the id of the thing drawn biggest, in the middle) and
   \`things\`, 3 to 7.
 - \`layers\`: what is inside a thing, by the thing's \`id\` (a reading's thing by its \`key\`): \`line\` (60) and \`things\`,
   1 to 12. A thing of a layer may have a layer of its own: four layers deep and 80 things in all at most. A thing
@@ -6489,7 +6489,7 @@ body{margin:0}
 .ok-head{position:relative;z-index:2}
 .ok--bare{padding:clamp(12px,1vw,16px)}
 .ok--bare .ok-head{display:none}
-.ok .ok-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ok .ok-head h1{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .ok .ok-head .ok-src{display:none}
 .ok-head h1{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .ok-head p{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
@@ -9786,8 +9786,7 @@ body{margin:0}
 .mp-src{font-size:13px;color:var(--q-muted);text-decoration:none}
 .mp-src:hover{color:var(--q-accent)}
 .mp--bare .mp-head{display:none}
-.mp .mp-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.mp .mp-src{display:none}
+.mp.is-rest .mp-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .mp-trail{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;padding:18px 43px 0;font-size:13px;line-height:18px;color:var(--q-muted)}
 .mp-trail[hidden]{display:none}
 .mp .mp-crumb{max-width:24em;padding:2px 6px;margin:0 -2px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -10272,7 +10271,8 @@ body{margin:0}
 		const lang = ui.model.lang;
 		let title = view.layer ? view.layer.title : ui.model.top === "reading" ? w.finding : "";
 		let line = view.layer ? view.layer.line : "";
-		if (standing && standing.stopped && ui.model.top === "reading" && view.depth === 0) {
+		const stopped = !!(standing && standing.stopped && ui.model.top === "reading" && view.depth === 0);
+		if (stopped) {
 			title = standing.since ? fill(w.stood, { time: when(standing.since, lang) }) : w.stoodNow;
 			const member = typeof standing.member === "string" && standing.member ? standing.member.split(/\\s+/)[0] : "";
 			// "Your" only when the reading says the login is the member looking's; another member by name; else no one
@@ -10306,6 +10306,7 @@ body{margin:0}
 			p.src.textContent = \`\${w.source} ↗\`;
 			p.src.hidden = false;
 		} else p.src.hidden = true;
+		ui.root.classList.toggle("is-rest", !stopped && !thing && !source && !!view.layer);
 	}
 
 	function trailEl(view) {

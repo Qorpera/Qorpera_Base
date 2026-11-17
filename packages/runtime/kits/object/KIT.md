@@ -17,7 +17,7 @@ its name beside it. Big facts sit under it. You write only `object.json` and ren
 
 ## Fields
 
-- `lang`: such as `"da"`. `title` up to 60 and `line` up to 60, read only by screen readers. `source`: a `folder:` or `https:` link, not drawn.
+- `lang`: such as `"da"`. `title` up to 60, read only by screen readers. `line` up to 60: the one quiet line the page draws, over the thing. `source`: a `folder:` or `https:` link, not drawn.
 - `name` up to 22: the thing's name on its chip when there are variants.
 - `turntable`: `{"picture", "frames", "columns", "frameWidth", "frameHeight"}`. Or `picture` alone: a still that
   does not turn.
