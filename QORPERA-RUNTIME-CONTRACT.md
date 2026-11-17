@@ -2494,6 +2494,12 @@ member's other login); the 2026-10-04 amendment below settles it.
 > whether or not it works while they are away. See the
 > [light asks amendment](#2026-11-14-amendment-light-asks), item 3.
 
+> **Amended 2026-11-17.** A member's own message that the provider turns
+> away for too many requests, before it took any effect, waits and runs again
+> on the same login instead of failing. See the
+> [member-message amendment](#2026-11-17-amendment-a-members-message-waits-at-a-rate-limit)
+> in section 19.
+
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
 member's ChatGPT Plus or Pro plan pays only for work that member starts, and
@@ -6952,6 +6958,27 @@ worker's run is claimed only by a shared execution host), never before it.
    machine has the home.
 4. **The way back** is one statement, and leaves the listed companies on:
    `update public.qorpera_home_settings set every_company = false where singleton;`
+
+### 2026-11-17 amendment: a member's message waits at a rate limit
+
+> The founder, 17 November 2026, to an item that read "A member's message must never disappear. Fewer notes will make
+> the limit rarer, but your own message still needs a retry or a visible 'didn't go through'": "1-4 straight yes". It
+> builds section 17's "transient rate limiting (retry)" for work a member started, and nothing else: no account
+> cool-down, no cap on turns, no change to claims, routines or file wakes. It goes live with migration `20260930801000`
+> alone.
+
+1. **What waits.** A run a member started (`session_turn`, a member's message in a conversation, or `room_delivery`, a
+   member's post in a room or an agent's thread) that has started, that the native adapter recorded `rate_limited` for
+   on this attempt, and that has had no effect yet (no operation receipt but a cancelled one, no public message, no open
+   proposal), pauses as a run at its usage limit does: `run_paused` marked `pausedFor: "rate_limited"`, the same login
+   and sponsor version, no attempt spent. It comes back after 1, 2, 4, 8 and then 15 minutes for its first to fifth
+   wait, each 0.8 to 1.2 times that at random, never before a reset the provider named (at most 6 hours).
+2. **When it stops waiting.** After its last wait (`rate_limit_waits`, 5, in `qorpera_member_rate_limit_settings`; 0
+   restores the old failure), or once it had an effect, it fails as before and waits for review. Runs no member started
+   fail as before.
+3. **What members read.** A waiting run's activity says `paused_for: "rate_limited"` and is never movable to another
+   login; a usage reading does not end the wait. The recovery read of a failed run says `rate_limited`, so the thread
+   says the provider got too many requests at once and the login is fine, never to check the login.
 
 ## 20. Enforcement matrix
 
