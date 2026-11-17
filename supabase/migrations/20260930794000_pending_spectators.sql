@@ -22,7 +22,8 @@ create function public.qorpera_list_pending_spectators(p_profile_id uuid)
 returns text[] language sql stable security definer set search_path = '' as $$
 	select coalesce(array_agg(pending.email order by pending.created_at, pending.email), '{}')
 	from public.qorpera_pending_spectators as pending
-	where pending.profile_id = p_profile_id and public.qorpera_member_role(p_profile_id) is not null
+	where pending.profile_id = p_profile_id
+		and coalesce(public.qorpera_member_role(p_profile_id)::text, '') in ('owner', 'admin')
 $$;
 
 create function public.qorpera_add_pending_spectators(p_profile_id uuid, p_emails text[])
@@ -31,10 +32,12 @@ begin
 	if auth.role() is distinct from 'authenticated'
 		or coalesce(public.qorpera_member_role(p_profile_id)::text, '') not in ('owner', 'admin') then
 		raise exception 'member management requires full access' using errcode = '42501'; end if;
-	if coalesce(cardinality(p_emails), 0) > 50 then
-		raise exception 'too many spectators at once' using errcode = '22023'; end if;
+	if (select count(*) from (select pending.email from public.qorpera_pending_spectators as pending
+			where pending.profile_id = p_profile_id
+			union select coalesce(lower(btrim(email)), '') from unnest(p_emails) as email) as wanted) > 50 then
+		raise exception 'a company keeps at most 50 spectators to invite' using errcode = '54000'; end if;
 	insert into public.qorpera_pending_spectators(profile_id, email, added_by_user_id)
-	select p_profile_id, lower(btrim(email)), auth.uid() from unnest(p_emails) as email
+	select p_profile_id, coalesce(lower(btrim(email)), ''), auth.uid() from unnest(p_emails) as email
 	on conflict (profile_id, email) do nothing;
 	return public.qorpera_list_pending_spectators(p_profile_id);
 end $$;

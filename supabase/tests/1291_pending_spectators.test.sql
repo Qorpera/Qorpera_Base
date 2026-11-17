@@ -44,15 +44,24 @@ begin
 		and pg_temp.ps_refused(v_outsider, 'select public.qorpera_add_pending_spectators(' || v_profile
 		|| ', array[''x@example.test''])::text', '42501'), 'contributors, viewers and outsiders add none');
 	perform pg_temp.base_assert(pg_temp.ps_refused(v_owner, 'select public.qorpera_add_pending_spectators(' || v_profile
-		|| ', array[''not an email''])::text', '23514'), 'a malformed email is refused');
-	perform pg_temp.base_assert(pg_temp.ps_as(v_member, 'select cardinality(public.qorpera_list_pending_spectators('
-		|| v_profile || '))::text') = '3' and pg_temp.ps_as(v_outsider,
+		|| ', array[''not an email''])::text', '23514') and pg_temp.ps_refused(v_owner,
+		'select public.qorpera_add_pending_spectators(' || v_profile || ', array[null::text])::text', '23514'),
+		'a malformed or missing email is refused');
+	perform pg_temp.base_assert(pg_temp.ps_refused(v_owner, 'select public.qorpera_add_pending_spectators(' || v_profile
+		|| ', (select array_agg(''s'' || n || ''@example.test'') from generate_series(1, 48) as n))::text', '54000'),
+		'a company keeps at most 50 to invite, across calls');
+	perform pg_temp.base_assert(pg_temp.ps_as(v_admin, 'select cardinality(public.qorpera_list_pending_spectators('
+		|| v_profile || '))::text') = '3' and pg_temp.ps_as(v_member,
+		'select cardinality(public.qorpera_list_pending_spectators(' || v_profile || '))::text') = '0'
+		and pg_temp.ps_as(v_viewer, 'select cardinality(public.qorpera_list_pending_spectators(' || v_profile
+		|| '))::text') = '0' and pg_temp.ps_as(v_outsider,
 		'select cardinality(public.qorpera_list_pending_spectators(' || v_profile || '))::text') = '0',
-		'members read the list, outsiders read nothing');
+		'owners and admins read the list, as they read invitations; nobody else does');
 	perform pg_temp.base_assert(pg_temp.ps_refused(v_member, 'select public.qorpera_invite_pending_spectators('
 		|| v_profile || ')::text', '42501') and pg_temp.ps_refused(v_viewer,
-		'select public.qorpera_invite_pending_spectators(' || v_profile || ')::text', '42501'),
-		'only an owner or admin sends the invites');
+		'select public.qorpera_invite_pending_spectators(' || v_profile || ')::text', '42501')
+		and pg_temp.ps_refused(v_outsider, 'select public.qorpera_invite_pending_spectators(' || v_profile
+		|| ')::text', '42501'), 'only an owner or admin sends the invites');
 
 	insert into public.qorpera_company_foundings(profile_id, created_by_user_id, phase, vision_draft)
 	values ('92400000-0000-4000-8000-000000000010', v_owner, 'open', '');
@@ -61,7 +70,9 @@ begin
 		and not exists (select 1 from public.qorpera_profile_invitations where email like '%@example.test'
 			and email in ('mom@example.test', 'dad@example.test', 'gran@example.test')),
 		'nothing is sent while the founding table is open');
-	delete from public.qorpera_company_foundings where profile_id = '92400000-0000-4000-8000-000000000010';
+	update public.qorpera_company_foundings set phase = 'started', started_at = clock_timestamp(), started_revision = 1,
+		start_client_id = '12910000-0000-4000-8000-000000000001', vision_draft = null, started_by_user_id = v_owner
+	where profile_id = '92400000-0000-4000-8000-000000000010';
 
 	perform pg_temp.ps_as(v_owner, 'select public.qorpera_add_pending_spectators(' || v_profile
 		|| ', array[''base-member@example.test''])::text');
