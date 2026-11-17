@@ -221,6 +221,18 @@ describe("the shipped pages (C6a)", () => {
 		missing(main);
 	});
 
+	it("waits while the company cannot be reached, and never calls a page missing for it", () => {
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
+		controller.store.set({ connectionLost: true, team: undefined, staff: [] });
+		const main = h("main");
+		document.body.append(main);
+		renderInterface(main, controller, "members");
+		expect(main.textContent).toBe("Can't reach Qorpera. Trying again…");
+		controller.store.set({ staff: [cofounder, ada], team: { ...team, members: [] } });
+		renderInterface(main, controller, "members");
+		expect(main.textContent).not.toContain("Can't reach Qorpera");
+	});
+
 	it("never shows Pulse, a page that is off, or one whose needs aren't met", () => {
 		const main = h("main");
 		renderInterface(main, company([], { members: 3, pages: pages(true, true) }).controller, "pulse");
