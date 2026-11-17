@@ -233,14 +233,11 @@ describe("putting an app's page together", () => {
 		expect(sent(page.querySelector("audio")?.getAttribute("src"))).toBe("audio/mpeg");
 		// Out of the app's own folder, it stays as written and the frame's policy blocks it.
 		expect(videos[2]?.getAttribute("src")).toBe("../c.mp4");
-		// 60 MiB: read when its element needs it, never with the page.
 		expect(videos[3]?.hasAttribute("src")).toBe(false);
 		expect(videos[3]?.getAttribute("data-qorpera-src")).toBe("film.mp4");
 		expect([...handed.values()].every((blob) => blob.size < 2 * 1024 * 1024)).toBe(true);
-		// A file the folder lacks is named for the frame's console, and its element loads nothing.
 		expect(videos[4]?.hasAttribute("src")).toBe(false);
 		expect(assembled.framed.missing).toEqual(["none.mp4"]);
-		// A change of the large file changes what the frame shows, though the page reads the same.
 		expect(assembled.key).toContain("film.mp4 ");
 	});
 
@@ -264,15 +261,12 @@ describe("putting an app's page together", () => {
 		if (!assembled.ok) throw new Error(assembled.message);
 		const page = new DOMParser().parseFromString(assembled.page, "text/html");
 		const handed = new Map(assembled.framed.files);
-		// The large script comes as a file of its own, not as text in the page.
 		const script = page.querySelector("script");
 		expect(handed.get(script?.getAttribute("src") ?? "")?.type).toBe("text/javascript");
 		expect(handed.get(script?.getAttribute("src") ?? "")?.size).toBeGreaterThan(700_000);
 		expect(page.querySelector("style")?.textContent).toMatch(/url\("qorpera-file-[0-9a-f]{32}-woff2"\)/);
-		// A hidden picture is there for a script to read: it comes with the page, whatever its size.
 		expect(handed.get(page.querySelector("img[hidden]")?.getAttribute("src") ?? "")?.size).toBe(20 * 1024 * 1024);
 		expect(page.querySelectorAll("img:not([hidden])")).toHaveLength(200);
-		// The first 24 pictures come with the page; the rest when they come near the screen.
 		expect(page.querySelectorAll("img:not([hidden])[src]")).toHaveLength(24);
 		expect(page.querySelectorAll("img[data-qorpera-src]")).toHaveLength(176);
 		expect(progress.at(-1)?.[0]).toBe(progress.at(-1)?.[1]);
@@ -308,7 +302,6 @@ describe("putting an app's page together", () => {
 				"apps/fee/engine.js": "window.Video = class {};",
 				"apps/fee/scenes.js": 'V.part("The fee");',
 				"apps/fee/voice/3f0a9c1e.mp4": new Uint8Array([0, 0, 0, 28]),
-				// The second clip is listed in the page and gone from the folder.
 			}) as never,
 			{ path: "apps/fee", entry: "index.html" },
 			new AbortController().signal,
@@ -566,7 +559,6 @@ describe("a page opened from the company folder by itself", () => {
 		for (const method of ["read", "list", "table", "agents", "todos", "query", "answer", "setRow", "tell", "open"])
 			expect((await page.answer({ method, params: { path: "hero.webp" } })).ok, method).toBe(false);
 		expect(f.reads.every((path) => path.startsWith("marketing/jordro/"))).toBe(true);
-		// A page in a folder the platform keeps reads nothing at all.
 		for (const root of ["bank", "QorperaOS/vision"]) {
 			const closed = new PageFiles(f, root, signal);
 			expect((await closed.answer({ method: "file", params: { path: "statement.pdf", base: "" } })).ok).toBe(false);

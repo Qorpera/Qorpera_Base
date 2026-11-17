@@ -83,9 +83,6 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  *   core takes the source path away.
  */
 
-/** A read asks for a window of at most one result's bound, and is shown as much of it as fits one tool result: the
- * result fence (MAX_CLOUD_TOOL_RESULT_BYTES, which the patched Codex pins at 32 KiB) is the real cap, so a window of
- * plain text shows up to about 31 KiB, less where characters need escaping, and the model reads on from nextOffset. */
 const MAX_READ_BYTES = MAX_CLOUD_TOOL_RESULT_BYTES;
 const MAX_WRITE_BYTES = MAX_TOOL_ARGUMENT_BYTES;
 /** A listing (keyholes S2, 12 November 2026) shows at most this many entries a call, one short line each: about as

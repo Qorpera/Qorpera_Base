@@ -1017,8 +1017,6 @@ describe("a folder-v2 company's Company File", () => {
 			["Page", "true"],
 			["Source", "false"],
 		]);
-		// The frame asks for its page once it is ready and loaded, and gets this one, put together as an app's page is,
-		// with one port that reads only the files beside it.
 		const send = vi.spyOn(frame.contentWindow!, "postMessage");
 		ready(frame);
 		frame.dispatchEvent(new Event("load"));
