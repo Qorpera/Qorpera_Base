@@ -22,7 +22,7 @@ export const CLAUDE_REPEAT_COMMAND =
 export const CLAUDE_REPEAT_CHANGE =
 	"When you are woken because it was approved, make that exact change again with the same file tool and the same input. Made unchanged, it is saved without another review.";
 export const CLAUDE_REPEAT_ELSEWHERE =
-	"If it is approved, a follow-up of this worker can do this exact action unchanged without another review; nothing else of this run's work is picked up again.";
+	"If it is approved, it is the agent's to do in its own thread: say in your report exactly what you would have done and where, so it can. Nothing else of this run's work is picked up again.";
 export const CLAUDE_FILE_UNREADABLE =
 	"REVIEW_UNAVAILABLE: This file change could not be read whole for its safety review, so it did not happen. Make it smaller, or in parts.";
 export const CLAUDE_FILE_UNACCOUNTED =

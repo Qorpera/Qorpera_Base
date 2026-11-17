@@ -14,10 +14,12 @@ import {
 	cloudClaudeShellWord,
 	cloudClaudeStatusPacket,
 } from "@qorpera/runtime/cloud-claude-home-review";
+import { parseCloudClaudeShellRequest } from "@qorpera/runtime/cloud-claude-home-shell";
 import {
 	CLAUDE_HOME_REVIEW_HOOK,
 	cloudClaudeHookRealPath,
 	cloudClaudeRipgrepCommand,
+	cloudClaudeShellRequestLine,
 } from "@qorpera/runtime/cloud-claude-home-shell-client";
 import type { CloudCodexHomeAction } from "@qorpera/runtime/cloud-codex-home";
 import { expect, it, vi } from "vitest";
@@ -289,4 +291,25 @@ it("stops at a stream that is not the protocol's", () => {
 	gate.fromMount(u32(0x7fffffff));
 	expect(gate.broken).toBe(true);
 	expect(toHome).toEqual([]);
+});
+
+it("never sends a hook the host cannot read: a change too big to review whole goes as no change, which the host refuses in words", () => {
+	const small = cloudClaudeShellRequestLine({
+		cmd: CLAUDE_HOME_REVIEW_HOOK,
+		cwd: "/company",
+		env: {},
+		hook: writeHook("t", "/company/a.md"),
+	});
+	expect(parseCloudClaudeShellRequest(small.trimEnd())?.hook).toContain("a.md");
+	const escaped = "\u0001".repeat(1024 * 1024);
+	const big = cloudClaudeShellRequestLine({
+		cmd: CLAUDE_HOME_REVIEW_HOOK,
+		cwd: "/company",
+		env: {},
+		hook: writeHook("t", "/company/a.md", escaped),
+	});
+	expect(Buffer.byteLength(big)).toBeLessThan(4 * 1024 * 1024);
+	expect(parseCloudClaudeShellRequest(big.trimEnd())?.hook).toBe("");
+	expect(cloudClaudeFileCall("")).toBeUndefined();
+	expect(CLAUDE_REPEAT_ELSEWHERE).not.toMatch(/without another review/);
 });

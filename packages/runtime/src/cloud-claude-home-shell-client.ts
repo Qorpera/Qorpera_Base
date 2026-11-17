@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 const SOCKET = "/run/qorpera-home/shell.sock";
 export const CLAUDE_HOME_REVIEW_HOOK = "/opt/qorpera/review-hook";
-const HOOK_BYTES = 4 * 1024 * 1024;
+const REQUEST_BYTES = 4 * 1024 * 1024 - 64 * 1024;
 const FORWARDED = [
 	"CLAUDECODE",
 	"CLAUDE_CODE_ENTRYPOINT",
@@ -76,7 +76,7 @@ export function cloudClaudeRipgrepCommand(
 function hookInput(): string {
 	try {
 		const bytes = readFileSync(0);
-		return bytes.length <= HOOK_BYTES ? bytes.toString("utf8") : "";
+		return bytes.length <= REQUEST_BYTES ? bytes.toString("utf8") : "";
 	} catch {
 		return "";
 	}
@@ -110,6 +110,18 @@ export function cloudClaudeHookRealPath(
 	}
 }
 
+export function cloudClaudeShellRequestLine(request: {
+	cmd: string;
+	cwd: string;
+	env: Record<string, string>;
+	hook?: string;
+	real?: string;
+}): string {
+	const line = `${JSON.stringify(request)}\n`;
+	if (request.hook === undefined || Buffer.byteLength(line) <= REQUEST_BYTES) return line;
+	return `${JSON.stringify({ ...request, hook: "" })}\n`;
+}
+
 function main(): void {
 	const hook = process.argv[2] === "--hook" || process.argv[2] === CLAUDE_HOME_REVIEW_HOOK;
 	const cmd = hook
@@ -141,13 +153,13 @@ function main(): void {
 	});
 	socket.on("connect", () =>
 		socket.write(
-			`${JSON.stringify({
+			cloudClaudeShellRequestLine({
 				cmd,
 				cwd,
 				env,
 				...(input === undefined ? {} : { hook: input }),
 				...(realPath === undefined ? {} : { real: realPath }),
-			})}\n`,
+			}),
 		),
 	);
 	socket.setEncoding("utf8");
