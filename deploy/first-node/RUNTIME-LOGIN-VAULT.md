@@ -879,15 +879,17 @@ refused it goes on with the token it holds; it reads a replaced `.credentials.js
   member's key and has the helper run `claude auth status --json` on it in a private folder (`/v1/claude/check`, the
   helper's isolation, Anthropic's sign-in hosts). The helper compares the credentials' bytes and reads `loggedIn` from
   Claude Code's output, nothing else. A changed file is sealed as the next version, a compare-and-swap on the version
-  and envelope the lock was taken on (`qorpera_commit_claude_login_renewal`); anything else is recorded
+  and envelope the check started from (`qorpera_commit_claude_login_renewal`; the lock decides who checks, not who may
+  seal); anything else is recorded
   (`qorpera_release_claude_login_renewal`: `unchanged`, `failed`, `refused`; a `failed` check counts as no check and
   rests the login from 1 minute, doubling to an hour, so a failing login neither blocks the idle pass nor is retried at
   every poll). A changed file is kept even when Claude Code's status run ends badly (its refresh token has already
   rotated). A renewal the database could not save is retried for 100 s, then kept in the vault process and saved before
   that host's next check of the login or its next idle pass. It seals on the base it was taken from even after its
   2-minute lock passed to another host (only one renewal from a refresh token works at Anthropic), and that host's
-  release then answers stale and records no refusal. Only a restart of the vault process before it is saved loses it
-  (the member then signs in again).
+  release then answers stale and records no refusal. It is lost by a restart of the vault process before it is saved,
+  or by that host staying cut off from the database while the other host's checks of the old version are refused twice
+  (about 5 minutes): the member then signs in again.
 - **Signed out:** Claude Code refusing the same version twice, at least 2 minutes apart, signs the login out as the
   member's own sign-out does. A run's open or poll then answers `SIGNED_OUT`; a run already going ends at its token's
   end in Claude Code's words ("their Claude sign-in has ended"); new Claude Code workers are refused at the dispatch.

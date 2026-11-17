@@ -181,6 +181,12 @@ begin
 	c := pg_temp.p_commit(v, 'canary-1287-v3', p_base_version => 1, p_base_sha => pg_temp.p_sha('canary-1287-v1'));
 	perform pg_temp.base_assert(c ->> 'state' = 'stale' and (pg_temp.p_login()).version = 2 and (pg_temp.p_login()).renewal_token is null,
 		'3: a stale base seals nothing: ' || c::text);
+	v2 := pg_temp.p_take('open');
+	c := pg_temp.p_commit(v2, 'canary-1287-v3', p_base_version => 1, p_base_sha => pg_temp.p_sha('canary-1287-v1'),
+		p_token => extensions.gen_random_uuid());
+	perform pg_temp.base_assert(c ->> 'state' = 'stale' and (pg_temp.p_login()).renewal_token = (v2 #>> '{renewal,token}')::uuid,
+		'3: a late commit on an old base leaves another holder''s lock as it is');
+	perform pg_temp.p_release(v2, 'unchanged');
 	perform pg_temp.p_back(interval '130 seconds');
 	v := pg_temp.p_take('poll');
 	v2 := pg_temp.p_release(v, 'unchanged');
