@@ -1185,6 +1185,24 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
 		});
 
+		it("invites the spectators picked in the box once the company is ready, as viewers", async () => {
+			const { api, cloud } = fixture();
+			const solo = soloTable(
+				() => true,
+				() => true,
+			);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			const invited = vi.spyOn(api, "inviteMember").mockResolvedValue({} as never);
+			setFoundingIntent(table, { start: true, spectators: ["mom@example.test"] });
+			open(api);
+			await settle();
+			await settle();
+			await settle();
+			expect(invited).toHaveBeenCalledWith(table, "mom@example.test", "viewer");
+			expect(invited).toHaveBeenCalledTimes(1);
+			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
+		});
+
 		it("offers Open on the same scene once the company is ready, should the way into it not come", async () => {
 			const { api, cloud } = fixture();
 			const solo = soloTable(
@@ -1687,11 +1705,63 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		box.value = "A café with takeaway";
 		box.dispatchEvent(new Event("input"));
 		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
-		expect(start).toHaveBeenCalledWith("A café with takeaway", "start", "");
-		[...container.querySelectorAll<HTMLButtonElement>("button")]
-			.find((item) => item.textContent?.includes("Invite friends"))!
+		expect(start).toHaveBeenCalledWith("A café with takeaway", "start", "", { spectators: [] });
+		hub.dispose();
+	});
+
+	it("invites friends as founders or spectators, and anyone by email as a spectator", async () => {
+		const { api } = fixture();
+		vi.mocked(api.listFriends).mockResolvedValue([
+			{
+				userId: id(950),
+				email: "dag@example.test",
+				displayName: "Dag",
+				status: "accepted",
+				direction: "outgoing",
+				since: "2026-11-01T00:00:00Z",
+			},
+		]);
+		const hub = new HubController(api, me);
+		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue(false);
+		renderNewCompany(hub, container, { userId: me, name: "Anna" });
+		const box = container.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		box.value = "A café with takeaway";
+		box.dispatchEvent(new Event("input"));
+		const invite = container.querySelector<HTMLButtonElement>(".hero-invite")!;
+		invite.click();
+		await settle();
+		const sheet = container.querySelector<HTMLElement>(".hero-invite-sheet")!;
+		expect(sheet.hidden).toBe(false);
+		expect(invite.getAttribute("aria-expanded")).toBe("true");
+		const email = sheet.querySelector<HTMLInputElement>(".hero-invite-email")!;
+		email.value = "Mom@Example.test";
+		[...sheet.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Add as spectator")!
 			.click();
-		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "friends", "");
+		expect(visibleText(sheet)).toContain("mom@example.test");
+		expect(invite.textContent).toContain("1 invited");
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "start", "", {
+			spectators: ["mom@example.test"],
+		});
+		invite.click();
+		const roles = () => [...container.querySelectorAll<HTMLButtonElement>(".hero-invite-role")];
+		roles()
+			.find((item) => item.textContent === "Founder")!
+			.click();
+		expect(
+			roles()
+				.find((item) => item.textContent === "Founder")!
+				.getAttribute("aria-pressed"),
+		).toBe("true");
+		expect(visibleText(container.querySelector(".hero-invite-sheet")!)).toContain(
+			"Builds with you, on their own subscription.",
+		);
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
+		expect(start).toHaveBeenLastCalledWith("A café with takeaway", "friends", "", {
+			founders: [id(950)],
+			spectators: ["mom@example.test"],
+		});
 		hub.dispose();
 	});
 
@@ -1729,11 +1799,23 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		// Once the company is open, both fields are empty for the next one.
 		expect(field.value).toBe("");
 		expect(box.value).toBe("");
-		// A name with no idea, by Invite friends: the name is used, and emptied too.
+		vi.mocked(api.listFriends).mockResolvedValue([
+			{
+				userId: id(950),
+				email: "dag@example.test",
+				displayName: "Dag",
+				status: "accepted",
+				direction: "outgoing",
+				since: "2026-11-01T00:00:00Z",
+			},
+		]);
 		field.value = "Nordlys Kaffe";
-		[...container.querySelectorAll<HTMLButtonElement>("button")]
-			.find((item) => item.textContent?.includes("Invite friends"))!
+		container.querySelector<HTMLButtonElement>(".hero-invite")!.click();
+		await settle();
+		[...container.querySelectorAll<HTMLButtonElement>(".hero-invite-role")]
+			.find((item) => item.textContent === "Founder")!
 			.click();
+		container.querySelector<HTMLFormElement>(".hero-box")!.requestSubmit();
 		await settle();
 		expect(names).toEqual(["Lerværket", "Nordlys Kaffe"]);
 		expect(field.value).toBe("");

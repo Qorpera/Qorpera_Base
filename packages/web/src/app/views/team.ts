@@ -37,7 +37,7 @@ export function roleLabel(role: HostedProfileRole): string {
 		case "contributor":
 			return t("contributor");
 		case "viewer":
-			return t("viewer");
+			return t("spectator");
 		default:
 			return role;
 	}
@@ -159,7 +159,11 @@ export function renderTeam(
 						"div",
 						{ class: "settings-copy" },
 						h("strong", null, member.displayName),
-						h("small", null, member.role === "owner" ? t("Founder") : t("Building")),
+						h(
+							"small",
+							null,
+							member.role === "owner" ? t("Founder") : member.role === "viewer" ? t("Spectator") : t("Building"),
+						),
 					),
 					// A founder steps down on their own while another founder stays.
 					member.userId === company.userId && member.role === "owner" && team.capabilities.leave === true

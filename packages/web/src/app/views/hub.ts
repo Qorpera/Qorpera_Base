@@ -6,7 +6,12 @@ import {
 	type FoundingTableEntry,
 } from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
-import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
+import type {
+	HostedFriend,
+	HostedIncomingProfileInvitation,
+	HostedProfile,
+	HostedProfileRole,
+} from "../../cloud/types.ts";
 import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
@@ -28,8 +33,13 @@ const ROLE_LABELS: Record<HostedProfileRole, string> = {
 	owner: phrase("founder"),
 	admin: phrase("admin"),
 	contributor: phrase("contributor"),
-	viewer: phrase("viewer"),
+	viewer: phrase("spectator"),
 };
+
+export interface Guests {
+	founders?: readonly string[];
+	spectators?: readonly string[];
+}
 
 /** What the new-company box asked for: open the table and start from there, or invite friends first. */
 export type CreationIntent = "start" | "friends";
@@ -38,6 +48,8 @@ export interface CreationOptions {
 	/** The idea: the table's first text, which the founders write on together. */
 	vision?: string;
 	intent?: CreationIntent;
+	founders?: readonly string[];
+	spectators?: readonly string[];
 }
 
 /** A table being opened, kept across a reload so a retry reuses its creation id. */
@@ -249,7 +261,7 @@ export class HubController {
 
 	/** The new-company box: the table opens with the name typed over the box, or else one taken from the idea; the
 	 * founders can change it at the table. True once the table is open. */
-	startFromIdea(idea: string, intent: CreationIntent, name = ""): Promise<boolean> {
+	startFromIdea(idea: string, intent: CreationIntent, name = "", guests: Guests = {}): Promise<boolean> {
 		const vision = idea.trim();
 		// A pasted tab or new line becomes a space, as in a name taken from the idea: the cloud refuses control
 		// characters, and a refused name would stay as the pending creation.
@@ -259,7 +271,16 @@ export class HubController {
 			.trim()
 			.slice(0, FOUNDING_NAME_MAX_CHARACTERS)
 			.trim();
-		return this.createCompany(typed || companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
+		return this.createCompany(typed || companyNameFromIdea(vision), {
+			...(vision ? { vision } : {}),
+			intent,
+			...(guests.founders?.length ? { founders: guests.founders } : {}),
+			...(guests.spectators?.length ? { spectators: guests.spectators } : {}),
+		});
+	}
+
+	async friends(): Promise<HostedFriend[]> {
+		return (await this.#api.listFriends()).filter((friend) => friend.status === "accepted");
 	}
 
 	/** True once the table is open. */
@@ -275,6 +296,8 @@ export class HubController {
 		const wanted: CreationOptions = {
 			...(options.vision ? { vision: options.vision } : {}),
 			...(options.intent ? { intent: options.intent } : {}),
+			...(options.founders?.length ? { founders: options.founders } : {}),
+			...(options.spectators?.length ? { spectators: options.spectators } : {}),
 		};
 		this.store.set({ creating: { name: trimmed, clientCreationId: "", ...wanted }, error: undefined });
 		// Asked every time, never taken from an older read: the cloud may have switched the lobby on or off since.
@@ -336,6 +359,8 @@ export class HubController {
 				...(creation.intent === "friends" ? { friends: true } : {}),
 				...(creation.intent === "start" ? { start: true } : {}),
 				...(pending ? { vision: pending } : {}),
+				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
+				...(creation.spectators?.length ? { spectators: [...creation.spectators] } : {}),
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;

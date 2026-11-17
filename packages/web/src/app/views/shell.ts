@@ -1273,6 +1273,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 	parts.close.hidden = !context.navigation;
 	parts.close.onclick = context.navigation?.toggle ?? null;
+	parts.add.hidden = state.team?.capabilities.write === false;
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 

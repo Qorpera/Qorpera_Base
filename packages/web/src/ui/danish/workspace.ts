@@ -415,7 +415,7 @@ export const WORKSPACE: Record<string, string> = {
 	founder: "stifter",
 	admin: "administrator",
 	contributor: "bidragyder",
-	viewer: "læser",
+	spectator: "tilskuer",
 	"Resume the pending company creation before starting another.":
 		"Gør oprettelsen af den ventende virksomhed færdig, før du starter en ny.",
 	"Creating a company is paused. Try again later.": "Det er sat på pause at oprette virksomheder. Prøv igen senere.",

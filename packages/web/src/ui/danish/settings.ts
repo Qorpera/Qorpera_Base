@@ -164,6 +164,7 @@ export const SETTINGS: Record<string, string> = {
 	"Make someone else a founder before you leave.": "Gør en anden til stifter, før du forlader virksomheden.",
 	"Company setup must finish before you can leave.": "Virksomheden skal være sat op, før du kan forlade den.",
 	Building: "Bygger",
+	Spectator: "Tilskuer",
 	"Remove {name} from {company}?": "Fjern {name} fra {company}?",
 	"{name} was removed.": "{name} blev fjernet.",
 	"Invited · email failed": "Inviteret · e-mail mislykkedes",
