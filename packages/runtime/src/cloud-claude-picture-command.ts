@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { APP_ICONS_FOLDER } from "@qorpera/cloud-client/app-icons";
 import { appPath } from "@qorpera/cloud-client/interface-apps";
@@ -168,7 +169,7 @@ export interface CloudClaudePictures {
 }
 
 export type ClaudePicturePlace =
-	| { readonly real: string; readonly exists: boolean }
+	| { readonly real: string; readonly file: string | null }
 	| "missing"
 	| "folder"
 	| "unresolved"
@@ -218,7 +219,7 @@ export async function runClaudePictureCommand(input: {
 	readonly callId: string;
 	readonly pictures: CloudClaudePictures;
 	readonly home: ClaudePictureHome;
-	readonly written: Set<string>;
+	readonly written: Map<string, string>;
 	readonly signal: AbortSignal;
 }): Promise<ClaudePictureOutcome> {
 	const { call, home, signal } = input;
@@ -230,9 +231,9 @@ export async function runClaudePictureCommand(input: {
 	const real = before.real;
 	const wrong = picturePathRefusal(real, call.path);
 	if (wrong !== undefined) return refused(wrong);
-	if (before.exists && !input.written.has(real))
+	if (before.file !== null && input.written.get(real) !== before.file)
 		return refused(
-			`PICTURE_EXISTS: nothing was made; ${real} is there already, and picture replaces only a picture it saved in this run. Name a new file, or remove the old one first.`,
+			`PICTURE_EXISTS: nothing was made; ${real} is there already, and picture replaces only the very picture it saved there in this run. Name a new file, or remove the old one first.`,
 		);
 	let foreignOwner = false;
 	const inFolder = folderPath(real) as string;
@@ -274,7 +275,7 @@ export async function runClaudePictureCommand(input: {
 		return refused(claudePictureFailureWords(new CloudPictureFailure("too_large")));
 	if (!isCloudPicturePng(made.png)) return refused(claudePictureFailureWords(new CloudPictureFailure("invalid")));
 	const after = await home.place(call.path, signal);
-	if (typeof after === "string" || after.real !== real || after.exists !== before.exists) {
+	if (typeof after === "string" || after.real !== real || after.file !== before.file) {
 		signal.throwIfAborted();
 		return refused(
 			after === "unavailable"
@@ -289,7 +290,7 @@ export async function runClaudePictureCommand(input: {
 			`PICTURE_NOT_SAVED: the picture was made but could not be written to ${real} on this machine; nothing was saved. Run it again into a folder you can write.`,
 		);
 	}
-	input.written.add(real);
+	input.written.set(real, createHash("sha256").update(made.png).digest("hex"));
 	return {
 		out: `Saved a new picture to ${real}: a PNG of ${made.png.byteLength} bytes, made on the member's ChatGPT from your words. Open it with Read and look at it; if it is not what the work needs, run picture again with better words (each picture uses the member's ChatGPT picture allowance).\n`,
 		code: 0,

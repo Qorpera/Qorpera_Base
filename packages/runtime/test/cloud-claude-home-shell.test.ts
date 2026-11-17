@@ -324,7 +324,7 @@ function pictureHome(place = 0, real?: string) {
 			if (place === 0)
 				send({
 					method: "process/output",
-					params: { processId, stream: "stdout", chunk: Buffer.from(`0 ${real ?? argv[4]}`).toString("base64") },
+					params: { processId, stream: "stdout", chunk: Buffer.from(`- ${real ?? argv[4]}`).toString("base64") },
 				});
 			send({ method: "process/exited", params: { processId, exitCode: place } });
 			send({ method: "process/closed", params: { processId } });

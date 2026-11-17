@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { cloudActionEffect, describeCloudAction } from "@qorpera/runtime/cloud-action-review";
 import {
 	CLAUDE_NO_PICTURES,
@@ -129,7 +130,7 @@ function fakeHome(
 			seen.push(`place ${path}`);
 			asked += 1;
 			if (typeof place === "function") return place(path, asked);
-			return place === "ok" ? { real: path, exists: false } : place;
+			return place === "ok" ? { real: path, file: null } : place;
 		},
 		write: async (path, png) => {
 			seen.push(`write ${path}`);
@@ -146,7 +147,7 @@ async function picture(
 	more: {
 		path?: string;
 		review?: (action: CloudCodexHomeAction) => { run: true } | { run: false; text: string };
-		written?: Set<string>;
+		written?: Map<string, string>;
 	} = {},
 ) {
 	const reviewed: CloudCodexHomeAction[] = [];
@@ -164,7 +165,7 @@ async function picture(
 		callId: "claude-picture:s:1",
 		pictures,
 		home,
-		written: more.written ?? new Set(),
+		written: more.written ?? new Map(),
 		signal: new AbortController().signal,
 	});
 	return { outcome, reviewed };
@@ -305,7 +306,7 @@ describe("one picture", () => {
 	it("is checked, reviewed and written at the real place a link leads to, and refused when that is outside", async () => {
 		const into = "/company/apps/shop/pictures/a.png";
 		const owners: string[] = [];
-		const linked = fakeHome(() => ({ real: into, exists: false }));
+		const linked = fakeHome(() => ({ real: into, file: null }));
 		const { outcome, reviewed } = await picture(
 			{
 				make: async () => ({ png: PNG }),
@@ -329,13 +330,13 @@ describe("one picture", () => {
 			made += 1;
 			return { png: PNG };
 		};
-		const outside = await picture({ make }, fakeHome(() => ({ real: "/etc/a.png", exists: false })).home, {
+		const outside = await picture({ make }, fakeHome(() => ({ real: "/etc/a.png", file: null })).home, {
 			path: "/company/mine/p/a.png",
 		});
 		expect(outside.outcome.err).toContain("leads to /etc/a.png on this machine");
 		const icons = await picture(
 			{ make },
-			fakeHome(() => ({ real: "/company/apps/shop/icons/a.png", exists: false })).home,
+			fakeHome(() => ({ real: "/company/apps/shop/icons/a.png", file: null })).home,
 		);
 		expect(icons.outcome.err).toBe(CLAUDE_PICTURE_ICONS);
 		expect(outside.reviewed).toEqual([]);
@@ -343,8 +344,9 @@ describe("one picture", () => {
 	});
 
 	it("replaces only a picture it saved in this run, and saves nothing when the place changed while it was made", async () => {
-		const there = fakeHome(() => ({ real: "/company/designs/chair.png", exists: true }));
-		const written = new Set<string>();
+		const ours = createHash("sha256").update(PNG).digest("hex");
+		const there = fakeHome(() => ({ real: "/company/designs/chair.png", file: ours }));
+		const written = new Map<string, string>();
 		const refused = await picture({ make: async () => ({ png: PNG }) }, there.home, { written });
 		expect(refused.outcome.err).toContain(
 			"PICTURE_EXISTS: nothing was made; /company/designs/chair.png is there already",
@@ -353,17 +355,21 @@ describe("one picture", () => {
 		const fresh = fakeHome();
 		const first = await picture({ make: async () => ({ png: PNG }) }, fresh.home, { written });
 		expect(first.outcome.code).toBe(0);
-		expect([...written]).toEqual(["/company/designs/chair.png"]);
+		expect([...written]).toEqual([["/company/designs/chair.png", ours]]);
 		const again = await picture({ make: async () => ({ png: PNG }) }, there.home, { written });
 		expect(again.outcome.code).toBe(0);
 		expect(there.written).toHaveLength(1);
+		const changed = fakeHome(() => ({ real: "/company/designs/chair.png", file: "f".repeat(64) }));
+		const other = await picture({ make: async () => ({ png: PNG }) }, changed.home, { written });
+		expect(other.outcome.err).toContain("PICTURE_EXISTS");
+		expect(changed.written).toEqual([]);
 		const swapped = fakeHome((path, asked) => ({
 			real: asked === 1 ? path : "/company/elsewhere/a.png",
-			exists: false,
+			file: null,
 		}));
 		const moved = await picture({ make: async () => ({ png: PNG }) }, swapped.home);
 		expect(moved.outcome.err).toContain("PICTURE_PLACE_CHANGED");
-		const appeared = fakeHome((path, asked) => ({ real: path, exists: asked > 1 }));
+		const appeared = fakeHome((path, asked) => ({ real: path, file: asked > 1 ? "e".repeat(64) : null }));
 		const late = await picture({ make: async () => ({ png: PNG }) }, appeared.home);
 		expect(late.outcome.err).toContain("PICTURE_PLACE_CHANGED");
 		expect([...swapped.written, ...appeared.written]).toEqual([]);

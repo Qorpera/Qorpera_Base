@@ -72,7 +72,7 @@ const INITIALIZE_MS = 20_000;
 const PICTURE_PLACE_MS = 30_000;
 const PICTURE_WRITE_MS = 120_000;
 const PICTURE_PLACE =
-	't=$(realpath -m -- "$1") || exit 6; [ -d "$(dirname -- "$t")" ] || exit 3; [ -d "$t" ] && exit 5; [ -e "$t" ] && e=1 || e=0; printf "%s %s" "$e" "$t"';
+	't=$(realpath -m -- "$1") || exit 6; [ -d "$(dirname -- "$t")" ] || exit 3; [ -d "$t" ] && exit 5; h=-; [ -e "$t" ] && h=$(sha256sum < "$t" | cut -c1-64); printf "%s %s" "$h" "$t"';
 
 /** The words a command shows when its home is not there; Claude Code shows them to the model as the command's stderr. */
 export const CLOUD_CLAUDE_SHELL_UNAVAILABLE =
@@ -154,7 +154,7 @@ export class CloudClaudeHomeShell {
 	readonly #pictures?: CloudClaudePictures;
 	#reviews = 0;
 	#pictureCalls = 0;
-	readonly #picturesWritten = new Set<string>();
+	readonly #picturesWritten = new Map<string, string>();
 	readonly #sockets = new Set<Socket>();
 	#server?: Server;
 	#path?: string;
@@ -356,8 +356,10 @@ export class CloudClaudeHomeShell {
 				if (ran?.code === 3) return "missing";
 				if (ran?.code === 5) return "folder";
 				if (ran?.code === 6) return "unresolved";
-				const found = ran?.code === 0 ? /^([01]) (\/[^\0]*)$/.exec(ran.out) : null;
-				return found ? { exists: found[1] === "1", real: found[2] as string } : "unavailable";
+				const found = ran?.code === 0 ? /^(-|[0-9a-f]{64}) (\/[^\0]*)$/.exec(ran.out) : null;
+				return found
+					? { file: found[1] === "-" ? null : (found[1] as string), real: found[2] as string }
+					: "unavailable";
 			},
 			write: async (path, png, signal) => {
 				let channel: Channel;
