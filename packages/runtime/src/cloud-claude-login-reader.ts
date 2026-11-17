@@ -60,6 +60,8 @@ const SCREEN_MS = 20_000;
 const CLAIM_MS = 45_000;
 const POLL_MS = 200;
 const SETTLE_MS = 1_200;
+const SCREEN_LAUNCHES = 3;
+const UNCHECKED = "Couldn't check for a reset right now · try again in a moment";
 const ONBOARDED = '{"hasCompletedOnboarding":true}\n';
 
 interface ClaudeProcess {
@@ -131,39 +133,44 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 		signal: AbortSignal,
 	): Promise<ClaudeResetOutcome> {
 		return this.#withLogin(request.credentials, async (root) => {
-			const run = await this.#launch(
-				root,
-				[`/limit-reset ${CLAUDE_RESET_ARGUMENTS[request.kind]}`],
-				"screen",
-				signal,
-			);
-			const watch = this.#watch(run);
-			try {
-				const shown = await this.#until(
-					watch,
-					(screen) => screen.kind === "confirm" || (screen.kind === "answer" && !!claudeResetAnswer(screen.line)),
-					this.#timings.screenMs,
+			for (let launch = 1; ; launch += 1) {
+				const run = await this.#launch(
+					root,
+					[`/limit-reset ${CLAUDE_RESET_ARGUMENTS[request.kind]}`],
+					"screen",
 					signal,
 				);
-				if (shown?.kind !== "confirm" || shown.reset !== request.kind || !shown.yesFocused)
-					return { outcome: "failed" };
-				await pause(this.#timings.settleMs, signal);
-				const still = watch.screen();
-				if (still?.kind !== "confirm" || still.reset !== request.kind || !still.yesFocused)
-					return { outcome: "failed" };
-				run.child.stdin.write("\r");
-				const answered = await this.#until(
-					watch,
-					(screen) => screen.kind === "answer" && !!claudeResetAnswer(screen.line),
-					this.#timings.claimMs,
-					signal,
-				);
-				const answer = answered?.kind === "answer" ? claudeResetAnswer(answered.line) : undefined;
-				if (answer?.kind === "reset") return { outcome: "reset", left: answer.left };
-				if (answer?.kind === "failed") return { outcome: "failed" };
-				return { outcome: "unconfirmed" };
-			} finally {
-				await run.close();
+				const watch = this.#watch(run);
+				try {
+					const shown = await this.#until(
+						watch,
+						(screen) =>
+							screen.kind === "confirm" ||
+							(screen.kind === "answer" && (!!claudeResetAnswer(screen.line) || screen.line === UNCHECKED)),
+						this.#timings.screenMs,
+						signal,
+					);
+					if (shown?.kind === "answer" && shown.line === UNCHECKED && launch < SCREEN_LAUNCHES) continue;
+					if (shown?.kind !== "confirm" || shown.reset !== request.kind || !shown.yesFocused)
+						return { outcome: "failed" };
+					await pause(this.#timings.settleMs, signal);
+					const still = watch.screen();
+					if (still?.kind !== "confirm" || still.reset !== request.kind || !still.yesFocused)
+						return { outcome: "failed" };
+					run.child.stdin.write("\r");
+					const answered = await this.#until(
+						watch,
+						(screen) => screen.kind === "answer" && !!claudeResetAnswer(screen.line),
+						this.#timings.claimMs,
+						signal,
+					);
+					const answer = answered?.kind === "answer" ? claudeResetAnswer(answered.line) : undefined;
+					if (answer?.kind === "reset") return { outcome: "reset", left: answer.left };
+					if (answer?.kind === "failed") return { outcome: "failed" };
+					return { outcome: "unconfirmed" };
+				} finally {
+					await run.close();
+				}
 			}
 		});
 	}
@@ -189,8 +196,8 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 	async #launch(root: string, args: string[], read: NativeClaudeRead, signal: AbortSignal): Promise<ClaudeProcess> {
 		signal.throwIfAborted();
 		await this.#beforeLaunch?.();
-		const scratchRoot = join(root, `scratch-${randomUUID()}`);
-		for (const path of ["", "workspace", "home", "config", "data", "cache"])
+		const scratchRoot = await mkdtemp(join(root, "s"));
+		for (const path of ["workspace", "home", "config", "data", "cache"])
 			await mkdir(join(scratchRoot, path), { mode: 0o700 });
 		const configDirectory = join(root, "claude");
 		if (this.#isolation) {
@@ -227,7 +234,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 		};
 		const child =
 			read === "screen"
-				? spawn("/usr/bin/script", nativeTerminalCommand(this.#claudePath, args), {
+				? spawn("/usr/bin/script", nativeTerminalCommand("/usr/bin/stty", this.#claudePath, args), {
 						cwd: join(scratchRoot, "workspace"),
 						env: environment,
 						stdio: ["pipe", "pipe", "pipe"],
@@ -358,21 +365,24 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 		kind: ClaudeResetKind | undefined,
 		signal: AbortSignal,
 	): Promise<ClaudeResetScreen | undefined> {
-		const run = await this.#launch(
-			root,
-			[kind ? `/limit-reset ${CLAUDE_RESET_ARGUMENTS[kind]}` : "/limit-reset"],
-			"screen",
-			signal,
-		);
-		try {
-			return await this.#until(
-				this.#watch(run),
-				(screen) => screen.kind !== "answer" || !!claudeResetAnswer(screen.line),
-				this.#timings.screenMs,
+		for (let launch = 1; ; launch += 1) {
+			const run = await this.#launch(
+				root,
+				[kind ? `/limit-reset ${CLAUDE_RESET_ARGUMENTS[kind]}` : "/limit-reset"],
+				"screen",
 				signal,
 			);
-		} finally {
-			await run.close();
+			try {
+				const shown = await this.#until(
+					this.#watch(run),
+					(screen) => screen.kind !== "answer" || !!claudeResetAnswer(screen.line) || screen.line === UNCHECKED,
+					this.#timings.screenMs,
+					signal,
+				);
+				if (shown?.kind !== "answer" || shown.line !== UNCHECKED || launch >= SCREEN_LAUNCHES) return shown;
+			} finally {
+				await run.close();
+			}
 		}
 	}
 

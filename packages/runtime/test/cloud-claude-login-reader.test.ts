@@ -29,7 +29,10 @@ if (args[0] === "-p") {
 	const prompt = args[0];
 	const kind = prompt.split(" ")[1] || "";
 	const draw = (lines) => (lines.some((line) => line.includes("Enter to confirm")) && log("DRAWN confirm " + Date.now()), process.stdout.write("\\x1b[2J\\x1b[H" + ["\\u276f " + prompt, "\\u2500\\u2500\\u2500\\u2500"].concat(lines).join("\\r\\n")));
-	draw(scenario.screens[kind] || ["  \\u23bf  " + scenario.otherwise]);
+	const launches = Number(fs.existsSync(path + ".launches") ? fs.readFileSync(path + ".launches", "utf8") : "0") + 1;
+	fs.writeFileSync(path + ".launches", String(launches));
+	if (launches <= (scenario.uncheckedLaunches || 0)) draw(["  \\u23bf  Couldn't check for a reset right now · try again in a moment"]);
+	else draw(scenario.screens[kind] || ["  \\u23bf  " + scenario.otherwise]);
 	if (scenario.changeAfterMs) setTimeout(() => draw(["  \\u23bf  " + scenario.changeTo]), scenario.changeAfterMs);
 	process.stdin.on("data", (data) => {
 		const text = data.toString();
@@ -144,6 +147,40 @@ describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and p
 		});
 		expect((await log()).filter((line) => line === 'KEY "\\r"')).toHaveLength(1);
 	});
+
+	it("starts Claude Code again while it could not check for a reset yet, and presses no key for it", async () => {
+		const read = await reader({ screens: { "": FULL.full }, uncheckedLaunches: 2 });
+		const result = await read.read.readClaudeLogin(
+			{ credentials, usage: false, resets: true },
+			AbortSignal.timeout(30_000),
+		);
+		expect(result.resets?.entries).toEqual([expect.objectContaining({ kind: "full", left: 3, usable: "now" })]);
+		const lines = await read.log();
+		expect(lines.filter((line) => line === 'ARGS ["/limit-reset"]')).toHaveLength(3);
+		expect(lines.filter((line) => line.startsWith("KEY ") && line !== 'KEY "\\u0003"')).toEqual([]);
+		const reset = await reader({ screens: FULL, answer: "Limits reset · 2 full resets left", uncheckedLaunches: 1 });
+		expect(await reset.read.useClaudeReset({ credentials, kind: "full" }, AbortSignal.timeout(30_000))).toEqual({
+			outcome: "reset",
+			left: 2,
+		});
+		expect((await reset.log()).filter((line) => line === 'ARGS ["/limit-reset full"]')).toHaveLength(2);
+		expect((await reset.log()).filter((line) => line === 'KEY "\\r"')).toHaveLength(1);
+	}, 60_000);
+
+	it("stops after three starts that could not check for a reset: no resets shown, nothing used", async () => {
+		const read = await reader({ screens: FULL, uncheckedLaunches: 9 });
+		const result = await read.read.readClaudeLogin(
+			{ credentials, usage: false, resets: true },
+			AbortSignal.timeout(30_000),
+		);
+		expect(result.resets).toBeNull();
+		expect((await read.log()).filter((line) => line.startsWith("ARGS "))).toHaveLength(3);
+		const reset = await reader({ screens: FULL, uncheckedLaunches: 9 });
+		const outcome = await reset.read.useClaudeReset({ credentials, kind: "full" }, AbortSignal.timeout(30_000));
+		expect(outcome).toEqual({ outcome: "failed" });
+		expect((await reset.log()).filter((line) => line.startsWith("ARGS "))).toHaveLength(3);
+		expect((await reset.log()).filter((line) => line === 'KEY "\\r"')).toEqual([]);
+	}, 60_000);
 
 	it("shows no resets for a screen it does not know", async () => {
 		const { read } = await reader({ screens: {}, otherwise: "A new kind of answer" });

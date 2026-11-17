@@ -1,3 +1,6 @@
+import { mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NATIVE_CHATGPT_PLAN_EGRESS_HOSTS, NATIVE_CODEX_EGRESS_HOSTS } from "@qorpera/runtime/cloud-native-egress";
 import {
 	CHATGPT_PLAN_TOKEN_ENVIRONMENT,
@@ -5,6 +8,7 @@ import {
 	nativeIsolationEgressHosts,
 	nativeIsolationInvocation,
 	nativeTerminalCommand,
+	rootOwnedProgram,
 } from "@qorpera/runtime/cloud-native-isolation";
 import { expect, it } from "vitest";
 
@@ -189,11 +193,31 @@ it("lets a Claude read reach Anthropic's API alone, with its own switches, and d
 	for (const read of ["usage", "screen"] as const)
 		expect(nativeIsolationEgressHosts(undefined, "claude-code", read)).toEqual(["api.anthropic.com"]);
 	expect(() => nativeIsolationInvocation({ ...base, claudeRead: "usage" })).toThrow("A Claude read runs Claude Code");
-	expect(nativeTerminalCommand("/usr/bin/bwrap", ["--x", "it's"])).toEqual([
+	expect(nativeTerminalCommand("/usr/lib/cargo/bin/coreutils/stty", "/usr/bin/bwrap", ["--x", "it's"])).toEqual([
 		"-q",
 		"-e",
 		"-c",
-		`/usr/bin/stty rows ${NATIVE_CLAUDE_TERMINAL.rows} cols ${NATIVE_CLAUDE_TERMINAL.cols} && exec '/usr/bin/bwrap' '--x' 'it'\\''s'`,
+		`'/usr/lib/cargo/bin/coreutils/stty' rows ${NATIVE_CLAUDE_TERMINAL.rows} cols ${NATIVE_CLAUDE_TERMINAL.cols} && exec '/usr/bin/bwrap' '--x' 'it'\\''s'`,
 		"/dev/null",
 	]);
 });
+
+it.runIf(process.platform === "linux")(
+	"runs the root-owned file a program's name leads to, a symlink to a hard-linked binary too",
+	async () => {
+		expect(await rootOwnedProgram("/usr/bin/stty")).toBe(await realpath("/usr/bin/stty"));
+		expect(await rootOwnedProgram("/usr/bin/script")).toBe(await realpath("/usr/bin/script"));
+		await expect(rootOwnedProgram("usr/bin/stty")).rejects.toThrow(
+			"Native isolation requires physical absolute artifacts",
+		);
+		const folder = await mkdtemp(join(tmpdir(), "qorpera-program-"));
+		try {
+			await writeFile(join(folder, "stty"), "", { mode: 0o755 });
+			await symlink(join(folder, "stty"), join(folder, "link"));
+			for (const path of [join(folder, "stty"), join(folder, "link")])
+				await expect(rootOwnedProgram(path)).rejects.toThrow("Unsafe native isolation artifact ownership");
+		} finally {
+			await rm(folder, { recursive: true, force: true });
+		}
+	},
+);

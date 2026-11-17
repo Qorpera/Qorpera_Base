@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
 	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
+	NATIVE_CLAUDE_READ_CONNECTIONS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_EGRESS_HOSTS,
 	startNativeCodexEgress,
@@ -50,6 +51,31 @@ export async function rootOwnedFile(path: string): Promise<void> {
 	}
 }
 
+async function rootOwnedFolders(path: string): Promise<void> {
+	let current = path;
+	while (true) {
+		const metadata = await lstat(current);
+		if (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0 || !metadata.isDirectory())
+			throw new Error("Unsafe native isolation artifact ownership");
+		if (current === "/") break;
+		current = dirname(current);
+	}
+}
+
+/** The file a root-owned program's name leads to, root's and written by no one else, every folder above it root's too.
+ * The caller runs that file, never the name. */
+export async function rootOwnedProgram(path: string): Promise<string> {
+	if (!isAbsolute(path) || path !== resolve(path))
+		throw new Error("Native isolation requires physical absolute artifacts");
+	const real = await realpath(path);
+	const metadata = await lstat(real);
+	// WHY: no single-link check: Ubuntu 26.04's stty is a symlink to one of the uutils binary's many hard links.
+	if (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0 || !metadata.isFile())
+		throw new Error("Unsafe native isolation artifact ownership");
+	await rootOwnedFolders(dirname(real));
+	return real;
+}
+
 /** A folder of this account's own that no one else may enter (also the Claude Code box's check). */
 export async function privateDirectory(path: string): Promise<void> {
 	const metadata = await lstat(path);
@@ -90,14 +116,14 @@ function claudeReadEnvironment(read: NativeClaudeRead | undefined): Record<strin
 	return { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
 }
 
-export function nativeTerminalCommand(program: string, args: readonly string[]): string[] {
+export function nativeTerminalCommand(stty: string, program: string, args: readonly string[]): string[] {
 	const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 	const { rows, cols } = NATIVE_CLAUDE_TERMINAL;
 	return [
 		"-q",
 		"-e",
 		"-c",
-		`/usr/bin/stty rows ${rows} cols ${cols} && exec ${[program, ...args].map(quote).join(" ")}`,
+		`${quote(stty)} rows ${rows} cols ${cols} && exec ${[program, ...args].map(quote).join(" ")}`,
 		"/dev/null",
 	];
 }
@@ -272,11 +298,14 @@ export async function launchIsolatedNativeProcess(options: {
 		"/usr/bin/bwrap",
 		"/usr/bin/node",
 		...(planDirectory ? ["/usr/bin/cat"] : []),
-		...(options.claudeRead === "screen" ? ["/usr/bin/script", "/usr/bin/stty"] : []),
 		options.configuration.entryPoint,
 		options.command,
 	])
 		await rootOwnedFile(file);
+	const terminal =
+		options.claudeRead === "screen"
+			? { script: await rootOwnedProgram("/usr/bin/script"), stty: await rootOwnedProgram("/usr/bin/stty") }
+			: undefined;
 	await privateDirectory(options.scratchRoot);
 	await privateDirectory(options.codexHome);
 	if (planDirectory) await privateDirectory(planDirectory);
@@ -286,6 +315,7 @@ export async function launchIsolatedNativeProcess(options: {
 		root: options.scratchRoot,
 		signal: options.signal,
 		hosts: nativeIsolationEgressHosts(plan, options.harness, options.claudeRead),
+		...(options.claudeRead ? { connections: NATIVE_CLAUDE_READ_CONNECTIONS } : {}),
 	});
 	let child: ChildProcessWithoutNullStreams | undefined;
 	try {
@@ -305,20 +335,19 @@ export async function launchIsolatedNativeProcess(options: {
 		}
 		const invocation = nativeIsolationInvocation({ ...options, relayPath: relay.path });
 		options.signal.throwIfAborted();
-		child =
-			options.claudeRead === "screen"
-				? spawn("/usr/bin/script", nativeTerminalCommand("/usr/bin/bwrap", invocation.args), {
-						cwd: options.scratchRoot,
-						env: { ...invocation.environment, SHELL: "/bin/sh" },
-						stdio: ["pipe", "pipe", "pipe"],
-						detached: true,
-					})
-				: spawn("/usr/bin/bwrap", invocation.args, {
-						cwd: options.scratchRoot,
-						env: invocation.environment,
-						stdio: ["pipe", "pipe", "pipe"],
-						detached: true,
-					});
+		child = terminal
+			? spawn(terminal.script, nativeTerminalCommand(terminal.stty, "/usr/bin/bwrap", invocation.args), {
+					cwd: options.scratchRoot,
+					env: { ...invocation.environment, SHELL: "/bin/sh" },
+					stdio: ["pipe", "pipe", "pipe"],
+					detached: true,
+				})
+			: spawn("/usr/bin/bwrap", invocation.args, {
+					cwd: options.scratchRoot,
+					env: invocation.environment,
+					stdio: ["pipe", "pipe", "pipe"],
+					detached: true,
+				});
 		const launched = child;
 		// Killing the namespace's init removes descendants, including processes
 		// that called setsid. The unit's cgroup is a second kill/resource boundary.
