@@ -186,7 +186,7 @@ describe("Mail at Google under Addresses", () => {
 		button(googleRow(main)!, "Connect Google")!.click();
 		button(googleRow(main)!, "Sign in at Google")!.click();
 		await vi.waitFor(() => expect(google.go).toHaveBeenCalledWith(SIGN_IN));
-		expect(google.begin).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(google.begin).mock.calls).toEqual([[expect.any(AbortSignal)]]);
 	});
 
 	it("says so when the sign-in cannot be started", async () => {
@@ -449,7 +449,7 @@ describe("Google mail's states", () => {
 		expect(button(card, "Sign in")!.classList.contains("hook-add")).toBe(true);
 		button(card, "Sign in")!.click();
 		await vi.waitFor(() => expect(google.go).toHaveBeenCalledWith(SIGN_IN));
-		expect(google.begin).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(google.begin).mock.calls).toEqual([[expect.any(AbortSignal), hookIds[0]]]);
 		expect(google.pause).not.toHaveBeenCalled();
 	});
 

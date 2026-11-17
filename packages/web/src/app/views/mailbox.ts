@@ -390,7 +390,7 @@ function pastedRecipients(text: string): string[] {
 }
 
 export interface GoogleMailboxCalls {
-	readonly begin: (signal: AbortSignal) => Promise<string>;
+	readonly begin: (signal: AbortSignal, mailboxId?: string) => Promise<string>;
 	readonly finish: (outcome: HostedConnectorReturn, signal: AbortSignal) => Promise<unknown>;
 	readonly pause: (mailboxId: string, paused: boolean) => Promise<void>;
 	readonly go: (url: string) => void;
@@ -2056,7 +2056,7 @@ function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAc
 			pill: true,
 			failed: startRefusal,
 			run: async (signal) => {
-				const url = await client.begin(signal);
+				const url = await client.begin(signal, addressOf(page, hook)?.hookId ?? hook.id);
 				if (signal.aborted || !hook.email) return;
 				signingInAgain(hook.email);
 				client.go(url);

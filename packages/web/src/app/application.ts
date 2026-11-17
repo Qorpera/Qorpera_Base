@@ -2375,7 +2375,7 @@ export function mountApplication(
 							),
 							accounts: (signal) => accounts.listConnections(signal),
 							google: {
-								begin: (signal) => connectors.beginMailboxSignIn(signal),
+								begin: (signal, mailboxId) => connectors.beginMailboxSignIn(signal, mailboxId),
 								finish: (outcome, signal) => connectors.finishSignIn(outcome, signal),
 								pause: (mailboxId, paused) => pauseGoogleMailbox(cloud, mailboxId, paused),
 								go: (url) => location.assign(url),

@@ -152,10 +152,18 @@ describe("connector client", () => {
 				expiresAt: timestamp,
 			}),
 		);
-		const url = await createWebConnectors(cloud, profile, fetch).beginMailboxSignIn();
+		const connectors = createWebConnectors(cloud, profile, fetch);
+		const url = await connectors.beginMailboxSignIn();
 		expect(url).toBe(`https://accounts.google.com/o/oauth2/v2/auth?state=${id(10)}.abc`);
 		expect(cloud.rpc).toHaveBeenCalledTimes(1);
 		expect(cloud.rpc).toHaveBeenCalledWith("qorpera_begin_google_mailbox", { p_environment_id: id(11) });
+		await connectors.beginMailboxSignIn(undefined, id(950));
+		expect(cloud.rpc).toHaveBeenLastCalledWith("qorpera_begin_google_mailbox", {
+			p_environment_id: id(11),
+			p_mailbox_id: id(950),
+		});
+		await expect(connectors.beginMailboxSignIn(undefined, "not-a-mailbox")).rejects.toThrow("Invalid mailbox.");
+		expect(cloud.rpc).toHaveBeenCalledTimes(2);
 		expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/oauth/${id(20)}/start?company=${id(10)}`);
 		const body = JSON.parse(String(fetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
 		expect(body).toMatchObject({

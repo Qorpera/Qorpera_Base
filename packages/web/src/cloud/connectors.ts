@@ -413,7 +413,7 @@ export interface WebConnectors {
 		/** The bank the member picked: required for the bank, and only for it. */
 		bank?: WebBankChoice,
 	): Promise<string>;
-	beginMailboxSignIn(signal?: AbortSignal): Promise<string>;
+	beginMailboxSignIn(signal?: AbortSignal, mailboxId?: string): Promise<string>;
 	/** Finishes a sign-in this tab started: the broker seals the account only
 	 * for the browser that holds the proof. Resolves to the account label. */
 	finishSignIn(outcome: HostedConnectorReturn, signal?: AbortSignal): Promise<string | null>;
@@ -509,10 +509,14 @@ export function createWebConnectors(
 			const returnTo = `${location.origin}/${location.hash}`;
 			return start(connectorId, await ticket(connectorId, existingSecretId), returnTo, signal, bank);
 		},
-		async beginMailboxSignIn(signal) {
+		async beginMailboxSignIn(signal, mailboxId) {
+			if (mailboxId !== undefined && !UUID_PATTERN.test(mailboxId)) throw new Error("Invalid mailbox.");
 			const returnTo = `${location.origin}/${location.hash}`;
 			const issued = parseTicket(
-				await cloud.rpc("qorpera_begin_google_mailbox", { p_environment_id: profile.environmentId }),
+				await cloud.rpc("qorpera_begin_google_mailbox", {
+					p_environment_id: profile.environmentId,
+					...(mailboxId === undefined ? {} : { p_mailbox_id: mailboxId }),
+				}),
 			);
 			return start("gmail", issued, returnTo, signal);
 		},
