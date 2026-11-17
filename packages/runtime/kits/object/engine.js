@@ -26,11 +26,27 @@
 		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
 		tell: "",
 		told: "",
+		nomodel: "",
 	};
 	const STATES = { known: 1, assumed: 1, unknown: 1 };
 	const SVGNS = "http://www.w3.org/2000/svg";
 	const IDLE_MS = 20000;
 	const TURN_SECONDS = 42; // one slow turn by itself
+	const THREE_FILE = "three.js";
+	const DEG = Math.PI / 180;
+	const OPEN_VIEW = { yaw: 30, pitch: 14 };
+	const TILT = [-6 * DEG, 52 * DEG];
+	const ZOOM = [0.8, 2.2];
+	const NOMODEL = {
+		en: "The model could not be shown.",
+		da: "Modellen kunne ikke vises.",
+		sv: "Modellen kunde inte visas.",
+		nb: "Modellen kunne ikke vises.",
+		de: "Das Modell konnte nicht angezeigt werden.",
+		nl: "Het model kon niet worden getoond.",
+		fr: "Le modèle n’a pas pu être affiché.",
+		es: "No se pudo mostrar el modelo.",
+	};
 
 	// ------------------------------------------------------------------ small helpers
 	const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -164,6 +180,17 @@ body{margin:0}
 .ok.phone .ok-facts{display:grid;grid-template-columns:1fr 1fr;gap:16px 18px;justify-content:stretch}
 .ok.phone .ok-fact{align-items:flex-start;min-width:0}
 .ok.phone .ok-fv{font-size:26px}
+.ok-gl{position:absolute;left:0;top:0;display:block;pointer-events:none;opacity:0;transition:opacity .8s cubic-bezier(.2,.7,.2,1);-webkit-mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent)}
+.ok.near .ok-label,.ok.near .ok-label.off{opacity:0;pointer-events:none}
+.ok.near .ok-lines .lead,.ok.near .ok-lines .halo{visibility:hidden}
+.ok-gl.on{opacity:1}
+.ok.live .ok-object canvas{opacity:0}
+.ok.live .ok-shadow{opacity:0}
+.ok-wait{position:absolute;left:50%;top:50%;width:72px;height:2px;margin:-1px 0 0 -36px;border-radius:2px;overflow:hidden;pointer-events:none;background:color-mix(in srgb,var(--q-text) 9%,transparent);opacity:0;transition:opacity .4s ease}
+.ok-wait.on{opacity:1;transition-delay:.45s}
+.ok-wait::after{content:"";position:absolute;top:0;bottom:0;left:0;width:40%;border-radius:2px;background:color-mix(in srgb,var(--q-text) 34%,transparent);animation:ok-wait 1.4s ease-in-out infinite}
+@keyframes ok-wait{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
+.ok-none{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;padding:0 24px;text-align:center;font-size:15px;line-height:1.45;color:var(--q-muted);pointer-events:none}
 @media (prefers-reduced-motion:reduce){.ok *,.ok *::before,.ok *::after{transition:none!important;animation:none!important}}
 `;
 
@@ -291,6 +318,7 @@ body{margin:0}
 					state,
 					value: state === "unknown" ? "" : cut(p.value, 16),
 					source: link(p.source),
+					node: typeof p.node === "string" && p.node.trim() ? p.node.trim().slice(0, 120) : null,
 					track: Array.isArray(p.track)
 						? p.track.map((t) =>
 								Array.isArray(t) && Number.isFinite(+t[0]) && Number.isFinite(+t[1]) ? [clamp(+t[0], -0.2, 1.2), clamp(+t[1], -0.2, 1.2), +t[2] ? 1 : 0] : [0.5, 0.5, 0],
@@ -309,16 +337,35 @@ body{margin:0}
 				return { label: cut(f.label, 18) || "—", value: state === "unknown" ? "" : cut(f.value, 14), state, source: link(f.source) };
 			});
 	}
+	function fileIn(v, kind) {
+		return typeof v === "string" &&
+			v.length <= 200 &&
+			kind.test(v) &&
+			!/^[a-z][a-z0-9+.-]*:/i.test(v) &&
+			!v.startsWith("/") &&
+			!v.split("/").includes("..") &&
+			!/[\0-\x1f"<>\\]/.test(v)
+			? v
+			: null;
+	}
+	const GLB = /\.glb$/i;
+	function viewOf(v) {
+		const o = v && typeof v === "object" ? v : {};
+		const deg = (x, d) => (x !== null && x !== "" && Number.isFinite(+x) ? +x : d);
+		return { yaw: deg(o.yaw, OPEN_VIEW.yaw) * DEG, pitch: clamp(deg(o.pitch, OPEN_VIEW.pitch) * DEG, TILT[0], TILT[1]) };
+	}
 	function normalize(raw) {
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 		const words = { ...EN };
 		if (raw.words && typeof raw.words === "object") for (const k in EN) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], 40);
 		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(raw.lang) ? raw.lang : D.documentElement.lang || "en";
+		if (!words.nomodel) words.nomodel = NOMODEL[lang.split("-")[0]] || NOMODEL.en;
 		const main = {
 			id: "main",
 			name: cut(raw.name, 22) || cut(raw.title, 22) || "—",
 			line: cut(raw.line, 60),
 			pic: picOf(raw.turntable, raw.picture),
+			model: fileIn(raw.model, GLB),
 			parts: partsOf(raw.parts),
 			facts: factsOf(raw.facts),
 		};
@@ -333,12 +380,21 @@ body{margin:0}
 						name: cut(v.name, 22) || "—",
 						line: cut(v.line, 60) || main.line,
 						pic: picOf(v.turntable, v.picture),
+						model: fileIn(v.model, GLB),
 						parts: Array.isArray(v.parts) ? partsOf(v.parts) : main.parts,
 						facts: Array.isArray(v.facts) ? factsOf(v.facts) : main.facts,
 					});
 				});
-		if (!variants.some((v) => v.pic || v.parts.length || v.facts.length)) return null;
-		return { lang, title: cut(raw.title, 60) || cut(D.title, 60), source: link(raw.source), words, variants };
+		if (!variants.some((v) => v.pic || v.model || v.parts.length || v.facts.length)) return null;
+		return {
+			lang,
+			title: cut(raw.title, 60) || cut(D.title, 60),
+			source: link(raw.source),
+			words,
+			variants,
+			environment: fileIn(raw.environment, /\.hdr$/i),
+			view: viewOf(raw.view),
+		};
 	}
 
 	// ------------------------------------------------------------------ pictures (only those the page named)
@@ -517,17 +573,6 @@ body{margin:0}
 		R.line.replaceChildren(v.line || "");
 		if (d.source) R.line.append("\u00a0", h("a", "ok-src", { href: d.source, title: d.words.source, "aria-label": d.words.source }, "↗"));
 		const pic = v.pic;
-		R.object.classList.toggle("still", !pic?.sheet);
-		if (pic?.sheet) {
-			R.object.setAttribute("role", "slider");
-			R.object.setAttribute("aria-label", d.words.turn);
-			R.object.setAttribute("aria-valuemin", "0");
-			R.object.setAttribute("aria-valuemax", "359");
-		} else {
-			R.object.setAttribute("role", "img");
-			R.object.setAttribute("aria-label", v.name);
-			for (const a of ["aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) R.object.removeAttribute(a);
-		}
 		// labels
 		for (const l of R.labels) l.el.remove();
 		R.lines.replaceChildren();
@@ -588,7 +633,7 @@ body{margin:0}
 				return li;
 			}),
 		);
-		R.hint.classList.toggle("show", !!pic?.sheet && !S.touched);
+		mode();
 		noteFor();
 		R.chips.querySelectorAll(".ok-chip").forEach((b, i) => b.setAttribute("aria-pressed", i === S.vi ? "true" : "false"));
 		if (pic) {
@@ -660,18 +705,19 @@ body{margin:0}
 	function layout() {
 		if (!R || !S.data) return;
 		const v = V();
+		const live = shownRec();
 		const pic = v.pic;
 		const rec = pic ? picture(pic.path) : null;
-		const fw = pic?.fw || 4;
-		const fh = pic?.fh || 3;
+		const fw = live ? live.fit.tx : pic?.fw || 4;
+		const fh = live ? live.fit.ty : pic?.fh || 3;
 		const vw = R.view.clientWidth || R.root.clientWidth;
 		const phone = innerWidth < 700;
 		R.root.classList.toggle("phone", phone);
 		// on a phone the note sits in the flow under the strip of names; on a wide screen it floats over the stage
 		if (phone && R.note.parentNode !== R.root) R.root.insertBefore(R.note, R.below);
 		else if (!phone && R.note.parentNode !== R.view) R.view.append(R.note);
-		const b = rec?.ok && pic.fw ? boundsOf(rec, pic) : null;
-		const ext = b ? Math.max(0.5 - b.left, b.right - 0.5) : 0.5; // half-width of the object, in frame widths
+		const b = !live && rec?.ok && pic.fw ? boundsOf(rec, pic) : null;
+		const ext = live ? live.fit.ext : b ? Math.max(0.5 - b.left, b.right - 0.5) : 0.5;
 		let w;
 		let hgt;
 		if (phone) {
@@ -724,6 +770,10 @@ body{margin:0}
 		R.lines.setAttribute("width", vw);
 		R.lines.setAttribute("height", viewH);
 		R.lines.setAttribute("viewBox", `0 0 ${vw} ${viewH}`);
+		if (live) {
+			size3d(vw, viewH);
+			tint();
+		}
 		placeLabels();
 		S.dirty = true;
 		draw();
@@ -735,7 +785,7 @@ body{margin:0}
 		if (!B || B.phone) return;
 		const items = R.labels;
 		if (!items.length) return;
-		const at0 = (p) => (p.track && p.track.length ? p.track[0] : null);
+		const at0 = (p) => (shownRec() ? liveAt(p) : p.track && p.track.length ? p.track[0] : null);
 		items.forEach((it) => {
 			const t = at0(it.part);
 			it.side = t ? (t[0] < 0.5 ? "l" : "r") : "r";
@@ -852,6 +902,17 @@ body{margin:0}
 	}
 	function draw() {
 		if (!R || !S.box) return;
+		const live = shownRec();
+		if (live) {
+			renderLive(live, performance.now());
+			R.root.classList.toggle("near", G.zoom > 1.2);
+			overlay();
+			const deg = Math.round(mod(G.yaw - S.data.view.yaw, TAU) / DEG) % 360;
+			R.object.setAttribute("aria-valuenow", String(deg));
+			R.object.setAttribute("aria-valuetext", `${deg}°`);
+			S.dirty = false;
+			return;
+		}
 		const ctx = R.ctx;
 		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.globalCompositeOperation = "source-over";
@@ -877,6 +938,13 @@ body{margin:0}
 
 	/** Where a part is at the current angle: [x, y, visibility 0..1] in view pixels. */
 	function where(p) {
+		if (shownRec()) {
+			const n = G.shown && G.shown.nodes.get(p.id);
+			if (!n) return null;
+			const [x, y] = project(n);
+			const inside = x >= 0 && x <= G.w && y >= 28 && y <= G.h - 28;
+			return [x, y, inside ? n.vis * (S.fade ? S.fade.k : 1) : 0];
+		}
 		const tr = p.track;
 		const pic = V().pic;
 		if (!tr || !tr.length || !pic) return null;
@@ -960,6 +1028,10 @@ body{margin:0}
 			last = now;
 			step(now, dt);
 			if (S.dirty) draw();
+			if (asleep()) {
+				S.running = false;
+				return;
+			}
 			requestAnimationFrame(tick);
 		};
 		requestAnimationFrame(tick);
@@ -967,12 +1039,13 @@ body{margin:0}
 	function step(now, dt) {
 		if (!S.data || D.hidden) return;
 		const pic = V().pic;
-		const turning = pic?.sheet;
+		const turning = turnable();
 		if (S.fade) {
 			S.fade.k = clamp((now - S.fade.t0) / 380, 0, 1);
 			if (S.fade.k >= 1) S.fade = null;
 			S.dirty = true;
 		}
+		if (shownRec()) return stepLive(now, dt);
 		if (!turning) return;
 		const n = pic.frames;
 		const idle = now - S.lastTouch > IDLE_MS;
@@ -1064,13 +1137,15 @@ body{margin:0}
 		if (!part) S.sel = null;
 		for (const it of R.labels) it.el.setAttribute("aria-pressed", it.part.id === S.sel ? "true" : "false");
 		R.strip.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.getAttribute("data-id") === S.sel ? "true" : "false"));
-		if (part && turn) {
+		if (part && turn && shownRec()) turnToNode(part);
+		else if (part && turn) {
 			const f = bestFrame(part);
 			if (f != null) turnTo(f);
 		}
 		noteFor();
 		syncLabels();
 		S.dirty = true;
+		loop();
 	}
 	function noteFor() {
 		const d = S.data;
@@ -1124,6 +1199,7 @@ body{margin:0}
 
 	// ------------------------------------------------------------------ hands and keys
 	function down(e) {
+		if (shownRec()) return liveDown(e);
 		if (e.button !== 0 && e.pointerType === "mouse") return;
 		touch();
 		S.drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, a0: S.ang, moved: false, lx: e.clientX, lt: e.timeStamp, v: 0 };
@@ -1131,10 +1207,11 @@ body{margin:0}
 		S.vel = 0;
 	}
 	function move(e) {
+		if (shownRec()) return liveMove(e);
 		const g = S.drag;
 		if (!g || g.id !== e.pointerId) return;
 		const dx = e.clientX - g.x0;
-		const pic = V().pic;
+		const pic = turnable() ? V().pic : null;
 		if (!g.moved) {
 			if (Math.abs(dx) < 6) return;
 			if (Math.abs(e.clientY - g.y0) > Math.abs(dx) && e.pointerType !== "mouse") {
@@ -1162,6 +1239,7 @@ body{margin:0}
 		e.preventDefault();
 	}
 	function up(e) {
+		if (shownRec()) return liveUp(e);
 		const g = S.drag;
 		if (!g || g.id !== e.pointerId) return;
 		S.drag = null;
@@ -1171,6 +1249,7 @@ body{margin:0}
 		if (!calm() && e.timeStamp - g.lt < 90) S.vel = clamp(g.v, -0.05, 0.05);
 	}
 	function cancel(e) {
+		if (shownRec()) return liveCancel(e);
 		if (S.drag && (!e || e.pointerId === S.drag.id)) {
 			S.drag = null;
 			R.object.classList.remove("grab");
@@ -1195,8 +1274,9 @@ body{margin:0}
 		else if (S.sel) select(null);
 	}
 	function key(e) {
+		if (shownRec()) return liveKey(e);
 		const pic = V().pic;
-		if (!pic?.sheet) return;
+		if (!turnable()) return;
 		const step = Math.max(1, Math.round(pic.frames / 24));
 		let target = null;
 		if (e.key === "ArrowRight" || e.key === "ArrowUp") target = Math.round(S.anim ? S.anim.to : S.ang) + step;
@@ -1219,6 +1299,762 @@ body{margin:0}
 			S.ang = base + d;
 			S.dirty = true;
 		} else S.anim = { from: S.ang, to: base + d, t0: performance.now(), dur: 380 };
+	}
+
+	const G = {
+		T: null,
+		lib: null,
+		env: null,
+		failed: "",
+		renderer: null,
+		canvas: null,
+		scene: null,
+		camera: null,
+		spin: null,
+		pmrem: null,
+		v: null,
+		models: new Map(),
+		shown: null,
+		opened: false,
+		w: 0,
+		h: 0,
+		ratio: 0,
+		yaw: 0,
+		pitch: 0,
+		zoom: 1,
+		drawn: [],
+		moving: false,
+		fading: false,
+		vel: 0,
+		autoV: 0,
+		anim: null,
+		ptrs: new Map(),
+		pinch: null,
+		tap: null,
+		idT: null,
+		idBuf: null,
+		idAt: 0,
+		stale: true,
+		idMats: new Map(),
+		told: new Set(),
+		resume: 0,
+		wheel: false,
+	};
+	const TAU = Math.PI * 2;
+	const wrap = (a) => mod(a + Math.PI, TAU) - Math.PI;
+	const glOk = () => typeof WebGL2RenderingContext === "function";
+	function say(text) {
+		if (G.told.has(text)) return;
+		G.told.add(text);
+		console.warn(`Object kit: ${text}`);
+	}
+	function fileAddress(path) {
+		const q = window.qorpera;
+		return Promise.resolve(q && typeof q.file === "function" ? q.file(path) : path);
+	}
+	function library() {
+		G.lib =
+			G.lib ||
+			(async () => {
+				if (!window.QORPERA_THREE) {
+					const src = await fileAddress(THREE_FILE);
+					await new Promise((ok, no) => {
+						const el = h("script", null, { src });
+						el.addEventListener("load", ok, { once: true });
+						el.addEventListener("error", () => no(new Error(`${THREE_FILE} did not load`)), { once: true });
+						D.head.append(el);
+					});
+				}
+				const T = window.QORPERA_THREE;
+				if (!T || typeof T.WebGLRenderer !== "function") throw new Error(`${THREE_FILE} is not the kit's 3D library`);
+				G.T = T;
+				return T;
+			})();
+		return G.lib;
+	}
+	function stage(T) {
+		if (G.renderer) return;
+		const canvas = h("canvas", "ok-gl", { "aria-hidden": "true" });
+		let r;
+		try {
+			r = new T.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: "high-performance" });
+		} catch (e) {
+			G.failed = "this browser could not start WebGL";
+			throw e;
+		}
+		r.setClearColor(0x000000, 0);
+		r.outputColorSpace = T.SRGBColorSpace;
+		r.toneMapping = T.AgXToneMapping;
+		r.toneMappingExposure = 1;
+		canvas.addEventListener("webglcontextlost", (e) => {
+			e.preventDefault();
+			lose("the browser took its drawing context away");
+		});
+		G.renderer = r;
+		G.canvas = canvas;
+		G.scene = new T.Scene();
+		G.camera = new T.PerspectiveCamera();
+		G.spin = new T.Group();
+		G.scene.add(G.spin);
+		G.pmrem = new T.PMREMGenerator(r);
+		G.v = new T.Vector3();
+		R.view.insertBefore(canvas, R.object);
+		mq("(prefers-color-scheme: dark)").addEventListener("change", () => {
+			tint();
+			S.dirty = true;
+			loop();
+		});
+	}
+	function lightUp(T) {
+		G.env =
+			G.env ||
+			(async () => {
+				const path = S.data.environment;
+				if (path)
+					try {
+						const url = await fileAddress(path);
+						const hdr = await new Promise((ok, no) => new T.HDRLoader().load(url, ok, undefined, no));
+						hdr.mapping = T.EquirectangularReflectionMapping;
+						G.scene.environment = G.pmrem.fromEquirectangular(hdr).texture;
+						hdr.dispose();
+						return;
+					} catch (e) {
+						say(`${path} could not be read as an .hdr light, so the thing is lit by the page's own studio light.`);
+					}
+				G.scene.environment = G.pmrem.fromScene(new T.RoomEnvironment(), 0.04).texture;
+			})();
+		return G.env;
+	}
+	function modelOf(path) {
+		let rec = G.models.get(path);
+		if (rec) return rec;
+		rec = { path, ok: false, failed: false };
+		G.models.set(path, rec);
+		(async () => {
+			const T = await library();
+			stage(T);
+			await lightUp(T);
+			const url = await fileAddress(path);
+			const gltf = await new Promise((ok, no) => new T.GLTFLoader().load(url, ok, undefined, no));
+			prepare(T, rec, gltf);
+			rec.ok = true;
+		})().then(
+			() => arrived(rec),
+			(e) => {
+				rec.failed = true;
+				const why = cut((e && e.message) || String(e || ""), 160);
+				say(
+					/draco|meshopt|basisu|ktx/i.test(why)
+						? `${path} is compressed in a way this page cannot open (${why}). Export it again without mesh or texture compression.`
+						: `${path} could not be shown (${why || "it did not load"}). The page shows the thing's picture instead.`,
+				);
+				arrived(rec);
+			},
+		);
+		return rec;
+	}
+	function arrived(rec) {
+		if (R && S.data && V().model === rec.path) {
+			mode();
+			layout();
+		}
+	}
+	function prepare(T, rec, gltf) {
+		const model = gltf.scene || (gltf.scenes || [])[0];
+		if (!model) throw new Error("it holds no scene");
+		model.updateMatrixWorld(true);
+		const box = new T.Box3().setFromObject(model);
+		if (box.isEmpty()) throw new Error("it holds no visible mesh");
+		const c = box.getCenter(new T.Vector3());
+		const inner = new T.Group();
+		inner.add(model);
+		inner.position.set(-c.x, -box.min.y, -c.z);
+		const holder = new T.Group();
+		holder.add(inner);
+		holder.updateMatrixWorld(true);
+		const corner = Math.max(1e-6, Math.hypot(box.max.x - box.min.x, box.max.z - box.min.z) / 2);
+		const p = new T.Vector3();
+		let reach = 0;
+		holder.traverse((o) => {
+			const pos = o.isMesh && o.geometry && o.geometry.attributes.position;
+			if (!pos) return;
+			const every = Math.max(1, Math.floor(pos.count / 60000));
+			for (let i = 0; i < pos.count; i += every) {
+				p.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+				reach = Math.max(reach, Math.hypot(p.x, p.z));
+			}
+		});
+		const names = new Map();
+		const json = (gltf.parser && gltf.parser.json) || {};
+		const links = gltf.parser && gltf.parser.associations;
+		model.traverse((o) => {
+			const link = links && links.get(o);
+			const mesh = link && link.meshes != null && json.meshes && json.meshes[link.meshes];
+			for (const name of [o.userData && o.userData.name, o.name, mesh && mesh.name])
+				if (typeof name === "string" && name && !names.has(name)) names.set(name, o);
+		});
+		rec.names = names;
+		rec.nodeNames = (json.nodes || []).map((n) => n && n.name).filter((n) => typeof n === "string" && n);
+		rec.holder = holder;
+		rec.r = reach ? Math.min(corner, reach * 1.01) : corner;
+		rec.height = Math.max(1e-6, box.max.y - box.min.y);
+		const size = Math.hypot(rec.r, rec.height / 2);
+		rec.cy = rec.height / 2;
+		rec.d = size * 3.4;
+		rec.near = Math.max(size * 0.02, (rec.d - size * 1.6) * 0.8);
+		rec.far = rec.d + size * 3;
+		rec.nodes = new Map();
+		shadowUnder(T, rec);
+	}
+	function shadowUnder(T, rec) {
+		const r = G.renderer;
+		const size = rec.r * 2.8;
+		const res = 512;
+		const [a, b, c] = [0, 0, 0].map(() => new T.WebGLRenderTarget(res, res, { depthBuffer: false }));
+		const cam = new T.OrthographicCamera(-size / 2, size / 2, size / 2, -size / 2, 0, Math.max(rec.height * 0.5, rec.r * 0.4));
+		cam.rotation.x = Math.PI / 2;
+		const scene = new T.Scene();
+		scene.add(rec.holder);
+		scene.overrideMaterial = new T.ShaderMaterial({
+			uniforms: { far: { value: cam.far } },
+			vertexShader: "varying float up;void main(){vec4 p=modelViewMatrix*vec4(position,1.0);up=-p.z;gl_Position=projectionMatrix*p;}",
+			fragmentShader: "uniform float far;varying float up;void main(){gl_FragColor=vec4(0.0,0.0,0.0,clamp(1.0-up/far,0.0,1.0));}",
+			side: T.DoubleSide,
+			depthTest: false,
+			depthWrite: false,
+			blending: T.CustomBlending,
+			blendEquation: T.MaxEquation,
+			blendEquationAlpha: T.MaxEquation,
+		});
+		r.setRenderTarget(a);
+		r.clear();
+		r.render(scene, cam);
+		scene.overrideMaterial.dispose();
+		scene.overrideMaterial = null;
+		const quad = new T.Mesh(new T.PlaneGeometry(size, size).rotateX(Math.PI / 2));
+		quad.position.y = cam.far / 2;
+		const across = new T.ShaderMaterial(T.HorizontalBlurShader);
+		const down = new T.ShaderMaterial(T.VerticalBlurShader);
+		across.depthTest = false;
+		down.depthTest = false;
+		const blur = (amount, to) => {
+			quad.material = across;
+			across.uniforms.tDiffuse.value = a.texture;
+			across.uniforms.h.value = amount / res;
+			r.setRenderTarget(b);
+			r.render(quad, cam);
+			quad.material = down;
+			down.uniforms.tDiffuse.value = b.texture;
+			down.uniforms.v.value = amount / res;
+			r.setRenderTarget(to);
+			r.render(quad, cam);
+		};
+		for (const amount of [5, 2.5, 1.2]) blur(amount, a);
+		blur(0.8, c);
+		for (const amount of [12, 6, 3]) blur(amount, a);
+		r.setRenderTarget(null);
+		scene.remove(rec.holder);
+		for (const x of [across, down, quad.geometry, b]) x.dispose();
+		const plane = new T.Mesh(
+			new T.PlaneGeometry(size, size).rotateX(Math.PI / 2),
+			new T.ShaderMaterial({
+				uniforms: { near: { value: c.texture }, wide: { value: a.texture }, tint: { value: new T.Vector3() }, strength: { value: 0.6 } },
+				vertexShader: "varying vec2 at;void main(){at=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}",
+				fragmentShader: "uniform sampler2D near;uniform sampler2D wide;uniform vec3 tint;uniform float strength;varying vec2 at;void main(){float edge=1.0-smoothstep(0.3,0.5,length(at-0.5));gl_FragColor=vec4(tint,max(texture2D(near,at).a,texture2D(wide,at).a*0.5)*edge*strength);}",
+				transparent: true,
+				depthWrite: false,
+				toneMapped: false,
+			}),
+		);
+		plane.scale.y = -1;
+		plane.renderOrder = 1;
+		plane.position.y = size * 0.0005;
+		rec.holder.add(plane);
+		rec.plane = plane;
+	}
+	function tint() {
+		const plane = G.shown && G.shown.plane;
+		if (!plane || !R) return;
+		const css = getComputedStyle(R.root).backgroundColor || "";
+		const m = /([\d.]+)[^\d.]+([\d.]+)[^\d.]+([\d.]+)/.exec(css);
+		const one = /^color\(/.test(css) ? 1 : 255;
+		const [r, g, b] = m ? [+m[1] / one, +m[2] / one, +m[3] / one] : [1, 1, 1];
+		const dark = 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45;
+		plane.material.uniforms.tint.value.set(r * 0.42, g * 0.42, b * 0.46);
+		plane.material.uniforms.strength.value = dark ? 0.9 : 0.7;
+	}
+	function bind(rec) {
+		const T = G.T;
+		const keep = G.spin.rotation.y;
+		G.spin.rotation.y = 0;
+		G.spin.updateMatrixWorld(true);
+		const nodes = new Map();
+		const owner = new Map();
+		V().parts.forEach((p, i) => {
+			if (!p.node) return;
+			const obj = rec.names.get(p.node) || rec.names.get(T.PropertyBinding.sanitizeNodeName(p.node));
+			if (!obj) {
+				const some = rec.nodeNames.slice(0, 16).join(", ");
+				say(`the part "${p.name}" names the node "${p.node}", which ${rec.path} does not have, so it is listed without a dot.${some ? ` Its nodes: ${some}${rec.nodeNames.length > 16 ? ", …" : ""}.` : ""}`);
+				return;
+			}
+			const n = { k: i + 1, obj, c: new T.Box3().setFromObject(obj).getCenter(new T.Vector3()), best: null, set: new Set(), vis: 0, want: 0 };
+			nodes.set(p.id, n);
+			if (!owner.has(obj)) owner.set(obj, n.k);
+		});
+		for (const n of nodes.values())
+			for (const m of nodes.values()) {
+				let o = m.obj;
+				while (o && o !== n.obj) o = o.parent;
+				if (o) n.set.add(m.k);
+			}
+		rec.holder.traverse((o) => {
+			if (!o.isMesh) return;
+			let a = o;
+			while (a && !owner.has(a)) a = a.parent;
+			o.userData.qk = a ? owner.get(a) : 0;
+		});
+		G.spin.rotation.y = keep;
+		G.spin.updateMatrixWorld(true);
+		rec.nodes = nodes;
+		rec.faced = false;
+	}
+	function shownRec() {
+		const path = S.data && V().model;
+		const rec = path ? G.models.get(path) : null;
+		return rec && rec.ok && !G.failed ? rec : null;
+	}
+	function modelFailed(v) {
+		return !!(G.failed || !glOk() || (G.models.get(v.model) || {}).failed);
+	}
+	const waiting = () => !!(V().model && !shownRec() && !modelFailed(V()));
+	const turnable = () => !!V().pic?.sheet && !waiting();
+	function show(rec) {
+		if (G.shown !== rec) {
+			if (G.shown) G.spin.remove(G.shown.holder);
+			G.spin.add(rec.holder);
+			G.shown = rec;
+			G.drawn = [];
+		}
+		if (!G.opened) {
+			G.opened = true;
+			G.yaw = S.data.view.yaw;
+			G.pitch = S.data.view.pitch;
+			G.zoom = 1;
+		}
+		place(rec, S.data.view.pitch);
+		const t = G.v;
+		let x = 0;
+		let y0 = Infinity;
+		let y1 = -Infinity;
+		for (let i = 0; i < 64; i++)
+			for (const y of [0, rec.height]) {
+				t.set(Math.sin((i / 64) * TAU) * rec.r, y, Math.cos((i / 64) * TAU) * rec.r).applyMatrix4(G.camera.matrixWorldInverse);
+				x = Math.max(x, Math.abs(t.x / -t.z));
+				y0 = Math.min(y0, t.y / -t.z);
+				y1 = Math.max(y1, t.y / -t.z);
+			}
+		const share = 0.9;
+		rec.fit = { tx: x / share, ty: (y1 - y0) / 2 / share, yc: (y0 + y1) / 2, ext: share / 2 };
+		bind(rec);
+		tint();
+		G.stale = true;
+	}
+	function place(rec, pitch) {
+		const cam = G.camera;
+		cam.near = rec.near;
+		cam.far = rec.far;
+		cam.position.set(0, rec.cy + rec.d * Math.sin(pitch), rec.d * Math.cos(pitch));
+		cam.up.set(0, 1, 0);
+		cam.lookAt(0, rec.cy, 0);
+		cam.updateMatrixWorld(true);
+	}
+	function aim() {
+		const rec = G.shown;
+		const B = S.box;
+		if (!rec || !B || !rec.fit) return;
+		const f = rec.fit;
+		const cam = G.camera;
+		place(rec, G.pitch);
+		const sx = f.tx / G.zoom / (B.w / 2);
+		const sy = f.ty / G.zoom / (B.h / 2);
+		const cx = B.left + B.w / 2;
+		const cy = B.top + B.h / 2;
+		const n = rec.near;
+		cam.projectionMatrix.makePerspective(-cx * sx * n, (G.w - cx) * sx * n, (f.yc + cy * sy) * n, (f.yc - (G.h - cy) * sy) * n, n, rec.far);
+		cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+		G.spin.rotation.y = G.yaw;
+		G.spin.updateMatrixWorld(true);
+	}
+	function project(n) {
+		const q = G.v.copy(n.c).applyMatrix4(G.spin.matrixWorld).project(G.camera);
+		return [((q.x + 1) / 2) * G.w, ((1 - q.y) / 2) * G.h, q];
+	}
+	function liveAt(p) {
+		const n = G.shown && G.shown.nodes.get(p.id);
+		if (!n || !S.box) return null;
+		const keep = [G.yaw, G.pitch, G.zoom];
+		[G.yaw, G.pitch, G.zoom] = [S.data.view.yaw, S.data.view.pitch, 1];
+		aim();
+		const [x, y] = project(n);
+		[G.yaw, G.pitch, G.zoom] = keep;
+		aim();
+		return [(x - S.box.left) / S.box.w, (y - S.box.top) / S.box.h];
+	}
+	function size3d(w, hgt) {
+		const ratio = Math.min(devicePixelRatio || 1, mq("(pointer: coarse)").matches || innerWidth < 700 ? 1.5 : 2);
+		const W = Math.max(1, Math.round(w));
+		const H = Math.max(1, Math.round(hgt));
+		if (G.w === W && G.h === H && G.ratio === ratio) return;
+		G.w = W;
+		G.h = H;
+		G.ratio = ratio;
+		G.renderer.setPixelRatio(ratio);
+		G.renderer.setSize(W, H);
+		G.stale = true;
+		G.drawn = [];
+	}
+	function idMat(k, side) {
+		const key = `${k}:${side}`;
+		let m = G.idMats.get(key);
+		if (!m) {
+			m = new G.T.MeshBasicMaterial({ side, toneMapped: false });
+			m.color.setRGB((k * 20) / 255, 0, 0);
+			G.idMats.set(key, m);
+		}
+		return m;
+	}
+	function seeThrough(m) {
+		return !!m && (m.transmission > 0 || (m.transparent && m.opacity < 0.6));
+	}
+	function idRender() {
+		const T = G.T;
+		const r = G.renderer;
+		const rec = G.shown;
+		const w = Math.max(8, Math.min(320, G.w));
+		const hgt = Math.max(8, Math.round((w * G.h) / Math.max(1, G.w)));
+		if (!G.idT || G.idT.width !== w || G.idT.height !== hgt) {
+			if (G.idT) G.idT.dispose();
+			G.idT = new T.WebGLRenderTarget(w, hgt);
+			G.idBuf = new Uint8Array(w * hgt * 4);
+		}
+		const kept = [];
+		rec.holder.traverse((o) => {
+			if (!o.isMesh || o === rec.plane) return;
+			const m = Array.isArray(o.material) ? o.material[0] : o.material;
+			kept.push([o, o.material, o.visible]);
+			if (seeThrough(m) && !o.userData.qk) o.visible = false;
+			else o.material = idMat(o.userData.qk || 0, m ? m.side : T.FrontSide);
+		});
+		rec.plane.visible = false;
+		r.setRenderTarget(G.idT);
+		r.clear();
+		r.render(G.scene, G.camera);
+		r.setRenderTarget(null);
+		for (const [o, m, seen] of kept) {
+			o.material = m;
+			o.visible = seen;
+		}
+		rec.plane.visible = true;
+		r.readRenderTargetPixels(G.idT, 0, 0, w, hgt, G.idBuf);
+		return [w, hgt, G.idBuf];
+	}
+	function idPass() {
+		const [w, hgt, buf] = idRender();
+		const around = Math.max(2, Math.round(w * 0.012));
+		for (const n of G.shown.nodes.values()) {
+			const q = project(n)[2];
+			let seen = false;
+			if (q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1 - 64 / Math.max(64, G.h)) {
+				const px = Math.round(((q.x + 1) / 2) * (w - 1));
+				const py = Math.round(((q.y + 1) / 2) * (hgt - 1));
+				for (let y = Math.max(0, py - around); y <= Math.min(hgt - 1, py + around) && !seen; y++)
+					for (let x = Math.max(0, px - around); x <= Math.min(w - 1, px + around); x++)
+						if (n.set.has(Math.round(buf[(y * w + x) * 4] / 20))) {
+							seen = true;
+							break;
+						}
+			}
+			n.want = seen ? 1 : 0;
+		}
+	}
+	function faces(rec) {
+		if (rec.faced || !rec.nodes.size) return;
+		rec.faced = true;
+		const steps = 24;
+		const keep = [G.yaw, G.pitch, G.zoom];
+		const seen = new Map([...rec.nodes.values()].map((n) => [n, []]));
+		for (let i = 0; i < steps; i++) {
+			[G.yaw, G.pitch, G.zoom] = [(i / steps) * TAU, S.data.view.pitch, 1];
+			aim();
+			const [w, hgt, buf] = idRender();
+			const count = new Array(13).fill(0);
+			for (let j = 0; j < w * hgt * 4; j += 4) count[Math.min(12, Math.round(buf[j] / 20))]++;
+			for (const [n, list] of seen) list.push([...n.set].reduce((sum, k) => sum + count[k], 0));
+		}
+		[G.yaw, G.pitch, G.zoom] = keep;
+		aim();
+		for (const [n, list] of seen) {
+			const top = Math.max(...list);
+			if (!top) continue;
+			let best = 0;
+			let run = 0;
+			for (let i = 0; i < steps; i++) {
+				if (list[i] < top * 0.9 || list[(i + steps - 1) % steps] >= top * 0.9) continue;
+				let k = 0;
+				while (k < steps && list[(i + k) % steps] >= top * 0.9) k++;
+				if (k > run) {
+					run = k;
+					best = i + (k - 1) / 2;
+				}
+			}
+			n.best = ((run ? best : list.indexOf(top)) / steps) * TAU;
+		}
+		G.stale = true;
+	}
+	function renderLive(rec, now) {
+		if (G.shown !== rec) show(rec);
+		aim();
+		if (G.stale && (!rec.nodes.size || now - G.idAt > 140 || !G.moving)) {
+			if (rec.nodes.size) idPass();
+			G.idAt = now;
+			G.stale = false;
+		}
+		G.renderer.setRenderTarget(null);
+		G.renderer.render(G.scene, G.camera);
+		G.drawn = [G.yaw, G.pitch, G.zoom];
+	}
+	function stepLive(now, dt) {
+		const rec = shownRec();
+		const idle = now - S.lastTouch > IDLE_MS;
+		const wantAuto = !calm() && (!S.touched || idle) && !S.sel && !S.drag && !G.anim && !G.ptrs.size;
+		const target = wantAuto ? TAU / (TURN_SECONDS * 1000) : 0;
+		G.autoV += (target - G.autoV) * Math.min(1, dt / (target ? 900 : 220));
+		if (Math.abs(G.autoV) < 1e-8) G.autoV = 0;
+		if (G.anim) {
+			const t = clamp((now - G.anim.t0) / G.anim.dur, 0, 1);
+			const k = ease(t);
+			[G.yaw, G.pitch, G.zoom] = G.anim.from.map((a, i) => a + (G.anim.to[i] - a) * k);
+			if (t >= 1) G.anim = null;
+		} else if (!S.drag) {
+			if (G.vel) {
+				G.yaw += G.vel * dt;
+				G.vel *= Math.exp(-dt / 330);
+				if (Math.abs(G.vel) < 2e-5) G.vel = 0;
+			}
+			G.yaw += G.autoV * dt;
+		}
+		if (Math.abs(G.yaw) > 1000) G.yaw = mod(G.yaw, TAU);
+		G.moving = G.yaw !== G.drawn[0] || G.pitch !== G.drawn[1] || G.zoom !== G.drawn[2];
+		if (G.moving) {
+			S.dirty = true;
+			S.lastMove = now;
+			G.stale = true;
+		} else if (G.stale) S.dirty = true;
+		G.fading = false;
+		for (const n of rec.nodes.values()) {
+			const d = n.want - n.vis;
+			if (Math.abs(d) > 0.01) {
+				n.vis += calm() ? d : d * Math.min(1, dt / 160);
+				G.fading = true;
+				S.dirty = true;
+			} else n.vis = n.want;
+		}
+	}
+	function asleep() {
+		if (!shownRec() || S.dirty || G.fading || G.stale || G.anim || G.vel || G.autoV || S.drag || S.fade || G.ptrs.size) return false;
+		clearTimeout(G.resume);
+		if (!calm() && !S.sel) G.resume = setTimeout(loop, Math.max(0, IDLE_MS - (performance.now() - S.lastTouch)) + 30);
+		return true;
+	}
+	function mode() {
+		const v = V();
+		if (v.model && !G.failed && glOk()) modelOf(v.model);
+		if (v.model && !glOk()) say("this browser cannot draw live 3D (it has no WebGL 2), so the page shows the thing's picture instead.");
+		const rec = shownRec();
+		if (rec) show(rec);
+		const failed = !!(v.model && !rec && modelFailed(v));
+		const wait = !!(v.model && !rec && !failed);
+		R.root.classList.toggle("live", !!rec);
+		if (G.canvas) G.canvas.classList.toggle("on", !!rec);
+		if (v.model || R.wait) {
+			R.wait = R.wait || R.view.appendChild(h("div", "ok-wait", { "aria-hidden": "true" }));
+			R.wait.classList.toggle("on", wait && !v.pic);
+		}
+		if ((failed && !v.pic) || R.none) {
+			R.none = R.none || R.view.appendChild(h("p", "ok-none"));
+			R.none.textContent = S.data.words.nomodel;
+			R.none.hidden = !(failed && !v.pic);
+		}
+		const turns = !!rec || (!!v.pic?.sheet && !wait);
+		R.object.classList.toggle("still", !turns);
+		if (turns) {
+			R.object.setAttribute("role", "slider");
+			R.object.setAttribute("aria-label", S.data.words.turn);
+			R.object.setAttribute("aria-valuemin", "0");
+			R.object.setAttribute("aria-valuemax", "359");
+		} else {
+			R.object.setAttribute("role", "img");
+			R.object.setAttribute("aria-label", v.name);
+			for (const a of ["aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) R.object.removeAttribute(a);
+		}
+		R.hint.classList.toggle("show", turns && !S.touched);
+		if (rec && !G.wheel) {
+			G.wheel = true;
+			R.object.addEventListener("wheel", wheel, { passive: false });
+		}
+		loop();
+	}
+	function lose(why) {
+		if (G.failed) return;
+		G.failed = why;
+		say(`live 3D stopped (${why}), so the page shows the thing's picture instead.`);
+		G.ptrs.clear();
+		G.pinch = null;
+		G.anim = null;
+		S.drag = null;
+		if (R && S.data) {
+			mode();
+			layout();
+		}
+	}
+	function animateTo(to, dur) {
+		G.vel = 0;
+		G.autoV = 0;
+		if (calm()) {
+			[G.yaw, G.pitch, G.zoom] = to;
+			G.anim = null;
+		} else G.anim = { from: [G.yaw, G.pitch, G.zoom], to, t0: performance.now(), dur };
+		S.dirty = true;
+		loop();
+	}
+	function turnToNode(part) {
+		const n = G.shown && G.shown.nodes.get(part.id);
+		if (!n) return;
+		faces(G.shown);
+		if (n.best == null) return;
+		const d = wrap(n.best - G.yaw);
+		animateTo([G.yaw + d, G.pitch, G.zoom], clamp(420 + (Math.abs(d) / DEG) * 4.2, 450, 1150));
+	}
+	function openedView(half) {
+		const o = S.data.view;
+		const base = G.anim ? G.anim.to[0] : G.yaw;
+		return [base + wrap(o.yaw + (half ? Math.PI : 0) - base), o.pitch, 1];
+	}
+	function wheel(e) {
+		if (!shownRec()) return;
+		e.preventDefault();
+		touch();
+		G.anim = null;
+		G.zoom = clamp(G.zoom * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), ZOOM[0], ZOOM[1]);
+		S.dirty = true;
+		loop();
+	}
+	function liveDown(e) {
+		if (e.pointerType === "mouse") G.ptrs.clear();
+		G.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+		loop();
+		if (G.ptrs.size === 2) {
+			const [a, b] = [...G.ptrs.values()];
+			G.pinch = { d0: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), z0: G.zoom };
+			S.drag = null;
+			G.vel = 0;
+			G.anim = null;
+			touch();
+			return;
+		}
+		if (e.button !== 0 && e.pointerType === "mouse") return;
+		touch();
+		S.drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, yaw0: G.yaw, pitch0: G.pitch, moved: false, lx: e.clientX, lt: e.timeStamp, v: 0 };
+		G.anim = null;
+		G.vel = 0;
+	}
+	function liveMove(e) {
+		const pt = G.ptrs.get(e.pointerId);
+		if (pt) {
+			pt.x = e.clientX;
+			pt.y = e.clientY;
+		}
+		if (G.pinch && G.ptrs.size >= 2) {
+			const [a, b] = [...G.ptrs.values()];
+			G.zoom = clamp((G.pinch.z0 * Math.hypot(a.x - b.x, a.y - b.y)) / G.pinch.d0, ZOOM[0], ZOOM[1]);
+			S.dirty = true;
+			e.preventDefault();
+			return;
+		}
+		const g = S.drag;
+		if (!g || g.id !== e.pointerId) return;
+		const dx = e.clientX - g.x0;
+		const dy = e.clientY - g.y0;
+		if (!g.moved) {
+			if (Math.hypot(dx, dy) < 6) return;
+			if (Math.abs(dy) > Math.abs(dx) && e.pointerType !== "mouse") {
+				S.drag = null;
+				return;
+			}
+			g.moved = true;
+			R.object.classList.add("grab");
+			try {
+				R.object.setPointerCapture(e.pointerId);
+			} catch (err) {}
+		}
+		const k = (Math.PI * 1.1) / Math.max(200, S.box.w);
+		G.yaw = g.yaw0 + dx * k;
+		G.pitch = clamp(g.pitch0 + dy * k * 0.7, TILT[0], TILT[1]);
+		const dt = Math.max(1, e.timeStamp - g.lt);
+		g.v = g.v * 0.6 + (((e.clientX - g.lx) * k) / dt) * 0.4;
+		g.lx = e.clientX;
+		g.lt = e.timeStamp;
+		S.dirty = true;
+		e.preventDefault();
+	}
+	function liveUp(e) {
+		G.ptrs.delete(e.pointerId);
+		if (G.pinch) {
+			if (G.ptrs.size < 2) G.pinch = null;
+			S.drag = null;
+			return;
+		}
+		const g = S.drag;
+		if (!g || g.id !== e.pointerId) return;
+		S.drag = null;
+		R.object.classList.remove("grab");
+		touch();
+		loop();
+		if (g.moved) {
+			if (!calm() && e.timeStamp - g.lt < 90) G.vel = clamp(g.v, -0.012, 0.012);
+			return;
+		}
+		const last = G.tap;
+		G.tap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+		if (last && e.timeStamp - last.t < 320 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 24) {
+			G.tap = null;
+			animateTo(openedView(false), 650);
+			return;
+		}
+		tap(e);
+	}
+	function liveCancel(e) {
+		if (e) G.ptrs.delete(e.pointerId);
+		if (G.ptrs.size < 2) G.pinch = null;
+		if (S.drag && (!e || e.pointerId === S.drag.id)) {
+			S.drag = null;
+			R.object.classList.remove("grab");
+		}
+	}
+	function liveKey(e) {
+		const k = e.key;
+		const base = G.anim ? G.anim.to : [G.yaw, G.pitch, G.zoom];
+		let to = null;
+		if (k === "ArrowRight" || k === "ArrowUp") to = [base[0] + 15 * DEG, base[1], base[2]];
+		else if (k === "ArrowLeft" || k === "ArrowDown") to = [base[0] - 15 * DEG, base[1], base[2]];
+		else if (k === "+" || k === "=") to = [base[0], base[1], clamp(base[2] * 1.25, ZOOM[0], ZOOM[1])];
+		else if (k === "-" || k === "_") to = [base[0], base[1], clamp(base[2] / 1.25, ZOOM[0], ZOOM[1])];
+		else if (k === "Home" || k === "End") to = openedView(k === "End");
+		if (!to) return;
+		e.preventDefault();
+		touch();
+		animateTo(to, 380);
 	}
 
 	// ------------------------------------------------------------------ data in and out

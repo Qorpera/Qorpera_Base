@@ -5,6 +5,7 @@ import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { JsonValue } from "@qorpera/contracts";
 import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
 import { KIT_FIGURES } from "@qorpera/runtime/cloud-app-kit-figures.generated";
+import { OBJECT_THREE_JS, OBJECT_THREE_LICENSE } from "@qorpera/runtime/cloud-app-kit-three.generated";
 import {
 	DATA_KITS,
 	KIT_DATA_MAX_BYTES,
@@ -12,10 +13,14 @@ import {
 	KIT_FALLBACK_STYLE,
 	KIT_GUIDE,
 	KIT_LIVE_QUESTIONS,
+	KIT_THREE,
+	KIT_THREE_LICENSE,
 	kitBindings,
 	kitDataFile,
 	kitFigures,
+	kitLibrary,
 	kitMedia,
+	kitModels,
 	kitNotes,
 	kitPage,
 	parseKitData,
@@ -944,12 +949,143 @@ it("reads a kit's data, or says in words why it does not read", () => {
 	expect(problem("board", '{"mode": "scale"}')).toBe("board.json has no items: the board kit draws nothing without");
 	expect(problem("path", "{}")).toBe("path.json has no steps and no lanes: the path kit draws nothing without");
 	expect(problem("object", "{}")).toBe(
-		"object.json has no turntable, picture or variants: the object kit has no thing to show",
+		"object.json has no model, turntable, picture or variants: the object kit has no thing to show",
 	);
 	expect(problem("object", '{"picture": "pictures/box.webp"}')).toBeNull();
 	expect(problem("model", JSON.stringify({ ...MODEL, pad: "x".repeat(KIT_DATA_MAX_BYTES) }))).toBe(
 		"model.json is larger than 256 KiB: it holds the facts and the names of the pictures, never the pictures or the long text",
 	);
+});
+
+const OBJECT = {
+	lang: "en",
+	title: "The box",
+	model: "model/box.glb",
+	turntable: { picture: "pictures/box.webp", frames: 4, columns: 4, frameWidth: 560, frameHeight: 560 },
+	parts: [{ id: "lid", name: "Lid", state: "known", node: "Lid" }],
+};
+
+it("holds the object kit's 3D library and its licence exactly as the vendored files have them", () => {
+	expect(OBJECT_THREE_JS).toBe(kitFile("object", "vendor/three.js"));
+	expect(OBJECT_THREE_LICENSE).toBe(kitFile("object", "vendor/three.LICENSE.txt"));
+	expect(OBJECT_THREE_LICENSE).toMatch(/^The MIT License\n\nCopyright © 2010-2026 three\.js authors/);
+	expect(OBJECT_THREE_JS).toContain("@license");
+	expect(OBJECT_THREE_JS).toContain('"186"');
+	expect(OBJECT_THREE_JS.startsWith("var QORPERA_THREE=")).toBe(true);
+	expect(() => new Script(OBJECT_THREE_JS)).not.toThrow();
+	expect(Buffer.byteLength(OBJECT_THREE_JS)).toBeLessThan(700 * 1024);
+});
+
+it("reads an object's model, and refuses one that is not a .glb in the app's folder", () => {
+	const problem = (text: string) => {
+		const parsed = parseKitData("object", text);
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	const notGlb = `object.json has a model that is not the path of a .glb file in the app's folder, such as "model/box.glb"`;
+	expect(problem('{"model": "box.glb"}')).toBeNull();
+	expect(problem(JSON.stringify(OBJECT))).toBeNull();
+	for (const model of ["box.gltf", "https://example.com/box.glb", "../box.glb", "/company/apps/box/box.glb", 3])
+		expect(problem(JSON.stringify({ model })), String(model)).toBe(notGlb);
+	expect(problem('{"picture": "a.webp", "variants": [{"id": "b", "model": "b.obj"}]}')).toBe(
+		`object.json has a model in variant 1 that is not the path of a .glb file in the app's folder, such as "model/box.glb"`,
+	);
+	expect(problem('{"model": "box.glb", "environment": "light.exr"}')).toBe(
+		"object.json has an environment that is not the path of an .hdr file in the app's folder",
+	);
+	expect(
+		problem('{"model": "box.glb", "environment": "light/studio.hdr", "view": {"yaw": 40, "pitch": 10}}'),
+	).toBeNull();
+	for (const view of ['{"yaw": "left"}', "[30, 10]", "30", "null"])
+		expect(problem(`{"model": "box.glb", "view": ${view}}`), view).toBe(
+			'object.json has a view that is not {"yaw", "pitch"} in degrees',
+		);
+	expect(
+		kitModels("object", {
+			model: "a.glb",
+			variants: [{ model: "b.glb" }, { model: "a.glb" }, { picture: "c.webp" }],
+		}),
+	).toEqual(["a.glb", "b.glb"]);
+	expect(kitModels("object", { picture: "c.webp" })).toEqual([]);
+	expect(kitModels("board", { model: "a.glb" })).toEqual([]);
+	expect(kitLibrary("object", { picture: "c.webp" })).toEqual([]);
+	expect(kitLibrary("object", OBJECT)).toEqual([
+		{ path: KIT_THREE, text: OBJECT_THREE_JS },
+		{ path: KIT_THREE_LICENSE, text: OBJECT_THREE_LICENSE },
+	]);
+	expect(kitMedia(OBJECT)).toEqual(["pictures/box.webp"]);
+});
+
+it("tells an object's maker which model or light the folder lacks, and of a model with no picture beside it", () => {
+	expect(kitNotes("object", OBJECT, () => true)).toEqual([]);
+	expect(
+		kitNotes("object", { ...OBJECT, environment: "light/studio.hdr" }, (path) => path.startsWith("pictures/")),
+	).toEqual([
+		"model/box.glb, light/studio.hdr are named in object.json but not in the app's folder: the page shows the picture or turntable in their place, or a line that the model could not be shown. Write them into the app's folder from a machine.",
+	]);
+	expect(kitNotes("object", { model: "box.glb", node: "x".repeat(120) }, () => true)).toEqual([
+		"1 thing has a model and no turntable or picture: give one beside the model, which the page shows while the model arrives and where a browser cannot draw 3D.",
+	]);
+	expect(kitNotes("object", { picture: "pictures/box.webp" }, () => true)).toEqual([]);
+});
+
+it("writes the 3D library into an object's app only when its data names a model, and never as the agent's", async () => {
+	const f = await fixture();
+	const { model: _model, ...still } = OBJECT;
+	const list = (made: { files: { path: string }[] }) => made.files.map((file) => file.path).sort();
+	const made = read(
+		await f.call(
+			"save_app",
+			save("kasse", "make-1", { title: "The box", kit: "object" }, [
+				{ path: "object.json", text: JSON.stringify(still) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect([...f.files.keys()].filter((path) => path.startsWith("apps/kasse/")).sort()).toEqual([
+		"apps/kasse/app.toml",
+		"apps/kasse/engine.js",
+		"apps/kasse/index.html",
+		"apps/kasse/object.json",
+	]);
+	expect(f.text("apps/kasse/index.html")).toBe(kitPage("kasse", "object", "The box", still, () => false));
+	expect(f.text("apps/kasse/index.html")).not.toContain("three");
+	const live = read(
+		await f.call(
+			"save_app",
+			save("kasse", "change-1", null, [{ path: "object.json", text: JSON.stringify(OBJECT) }]),
+		),
+	);
+	expect(list(live)).toEqual([
+		"apps/kasse/index.html",
+		"apps/kasse/object.json",
+		"apps/kasse/three.js",
+		"apps/kasse/three.license.txt",
+	]);
+	expect(f.text("apps/kasse/three.js")).toBe(OBJECT_THREE_JS);
+	expect(f.text("apps/kasse/three.license.txt")).toBe(OBJECT_THREE_LICENSE);
+	expect(f.text("apps/kasse/index.html")).toBe(kitPage("kasse", "object", "The box", OBJECT, () => false));
+	const again = read(
+		await f.call(
+			"save_app",
+			save("kasse", "change-2", null, [{ path: "object.json", text: JSON.stringify({ ...OBJECT, line: "A box" }) }]),
+		),
+	);
+	expect(list(again)).toEqual(["apps/kasse/index.html", "apps/kasse/object.json"]);
+	const fresh = read(
+		await f.call(
+			"save_app",
+			save("skab", "make-2", { title: "Skab", kit: "object" }, [
+				{ path: "object.json", text: JSON.stringify(OBJECT) },
+			]),
+		),
+	);
+	expect(fresh.state).toBe("applied");
+	expect(f.text("apps/skab/three.js")).toBe(OBJECT_THREE_JS);
+	for (const path of ["three.js", "three.license.txt"])
+		await refuses(
+			f.call("save_app", save("kasse", `own-${path}`, null, [{ path, text: "x" }])),
+			`APP_KIT_FILE: ${path} is the object kit's own file, which save_app writes; leave it out and give object.json`,
+		);
 });
 
 it("tells the maker which pictures the folder lacks and which texts the page cuts", () => {
