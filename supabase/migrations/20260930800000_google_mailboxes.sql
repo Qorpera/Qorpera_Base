@@ -88,6 +88,11 @@ revoke all on table public.qorpera_google_mailbox_tickets from public, anon, aut
 
 alter table public.qorpera_company_mail_outbox add column route text not null default 'platform'
 	check (route in ('platform', 'gmail'));
+alter table public.qorpera_company_mail_outbox
+	add column gmail_draft_id text check (gmail_draft_id ~ '^[A-Za-z0-9_-]{1,64}$'),
+	add column gmail_draft_message_id text check (gmail_draft_message_id ~ '^[A-Za-z0-9_-]{1,64}$'),
+	add constraint qorpera_company_mail_outbox_gmail_draft
+		check ((gmail_draft_id is null) = (gmail_draft_message_id is null) and (gmail_draft_id is null or route = 'gmail'));
 create index qorpera_company_mail_outbox_gmail_due on public.qorpera_company_mail_outbox (profile_id, next_attempt_at)
 	where route = 'gmail' and status in ('pending', 'retrying', 'delivering');
 
@@ -831,6 +836,7 @@ begin
 			'References', claimed.thread_references,
 			'Auto-Submitted', case when claimed.in_reply_to_delivery_id is not null then 'auto-replied' end)),
 		'gmailThreadId', public.qorpera_google_mail_thread(claimed.id),
+		'draftId', claimed.gmail_draft_id, 'draftMessageId', claimed.gmail_draft_message_id,
 		'companyId', secret.profile_id, 'environmentId', secret.environment_id, 'secretId', secret.id, 'secretVersion', secret.current_version, 'keyId', version.key_id,
 		'encryptedEnvelopeBase64', translate(encode(version.encrypted_envelope, 'base64'), E'\n', ''),
 		'envelopeSha256', version.envelope_sha256
@@ -846,6 +852,36 @@ $$;
 revoke all on function public.qorpera_claim_google_mail_sends(uuid, text, integer)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_claim_google_mail_sends(uuid, text, integer) to qorpera_secret_broker;
+
+create function public.qorpera_record_google_mail_draft(
+	p_broker_authority_id uuid,
+	p_broker_capability_sha256 text,
+	p_mail_id uuid,
+	p_lease_id uuid,
+	p_draft_id text,
+	p_draft_message_id text
+)
+returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
+declare
+	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
+	v_mail public.qorpera_company_mail_outbox%rowtype;
+begin
+	v_authority := public.qorpera_google_mailbox_authority(p_broker_authority_id, p_broker_capability_sha256);
+	if p_draft_id is null or p_draft_id !~ '^[A-Za-z0-9_-]{1,64}$'
+		or p_draft_message_id is null or p_draft_message_id !~ '^[A-Za-z0-9_-]{1,64}$' then
+		raise exception 'Google mail draft is invalid' using errcode = '22023'; end if;
+	update public.qorpera_company_mail_outbox
+	set gmail_draft_id = p_draft_id, gmail_draft_message_id = p_draft_message_id
+	where id = p_mail_id and lease_id = p_lease_id and status = 'delivering' and route = 'gmail'
+		and profile_id = v_authority.profile_id and gmail_draft_id is null
+	returning * into v_mail;
+	return jsonb_build_object('schema', 'qorpera.google-mail-draft/v1', 'recorded', v_mail.id is not null);
+end
+$$;
+revoke all on function public.qorpera_record_google_mail_draft(uuid, text, uuid, uuid, text, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_record_google_mail_draft(uuid, text, uuid, uuid, text, text)
+	to qorpera_secret_broker;
 
 create function public.qorpera_complete_google_mail_send(
 	p_broker_authority_id uuid,

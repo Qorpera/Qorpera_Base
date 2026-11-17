@@ -306,6 +306,26 @@ select pg_temp.base_assert(jsonb_array_length(current_setting('qorpera_test.g_se
 		and current_setting('qorpera_test.g_sends')::jsonb #> '{sends,0,headers}'
 			= jsonb_build_object('In-Reply-To', '<a2@example.org>', 'References', '<a2@example.org>'),
 	'The broker claims the send in the Gmail thread it answers: ' || current_setting('qorpera_test.g_sends'));
+select pg_temp.base_assert(current_setting('qorpera_test.g_sends')::jsonb #> '{sends,0,draftId}' = 'null'::jsonb
+		and pg_temp.g_broker(format('select public.qorpera_record_google_mail_draft(%L, %L, %L, %L, %L, %L)',
+			'12970000-0000-4000-8000-0000000000d1', repeat('1', 64), current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,mailId}',
+			current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,leaseId}', 'r1', 's1')) ->> 'recorded' = 'true',
+	'The vault records the Gmail draft before it sends it');
+select pg_temp.base_assert(pg_temp.g_broker(format('select public.qorpera_record_google_mail_draft(%L, %L, %L, %L, %L, %L)',
+			'12970000-0000-4000-8000-0000000000d1', repeat('1', 64), current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,mailId}',
+			current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,leaseId}', 'r2', 's2')) ->> 'recorded' = 'false'
+		and (select mail.gmail_draft_id = 'r1' and mail.gmail_draft_message_id = 's1'
+			from public.qorpera_company_mail_outbox as mail
+			where mail.id = (current_setting('qorpera_test.g_sent')::jsonb ->> 'mailId')::uuid),
+	'An email keeps its first draft: a second one is never recorded');
+update public.qorpera_company_mail_outbox set lease_expires_at = clock_timestamp() - interval '1 second'
+where id = (current_setting('qorpera_test.g_sent')::jsonb ->> 'mailId')::uuid;
+select set_config('qorpera_test.g_sends', pg_temp.g_broker($q$select public.qorpera_claim_google_mail_sends(
+	'12970000-0000-4000-8000-0000000000d1', repeat('1', 64), 10)$q$)::text, true) \g /dev/null
+select pg_temp.base_assert(current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,draftId}' = 'r1'
+		and current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,draftMessageId}' = 's1'
+		and (current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,attemptCount}')::integer = 2,
+	'A send claimed again carries its draft, so the vault checks it before sending');
 select set_config('qorpera_test.g_done', pg_temp.g_broker(format(
 	'select public.qorpera_complete_google_mail_send(%L, %L, %L, %L, %L, %L, %L)',
 	'12970000-0000-4000-8000-0000000000d1', repeat('1', 64), current_setting('qorpera_test.g_sends')::jsonb #>> '{sends,0,mailId}',
@@ -504,6 +524,7 @@ begin
 		'public.qorpera_finish_google_mailbox_pass(uuid,text,uuid,uuid,text,text,text,integer,text)',
 		'public.qorpera_claim_google_mail_sends(uuid,text,integer)',
 		'public.qorpera_complete_google_mail_send(uuid,text,uuid,uuid,text,text,text)',
+		'public.qorpera_record_google_mail_draft(uuid,text,uuid,uuid,text,text)',
 		'public.qorpera_fail_google_mail_send(uuid,text,uuid,uuid,text,boolean,boolean)',
 		'public.qorpera_broker_principal_google_mailboxes_due(uuid,text)'] loop
 		perform pg_temp.base_assert(has_function_privilege('qorpera_secret_broker', v_function, 'EXECUTE')

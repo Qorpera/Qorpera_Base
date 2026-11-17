@@ -144,6 +144,7 @@ begin
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)',
 		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
+		'qorpera_record_google_mail_draft(uuid,text,uuid,uuid,text,text)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',

@@ -2665,6 +2665,24 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	recordGoogleMailDraft(
+		input: Parameters<GmailMailboxAuthority["recordGoogleMailDraft"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_google_mail_draft($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.mailId,
+				input.lease,
+				input.draftId,
+				input.draftMessageId,
+			],
+			signal,
+		);
+	}
+
 	completeGoogleMailSend(
 		input: Parameters<GmailMailboxAuthority["completeGoogleMailSend"]>[0],
 		signal: AbortSignal,

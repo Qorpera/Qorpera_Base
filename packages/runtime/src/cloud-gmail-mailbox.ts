@@ -52,6 +52,13 @@ export class GmailHistoryGone extends Error {
 	}
 }
 
+export class GmailDraftGone extends Error {
+	constructor() {
+		super("The email's Gmail draft was removed before it was sent");
+		this.name = "GmailDraftGone";
+	}
+}
+
 class GmailMailboxError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -211,14 +218,40 @@ export class GmailMailboxApi {
 		}
 	}
 
-	async send(
+	async createDraft(
 		raw: string,
 		threadId: string | null,
 		signal: AbortSignal,
-	): Promise<{ id: string; threadId: string | null }> {
-		const sent = await this.#call("/gmail/v1/users/me/messages/send", signal, {
+	): Promise<{ id: string; messageId: string }> {
+		const draft = await this.#call("/gmail/v1/users/me/drafts", signal, {
 			method: "POST",
-			body: JSON.stringify({ raw: encodeBase64Url(raw), ...(threadId ? { threadId } : {}) }),
+			body: JSON.stringify({ message: { raw: encodeBase64Url(raw), ...(threadId ? { threadId } : {}) } }),
+		});
+		const message = jsonRecord(draft.message);
+		if (
+			typeof draft.id !== "string" ||
+			!GOOGLE_ID.test(draft.id) ||
+			typeof message.id !== "string" ||
+			!GOOGLE_ID.test(message.id)
+		)
+			throw new GmailMailboxError("Gmail did not keep the draft");
+		return { id: draft.id, messageId: message.id };
+	}
+
+	async draftExists(id: string, signal: AbortSignal): Promise<boolean> {
+		try {
+			await this.#call(`/gmail/v1/users/me/drafts/${id}`, signal, { query: { format: "minimal" } });
+			return true;
+		} catch (error) {
+			if (error instanceof ConnectorRequestError && error.reason === "not_found") return false;
+			throw error;
+		}
+	}
+
+	async sendDraft(id: string, signal: AbortSignal): Promise<{ id: string; threadId: string | null }> {
+		const sent = await this.#call("/gmail/v1/users/me/drafts/send", signal, {
+			method: "POST",
+			body: JSON.stringify({ id }),
 		});
 		if (typeof sent.id !== "string" || !GOOGLE_ID.test(sent.id))
 			throw new GmailMailboxError("Gmail did not confirm the send");
@@ -226,6 +259,18 @@ export class GmailMailboxApi {
 			id: sent.id,
 			threadId: typeof sent.threadId === "string" && GOOGLE_ID.test(sent.threadId) ? sent.threadId : null,
 		};
+	}
+
+	async sentMessage(id: string, signal: AbortSignal): Promise<{ id: string; threadId: string | null } | null> {
+		let message: Json;
+		try {
+			message = await this.#call(`/gmail/v1/users/me/messages/${id}`, signal, { query: { format: "minimal" } });
+		} catch (error) {
+			if (error instanceof ConnectorRequestError && error.reason === "not_found") return null;
+			throw error;
+		}
+		if (!jsonArray(message.labelIds).includes("SENT")) return null;
+		return listed([message])[0] ?? null;
 	}
 
 	async sentWith(messageId: string, signal: AbortSignal): Promise<{ id: string; threadId: string | null } | null> {
@@ -549,6 +594,10 @@ export interface GmailMailboxAuthority {
 		signal: AbortSignal,
 	): Promise<unknown>;
 	claimGoogleMailSends(limit: number, signal: AbortSignal): Promise<unknown>;
+	recordGoogleMailDraft(
+		input: { mailId: string; lease: string; draftId: string; draftMessageId: string },
+		signal: AbortSignal,
+	): Promise<unknown>;
 	completeGoogleMailSend(
 		input: { mailId: string; lease: string; gmailId: string; gmailThreadId: string | null; messageId: string | null },
 		signal: AbortSignal,
@@ -592,6 +641,7 @@ interface SendClaim extends SealedSignIn {
 	readonly text: string;
 	readonly headers: Readonly<Record<string, string>>;
 	readonly gmailThreadId: string | null;
+	readonly draft: { readonly id: string; readonly messageId: string } | null;
 }
 
 function sealed(input: Json, companyId: unknown, environmentId: unknown): SealedSignIn {
@@ -698,6 +748,12 @@ function parseSends(value: unknown): SendClaim[] {
 					typeof content !== "string" ||
 					/[\r\n]/.test(content),
 			) ||
+			(send.draftId !== null &&
+				(typeof send.draftId !== "string" ||
+					!GOOGLE_ID.test(send.draftId) ||
+					typeof send.draftMessageId !== "string" ||
+					!GOOGLE_ID.test(send.draftMessageId))) ||
+			(send.draftId === null && send.draftMessageId !== null) ||
 			(send.gmailThreadId !== null &&
 				(typeof send.gmailThreadId !== "string" || !GOOGLE_ID.test(send.gmailThreadId)))
 		)
@@ -715,6 +771,7 @@ function parseSends(value: unknown): SendClaim[] {
 			text: send.text as string,
 			headers: headers as Record<string, string>,
 			gmailThreadId: send.gmailThreadId as string | null,
+			draft: send.draftId === null ? null : { id: send.draftId as string, messageId: send.draftMessageId as string },
 		};
 	});
 }
@@ -836,6 +893,7 @@ export class CloudGmailMailboxes {
 				error instanceof GmailMailboxError ||
 				error instanceof GmailSignInRefused ||
 				error instanceof GmailHistoryGone ||
+				error instanceof GmailDraftGone ||
 				error instanceof ConnectorRequestError
 			)
 				throw error;
@@ -1018,6 +1076,9 @@ export class CloudGmailMailboxes {
 				if (error instanceof GmailSignInRefused) {
 					tally.refused += 1;
 					await fail(GMAIL_SIGN_IN_AGAIN, true, true);
+				} else if (error instanceof GmailDraftGone) {
+					tally.failed += 1;
+					await fail(error.message, false, false);
 				} else if (error instanceof ConnectorRequestError && error.reason === "invalid_request") {
 					tally.failed += 1;
 					await fail("Gmail refused the email", false, false);
@@ -1062,14 +1123,7 @@ export class CloudGmailMailboxes {
 		signal: AbortSignal,
 	): Promise<{ id: string; threadId: string | null; messageId: string | null }> {
 		return this.#withApi(claimed, signal, async (api) => {
-			const own = gmailOwnMessageId(claimed.mailId);
-			const sent =
-				(claimed.attemptCount > 1 ? await api.sentWith(own, signal) : null) ??
-				(await api.send(
-					gmailRawMessage({ ...claimed, date: new Date(this.#now()) }),
-					claimed.gmailThreadId,
-					signal,
-				));
+			const sent = await this.#sendByDraft(api, claimed, signal);
 			let messageId: string | null = null;
 			try {
 				messageId = await api.messageId(sent.id, signal);
@@ -1078,6 +1132,41 @@ export class CloudGmailMailboxes {
 			}
 			return { ...sent, messageId };
 		});
+	}
+
+	async #sendByDraft(
+		api: GmailMailboxApi,
+		claimed: SendClaim,
+		signal: AbortSignal,
+	): Promise<{ id: string; threadId: string | null }> {
+		let draft = claimed.draft;
+		if (draft && !(await api.draftExists(draft.id, signal))) {
+			const sent =
+				(await api.sentMessage(draft.messageId, signal)) ??
+				(await api.sentWith(gmailOwnMessageId(claimed.mailId), signal));
+			if (!sent) throw new GmailDraftGone();
+			return sent;
+		}
+		if (!draft) {
+			const earlier =
+				claimed.attemptCount > 1 ? await api.sentWith(gmailOwnMessageId(claimed.mailId), signal) : null;
+			if (earlier) return earlier;
+			const made = await api.createDraft(
+				gmailRawMessage({ ...claimed, date: new Date(this.#now()) }),
+				claimed.gmailThreadId,
+				signal,
+			);
+			const recorded = jsonRecord(
+				await this.#authority.recordGoogleMailDraft(
+					{ mailId: claimed.mailId, lease: claimed.lease, draftId: made.id, draftMessageId: made.messageId },
+					database(),
+				),
+			);
+			if (recorded.schema !== "qorpera.google-mail-draft/v1" || recorded.recorded !== true)
+				throw new GmailMailboxError("the database did not keep the draft");
+			draft = made;
+		}
+		return api.sendDraft(draft.id, signal);
 	}
 }
 
