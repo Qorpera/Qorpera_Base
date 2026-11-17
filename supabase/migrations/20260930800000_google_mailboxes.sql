@@ -31,7 +31,9 @@ create table public.qorpera_google_mailboxes (
 	paused boolean not null default false,
 	history_id text check (history_id ~ '^[0-9]{1,20}$'),
 	page_token text check (char_length(page_token) between 1 and 512 and page_token ~ '^[\x21-\x7e]+$'),
-	brought_in integer not null default 0 check (brought_in between 0 and 50000),
+	brought_in integer not null default 0 check (brought_in >= 0),
+	import_count integer not null default 0 check (import_count between 0 and 50000),
+	gap boolean not null default false,
 	total integer check (total >= 0),
 	imported_at timestamptz,
 	due_at timestamptz,
@@ -480,7 +482,7 @@ begin
 		update public.qorpera_company_mailboxes set removed_at = null where id = v_removed.mailbox_id;
 		update public.qorpera_google_mailboxes
 		set removed_at = null, secret_id = v_secret_id, state = 'bringing_in', paused = false, history_id = null,
-			page_token = null, imported_at = null, due_at = clock_timestamp(), lease_id = null, lease_until = null,
+			page_token = null, imported_at = null, import_count = 0, gap = true, due_at = clock_timestamp(), lease_id = null, lease_until = null,
 			attempts = 0, last_error = null, updated_at = clock_timestamp()
 		where mailbox_id = v_removed.mailbox_id;
 		v_mailbox_id := v_removed.mailbox_id;
@@ -525,7 +527,7 @@ begin
 	v_authority := public.qorpera_google_mailbox_authority(p_broker_authority_id, p_broker_capability_sha256);
 	loop
 		select google.mailbox_id, google.environment_id, google.address, google.state, google.secret_id,
-			google.history_id, google.page_token, google.brought_in, google.total,
+			google.history_id, google.page_token, google.brought_in, google.total, google.import_count, google.gap,
 			secret.status as secret_status, secret.current_version, version.key_id, version.encrypted_envelope,
 			version.envelope_sha256, version.broker_authority_id as sealed_for, hook.status as hook_status
 		into v_row
@@ -565,7 +567,7 @@ begin
 			'encryptedEnvelopeBase64', translate(encode(v_row.encrypted_envelope, 'base64'), E'\n', ''),
 			'envelopeSha256', v_row.envelope_sha256,
 			'historyId', v_row.history_id, 'pageToken', v_row.page_token, 'broughtIn', v_row.brought_in,
-			'total', v_row.total);
+			'total', v_row.total, 'importCount', v_row.import_count, 'gap', v_row.gap);
 	end loop;
 end
 $$;
@@ -635,7 +637,7 @@ begin
 			and known.gmail_id = p_gmail_id) then
 		return jsonb_build_object('schema', 'qorpera.google-mail-brought-in/v1', 'outcome', 'duplicate');
 	end if;
-	if p_imported and v_google.state = 'bringing_in' and v_google.brought_in >= 50000 then
+	if p_imported and v_google.state = 'bringing_in' and v_google.import_count >= 50000 then
 		return jsonb_build_object('schema', 'qorpera.google-mail-brought-in/v1', 'outcome', 'bounded');
 	end if;
 	v_email_id := public.qorpera_google_mail_email_id(v_google.profile_id, v_google.address, p_gmail_id);
@@ -674,7 +676,8 @@ begin
 	on conflict do nothing;
 	if p_imported and v_google.state = 'bringing_in' and v_item ->> 'outcome' = 'accepted' then
 		update public.qorpera_google_mailboxes
-		set brought_in = brought_in + 1, total = case when total is null then null else greatest(total, brought_in + 1) end,
+		set brought_in = brought_in + 1, import_count = import_count + 1,
+			total = case when total is null then null else greatest(total, brought_in + 1) end,
 			updated_at = clock_timestamp()
 		where mailbox_id = v_google.mailbox_id;
 	end if;
@@ -721,6 +724,7 @@ begin
 	update public.qorpera_google_mailboxes
 	set state = case p_outcome when 'imported' then 'live' when 'refused' then 'sign_in_again' else state end,
 		imported_at = case when p_outcome = 'imported' then v_now else imported_at end,
+		gap = case when p_outcome = 'imported' then false else gap end,
 		history_id = coalesce(p_history_id, history_id),
 		page_token = case p_outcome when 'importing' then p_page_token when 'imported' then null else page_token end,
 		total = case when coalesce(p_total, total) is null then null

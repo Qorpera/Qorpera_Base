@@ -576,6 +576,8 @@ interface MailboxClaim extends SealedSignIn, GmailMailboxLease {
 	readonly pageToken: string | null;
 	readonly broughtIn: number;
 	readonly total: number | null;
+	readonly importCount: number;
+	readonly gap: boolean;
 }
 
 interface SendClaim extends SealedSignIn {
@@ -623,7 +625,7 @@ function parseMailboxClaim(value: unknown): MailboxClaim | null {
 	const input = jsonRecord(value);
 	if (
 		Object.keys(input).sort().join() !==
-			"address,broughtIn,companyId,encryptedEnvelopeBase64,envelopeSha256,environmentId,historyId,keyId,lease,mailboxId,pageToken,schema,secretId,secretVersion,state,total" ||
+			"address,broughtIn,companyId,encryptedEnvelopeBase64,envelopeSha256,environmentId,gap,historyId,importCount,keyId,lease,mailboxId,pageToken,schema,secretId,secretVersion,state,total" ||
 		input.schema !== "qorpera.google-mailbox-claim/v1" ||
 		![input.mailboxId, input.lease].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof input.address !== "string" ||
@@ -633,7 +635,10 @@ function parseMailboxClaim(value: unknown): MailboxClaim | null {
 		(input.pageToken !== null && (typeof input.pageToken !== "string" || !PAGE_TOKEN.test(input.pageToken))) ||
 		!Number.isSafeInteger(input.broughtIn) ||
 		(input.broughtIn as number) < 0 ||
-		(input.total !== null && (!Number.isSafeInteger(input.total) || (input.total as number) < 0))
+		(input.total !== null && (!Number.isSafeInteger(input.total) || (input.total as number) < 0)) ||
+		!Number.isSafeInteger(input.importCount) ||
+		(input.importCount as number) < 0 ||
+		typeof input.gap !== "boolean"
 	)
 		throw new GmailMailboxError("the Google mailbox claim is not readable");
 	return {
@@ -646,6 +651,8 @@ function parseMailboxClaim(value: unknown): MailboxClaim | null {
 		pageToken: input.pageToken as string | null,
 		broughtIn: input.broughtIn as number,
 		total: input.total as number | null,
+		importCount: input.importCount as number,
+		gap: input.gap as boolean,
 	};
 }
 
@@ -923,13 +930,16 @@ export class CloudGmailMailboxes {
 	): Promise<PassEnd> {
 		const profile = claim.historyId === null || claim.total === null ? await api.profile(signal) : null;
 		const historyId = claim.historyId ?? (profile as GmailProfile).historyId;
-		const total = claim.total ?? profile?.messagesTotal ?? null;
+		const total = profile?.messagesTotal ?? claim.total;
 		let pageToken = claim.pageToken;
-		let count = claim.broughtIn;
+		let count = claim.importCount;
 		for (;;) {
 			if (spent()) return { outcome: "importing", historyId, pageToken, total };
 			const page = await api.list(pageToken, signal);
-			for (const id of await this.#unknown(claim, [...new Set(page.messages.map((message) => message.id))])) {
+			const ids = [...new Set(page.messages.map((message) => message.id))];
+			const unknown = await this.#unknown(claim, ids);
+			const reached = claim.gap ? ids.findIndex((id) => !unknown.includes(id)) : -1;
+			for (const id of reached < 0 ? unknown : ids.slice(0, reached)) {
 				if (count >= GMAIL_IMPORT_BOUND) return { outcome: "imported", historyId, pageToken: null, total };
 				if (spent()) return { outcome: "importing", historyId, pageToken, total };
 				const outcome = await this.#bring(api, claim, id, true, signal);
@@ -939,7 +949,7 @@ export class CloudGmailMailboxes {
 				else if (outcome !== "duplicate" && outcome !== "gone")
 					throw new GmailMailboxError("the mail door did not take the message");
 			}
-			if (page.next === null) return { outcome: "imported", historyId, pageToken: null, total };
+			if (reached >= 0 || page.next === null) return { outcome: "imported", historyId, pageToken: null, total };
 			pageToken = page.next;
 		}
 	}

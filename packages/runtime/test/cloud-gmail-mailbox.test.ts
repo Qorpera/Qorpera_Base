@@ -163,6 +163,8 @@ function claim(overrides: Record<string, unknown> = {}) {
 		pageToken: null,
 		broughtIn: 0,
 		total: null,
+		importCount: 0,
+		gap: false,
 		...overrides,
 	};
 }
@@ -286,7 +288,7 @@ it("stops a pass within its bound and goes on from the page it was on", async ()
 
 it("ends the first import at 50,000 messages", async () => {
 	const gmail = new FakeGmail(5);
-	const counted = fixture({ claims: [claim({ broughtIn: 49_999, historyId: "1000" })], gmail });
+	const counted = fixture({ claims: [claim({ broughtIn: 60_000, importCount: 49_999, historyId: "1000" })], gmail });
 	await counted.mailboxes.pass(signal);
 	expect(counted.order).toEqual(["m0005"]);
 	expect(counted.finished).toEqual([expect.objectContaining({ outcome: "imported", pageToken: null })]);
@@ -294,6 +296,22 @@ it("ends the first import at 50,000 messages", async () => {
 	await bounded.mailboxes.pass(signal);
 	expect(bounded.order).toEqual(["m0005", "m0004"]);
 	expect(bounded.finished).toEqual([expect.objectContaining({ outcome: "imported" })]);
+});
+
+it("after a reconnect brings in the gap newest first until it reaches known mail, whatever came in before", async () => {
+	const gmail = new FakeGmail(6);
+	gmail.historyId = "3000";
+	const f = fixture({
+		claims: [claim({ gap: true, broughtIn: 50_000, importCount: 0, total: 50_000 })],
+		gmail,
+		known: ["m0004", "m0002"],
+	});
+	await f.mailboxes.pass(signal);
+	expect(f.order).toEqual(["m0006", "m0005"]);
+	expect(f.stored.get("m0006")?.imported).toBe(true);
+	expect(f.finished).toEqual([
+		expect.objectContaining({ outcome: "imported", historyId: "3000", pageToken: null, total: 6 }),
+	]);
 });
 
 it("reads Gmail's change list since the mark as new mail, skipping sent and spam", async () => {

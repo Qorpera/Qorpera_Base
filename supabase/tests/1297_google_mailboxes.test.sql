@@ -184,7 +184,7 @@ select pg_temp.base_assert((current_setting('qorpera_test.g_claim')::jsonb - arr
 			'envelopeSha256', 'secretId', 'mailboxId', 'environmentId', 'keyId'])
 		= jsonb_build_object('schema', 'qorpera.google-mailbox-claim/v1', 'companyId', '92400000-0000-4000-8000-000000000010',
 			'address', 'owner@gmail.com', 'state', 'bringing_in', 'secretVersion', 1, 'historyId', null, 'pageToken', null,
-			'broughtIn', 0, 'total', null)
+			'broughtIn', 0, 'total', null, 'importCount', 0, 'gap', false)
 		and pg_temp.g_claim() is null,
 	'The broker claims the due mailbox once, with its sealed sign-in: ' || current_setting('qorpera_test.g_claim'));
 select pg_temp.base_assert(pg_temp.g_bring(current_setting('qorpera_test.g_claim')::jsonb, 'a1', true,
@@ -227,11 +227,11 @@ select pg_temp.base_assert(pg_temp.g_bring(current_setting('qorpera_test.g_claim
 		clock_timestamp() - interval '2 hours') ->> 'outcome' = 'accepted'
 		and (pg_temp.g_box('owner@gmail.com')).brought_in = 3 and (pg_temp.g_box('owner@gmail.com')).total = 3,
 	'Google''s total never reads below what was brought in');
-update public.qorpera_google_mailboxes set brought_in = 50000 where address = 'owner@gmail.com';
+update public.qorpera_google_mailboxes set import_count = 50000 where address = 'owner@gmail.com';
 select pg_temp.base_assert(pg_temp.g_bring(current_setting('qorpera_test.g_claim')::jsonb, 'a4', true, clock_timestamp())
 		->> 'outcome' = 'bounded',
 	'The first import stops at 50,000 messages');
-update public.qorpera_google_mailboxes set brought_in = 2 where address = 'owner@gmail.com';
+update public.qorpera_google_mailboxes set import_count = 3 where address = 'owner@gmail.com';
 select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'imported', '950')
 		->> 'state' = 'live',
 	'The import is done: the mailbox is live');
@@ -240,7 +240,7 @@ update public.qorpera_google_mailboxes set due_at = clock_timestamp() where addr
 select set_config('qorpera_test.g_claim', pg_temp.g_claim()::text, true) \g /dev/null
 select pg_temp.base_assert(pg_temp.g_bring(current_setting('qorpera_test.g_claim')::jsonb, 'a5', true,
 		clock_timestamp() - interval '3 hours') ->> 'outcome' = 'accepted'
-		and (pg_temp.g_box('owner@gmail.com')).brought_in = 2,
+		and (pg_temp.g_box('owner@gmail.com')).brought_in = 3,
 	'Mail from a gap in the change list comes in quietly, outside the first import''s count');
 select pg_temp.base_assert(pg_temp.g_bring(current_setting('qorpera_test.g_claim')::jsonb, 'n1', false, clock_timestamp())
 		->> 'outcome' = 'accepted',
@@ -469,9 +469,23 @@ select pg_temp.base_assert(current_setting('qorpera_test.g_claim')::jsonb ->> 'a
 		and pg_temp.g_bring(current_setting('qorpera_test.g_claim')::jsonb, 'a1', true,
 			clock_timestamp() - interval '40 days') ->> 'outcome' = 'duplicate',
 	'Reading again skips what came in before: nothing is lost and nothing twice');
-select pg_temp.base_assert((select count(*) = 5 from public.qorpera_mail_received as received
+select pg_temp.base_assert((current_setting('qorpera_test.g_claim')::jsonb ->> 'gap')::boolean
+		and (current_setting('qorpera_test.g_claim')::jsonb ->> 'importCount')::integer = 0
+		and (current_setting('qorpera_test.g_claim')::jsonb ->> 'broughtIn')::integer = 50000
+		and current_setting('qorpera_test.g_claim')::jsonb ->> 'historyId' is null
+		and pg_temp.g_bring(current_setting('qorpera_test.g_claim')::jsonb, 'g1', true,
+			clock_timestamp() - interval '3 days') ->> 'outcome' = 'accepted'
+		and (pg_temp.g_box('owner@gmail.com')).brought_in = 50001
+		and (pg_temp.g_box('owner@gmail.com')).import_count = 1,
+	'Mail from while it was removed comes in past a removed row''s 50,000, on a limit of its own');
+select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'imported', '5000', null, 60000)
+		->> 'state' = 'live'
+		and not (pg_temp.g_box('owner@gmail.com')).gap
+		and (pg_temp.g_box('owner@gmail.com')).total = 60000,
+	'The gap import ends at known mail, with Google''s count read again');
+select pg_temp.base_assert((select count(*) = 6 from public.qorpera_mail_received as received
 		where received.mailbox_id = (pg_temp.g_box('owner@gmail.com')).mailbox_id),
-	'Still five messages after reading again');
+	'Five messages from before and the one from the gap, none twice');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_set_event_hook_status((pg_temp.g_box('owner@gmail.com')).hook_id, 'removed') \g /dev/null
 select pg_temp.base_claims('service_role');
