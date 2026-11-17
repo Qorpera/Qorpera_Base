@@ -1769,10 +1769,11 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		useBy: "2026-11-30T10:00:00.000Z",
 		usable: "now" as const,
 	};
-	async function claudeView(listed: WebClaudeLogin, readClaude = vi.fn(async () => id(99))) {
+	type ReadClaude = (options: { reset?: string; force?: boolean }) => Promise<string>;
+	async function claudeView(listed: WebClaudeLogin, readClaude = vi.fn<ReadClaude>(async () => id(99))) {
 		const logins = { signInOpen: true, readable: true, logins: [listed] };
 		const client = {
-			listConnections: vi.fn(async () => structuredClone(observed([]))),
+			listConnections: vi.fn(async () => structuredClone(observed())),
 			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
 			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
 			listClaudeLogins: vi.fn(async () => structuredClone(logins)),
@@ -1902,6 +1903,32 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(unconfirmed.querySelector("strong")!.textContent).toBe("Couldn't confirm the reset went through");
 		expect(unconfirmed.querySelector("button")).toBeNull();
 		expect(readClaude.mock.calls.filter(([options]) => options.reset)).toHaveLength(2);
+	});
+
+	it("reads the bars again after a reset, also when another read was running meanwhile", async () => {
+		const reset = deferred<string>();
+		const meanwhile = deferred<string>();
+		let forced = 0;
+		const readClaude = vi.fn(async (options: { reset?: string; force?: boolean }) => {
+			if (options.reset) return reset.promise;
+			if (options.force && ++forced === 1) return meanwhile.promise;
+			return id(99);
+		});
+		const { logins } = await claudeView(
+			login({ resets: { observedAt: new Date().toISOString(), entries: [fullReset] } }),
+			readClaude,
+		);
+		claudeCard().querySelector<HTMLButtonElement>(".connection-resets button")!.click();
+		await settle();
+		view.el.querySelector<HTMLButtonElement>(".connection-section-heading button")!.click();
+		await settle();
+		logins.logins[0]!.lastReset = { requestId: id(92), kind: "full", outcome: "reset", left: 2, at: timestamp };
+		reset.resolve(id(92));
+		await settle();
+		meanwhile.resolve(id(99));
+		await settle();
+		await settle();
+		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(2);
 	});
 
 	it("says nothing was used and offers another try when the reset never began", async () => {

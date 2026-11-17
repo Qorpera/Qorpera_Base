@@ -701,7 +701,8 @@ export class ConnectionsView {
 		}
 		if (this.#lifetime.signal.aborted) return;
 		this.#draw();
-		void this.#refreshUsage(true);
+		await this.#metadataRefresh;
+		if (!this.#lifetime.signal.aborted) void this.#refreshUsage(true);
 	}
 	#claudeResets(login: WebClaudeLogin, limited: boolean): HTMLElement[] {
 		const use = this.#claudeReset?.loginId === login.loginId ? this.#claudeReset : undefined;
