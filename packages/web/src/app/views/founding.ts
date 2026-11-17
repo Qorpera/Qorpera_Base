@@ -6,12 +6,22 @@ import {
 } from "../../cloud/company-founding.ts";
 import type { FoundingField } from "../../cloud/founding-presence.ts";
 import { companyInSentence, companyNameText, isUnnamed } from "../../ui/company-name.ts";
-import { button, confirmDialog, fmtTime, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
+import {
+	button,
+	confirmDialog,
+	fmtTime,
+	growToText,
+	h,
+	icon,
+	notice,
+	personAvatar,
+	personColor,
+	spinner,
+} from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { FounderLive, FoundingController } from "../founding.ts";
 import { navigate } from "../router.ts";
-import { mountCrown } from "./crown.ts";
-import { claimStartCrown } from "./start-crown.ts";
+import { cheerStartCrown, claimStartCrown } from "./start-crown.ts";
 
 /* The founding table, drawn as writing the first message together (Jonas, 22 October 2026, hub round 3):
  * the company's name in a labelled field, then one box like qorpera.com's, with the Co-Founder's crown
@@ -50,12 +60,6 @@ class Slot {
 		if (built) this.el.replaceChildren(built);
 		else this.el.replaceChildren();
 	}
-}
-
-/** A text box that grows with its text, as qorpera.com's does. */
-function growToText(field: HTMLTextAreaElement): void {
-	field.style.height = "auto";
-	if (field.scrollHeight > 0) field.style.height = `${field.scrollHeight}px`;
 }
 
 /** A place in a text that does not split a character made of two UTF-16 units. */
@@ -322,7 +326,6 @@ export class FoundingView {
 	#name: SyncedField<HTMLInputElement> | undefined;
 	#vision: SyncedField<HTMLTextAreaElement> | undefined;
 	readonly #heads = new Slot();
-	readonly #crownStage = h("span", { class: "founding-crown", "aria-hidden": "true" });
 	readonly #invitation = new Slot();
 	readonly #seatList = h("div", { class: "founding-seats" });
 	readonly #seats = new Map<string, SeatChip>();
@@ -479,6 +482,7 @@ export class FoundingView {
 			type: "button",
 			class: "btn btn-primary founding-start",
 			onclick: () => {
+				cheerStartCrown();
 				// Alone at the table, Start is one press: Ready, then Start.
 				if (this.#seen.alone) void founding.startAlone(this.#seen.revision);
 				else void founding.start();
@@ -584,8 +588,7 @@ export class FoundingView {
 		const table = state.table;
 		const mode = state.gone
 			? `gone:${state.gone}`
-			: (state.autoStart && table?.phase !== "started") ||
-					(state.startedAlone && table?.phase === "started" && startsQuietly(table))
+			: (state.autoStart && table?.phase !== "started") || (table?.phase === "started" && startsQuietly(table))
 				? "starting"
 				: !table
 					? "loading"
@@ -595,20 +598,13 @@ export class FoundingView {
 		if (mode !== this.#mode) {
 			this.#mode = mode;
 			this.#page.show(mode, () => this.#build(mode));
-			// The crown stops when it leaves the page; the open table gets a new one each time it is built.
-			if (mode === "open") {
-				this.#crownStage.replaceChildren();
-				mountCrown(this.#crownStage, { mirrored: false });
-			}
 		}
+		if (mode === "loading" || mode === "open" || mode === "starting") claimStartCrown();
 		if (mode === "loading")
 			this.#error.show(state.readError ?? "", () => (state.readError ? notice("danger", state.readError) : null));
 		else if (mode === "started") this.#started(table!);
 		else if (mode === "open") this.#open(table!);
-		else if (mode === "starting") {
-			claimStartCrown();
-			this.#starting(table);
-		}
+		else if (mode === "starting") this.#starting(table);
 	}
 
 	#starting(table: CompanyFounding | undefined): void {
@@ -619,12 +615,36 @@ export class FoundingView {
 		const idea = (table?.vision || this.#founding.pendingVision || "").trim().split(/\r?\n/, 1)[0] ?? "";
 		const shownIdea = idea.toLocaleLowerCase() === name.toLocaleLowerCase() ? "" : idea;
 		const ready = table?.start?.companyReady === true;
-		this.#startingSlot.show(`${name}\n${shownIdea}\n${connect}\n${ready}`, () =>
+		const founders = table?.phase === "started" && table.seats.length > 1 ? table.seats : [];
+		const foundersKey = founders.map((seat) => `${seat.userId}:${seat.displayName}`).join(",");
+		this.#startingSlot.show(`${name}\n${shownIdea}\n${connect}\n${ready}\n${foundersKey}`, () =>
 			h(
 				"header",
 				{ class: "founding-head founding-start-head" },
 				named ? h("h1", { class: "founding-start-name" }, named) : null,
 				shownIdea ? h("p", { class: "founding-start-idea" }, shownIdea) : null,
+				table && founders.length > 0
+					? h(
+							"div",
+							{ class: "founding-start-founders" },
+							h(
+								"span",
+								{ class: "founding-start-faces", "aria-hidden": "true" },
+								...founders.map((seat) => personAvatar(seat.displayName, seat.userId)),
+							),
+							h(
+								"p",
+								null,
+								t("{names} own it now.", {
+									names: names(
+										table,
+										founders.map((seat) => seat.userId),
+										"",
+									),
+								}),
+							),
+						)
+					: null,
 				connect
 					? h(
 							"p",
@@ -689,9 +709,8 @@ export class FoundingView {
 			h(
 				"div",
 				{ class: "founding-ask" },
-				this.#crownStage,
 				this.#heads.el,
-				h("div", { class: "founding-box" }, this.#visionSlot.el, this.#boxFoot),
+				h("div", { class: "hero-box founding-box" }, this.#visionSlot.el, this.#boxFoot),
 				this.#friends,
 			),
 			this.#seatList,
@@ -718,12 +737,13 @@ export class FoundingView {
 			}
 			const field = h("input", {
 				id: "foundingName",
-				class: "founding-name",
+				class: "hero-name",
 				type: "text",
 				maxlength: FOUNDING_NAME_MAX_CHARACTERS,
 				required: true,
 				autocomplete: "organization",
-				placeholder: t("No name yet"),
+				placeholder: t("Name your company"),
+				"aria-label": t("Company name"),
 			});
 			const syncedName = new SyncedField(
 				field,
@@ -735,13 +755,7 @@ export class FoundingView {
 			);
 			this.#name = syncedName;
 			this.#watchLive(syncedName, "name");
-			// A field you can see is one, not the page's title (Jonas, 9 November 2026): a label over it, an edge round it.
-			return h(
-				"div",
-				{ class: "founding-name-field" },
-				h("label", { for: "foundingName", class: "founding-name-label" }, t("Company name")),
-				h("div", { class: "founding-name-box" }, field, icon("edit")),
-			);
+			return h("div", { class: "hero-name-field" }, h("div", { class: "hero-name-box" }, field, icon("edit")));
 		});
 		this.#name?.show(isUnnamed(table.companyName) ? "" : table.companyName, followedName);
 
@@ -779,8 +793,8 @@ export class FoundingView {
 				class: "founding-vision",
 				rows: 1,
 				maxlength: VISION_MAX_UNITS,
-				placeholder: t("What is the company for? One line is enough to start."),
-				"aria-label": t("What the company is for"),
+				placeholder: t("Describe your idea"),
+				"aria-label": t("Describe your idea"),
 			});
 			// The idea the opening could not save waits here as your unsaved text: leaving the box saves it.
 			const syncedVision = new SyncedField(
@@ -1056,12 +1070,10 @@ export class FoundingView {
 			role: before?.seats.find((earlier) => earlier.userId === seat.userId)?.role ?? "",
 		}));
 		const ready = table.start?.companyReady === true;
-		const failed = !ready && table.start?.companySetup === "failed";
 		const firstRun = ready ? (table.start?.firstRun ?? null) : null;
 		const waitsUntil = ready && firstRun === "queued" ? (table.start?.firstRunWaitsUntil ?? null) : null;
 		const key = [
 			ready,
-			failed,
 			firstRun,
 			waitsUntil,
 			table.companyName,
@@ -1084,9 +1096,7 @@ export class FoundingView {
 						{ class: "founding-name" },
 						ready
 							? t("{name} has started", { name: companyInSentence(table.companyName, true) })
-							: failed
-								? t("{name} could not be set up", { name: companyInSentence(table.companyName, true) })
-								: t("{name} is starting", { name: companyInSentence(table.companyName, true) }),
+							: t("{name} could not be set up", { name: companyInSentence(table.companyName, true) }),
 					),
 					h(
 						"p",
@@ -1145,17 +1155,12 @@ export class FoundingView {
 								() => navigate({ name: "company", profileId: table.profileId, section: "home" }),
 								{ primary: true },
 							)
-						: failed
-							? notice(
-									"danger",
-									t(
-										"Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.",
-										{
-											name: companyInSentence(table.companyName),
-										},
-									),
-								)
-							: spinner(t("Preparing {name}", { name: companyInSentence(table.companyName) })),
+						: notice(
+								"danger",
+								t("Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.", {
+									name: companyInSentence(table.companyName),
+								}),
+							),
 				),
 			);
 		});

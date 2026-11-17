@@ -862,7 +862,7 @@ textarea.hero-idea:focus-visible { outline: none; }
 }
 a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, var(--sidebar-selection) 13%, var(--bg)); }
 .hero-invitation > span:nth-child(2) { flex: 1; min-width: 0; }
-.hero-invitation .company-inviter { position: static; width: 38px; height: 38px; font-size: 13px; box-shadow: none; }
+.hero-invitation .company-inviter { position: relative; inset: auto; width: 38px; height: 38px; font-size: 13px; box-shadow: none; }
 .hero-invitation .hero-invitation-logo { width: 38px; height: 38px; }
 
 @media (max-width: 760px) {

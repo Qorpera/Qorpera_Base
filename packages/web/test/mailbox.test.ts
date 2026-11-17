@@ -1401,7 +1401,9 @@ describe("Sent, Addresses and Write", () => {
 		// The cloud cannot be read after a stop: the page says so and claims nothing; the line is as the mail says.
 		list.mockImplementationOnce(list.getMockImplementation()!).mockRejectedValueOnce(new Error("Failed to fetch"));
 		press("Bo");
-		await vi.waitFor(() => expect(said()).toBe("Failed to fetch"));
+		await vi.waitFor(() =>
+			expect(said()).toBe("Qorpera can't be reached right now. Check your connection and try again."),
+		);
 		expect(named()).toBe("Choose who answers");
 	});
 

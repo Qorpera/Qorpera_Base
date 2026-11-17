@@ -7,20 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025299_runtime_bundle_activation_v252.sql";
-const activationVersion = 252;
-const previousActivationVersion = 251;
-const previousActivationSha256 = "27a9118662d860eecae26f6b94168adaea1c75e5279a62c0e5c06e23a83bae72";
+const activation = "supabase/migrations/20260929025499_runtime_bundle_activation_v254.sql";
+const activationVersion = 254;
+const previousActivationVersion = 253;
+const previousActivationSha256 = "ec5969910e64e58b11d03e8ac777ee44121384317988b071ea9660ed2d023646";
 const activationRequires = Object.freeze([
 	[
-		"20260930784000_conversation_claude_models",
-		"conversation models (#1877): bundle 252 declares modelPolicy.claudeChoice, which an older kernel's manifest check refuses; 784000 makes the check take it and pins a member's Claude pick on the run",
-		"to_regprocedure('public.qorpera_pin_execution_claude_choice()') is not null",
-	],
-	[
-		"20260930785000_move_all_chats_to_another_login",
-		"#1876 (the founder's go for v252): one click moves all of a member's chats waiting on a used-up login to another of their own logins; its web, merged in this release, calls the two new functions",
-		"to_regprocedure('public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)') is not null",
+		"20260930796000_company_mail_handles_and_unnamed",
+		"#1915 (company mail handles, 'No name yet'): bundle 254 (#1921) asks for the address on an ask_member card with input kind mail_address, which only 796000's kernel validator takes, and manage_hook names <box>.<handle> under a handle the company owns",
+		"to_regclass('public.qorpera_company_mail_handles') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

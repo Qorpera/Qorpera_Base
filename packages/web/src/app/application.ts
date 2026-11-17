@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
-import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
+import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
@@ -127,6 +127,7 @@ export function mountApplication(
 	api = new CloudApi(cloud),
 	workspaceActions: WorkspaceActions = {},
 ): () => void {
+	translateCloudErrors(t);
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
 	/** The founding table on screen, if any; one at a time, like the company. */

@@ -1,6 +1,6 @@
 import { FOUNDING_NAME_MAX_CHARACTERS } from "../../cloud/company-founding.ts";
 import { companyInSentence, UNNAMED_COMPANY } from "../../ui/company-name.ts";
-import { button, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
+import { button, growToText, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { IDEA_MAX_CHARACTERS } from "../router.ts";
 import type { HubController } from "./hub.ts";
@@ -152,7 +152,7 @@ class NewCompanyView {
 		if (document.activeElement === this.#idea) this.#caret = caretOf(this.#idea);
 		container.replaceChildren(h("section", { class: wrapperClass, "data-form-owner": "new-company" }, this.el));
 		this.#restoreCaret();
-		this.#resize();
+		growToText(this.#idea);
 	}
 
 	carry(handoff: WebsiteHandoff): void {
@@ -233,14 +233,8 @@ class NewCompanyView {
 		this.#invitations.hidden = invitations.length === 0;
 	}
 
-	/** The box grows with the idea, as the website's does. */
-	#resize(): void {
-		this.#idea.style.height = "auto";
-		if (this.#idea.scrollHeight > 0) this.#idea.style.height = `${this.#idea.scrollHeight}px`;
-	}
-
 	#changed(): void {
-		this.#resize();
+		growToText(this.#idea);
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 	}

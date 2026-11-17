@@ -31,7 +31,7 @@ begin
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the dispatch: ' || v_result::text);
 	-- A plain worker beside it, for a run that is not a Claude Code worker's.
 	v_result := pg_temp.c4_dispatch(v_alice, 'c4b-dispatch-2', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12690000-0000-4000-8000-0000000000b2', null, 'Read the notes'));
+		pg_temp.c4_brief('12690000-0000-4000-8000-0000000000b2', 'codex', 'Read the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the plain dispatch: ' || v_result::text);
 	perform pg_temp.c4_drain();
 	v_pass := pg_temp.base_materialize();

@@ -19,7 +19,7 @@ import {
 	cloudRoutineSpreadLocalTime,
 } from "./cloud-routine-pace.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
-import { CLOUD_RUNTIME_REASONING_EFFORTS, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
+import { CLOUD_RUNTIME_ROUTINE_EFFORTS, isCloudRuntimeRoutineEffort } from "./cloud-runtime-policy.ts";
 import { CURSOR, fitsOneResult } from "./cloud-worker-tools.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
@@ -498,7 +498,7 @@ export function cloudRoutineTools(
 				},
 				effort: {
 					type: "string",
-					enum: [...CLOUD_RUNTIME_REASONING_EFFORTS],
+					enum: [...CLOUD_RUNTIME_ROUTINE_EFFORTS],
 					description:
 						"Each run's thinking depth: high for judgement-heavy analysis, low for a quick check. A new routine starts at medium; a save without it keeps what it has.",
 				},
@@ -639,7 +639,7 @@ export function cloudRoutineTools(
 					throw new Error("Invalid routine occurrence limit");
 				request.maxOccurrences = a.maxOccurrences;
 			}
-			if (a.effort !== undefined && !isCloudRuntimeReasoningEffort(a.effort))
+			if (a.effort !== undefined && !isCloudRuntimeRoutineEffort(a.effort))
 				throw new Error("Invalid routine effort");
 			// The routine file's writer starts a new routine at medium and keeps a saved routine's effort when none is given.
 			if (a.effort !== undefined) request.effort = a.effort;
@@ -712,7 +712,7 @@ export function cloudRoutineDecisionTool(
 						"When the work changed: the complete new instruction for your future self (what to check, what you learned, when to speak). Without it the next run keeps this run's.",
 				},
 				title: { type: "string", minLength: 1, maxLength: 160 },
-				effort: { type: "string", enum: [...CLOUD_RUNTIME_REASONING_EFFORTS] },
+				effort: { type: "string", enum: [...CLOUD_RUNTIME_ROUTINE_EFFORTS] },
 				report: { type: "string", enum: [...REPLY] },
 				summary: { type: "string", minLength: 1, maxLength: 2000 },
 				whenDone: { type: "string", minLength: 1, maxLength: 1024 },
@@ -747,7 +747,7 @@ export function cloudRoutineDecisionTool(
 			if (n.intent !== undefined) request.intent = text(n.intent, 32768);
 			if (n.title !== undefined) request.title = text(n.title, 160, true);
 			if (n.effort !== undefined) {
-				if (!isCloudRuntimeReasoningEffort(n.effort)) throw new Error("Invalid routine effort");
+				if (!isCloudRuntimeRoutineEffort(n.effort)) throw new Error("Invalid routine effort");
 				request.effort = n.effort;
 			}
 			if (n.report !== undefined) request.report = reply(n.report);

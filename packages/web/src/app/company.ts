@@ -2,7 +2,7 @@ import type { CloudMemberDataDescription } from "@qorpera/cloud-client/cloud-mem
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
-import { CloudRpcError, describeError } from "../cloud/client.ts";
+import { CloudRpcError, connectionLost, describeError } from "../cloud/client.ts";
 import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import {
 	type CodingSession,
@@ -98,6 +98,7 @@ import {
 	type QuoteRecord,
 	takeQuoteRecords,
 } from "./quotes.ts";
+import { Reconnect } from "./reconnect.ts";
 import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store, throttle } from "./state.ts";
 
@@ -204,6 +205,7 @@ export interface CompanyState {
 	staff: HostedStaffAgent[];
 	sessions: HostedSession[];
 	sessionsError?: string;
+	connectionLost?: boolean;
 	groups?: Record<string, GroupChatDetails>;
 	/** Kept for diagnostics only; the rail does not show it (see shell.ts). */
 	groupsError?: string;
@@ -623,7 +625,9 @@ export class CompanyController {
 	#hiddenAt: number | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
+	#connectionFailures = 0;
 	readonly #abort = new AbortController();
+	readonly #reconnect = new Reconnect(() => this.#tryAgain(), this.#abort.signal);
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
@@ -1071,7 +1075,7 @@ export class CompanyController {
 						earlierError: undefined,
 					}));
 				this.stop();
-			} else this.store.set({ error: describeError(error) });
+			} else if (!this.#lost(error)) this.store.set({ error: describeError(error) });
 		}
 	}
 
@@ -1106,7 +1110,7 @@ export class CompanyController {
 			this.store.set((state) => ({ staff, hierarchy: buildCompanyHierarchy(state.organization, staff) }));
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.staff) return;
-			this.store.set({ error: describeError(error) });
+			if (!this.#lost(error)) this.store.set({ error: describeError(error) });
 		}
 	}
 
@@ -1126,7 +1130,7 @@ export class CompanyController {
 				if (!this.store.get().loading) await this.refreshGroups();
 			} catch (error) {
 				if (this.#stopped || version !== this.#versions.sessions) return;
-				this.store.set({ sessionsError: describeError(error) });
+				this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
 			}
 		})();
 		this.#sessionsFullRead = read;
@@ -1198,10 +1202,29 @@ export class CompanyController {
 				await this.refreshGroups();
 			return changed;
 		} catch (error) {
-			if (!this.#stopped) this.store.set({ sessionsError: describeError(error) });
+			if (!this.#stopped) this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
 			// Unknown, not unchanged: what the hint would have read is read anyway.
 			return undefined;
 		}
+	}
+
+	#lost(error: unknown): boolean {
+		if (this.#stopped || !connectionLost(error)) return false;
+		this.#connectionFailures += 1;
+		if (!this.store.get().connectionLost) this.store.set({ connectionLost: true });
+		this.#reconnect.lost();
+		return true;
+	}
+
+	async #tryAgain(): Promise<boolean> {
+		const failures = this.#connectionFailures;
+		await this.refreshTeam();
+		await Promise.all([this.refreshSessions(), this.refreshStaff(), this.refreshOrganization()]);
+		if (this.#stopped || this.#connectionFailures !== failures) return false;
+		this.store.set({ connectionLost: undefined });
+		for (const listener of this.#invalidations) listener("sessions");
+		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
+		return true;
 	}
 
 	async refreshOrganization(): Promise<void> {
@@ -1223,7 +1246,7 @@ export class CompanyController {
 					organizationState: "not-deployed",
 					hierarchy: buildCompanyHierarchy(undefined, state.staff),
 				}));
-			} else {
+			} else if (!this.#lost(error)) {
 				this.store.set({ organizationState: "error", organizationError: describeError(error) });
 			}
 		}
@@ -2548,6 +2571,7 @@ export class CompanyController {
 								...(hasEarlier === undefined ? {} : { hasEarlier }),
 							}
 						: {};
+				this.#lost(error);
 				store.set({ ...read, loading: false, complete: false, error: describeError(error) });
 				return;
 			}

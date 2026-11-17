@@ -48,6 +48,8 @@ body{margin:0}
 .rk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .rk--bare{padding:clamp(12px,1vw,16px)}
 .rk--bare .rk-head{display:none}
+.rk .rk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.rk .rk-src{display:none}
 .rk-stage{position:relative;flex:none;margin:auto;outline:none;touch-action:pan-y;border-radius:50%;cursor:pointer}
 .rk-stage:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
 .rk-stage svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}

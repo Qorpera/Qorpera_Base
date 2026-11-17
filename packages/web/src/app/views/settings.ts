@@ -580,16 +580,18 @@ export class SettingsView {
 		if (!authority || !team) {
 			replace(
 				this.#storageContent,
-				state?.loading
-					? notice("neutral", t("Opening Company File"))
-					: h(
-							"div",
-							null,
-							notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
-							button(t("Retry company"), () => {
-								if (!company.store.get().loading) void company.refreshAll();
-							}),
-						),
+				state?.connectionLost
+					? notice("neutral", t("Can't reach Qorpera. Trying again…"))
+					: state?.loading
+						? notice("neutral", t("Opening Company File"))
+						: h(
+								"div",
+								null,
+								notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
+								button(t("Retry company"), () => {
+									if (!company.store.get().loading) void company.refreshAll();
+								}),
+							),
 			);
 			return;
 		}

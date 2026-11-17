@@ -1,5 +1,5 @@
 import type { CloudApi } from "../../cloud/api.ts";
-import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import { CloudRpcError, connectionLost, describeError } from "../../cloud/client.ts";
 import {
 	CompanyFoundingApi,
 	FOUNDING_NAME_MAX_CHARACTERS,
@@ -19,6 +19,7 @@ import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, repl
 import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
 import { lobbyError, setFoundingIntent } from "../founding.ts";
+import { Reconnect } from "../reconnect.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { renderNewCompany, type Viewer } from "./new-company.ts";
@@ -67,6 +68,7 @@ export interface HubState {
 	foundingAvailable?: boolean;
 	busyTable?: string;
 	error?: string;
+	connectionLost?: boolean;
 	creating?: Creation;
 	creationRetry?: Creation;
 	busyInvitation?: string;
@@ -81,6 +83,11 @@ export class HubController {
 	readonly #userId?: string;
 	readonly #creationKey?: string;
 	#disposed = false;
+	readonly #abort = new AbortController();
+	readonly #reconnect = new Reconnect(async () => {
+		await this.refresh();
+		return !this.store.get().connectionLost;
+	}, this.#abort.signal);
 	#refresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
@@ -124,6 +131,7 @@ export class HubController {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#abort.abort();
 		this.store.dispose();
 	}
 
@@ -189,9 +197,22 @@ export class HubController {
 				this.#readFounding(),
 			]);
 			if (revision === this.#membershipRevision)
-				this.store.set({ profiles, invitations, ...founding, loading: false, loaded: true });
+				this.store.set({
+					profiles,
+					invitations,
+					...founding,
+					loading: false,
+					loaded: true,
+					connectionLost: undefined,
+				});
 		} catch (error) {
-			if (revision === this.#membershipRevision) this.store.set({ loading: false, error: describeError(error) });
+			if (this.#disposed || revision !== this.#membershipRevision) return;
+			if (!connectionLost(error)) {
+				this.store.set({ loading: false, connectionLost: undefined, error: describeError(error) });
+				return;
+			}
+			this.store.set({ loading: false, connectionLost: true });
+			this.#reconnect.lost();
 		}
 	}
 
@@ -535,7 +556,7 @@ function openCompanyMenu(hub: HubController, event: MouseEvent): void {
 export function renderHub(hub: HubController, container: HTMLElement, viewer?: Viewer): void {
 	const state = hub.store.get();
 	// Placeholders stand in only for the first read; a refresh keeps what the page shows.
-	const firstRead = state.loading && !state.loaded;
+	const firstRead = (state.loading || state.connectionLost === true) && !state.loaded;
 	// A member with no company and no table of their own starts one: the new-company box is the hub.
 	const welcome =
 		!firstRead && state.profiles.length === 0 && !state.tables.some((table) => table.myState === "joined");
@@ -573,6 +594,7 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 				{ class: "hub-inner hub-pick" },
 				h("h1", { class: "hub-title" }, first ? t("Welcome back, {name}.", { name: first }) : t("Your companies")),
 				h("p", { class: "hub-lead" }, t("Pick a company.")),
+				state.connectionLost ? notice("neutral", t("Can't reach Qorpera. Trying again…")) : null,
 				state.error ? notice("danger", state.error) : null,
 				state.creationRetry && !state.creating
 					? button(
