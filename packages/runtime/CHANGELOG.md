@@ -1,14 +1,14 @@
 # Changelog
 
 ## [Unreleased]
-- Release v254 (company mail handles and companies with no name yet, #1915 and #1921, each merged in the release branch
-  at its approved head; and master since v253: pending spectators, #1911; long company names in the invitation email,
-  #1901; the kits' pages without a header, #1899): runtime bundle 254
-  `4b63ee88cd3675f522d8bebeb744cadec06ef68aa4bf173ad25594d78bcd77a5` (activation `20260929025499`, previous 253
+- Release v254 (company mail handles and companies with no name yet, #1915 and #1921; a member's message waits at a
+  rate limit, #1916; each merged in the release branch at its approved head; and master since v253: pending spectators,
+  #1911; long company names in the invitation email, #1901; the kits' pages without a header, #1899): runtime bundle 254
+  `9a7b54ecd96fa8326981602d6139d2388265a77a22dc6808a8dfb301e6529b10` (activation `20260929025499`, previous 253
   `ec5969910e64`). Its activation requires `20260930796000` (the kernel's question input `mail_address` and the company
-  mail handles), which the roll's `migrate` runs before the switch, after `20260930794000` (pending spectators). The
-  guest moves: the native provider host (`489f0b13`); the ephemeral runner, the two LXD bootstraps and the native Codex
-  (`9c299f88`) stay.
+  mail handles). The roll's `migrate` runs `20260930794000` (pending spectators), `20260930796000` and `20260930801000`
+  (the rate-limit wait; #1902, its web half, is live before it) before the switch. The guest moves: the native provider
+  host (`5aa643be`); the ephemeral runner, the two LXD bootstraps and the native Codex (`9c299f88`) stay.
 - A member's own message waits at a ChatGPT rate limit instead of failing (contract 17, the 2026-11-17 amendment "a
   member's message waits at a rate limit"; migration `20260930801000`, SQL test 1289). On 17 Nov 2026 the founder's
   "retry" in Produkt's thread (run `e5391a06`, `room_delivery`) failed in 2 s with `rate_limited` and only a failure card
