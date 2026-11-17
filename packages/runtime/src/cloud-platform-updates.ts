@@ -90,6 +90,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Coding and design work goes to Claude Code first",
 		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
 	},
+	{
+		id: "google-mailboxes",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "A member's Google mail in the Mailbox",
+		text: "An owner or admin can bring their Google mail into the company's Mailbox. Their address then shows among the mailboxes (list_hooks), and its mail reaches you as any company mail does: new mail starts the routines that listen to that mailbox, while the older mail brought in at the start never does. Email you send from that address leaves through Gmail from the member's own address and shows in their Gmail. It carries no attached files, and while Google asks the member to sign in again it is refused: tell them to sign in again in the Mailbox.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

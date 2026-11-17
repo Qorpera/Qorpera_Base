@@ -10,6 +10,7 @@ import {
 } from "./cloud-connector-google.ts";
 import { BANK_CONNECTOR_ID, CloudConnectorOAuthFlows, parseConnectorReturnOrigins } from "./cloud-connector-oauth.ts";
 import { CloudConnectorTokenRevoker } from "./cloud-connector-token-revocation.ts";
+import { GmailMailboxClient } from "./cloud-gmail-mailbox.ts";
 import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
 import { DigitalPostPdfText, type DigitalPostPdfTextReader } from "./digital-post-pdf-text.ts";
 
@@ -60,6 +61,7 @@ export interface CloudConnectorService {
 	readonly digitalPost?: DigitalPostClient;
 	/** With it, the reader of PDF-only letters' text. */
 	readonly digitalPostPdfText?: DigitalPostPdfTextReader;
+	readonly gmailMailbox?: GmailMailboxClient;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -177,5 +179,8 @@ export function composeCloudConnectorService(
 		}),
 		...(bank ? { bank } : {}),
 		...(digitalPost ? { digitalPost, digitalPostPdfText: new DigitalPostPdfText() } : {}),
+		...(config.google
+			? { gmailMailbox: new GmailMailboxClient({ client: config.google, fetch: fetchImplementation }) }
+			: {}),
 	});
 }

@@ -60,6 +60,7 @@ import {
 	parseEventHookFillRequest,
 	parseEventHookRequest,
 } from "./cloud-event-hook-vault.ts";
+import type { GmailMailboxClient } from "./cloud-gmail-mailbox.ts";
 import { CLAUDE_LOGIN_FILES } from "./cloud-model-login-sign-in.ts";
 import {
 	type CloudModelLoginVault,
@@ -82,6 +83,7 @@ import {
 	type CodingRelaySignIn,
 	type CodingRepositoryCredentialRequest,
 	type CodingRepositoryFetchRequest,
+	type GoogleMailboxConnection,
 	parseCloudSecretAccountLabel,
 	parseCodingEnvironmentRequest,
 	parseCodingMcpSignInRequest,
@@ -665,6 +667,7 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	readonly memberOrigins?: readonly string[];
 	/** Connector OAuth flows (Step 7); absent means the OAuth routes answer 404. */
 	readonly oauth?: CloudConnectorOAuthFlows;
+	readonly gmailMailbox?: Pick<GmailMailboxClient, "address">;
 	/** The coding executor's own bearer for `/v1/repository-credentials`
 	 * (bundle v88), `/v1/coding-environment` (5j-3) and the relay's
 	 * `/v1/coding-mcp` and `/v1/coding-repository-fetch/*` (5j-6b); credential
@@ -724,6 +727,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #port: number;
 	readonly #memberOrigins: ReadonlySet<string>;
 	readonly #oauth: CloudConnectorOAuthFlows | undefined;
+	readonly #gmailMailbox: Pick<GmailMailboxClient, "address"> | undefined;
 	readonly #codingExecutorToken: string | undefined;
 	readonly #relayTransport: CloudSecretRelayTransport;
 	readonly #proveBinding: NativeBindingProof | undefined;
@@ -768,6 +772,7 @@ export class HttpCloudSecretBrokerService {
 		this.#port = listenPort;
 		this.#memberOrigins = new Set(origins.map(parseMemberOrigin));
 		this.#oauth = options.oauth;
+		this.#gmailMailbox = options.gmailMailbox;
 		this.#codingExecutorToken = options.codingExecutorToken;
 		this.#relayTransport = options.relayTransport ?? CLOUD_SECRET_RELAY_TRANSPORT;
 		this.#proveBinding = options.proveBinding;
@@ -1050,6 +1055,17 @@ export class HttpCloudSecretBrokerService {
 						},
 						cors,
 					);
+					return;
+				}
+				const mailbox =
+					completion.connectorId === "gmail" && this.#gmailMailbox
+						? await scope.broker.googleMailboxTicket(
+								{ ticketId: completion.ticketId, captureCapability: completion.captureCapability },
+								AbortSignal.timeout(3_000),
+							)
+						: null;
+				if (mailbox && this.#gmailMailbox) {
+					await this.#connectGoogleMailbox(scope.broker, this.#gmailMailbox, completion, reply, cors);
 					return;
 				}
 				try {
@@ -1383,6 +1399,56 @@ export class HttpCloudSecretBrokerService {
 	 * leaves with a fragment naming the connector and a one-time confirmation
 	 * id (or the failure), never a code or token, and only the browser that
 	 * started the sign-in can confirm it. */
+	async #connectGoogleMailbox(
+		broker: CloudSecretBroker,
+		gmail: Pick<GmailMailboxClient, "address">,
+		completion: Awaited<ReturnType<CloudConnectorOAuthFlows["confirm"]>>,
+		reply: ServerResponse,
+		cors: Record<string, string>,
+	): Promise<void> {
+		let connection: GoogleMailboxConnection;
+		try {
+			const address = await gmail.address(completion.fields.refresh_token ?? "", AbortSignal.timeout(8_000));
+			connection = await broker.captureGoogleMailbox(
+				{
+					ticketId: completion.ticketId,
+					captureCapability: completion.captureCapability,
+					fields: completion.fields,
+				},
+				address,
+				AbortSignal.timeout(10_000),
+			);
+		} catch {
+			response(reply, 403, { schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "expired" }, cors);
+			return;
+		}
+		if ("refused" in connection) {
+			response(
+				reply,
+				403,
+				{
+					schema: "qorpera.cloud-connector-oauth-failed/v1",
+					reason: connection.refused,
+					...(connection.address === null ? {} : { address: connection.address }),
+					message: connection.message,
+				},
+				cors,
+			);
+			return;
+		}
+		response(
+			reply,
+			200,
+			{
+				schema: "qorpera.cloud-connector-oauth-confirmed/v1",
+				connectorId: completion.connectorId,
+				accountLabel: connection.address,
+				mailbox: { mailboxId: connection.mailboxId, address: connection.address, outcome: connection.outcome },
+			},
+			cors,
+		);
+	}
+
 	async #oauthCallback(url: URL, reply: ServerResponse): Promise<void> {
 		if (!this.#oauth) {
 			plainPage(reply, 404, "Not found.");

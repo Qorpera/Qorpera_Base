@@ -17,6 +17,7 @@ import {
 } from "./cloud-connector-token-revocation.ts";
 import { CloudDigitalPostSyncs, CloudDigitalPostSyncUpkeep } from "./cloud-digital-post-sync.ts";
 import { CloudEventVerifications, CloudEventVerificationUpkeep } from "./cloud-event-verification.ts";
+import { CloudGmailMailboxes, CloudGmailMailboxUpkeep, type GmailMailboxClient } from "./cloud-gmail-mailbox.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
@@ -375,6 +376,7 @@ export async function runCloudSecretBrokerServiceMain(
 				...(connectors?.bank ? { bank: connectors.bank } : {}),
 				...(connectors?.digitalPost ? { digitalPost: connectors.digitalPost } : {}),
 				...(connectors?.digitalPostPdfText ? { digitalPostPdfText: connectors.digitalPostPdfText } : {}),
+				...(connectors?.gmailMailbox ? { gmailMailbox: connectors.gmailMailbox } : {}),
 				runtimeToken,
 				proveBinding,
 				port: config.port as number,
@@ -456,12 +458,18 @@ export async function runCloudSecretBrokerServiceMain(
 					}),
 				})
 			: undefined;
+		const gmailMailboxes = connectors?.gmailMailbox
+			? new CloudGmailMailboxUpkeep({
+					mailboxes: new CloudGmailMailboxes({ authority, keyring, gmail: connectors.gmailMailbox }),
+				})
+			: undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
 			memberOrigins,
 			proveBinding,
 			...(connectors ? { oauth: connectors.oauth } : {}),
+			...(connectors?.gmailMailbox ? { gmailMailbox: connectors.gmailMailbox } : {}),
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
 			modelLogins,
 			...(signIns ? { modelLoginSignIns: signIns } : {}),
@@ -479,6 +487,7 @@ export async function runCloudSecretBrokerServiceMain(
 			verifications.start();
 			bankSyncs?.start();
 			digitalPostSyncs?.start();
+			gmailMailboxes?.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -494,6 +503,7 @@ export async function runCloudSecretBrokerServiceMain(
 				verifications.close(),
 				bankSyncs?.close(),
 				digitalPostSyncs?.close(),
+				gmailMailboxes?.close(),
 				signIns?.close(),
 				service.close(),
 			]);
@@ -516,6 +526,7 @@ async function runSharedVault(options: {
 	bank?: EnableBankingClient;
 	digitalPost?: DigitalPostClient;
 	digitalPostPdfText?: DigitalPostPdfTextReader;
+	gmailMailbox?: GmailMailboxClient;
 	runtimeToken: string;
 	proveBinding: NativeBindingProof;
 	port: number;
@@ -533,6 +544,7 @@ async function runSharedVault(options: {
 		...(options.bank ? { bank: options.bank } : {}),
 		...(options.digitalPost ? { digitalPost: options.digitalPost } : {}),
 		...(options.digitalPostPdfText ? { digitalPostPdfText: options.digitalPostPdfText } : {}),
+		...(options.gmailMailbox ? { gmailMailbox: options.gmailMailbox } : {}),
 	});
 	const service = new HttpCloudSecretBrokerService(companies, options.runtimeToken, {
 		host: "127.0.0.1",
@@ -540,6 +552,7 @@ async function runSharedVault(options: {
 		memberOrigins: options.memberOrigins,
 		proveBinding: options.proveBinding,
 		...(options.oauth ? { oauth: options.oauth } : {}),
+		...(options.gmailMailbox ? { gmailMailbox: options.gmailMailbox } : {}),
 		...(options.codingExecutorToken ? { codingExecutorToken: options.codingExecutorToken } : {}),
 	});
 	const stop = new AbortController();

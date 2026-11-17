@@ -12,6 +12,7 @@ import {
 } from "./cloud-connector-token-revocation.ts";
 import { CloudDigitalPostSyncs, logDigitalPostSyncPass } from "./cloud-digital-post-sync.ts";
 import { CloudEventVerifications, logEventVerificationPass } from "./cloud-event-verification.ts";
+import { CloudGmailMailboxes, type GmailMailboxClient, logGmailMailboxPass } from "./cloud-gmail-mailbox.ts";
 import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import {
@@ -86,6 +87,7 @@ interface Served {
 	readonly verifications: CloudEventVerifications;
 	readonly bankSyncs: CloudBankSyncs | undefined;
 	readonly digitalPostSyncs: CloudDigitalPostSyncs | undefined;
+	readonly gmailMailboxes: CloudGmailMailboxes | undefined;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -108,6 +110,7 @@ type SharedVaultPrincipal = Pick<
 	PostgresCloudSecretBrokerPrincipal,
 	"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue" | "digitalPostSyncsDue"
 > &
+	Partial<Pick<PostgresCloudSecretBrokerPrincipal, "googleMailboxesDue">> &
 	Partial<AccountModelLoginAuthority>;
 
 /** The principal's account login calls, when it has them all. */
@@ -156,6 +159,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #bank: Pick<EnableBankingClient, "balances" | "transactions"> | undefined;
 	readonly #digitalPost: Pick<DigitalPostClient, "available" | "letter" | "receipt"> | undefined;
 	readonly #digitalPostPdfText: DigitalPostPdfTextReader | undefined;
+	readonly #gmailMailbox: Pick<GmailMailboxClient, "api"> | undefined;
 	readonly #refreshEveryMs: number;
 	readonly #collectEveryMs: number;
 	readonly #sweepEveryMs: number;
@@ -164,6 +168,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #verifyEveryMs: number;
 	readonly #bankEveryMs: number;
 	readonly #digitalPostEveryMs: number;
+	readonly #gmailEveryMs: number;
 	readonly #now: () => number;
 	readonly #served = new Map<string, Served>();
 	readonly #signingIn = new Map<string, number>();
@@ -195,6 +200,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		digitalPost?: Pick<DigitalPostClient, "available" | "letter" | "receipt">;
 		/** Reads PDF-only letters' text; absent, they are kept without it. */
 		digitalPostPdfText?: DigitalPostPdfTextReader;
+		gmailMailbox?: Pick<GmailMailboxClient, "api">;
 		refreshEveryMs?: number;
 		collectEveryMs?: number;
 		sweepEveryMs?: number;
@@ -203,6 +209,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		verifyEveryMs?: number;
 		bankEveryMs?: number;
 		digitalPostEveryMs?: number;
+		gmailEveryMs?: number;
 		now?: () => number;
 	}) {
 		this.#principal = options.principal;
@@ -215,6 +222,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#bank = options.bank;
 		this.#digitalPost = options.digitalPost;
 		this.#digitalPostPdfText = options.digitalPostPdfText;
+		this.#gmailMailbox = options.gmailMailbox;
 		this.#refreshEveryMs = options.refreshEveryMs ?? 10_000;
 		this.#collectEveryMs = options.collectEveryMs ?? 2000;
 		this.#sweepEveryMs = options.sweepEveryMs ?? 30_000;
@@ -223,6 +231,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#verifyEveryMs = options.verifyEveryMs ?? 5000;
 		this.#bankEveryMs = options.bankEveryMs ?? 60_000;
 		this.#digitalPostEveryMs = options.digitalPostEveryMs ?? 60_000;
+		this.#gmailEveryMs = options.gmailEveryMs ?? 60_000;
 		this.#now = options.now ?? Date.now;
 		const account = this.#account;
 		const helper = this.#helper;
@@ -397,6 +406,9 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 						...(this.#digitalPostPdfText ? { pdfText: this.#digitalPostPdfText } : {}),
 					})
 				: undefined,
+			gmailMailboxes: this.#gmailMailbox
+				? new CloudGmailMailboxes({ authority, keyring: this.#keyring, gmail: this.#gmailMailbox })
+				: undefined,
 		};
 	}
 
@@ -504,6 +516,28 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		});
 	}
 
+	syncGoogleMail(): Promise<void> {
+		return withAbortScope(this.#closing.signal, async (signal) => {
+			const due = this.#principal.googleMailboxesDue;
+			if (this.#closed || !this.#gmailMailbox || !due) return;
+			const answer = record(
+				await due.call(this.#principal, AbortSignal.any([signal, AbortSignal.timeout(DEADLINE_MS)])),
+				"Shared vault Google mailboxes",
+			);
+			if (
+				answer.schema !== "qorpera.broker-principal-google-mailboxes/v1" ||
+				!Array.isArray(answer.companyIds) ||
+				answer.companyIds.length > 1000
+			)
+				throw new Error("Shared vault Google mailboxes are invalid");
+			for (const companyId of new Set(answer.companyIds.map(company))) {
+				if (this.#closed) return;
+				const mailboxes = this.#served.get(companyId)?.gmailMailboxes;
+				if (mailboxes) await logGmailMailboxPass(mailboxes, signal);
+			}
+		});
+	}
+
 	start(): void {
 		if (this.#started || this.#closed) return;
 		this.#started = true;
@@ -528,6 +562,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				() => this.syncDigitalPost(),
 				this.#digitalPostEveryMs,
 				20_000 + Math.floor(Math.random() * this.#digitalPostEveryMs),
+			);
+		if (this.#gmailMailbox)
+			this.#loop(
+				() => this.syncGoogleMail(),
+				this.#gmailEveryMs,
+				15_000 + Math.floor(Math.random() * this.#gmailEveryMs),
 			);
 	}
 
