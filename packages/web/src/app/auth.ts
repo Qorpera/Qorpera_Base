@@ -13,7 +13,7 @@ export type AuthStep =
 	| { name: "create" }
 	| { name: "confirm"; email: string }
 	| { name: "code"; email: string }
-	| { name: "reset"; email: string };
+	| { name: "reset"; email: string; verified?: boolean };
 
 export type AuthErrorKind = "mismatch" | "exists";
 
@@ -60,6 +60,7 @@ export class AuthController {
 	#providerRequest?: AbortController;
 	/** A refused session is being signed out; further refusals wait for that one sign-out. */
 	#signingOut = false;
+	#verifyingRecovery = false;
 
 	constructor(cloud: Cloud) {
 		this.#cloud = cloud;
@@ -107,8 +108,13 @@ export class AuthController {
 			data: { subscription },
 		} = this.#cloud.supabase.auth.onAuthStateChange((_event, session) => {
 			this.store.set({ session, user: session?.user ?? null, ready: true });
-			if (session) return;
-			if (this.store.get().step.name === "reset")
+			const step = this.store.get().step;
+			const resetUnproven = step.name === "reset" && !step.verified && !this.#verifyingRecovery;
+			if (session) {
+				if (resetUnproven) this.store.set({ step: { name: "signin" }, error: undefined, errorKind: undefined });
+				return;
+			}
+			if (step.name === "reset")
 				this.store.set({ step: { name: "signin" }, error: undefined, errorKind: undefined });
 			// Signed out, however it came about: no file read as the member stays in this tab.
 			forgetMemberFiles();
@@ -319,16 +325,22 @@ export class AuthController {
 		const step = this.store.get().step;
 		if (step.name !== "reset") return;
 		const code = token.replace(/\D/g, "");
-		if (code.length !== CODE_LENGTH) return this.#fail(t("Enter the 6-digit code from the email."));
+		if (!step.verified && code.length !== CODE_LENGTH) return this.#fail(t("Enter the 6-digit code from the email."));
 		if (password.length < PASSWORD_MIN) return this.#fail(t("Use at least 8 characters for your password."));
 		await this.#run(async () => {
-			if (!this.store.get().session) {
-				const verified = await this.#cloud.supabase.auth.verifyOtp({
-					email: step.email,
-					token: code,
-					type: "recovery",
-				});
-				if (verified.error) throw verified.error;
+			if (!step.verified) {
+				this.#verifyingRecovery = true;
+				try {
+					const verified = await this.#cloud.supabase.auth.verifyOtp({
+						email: step.email,
+						token: code,
+						type: "recovery",
+					});
+					if (verified.error) throw verified.error;
+				} finally {
+					this.#verifyingRecovery = false;
+				}
+				this.store.set({ step: { name: "reset", email: step.email, verified: true } });
 			}
 			const { error } = await this.#cloud.supabase.auth.updateUser({ password });
 			if (error) throw error;

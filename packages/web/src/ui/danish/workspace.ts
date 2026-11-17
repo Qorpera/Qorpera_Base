@@ -523,6 +523,7 @@ export const WORKSPACE: Record<string, string> = {
 	"We sent a 6-digit code to {email}. Type it, then pick a new password.":
 		"Vi har sendt en 6-cifret kode til {email}. Skriv den, og vælg så en ny adgangskode.",
 	"Save and sign in": "Gem og log ind",
+	"Pick a new password for {email}.": "Vælg en ny adgangskode til {email}.",
 	"Back to sign in": "Tilbage til log ind",
 	"One moment…": "Et øjeblik…",
 	"What should we call you?": "Hvad skal vi kalde dig?",

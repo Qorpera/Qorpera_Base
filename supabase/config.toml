@@ -11,7 +11,7 @@ otp_length = 6
 [auth.email.notification.password_changed]
 enabled = true
 subject = "Your Qorpera password was changed"
-content_path = "../packages/web/auth-email/password-changed.html"
+content_path = "./packages/web/auth-email/password-changed.html"
 
 [auth.mfa.totp]
 enroll_enabled = true

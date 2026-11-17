@@ -351,14 +351,16 @@ function resetBody(
 	container: HTMLElement,
 	step: Extract<Step, { name: "reset" }>,
 ): HTMLElement[] {
-	const code = codeField(container, state.busy);
+	const code = step.verified ? null : codeField(container, state.busy);
 	const password = passwordField(container, "signinNewPassword", t("New password"), "new-password", state.busy);
 	return [
 		h("h1", { id: "authTitle" }, t("Choose a new password")),
 		h(
 			"p",
 			{ class: "auth-lead" },
-			t("We sent a 6-digit code to {email}. Type it, then pick a new password.", { email: step.email }),
+			step.verified
+				? t("Pick a new password for {email}.", { email: step.email })
+				: t("We sent a 6-digit code to {email}. Type it, then pick a new password.", { email: step.email }),
 		),
 		h(
 			"form",
@@ -378,19 +380,21 @@ function resetBody(
 			h("p", { class: "auth-hint" }, t("At least 8 characters.")),
 			h("button", { type: "submit", class: "auth-primary", disabled: state.busy }, t("Save and sign in")),
 		),
-		h(
-			"p",
-			{ class: "auth-muted" },
-			t("Didn't get it? Look in spam, or "),
-			countdown(auth, state.resendAt, state.busy),
-			".",
-		),
+		step.verified
+			? null
+			: h(
+					"p",
+					{ class: "auth-muted" },
+					t("Didn't get it? Look in spam, or "),
+					countdown(auth, state.resendAt, state.busy),
+					".",
+				),
 		h(
 			"p",
 			{ class: "auth-muted" },
 			h("button", { type: "button", class: "auth-inline", onclick: () => auth.back() }, t("Back to sign in")),
 		),
-	];
+	].filter((part): part is HTMLElement => part !== null);
 }
 
 function brand(): HTMLElement {

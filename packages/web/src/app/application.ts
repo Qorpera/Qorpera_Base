@@ -973,7 +973,7 @@ export function mountApplication(
 			else if (!root!.querySelector(":scope > .boot")) replace(root!, blankSkeleton(t("Connecting to the cloud")));
 			return;
 		}
-		if (!authState.session || authState.step.name === "reset") {
+		if (!authState.session || (authState.step.name === "reset" && authState.step.verified)) {
 			teardownCompany();
 			let container = root!.querySelector<HTMLElement>(':scope > .auth:not([data-step="name"])');
 			if (!container) {

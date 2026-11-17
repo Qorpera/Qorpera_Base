@@ -237,7 +237,8 @@ describe("a new password that is refused after the code signed in", () => {
 		submit();
 		await settle();
 		expect(auth.store.get().session).not.toBeNull();
-		expect(auth.store.get().step.name).toBe("reset");
+		expect(auth.store.get().step).toEqual({ name: "reset", email: "mette@lerhave.dk", verified: true });
+		expect(root.querySelector("#signinCode")).toBeNull();
 		expect(root.querySelector(".auth-alert")!.textContent).toContain("That's your current password.");
 		type("signinNewPassword", "nytkodeord1");
 		submit();
@@ -245,6 +246,31 @@ describe("a new password that is refused after the code signed in", () => {
 		expect(calls.verifyOtp).toHaveBeenCalledOnce();
 		expect(calls.updateUser).toHaveBeenLastCalledWith({ password: "nytkodeord1" });
 		expect(auth.store.get().step.name).toBe("signin");
+	});
+
+	it("never takes a session from elsewhere for the reset's code", async () => {
+		const f = await signedOut();
+		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" } });
+		await settle();
+		f.auth(userA);
+		await settle();
+		expect(auth.store.get().step.name).toBe("signin");
+		await auth.resetPassword("123456", "nytkodeord1");
+		expect(calls.verifyOtp).not.toHaveBeenCalled();
+		expect(calls.updateUser).not.toHaveBeenCalled();
+	});
+
+	it("asks for the code when the reset has a session it did not make", async () => {
+		const f = await signedOut();
+		f.auth(userA);
+		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" } });
+		await settle();
+		type("signinCode", "482071");
+		type("signinNewPassword", "nytkodeord1");
+		submit();
+		await settle();
+		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "482071", type: "recovery" });
+		expect(calls.verifyOtp.mock.invocationCallOrder[0]).toBeLessThan(calls.updateUser.mock.invocationCallOrder[0]!);
 	});
 
 	it("lets the reset step go when the member is signed out", async () => {
