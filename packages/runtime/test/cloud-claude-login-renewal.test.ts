@@ -412,6 +412,27 @@ describe("the vault's Claude renewer", () => {
 		expect(db.login.version).toBe(3);
 	});
 
+	it("has the open read again when a kept renewal finds a newer version saved meanwhile", async () => {
+		const db = database();
+		const commit = db.authority.commitClaudeLoginRenewal;
+		let away = true;
+		db.authority.commitClaudeLoginRenewal = async (request, signal) => {
+			if (away) throw new Error("database away");
+			return commit(request, signal);
+		};
+		const renewer = new CloudClaudeLoginRenewer({
+			authority: db.authority,
+			checker: checker([{ outcome: "renewed", credentials: b64(credentials("v2")) }]),
+			keyring: db.keyring,
+			commitRetryMs: 20,
+		});
+		expect(await renewer.check(db.login.id, "poll")).toBe("failed");
+		away = false;
+		db.login.version = 2;
+		db.login.token = null;
+		expect(await renewer.checkForRun(db.login.id, "poll")).toBe("reopen");
+	});
+
 	it("checks idle logins in the upkeep pass, a few at a time", async () => {
 		const db = database();
 		const renewer = new CloudClaudeLoginRenewer({

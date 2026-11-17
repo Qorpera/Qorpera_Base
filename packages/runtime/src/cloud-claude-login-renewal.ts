@@ -300,7 +300,7 @@ export class CloudClaudeLoginRenewer {
 			const pending = this.#pending.get(id);
 			if (pending) {
 				const kept = await this.#commitPending(pending);
-				if (kept === "renewed") return "renewed";
+				if (kept === "renewed" || kept === "dropped") return "renewed";
 				if (kept === "kept") return "failed";
 			}
 			const taken = parseTaken(
