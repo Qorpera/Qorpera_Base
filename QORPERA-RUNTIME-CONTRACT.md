@@ -2482,12 +2482,6 @@ member's other login); the 2026-10-04 amendment below settles it.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 6, 11 and 12.
 
-> **Amended 2026-11-17.** A member's own message that the provider turns
-> away for too many requests, before it took any effect, waits and runs again
-> on the same login instead of failing. See the
-> [member-message amendment](#2026-11-17-amendment-a-members-message-waits-at-a-rate-limit)
-> in section 19.
-
 > **Scope reset, 2026-10-17.** The note above is part of the optional beta. It
 > holds only for the runs recorded in **Shared context — Beta**, and its resume
 > work does not hold the core. With **Agent notebooks**, the default, this
@@ -2499,6 +2493,12 @@ member's other login); the 2026-10-04 amendment below settles it.
 > made while they are there: their own login pays for it, a ChatGPT plan too,
 > whether or not it works while they are away. See the
 > [light asks amendment](#2026-11-14-amendment-light-asks), item 3.
+
+> **Amended 2026-11-17.** A member's own message that the provider turns
+> away for too many requests, before it took any effect, waits and runs again
+> on the same login instead of failing. See the
+> [member-message amendment](#2026-11-17-amendment-a-members-message-waits-at-a-rate-limit)
+> in section 19.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A

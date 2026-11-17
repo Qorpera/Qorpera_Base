@@ -97,6 +97,19 @@ end
 $$;
 rollback to savepoint rl_rollback_switch;
 
+savepoint rl_settings_gone;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
+begin
+	delete from public.qorpera_member_rate_limit_settings;
+	perform pg_temp.rr_begin(v_binding);
+	perform pg_temp.rl_turned_away(v_binding);
+	perform pg_temp.base_assert((pg_temp.rl_job()).status = 'failed' and pg_temp.rr_events(pg_temp.rr_run(), 'run_paused') = 0,
+		'without its settings row a run fails as before');
+end
+$$;
+rollback to savepoint rl_settings_gone;
+
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_job public.qorpera_runner_jobs;
 	v_pause jsonb; v_activity jsonb;

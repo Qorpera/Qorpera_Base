@@ -53,7 +53,7 @@ begin
 	if not found or public.qorpera_run_had_effect(v_run.id) then return null; end if;
 	select count(*)::integer into v_waits from public.qorpera_execution_run_events as paused
 	where paused.run_id = v_run.id and paused.event_type = 'run_paused' and paused.payload ->> 'pausedFor' = 'rate_limited';
-	if v_waits >= (select settings.rate_limit_waits from public.qorpera_member_rate_limit_settings as settings) then
+	if v_waits >= coalesce((select settings.rate_limit_waits from public.qorpera_member_rate_limit_settings as settings), 0) then
 		return null; end if;
 	return greatest(
 		statement_timestamp() + (array[1, 2, 4, 8, 15])[least(v_waits + 1, 5)] * interval '1 minute'
