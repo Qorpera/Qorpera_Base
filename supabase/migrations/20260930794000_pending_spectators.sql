@@ -32,6 +32,7 @@ begin
 	if auth.role() is distinct from 'authenticated'
 		or coalesce(public.qorpera_member_role(p_profile_id)::text, '') not in ('owner', 'admin') then
 		raise exception 'member management requires full access' using errcode = '42501'; end if;
+	perform 1 from public.qorpera_profiles as profile where profile.id = p_profile_id for update;
 	if (select count(*) from (select pending.email from public.qorpera_pending_spectators as pending
 			where pending.profile_id = p_profile_id
 			union select coalesce(lower(btrim(email)), '') from unnest(p_emails) as email) as wanted) > 50 then
