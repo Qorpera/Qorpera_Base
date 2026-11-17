@@ -119,11 +119,9 @@ class H(BaseHTTPRequestHandler):
     def review(self, req, base):
         msgs = req.get("messages") or []
         asked = content_text(msgs[-1].get("content")) if msgs else ""
-        try:
-            action = json.loads(asked).get("action") or {}
-        except Exception:
-            action = {}
-        marked = str(action.get("arguments", "")) + json.dumps(action.get("contents", ""))
+        found = re.search(r'"tool": ?"([a-z_]{1,40})"', asked)
+        action = {"tool": found.group(1) if found else "", "arguments": asked[asked.find('"arguments"'):][:300]}
+        marked = asked
         decision = "deny" if "C4C-REFUSE" in marked else "ask" if "C4C-ASK" in marked else "allow"
         verdict = {"decision": decision, "ruleIds": [],
                    "builtIn": {"deny": "not_requested", "ask": "money", "allow": "none"}[decision],
