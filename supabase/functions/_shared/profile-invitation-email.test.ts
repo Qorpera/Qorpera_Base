@@ -77,7 +77,8 @@ describe("profile invitation email delivery", () => {
 		assert.equal(invitationUrl.hash, `#invitation=${invitationId}`);
 		assert.match(email.html, /Qorpera &lt;Core&gt;/);
 		assert.doesNotMatch(email.html, /<Core>/);
-		assert.match(email.text, /sign in as friend@example\.com/i);
+		assert.match(email.text, /create your account as friend@example\.com/i);
+		assert.match(email.html, /crown-glance\.gif/);
 		assert.match(email.text, /before you choose whether to accept/i);
 		assert.equal(invitationIdempotencyKey(invitationId), `qorpera-profile-invitation/${invitationId}`);
 		assert.throws(() => buildProfileInvitationEmail(job(), "http://qorpera.com/invitation"), /HTTPS/);

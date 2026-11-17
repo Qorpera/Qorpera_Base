@@ -119,10 +119,19 @@ function escapeHtml(value: string): string {
 		.replaceAll("'", "&#39;");
 }
 
-function roleDescription(roleValue: InvitationDeliveryRole): string {
-	if (roleValue === "admin") return "full access to contribute, authorize actions, and manage members";
-	if (roleValue === "contributor") return "partial access to contribute and communicate without authorizing actions";
-	return "read-only access";
+function roleLine(roleValue: InvitationDeliveryRole): string {
+	if (roleValue === "admin") return "You can work with its agents, approve what they do and manage its members.";
+	if (roleValue === "contributor") return "You can work with its agents; its admins approve what they do.";
+	return "You can see the company, its agents and what they're doing.";
+}
+
+const BRAND_ASSETS = "https://app.qorpera.com/assets/brand";
+const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif";
+
+function invitationHtml(inviter: string, profile: string, recipient: string, role: string, expiry: string, href: string): string {
+	const text = (size: number, color: string, margin: string) =>
+		`margin:${margin};font-family:${FONT};font-size:${size}px;line-height:1.55;color:${color}`;
+	return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"></head><body style="margin:0;padding:0;background:#f5f3ee"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f3ee"><tr><td align="center" style="padding:40px 16px 48px"><table role="presentation" width="520" cellspacing="0" cellpadding="0" style="max-width:520px;width:100%"><tr><td style="padding:0 6px 22px"><img src="${BRAND_ASSETS}/qorpera-lockup-light-800.png" alt="Qorpera" width="128" height="32" style="display:block;border:0"></td></tr><tr><td style="background:#ffffff;border-radius:18px;padding:0;border:1px solid rgba(11,11,11,0.06)"><div style="background:#fafaf9;border-bottom:1px solid rgba(11,11,11,0.06);border-radius:18px 18px 0 0;text-align:center;padding:22px 0 14px"><img src="${BRAND_ASSETS}/crown-glance.gif" alt="" width="150" height="126" style="display:inline-block;border:0"></div><div style="padding:30px 40px 36px"><h1 style="margin:0 0 12px;font-family:${FONT};font-size:26px;line-height:1.2;font-weight:700;letter-spacing:-0.02em;color:#161615">${inviter} invited you to ${profile}</h1><p style="${text(16, "#5f6168", "0 0 22px")}">${role}</p><table role="presentation" cellspacing="0" cellpadding="0" style="margin:4px 0 26px"><tr><td style="background:#161615;border-radius:10px"><a href="${href}" style="display:inline-block;padding:14px 22px;font-family:${FONT};font-size:16px;font-weight:600;color:#ffffff;text-decoration:none">See the invitation</a></td></tr></table><p style="${text(13.5, "#8b8b86", "0")}">Sign in or create your account with ${recipient} to accept. The invitation runs out on ${expiry}.</p></div></td></tr><tr><td style="padding:22px 6px 0"><p style="${text(13.5, "#8b8b86", "0")}">You got this email because ${inviter} invited ${recipient}. Not expecting it? Ignore it.</p><p style="${text(13.5, "#8b8b86", "10px 0 0")}">Qorpera · <a href="https://qorpera.com" style="color:#8b8b86">qorpera.com</a></p></td></tr></table></td></tr></table></body></html>`;
 }
 
 export function invitationIdempotencyKey(invitationId: string): string {
@@ -137,20 +146,27 @@ export function buildProfileInvitationEmail(
 	const invitationUrl = new URL(invitationUrlBase);
 	if (invitationUrl.protocol !== "https:") throw new Error("Invitation URL must use HTTPS");
 	invitationUrl.hash = new URLSearchParams({ invitation: job.invitationId }).toString();
-	const permission = roleDescription(job.role);
+	const role = roleLine(job.role);
 	const expiry = new Intl.DateTimeFormat("en", {
 		dateStyle: "long",
 		timeZone: "UTC",
 	}).format(new Date(job.expiresAt));
 	const subject = `${job.invitedByDisplayName} invited you to ${job.profileName} on Qorpera`.replace(/[\r\n]/g, " ");
 	const textBody = [
-		`${job.invitedByDisplayName} invited you to join ${job.profileName} on Qorpera.`,
-		`You will have ${permission}.`,
-		`Open Qorpera and sign in as ${job.recipientEmail}. Qorpera will show the invitation before you choose whether to accept it.`,
-		`Open Qorpera: ${invitationUrl.href}`,
-		`This invitation expires on ${expiry}.`,
+		`${job.invitedByDisplayName} invited you to ${job.profileName} on Qorpera.`,
+		role,
+		`Sign in or create your account as ${job.recipientEmail}. Qorpera shows the invitation before you choose whether to accept it.`,
+		`See the invitation: ${invitationUrl.href}`,
+		`The invitation runs out on ${expiry}. Not expecting it? Ignore this email.`,
 	].join("\n\n");
-	const html = `<!doctype html><html><body style="margin:0;background:#f4f4f2;color:#171716;font-family:Inter,Arial,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:40px 16px"><table role="presentation" width="560" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border-radius:18px"><tr><td style="padding:36px"><p style="margin:0 0 28px;font-weight:700">Qorpera</p><h1 style="font-size:25px;line-height:1.25;margin:0 0 18px">Join ${escapeHtml(job.profileName)}</h1><p style="font-size:16px;line-height:1.6;margin:0 0 14px">${escapeHtml(job.invitedByDisplayName)} invited you to join their company profile with ${escapeHtml(permission)}.</p><p style="font-size:16px;line-height:1.6;margin:0 0 26px">Sign in as <strong>${escapeHtml(job.recipientEmail)}</strong> to accept.</p><p style="margin:0 0 26px"><a href="${escapeHtml(invitationUrl.href)}" style="display:inline-block;background:#171716;color:#fff;text-decoration:none;border-radius:10px;padding:13px 18px;font-weight:600">Open Qorpera</a></p><p style="font-size:13px;line-height:1.5;color:#686864;margin:0">This invitation expires on ${escapeHtml(expiry)}. If you were not expecting it, you can ignore this email.</p></td></tr></table></td></tr></table></body></html>`;
+	const html = invitationHtml(
+		escapeHtml(job.invitedByDisplayName),
+		escapeHtml(job.profileName),
+		escapeHtml(job.recipientEmail),
+		escapeHtml(role),
+		escapeHtml(expiry),
+		escapeHtml(invitationUrl.href),
+	);
 	return { subject: subject.slice(0, 240), text: textBody, html, invitationUrl: invitationUrl.href };
 }
 
