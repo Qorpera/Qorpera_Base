@@ -8,8 +8,8 @@ import {
 	type ClaudeCodeBoxOptions,
 	claudeBoxStartStage,
 } from "./cloud-claude-box.ts";
-import { CLAUDE_PICTURE_NOTE } from "./cloud-claude-picture-command.ts";
 import { type ClaudeLoginFileName, wipeClaudeLoginFolder } from "./cloud-claude-login-renewal.ts";
+import { CLAUDE_PICTURE_NOTE } from "./cloud-claude-picture-command.ts";
 import { cloudHomeRefusalWords } from "./cloud-codex-home.ts";
 import { CloudHomeChannelRefused } from "./cloud-home-channel.ts";
 import type { ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
