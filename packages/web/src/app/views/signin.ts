@@ -353,7 +353,7 @@ function resetBody(
 ): HTMLElement[] {
 	const code = step.verified ? null : codeField(container, state.busy);
 	const password = passwordField(container, "signinNewPassword", t("New password"), "new-password", state.busy);
-	return [
+	const parts: (HTMLElement | null)[] = [
 		h("h1", { id: "authTitle" }, t("Choose a new password")),
 		h(
 			"p",
@@ -394,7 +394,8 @@ function resetBody(
 			{ class: "auth-muted" },
 			h("button", { type: "button", class: "auth-inline", onclick: () => auth.back() }, t("Back to sign in")),
 		),
-	].filter((part): part is HTMLElement => part !== null);
+	];
+	return parts.filter((part): part is HTMLElement => part !== null);
 }
 
 function brand(): HTMLElement {
