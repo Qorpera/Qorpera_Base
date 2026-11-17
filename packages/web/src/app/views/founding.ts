@@ -8,6 +8,7 @@ import type { FoundingField } from "../../cloud/founding-presence.ts";
 import { button, confirmDialog, fmtTime, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { FounderLive, FoundingController } from "../founding.ts";
+import { pendingSpectators } from "../pending-spectators.ts";
 import { navigate } from "../router.ts";
 import { mountCrown } from "./crown.ts";
 import { claimStartCrown } from "./start-crown.ts";
@@ -333,6 +334,7 @@ export class FoundingView {
 	readonly #carets = h("div", { class: "founding-carets", "aria-hidden": "true" });
 	readonly #boxFoot: HTMLElement;
 	readonly #friends: HTMLElement;
+	readonly #pending = h("p", { class: "founding-pending", hidden: true });
 	readonly #friendList = new Slot();
 	readonly #friendNote = new Slot();
 	readonly #friendEmail: HTMLInputElement;
@@ -687,6 +689,7 @@ export class FoundingView {
 				this.#friends,
 			),
 			this.#seatList,
+			this.#pending,
 			this.#connect,
 			this.#error.el,
 			this.#bar,
@@ -695,6 +698,11 @@ export class FoundingView {
 	}
 
 	#open(table: CompanyFounding): void {
+		const spectators = pendingSpectators(table.profileId);
+		this.#pending.hidden = spectators.length === 0;
+		this.#pending.textContent = spectators.length
+			? t("{emails} will be invited to follow once the company starts.", { emails: spectators.join(", ") })
+			: "";
 		const founding = this.#founding;
 		const state = founding.store.get();
 		const me = founding.userId;

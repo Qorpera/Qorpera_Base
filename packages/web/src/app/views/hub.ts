@@ -17,6 +17,7 @@ import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, repl
 import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
 import { lobbyError, setFoundingIntent } from "../founding.ts";
+import { keepPendingSpectators, pendingSpectators } from "../pending-spectators.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { companyNameFromIdea, renderNewCompany, type Viewer } from "./new-company.ts";
@@ -115,11 +116,15 @@ export class HubController {
 				const vision = "vision" in saved && typeof saved.vision === "string" ? saved.vision : undefined;
 				const intent =
 					"intent" in saved && (saved.intent === "start" || saved.intent === "friends") ? saved.intent : undefined;
+				const founders = "founders" in saved ? texts(saved.founders) : [];
+				const spectators = "spectators" in saved ? texts(saved.spectators) : [];
 				this.#creation = {
 					name: saved.name,
 					clientCreationId: saved.clientCreationId,
 					...(vision ? { vision } : {}),
 					...(intent ? { intent } : {}),
+					...(founders.length ? { founders } : {}),
+					...(spectators.length ? { spectators } : {}),
 				};
 				this.store.set({ creationRetry: this.#creation });
 			} else if (saved !== null && this.#creationKey) sessionStorage.removeItem(this.#creationKey);
@@ -360,8 +365,9 @@ export class HubController {
 				...(creation.intent === "start" ? { start: true } : {}),
 				...(pending ? { vision: pending } : {}),
 				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
-				...(creation.spectators?.length ? { spectators: [...creation.spectators] } : {}),
 			});
+			if (creation.spectators?.length)
+				keepPendingSpectators(table.profileId, [...pendingSpectators(table.profileId), ...creation.spectators]);
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;
 		} catch (error) {
@@ -616,4 +622,10 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 			),
 		),
 	);
+}
+
+function texts(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+		: [];
 }

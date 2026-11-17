@@ -80,6 +80,8 @@ export const FOUNDING: Record<string, string> = {
 	"Builds with you, on their own subscription.": "Bygger med dig, på sit eget abonnement.",
 	"Follows the chats. No subscription.": "Følger chattene. Intet abonnement.",
 	"Your friends could not be read.": "Dine venner kunne ikke læses.",
+	"{emails} will be invited to follow once the company starts.":
+		"{emails} bliver inviteret til at følge med, når virksomheden starter.",
 	"{emails} could not be invited to follow. Invite them from the team page.":
 		"{emails} kunne ikke inviteres til at følge med. Inviter dem fra teamsiden.",
 	"A webshop with ceramics": "En webshop med keramik",

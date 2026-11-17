@@ -1185,22 +1185,36 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
 		});
 
-		it("invites the spectators picked in the box once the company is ready, as viewers", async () => {
+		it("invites the founders picked in the box at the table, once", async () => {
 			const { api, cloud } = fixture();
-			const solo = soloTable(
-				() => true,
-				() => true,
-			);
-			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
-			const invited = vi.spyOn(api, "inviteMember").mockResolvedValue({} as never);
-			setFoundingIntent(table, { start: true, spectators: ["mom@example.test"] });
+			const calls: string[] = [];
+			vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+				calls.push(name);
+				return wire({ me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false } });
+			});
+			setFoundingIntent(table, { friends: true, founders: [id(950)] });
 			open(api);
 			await settle();
 			await settle();
-			await settle();
-			expect(invited).toHaveBeenCalledWith(table, "mom@example.test", "viewer");
-			expect(invited).toHaveBeenCalledTimes(1);
+			expect(calls.filter((name) => name === "qorpera_invite_company_founder")).toHaveLength(1);
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
+		});
+
+		it("says at the table who will be invited to follow once the company starts", async () => {
+			const { api, cloud } = fixture();
+			vi.mocked(cloud.rpc).mockImplementation(async () =>
+				wire({ me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false } }),
+			);
+			localStorage.setItem(`qorpera:pending-spectators:${table}`, JSON.stringify(["mom@example.test"]));
+			try {
+				open(api);
+				await settle();
+				expect(visibleText(container)).toContain(
+					"mom@example.test will be invited to follow once the company starts.",
+				);
+			} finally {
+				localStorage.removeItem(`qorpera:pending-spectators:${table}`);
+			}
 		});
 
 		it("offers Open on the same scene once the company is ready, should the way into it not come", async () => {

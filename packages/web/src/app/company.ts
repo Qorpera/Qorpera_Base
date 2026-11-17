@@ -85,6 +85,7 @@ import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
 import { MemberChats } from "./member-chats.ts";
+import { invitePendingSpectators, pendingSpectators } from "./pending-spectators.ts";
 import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
 import {
 	appendQuoted,
@@ -644,6 +645,7 @@ export class CompanyController {
 	#connectedBefore = false;
 	/** This member's time zone was handed in for the company, which had none (#offerTimeZone): once, whatever came of it. */
 	#timeZoneOffered = false;
+	#spectatorsInvited = false;
 	/** The cloud has no newest-first transcript read (before 20260928279410): threads read forward. */
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
@@ -1036,6 +1038,7 @@ export class CompanyController {
 				.join(" ");
 			this.store.set({ team, accessLost: false });
 			void this.#offerTimeZone(team);
+			void this.#invitePendingSpectators(team);
 			this.#joinPresence();
 			// Someone joined or left: the member chats are theirs too. (The first read comes with refreshAll.)
 			if (before !== undefined && before !== team.members.map((member) => member.userId).join(" "))
@@ -1079,6 +1082,21 @@ export class CompanyController {
 	 * company has none and answers the company's, which the team then says. Nothing shows, whatever comes of it: a call
 	 * that failed is not made again by this company's open, and a zone the cloud refused is not handed in again by this
 	 * browser. */
+	async #invitePendingSpectators(team: HostedProfileTeam): Promise<void> {
+		if (this.#spectatorsInvited || !team.capabilities.manageMembers) return;
+		if (!pendingSpectators(this.profile.profileId).length) return;
+		this.#spectatorsInvited = true;
+		const missed = await invitePendingSpectators(this.#api, this.profile.profileId);
+		if (this.#stopped) return;
+		if (missed.length)
+			this.store.set({
+				error: t("{emails} could not be invited to follow. Invite them from the team page.", {
+					emails: missed.join(", "),
+				}),
+			});
+		else void this.refreshTeam();
+	}
+
 	async #offerTimeZone(team: HostedProfileTeam): Promise<void> {
 		if (this.#timeZoneOffered || team.timeZone !== null || !team.capabilities.write) return;
 		const profileId = this.profile.profileId;
