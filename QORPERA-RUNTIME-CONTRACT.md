@@ -6965,8 +6965,9 @@ worker's run is claimed only by a shared execution host), never before it.
    real, software as real screens to click through. The solution (strategy/solution.md) is worked out beside it and
    corrects it. Until the founders say it is their product, plans for later stages wait for their answer unless a
    founder asks for one, and a card left unanswered for two working days no longer holds them; that orders the work
-   and caps none of it. An owner is told so only before the vision is agreed. What is simulated or undecided is said
-   in the solution, never as notes on a concept's screens.
+   and caps none of it. The owner's role repeats it only before the vision is agreed; the Concepts section carries it
+   for every staff run that can save an app, and the Co-Founder's product paragraph always. What is simulated or
+   undecided is said in the solution, never as notes on a concept's screens.
 2. **The founding team.** The first assignments of the researcher, market watcher and strategist stay due within a day
    or two. The product's builders get first assignments that move the first concept. The Brand owner's first assignment
    is two to four directions, each the company's product in its world in a real picture or film, picked by the founders
