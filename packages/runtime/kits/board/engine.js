@@ -285,14 +285,13 @@ body{margin:0}
 .bk-pick{width:100%}
 }
 
-.bk-choose .bk-panels.is-pics{display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));grid-template-rows:repeat(var(--rows,1),minmax(0,1fr));flex:none;height:max(420px,100vh);height:max(420px,100dvh);min-height:0}
+.bk-choose .bk-panels.is-pics{display:grid;grid-template-columns:var(--tc,repeat(2,minmax(0,1fr)));grid-template-rows:var(--tr,minmax(0,1fr));transition:grid-template-columns .65s var(--ease),grid-template-rows .65s var(--ease);flex:none;height:max(420px,100vh);height:max(420px,100dvh);min-height:0}
 .bk-panels.is-odd>.bk-panel:last-child{grid-column:1/-1}
 .bk-panels.is-pics .bk-panel{flex:none;flex-direction:column;flex-wrap:nowrap;align-items:stretch;justify-content:center;gap:clamp(12px,1.8vh,18px);min-height:0;padding:clamp(14px,2.2vw,30px);text-align:left;box-shadow:inset 0 0 0 .5px var(--faint)}
 .bk-stage{position:relative;flex:1 1 0;min-height:0;align-self:stretch;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(12px,1.8vh,18px);container-type:size}
 .bk-panels.is-pics .bk-win{flex:none;order:0;width:min(100cqw,calc((100cqh - var(--lab,64px)) * var(--ar,1.6)));max-width:none;aspect-ratio:var(--ar,1.6);margin:0;border-radius:12px;box-shadow:0 0 0 1px var(--faint),0 34px 60px -38px color-mix(in srgb,var(--ink) 70%,transparent);transition:transform .5s var(--ease)}
 .bk-panels.is-pics .bk-win>img,.bk-panels.is-pics .bk-win>video{object-position:50% 50%}
 .bk-panels.is-pics .bk-win>.bk-ph{position:absolute;inset:0;border-radius:0}
-@media (hover:hover){.bk-panels.is-pics .bk-panel:hover .bk-win{transform:translateY(-3px)}}
 .bk-panels.is-pics .bk-ptop{position:absolute;top:12px;left:12px;right:12px;z-index:2;min-height:0;pointer-events:none}
 .bk-panels.is-pics .bk-badge{background:var(--bg)}
 .bk-panels.is-pics .bk-pmid{flex:none;order:0;max-width:100%;display:grid;grid-template-columns:minmax(0,auto);justify-content:center;justify-items:start;align-items:center;column-gap:12px;row-gap:2px;padding:0}
@@ -1523,12 +1522,28 @@ body{margin:0}
 				});
 				if (least > most * 1.04) [best, most] = [c, least];
 			}
-			row.style.setProperty("--cols", best);
-			row.style.setProperty("--rows", Math.ceil(n / best));
+			cols = best;
 			row.classList.toggle("is-odd", n % best !== 0);
+			grow(near);
+		}
+		let cols = 1;
+		let near = -1;
+		function grow(i) {
+			near = i;
+			const rows = Math.ceil(panels.length / cols);
+			const track = (k, at) => Array.from({ length: k }, (_, j) => `minmax(0,${j === at ? 1.4 : 1}fr)`).join(" ");
+			const wide = i >= 0 && !(i === panels.length - 1 && panels.length % cols);
+			row.style.setProperty("--tc", track(cols, wide ? i % cols : -1));
+			row.style.setProperty("--tr", track(rows, i >= 0 ? Math.floor(i / cols) : -1));
 		}
 		let watch = null;
 		if (pics) {
+			panels.forEach(({ p }, i) => {
+				p.addEventListener("pointerenter", (e) => e.pointerType === "mouse" && grow(i), on);
+				p.addEventListener("pointerleave", () => near === i && grow(-1), on);
+				p.addEventListener("focus", () => p.matches(":focus-visible") && grow(i), on);
+				p.addEventListener("blur", () => near === i && grow(-1), on);
+			});
 			for (const { o } of panels) {
 				const src = mediaFor(o.poster || o.video);
 				if (src) src.addEventListener(src.tagName === "VIDEO" ? "loadedmetadata" : "load", fit, on);
