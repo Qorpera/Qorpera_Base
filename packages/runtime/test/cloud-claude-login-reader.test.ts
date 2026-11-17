@@ -28,7 +28,7 @@ if (args[0] === "-p") {
 	if (process.stdin.isTTY) process.stdin.setRawMode(true);
 	const prompt = args[0];
 	const kind = prompt.split(" ")[1] || "";
-	const draw = (lines) => process.stdout.write("\\x1b[2J\\x1b[H" + ["\\u276f " + prompt, "\\u2500\\u2500\\u2500\\u2500"].concat(lines).join("\\r\\n"));
+	const draw = (lines) => (lines.some((line) => line.includes("Enter to confirm")) && log("DRAWN confirm"), process.stdout.write("\\x1b[2J\\x1b[H" + ["\\u276f " + prompt, "\\u2500\\u2500\\u2500\\u2500"].concat(lines).join("\\r\\n")));
 	draw(scenario.screens[kind] || ["  \\u23bf  " + scenario.otherwise]);
 	if (scenario.changeAfterMs) setTimeout(() => draw(["  \\u23bf  " + scenario.changeTo]), scenario.changeAfterMs);
 	process.stdin.on("data", (data) => {
@@ -131,6 +131,7 @@ describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and p
 			outcome: "failed",
 		});
 		expect(Date.now() - started).toBeLessThan(4_000);
+		expect(await changing.log()).toContain("DRAWN confirm");
 		expect((await changing.log()).filter((line) => line === 'KEY "\\r"')).toEqual([]);
 	});
 

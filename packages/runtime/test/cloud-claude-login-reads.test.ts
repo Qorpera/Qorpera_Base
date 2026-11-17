@@ -154,6 +154,7 @@ function vaultWorld(options: { reset?: "full" | null; resetState?: string | null
 		status: options.status ?? "pending",
 		claim: "",
 		claimLost: false,
+		claimThrows: 0,
 		recordFails: 0,
 	};
 	const authority = {
@@ -192,6 +193,10 @@ function vaultWorld(options: { reset?: "full" | null; resetState?: string | null
 				state.resetState = "using";
 				state.claim = request.claim;
 				throw new Error("the answer was lost");
+			}
+			if (state.claimThrows > 0) {
+				state.claimThrows -= 1;
+				throw new Error("the database did not answer");
 			}
 			if (state.resetState === "using") return state.claim === request.claim;
 			if (state.resetState !== "asked") return false;
@@ -306,7 +311,7 @@ describe("the vault's Claude read and reset", () => {
 		const reads = { readClaudeLogin: vi.fn(), useClaudeReset: vi.fn() };
 		const usage = new CloudModelLoginUsage({ authority: using.authority, keyring: using.keyring, claude: reads });
 		expect((await usage.refresh(using.request, AbortSignal.timeout(5_000))).status).toBe("preparing");
-		expect(using.authority.claimClaudeLoginReset).not.toHaveBeenCalled();
+		expect(reads.useClaudeReset).not.toHaveBeenCalled();
 		const done = vaultWorld({ reset: "full", resetState: "unconfirmed" });
 		const after = new CloudModelLoginUsage({ authority: done.authority, keyring: done.keyring, claude: reads });
 		expect((await after.refresh(done.request, AbortSignal.timeout(5_000))).status).toBe("completed");
@@ -361,6 +366,29 @@ describe("the vault's Claude read and reset", () => {
 		});
 		await expect(usage.refresh(w.request, AbortSignal.timeout(5_000))).rejects.toThrow("the database did not answer");
 		expect(w.authority.completeModelLoginAccountRefresh).not.toHaveBeenCalled();
+	});
+
+	it("takes back a claim whose answers were all lost on a later look, and runs the reset once", async () => {
+		const w = vaultWorld({ reset: "full" });
+		w.state.claimLost = true;
+		w.state.claimThrows = 5;
+		const reads = {
+			readClaudeLogin: vi.fn(),
+			useClaudeReset: vi.fn(async () => ({ outcome: "reset" as const, left: 1 })),
+		};
+		const usage = new CloudModelLoginUsage({ authority: w.authority, keyring: w.keyring, claude: reads });
+		expect((await usage.refresh(w.request, AbortSignal.timeout(10_000))).status).toBe("preparing");
+		expect(reads.useClaudeReset).not.toHaveBeenCalled();
+		expect(w.state.resetState).toBe("using");
+		expect((await usage.refresh(w.request, AbortSignal.timeout(10_000))).status).toBe("preparing");
+		await vi.waitFor(() => expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1));
+		expect((await usage.refresh(w.request, AbortSignal.timeout(10_000))).status).toBe("completed");
+		expect(reads.useClaudeReset).toHaveBeenCalledTimes(1);
+		const other = vaultWorld({ reset: "full", resetState: "using" });
+		const another = new CloudModelLoginUsage({ authority: other.authority, keyring: other.keyring, claude: reads });
+		other.state.claim = "someone-else";
+		expect((await another.refresh(other.request, AbortSignal.timeout(10_000))).status).toBe("preparing");
+		expect(reads.useClaudeReset).toHaveBeenCalledTimes(1);
 	});
 
 	it("goes on with the refresh when the database no longer lets the vault read the Claude login", async () => {

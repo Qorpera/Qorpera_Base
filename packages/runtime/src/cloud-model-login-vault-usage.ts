@@ -320,6 +320,7 @@ export class CloudModelLoginUsage {
 	readonly #claude: ClaudeLoginReads | undefined;
 	readonly #resetting = new Map<string, Promise<void>>();
 	readonly #claimSecret = randomBytes(32);
+	readonly #started = new Set<string>();
 
 	constructor(options: {
 		authority: ModelLoginUsageAuthority;
@@ -411,7 +412,7 @@ export class CloudModelLoginUsage {
 			);
 			return "completed";
 		}
-		if (claude.resetState === "using" || this.#resetting.has(request.requestId)) return "preparing";
+		if (this.#resetting.has(request.requestId) || this.#started.has(request.requestId)) return "preparing";
 		const claim = this.#claimToken(request);
 		let claimed = false;
 		for (let attempt = 0; attempt < CLAUDE_SAVE_ATTEMPTS && !claimed; attempt++) {
@@ -424,6 +425,7 @@ export class CloudModelLoginUsage {
 			}
 		}
 		if (!claimed) return "preparing";
+		this.#started.add(request.requestId);
 		const kind = claude.reset as ClaudeResetKind;
 		const envelope = Buffer.from(claude.envelope);
 		const job = (async () => {
