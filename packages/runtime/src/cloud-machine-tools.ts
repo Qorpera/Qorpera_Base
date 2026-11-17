@@ -58,7 +58,6 @@ import {
 	type CloudScriptEntry,
 	cloudCommandScripts,
 	cloudScriptContents,
-	cloudScriptGuard,
 	cloudScriptIdentity,
 	cloudScriptNotRead,
 	cloudScriptReadProgram,
@@ -124,7 +123,6 @@ const WAKE_WORDS = 3;
 const SCRIPT_READ_MS = 20_000;
 const SCRIPT_READ_POLL_MS = 300;
 const REMEMBERED_SCRIPTS = 64;
-const MACHINE_COMMAND_BYTES = 16_384;
 /** How long a run gives its report of a wait (20260930755000): beside the answer, never holding it long. */
 const WAIT_REPORT_MS = 5000;
 
@@ -1085,10 +1083,6 @@ export function cloudMachineTools(options: {
 					`the command runs more than the ${CLOUD_SCRIPT_FILES} files the review reads`,
 				),
 			];
-			if (Buffer.byteLength(`${cloudScriptGuard(files)}${String(input.command)}`) > MACHINE_COMMAND_BYTES)
-				throw new CloudToolRefusal(
-					`COMMAND_TOO_LONG: with the check of the files it runs, this command is over ${MACHINE_COMMAND_BYTES} bytes; make it shorter`,
-				);
 			return { ...input, scripts: { files, notShown: found.notShown } as unknown as JsonValue };
 		},
 		reviewContents(parsed) {
@@ -1102,8 +1096,6 @@ export function cloudMachineTools(options: {
 		async execute(value, context) {
 			check(context);
 			const input = value as Record<string, JsonValue>;
-			const scripts = scriptsOf(value);
-			const command = `${scripts === undefined ? "" : cloudScriptGuard(scripts.files)}${String(input.command)}`;
 			const machine = await find(String(input.machine), context.signal);
 			if (!machine) return refused("MACHINE_NOT_FOUND", `no machine is named ${String(input.machine)}`);
 			if (machine.state !== "running")
@@ -1136,7 +1128,7 @@ export function cloudMachineTools(options: {
 									{
 										commandId: effect.receiptId,
 										inputSha256: effect.inputSha256,
-										command,
+										command: String(input.command),
 										timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
 										notify: input.notify === true,
 									},

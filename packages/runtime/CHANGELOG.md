@@ -5,10 +5,11 @@
   that runs a file has that file read on the machine before its review and shown whole to the reviewer (64 KiB a file,
   128 KiB and 8 files a command). A file it could not be shown is never on its own a reason to deny or to raise a card:
   the guards are answered from what is visible, and only the reviewer's own ask about such a command stays an ask rather
-  than becoming the fixed rule's allow. The approval and the run are bound to the reviewed bytes (`sha256sum -c` before
-  the command, exit 125 when a file changed). A denial names the next step (a card asking for what the work needs, or a
-  worker's blocked report). The agent's home reads no files (known limit). Runtime bundle only: no migration, host call,
-  executor or image moves; it rolls with the next runtime release.
+  than becoming the fixed rule's allow. A card's approval covers the reviewed files' digests, so an identical call
+  repeated after a file was edited is reviewed again; the machine runs the model's command byte for byte. A denial names
+  the next step (a card asking for what the work needs, or a worker's blocked report). The agent's home reads no files
+  (known limit). Runtime bundle only: no migration, host call, executor or image moves; it rolls with the next runtime
+  release.
 - A review whose model turn met the provider's rate limit, usage limit or an overload is asked again after 5, 10, 20, 30
   and 30 seconds, within two minutes, before the call is refused (2026-11-17 amendment, item 5); REVIEW_UNAVAILABLE now
   tells the agent to say the step could not be checked just now. Runtime bundle only.

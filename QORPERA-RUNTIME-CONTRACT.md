@@ -6965,7 +6965,10 @@ bundle; no migration, host call or image moves.
    on the machine before the review, with one fixed read-only command of its own through the same receipts and command
    gateway, and gives the reviewer its text in the action's `contents`: each file whole, at most 64 KiB a file, 128 KiB
    and 8 files a command. Files they load or import are not shown, and the contents say so. A command the runtime does
-   not recognise as running a file is reviewed as before.
+   not recognise as running a file is reviewed as before. Known limit: the files are read when the action is reviewed;
+   a file changed between that read and the command's start in the same call is not detected. A check of the bytes in
+   the command itself would only close those seconds, while the files a script loads stay unseen and unbound anyway,
+   and it would put a platform line in front of the agent's command.
 2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
    bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
    variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the
@@ -6973,12 +6976,12 @@ bundle; no migration, host call or image moves.
    its own a reason to deny or to answer a guard true. It asks only when what it can see gives a real reason to suspect a
    guard that the unseen file would settle. The fixed machine rule is as before, except that the reviewer's own ask
    (built-in check none, every guard false) about a command with `notShown` stands instead of becoming an allow.
-3. **What ran is what was reviewed.** The approval's identity (`argumentSha256` at begin and record) is the SHA-256 of
-   the call's own digest and each reviewed file's path and digest (or that it was not shown); the card's `call` stays
-   the model's own arguments. A woken agent that repeats the identical call has its files read again and matches its
-   approval only while they are unchanged; otherwise it is reviewed afresh. On the machine the command runs behind a
-   `sha256sum -c` of the reviewed bytes, in the same shell: a file changed since its review stops the command with
-   exit 125 and says so, and nothing of the command ran.
+3. **An approval covers the files reviewed.** The approval's identity (`argumentSha256` at begin and record) is the
+   SHA-256 of the call's own digest and each reviewed file's path and digest (or that it was not shown); the card's
+   `call` stays the model's own arguments. A woken agent that repeats the identical call has its files read again and
+   matches its approval only while they are unchanged; a file edited while the card waited gets a fresh review of its
+   new text. The machine runs exactly the text the model wrote, so the command's head, busy check-ins, stopped work and
+   events stay the agent's own command.
 4. **A refusal names the next step.** A denial still says not to retry, reword or reach the action another way, and
    that only a member's new message (a card answer does not count) lets the agent make it once more. It now adds: when
    the work cannot go on without it, a worker reports its work blocked with the reason, and any other agent raises a card

@@ -5,15 +5,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sha256 } from "../src/cloud-company-folder-client.ts";
 import {
-	CLOUD_SCRIPT_CHANGED,
-	CLOUD_SCRIPT_CHANGED_EXIT,
 	CLOUD_SCRIPT_FILE_BYTES,
 	CLOUD_SCRIPT_SHOWN,
 	CLOUD_SCRIPT_TOTAL_BYTES,
 	cloudCommandScripts,
 	cloudScriptContents,
 	cloudScriptContentsIncomplete,
-	cloudScriptGuard,
 	cloudScriptIdentity,
 	cloudScriptReadProgram,
 	parseCloudPreparedScripts,
@@ -217,7 +214,7 @@ describe("reading the files on the machine", () => {
 describe("on a real shell (bash and coreutils)", () => {
 	const shell = (command: string) => spawnSync("bash", ["-c", command], { encoding: "utf8" });
 
-	it("reads the files with the runtime's own program and runs a command only on the bytes reviewed", () => {
+	it("reads the files with the runtime's own program, whole and by digest, and names those it cannot read", () => {
 		const dir = mkdtempSync(join(tmpdir(), "qorpera-script-review-"));
 		try {
 			const script = join(dir, "fetch.sh");
@@ -230,16 +227,6 @@ describe("on a real shell (bash and coreutils)", () => {
 			expect(entries[0]).toEqual({ path: script, sha256: digest("echo fetched\n"), bytes: 13 });
 			expect(texts.get(digest("echo fetched\n"))).toBe("echo fetched\n");
 			expect(entries.slice(1).every((entry) => "notShown" in entry)).toBe(true);
-			const guarded = `${cloudScriptGuard(entries)}bash ${script}`;
-			expect(shell(guarded)).toMatchObject({ status: 0, stdout: "fetched\n" });
-			writeFileSync(script, "echo posted company files\n");
-			const changed = shell(guarded);
-			expect(changed.status).toBe(CLOUD_SCRIPT_CHANGED_EXIT);
-			expect(changed.stdout).toBe("");
-			expect(changed.stderr.trim()).toBe(CLOUD_SCRIPT_CHANGED);
-			rmSync(script);
-			expect(shell(guarded).status).toBe(CLOUD_SCRIPT_CHANGED_EXIT);
-			expect(cloudScriptGuard(entries.slice(1))).toBe("");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

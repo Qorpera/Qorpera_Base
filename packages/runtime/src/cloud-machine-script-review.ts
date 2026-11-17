@@ -5,9 +5,6 @@ import { type JsonValue, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 export const CLOUD_SCRIPT_FILE_BYTES = 64 * 1024;
 export const CLOUD_SCRIPT_TOTAL_BYTES = 128 * 1024;
 export const CLOUD_SCRIPT_FILES = 8;
-export const CLOUD_SCRIPT_CHANGED_EXIT = 125;
-export const CLOUD_SCRIPT_CHANGED =
-	"A file this command runs changed after its review, so nothing ran. Call it again to have it reviewed as it is now.";
 export const CLOUD_SCRIPT_SHOWN =
 	"The files this command runs directly, each as it is on the machine now and in full, are shown here. Files they load, import or read themselves are not shown.";
 
@@ -588,12 +585,6 @@ export function parseCloudScriptRead(output: string, files: readonly CloudComman
 		});
 	}
 	return { entries, texts };
-}
-
-export function cloudScriptGuard(entries: readonly CloudScriptEntry[]): string {
-	const lines = entries.flatMap((entry) => ("sha256" in entry ? [`${entry.sha256}  ${entry.path}`] : []));
-	if (lines.length === 0) return "";
-	return `sha256sum -c --status 2>/dev/null <<'QORPERA_REVIEWED_FILES' || { echo ${quote(CLOUD_SCRIPT_CHANGED)} >&2; exit ${CLOUD_SCRIPT_CHANGED_EXIT}; }\n${lines.join("\n")}\nQORPERA_REVIEWED_FILES\n`;
 }
 
 export interface CloudPreparedScripts {
