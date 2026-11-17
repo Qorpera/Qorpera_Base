@@ -1162,6 +1162,36 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			&& (toldN?.text ?? "").includes("Blender") && noneOnHome.trim() === "absent",
 			`a run whose root holds no Codex login gets the words and no file: ${JSON.stringify(toldN)} ${noneOnHome.trim()}`);
 
+		drain();
+		const wo = "c4c00000-0000-4000-8000-0000000000bc";
+		dispatch("otherpicture", wo, "A picture on another member's login");
+		drain();
+		const bo = leased(start(wo));
+		const otherMember = sessionJson<string>(`select to_jsonb(m.user_id)::text from public.qorpera_profile_members m
+			where m.profile_id = '${COMPANY}' and m.user_id <> '${owner}' order by m.user_id limit 1;`);
+		session(`set local session_replication_role = replica;
+			update public.qorpera_execution_runs set sponsored_by_user_id = '${otherMember}' where id = '${bo.runId}';
+			set local session_replication_role = origin;`);
+		const ro = await runWorker(
+			bo,
+			scenario("otherpicture", [
+				T("Bash", "other-picture", {
+					command: 'picture /company/c4c-pictures/other.png "a walnut chair"',
+					description: "other-picture",
+					timeout: 300000,
+				}),
+			], "Other picture done."),
+			{ picture: true },
+		);
+		if (ro.ok && ro.providerSessionId) complete(bo, ro.providerSessionId);
+		const toldO = (ro.stub?.results ?? []).find((result) => result.name === "other-picture");
+		const otherOnHome = spawnSync("lxc", ["exec", PROOF_MACHINE, "--", "sh", "-c",
+			"[ -e /company/c4c-pictures/other.png ] && echo there || echo absent"], { encoding: "utf8" }).stdout;
+		check("picture-other-member", ro.ok && toldO?.isError === true
+			&& (toldO?.text ?? "").includes("own ChatGPT sign-in isn't what this run uses") && (toldO?.text ?? "").includes("Blender")
+			&& otherOnHome.trim() === "absent" && !ro.text.includes("PICTURE asked"),
+			`a run whose Codex login is another member's makes no picture, even with a picture lane there: ${JSON.stringify(toldO)} ${otherOnHome.trim()} ${ro.providerSessionId ?? ro.error}`);
+
 		// 6. A revoked sign-in: the worker was dispatched on it; the run opens nothing and ends blocked in its words.
 		drain();
 		const w4 = "c4c00000-0000-4000-8000-0000000000b4";

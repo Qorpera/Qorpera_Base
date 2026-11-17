@@ -42,6 +42,16 @@ export const CLAUDE_PICTURE_ICONS =
 export const CLAUDE_PICTURE_WORDS = `PICTURE_USAGE: nothing was made. The words for the picture must be plain text of 1 to ${MAX_CLOUD_PICTURE_PROMPT_BYTES} bytes.`;
 export const CLAUDE_NO_PICTURES =
 	"NO_PICTURES: no picture can be made for this work: pictures are made on the member's own ChatGPT sign-in, and this member has none here that makes pictures. Nothing was made or saved. Render it in Blender on this machine instead (blender -b, with the starter assets in /opt/qorpera-assets), or go on without the picture.";
+export const CLAUDE_PICTURE_NOT_OWN_LOGIN =
+	"NO_PICTURES: the asking member's own ChatGPT sign-in isn't what this run uses, so no picture was made: a picture is only ever made on the ChatGPT of the member whose word this work is. Nothing was saved. Render it in Blender on this machine instead (blender -b, with the starter assets in /opt/qorpera-assets), or go on without the picture.";
+
+export function claudePictureLogin(facts: unknown): { readonly own: boolean; readonly none?: string } {
+	const own =
+		facts !== null && typeof facts === "object" ? (facts as Record<string, unknown>).ownCodexLogin : undefined;
+	if (own === true) return { own: true };
+	return own === false ? { own: false, none: CLAUDE_PICTURE_NOT_OWN_LOGIN } : { own: false };
+}
+
 export const CLAUDE_PICTURE_FAILED =
 	"PICTURE_FAILED: the picture could not be made now; nothing was saved. Run it once more; if it fails again, go on without it.";
 
@@ -165,6 +175,7 @@ export function cloudClaudePictureAction(
 
 export interface CloudClaudePictures {
 	readonly make: ((input: CloudPictureInput, signal: AbortSignal) => Promise<CloudPictureMade>) | undefined;
+	readonly none?: string;
 	readonly foreignOwner?: (path: string, signal: AbortSignal) => Promise<boolean>;
 }
 
@@ -225,7 +236,7 @@ export async function runClaudePictureCommand(input: {
 	const { call, home, signal } = input;
 	const refused = (words: string, code = 1): ClaudePictureOutcome => ({ err: words, code });
 	const make = input.pictures.make;
-	if (!make) return refused(CLAUDE_NO_PICTURES);
+	if (!make) return refused(input.pictures.none ?? CLAUDE_NO_PICTURES);
 	const before = await home.place(call.path, signal);
 	if (typeof before === "string") return refused(placeRefusal(before, call.path), before === "unavailable" ? 255 : 1);
 	const real = before.real;

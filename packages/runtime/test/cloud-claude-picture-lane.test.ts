@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
 	CloudClaudePictureLane,
 	type CloudClaudePictureSessionStart,
+	claudeWorkerPictures,
 	cloudClaudePictureLaneFor,
 	cloudClaudePictureSessionStart,
 } from "@qorpera/runtime/cloud-claude-picture-lane";
@@ -169,4 +170,33 @@ it("makes pictures on a light Codex of the run's own root, a later session clear
 	expect(lane?.failure).toBeUndefined();
 	await lane?.close();
 	expect(await readdir(join(root, "codex"))).not.toContain("state.sqlite");
+});
+
+it("gives a Claude worker pictures only when the run's facts say its Codex login is the asking member's own", async () => {
+	const given = vi.fn(async () => ({ png: PNG }));
+	const lane = vi.fn(
+		async () => new CloudClaudePictureLane({ start: sessions().start, signal: new AbortController().signal }),
+	);
+	const foreignOwner = async () => false;
+	const another = await claudeWorkerPictures({
+		facts: { member: "Ada", ownCodexLogin: false },
+		home: true,
+		given,
+		lane,
+		foreignOwner,
+	});
+	expect(another.pictures.make).toBeUndefined();
+	expect(another.pictures.none).toContain("own ChatGPT sign-in isn't what this run uses");
+	const unknown = await claudeWorkerPictures({ facts: null, home: true, lane, foreignOwner });
+	expect(unknown.pictures.make).toBeUndefined();
+	expect(unknown.pictures.none).toBeUndefined();
+	expect(lane).not.toHaveBeenCalled();
+	const own = await claudeWorkerPictures({ facts: { ownCodexLogin: true }, home: true, lane, foreignOwner });
+	expect(lane).toHaveBeenCalledOnce();
+	expect(own.lane).toBeInstanceOf(CloudClaudePictureLane);
+	expect(typeof own.pictures.make).toBe("function");
+	const proof = await claudeWorkerPictures({ facts: { ownCodexLogin: true }, home: true, given, lane, foreignOwner });
+	expect(proof.pictures.make).toBe(given);
+	expect(lane).toHaveBeenCalledOnce();
+	await own.lane?.close();
 });

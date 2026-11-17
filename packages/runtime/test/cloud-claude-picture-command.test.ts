@@ -4,12 +4,14 @@ import {
 	CLAUDE_NO_PICTURES,
 	CLAUDE_PICTURE_ICONS,
 	CLAUDE_PICTURE_MAX_BYTES,
+	CLAUDE_PICTURE_NOT_OWN_LOGIN,
 	CLAUDE_PICTURE_PATH,
 	CLAUDE_PICTURE_USAGE,
 	CLAUDE_PICTURE_WORDS,
 	type ClaudePictureHome,
 	type ClaudePicturePlace,
 	type CloudClaudePictures,
+	claudePictureLogin,
 	cloudClaudeCommandWords,
 	cloudClaudePictureAction,
 	cloudClaudePictureCall,
@@ -373,5 +375,22 @@ describe("one picture", () => {
 		const late = await picture({ make: async () => ({ png: PNG }) }, appeared.home);
 		expect(late.outcome.err).toContain("PICTURE_PLACE_CHANGED");
 		expect([...swapped.written, ...appeared.written]).toEqual([]);
+	});
+
+	it("makes a picture only on the asking member's own Codex login, as the run's facts say, and nothing on any other", async () => {
+		expect(claudePictureLogin({ member: "Ada", ownCodexLogin: true })).toEqual({ own: true });
+		expect(claudePictureLogin({ member: "Ada", ownCodexLogin: false })).toEqual({
+			own: false,
+			none: CLAUDE_PICTURE_NOT_OWN_LOGIN,
+		});
+		for (const facts of [null, { member: "Ada" }, { ownCodexLogin: "true" }, "x"])
+			expect(claudePictureLogin(facts)).toEqual({ own: false });
+		expect(CLAUDE_PICTURE_NOT_OWN_LOGIN).toContain("own ChatGPT sign-in isn't what this run uses");
+		expect(CLAUDE_PICTURE_NOT_OWN_LOGIN).toContain("Blender");
+		const home = fakeHome();
+		const { outcome, reviewed } = await picture({ make: undefined, none: CLAUDE_PICTURE_NOT_OWN_LOGIN }, home.home);
+		expect(outcome).toEqual({ err: CLAUDE_PICTURE_NOT_OWN_LOGIN, code: 1 });
+		expect(home.seen).toEqual([]);
+		expect(reviewed).toEqual([]);
 	});
 });

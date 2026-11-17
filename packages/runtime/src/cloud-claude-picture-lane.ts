@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
+import { type CloudClaudePictures, claudePictureLogin } from "./cloud-claude-picture-command.ts";
 import { CHATGPT_PLAN_DIRECTORY, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import { type CloudNativeRunToolAdapters, runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
@@ -180,4 +181,28 @@ export function cloudClaudePictureSessionStart(options: {
 			signal,
 			...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
 		});
+}
+
+export async function claudeWorkerPictures(input: {
+	readonly facts: unknown;
+	readonly home: boolean;
+	readonly given?: CloudClaudePictures["make"];
+	readonly lane: () => Promise<CloudClaudePictureLane | undefined>;
+	readonly foreignOwner: NonNullable<CloudClaudePictures["foreignOwner"]>;
+}): Promise<{ readonly pictures: CloudClaudePictures; readonly lane?: CloudClaudePictureLane }> {
+	const login = claudePictureLogin(input.facts);
+	const lane = input.home && login.own && input.given === undefined ? await input.lane() : undefined;
+	const made = lane;
+	const make = !login.own
+		? undefined
+		: (input.given ??
+			(made ? (picture: CloudPictureInput, signal: AbortSignal) => made.make(picture, signal) : undefined));
+	return {
+		pictures: {
+			make,
+			...(login.none === undefined ? {} : { none: login.none }),
+			foreignOwner: input.foreignOwner,
+		},
+		...(lane ? { lane } : {}),
+	};
 }

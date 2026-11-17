@@ -30,6 +30,7 @@ import type { CloudClaudeHomeChannel } from "./cloud-claude-home-shell.ts";
 import type { CloudClaudePictures } from "./cloud-claude-picture-command.ts";
 import {
 	type CloudClaudePictureLane,
+	claudeWorkerPictures,
 	cloudClaudePictureLaneFor,
 	cloudClaudePictureSessionStart,
 } from "./cloud-claude-picture-lane.ts";
@@ -220,7 +221,7 @@ export interface CloudClaudeWorkerHost {
 	readonly configuration?: ClaudeBoxConfiguration;
 	/** Proofs only: the box's egress transport and CA for a stub model. No production host sets it. */
 	readonly proof?: ClaudeCodeBoxOptions["proof"];
-	readonly pictures?: (identityRoot: string) => CloudClaudePictures["make"];
+	readonly pictures?: (identityRoot: string) => NonNullable<CloudClaudePictures["make"]>;
 }
 
 // The company runtime's control plane completes folder receipts: a folder-v2 run's writers commit under them.
@@ -1781,7 +1782,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				.catch(() => {
 					runSignal.throwIfAborted();
 					return null;
-				})) as { member?: unknown; earlier?: unknown } | null;
+				})) as { member?: unknown; earlier?: unknown; ownCodexLogin?: unknown } | null;
 			const member = typeof facts?.member === "string" && facts.member ? facts.member : "the member who asked";
 			const earlier = typeof facts?.earlier === "string" && facts.earlier ? facts.earlier : null;
 			const home = await input.home;
@@ -1817,20 +1818,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					timeZone: wake.time.timeZone,
 				},
 			});
-			pictureLane =
-				home && !host.pictures
-					? await this.#claudePictureLane(identityRoot, binding, identity, runSignal)
-					: undefined;
-			const lane = pictureLane;
-			const pictures: CloudClaudePictures = {
-				make: host.pictures
-					? host.pictures(identityRoot)
-					: lane
-						? (picture, pictureSignal) => lane.make(picture, pictureSignal)
-						: undefined,
+			const chosen = await claudeWorkerPictures({
+				facts,
+				home: home !== undefined,
+				...(host.pictures ? { given: host.pictures(identityRoot) } : {}),
+				lane: () => this.#claudePictureLane(identityRoot, binding, identity, runSignal),
 				foreignOwner: (path, ownerSignal) =>
 					cloudPictureForeignOwner(folder, path, identity.staffAgentId, ownerSignal),
-			};
+			});
+			pictureLane = chosen.lane;
+			const pictures = chosen.pictures;
 			let outcome: ClaudeWorkerOutcome;
 			if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
 			else
