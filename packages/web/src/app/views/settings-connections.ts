@@ -7,6 +7,7 @@ import {
 import {
 	ChatGptPlanSignInError,
 	ClaudeCodeError,
+	ClaudeReadNotStarted,
 	PlanSwitchBusyError,
 	planLogin,
 	type WebAccountLogin,
@@ -21,7 +22,7 @@ import {
 	type WebNativeSubscription,
 } from "../../cloud/native-subscription.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
-import { t } from "../../ui/preferences.ts";
+import { presentationLocale, t } from "../../ui/preferences.ts";
 
 export type ConnectionsClient = Pick<
 	WebNativeSubscription,
@@ -104,11 +105,11 @@ function kindResets(kind: WebClaudeResetKind, left: number): string {
 }
 
 function shortDay(iso: string): string {
-	return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
+	return new Date(iso).toLocaleDateString(presentationLocale(), { day: "numeric", month: "short", timeZone: "UTC" });
 }
 
 function weekday(iso: string): string {
-	return new Date(iso).toLocaleDateString(undefined, { weekday: "long", timeZone: "UTC" });
+	return new Date(iso).toLocaleDateString(presentationLocale(), { weekday: "long", timeZone: "UTC" });
 }
 
 interface Attempt {
@@ -437,7 +438,8 @@ export class ConnectionsView {
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
 			if (this.#lifetime.signal.aborted) return;
-			const codex = this.#shown().some(live) && this.#client.refreshAccountMetadata;
+			const codex =
+				this.#shown().some(live) && this.#claudeReset?.phase !== "using" && this.#client.refreshAccountMetadata;
 			const claude = this.#claudeReadable() && this.#client.readClaude;
 			if (!codex && !claude) return;
 			const forced = this.#metadataForced;
@@ -694,12 +696,12 @@ export class ConnectionsView {
 			const last = this.#claude?.logins.find((each) => each.loginId === login.loginId)?.lastReset;
 			use.phase = last?.requestId === requestId ? last.outcome : "unconfirmed";
 			use.resetsLeft = last?.requestId === requestId ? last.left : null;
-		} catch {
-			use.phase = "unconfirmed";
+		} catch (error) {
+			use.phase = error instanceof ClaudeReadNotStarted ? "failed" : "unconfirmed";
 		}
 		if (this.#lifetime.signal.aborted) return;
 		this.#draw();
-		if (use.phase === "reset") void this.#refreshUsage(true);
+		void this.#refreshUsage(true);
 	}
 	#claudeResets(login: WebClaudeLogin, limited: boolean): HTMLElement[] {
 		const use = this.#claudeReset?.loginId === login.loginId ? this.#claudeReset : undefined;

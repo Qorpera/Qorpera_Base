@@ -177,6 +177,12 @@ function parseClaudeLastReset(value: unknown): WebClaudeLastReset | undefined {
 	};
 }
 
+export class ClaudeReadNotStarted extends Error {
+	constructor() {
+		super("The Claude read was not started.");
+	}
+}
+
 /** Claude Code did not take the code (or it was not one): the member signs in again. */
 export class ClaudeCodeError extends Error {
 	constructor() {
@@ -1245,8 +1251,14 @@ export function createWebNativeSubscription(
 								await rpc("qorpera_begin_claude_login_read", args, deadline),
 							);
 						} catch (error) {
-							if (reset || !(error instanceof CloudRpcError) || error.code !== "55000") throw error;
-							await pause(wait);
+							const busy =
+								error instanceof CloudRpcError &&
+								error.code === "55000" &&
+								(!reset || error.message === "Account refresh already in progress");
+							if (!busy) throw reset ? new ClaudeReadNotStarted() : error;
+							await pause(wait).catch(() => {
+								throw reset ? new ClaudeReadNotStarted() : new Error("Claude read interrupted");
+							});
 						}
 					}
 					if (authority.profileId !== profileId || authority.requestedByUserId !== memberId)

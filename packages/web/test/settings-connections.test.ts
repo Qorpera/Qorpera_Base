@@ -14,6 +14,7 @@ import {
 import {
 	ChatGptPlanSignInError,
 	ClaudeCodeError,
+	ClaudeReadNotStarted,
 	PlanSwitchBusyError,
 	type WebClaudeLogin,
 	type WebExecutionConnections,
@@ -1901,5 +1902,18 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(unconfirmed.querySelector("strong")!.textContent).toBe("Couldn't confirm the reset went through");
 		expect(unconfirmed.querySelector("button")).toBeNull();
 		expect(readClaude.mock.calls.filter(([options]) => options.reset)).toHaveLength(2);
+	});
+
+	it("says nothing was used and offers another try when the reset never began", async () => {
+		const readClaude = vi.fn(async (options: { reset?: string }) => {
+			if (options.reset) throw new ClaudeReadNotStarted();
+			return id(99);
+		});
+		await claudeView(login({ resets: { observedAt: new Date().toISOString(), entries: [fullReset] } }), readClaude);
+		claudeCard().querySelector<HTMLButtonElement>(".connection-resets button")!.click();
+		await settle();
+		const failed = claudeCard().querySelector<HTMLElement>(".connection-resets.is-ready")!;
+		expect(failed.querySelector("strong")!.textContent).toBe("Couldn't reset your limits");
+		expect(failed.querySelector("button")!.textContent).toBe("Try again");
 	});
 });
