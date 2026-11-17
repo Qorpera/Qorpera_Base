@@ -406,7 +406,9 @@ describe("founding table", () => {
 		await controller!.refresh();
 		await settle();
 		expect(vision.value).toBe("Specialty coffee, roasted in Aarhus.");
-		expect(visibleText(container)).toContain("Failed to fetch");
+		expect(visibleText(container)).toContain(
+			"Qorpera can't be reached right now. Check your connection and try again.",
+		);
 	});
 
 	it("sends a description again on a table that moved, with the other founder's new name", async () => {
@@ -856,7 +858,9 @@ describe("hub with founding tables", () => {
 		expect(hub.store.get().foundingAvailable).toBeUndefined();
 		await hub.createCompany("Nordlys Kaffe");
 		expect(cloud.rpc).not.toHaveBeenCalled();
-		expect(hub.store.get().error).toContain("Failed to fetch");
+		expect(hub.store.get().error).toContain(
+			"Qorpera can't be reached right now. Check your connection and try again.",
+		);
 		// A tab that read "on" earlier still asks again; the cloud has switched the lobby off since.
 		hub.store.set({ foundingAvailable: true });
 		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(false);
@@ -1349,7 +1353,9 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(calls).toContain("qorpera_update_company_founding");
 		expect(calls).not.toContain("qorpera_set_founder_ready");
 		expect(calls).not.toContain("qorpera_start_company_founding");
-		expect(visibleText(container)).toContain("Failed to fetch");
+		expect(visibleText(container)).toContain(
+			"Qorpera can't be reached right now. Check your connection and try again.",
+		);
 		expect(field.value).toBe("Specialty coffee, roasted in Aarhus.");
 	});
 
