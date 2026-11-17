@@ -9,7 +9,9 @@
   the rest). The wake starts 60 s after its latest change, at most 5 min after its first
   (`qorpera_folder_file_wake_settings`; settle 0 restores one wake per change set). While one runs, a single follow-up
   collects what is saved meanwhile. `qorpera_folder_file_wake_changes` reads the folded commits too, so the run's v1
-  file event lists every changed path of the burst; `qorpera_guard_wake_identity` admits only the listener's fold. Old
+  file event lists every changed path of the burst, and `qorpera_folder_file_wake_readable` (the materializer's
+  authorization) and both erasure phases look at the folded commits too; a match that folds counts towards no
+  `max_occurrences`; `more` counts each unlisted path once. `qorpera_guard_wake_identity` admits only the listener's fold. Old
   wakes and every live runtime bundle read as before. Deploy: this migration alone, any time.
 - Release v252 (conversation models GPT-6.1 Sol, Fable 5.2 and Opus 5.5, #1877; the move of all of a member's chats
   waiting on a used-up login, #1876, merged in the release branch; and master since v251): runtime bundle 252

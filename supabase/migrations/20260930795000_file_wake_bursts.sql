@@ -52,6 +52,9 @@ create function public.qorpera_folder_file_wake_folded(p_payload jsonb, p_seq bi
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare
 	v_new jsonb := case when jsonb_typeof(p_versions) = 'array' then p_versions else '[]'::jsonb end;
+	v_burst uuid[] := array[(p_payload ->> 'commitId')::uuid] || coalesce(array(select (folded.value ->> 'commitId')::uuid
+		from jsonb_array_elements(case when jsonb_typeof(p_payload -> 'folded') = 'array'
+			then p_payload -> 'folded' else '[]'::jsonb end) as folded), '{}'::uuid[]);
 	v_kept jsonb;
 	v_more integer := coalesce((p_payload ->> 'more')::integer, 0) + greatest(coalesce(p_more, 0), 0);
 	v_version text;
@@ -67,7 +70,10 @@ begin
 	for v_version in select added.value from jsonb_array_elements_text(v_new) as added loop
 		if jsonb_array_length(v_kept) < 21 then
 			v_kept := v_kept || to_jsonb(v_version);
-		else
+		elsif not exists (select 1 from public.qorpera_folder_path_versions as newer
+				join public.qorpera_folder_path_versions as earlier on earlier.commit_id = any(v_burst)
+					and public.qorpera_folder_key(earlier.path) = public.qorpera_folder_key(newer.path)
+				where newer.version = v_version::uuid) then
 			v_more := v_more + 1;
 		end if;
 	end loop;
@@ -75,6 +81,15 @@ begin
 		'folded', coalesce(p_payload -> 'folded', '[]'::jsonb)
 			|| jsonb_build_array(jsonb_build_object('seq', p_seq, 'commitId', p_commit_id)));
 end $$;
+
+create function public.qorpera_folder_file_wake_joins(p_routine_id uuid, p_version bigint, p_planned integer)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select public.qorpera_folder_file_wakes_fold() and (coalesce(p_planned, 0) > 0
+		or exists (select 1 from public.qorpera_wake_occurrences as wake
+			where wake.routine_id = p_routine_id and wake.routine_version = p_version and wake.source_kind = 'company-file'
+				and wake.status = 'queued' and wake.run_id is null
+				and jsonb_array_length(coalesce(wake.payload -> 'folded', '[]'::jsonb)) < 48))
+$$;
 
 create function public.qorpera_folder_file_wake_commits(p_wake public.qorpera_wake_occurrences)
 returns uuid[] language sql stable security definer set search_path = '' as $$
@@ -85,7 +100,8 @@ $$;
 
 revoke all on function public.qorpera_folder_file_wake_folded(jsonb, bigint, uuid, jsonb, integer),
 	public.qorpera_folder_file_wake_due(timestamptz), public.qorpera_folder_file_wakes_fold(),
-	public.qorpera_folder_file_wake_commits(public.qorpera_wake_occurrences)
+	public.qorpera_folder_file_wake_commits(public.qorpera_wake_occurrences),
+	public.qorpera_folder_file_wake_joins(uuid, bigint, integer)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 select pg_temp.file_wake_replace('public.qorpera_guard_wake_identity()', array[
@@ -106,7 +122,27 @@ select pg_temp.file_wake_replace('public.qorpera_folder_file_wake_changes(public
 	|| E'\t\t\tand v.commit_id = any(public.qorpera_folder_file_wake_commits(p_wake))\n',
 	E'where o.commit_id = p_wake.source_id and o.unit_no = v_row.unit_no',
 	E'where o.commit_id = v_row.commit_id and o.unit_no = v_row.unit_no']);
+create index qorpera_wake_occurrences_folded_file_commits on public.qorpera_wake_occurrences
+	using gin ((payload -> 'folded') jsonb_path_ops) where source_kind = 'company-file' and payload ? 'folded';
+
+select pg_temp.file_wake_replace('public.qorpera_folder_file_wake_readable(public.qorpera_wake_occurrences)', array[
+	E'and v.commit_id = p_wake.source_id\n',
+	E'and v.commit_id = any(public.qorpera_folder_file_wake_commits(p_wake))\n']);
+
+select pg_temp.file_wake_replace('public.qorpera_folder_erasure_step(integer,integer,integer)', array[
+	E'join public.qorpera_wake_occurrences w on w.source_kind = \'company-file\' and w.source_id = (b ->> \'commitId\')::uuid\n',
+	E'join public.qorpera_wake_occurrences w on w.source_kind = \'company-file\' and (w.source_id = (b ->> \'commitId\')::uuid\n'
+	|| E'\t\t\t\tor w.payload -> \'folded\' @> jsonb_build_array(jsonb_build_object(\'commitId\', (b ->> \'commitId\')::uuid)))\n',
+	E'where w.source_kind = \'company-file\' and w.source_id = v_commit.id and w.run_id is not null\n',
+	E'where w.source_kind = \'company-file\' and w.run_id is not null and (w.source_id = v_commit.id\n'
+	|| E'\t\t\t\t\t\t\tor w.payload -> \'folded\' @> jsonb_build_array(jsonb_build_object(\'commitId\', v_commit.id)))\n']);
+
 select pg_temp.file_wake_replace('public.qorpera_folder_listen_company(uuid,integer)', array[
+	E'or (v_routine.max_occurrences is not null and public.qorpera_routine_occurrence_count(v_routine.id)',
+	E'or (v_routine.max_occurrences is not null\n'
+	|| E'\t\t\t\t\t\tand not public.qorpera_folder_file_wake_joins(v_routine.id, (v_match.m ->> \'version\')::bigint,\n'
+	|| E'\t\t\t\t\t\t\t(v_inserted ->> v_routine.id::text)::integer)\n'
+	|| E'\t\t\t\t\t\tand public.qorpera_routine_occurrence_count(v_routine.id)',
 	E'and w.occurrence_key = \'file:\' || (v_match.m ->> \'seq\') || \':\' || (v_match.m ->> \'version\')) then',
 	E'and (w.occurrence_key = \'file:\' || (v_match.m ->> \'seq\') || \':\' || (v_match.m ->> \'version\')\n'
 	|| E'\t\t\t\t\t\t\tor (w.routine_version = (v_match.m ->> \'version\')::bigint and w.payload -> \'folded\'\n'

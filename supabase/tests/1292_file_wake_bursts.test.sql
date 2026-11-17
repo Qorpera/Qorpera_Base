@@ -58,12 +58,64 @@ begin
 end $$;
 
 do $$
-declare w public.qorpera_wake_occurrences := pg_temp.fb_queued(); r jsonb; v_n integer; v_follow public.qorpera_wake_occurrences;
+declare w public.qorpera_wake_occurrences := pg_temp.fb_queued();
+begin
+	if exists (select 1 from jsonb_array_elements_text(w.payload -> 'versions') as kept(version)
+			join public.qorpera_folder_path_versions as v on v.version = kept.version::uuid and v.commit_id = w.source_id) then
+		raise exception 'The burst saved its first change set''s paths again, so no kept version is from it: %', w.payload; end if;
+	if not public.qorpera_folder_file_wake_readable(w) or not public.qorpera_folder_wake_authorized(w)
+		or not public.qorpera_wake_authorized(w) then
+		raise exception 'The folded wake is still readable and authorized for the materializer'; end if;
+	update public.qorpera_folder_file_wake_settings set settle_seconds = 1;
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'burst-0039', jsonb_build_array(
+		pg_temp.put('docs/s25.md', 'draft 39'))));
+	perform pg_temp.listen();
+	w := pg_temp.fb_queued();
+	perform pg_temp.is(cardinality(pg_temp.fb_seqs(w))::text, '39', 'one more change set folds in');
+	perform pg_temp.is(w.payload ->> 'more', '9', 'a path already counted is not counted again');
+end $$;
+select pg_sleep(1.2);
+savepoint fb_materialize;
+do $$
+declare w public.qorpera_wake_occurrences := pg_temp.fb_queued(); v_pass jsonb; v_after public.qorpera_wake_occurrences;
+begin
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	perform set_config('qorpera.folder_wake_admission', '', true);
+	v_pass := public.qorpera_folder_materialize_company('70700000-0000-4000-8000-000000000010', 16);
+	select * into strict v_after from public.qorpera_wake_occurrences where id = w.id;
+	if v_after.status <> 'cancelled' or v_after.blocked_reason <> 'Wake compute authority is unavailable' then
+		raise exception 'The materializer takes the folded wake past its authorization (this company has no login to start it): '
+			'% / % / %', v_pass, v_after.blocked_reason, v_after.status; end if;
+end $$;
+rollback to savepoint fb_materialize;
+do $$
+declare w public.qorpera_wake_occurrences := pg_temp.fb_queued(); v_run uuid := extensions.gen_random_uuid();
+	v_job uuid := extensions.gen_random_uuid();
 begin
 	set local session_replication_role = replica;
-	update public.qorpera_wake_occurrences set status = 'materialized', run_id = extensions.gen_random_uuid() where id = w.id;
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+	values (v_job, w.profile_id, w.environment_id, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn',
+		'{}', w.requested_by_user_id, 'leased', extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('a', 64),
+		clock_timestamp() + interval '1 hour', v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, session_id, input_ids, company_seq)
+	values (v_run, w.profile_id, w.environment_id, 'wake', w.id, v_job, null, null,
+		w.staff_agent_id, w.staff_version, w.sponsor_binding_id, w.sponsor_version, 'agent_turn', 'agent_turn', repeat('c', 64), 0,
+		w.requested_by_user_id, w.requested_by_user_id, 'openai', 'gpt-test', 'provider_default', 'company', extensions.gen_random_uuid(),
+		repeat('b', 64), w.session_id, '{}', (w.payload ->> 'seq')::bigint);
+	update public.qorpera_wake_occurrences set run_id = v_run, status = 'materialized' where id = w.id;
 	set local session_replication_role = origin;
-	for v_n in 39..44 loop
+	perform set_config('qorpera_test.fb_first', w.id::text, true);
+end $$;
+
+do $$
+declare r jsonb; v_n integer; v_follow public.qorpera_wake_occurrences;
+begin
+	update public.qorpera_folder_file_wake_settings set settle_seconds = 60;
+	for v_n in 40..45 loop
 		r := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'burst-' || lpad(v_n::text, 4, '0'), jsonb_build_array(
 			pg_temp.put('docs/late' || v_n || '.md', 'late ' || v_n))));
 		perform pg_temp.listen();
@@ -75,12 +127,48 @@ begin
 	set local session_replication_role = replica;
 	update public.qorpera_wake_occurrences set scheduled_for = clock_timestamp() - interval '10 minutes' where id = v_follow.id;
 	set local session_replication_role = origin;
-	r := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'burst-0045', jsonb_build_array(pg_temp.put('docs/late45.md', 'x'))));
+	r := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'burst-0046', jsonb_build_array(pg_temp.put('docs/late46.md', 'x'))));
 	perform pg_temp.listen();
 	v_follow := pg_temp.fb_queued();
 	if v_follow.not_before <> v_follow.scheduled_for + interval '5 minutes' then
 		raise exception 'A steady stream still runs five minutes after its first change: %', to_jsonb(v_follow); end if;
 	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '2', 'still one follow-up');
+end $$;
+
+do $$
+declare v_id uuid; v public.qorpera_folder_erasures%rowtype; v_run uuid;
+begin
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.fb_first')::uuid;
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'burst-0047', jsonb_build_array(pg_temp.del('docs/s20.md'))));
+	perform pg_temp.listen();
+	v_id := (public.qorpera_folder_erase('70700000-0000-4000-8000-000000000020', pg_temp.owner(), '["docs/s20.md"]', 'erase-s20')
+		->> 'erasureId')::uuid;
+	for i in 1 .. 60 loop
+		select * into v from public.qorpera_folder_erasures where id = v_id;
+		exit when v.state <> 'working';
+		perform public.qorpera_folder_erasure_step(3, 3, 3);
+	end loop;
+	if not exists (select 1 from public.qorpera_folder_erasure_runs where erasure_id = v_id and run_id = v_run) then
+		raise exception 'Erasing a folded change set notes the run that read it: %', to_jsonb(v); end if;
+end $$;
+
+do $$
+declare v_n integer; w public.qorpera_wake_occurrences;
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_cloud_routines set max_occurrences = public.qorpera_routine_occurrence_count(id) + 1
+	where id = '88700000-0000-4000-8000-0000000000e2';
+	set local session_replication_role = origin;
+	for v_n in 1..10 loop
+		perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'limit-' || lpad(v_n::text, 4, '0'), jsonb_build_array(
+			pg_temp.put('docs/a.md', 'limit ' || v_n))));
+	end loop;
+	perform pg_temp.listen();
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e2')::text, '1',
+		'a routine one run from its limit gets one wake for a burst in one listener step');
+	select * into strict w from public.qorpera_wake_occurrences where routine_id = '88700000-0000-4000-8000-0000000000e2'
+		and source_kind = 'company-file';
+	perform pg_temp.is(cardinality(pg_temp.fb_seqs(w))::text, '10', 'and it holds all ten change sets, none dropped');
 end $$;
 
 do $$
