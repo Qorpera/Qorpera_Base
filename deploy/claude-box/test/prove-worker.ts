@@ -886,6 +886,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			const result = line ? (JSON.parse(line.slice(7)) as RunResult) : ({ ok: false, error: "no RESULT line", outputs: text.slice(-3000), ms: 0 } as RunResult);
 			say(`${label}: ${result.ok ? `ok ${result.providerSessionId}` : `failed ${result.stage ?? ""} ${result.error?.slice(0, 300)}`} in ${Date.now() - t0} ms`);
 			if (!result.ok) say(`${label} output tail: ${text.slice(-2500).replaceAll("\n", " | ")}`);
+			const reviewNotes = text.split("\n").filter((entry) => /^(LONE|REVIEWER) /.test(entry));
+			if (reviewNotes.length) say(`${label} review notes: ${reviewNotes.join(" || ").slice(0, 3000)}`);
+			say(`${label} results: ${JSON.stringify((result.stub?.results ?? []).map((r) => [r.name, r.isError, (r.text ?? "").slice(0, 120)]))}`);
 			if (!extra.parallel) slotRuns.push({ label, root: result.root, left: result.leftInSlot });
 			return { ...result, text };
 		};
