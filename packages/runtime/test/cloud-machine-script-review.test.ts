@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { sha256 } from "../src/cloud-company-folder-client.ts";
 import {
 	CLOUD_SCRIPT_CHANGED,
 	CLOUD_SCRIPT_CHANGED_EXIT,
@@ -20,8 +20,8 @@ import {
 	parseCloudScriptRead,
 } from "../src/cloud-machine-script-review.ts";
 
+const digest = (text: string) => sha256(Buffer.from(text));
 const paths = (command: string) => cloudCommandScripts(command).files.map((file) => file.path);
-const sha256 = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
 
 describe("the files a machine command runs", () => {
 	it("names the script of the mywave refusal and of production's usual script runs", () => {
@@ -131,13 +131,13 @@ describe("reading the files on the machine", () => {
 			files("/tmp/a.py", "/tmp/gone.py", "/tmp/dir", "/tmp/big.js", "/tmp/a.out"),
 		);
 		expect(read.entries).toEqual([
-			{ path: "/tmp/a.py", sha256: sha256(script), bytes: Buffer.byteLength(script) },
+			{ path: "/tmp/a.py", sha256: digest(script), bytes: Buffer.byteLength(script) },
 			{ path: "/tmp/gone.py", notShown: "it is not on the machine now" },
 			{ path: "/tmp/dir", notShown: "it is not a plain file the review can read, such as a folder" },
 			{ path: "/tmp/big.js", notShown: "it is 70000 bytes, more than the 64 KiB the review reads of one file" },
 			{ path: "/tmp/a.out", notShown: "it is not text, so the review cannot read it" },
 		]);
-		expect(read.texts.get(sha256(script))).toBe(script);
+		expect(read.texts.get(digest(script))).toBe(script);
 		expect(() => parseCloudScriptRead("QORPERA-REVIEW-READ\nF 3\nnot base64!\n", files("/tmp/a.py"))).toThrow();
 		expect(() => parseCloudScriptRead("QORPERA-REVIEW-READ\n?\n", files("/tmp/a.py"))).toThrow();
 		expect(() => parseCloudScriptRead("F 0\n\n", files("/tmp/a.py"))).toThrow();
@@ -163,19 +163,19 @@ describe("reading the files on the machine", () => {
 		const script = "print(1)\n";
 		const scripts = {
 			files: [
-				{ path: "/tmp/a.py", sha256: sha256(script), bytes: 9, changedByCommand: true as const },
+				{ path: "/tmp/a.py", sha256: digest(script), bytes: 9, changedByCommand: true as const },
 				{ path: "/tmp/x.sh", notShown: "it is not on the machine now" },
 			],
 			notShown: ["sh runs what another program prints into it, which the review cannot see"],
 		};
-		const contents = cloudScriptContents(scripts, new Map([[sha256(script), script]]));
+		const contents = cloudScriptContents(scripts, new Map([[digest(script), script]]));
 		expect(contents).toEqual({
 			shown: CLOUD_SCRIPT_SHOWN,
 			files: [
 				{
 					path: "/tmp/a.py",
 					bytes: 9,
-					sha256: sha256(script),
+					sha256: digest(script),
 					note: "This command changes or writes this path before it runs it: what it writes there is in the command.",
 					text: script,
 				},
@@ -189,7 +189,7 @@ describe("reading the files on the machine", () => {
 		expect(cloudScriptContentsIncomplete(contents)).toBe(true);
 		const whole = cloudScriptContents(
 			{ files: [scripts.files[0]], notShown: [] },
-			new Map([[sha256(script), script]]),
+			new Map([[digest(script), script]]),
 		);
 		expect(whole).not.toHaveProperty("notShown");
 		expect(cloudScriptContentsIncomplete(whole)).toBe(false);
@@ -227,8 +227,8 @@ describe("on a real shell (bash and coreutils)", () => {
 			expect(read.status).toBe(0);
 			const files = [script, missing, dir].map((path) => ({ path, mentioned: false }));
 			const { entries, texts } = parseCloudScriptRead(read.stdout, files);
-			expect(entries[0]).toEqual({ path: script, sha256: sha256("echo fetched\n"), bytes: 13 });
-			expect(texts.get(sha256("echo fetched\n"))).toBe("echo fetched\n");
+			expect(entries[0]).toEqual({ path: script, sha256: digest("echo fetched\n"), bytes: 13 });
+			expect(texts.get(digest("echo fetched\n"))).toBe("echo fetched\n");
 			expect(entries.slice(1).every((entry) => "notShown" in entry)).toBe(true);
 			const guarded = `${cloudScriptGuard(entries)}bash ${script}`;
 			expect(shell(guarded)).toMatchObject({ status: 0, stdout: "fetched\n" });

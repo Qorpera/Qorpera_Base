@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 
 export const CLOUD_SCRIPT_FILE_BYTES = 64 * 1024;
 export const CLOUD_SCRIPT_TOTAL_BYTES = 128 * 1024;
@@ -622,7 +622,7 @@ export function parseCloudPreparedScripts(value: JsonValue | undefined): CloudPr
 			!entry.path.startsWith("/") ||
 			(typeof entry.notShown !== "string" &&
 				(typeof entry.sha256 !== "string" ||
-					!/^[0-9a-f]{64}$/.test(entry.sha256) ||
+					!SHA256_HEX_PATTERN.test(entry.sha256) ||
 					!Number.isSafeInteger(entry.bytes)))
 		)
 			throw new Error("Invalid reviewed files");
@@ -645,7 +645,7 @@ export function cloudScriptContents(scripts: CloudPreparedScripts, texts: Readon
 	];
 	return {
 		shown: CLOUD_SCRIPT_SHOWN,
-		files: scripts.files.map((entry) => {
+		files: scripts.files.map((entry): JsonValue => {
 			if ("notShown" in entry) return { path: entry.path, notShown: entry.notShown };
 			const text = texts.get(entry.sha256);
 			if (text === undefined) throw new Error("Reviewed file is gone");
