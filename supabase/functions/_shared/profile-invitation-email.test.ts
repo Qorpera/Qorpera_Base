@@ -132,6 +132,21 @@ describe("profile invitation email delivery", () => {
 		assert.throws(() => buildProfileInvitationEmail(job(), "http://qorpera.com/invitation"), /HTTPS/);
 	});
 
+	it("names neither a company nor its placeholder when the company has no name yet", () => {
+		const unnamed = buildProfileInvitationEmail(
+			job({ profileName: "No name yet", invitedByDisplayName: "Jonas <J>" }),
+			"https://qorpera.com/invitation",
+		);
+		assert.equal(unnamed.subject, "Jonas <J> invited you to their new company on Qorpera");
+		assert.match(unnamed.html, /<h1[^>]*>Join Jonas &lt;J&gt;&#39;s new company<\/h1>/);
+		assert.match(unnamed.text, /^Jonas <J> invited you to join their new company on Qorpera\./);
+		assert.doesNotMatch(`${unnamed.subject}${unnamed.text}${unnamed.html}`, /No name yet/);
+		const named = buildProfileInvitationEmail(job({ profileName: "Nordlys" }), "https://qorpera.com/invitation");
+		assert.equal(named.subject, "Jonas invited you to Nordlys on Qorpera");
+		assert.match(named.html, /<h1[^>]*>Join Nordlys<\/h1>/);
+		assert.match(named.text, /^Jonas invited you to join Nordlys on Qorpera\./);
+	});
+
 	it("records retryable and permanent failures without stopping the batch", async () => {
 		const completed: string[] = [];
 		const failures: Array<{ id: string; retryable: boolean }> = [];
