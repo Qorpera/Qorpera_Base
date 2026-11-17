@@ -510,4 +510,28 @@ describe("answering Google mail", () => {
 		};
 		expect(sent.from).toBe(GMAIL);
 	});
+
+	it("offers no files in a reply from a Google address, and says a refusal in the cloud's own words", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.addresses.unshift(googleAddress({ state: "live", broughtIn: 10, total: 10, lastWeek: 1 }));
+			mail.threads = [summary(1, { address: GMAIL })];
+			mail.sendError = { message: "Email sent from a Google address carries no attached files", code: "0A000" };
+		});
+		await vi.waitFor(() => expect(main.querySelectorAll(".mailbox-row")).toHaveLength(1));
+		main.querySelector<HTMLButtonElement>(".mailbox-row .mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Reply")).toBeDefined());
+		button(main, "Reply")!.click();
+		const reply = main.querySelector<HTMLFormElement>(".mailbox-reply-box")!;
+		expect(reply.querySelector('input[type="file"], [data-focus-key*="attach"]')).toBeNull();
+		const text = reply.querySelector("textarea")!;
+		text.value = "The photo follows by post.";
+		text.dispatchEvent(new Event("input", { bubbles: true }));
+		reply.requestSubmit();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-reply-box .mailbox-write-error")?.textContent).toBe(
+				"Email sent from a Google address carries no attached files",
+			),
+		);
+		expect(fake.calls.filter((call) => call.fn === "qorpera_send_member_mail")).toHaveLength(1);
+	});
 });
