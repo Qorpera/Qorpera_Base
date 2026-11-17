@@ -28,12 +28,13 @@ if (args[0] === "-p") {
 	if (process.stdin.isTTY) process.stdin.setRawMode(true);
 	const prompt = args[0];
 	const kind = prompt.split(" ")[1] || "";
-	const draw = (lines) => (lines.some((line) => line.includes("Enter to confirm")) && log("DRAWN confirm"), process.stdout.write("\\x1b[2J\\x1b[H" + ["\\u276f " + prompt, "\\u2500\\u2500\\u2500\\u2500"].concat(lines).join("\\r\\n")));
+	const draw = (lines) => (lines.some((line) => line.includes("Enter to confirm")) && log("DRAWN confirm " + Date.now()), process.stdout.write("\\x1b[2J\\x1b[H" + ["\\u276f " + prompt, "\\u2500\\u2500\\u2500\\u2500"].concat(lines).join("\\r\\n")));
 	draw(scenario.screens[kind] || ["  \\u23bf  " + scenario.otherwise]);
 	if (scenario.changeAfterMs) setTimeout(() => draw(["  \\u23bf  " + scenario.changeTo]), scenario.changeAfterMs);
 	process.stdin.on("data", (data) => {
 		const text = data.toString();
 		log("KEY " + JSON.stringify(text));
+		if (text.includes("\\x03")) log("STOPPED " + Date.now());
 		if (text.includes("\\x03")) process.exit(0);
 		if (text.includes("\\r") && scenario.answer) setTimeout(() => draw(["  \\u23bf  " + scenario.answer]), 100);
 	});
@@ -126,12 +127,13 @@ describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and p
 			expect((await log()).filter((line) => line === 'KEY "\\r"')).toEqual([]);
 		}
 		const changing = await reader({ screens: FULL, changeAfterMs: 500, changeTo: "Something else" }, 800);
-		const started = Date.now();
 		expect(await changing.read.useClaudeReset({ credentials, kind: "full" }, AbortSignal.timeout(20_000))).toEqual({
 			outcome: "failed",
 		});
-		expect(Date.now() - started).toBeLessThan(4_000);
-		expect(await changing.log()).toContain("DRAWN confirm");
+		const lines = await changing.log();
+		const drawn = Number(lines.find((line) => line.startsWith("DRAWN confirm "))?.split(" ")[2]);
+		const stopped = Number(lines.find((line) => line.startsWith("STOPPED "))?.split(" ")[1]);
+		expect(stopped - drawn).toBeLessThan(4_000);
 		expect((await changing.log()).filter((line) => line === 'KEY "\\r"')).toEqual([]);
 	});
 
