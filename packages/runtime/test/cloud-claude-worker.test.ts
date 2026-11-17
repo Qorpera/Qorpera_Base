@@ -595,7 +595,23 @@ describe("a Claude Code worker's run", () => {
 				signInHosts: false,
 			});
 		}
-		expect(await readFile(join(source, "cloud-claude-box.ts"), "utf8")).toContain("hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,");
+		expect(await readFile(join(source, "cloud-claude-box.ts"), "utf8")).toContain(
+			"hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,",
+		);
+		const named: string[] = [];
+		const launchers: string[] = [];
+		for (const name of (await readdir(source)).filter((file) => file.endsWith(".ts")).sort()) {
+			const text = await readFile(join(source, name), "utf8");
+			if (text.includes("NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS")) named.push(name);
+			if (text.includes("launchIsolatedNativeProcess(")) launchers.push(name);
+		}
+		expect(named).toEqual(["cloud-native-egress.ts", "cloud-native-isolation.ts"]);
+		expect(launchers).toEqual([
+			"cloud-codex-tool-session.ts",
+			"cloud-model-login-renewal.ts",
+			"cloud-native-isolation.ts",
+			"cloud-native-provider-host.ts",
+		]);
 	});
 
 	it("removes the folder when the run is stopped in the middle", async () => {
