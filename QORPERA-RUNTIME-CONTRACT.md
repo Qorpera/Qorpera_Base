@@ -4740,7 +4740,13 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    platform creates `hooks/` with the first saved event, as it creates `code/`
    when coding starts (5.6), and only the platform adds or changes files
    under it; agents and members read them, and owners and admins may delete
-   them. Otherwise they stay until the company is deleted.
+   them. Otherwise they stay until the company is deleted. Amended 17
+   November 2026 (founder: "we need to build support for users to bring in
+   their emails", "Yes, build it"; item 9's Google mailboxes): the deliveries
+   of a company's Google mailbox, with their body and headers, and its
+   threads are kept as long as the company keeps that mailbox's record, also
+   after Remove, until the company is deleted; they are the mail the member
+   brought in, which Gmail itself keeps.
 7. **Today's routines take the trigger too.** Event wakes are added to the
    routine rows of `snapshot-v1` companies before the clean reset, and hooks
    exist for those companies (item 2), although new company state otherwise
@@ -4819,7 +4825,13 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    name on the platform's domain is unknown. Mail from before the
    connection (the first import, at most 50,000 messages) is stored but
    wakes no routine and is not counted against the company's hourly intake;
-   mail that arrives after it is a received email like any other. Who
+   mail that arrives after it is a received email like any other, with two
+   quiet exceptions that are stored the same way as the first import and
+   wake nothing: mail recovered when Gmail no longer keeps the change list
+   since the vault's last mark (the newest messages, read again from the
+   top), and mail that arrived while the address was removed, brought in
+   when the same company connects it again (newest first, until mail that is
+   already here). Who
    sends: email from a Google address, an agent's or a member's, leaves
    through Gmail from the vault, from that address, in the thread it
    answers; nothing else sends it. Everything else of this item holds for a
