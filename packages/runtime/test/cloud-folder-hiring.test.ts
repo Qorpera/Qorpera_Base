@@ -72,7 +72,7 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 		"the platform starts Ada Lind on it by itself, usually within a minute: no start message is needed.",
 	);
 	expect(result.next).toContain("if Ada Lind has not begun after a few minutes");
-	expect(result.next).toContain(`send_coworker_message (recipientStaffId ${result.agent.id})`);
+	expect(result.next).toContain(`send_coworker_message with priority true (recipientStaffId ${result.agent.id})`);
 	expect(result.next).toContain("a message sent while Ada Lind is still starting waits for it.");
 	expect(result.next).not.toContain("has not started");
 	expect(result.agent.id).toBe(hashedId("qorpera.folder-hire/v1", f.identity.runId, "hire-1"));
@@ -539,7 +539,7 @@ it("hires a team as one commit of new folders under one review, each with its ow
 	expect(result.next).toContain("each one's first run already lists the whole team as coworkers");
 	expect(result.next).toContain("No start message or introduction is needed. Tell the member who you hired and why.");
 	expect(result.next).toContain(
-		"Use send_coworker_message only for one that has not begun after a few minutes or needs more than its assignment says.",
+		"Use send_coworker_message, with priority true, only for one that has not begun after a few minutes or needs more than its assignment says.",
 	);
 	expect(result.next).not.toContain("recipientStaffId");
 	const again = parse(await f.hiring().hireTeam(TEAM, f.context));

@@ -11,6 +11,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
+	CLOUD_COWORKER_PRIORITY_REQUIRED,
 	CLOUD_COWORKER_STARTING,
 	CLOUD_COWORKER_STARTING_WAIT_MS,
 	CLOUD_WAKE_SCHEMA,
@@ -1550,6 +1551,27 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 		expect(Buffer.byteLength(JSON.stringify(heavy.payload))).toBeGreaterThan(16384);
 		expect(parseCloudWakeEnvelope(heavy, identity).payload.heldMessages).toHaveLength(12);
 	});
+	it("reads a coworker wake carrying the most the kernel lets one run take: 19200 bytes of messages, some in full", () => {
+		const { identity, wake } = pairWakeFixture();
+		const transcript = Array.from({ length: 12 }, () => ({
+			eventId: randomUUID(),
+			staffAgentId: wake.actorStaffId as string,
+			text: "ø".repeat(400),
+			at: "2026-09-22T22:30:00.000000Z",
+		}));
+		const heldMessages = [
+			...Array.from({ length: 4 }, () => ({ ...heldLine(), text: "ø".repeat(2048) })),
+			...Array.from({ length: 2 }, () => ({ ...heldLine(), text: "ø".repeat(700) })),
+			...Array.from({ length: 6 }, () => ({ ...heldLine(), text: "ok" })),
+		];
+		expect(heldMessages.reduce((bytes, line) => bytes + Buffer.byteLength(line.text), 0)).toBeLessThanOrEqual(19200);
+		const full = {
+			...wake,
+			payload: { ...wake.payload, text: "ø".repeat(2048), transcript, heldMessages },
+		};
+		expect(Buffer.byteLength(JSON.stringify(full.payload))).toBeGreaterThan(32768);
+		expect(parseCloudWakeEnvelope(full, identity).payload.heldMessages).toEqual(heldMessages);
+	});
 	it("rejects a held message the agent supposedly left for itself", () => {
 		const human = fixture();
 		const self = human.authority.identity.staffAgentId;
@@ -1574,6 +1596,24 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 				identity,
 			),
 		).toThrow("Invalid held coworker messages");
+	});
+	it("refuses a message that does not say whether it wakes the coworker", async () => {
+		const { run, message, call, bus, createBoundary } = await coworkerFixture();
+		const { priority: _priority, ...undecided } = message;
+		const boundary = createBoundary();
+		try {
+			const response = await boundary.invoke("undecided_1", "qorpera", "send_coworker_message", undecided);
+			expect(response.success).toBe(false);
+			expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: `INVALID_ARGUMENTS: ${CLOUD_COWORKER_PRIORITY_REQUIRED}` },
+			});
+			expect(call).not.toHaveBeenCalled();
+			expect(bus.coworkerTool().inputSchema.required).toContain("priority");
+		} finally {
+			boundary.close();
+			run.close();
+		}
 	});
 	it("sends priority false to the kernel and accepts a held receipt", async () => {
 		const { binding, run, message, call, createBoundary } = await coworkerFixture();

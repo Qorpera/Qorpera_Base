@@ -176,7 +176,7 @@ describe("which calls are reviewed", () => {
 		],
 		[
 			"manage_hook",
-			{ action: "create", kind: "mailbox", localPart: "sales", purpose: "Sales.", operationKey: "k" },
+			{ action: "create", kind: "mailbox", localPart: "sales.acme", purpose: "Sales.", operationKey: "k" },
 			"external",
 		],
 		// A signed hook too: the vault makes its secret, for one site (E3b).
@@ -485,13 +485,13 @@ describe("what the card shows", () => {
 			describeCloudAction(tool("manage_hook"), {
 				action: "create",
 				kind: "mailbox",
-				localPart: "sales",
+				localPart: "sales.acme",
 				purpose: "Sales mail from customers.",
 				operationKey: "k",
 			}),
 		).toEqual({
 			title: "Open a mailbox",
-			target: "sales",
+			target: "sales.acme",
 			details: {
 				purpose: "Sales mail from customers.",
 				effect: "Anyone may send email to this address; what arrives can wake the company's routines",
@@ -2027,11 +2027,11 @@ describe("what the reviewer reads as the mandate", () => {
 		);
 	});
 
-	it("lets the Co-Founder open the company's main mailbox in any run (10 November 2026)", () => {
-		// Jonas, 10 November: a company should have its email from the start, without a card in the founder's way.
+	it("leaves the company's first address to a founder's address card, and judges another under its handle like any mailbox (17 November 2026)", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"The Co-Founder opening the company's main mailbox, named after the company, is part of founding and is requested in every run, members' runs included.",
+			"The company's first email address is made by a founder on the address card, so the Co-Founder opening a first address (under a new handle) is not requested; adding another address under a handle the company already owns is judged like any other mailbox.",
 		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).not.toContain("main mailbox, named after the company");
 	});
 
 	it("tells the reviewer a routine never narrows the job, and to ask rather than deny when unsure (4 November 2026)", () => {

@@ -411,7 +411,7 @@ export class CloudFolderHiring {
 					agent: { id: agentId, name: request.name, role: request.role, folder: root },
 					next:
 						saved.outcome === "saved"
-							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos, and the platform starts ${request.name} on it by itself, usually within a minute: no start message is needed. Tell the member who you hired and why. To give ${request.name} more than the assignment says, or if ${request.name} has not begun after a few minutes, use send_coworker_message (recipientStaffId ${agentId}); a message sent while ${request.name} is still starting waits for it.`
+							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos, and the platform starts ${request.name} on it by itself, usually within a minute: no start message is needed. Tell the member who you hired and why. To give ${request.name} more than the assignment says, or if ${request.name} has not begun after a few minutes, use send_coworker_message with priority true (recipientStaffId ${agentId}); a message sent while ${request.name} is still starting waits for it.`
 							: saved.outcome === "conflict"
 								? `${root} is taken: call again with a new operationKey, and if this repeats, choose a slightly different name.`
 								: saved.outcome === "waiting_for_review"
@@ -556,7 +556,7 @@ function teamNext(
 	const starts =
 		"the platform starts each on its first assignment (an open todo in its own todos folder) by itself, usually within a minute";
 	const after =
-		"No start message or introduction is needed. Tell the member who you hired and why. Use send_coworker_message only for one that has not begun after a few minutes or needs more than its assignment says.";
+		"No start message or introduction is needed. Tell the member who you hired and why. Use send_coworker_message, with priority true, only for one that has not begun after a few minutes or needs more than its assignment says.";
 	if (outcome === "saved")
 		return `${names(hired)} are hired, together: ${starts}, and each one's first run already lists the whole team as coworkers. ${after}`;
 	if (outcome === "partly_saved")

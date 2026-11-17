@@ -11,6 +11,7 @@ import {
 	relabelNewCompany,
 	renderNewCompany,
 } from "../src/app/views/new-company.ts";
+import { settleStartCrown } from "../src/app/views/start-crown.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { CompanyFoundingApi, parseCompanyFounding } from "../src/cloud/company-founding.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -190,8 +191,8 @@ describe("founding table", () => {
 		const text = visibleText(container);
 		expect(text).toContain("Connect ChatGPT");
 		expect(text).toContain("Invite friends");
-		// The name is a labelled field; no sub-heading, no role line, and Cancel sits beside Start.
-		expect(container.querySelector("label.founding-name-label")?.textContent).toBe("Company name");
+		expect(container.querySelector(".founding-head label")).toBeNull();
+		expect(container.querySelector<HTMLInputElement>("input#foundingName")?.placeholder).toBe("Name your company");
 		expect(container.querySelector(".founding-sub")?.hasAttribute("hidden")).toBe(true);
 		expect(container.querySelector(".founding-role-mine")).toBeNull();
 		expect(container.querySelector(".founding-actions .founding-cancel + .founding-ready")).not.toBeNull();
@@ -272,7 +273,7 @@ describe("founding table", () => {
 		let server = wire();
 		const { named } = mount(() => server);
 		await settle();
-		const name = container.querySelector<HTMLInputElement>("input.founding-name")!;
+		const name = container.querySelector<HTMLInputElement>("input#foundingName")!;
 		name.focus();
 		// Bo renames the company while Anna's cursor sits in the name, untouched.
 		server = wire({ companyName: "Nordlys Roastery", revision: 5 });
@@ -288,7 +289,7 @@ describe("founding table", () => {
 	it("keeps a space or new line you just typed across a refresh", async () => {
 		const { named } = mount(() => wire());
 		await settle();
-		const name = container.querySelector<HTMLInputElement>("input.founding-name")!;
+		const name = container.querySelector<HTMLInputElement>("input#foundingName")!;
 		name.focus();
 		name.value = "Nordlys Kaffe ";
 		await controller!.refresh();
@@ -306,7 +307,7 @@ describe("founding table", () => {
 		let server = wire();
 		const { named } = mount(() => server);
 		await settle();
-		const name = container.querySelector<HTMLInputElement>("input.founding-name")!;
+		const name = container.querySelector<HTMLInputElement>("input#foundingName")!;
 		name.focus();
 		name.value = "Nordlys Kaffe ";
 		name.setSelectionRange(name.value.length, name.value.length);
@@ -406,7 +407,9 @@ describe("founding table", () => {
 		await controller!.refresh();
 		await settle();
 		expect(vision.value).toBe("Specialty coffee, roasted in Aarhus.");
-		expect(visibleText(container)).toContain("Failed to fetch");
+		expect(visibleText(container)).toContain(
+			"Qorpera can't be reached right now. Check your connection and try again.",
+		);
 	});
 
 	it("sends a description again on a table that moved, with the other founder's new name", async () => {
@@ -570,7 +573,26 @@ describe("founding table", () => {
 		expect(seatChanges).toHaveBeenCalled();
 	});
 
-	it("after Start, keeps the roles it last saw and opens the company once it is ready", async () => {
+	it("keeps one crown from the table's first read to the open table", async () => {
+		const read = deferred<unknown>();
+		const { view } = mount(() => read.promise);
+		const crown = document.querySelector(".start-crown");
+		expect(crown?.isConnected).toBe(true);
+		settleStartCrown();
+		view.update();
+		await settle();
+		expect(crown?.isConnected).toBe(true);
+		read.resolve(wire());
+		await settle();
+		expect(container.querySelector("textarea.founding-vision")).not.toBeNull();
+		expect(document.querySelector(".start-crown")).toBe(crown);
+		controller!.dispose();
+		settleStartCrown();
+		await settle();
+		expect(crown?.isConnected).toBe(false);
+	});
+
+	it("after Start, shows the founders on the starting scene and opens the company once it is ready", async () => {
 		let started = false;
 		let ready = false;
 		mount((name) => {
@@ -597,9 +619,9 @@ describe("founding table", () => {
 		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
 		await settle();
 		let text = visibleText(container);
-		expect(text).toContain("Nordlys Kaffe is starting");
+		expect(container.querySelector(".founding-starting")).not.toBeNull();
+		expect(text).toContain("Your Co-Founder is getting ready");
 		expect(text).toContain("Anna and Bo own it now.");
-		expect(text).toContain("Wholesale.");
 		// The Co-Founder's arrival plays from its first frame in this tab (the hint Interfaces' layer reads once).
 		expect(Number(sessionStorage.getItem(cofounderArrivalKey(table)))).toBeGreaterThan(0);
 		sessionStorage.removeItem(cofounderArrivalKey(table));
@@ -856,7 +878,9 @@ describe("hub with founding tables", () => {
 		expect(hub.store.get().foundingAvailable).toBeUndefined();
 		await hub.createCompany("Nordlys Kaffe");
 		expect(cloud.rpc).not.toHaveBeenCalled();
-		expect(hub.store.get().error).toContain("Failed to fetch");
+		expect(hub.store.get().error).toContain(
+			"Qorpera can't be reached right now. Check your connection and try again.",
+		);
 		// A tab that read "on" earlier still asks again; the cloud has switched the lobby off since.
 		hub.store.set({ foundingAvailable: true });
 		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(false);
@@ -1115,7 +1139,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			"qorpera_set_founder_ready",
 			"qorpera_start_company_founding",
 		]);
-		expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+		expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
 	});
 
 	describe("the arrow alone starts the company by itself", () => {
@@ -1180,7 +1204,6 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
 			expect(visibleText(container)).not.toContain("is starting");
 			expect(controller.store.get().autoStart).toBe(false);
-			expect(controller.store.get().startedAlone).toBe(true);
 			// Done: a reload opens the started page, and starts nothing again.
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
 		});
@@ -1349,7 +1372,9 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		expect(calls).toContain("qorpera_update_company_founding");
 		expect(calls).not.toContain("qorpera_set_founder_ready");
 		expect(calls).not.toContain("qorpera_start_company_founding");
-		expect(visibleText(container)).toContain("Failed to fetch");
+		expect(visibleText(container)).toContain(
+			"Qorpera can't be reached right now. Check your connection and try again.",
+		);
 		expect(field.value).toBe("Specialty coffee, roasted in Aarhus.");
 	});
 
@@ -1417,7 +1442,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		idea.value = "Specialty coffee, roasted in Aarhus.";
 		idea.blur();
 		await settle();
-		const name = container.querySelector<HTMLInputElement>("input.founding-name")!;
+		const name = container.querySelector<HTMLInputElement>("input#foundingName")!;
 		name.focus();
 		name.value = "Nordlys Roastery";
 		name.blur();
@@ -1529,7 +1554,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			"qorpera_set_founder_ready",
 			"qorpera_start_company_founding",
 		]);
-		expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+		expect(visibleText(container)).toContain("Your Co-Founder is getting ready");
 	});
 
 	it("never lets the opening idea's retry overwrite newer text you saved first", async () => {
