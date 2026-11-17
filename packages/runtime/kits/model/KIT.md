@@ -16,8 +16,8 @@ Write `model.json`. Every number comes from the company's files. What is not kno
   - `state`: `"known"` (a fact), `"assumed"` (someone's assumption), `"unknown"` (not known yet).
   - `value` for known and assumed. `start` for unknown: where the slider waits and what "Try an example" sets.
     A range and a start are not claims: pick a plain middle.
-  - optional `note` (≤90, shown when the label is tapped), `source` link, `marks`: up to 6 reference points
-    `{label (≤24), value (number or formula), note (≤40)}`, such as a competitor's public price.
+  - optional `note` (≤90, shown on a tap of the label), `source` (`folder:`/`https:`), `marks`: up to 6
+    reference points `{label (≤24), value (number or formula), note (≤40)}`, such as a competitor's public price.
   - A `%` input holds the number shown (8 means 8 %): write `retur / 100` in formulas.
   - `value` may be live from a company database: `{"query": "<database>/<question>", "params": {}, "column": "n",
     "example": 49}`. Known once it answers, else unknown. `example` shows only outside Qorpera.
