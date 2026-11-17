@@ -11,6 +11,7 @@ import { createWebEventHooks } from "../cloud/event-hooks.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
+import { pauseGoogleMailbox } from "../cloud/mail.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
@@ -77,6 +78,7 @@ import { FriendsWindow } from "./views/friends-window.ts";
 import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
+import { noteGoogleMailReturn } from "./views/mailbox.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { MemberChatView } from "./views/member-chat.ts";
 import {
@@ -844,9 +846,8 @@ export function mountApplication(
 					});
 				}
 			}
-			// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
-			// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
 			if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
+			noteGoogleMailReturn(connectorReturn);
 			connectorReturn = undefined;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -2352,6 +2353,7 @@ export function mountApplication(
 							environmentId: controller.profile.environmentId,
 						};
 						const keys = createDigitalPostKeys(cloud, environment);
+						const connectors = createWebConnectors(cloud, controller.profile);
 						const accounts = createWebNativeSubscription(
 							cloud,
 							controller.profile.profileId,
@@ -2372,6 +2374,12 @@ export function mountApplication(
 								memberFolder(companyCurrent, t("Company access changed.")),
 							),
 							accounts: (signal) => accounts.listConnections(signal),
+							google: {
+								begin: (signal) => connectors.beginMailboxSignIn(signal),
+								finish: (outcome, signal) => connectors.finishSignIn(outcome, signal),
+								pause: (mailboxId, paused) => pauseGoogleMailbox(cloud, mailboxId, paused),
+								go: (url) => location.assign(url),
+							},
 						};
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),

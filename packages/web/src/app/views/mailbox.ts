@@ -2,18 +2,21 @@ import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-nat
 import { cloudRoutineTriggerOfFile } from "@qorpera/cloud-client/cloud-routine-file";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFolderRejectedError, withProblems } from "../../cloud/company-folder-writes.ts";
+import type { HostedConnectorReturn } from "../../cloud/connectors.ts";
 import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
 import type { EventHook } from "../../cloud/event-hooks.ts";
-import type {
-	MailAccount,
-	MailAddress,
-	MailAgent,
-	MailMember,
-	MailMessage,
-	MailMessageRef,
-	MailThreadSummary,
-	MailWaitingItem,
-	MailWaitingSend,
+import {
+	GOOGLE_FIRST_IMPORT_LIMIT,
+	type GoogleMail,
+	type MailAccount,
+	type MailAddress,
+	type MailAgent,
+	type MailMember,
+	type MailMessage,
+	type MailMessageRef,
+	type MailThreadSummary,
+	type MailWaitingItem,
+	type MailWaitingSend,
 } from "../../cloud/mail.ts";
 import {
 	canPayForRoutine,
@@ -43,7 +46,7 @@ import { mailList, mailRow, mailSummary } from "../interface-mail.ts";
 import type { QuotedText } from "../quotes.ts";
 import { messageText, show } from "./interface.ts";
 import { type DigitalPostClient, DigitalPostView } from "./settings-digital-post.ts";
-import { type HooksClient, HooksView } from "./settings-hooks.ts";
+import { type HookAction, type HooksClient, HooksView } from "./settings-hooks.ts";
 
 /* The Mailbox page, drawn as a mail app (Jonas, 10 Nov 2026: "more like just using Gmail inside of qorpera"): Write
  * and the folders Inbox, Sent and Addresses at the side, a search field across the top, and one dense line per thread.
@@ -131,6 +134,8 @@ interface MailboxUi {
 	pendingHow: Record<string, string>;
 	/** Whether Digital Post's card is open under its pill. */
 	postOpen: boolean;
+	google: "closed" | "open" | "starting";
+	googleError: string | null;
 	/** Words on how an agent answers that were typed and not yet saved or let go, by `hookId:agent` (`add` for the Add
 	 * form's): a menu that closes without Save keeps them, and the panel opens on them again. */
 	howDrafts: Record<string, HowDraft>;
@@ -384,10 +389,18 @@ function pastedRecipients(text: string): string[] {
 	return found;
 }
 
+export interface GoogleMailboxCalls {
+	readonly begin: (signal: AbortSignal) => Promise<string>;
+	readonly finish: (outcome: HostedConnectorReturn, signal: AbortSignal) => Promise<unknown>;
+	readonly pause: (mailboxId: string, paused: boolean) => Promise<void>;
+	readonly go: (url: string) => void;
+}
+
 /** The calls behind the company's mail addresses and its Digital Post key. */
 export interface MailboxManage {
 	readonly hooks: HooksClient;
 	readonly digitalPost: DigitalPostClient;
+	readonly google?: GoogleMailboxCalls;
 	/** The routines behind "who answers an address": an agent answers one through a routine that starts on its mail.
 	 * Without them, and the member's accounts, who answers an address is only shown. */
 	readonly routines?: Pick<WebRoutines, "list" | "open" | "payer" | "save" | "setEnabled">;
@@ -431,6 +444,8 @@ export function renderMailbox(
 			addHow: "",
 			pendingHow: {},
 			postOpen: false,
+			google: "closed",
+			googleError: null,
 			howDrafts: {},
 			busy: false,
 			error: null,
@@ -485,6 +500,7 @@ export function renderMailbox(
 			: null,
 	]);
 	const page: Page = { company, ui, name, profileId, redraw, options };
+	if (googleReturn?.signIn.companyId === profileId.toLowerCase()) void finishGoogle(page);
 	show(container, key, () => settle(container.firstElementChild, drawPage(page)), moveFocus);
 	CompanyMail.of(company)?.watch(lists, threads, stillShown, letters);
 }
@@ -762,7 +778,7 @@ function noAddress(page: Page): HTMLElement {
 		h("p", null, t("Make one, and pick the agent who answers what comes in.")),
 		h("p", null, t("Letters from public authorities come here too, once Digital Post is connected.")),
 		views
-			? h("div", { class: "mailbox-manage" }, views.hooks.el)
+			? h("div", { class: "mailbox-manage" }, views.hooks.el, googleList(page))
 			: h("p", { class: "mailbox-muted" }, t("An owner or admin makes the company's addresses.")),
 	);
 }
@@ -810,7 +826,14 @@ function manageOf(page: Page): ManageViews | null {
 				card: (hook) => answerer(drawn(), calls, hook),
 				form: () => newAnswerer(drawn(), calls),
 				// An address's line says no more than who answers it: a paused one says so.
-				state: (hook) => (hook.status === "paused" ? t("Paused") : null),
+				state: (hook) => {
+					const google = googleOf(drawn(), hook);
+					return google ? googleState(google) : hook.status === "paused" ? t("Paused") : null;
+				},
+				mark: (hook) => (googleOf(drawn(), hook) ? googleMark() : null),
+				note: (hook) =>
+					googleOf(drawn(), hook)?.state === "sign_in_again" ? t("Google asked you to sign in again") : null,
+				action: (hook) => googleAction(drawn(), calls, hook),
 				// Adding an address comes first, with Digital Post beside it: its card opens under them.
 				top: { beside: () => postPill(drawn()), below: () => postCard(drawn()) },
 				// The new address goes to the agent its form named, with the words on how it answers.
@@ -910,14 +933,17 @@ function listView(page: Page): HTMLElement {
 	]
 		.sort((a, b) => b.at - a.at)
 		.map((entry) => entry.row);
+	const google = ui.tab === "inbox" ? googleLine(page) : null;
 	if (list.status === "ready" && !rows.length && !waitingRows.length && !list.next) {
 		if (ui.search.trim()) return h("p", { class: "mailbox-none" }, t("No mail matches."));
 		if (ui.tab === "sent") return h("p", { class: "mailbox-none" }, t("Nothing has been sent yet."));
-		return fresh(page, mail?.addresses ?? []);
+		const empty = fresh(page, mail?.addresses ?? []);
+		return google ? h("div", { class: "mailbox-list" }, google, empty) : empty;
 	}
 	return h(
 		"div",
 		{ class: "mailbox-list" },
+		google,
 		waitingRows.length
 			? h(
 					"section",
@@ -1883,15 +1909,239 @@ function digitalPostAddress(page: Page, agents: readonly HostedStaffAgent[]): HT
 	);
 }
 
+const googleMark = () =>
+	h("img", { class: "mailbox-google-mark", src: "./assets/provider-gmail.svg", alt: "", width: 16, height: 16 });
+
+const count = (value: number) => new Intl.NumberFormat(presentationLocale()).format(value);
+
+let googleReturn: HostedConnectorReturn | undefined;
+export function noteGoogleMailReturn(outcome: HostedConnectorReturn | undefined): void {
+	googleReturn = outcome?.connector === "gmail" ? outcome : undefined;
+}
+
+function googleRefusal(reason: unknown): string {
+	switch (reason) {
+		case "declined":
+			return t("Google was not given access. Nothing was brought in.");
+		case "expired":
+			return t("The sign-in took too long. Try again.");
+		case "browser_mismatch":
+			return t("The sign-in was finished in another browser. Start it again here.");
+		case "state_unknown":
+			return t("This sign-in link is no longer valid. Try again.");
+		case "address_taken":
+			return t("This address is already brought in by another company.");
+		default:
+			return t("Google mail could not be brought in. Try again.");
+	}
+}
+
+async function finishGoogle(page: Page): Promise<void> {
+	const outcome = googleReturn;
+	const google = page.options.manage ? manageOf(page)?.calls.google : undefined;
+	if (!outcome || !google) return;
+	googleReturn = undefined;
+	const { company, ui } = page;
+	ui.open = null;
+	ui.letter = null;
+	try {
+		if (outcome.connection === "failed") throw Object.assign(new Error("refused"), { reason: outcome.reason });
+		await google.finish(outcome, company.signal);
+		if (company.signal.aborted) return;
+		ui.tab = "inbox";
+		ui.google = "closed";
+		ui.googleError = null;
+	} catch (error) {
+		if (company.signal.aborted) return;
+		ui.tab = "addresses";
+		ui.google = "open";
+		ui.googleError = googleRefusal((error as { reason?: unknown } | undefined)?.reason);
+	}
+	page.redraw();
+	await CompanyMail.of(company)?.reread();
+}
+
+async function startGoogle(page: Page, google: GoogleMailboxCalls): Promise<void> {
+	const { company, ui } = page;
+	ui.google = "starting";
+	ui.googleError = null;
+	page.redraw("google-sign-in");
+	try {
+		const url = await google.begin(company.signal);
+		if (company.signal.aborted) return;
+		google.go(url);
+	} catch {
+		if (company.signal.aborted) return;
+		ui.google = "open";
+		ui.googleError = t("The sign-in at Google could not be started. Try again.");
+		page.redraw("google-sign-in");
+	}
+}
+
+function googleOf(page: Page, hook: EventHook): GoogleMail | undefined {
+	const email = hook.email?.toLowerCase();
+	if (!email) return undefined;
+	return page.company.store.get().mail?.addresses.find((address) => address.address.toLowerCase() === email)?.google;
+}
+
+function googleState(google: GoogleMail): string | null {
+	if (google.state === "paused") return t("Paused");
+	if (google.state === "live" && google.total !== null && google.total > google.broughtIn)
+		return t("The newest {count} messages are here.", { count: count(GOOGLE_FIRST_IMPORT_LIMIT) });
+	return null;
+}
+
+function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAction | null {
+	const google = googleOf(page, hook);
+	const client = calls.google;
+	if (!google || !client) return null;
+	if (google.state === "sign_in_again")
+		return {
+			label: t("Sign in"),
+			pill: true,
+			failed: t("The sign-in at Google could not be started. Try again."),
+			run: async (signal) => {
+				const url = await client.begin(signal);
+				if (!signal.aborted) client.go(url);
+			},
+		};
+	const paused = google.state === "paused";
+	return {
+		label: paused ? t("Resume") : t("Pause"),
+		failed: t("It could not be changed. Try again."),
+		run: () => client.pause(hook.id, !paused),
+	};
+}
+
+function googleRow(page: Page): HTMLElement | null {
+	const { company, ui } = page;
+	const state = company.store.get();
+	const google = manageViews.get(ui)?.calls.google;
+	if (state.team?.capabilities.authorize !== true || !google) return null;
+	if ((state.mail?.addresses ?? []).some((address) => address.google)) return null;
+	const open = ui.google !== "closed";
+	const starting = ui.google === "starting";
+	return h(
+		"li",
+		{ class: "mailbox-address is-google" },
+		h(
+			"div",
+			{ class: "mailbox-address-row" },
+			h(
+				"span",
+				{ class: "mailbox-address-name" },
+				h("strong", null, googleMark(), t("Mail at Google")),
+				h("span", { class: "mailbox-muted" }, t("Bring your mail in. It stays at Google too.")),
+			),
+			open
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "mailbox-text is-quiet",
+							"aria-expanded": "true",
+							"aria-controls": "mailbox-google-open",
+							disabled: starting,
+							"data-focus-key": "google",
+							onclick: () => {
+								ui.google = "closed";
+								ui.googleError = null;
+								page.redraw("google");
+							},
+						},
+						t("Cancel"),
+					)
+				: h(
+						"button",
+						{
+							type: "button",
+							class: "mailbox-answer",
+							"aria-expanded": "false",
+							"data-focus-key": "google",
+							onclick: () => {
+								ui.google = "open";
+								page.redraw("google-sign-in");
+							},
+						},
+						t("Connect Google"),
+					),
+		),
+		open
+			? h(
+					"div",
+					{ class: "mailbox-google-open", id: "mailbox-google-open" },
+					h(
+						"p",
+						null,
+						t("You sign in at Google once. Everyone in the company and your agents can read this mail."),
+					),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "mailbox-primary",
+							disabled: starting,
+							"data-focus-key": "google-sign-in",
+							onclick: () => void startGoogle(page, google),
+						},
+						t("Sign in at Google"),
+					),
+					ui.googleError ? h("p", { class: "mailbox-error", role: "alert" }, ui.googleError) : null,
+				)
+			: null,
+	);
+}
+
+function googleList(page: Page): HTMLElement | null {
+	const row = googleRow(page);
+	return row ? h("ul", { class: "mailbox-address-list" }, row) : null;
+}
+
+function googleLine(page: Page): HTMLElement | null {
+	const google = (page.company.store.get().mail?.addresses ?? []).flatMap((address) =>
+		address.google ? [address.google] : [],
+	);
+	if (google.some((each) => each.state === "sign_in_again"))
+		return h(
+			"p",
+			{ class: "mailbox-google-line is-waiting", role: "status" },
+			googleMark(),
+			h("span", null, t("Mail from Google is paused until you sign in again.")),
+		);
+	const coming = google.filter((each) => each.state === "bringing_in");
+	if (!coming.length) return null;
+	const broughtIn = coming.reduce((sum, each) => sum + each.broughtIn, 0);
+	const totals = coming.flatMap((each) => (each.total === null ? [] : [each.total]));
+	const total = totals.length === coming.length ? totals.reduce((sum, each) => sum + each, 0) : null;
+	return h(
+		"p",
+		{ class: "mailbox-google-line", role: "status" },
+		googleMark(),
+		h(
+			"span",
+			null,
+			`${t("Bringing in your mail from Google")} · `,
+			h("strong", { class: "mailbox-google-count" }, count(broughtIn)),
+			total === null ? null : ` ${t("of {total}", { total: count(total) })}`,
+		),
+	);
+}
+
 // Addresses ---------------------------------------------------------------------------------------------------------
 
 function addressesView(page: Page): HTMLElement {
 	const { company } = page;
 	const views = manageOf(page);
 	const post = digitalPostAddress(page, agentsAtWork(page));
-	const postList = post ? h("ul", { class: "mailbox-address-list" }, post) : null;
+	const row = views ? googleRow(page) : null;
+	const postList = post || row ? h("ul", { class: "mailbox-address-list" }, row, post) : null;
+	const refused = page.ui.googleError && !row ? notice("danger", h("p", null, page.ui.googleError)) : null;
 	if (views)
-		return h("div", { class: "mailbox-addresses" }, h("div", { class: "mailbox-manage" }, views.hooks.el, postList));
+		return h(
+			"div",
+			{ class: "mailbox-addresses" },
+			h("div", { class: "mailbox-manage" }, refused, views.hooks.el, postList),
+		);
 	// A page without the calls behind the addresses reads them from the mail: each one and who answers it.
 	const rows = (company.store.get().mail?.addresses ?? []).map((address) => {
 		const [handler] = address.handledBy;
@@ -1977,6 +2227,15 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 			: more.length
 				? t("{name} and {count} more", { name: nameOf(first), count: more.length + 1 })
 				: t("{first} and {second}", { first: nameOf(first), second: nameOf(second) });
+	const google = googleOf(page, hook);
+	const week = google
+		? h(
+				"span",
+				{ class: "mailbox-muted mailbox-google-week" },
+				h("strong", { class: "mailbox-week" }, count(google.lastWeek)),
+				` ${t("in the last 7 days")}`,
+			)
+		: null;
 	if (!assigns(page, calls))
 		return h(
 			"div",
@@ -1987,6 +2246,7 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 				first ? figure(page, first, undefined, 24) : null,
 				names ? t("{name} answers it", { name: names }) : t("No agent answers it yet"),
 			),
+			week,
 		);
 	const said = ui.answerErrors[email];
 	const target = { address: email, hookId: hook.id };
@@ -2038,6 +2298,7 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 				setting !== null,
 			),
 		),
+		week,
 		said ? h("p", { class: "mailbox-error", role: "alert" }, said) : null,
 	);
 }

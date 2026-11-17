@@ -114,6 +114,13 @@ function addError(kind: Kind, error: unknown): string {
 	return t(KIND_TEXT[kind].failed);
 }
 
+export interface HookAction {
+	readonly label: string;
+	readonly pill?: boolean;
+	readonly failed: string;
+	readonly run: (signal: AbortSignal) => Promise<void>;
+}
+
 /** More beside the way to add a hook, and under it, where it stands above the list (`top`). */
 export interface HooksTop {
 	readonly beside?: () => HTMLElement | null;
@@ -130,6 +137,9 @@ export class HooksView {
 	/** Told after a hook was added, paused, resumed or removed. */
 	readonly #changed: () => void;
 	readonly #card: ((hook: EventHook) => HTMLElement | null) | undefined;
+	readonly #mark: ((hook: EventHook) => HTMLElement | null) | undefined;
+	readonly #note: ((hook: EventHook) => string | null) | undefined;
+	readonly #action: ((hook: EventHook) => HookAction | null) | undefined;
 	readonly #stateOf: ((hook: EventHook, text: string) => string | null) | undefined;
 	readonly #top: HooksTop | undefined;
 	readonly #formExtra: ((kind: HookKind) => HTMLElement | null) | undefined;
@@ -161,6 +171,9 @@ export class HooksView {
 			/** More of a hook, drawn in its card between its words and its buttons (the Mailbox: who answers a
 			 * mailbox). The page that gives it calls `redraw` when what it shows changed. */
 			card?: (hook: EventHook) => HTMLElement | null;
+			mark?: (hook: EventHook) => HTMLElement | null;
+			note?: (hook: EventHook) => string | null;
+			action?: (hook: EventHook) => HookAction | null;
 			/** What a hook's state line says, from what it says here (`text`); none for no line (the Mailbox: a paused
 			 * mailbox only). */
 			state?: (hook: EventHook, text: string) => string | null;
@@ -177,6 +190,9 @@ export class HooksView {
 		this.#access = options.access ?? FULL_ACCESS;
 		this.#changed = options.changed ?? (() => {});
 		this.#card = options.card;
+		this.#mark = options.mark;
+		this.#note = options.note;
+		this.#action = options.action;
 		this.#stateOf = options.state;
 		this.#top = options.top;
 		this.#formExtra = options.form;
@@ -355,6 +371,30 @@ export class HooksView {
 		if (!this.#lifetime.signal.aborted) this.#draw(`hook-copy:${hook.id}`);
 	}
 
+	async #run(hook: EventHook, action: HookAction): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted) return;
+		this.#working = hook.id;
+		this.#outcome = undefined;
+		this.#draw();
+		try {
+			await action.run(this.#lifetime.signal);
+			if (!this.#lifetime.signal.aborted) this.#changed();
+		} catch (error) {
+			if (!this.#lifetime.signal.aborted)
+				this.#outcome = {
+					key: hook.id,
+					tone: "error",
+					text:
+						error instanceof CloudRpcError && error.code === "42501"
+							? t("Only founders and admins can add, pause or remove them.")
+							: action.failed,
+				};
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) await this.#refresh(`hook-toggle:${hook.id}`);
+		}
+	}
+
 	/** The hook's state: whether it is on, when something last arrived, and who signs it. */
 	/** The hook's state line, as the page that shows it wants it. */
 	#stateLine(hook: EventHook): HTMLElement | null {
@@ -402,11 +442,17 @@ export class HooksView {
 		const actions: HTMLElement[] = [];
 		if (manage) {
 			const paused = hook.status === "paused";
-			const toggle = button(
-				busy ? t("Working…") : paused ? t("Resume") : t("Pause"),
-				() => void this.#setStatus(hook, paused ? "active" : "paused"),
-				{ disabled: Boolean(this.#working) },
-			);
+			const action = this.#action?.(hook);
+			const toggle = action
+				? button(busy ? t("Working…") : action.label, () => void this.#run(hook, action), {
+						disabled: Boolean(this.#working),
+					})
+				: button(
+						busy ? t("Working…") : paused ? t("Resume") : t("Pause"),
+						() => void this.#setStatus(hook, paused ? "active" : "paused"),
+						{ disabled: Boolean(this.#working) },
+					);
+			if (action?.pill) toggle.classList.add("hook-add");
 			toggle.dataset.focusKey = `hook-toggle:${hook.id}`;
 			const remove = button(t("Remove"), () => void this.#setStatus(hook, "removed"), {
 				danger: true,
@@ -432,6 +478,9 @@ export class HooksView {
 					: null,
 			);
 		}
+		const note = this.#note?.(hook);
+		// A mailbox added here has its name for a purpose (#add): the line is for one that says more.
+		const purpose = hook.purpose && hook.purpose !== hook.email?.split("@")[0] ? hook.purpose : null;
 		return h(
 			"article",
 			{ class: "service-card hook-card", dataset: { hook: hook.id }, "aria-label": title(hook) },
@@ -439,9 +488,8 @@ export class HooksView {
 			h(
 				"div",
 				{ class: "settings-copy" },
-				h("strong", null, title(hook)),
-				// A mailbox added here has its name for a purpose (#add): the line is for one that says more.
-				hook.purpose && hook.purpose !== hook.email?.split("@")[0] ? h("small", null, hook.purpose) : null,
+				h("strong", null, title(hook), this.#mark?.(hook) ?? null),
+				note ? h("small", { class: "hook-note" }, note) : purpose ? h("small", null, purpose) : null,
 				this.#stateLine(hook),
 			),
 			this.#card?.(hook) ?? null,
