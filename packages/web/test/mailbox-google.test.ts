@@ -403,9 +403,13 @@ describe("Google mail's states", () => {
 		const { main, manage, google, hookIds } = await mailbox((mail) => {
 			mail.addresses.unshift({
 				...googleAddress({ state: "bringing_in", broughtIn: 10, total: 900, lastWeek: 1 }),
+				status: "paused",
 				hookPaused: true,
 			});
+			mail.threads = [summary(1)];
 		});
+		await vi.waitFor(() => expect(main.querySelectorAll(".mailbox-row")).toHaveLength(1));
+		expect(topLine(main)).toBeNull();
 		await addresses(main, 2);
 		const card = () => cardOf(main, hookIds[0]!)!;
 		expect(card().querySelector(".hook-state")?.textContent).toBe("Paused");

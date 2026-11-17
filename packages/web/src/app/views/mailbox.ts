@@ -2159,7 +2159,9 @@ function googleLine(page: Page): HTMLElement | null {
 			googleMark(),
 			h("span", null, t("Mail from Google is paused until you sign in again.")),
 		);
-	const coming = google.filter((each) => each.state === "bringing_in");
+	const coming = (page.company.store.get().mail?.addresses ?? []).flatMap((address) =>
+		address.google?.state === "bringing_in" && address.status !== "paused" ? [address.google] : [],
+	);
 	if (!coming.length) return null;
 	const broughtIn = coming.reduce((sum, each) => sum + each.broughtIn, 0);
 	const totals = coming.flatMap((each) =>
