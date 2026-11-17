@@ -126,7 +126,17 @@ alter table public.qorpera_claude_logins
 	add column renewed_at timestamptz,
 	add column refused_version bigint,
 	add column refused_at timestamptz,
+	add column failed_at timestamptz,
+	add column failures integer not null default 0 check (failures >= 0),
 	add constraint qorpera_claude_logins_renewal_lock check ((renewal_token is null) = (renewal_until is null));
+
+create function public.qorpera_claude_login_renewal_rested(p_login public.qorpera_claude_logins, p_now timestamptz)
+returns boolean language sql immutable set search_path = '' as $$
+	select p_login.failed_at is null or p_login.failed_at
+		<= p_now - least(interval '1 minute' * power(2, least(p_login.failures, 7) - 1), interval '1 hour')
+$$;
+revoke all on function public.qorpera_claude_login_renewal_rested(public.qorpera_claude_logins, timestamptz)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 create function public.qorpera_claude_login_renewal_answer(p_login public.qorpera_claude_logins)
 returns jsonb language sql stable security definer set search_path = '' as $$
@@ -156,6 +166,7 @@ begin
 	where login.id = p_claude_login_id and login.principal_id = v_principal.id and login.status = 'active'
 		and (login.renewal_until is null or login.renewal_until < v_now)
 		and (login.checked_at is null or login.checked_at < v_now - v_age)
+		and public.qorpera_claude_login_renewal_rested(login, v_now)
 		and exists (select 1 from public.qorpera_claude_worker_leases lease
 			where lease.owner_user_id = login.owner_user_id and public.qorpera_claude_worker_lease_live(lease))
 	returning login.* into v_login;
@@ -180,6 +191,7 @@ begin
 		select login.id from public.qorpera_claude_logins login
 		where login.principal_id = v_principal.id and login.status = 'active'
 			and (login.renewal_until is null or login.renewal_until < v_now)
+			and public.qorpera_claude_login_renewal_rested(login, v_now)
 			and (login.checked_at is null or login.checked_at < v_now - interval '20 hours'
 				or (login.refused_version = login.version and login.refused_at < v_now - interval '2 minutes'))
 		order by login.checked_at nulls first, login.id
@@ -189,6 +201,7 @@ begin
 		set renewal_token = extensions.gen_random_uuid(), renewal_until = v_now + interval '2 minutes'
 		where login.id = v_candidate and login.principal_id = v_principal.id and login.status = 'active'
 			and (login.renewal_until is null or login.renewal_until < v_now)
+			and public.qorpera_claude_login_renewal_rested(login, v_now)
 			and (login.checked_at is null or login.checked_at < v_now - interval '20 hours'
 				or (login.refused_version = login.version and login.refused_at < v_now - interval '2 minutes'))
 		returning login.* into v_login;
@@ -221,7 +234,8 @@ create function public.qorpera_commit_claude_login_renewal(p_principal_id uuid, 
 	p_claude_login_id uuid, p_token uuid, p_base_version bigint, p_base_envelope_sha256 text, p_key_id text,
 	p_encrypted_envelope_base64 text, p_envelope_sha256 text)
 returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
-declare v_login public.qorpera_claude_logins%rowtype; v_envelope bytea; v_now timestamptz := clock_timestamp();
+declare v_principal public.qorpera_cloud_secret_broker_principals%rowtype; v_login public.qorpera_claude_logins%rowtype;
+	v_envelope bytea; v_now timestamptz := clock_timestamp();
 begin
 	if p_base_version is null or p_base_version < 1
 		or coalesce(p_base_envelope_sha256, '') !~ '^[0-9a-f]{64}$' or coalesce(p_envelope_sha256, '') !~ '^[0-9a-f]{64}$'
@@ -232,22 +246,28 @@ begin
 	if octet_length(v_envelope) not between 1 and 131072
 		or encode(extensions.digest(v_envelope, 'sha256'), 'hex') <> p_envelope_sha256 then
 		raise exception 'Claude login renewal is invalid' using errcode = '22023'; end if;
-	v_login := public.qorpera_claude_login_renewal_locked(p_principal_id, p_capability_sha256, p_claude_login_id, p_token);
-	if v_login.id is null then
-		return jsonb_build_object('schema', 'qorpera.claude-login-renewal-commit/v1', 'state', 'stale'); end if;
+	v_principal := public.qorpera_broker_principal(p_principal_id, p_capability_sha256);
+	if p_claude_login_id is null or p_token is null then
+		raise exception 'Claude login renewal is invalid' using errcode = '22023'; end if;
+	select login.* into v_login from public.qorpera_claude_logins login
+	where login.id = p_claude_login_id and login.principal_id = v_principal.id for update;
+	if v_login.id is null then raise exception 'Claude login is unavailable' using errcode = '42501'; end if;
 	if v_login.status <> 'active' then
 		return jsonb_build_object('schema', 'qorpera.claude-login-renewal-commit/v1', 'state', 'refused',
 			'reason', 'SIGNED_OUT'); end if;
 	if p_key_id is distinct from v_login.key_id then
 		raise exception 'Claude login renewal is invalid' using errcode = '22023'; end if;
 	if v_login.version <> p_base_version or v_login.envelope_sha256 <> p_base_envelope_sha256 then
-		update public.qorpera_claude_logins set renewal_token = null, renewal_until = null where id = v_login.id;
+		if v_login.renewal_token = p_token then
+			update public.qorpera_claude_logins set renewal_token = null, renewal_until = null where id = v_login.id; end if;
 		return jsonb_build_object('schema', 'qorpera.claude-login-renewal-commit/v1', 'state', 'stale');
 	end if;
+	-- WHY: a renewal on the base it was taken from seals even after its lock passed to another host: its refresh token
+	-- has rotated at Anthropic, so it is the only one that can work, and that host's later release answers stale.
 	update public.qorpera_claude_logins
 	set encrypted_envelope = v_envelope, envelope_sha256 = p_envelope_sha256, version = version + 1,
 		renewal_token = null, renewal_until = null, checked_at = v_now, renewed_at = v_now,
-		refused_version = null, refused_at = null
+		refused_version = null, refused_at = null, failed_at = null, failures = 0
 	where id = v_login.id
 	returning * into v_login;
 	return jsonb_build_object('schema', 'qorpera.claude-login-renewal-commit/v1', 'state', 'sealed',
@@ -276,6 +296,8 @@ begin
 	update public.qorpera_claude_logins
 	set renewal_token = null, renewal_until = null,
 		checked_at = case when p_outcome = 'failed' then checked_at else v_now end,
+		failed_at = case when p_outcome = 'failed' then v_now end,
+		failures = case when p_outcome = 'failed' then failures + 1 else 0 end,
 		refused_version = case when p_outcome = 'refused' then version
 			when p_outcome = 'unchanged' then null else refused_version end,
 		refused_at = case when p_outcome = 'refused' then
