@@ -2160,9 +2160,10 @@ function googleLine(page: Page): HTMLElement | null {
 	);
 	if (!coming.length) return null;
 	const broughtIn = coming.reduce((sum, each) => sum + each.broughtIn, 0);
-	const totals = coming.flatMap((each) =>
-		each.total === null || each.total < each.broughtIn ? [] : [Math.min(each.total, GOOGLE_FIRST_IMPORT_LIMIT)],
-	);
+	const totals = coming.flatMap((each) => {
+		const capped = each.total === null ? null : Math.min(each.total, GOOGLE_FIRST_IMPORT_LIMIT);
+		return capped === null || capped < each.broughtIn ? [] : [capped];
+	});
 	const total = totals.length === coming.length ? totals.reduce((sum, each) => sum + each, 0) : null;
 	return h(
 		"p",
