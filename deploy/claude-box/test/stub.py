@@ -117,10 +117,9 @@ class H(BaseHTTPRequestHandler):
              "ms": ms, "is_error": is_error, "tags": tags(txt), "len": len(txt), "text": txt[:6000]})
 
     def review(self, req, base):
-        msgs = req.get("messages") or []
-        asked = content_text(msgs[-1].get("content")) if msgs else ""
-        found = re.search(r'"tool": ?"([a-z_]{1,40})"', asked)
-        action = {"tool": found.group(1) if found else "", "arguments": asked[asked.find('"arguments"'):][:300]}
+        asked = json.dumps(req.get("messages") or [])
+        found = re.search(r'tool\\?": ?\\?"([a-z_]{1,40})', asked)
+        action = {"tool": found.group(1) if found else "", "arguments": asked[:300]}
         marked = asked
         decision = "deny" if "C4C-REFUSE" in marked else "ask" if "C4C-ASK" in marked else "allow"
         verdict = {"decision": decision, "ruleIds": [],
