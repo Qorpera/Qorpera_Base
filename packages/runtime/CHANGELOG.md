@@ -29,7 +29,9 @@
   to the next run, and a Stop withdraws it then, as for a held note. Held notes are now cut at 1600 bytes, not 400
   characters, and a cut one ends ` … [cut: the full message is in your transcript with this coworker]`; a note of the
   pair whose transcript the wake shows is left out only when that transcript (400 characters a line) shows it whole. The context
-  message's heldMessages line says the list also holds messages that waited for this run. Deploy order: either; the
+  message's heldMessages line says the list also holds messages that waited for this run (staff instruction pins
+  `9cccae895f75` → `e95ea3068e9a0d088e4eece6245e68757a2a6fb203ff536c01fcecd0cc67c3ee`, conversation and private; the
+  worker's and the prompts' unchanged). Deploy order: either; the
   payload keeps the shape every live bundle parses (`heldMessages`), so the migration works with the bundles live today
   and the runtime text change needs no migration.
 - The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure
