@@ -15,63 +15,49 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "fi", "done", "esac"]);
 const SKIPPED = new Set(["for", "case", "select", "function", "alias", "export", "local", "declare", "readonly"]);
 
-interface Prefix {
-	readonly values: readonly string[];
-	readonly operand?: true;
-	readonly chdir?: readonly string[];
-}
-
-const PREFIXES: Readonly<Record<string, Prefix>> = {
-	env: { values: ["-u", "--unset", "-C", "--chdir", "-S", "--split-string"], chdir: ["-C", "--chdir"] },
-	sudo: { values: ["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "--chdir"], chdir: ["-D", "--chdir"] },
-	timeout: { values: ["-k", "--kill-after", "-s", "--signal"], operand: true },
-	nice: { values: ["-n", "--adjustment"] },
-	ionice: { values: ["-c", "--class", "-n", "--classdata"] },
-	nohup: { values: [] },
-	exec: { values: ["-a"] },
-	time: { values: ["-f", "--format", "-o", "--output"] },
-	command: { values: [] },
-	stdbuf: { values: ["-i", "-o", "-e", "--input", "--output", "--error"] },
-	setsid: { values: [] },
-	"xvfb-run": {
-		values: ["-s", "--server-args", "-n", "--server-num", "-e", "--error-file", "-f", "--auth-file", "-p"],
-	},
-};
+const STEERING =
+	/^(PATH|CDPATH|ENV|BASH_ENV|IFS|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|NODE_OPTIONS|NODE_PATH|RUBYOPT|RUBYLIB|PERL5OPT|PERL5LIB|LD_PRELOAD|LD_LIBRARY_PATH|BASH_FUNC_[^=]*)\+?=/;
+const PREFIXES = new Set(["env", "time", "nohup", "nice", "timeout", "xvfb-run"]);
+const WRAPPERS = new Set([
+	"sudo",
+	"doas",
+	"ionice",
+	"stdbuf",
+	"setsid",
+	"exec",
+	"command",
+	"builtin",
+	"chroot",
+	"strace",
+]);
+const DURATION = /^[0-9]{1,6}(\.[0-9]{1,3})?[smhd]?$/;
+const NICENESS = /^-?[0-9]{1,2}$/;
 
 interface Interpreter {
 	readonly inline: readonly string[];
-	readonly values: readonly string[];
+	readonly allowed: readonly string[];
 	readonly module?: readonly string[];
-	readonly file?: readonly string[];
-	readonly stdin?: readonly string[];
 }
 
-const SHELL: Interpreter = {
-	inline: ["-c"],
-	values: ["-o", "+o", "-O", "+O", "--rcfile", "--init-file"],
-	stdin: ["-s"],
-};
-const PYTHON: Interpreter = { inline: ["-c"], values: ["-W", "-X", "-Q"], module: ["-m"] };
-const NODE: Interpreter = {
-	inline: ["-e", "--eval", "-p", "--print"],
-	values: ["-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--env-file"],
-};
+const SHELL: Interpreter = { inline: ["-c"], allowed: ["-e", "-u", "-x", "-eu", "-ex", "-eux"] };
+const SHELL_SETTINGS = new Set(["pipefail", "errexit", "nounset"]);
+const PYTHON: Interpreter = { inline: ["-c"], allowed: ["-u", "-B", "-O", "-q"], module: ["-m"] };
+const NODE: Interpreter = { inline: ["-e", "--eval", "-p", "--print"], allowed: [] };
 const INTERPRETERS: Readonly<Record<string, Interpreter>> = {
 	bash: SHELL,
 	sh: SHELL,
 	dash: SHELL,
-	zsh: SHELL,
 	python: PYTHON,
 	python3: PYTHON,
 	node: NODE,
 	nodejs: NODE,
 	tsx: NODE,
 	"ts-node": NODE,
-	ruby: { inline: ["-e"], values: ["-r", "-I", "-C", "-E"] },
-	perl: { inline: ["-e", "-E"], values: ["-I", "-M", "-m"] },
-	php: { inline: ["-r"], values: ["-c", "-d", "-z"], file: ["-f"] },
-	Rscript: { inline: ["-e"], values: [] },
-	lua: { inline: ["-e"], values: ["-l"] },
+	ruby: { inline: ["-e"], allowed: [] },
+	perl: { inline: ["-e", "-E"], allowed: [] },
+	php: { inline: ["-r"], allowed: [] },
+	Rscript: { inline: ["-e"], allowed: [] },
+	lua: { inline: ["-e"], allowed: [] },
 };
 
 interface Word {
@@ -326,8 +312,7 @@ function basename(text: string): string {
 	return text.slice(text.lastIndexOf("/") + 1);
 }
 
-function interpreterOf(text: string): Interpreter | undefined {
-	const name = basename(text);
+function interpreterOf(name: string): Interpreter | undefined {
 	return INTERPRETERS[/^python3\.[0-9]{1,2}$/.test(name) ? "python3" : name];
 }
 
@@ -356,101 +341,121 @@ function printed(word: Word): boolean {
 	return word.substituted && word.text.trim() === "";
 }
 
-function stripPrefixes(
-	words: Word[],
-	folder: string | null,
-): { folder: string | null; grouped: boolean; keywords: string[] } {
+function grammar(words: readonly Word[]): { at: number; grouped: boolean; keywords: string[] } {
+	let at = 0;
 	let grouped = false;
 	const keywords: string[] = [];
 	for (;;) {
-		while (words.length > 0 && ASSIGNMENT.test((words[0] as Word).text)) words.shift();
-		const first = words[0];
-		if (!first || !first.literal) return { folder, grouped, keywords };
-		if (KEYWORDS.has(first.text)) {
-			keywords.push(first.text);
-			words.shift();
-			continue;
-		}
-		if (first.text === "{" || first.text === "}") {
-			grouped = true;
-			words.shift();
-			continue;
-		}
-		const prefix = PREFIXES[basename(first.text)];
-		if (!prefix) return { folder, grouped, keywords };
-		words.shift();
-		let operand = prefix.operand === true;
-		while (words.length > 0) {
-			const option = (words[0] as Word).text;
-			if (option === "--") {
-				words.shift();
-				break;
-			}
-			if (option.startsWith("-") && option.length > 1) {
-				words.shift();
-				if (prefix.chdir?.includes(option.split("=")[0] as string)) folder = null;
-				if (prefix.values.includes(option)) words.shift();
-				continue;
-			}
-			if (ASSIGNMENT.test(option)) {
-				words.shift();
-				continue;
-			}
-			if (!operand) break;
-			words.shift();
-			operand = false;
-		}
+		const word = words[at];
+		if (!word) return { at, grouped, keywords };
+		if (word.literal && KEYWORDS.has(word.text)) keywords.push(word.text);
+		else if (word.literal && (word.text === "{" || word.text === "}")) grouped = true;
+		else if (!ASSIGNMENT.test(word.text)) return { at, grouped, keywords };
+		at += 1;
 	}
 }
 
-function interpreterScript(
-	interpreter: Interpreter,
-	words: readonly Word[],
-): { readonly script?: Word; readonly inline?: true; readonly code?: Word } {
-	for (let index = 1; index < words.length; ) {
+function programName(word: Word | undefined): string | undefined {
+	if (!word?.literal) return undefined;
+	if (!word.text.includes("/")) return word.text;
+	return PROGRAMS.test(posix.resolve(word.text)) ? basename(word.text) : undefined;
+}
+
+type Start = { readonly at: number; readonly prefixed: boolean } | { readonly why: string };
+
+function commandStart(words: readonly Word[]): Start {
+	let at = 0;
+	let prefixed = false;
+	const assignments = (): string | undefined => {
+		while (words[at] && ASSIGNMENT.test((words[at] as Word).text)) {
+			const word = words[at] as Word;
+			if (!word.literal) return `${line(word.text)}: the command's setting is named through an expansion`;
+			if (STEERING.test(word.text)) return `${line(word.text)}: it changes which code the command runs`;
+			at += 1;
+		}
+		return undefined;
+	};
+	while (
+		words[at]?.literal &&
+		(KEYWORDS.has((words[at] as Word).text) || ["{", "}"].includes((words[at] as Word).text))
+	)
+		at += 1;
+	const first = assignments();
+	if (first) return { why: first };
+	for (;;) {
+		const name = programName(words[at]);
+		if (name === undefined || !PREFIXES.has(name)) return { at, prefixed };
+		prefixed = true;
+		at += 1;
+		if (name === "env") {
+			const why = assignments();
+			if (why) return { why };
+		} else if (name === "nice") {
+			if (words[at]?.text === "-n" && NICENESS.test(words[at + 1]?.text ?? "")) at += 2;
+		} else if (name === "timeout") {
+			if (!DURATION.test(words[at]?.text ?? ""))
+				return { why: "timeout: it runs its program with options the review does not follow" };
+			at += 1;
+		} else if (name === "xvfb-run" && words[at]?.text === "-a") at += 1;
+		if (words[at]?.text.startsWith("-"))
+			return { why: `${name}: it runs its program with options the review does not follow` };
+	}
+}
+
+type Script = { readonly script?: Word; readonly code?: Word; readonly exact?: true; readonly why?: string };
+
+function interpreterScript(name: string, interpreter: Interpreter, words: readonly Word[], at: number): Script {
+	for (let index = at + 1; index < words.length; ) {
 		const word = words[index] as Word;
 		const option = word.text;
-		if (option === "--") return words[index + 1] ? { script: words[index + 1] as Word } : {};
-		if (shortFlags(interpreter, option, interpreter.inline))
-			return words[index + 1] ? { inline: true, code: words[index + 1] as Word } : { inline: true };
-		if (interpreter.module && shortFlags(interpreter, option, interpreter.module)) return { inline: true };
-		if (interpreter.file?.includes(option)) return words[index + 1] ? { script: words[index + 1] as Word } : {};
-		if (interpreter.stdin && shortFlags(interpreter, option, interpreter.stdin)) return {};
-		if (option === "-") return {};
-		if (option.startsWith("-") || (interpreter === SHELL && option.startsWith("+"))) {
-			index += interpreter.values.includes(option) ? 2 : 1;
+		if (!option.startsWith("-") && !(interpreter === SHELL && option.startsWith("+"))) return { script: word };
+		if (shortFlags(interpreter, option, interpreter.inline)) {
+			const code = words[index + 1];
+			if (!code) return {};
+			return interpreter.inline.includes(option) ? { code, exact: true } : { code };
+		}
+		if (interpreter.module && shortFlags(interpreter, option, interpreter.module))
+			return { why: `${line(name)} ${line(option)}: it runs a module the review does not read` };
+		if (interpreter.allowed.includes(option)) {
+			index += 1;
 			continue;
 		}
-		return { script: word };
+		if (interpreter === SHELL && option === "-o" && SHELL_SETTINGS.has(words[index + 1]?.text ?? "")) {
+			index += 2;
+			continue;
+		}
+		if (option === "-") return {};
+		return { why: `${line(name)} ${line(option)}: it runs with options the review does not follow` };
 	}
 	return {};
 }
 
-const FOLDER_WORDS = new Set([
-	"cd",
-	"pushd",
-	"popd",
-	"eval",
-	"builtin",
-	"command",
-	"exec",
-	"alias",
-	"shopt",
-	"trap",
-	"function",
-]);
+const FOLDER_WORDS = new Set(["cd", "pushd", "popd", "eval", "builtin", "command", "exec", "shopt", "trap"]);
+const STARTUP = /^(BASH_ENV|ENV|ZDOTDIR)(\+?=|$)/;
 
-function shellCode(words: readonly Word[]): readonly Word[] {
-	const interpreter = interpreterOf(words[0]?.text ?? "");
-	if (interpreter !== SHELL) return [];
-	const { code } = interpreterScript(interpreter, words);
-	return code ? [code] : [];
+interface Scan {
+	moves: boolean;
+	steers: boolean;
 }
 
-function movesFolder(text: string, sourced: boolean, depth = 0): boolean {
-	if (depth > 8) return true;
+function named(name: string | undefined): boolean {
+	return (
+		name !== undefined &&
+		(name in INTERPRETERS || PREFIXES.has(name) || name === "cd" || /^python3\.[0-9]{1,2}$/.test(name))
+	);
+}
+
+function scan(text: string, sourced: boolean, depth = 0, found: Scan = { moves: false, steers: false }): Scan {
+	if (depth > 8) {
+		found.moves = true;
+		found.steers = true;
+		return found;
+	}
 	const { simples, complete } = lex(text);
-	if (!complete) return true;
+	if (!complete) {
+		found.moves = true;
+		found.steers = true;
+	}
 	let cases = 0;
 	let pattern = false;
 	for (let at = 0; at < simples.length; at += 1) {
@@ -459,7 +464,13 @@ function movesFolder(text: string, sourced: boolean, depth = 0): boolean {
 			pattern = false;
 			continue;
 		}
-		if (simple.marker === "(" && simples[at + 1]?.marker === ")" && !sourced) return true;
+		if (simple.marker === "(" && simples[at + 1]?.marker === ")") {
+			const name = simples[at - 1]?.words.at(-1)?.text;
+			if (!sourced || named(name)) {
+				found.moves = true;
+				found.steers = true;
+			}
+		}
 		if (simple.marker) continue;
 		const first = simple.words[0];
 		if (cases > 0 && (simple.after === ";;" || simple.after === ";&" || simple.after === ";;&")) pattern = true;
@@ -467,30 +478,52 @@ function movesFolder(text: string, sourced: boolean, depth = 0): boolean {
 			cases -= 1;
 			pattern = false;
 		}
-		for (const word of simple.words) {
-			if (word.text.includes("CDPATH") || word.text === "--chdir") return true;
-			if (word.literal && FOLDER_WORDS.has(word.text) && !(sourced && word.text === "function")) return true;
-			for (const body of word.bodies) if (movesFolder(body, sourced, depth + 1)) return true;
+		for (const [index, word] of simple.words.entries()) {
+			if (word.text.includes("CDPATH") || STARTUP.test(word.text)) found.moves = true;
+			if (!sourced && STEERING.test(word.text)) found.steers = true;
+			if (word.literal && FOLDER_WORDS.has(word.text)) found.moves = true;
+			if (word.literal && word.text === "alias") {
+				found.moves = true;
+				found.steers = true;
+			}
+			if (word.literal && word.text === "function" && (!sourced || named(simple.words[index + 1]?.text))) {
+				found.moves = true;
+				found.steers = true;
+			}
+			for (const body of word.bodies) scan(body, sourced, depth + 1, found);
+			const shell = programName(word);
+			if (shell !== undefined && INTERPRETERS[shell] === SHELL)
+				for (let next = index + 1; simple.words[next]?.text.match(/^[-+]/); next += 1)
+					if (shortFlags(SHELL, (simple.words[next] as Word).text, SHELL.inline)) {
+						const code = simple.words[next + 1];
+						if (code) scan(code.text, sourced, depth + 1, found);
+						break;
+					}
 		}
-		const words = [...simple.words];
-		if (stripPrefixes(words, HOME).folder === null) return true;
-		const program = words[0];
+		const { at: start } = grammar(simple.words);
+		const program = simple.words[start];
 		if (!program) continue;
-		if (!pattern && !program.literal && program.text !== "[" && program.text !== "[[") return true;
-		if (sourced && (program.text === "source" || program.text === ".")) return true;
+		if (!pattern && !program.literal && program.text !== "[" && program.text !== "[[") {
+			found.moves = true;
+			found.steers = true;
+		}
+		const name = programName(program);
+		if (name === "hash" && simple.words.slice(start + 1).some((word) => /^-[A-Za-z]*p/.test(word.text)))
+			found.steers = true;
+		if (sourced && (program.text === "source" || program.text === ".")) found.moves = true;
 		if (first?.plain && first.text === "case") {
 			cases += 1;
 			pattern = true;
 		}
-		for (const code of shellCode(words)) if (movesFolder(code.text, sourced, depth + 1)) return true;
-		if (interpreterOf(program.text) === SHELL)
-			for (const body of simple.bodies) if (movesFolder(body, sourced, depth + 1)) return true;
+		if (name !== undefined && INTERPRETERS[name] === SHELL)
+			for (const body of simple.bodies) scan(body, sourced, depth + 1, found);
 	}
-	return false;
+	return found;
 }
 
 export function cloudScriptKeepsFolder(text: string): boolean {
-	return !movesFolder(text, true);
+	const found = scan(text, true);
+	return !found.moves && !found.steers;
 }
 
 function leadingFolder(simples: readonly Simple[], start: string | null): { count: number; folder: string | null } {
@@ -530,15 +563,23 @@ function chainOf(simples: readonly Simple[], from: number): boolean[] {
 		const pipeline = simples.slice(at, end + 1);
 		const opened = pipeline.every((simple) => {
 			if (simple.marker) return false;
-			const words = [...simple.words];
-			const stripped = stripPrefixes(words, HOME);
-			return !stripped.grouped && stripped.keywords.length === 0;
+			const shape = grammar(simple.words);
+			return !shape.grouped && shape.keywords.length === 0;
 		});
 		if (!opened || pipeline[0]?.joined !== "&&" || pipeline.at(-1)?.background) break;
 		for (let index = at; index <= end; index += 1) chained[index] = true;
 		at = end + 1;
 	}
 	return chained;
+}
+
+function runsScript(words: readonly Word[]): boolean {
+	return words.some((word) => {
+		const name = programName(word);
+		return (
+			(name !== undefined && interpreterOf(name) !== undefined) || (name === undefined && word.text.includes("/"))
+		);
+	});
 }
 
 export function cloudCommandScripts(
@@ -556,7 +597,9 @@ export function cloudCommandScripts(
 		leading.count === 0
 			? 0
 			: simples.slice(leading.count).find((simple) => simple.words[0] !== undefined)?.words[0]?.start;
-	const restMoves = movesFolder(rest === undefined ? "" : command.slice(rest), false);
+	const whole = scan(command, false);
+	const restMoves =
+		leading.count === 0 ? whole.moves : scan(rest === undefined ? "" : command.slice(rest), false).moves;
 	let certain = leading.count === 0 ? !restMoves && start !== null : !restMoves && leading.folder !== null;
 	const chained = leading.count > 0 ? chainOf(simples, leading.count) : [];
 	const run = (word: Word, folder: string | null) => {
@@ -572,19 +615,28 @@ export function cloudCommandScripts(
 	};
 	for (const [index, simple] of simples.entries()) {
 		if (index < leading.count) continue;
-		const words = [...simple.words];
-		stripPrefixes(words, HOME);
 		const folder = !certain ? null : leading.count === 0 ? start : chained[index] ? leading.folder : null;
-		const program = words[0];
-		if (!program) continue;
+		const words = simple.words;
+		const begun = commandStart(words);
+		if ("why" in begun) {
+			if (runsScript(words)) notShown.add(begun.why);
+			continue;
+		}
+		const program = words[begun.at];
+		if (!program || program.text.startsWith("-")) continue;
 		if (!program.literal && program.text !== "[" && program.text !== "[[") {
 			notShown.add(`${line(program.text) || "a program"}: it is named through a variable or an expansion`);
 			continue;
 		}
-		const name = program.text;
-		if (SKIPPED.has(name)) continue;
+		const name = programName(program);
+		if (name !== undefined && SKIPPED.has(name)) continue;
+		if (name !== undefined && WRAPPERS.has(name)) {
+			if (runsScript(words.slice(begun.at + 1)))
+				notShown.add(`${line(name)}: the review does not follow what it runs`);
+			continue;
+		}
 		if ((name === "cat" || name === "tee") && simple.heredoc) {
-			const targets = name === "tee" ? words.slice(1).filter((word) => !word.text.startsWith("-")) : [];
+			const targets = name === "tee" ? words.slice(begun.at + 1).filter((word) => !word.text.startsWith("-")) : [];
 			for (const target of [...simple.outputs, ...targets]) {
 				const located = locate(target, folder);
 				if ("path" in located) written.add(located.path);
@@ -592,52 +644,69 @@ export function cloudCommandScripts(
 			continue;
 		}
 		if (name === "eval") {
-			if (words.slice(1).some(printed))
+			if (words.slice(begun.at + 1).some(printed))
 				notShown.add("eval runs code another program prints, which the review cannot see");
 			continue;
 		}
 		if (name === "source" || name === ".") {
-			const file = words[1];
+			const file = words[begun.at + 1];
 			const located = file ? locate(file, folder) : undefined;
-			if (file?.literal && !file.text.includes("/"))
+			if (begun.prefixed) notShown.add(`${line(name)}: the review does not follow what runs it`);
+			else if (file?.literal && !file.text.includes("/"))
 				notShown.add(`${line(file.text)}: the shell looks it up on its program path first`);
 			else if (file) run(file, folder);
-			if (!(file?.text.includes("/") && located && "path" in located && settled.has(located.path))) certain = false;
+			if (begun.prefixed || !(file?.text.includes("/") && located && "path" in located && settled.has(located.path)))
+				certain = false;
 			continue;
 		}
-		const interpreter = interpreterOf(name);
-		if (interpreter) {
-			const { script, inline, code } = interpreterScript(interpreter, words);
-			if (code && printed(code))
-				notShown.add(`${line(name)} runs code another program prints, which the review cannot see`);
-			else if (code && interpreter === SHELL && !nested) {
-				if (code.substituted)
-					notShown.add(
-						`${line(name)} runs code built from what another program prints, which the review cannot see`,
-					);
-				else {
-					const inner = cloudCommandScripts(code.text, folder, true, settled);
-					for (const reason of inner.notShown) notShown.add(reason);
-					for (const file of inner.files)
-						if (!written.has(file.path) && !files.some((known) => known.path === file.path)) files.push(file);
-				}
+		const interpreter = name === undefined ? undefined : interpreterOf(name);
+		if (name !== undefined && interpreter) {
+			const found = interpreterScript(name, interpreter, words, begun.at);
+			if (found.why) {
+				notShown.add(found.why);
+				continue;
 			}
-			if (inline) continue;
-			if (script) run(script, folder);
+			if (found.code) {
+				if (printed(found.code))
+					notShown.add(`${line(name)} runs code another program prints, which the review cannot see`);
+				else if (interpreter === SHELL && !nested) {
+					if (found.code.substituted)
+						notShown.add(
+							`${line(name)} runs code built from what another program prints, which the review cannot see`,
+						);
+					else {
+						const inner = cloudCommandScripts(found.code.text, found.exact ? folder : null, true, settled);
+						for (const reason of inner.notShown) notShown.add(reason);
+						for (const file of inner.files)
+							if (!written.has(file.path) && !files.some((known) => known.path === file.path)) files.push(file);
+					}
+				}
+				continue;
+			}
+			if (found.script) run(found.script, folder);
 			else if (simple.inputs[0]) run(simple.inputs[0], folder);
 			else if (simple.piped && !simple.heredoc)
 				notShown.add(`${line(name)} runs what another program prints into it, which the review cannot see`);
 			continue;
 		}
-		if (name === "deno" || name === "bun") {
-			if (name === "deno" && words[1]?.text !== "run") continue;
-			const rest = words.slice(name === "deno" || words[1]?.text === "run" ? 2 : 1);
-			const script = rest.find((word) => !word.text.startsWith("-"));
-			if (script && (!script.literal || /[/.]/.test(script.text))) run(script, folder);
+		if (name === "deno") {
+			const script = words[begun.at + 2];
+			if (words[begun.at + 1]?.text !== "run" || !script) continue;
+			if (script.text.startsWith("-"))
+				notShown.add(`deno run ${line(script.text)}: it runs with options the review does not follow`);
+			else run(script, folder);
 			continue;
 		}
-		if (name.includes("/") && !PROGRAMS.test(name.startsWith("/") ? posix.resolve(name) : name)) run(program, folder);
+		if (name === undefined && program.text.includes("/")) run(program, folder);
 	}
+	if (whole.steers && (files.length > 0 || notShown.size > 0))
+		return {
+			files: [],
+			notShown: [
+				...files.map((file) => `${file.path}: the command changes which program or code its commands run`),
+				...notShown,
+			],
+		};
 	return { files, notShown: [...notShown] };
 }
 

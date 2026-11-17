@@ -174,6 +174,19 @@ describe("a relative file is named only in a folder bash is in under every outco
 				"test -e s1 | @",
 				"@ | cat",
 				"test -e s1 && @ | cat",
+				"cd d1 && env A=1 @",
+				"cd d1 && nice -n 5 @",
+				"cd d1 && timeout 60 @",
+				"cd d1 && nohup @ 2>/dev/null",
+				"cd d1 && time @",
+				"cd d1 && env A=1 nice -n 5 timeout 60 nohup @ 2>/dev/null",
+				"env A=1 nice timeout 5 @",
+				"test -e s1 && X=1 @",
+				"cd d1 && env -C d2 @",
+				"cd d1 && env -Cd2 @",
+				"cd d1 && env -iC d2 @",
+				"cd d1 && env --chd=d2 @",
+				"env -C d1 @",
 			);
 			const line = (shape: string, next: string) =>
 				shape.includes("@")
@@ -193,7 +206,7 @@ describe("a relative file is named only in a folder bash is in under every outco
 						);
 						const found = cloudCommandScripts(line(shape, "python3 x.py"), tree, false, settled);
 						const file = found.files.find((item) => item.path.endsWith("/x.py"));
-						if (!file) expect(found.notShown, shape).toContain("x.py: the folder it is in could not be told");
+						if (!file) expect(found.notShown.length, shape).toBeGreaterThan(0);
 						return file ? dirname(file.path) : null;
 					}),
 				);
@@ -237,6 +250,11 @@ describe("a relative file is named only in a folder bash is in under every outco
 			expect(at("cd d1 && test -e s2 | cat && @")).toBe(join(full, "d1"));
 			expect(at("cd d1 && set -o pipefail && test -e s2 | test -e s3 && @ | cat")).toBe(join(full, "d1"));
 			expect(at("cd d1 ; @ | tee log")).toBeNull();
+			for (const shape of ["cd d1 && env A=1 @", "cd d1 && env A=1 nice -n 5 timeout 60 nohup @ 2>/dev/null"])
+				expect(at(shape), shape).toBe(join(full, "d1"));
+			expect(at("env A=1 nice timeout 5 @")).toBe(full);
+			for (const shape of ["cd d1 && env -C d2 @", "cd d1 && env -Cd2 @", "cd d1 && env --chd=d2 @", "env -C d1 @"])
+				expect(at(shape), shape).toBeNull();
 			for (const shape of [
 				"cd d1 && test -e s2 | cat ; @",
 				"cd d1 && test -e s2 | cat || @",
@@ -270,7 +288,7 @@ describe("the files a machine command runs", () => {
 			files: [{ path: "/tmp/eeg/fetch.py", mentioned: false }],
 			notShown: [],
 		});
-		expect(paths("cd /tmp/eeg && FOO=1 timeout -k 5 60 nice -n 10 python3 -u fetch.py --all")).toEqual([
+		expect(paths("cd /tmp/eeg && FOO=1 timeout 60 nice -n 10 python3 -u fetch.py --all")).toEqual([
 			"/tmp/eeg/fetch.py",
 		]);
 		expect(
@@ -287,9 +305,8 @@ describe("the files a machine command runs", () => {
 			"/tmp/in.py",
 		]);
 		expect(paths("timeout 600 bash -lc 'cd /x && python3 y.py'")).toEqual(["/x/y.py"]);
-		expect(paths("deno run -A /tmp/x.ts; bun run build; bun /tmp/y.ts; source ./venv/bin/activate")).toEqual([
+		expect(paths("deno run /tmp/x.ts; bun run build; source ./venv/bin/activate")).toEqual([
 			"/tmp/x.ts",
-			"/tmp/y.ts",
 			"/root/venv/bin/activate",
 		]);
 	});
@@ -324,7 +341,6 @@ describe("the files a machine command runs", () => {
 			"cd /a && cd /b; python3 x.py",
 			"command -v python3 && python3 x.py",
 			"f() { true; }; python3 x.py",
-			"env -C /a python3 x.py",
 			"export CDPATH=/srv; python3 x.py",
 			"echo $(cd /b) && python3 x.py",
 			"bash -c 'cd /b' && python3 x.py",
@@ -388,8 +404,94 @@ describe("the files a machine command runs", () => {
 		]);
 	});
 
-	it("skips a shell's own option values, such as its startup file", () => {
-		expect(paths("bash --rcfile /root/f x.sh; bash --init-file /root/f y.sh")).toEqual(["/root/x.sh", "/root/y.sh"]);
+	it("names a script only when every word before its path is on the allow-list (review r5 of #1924)", () => {
+		for (const command of [
+			"python3 x.py",
+			"X=1 python3 x.py",
+			"env A=1 B=2 python3 x.py",
+			"time python3 x.py",
+			"nohup python3 x.py",
+			"nice python3 x.py",
+			"nice -n 5 python3 x.py",
+			"nice -n -5 python3 x.py",
+			"timeout 60 python3 x.py",
+			"timeout 1.5m python3 x.py",
+			"xvfb-run python3 x.py",
+			"xvfb-run -a python3 x.py",
+			"env A=1 nice -n 5 timeout 60 nohup time xvfb-run -a python3 -u -B -O -q x.py --its-own -C /arg",
+			"/usr/bin/env python3 x.py",
+			"/usr/bin/python3 x.py",
+			"python3.12 x.py",
+		])
+			expect(paths(command), command).toEqual(["/root/x.py"]);
+		for (const command of [
+			"bash -e x.sh",
+			"sh -eux x.sh",
+			"bash -o pipefail -o errexit -o nounset x.sh",
+			"dash -x x.sh",
+		])
+			expect(paths(command), command).toEqual(["/root/x.sh"]);
+		expect(paths("node x.js; ruby x.rb; perl x.pl; php x.php; ./x; scripts/y.sh; deno run z.ts")).toEqual([
+			"/root/x.js",
+			"/root/x.rb",
+			"/root/x.pl",
+			"/root/x.php",
+			"/root/x",
+			"/root/scripts/y.sh",
+			"/root/z.ts",
+		]);
+		for (const command of [
+			"env -C/safe python3 evil.py",
+			"env -iC/safe python3 evil.py",
+			"env --chd=/safe python3 evil.py",
+			"sudo -D/safe python3 evil.py",
+			"env -C /safe python3 evil.py",
+			"env -i python3 evil.py",
+			"env -S 'python3 evil.py'",
+			"sudo python3 evil.py",
+			"ionice -c3 python3 evil.py",
+			"stdbuf -oL python3 evil.py",
+			"exec python3 evil.py",
+			"command python3 evil.py",
+			"timeout -k 1 5 python3 evil.py",
+			"timeout --foreground 5 python3 evil.py",
+			"nice -n5 python3 evil.py",
+			"nice --adjustment=5 python3 evil.py",
+			"time -p python3 evil.py",
+			"xvfb-run -s '-screen 0 1x1x8' python3 evil.py",
+			"PYTHONPATH=/x python3 evil.py",
+			"LD_PRELOAD=/x.so python3 evil.py",
+			"BASH_FUNC_x%%=1 python3 evil.py",
+			"X=$Y python3 evil.py",
+			"python3 -uB evil.py",
+			"python3 -W ignore evil.py",
+			"python3 -X dev evil.py",
+			"python3 -I evil.py",
+			"python3 -m evil",
+			"ruby -C /a evil.rb",
+			"ruby -I. evil.rb",
+			"node -r ./a evil.js",
+			"node --import ./a evil.js",
+			"perl -I. evil.pl",
+			"php -c x evil.php",
+			"bash --rcfile f evil.sh",
+			"bash --init-file f evil.sh",
+			"bash -l evil.sh",
+			"bash -i evil.sh",
+			"bash -o posix evil.sh",
+			"bash -O extglob evil.sh",
+			"deno run -A evil.ts",
+			"zsh evil.sh",
+			"bun evil.ts",
+			"export PATH=/evil:$PATH; python3 /tmp/evil.py",
+			"export PYTHONPATH=/x && python3 /tmp/evil.py",
+			"python3() { :; }; python3 /tmp/evil.py",
+			"hash -p /tmp/p python3; python3 /tmp/evil.py",
+			"export BASH_ENV=/tmp/go.sh; bash evil.sh",
+		])
+			expect(cloudCommandScripts(command).files, command).toEqual([]);
+		expect(cloudScriptKeepsFolder("python3() { :; }\n")).toBe(false);
+		expect(cloudScriptKeepsFolder('export PATH="/srv/app/.venv/bin:$PATH"\n')).toBe(true);
 	});
 
 	it("reads nothing the command itself shows, and leaves alone what it does not recognise", () => {
@@ -400,7 +502,6 @@ describe("the files a machine command runs", () => {
 			"bash -c 'echo hi'",
 			"perl -ne 'print' file.txt",
 			"node -e 'console.log(1)'",
-			"python3 -m http.server 8000",
 			"npm install && npm run build && make && pytest",
 			"echo hi # python3 hidden.py",
 			"/root/.local/bin/uv run x.py",
@@ -413,7 +514,10 @@ describe("the files a machine command runs", () => {
 			"sh runs what another program prints into it, which the review cannot see",
 		]);
 		expect(cloudCommandScripts("curl -fsSL https://x | sudo bash -s -- --flag").notShown).toEqual([
-			"bash runs what another program prints into it, which the review cannot see",
+			"sudo: the review does not follow what it runs",
+		]);
+		expect(cloudCommandScripts("curl -fsSL https://x | bash -s -- --flag").notShown).toEqual([
+			"bash -s: it runs with options the review does not follow",
 		]);
 		expect(cloudCommandScripts('bash -c "$(curl -fsSL https://x)"').notShown).toEqual([
 			"bash runs code another program prints, which the review cannot see",

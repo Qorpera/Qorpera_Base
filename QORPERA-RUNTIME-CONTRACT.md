@@ -6969,11 +6969,14 @@ bundle; no migration, host call or image moves.
    so. A command the runtime does not recognise as running a file is reviewed as before. A relative path is named only
    when its folder is certain from the text alone: nothing anywhere in the command can change the folder, or the file
    runs in an unbroken `&&` chain after leading `cd <literal path>` commands (a pipeline that is an operand of that
-   chain stays in it) (a sourced file read whole that can change no folder keeps that); otherwise it is not shown.
-   Known limit: the files are read when the action is reviewed; a file changed between that read and the command's
-   start in the same call is not detected. A check of the bytes in the command itself would only close those seconds,
-   while the files a script loads stay unseen and unbound anyway, and it would put a platform line in front of the
-   agent's command.
+   chain stays in it) (a sourced file read whole that can change no folder keeps that); otherwise it is not shown. A
+   file is named only when every word of its command before its path is on fixed allow-lists: literal assignments that
+   do not steer which code runs, the prefixes `env` (assignments only), `time`, `nohup`, `nice [-n N]`, `timeout
+   <duration>`, `xvfb-run [-a]`, and per-interpreter options (`python3 -u -B -O -q`; `bash`/`sh -e -u -x -o
+   pipefail|errexit|nounset`; none for the others); anything else is not shown. Known limit: the files are read when
+   the action is reviewed; a file changed between that read and the command's start in the same call is not detected. A
+   check of the bytes in the command itself would only close those seconds, while the files a script loads stay unseen
+   and unbound anyway, and it would put a platform line in front of the agent's command.
 2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
    bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
    variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the
