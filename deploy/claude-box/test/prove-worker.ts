@@ -748,11 +748,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		mkdirSync(join(B, "configs"), { recursive: true, mode: 0o700 });
 		chownSync(B, 65534, 65534);
 		chownSync(join(B, "configs"), 65534, 65534);
-		// The stub's renewed tokens live one second, so every run renews at its start (and again before later requests):
-		// each run has a renewal to seal, and a run's seal lands only on the version it opened (the vault's compare-and-swap).
-		const scenario = (label: string, steps: unknown[], final: string, expiresIn = 1, extra: Record<string, unknown> = {}) => {
+		const scenario = (label: string, steps: unknown[], final: string, expiresIn = 1) => {
 			const path = join(P, `scen-c4c-${label}.json`);
-			writeFileSync(path, JSON.stringify({ label, nonce: randomBytes(4).toString("hex"), steps, final, expiresIn, ...extra }), { mode: 0o444 });
+			writeFileSync(path, JSON.stringify({ label, nonce: randomBytes(4).toString("hex"), steps, final, expiresIn }), { mode: 0o444 });
 			return path;
 		};
 		const out = (key: string) => `/company/QorperaOS/agents/alice/todos/onboarding/${key}`;
@@ -913,6 +911,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			const result = line ? (JSON.parse(line.slice(7)) as RunResult) : ({ ok: false, error: "no RESULT line", outputs: text.slice(-3000), ms: 0 } as RunResult);
 			say(`${label}: ${result.ok ? `ok ${result.providerSessionId}` : `failed ${result.stage ?? ""} ${result.error?.slice(0, 300)}`} in ${Date.now() - t0} ms`);
 			if (!result.ok) say(`${label} output tail: ${text.slice(-2500).replaceAll("\n", " | ")}`);
+			const reviewNotes = text.split("\n").filter((entry) => /^(LONE|REVIEWER) /.test(entry));
+			if (reviewNotes.length) say(`${label} review notes: ${reviewNotes.join(" || ").slice(0, 3000)}`);
+			say(`${label} results: ${JSON.stringify((result.stub?.results ?? []).map((r) => [r.name, r.isError, (r.text ?? "").slice(0, 120)]))}`);
 			if (!extra.parallel) slotRuns.push({ label, root: result.root, left: result.leftInSlot });
 			return { ...result, text };
 		};
