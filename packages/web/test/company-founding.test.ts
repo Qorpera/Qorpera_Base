@@ -188,8 +188,8 @@ describe("founding table", () => {
 				: wire({ companyName: "No name yet" }),
 		);
 		await settle();
-		const field = container.querySelector<HTMLInputElement>("input.founding-name")!;
-		expect([field.value, field.placeholder]).toEqual(["", "No name yet"]);
+		const field = container.querySelector<HTMLInputElement>("input.hero-name")!;
+		expect([field.value, field.placeholder]).toEqual(["", "Name your company"]);
 		expect(container.querySelector(".founding-start")?.textContent).toBe("Start the company");
 		expect(visibleText(container)).toContain("Everyone at the table becomes a founder of the company.");
 		field.focus();
