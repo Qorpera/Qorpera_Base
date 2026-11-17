@@ -1361,7 +1361,7 @@ it.each([
 				"ask_member",
 				"update_memory",
 				"more_tools",
-				...(agentKind === "cofounder" ? ["hire_agent", "update_reading"] : []),
+				...(agentKind === "cofounder" ? ["hire_agent", "hire_team", "update_reading"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
