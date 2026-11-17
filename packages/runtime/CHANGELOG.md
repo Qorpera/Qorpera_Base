@@ -29,18 +29,6 @@
   14.6, the 2026-11-17 amendment). The coworker paragraph and the coworker wake's protocol stop replies that
   say received, agreed or done, and passing news on to a third coworker who need not act. `PLATFORM_UPDATES` tells the
   Co-Founder (`coworker-messages-wake-on-request`). The runtime bundle only; no migration.
-- Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
-  worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
-  on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
-  approved head; and master since v252): runtime bundle 253
-  `ec5969910e64e58b11d03e8ac777ee44121384317988b071ea9660ed2d023646` (activation `20260929025399`, previous 252
-  `ac0e54611d0d`). Its activation requires the release's four migrations, which the roll's `migrate` runs before the
-  switch, in this order: `20260930786000` (a Claude Code worker's run is claimed only by a shared execution host),
-  `20260930787000` (bundle 253 calls `qorpera_claude_worker_fall_back`), `20260930788000` (bundle 253 declares
-  `modelPolicy.threadEfforts`, which an older kernel refuses) and `20260930789000` (the home for every company, which must
-  not apply before `20260930786000`). The coding executor moves before the switch (its command authority takes a run at
-  `xhigh`). The guest moves: the native provider host (`26e07eb7`), the ephemeral runner (`df616dab`, #1887) and the two
-  LXD bootstraps; the native Codex stays `9c299f88`.
 - Coworker messages waiting for one agent are delivered in one run (the founder, 17 November 2026: "Build, no cap";
   migration `20260930798000`, SQL test 1295; lanes/agent-messaging-volume-20261117/DESIGN-FOLD.md). An agent's coworker
   wakes all go to its own thread, which runs one run at a time, so messages that arrive while it is busy used to start
@@ -68,6 +56,18 @@
   characters; contract 14.6 gains the amendment (the staff instruction pins and the tool catalog pins move). Deploy order: either; the
   payload keeps the shape every live bundle parses (`heldMessages`), so the migration works with the bundles live today
   and the runtime text change needs no migration.
+- Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
+  worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
+  on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
+  approved head; and master since v252): runtime bundle 253
+  `ec5969910e64e58b11d03e8ac777ee44121384317988b071ea9660ed2d023646` (activation `20260929025399`, previous 252
+  `ac0e54611d0d`). Its activation requires the release's four migrations, which the roll's `migrate` runs before the
+  switch, in this order: `20260930786000` (a Claude Code worker's run is claimed only by a shared execution host),
+  `20260930787000` (bundle 253 calls `qorpera_claude_worker_fall_back`), `20260930788000` (bundle 253 declares
+  `modelPolicy.threadEfforts`, which an older kernel refuses) and `20260930789000` (the home for every company, which must
+  not apply before `20260930786000`). The coding executor moves before the switch (its command authority takes a run at
+  `xhigh`). The guest moves: the native provider host (`26e07eb7`), the ephemeral runner (`df616dab`, #1887) and the two
+  LXD bootstraps; the native Codex stays `9c299f88`.
 - The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure
   they are running with bypass permissions, and all permissions turned ON"; lanes/agent-box-20261113/harness-permissions/
   AUDIT.md; the runtime bundle only). `CLAUDE_BOX_TOOLS` goes from 8 to 18: Task (sub-agents), WebSearch, Skill,
