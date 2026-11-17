@@ -6948,10 +6948,11 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    included: no run waits on its own worker (a parent is told to end its turn when it dispatches one, and the report
    comes back in a new run), so no run holds a turn the cap needs. Both numbers are one platform setting row
    (`qorpera_provider_account_turn_settings`).
-5. **Wakes and routines.** A waiting run keeps its wake, so a routine makes no new run meanwhile. A run of an agent's
-   once-routine that ended turned away is no attempt of the routine: it counts towards neither its number nor its
-   limit. Turned-away runs in a row still back off: the next run is not due before 15 minutes after the first of them,
-   doubling with each (at most a day), nor before the account's cool-down ends.
+5. **Wakes and routines.** A waiting run keeps its wake, so a routine makes no new run meanwhile; the run's own waits
+   (item 2) are its retry. A run of an agent's once-routine that still ended turned away counts towards the routine's
+   limit (`max_occurrences`) like any run that ended, as before. It is no attempt for the delay of the next run, and
+   turned-away runs in a row back off: a routine with room left runs next no sooner than 15 minutes after the first of
+   them, doubling with each (at most a day), and not before the account's cool-down ends.
 6. **What members read.** A waiting run's activity says `paused_for: "rate_limited"` and is never movable to another
    login; the recovery read of a failed run says `rate_limited`. The thread says ChatGPT got too many requests at once,
    that the work goes on by itself, and that the login is fine; never to check the login.

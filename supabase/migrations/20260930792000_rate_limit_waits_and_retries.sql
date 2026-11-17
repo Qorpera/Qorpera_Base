@@ -343,15 +343,6 @@ select pg_temp.rate_limit_replace('public.qorpera_folder_restore_dynamic_routine
 	|| E'\t\tend if;\n'
 	|| E'\tend if;\n'
 	|| E'\t-- 20260930570000: a run brought forward starts now, as the attempt of the run that gives way to it.\n');
-select pg_temp.rate_limit_replace('public.qorpera_folder_restore_dynamic_routine_run(uuid,bigint)',
-	E'\t\t\twhere routine_id = v_routine.id) >= v_routine.max_occurrences) then\n',
-	E'\t\t\twhere routine_id = v_routine.id\n'
-	|| E'\t\t\t\tand not (run_id is not null and public.qorpera_run_rate_limited(run_id))) >= v_routine.max_occurrences) then\n');
 
-select pg_temp.rate_limit_replace('public.qorpera_routine_occurrence_count(uuid)',
-	E'from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine_id\n',
-	E'from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine_id\n'
-	|| E'\t\tand not (wake.run_id is not null and wake.status in (\'failed\', \'requires_review\')\n'
-	|| E'\t\t\tand public.qorpera_run_rate_limited(wake.run_id))\n');
 
 drop function pg_temp.rate_limit_replace(regprocedure, text, text);

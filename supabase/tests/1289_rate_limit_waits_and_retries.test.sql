@@ -398,7 +398,6 @@ begin
 	perform pg_temp.base_assert(public.qorpera_routine_turned_away_streak(v_routine, 1) = 3, 'three in a row');
 	update public.qorpera_provider_account_cooldowns set cool_until = clock_timestamp() + interval '5 minutes'
 	returning cool_until into v_until;
-	update public.qorpera_cloud_routines set max_occurrences = 1 where id = v_routine;
 	perform pg_temp.base_claims('service_role');
 	perform set_config('qorpera_test.rl_routine', v_routine::text, true);
 end
@@ -411,7 +410,7 @@ begin
 	select * into v_wake from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrence_id')::uuid;
 	perform pg_temp.base_assert(v_result ->> 'status' = 'inserted' and v_wake.occurrence_key = 'once:1:4'
 		and v_wake.payload ->> 'attempt' = '1' and v_wake.not_before = statement_timestamp() + interval '60 minutes',
-		'turned away three times in a row: its first attempt, not before an hour, and not over its limit: ' || v_result::text
+		'turned away three times in a row: its first attempt, not before an hour: ' || v_result::text
 		|| ' / ' || coalesce(to_jsonb(v_wake)::text, 'none'));
 end
 $$;
@@ -437,7 +436,6 @@ begin
 		'openai', 'rate_limited', 'native_adapter', extensions.gen_random_uuid()
 	from public.qorpera_execution_runs as run where run.id = pg_temp.rl_id(6, 25);
 	set local session_replication_role = origin;
-	update public.qorpera_cloud_routines set max_occurrences = 2 where id = v_routine;
 	perform pg_temp.base_assert(public.qorpera_routine_turned_away_streak(v_routine, 1) = 1,
 		'a run that was not turned away ends the streak');
 	select cool_until into v_until from public.qorpera_provider_account_cooldowns where account_key = pg_temp.rl_key();
@@ -447,6 +445,79 @@ begin
 		and v_wake.not_before = greatest(statement_timestamp() + interval '15 minutes', v_until),
 		'one turned away after a real attempt: its second attempt, after 15 minutes: ' || v_result::text || ' / '
 		|| coalesce(to_jsonb(v_wake)::text, 'none'));
+end
+$$;
+
+create function pg_temp.rl_limited_routine(p_n integer, p_max integer) returns uuid language plpgsql as $$
+declare v_run public.qorpera_execution_runs; v_routine uuid := pg_temp.rl_id(12, p_n);
+begin
+	select * into strict v_run from public.qorpera_execution_runs where id = pg_temp.rr_run();
+	set local session_replication_role = replica;
+	insert into public.qorpera_cloud_routines(id, profile_id, environment_id, client_routine_id, current_version, status,
+		created_by_user_id, origin, owner_staff_agent_id, routine_key, max_occurrences)
+	values (v_routine, v_run.profile_id, v_run.environment_id, extensions.gen_random_uuid(), 1, 'active',
+		'92400000-0000-4000-8000-000000000001', 'agent', '92400000-0000-4000-8000-000000000030', 'r-limit-' || p_n, p_max);
+	insert into public.qorpera_cloud_routine_versions(routine_id, version, client_version_id, profile_id, environment_id,
+		staff_agent_id, title, prompt, triggers, effort, sponsor_binding_id, sponsor_version, content_sha256, created_by_user_id)
+	values (v_routine, 1, extensions.gen_random_uuid(), v_run.profile_id, v_run.environment_id,
+		'92400000-0000-4000-8000-000000000030', 'Limited', 'Check once more.',
+		'[{"id":"t1","kind":"once","at":"2026-10-01T09:00:00Z","timeZone":"UTC"}]', 'medium', v_run.sponsor_binding_id,
+		v_run.sponsor_version, repeat('e', 64), '92400000-0000-4000-8000-000000000001');
+	set local session_replication_role = origin;
+	return v_routine;
+end
+$$;
+create function pg_temp.rl_turn_away(p_wake uuid, p_n integer) returns void language plpgsql as $$
+begin
+	perform pg_temp.rl_run(p_n, pg_temp.rl_connection(), 2);
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set status = 'requires_review', run_id = pg_temp.rl_id(6, p_n),
+		finished_at = clock_timestamp() where id = p_wake;
+	insert into public.qorpera_provider_connection_usage_signals(profile_id, run_id, job_id, sponsor_binding_id,
+		sponsor_version, provider_connection_id, provider_connection_version, provider, signal_kind, source, assignment_id)
+	select run.profile_id, run.id, run.job_id, run.sponsor_binding_id, run.sponsor_version, pg_temp.rl_connection(), 2,
+		'openai', 'rate_limited', 'native_adapter', extensions.gen_random_uuid()
+	from public.qorpera_execution_runs as run where run.id = pg_temp.rl_id(6, p_n);
+	set local session_replication_role = origin;
+end
+$$;
+create function pg_temp.rl_due(p_routine uuid) returns boolean language sql as $$
+	select exists (select 1 from jsonb_array_elements(public.qorpera_folder_dynamic_routines_due(null, 500) -> 'items') as item
+		where item ->> 'routine_id' = p_routine::text)
+$$;
+
+do $$
+declare v_routine uuid := pg_temp.rl_limited_routine(31, 2); v_result jsonb;
+begin
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.base_assert(pg_temp.rl_due(v_routine), 'a routine with room is due');
+	v_result := public.qorpera_folder_restore_dynamic_routine_run(v_routine, 1);
+	perform pg_temp.base_assert(v_result ->> 'status' = 'inserted', 'its first run: ' || v_result::text);
+	perform pg_temp.rl_turn_away((v_result ->> 'occurrence_id')::uuid, 31);
+	perform pg_temp.base_assert(pg_temp.rl_due(v_routine), 'turned away once, a routine of two runs is due again');
+	v_result := public.qorpera_folder_restore_dynamic_routine_run(v_routine, 1);
+	perform pg_temp.base_assert(v_result ->> 'status' = 'inserted', 'its second run: ' || v_result::text);
+	perform pg_temp.rl_turn_away((v_result ->> 'occurrence_id')::uuid, 32);
+	perform pg_temp.base_assert((select status from public.qorpera_cloud_routines where id = v_routine) = 'expired'
+		and not pg_temp.rl_due(v_routine)
+		and public.qorpera_folder_restore_dynamic_routine_run(v_routine, 1) ->> 'status' <> 'inserted'
+		and (select count(*) from public.qorpera_wake_occurrences where routine_id = v_routine) = 2,
+		'two runs turned away use up a limit of two: the routine expires, nothing is stuck active');
+end
+$$;
+
+do $$
+declare v_routine uuid := pg_temp.rl_limited_routine(33, 1); v_result jsonb;
+begin
+	perform pg_temp.base_claims('service_role');
+	v_result := public.qorpera_folder_restore_dynamic_routine_run(v_routine, 1);
+	perform pg_temp.base_assert(v_result ->> 'status' = 'inserted', 'its one run: ' || v_result::text);
+	perform pg_temp.rl_turn_away((v_result ->> 'occurrence_id')::uuid, 33);
+	perform pg_temp.base_assert((select status from public.qorpera_cloud_routines where id = v_routine) = 'expired'
+		and not pg_temp.rl_due(v_routine)
+		and public.qorpera_folder_restore_dynamic_routine_run(v_routine, 1) ->> 'status' <> 'inserted'
+		and (select count(*) from public.qorpera_wake_occurrences where routine_id = v_routine) = 1,
+		'a routine of one run turned away is expired, with no extra run');
 end
 $$;
 
