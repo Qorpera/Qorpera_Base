@@ -181,11 +181,10 @@ export function runFailureReason(
 	usageLimit?: boolean,
 	payer: RunPayer = {},
 	rateLimited?: boolean,
-	sourceKind?: string,
+	ownMessage?: boolean,
 ): string {
 	const kind = classifyRunFailure(lastError, jobStatus, usageLimit, rateLimited);
-	if (kind === "rate_limited" && sourceKind === "session_turn") return t(MESSAGE_RATE_LIMITED);
-	if (kind === "rate_limited" && sourceKind === "room_delivery") return t(POST_RATE_LIMITED);
+	if (kind === "rate_limited" && ownMessage === true) return t(MESSAGE_RATE_LIMITED);
 	const resetsAt = payer.resetsAt;
 	const time = kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now() ? fmtTime(resetsAt) : undefined;
 	// The work never moves by itself. The member whose own login paid may continue it with another login of theirs that
@@ -233,9 +232,6 @@ export function runWaitingReason(until: string, payer: RunPayer = {}, rateLimite
 
 const MESSAGE_RATE_LIMITED = phrase(
 	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.",
-);
-const POST_RATE_LIMITED = phrase(
-	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine. Send it again in a few minutes.",
 );
 
 const RATE_LIMIT_WAIT = phrase(

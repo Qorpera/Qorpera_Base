@@ -295,7 +295,7 @@ describe("why a run stopped, in the member's words", () => {
 	});
 });
 
-describe("a run ChatGPT turned away for too many requests at once (20260930792000)", () => {
+describe("a run ChatGPT turned away for too many requests at once (20260930801000)", () => {
 	const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
 	const TURNED_AWAY = "ChatGPT turned this run away because too many requests came at once. The login is fine.";
 	const WAITS =
@@ -312,15 +312,11 @@ describe("a run ChatGPT turned away for too many requests at once (2026093079200
 
 	it("tells a member plainly that their own message didn't go through", () => {
 		const message = "Your message didn't go through: ChatGPT got too many requests at once. The login is fine.";
-		expect(runFailureReason(refused, "failed", false, { own: true }, true, "session_turn")).toBe(message);
-		expect(runFailureReason(refused, "failed", false, {}, true, "room_delivery")).toBe(
-			`${message} Send it again in a few minutes.`,
-		);
-		for (const kind of ["wake", "proposal_review", undefined])
-			expect(runFailureReason(refused, "failed", false, {}, true, kind)).toBe(TURNED_AWAY);
-		expect(runFailureReason(refused, "failed", false, { own: true }, false, "session_turn")).toMatch(
-			PROVIDER_REFUSED,
-		);
+		expect(runFailureReason(refused, "failed", false, { own: true }, true, true)).toBe(message);
+		expect(runFailureReason(refused, "failed", false, {}, true, true)).toBe(message);
+		for (const own of [false, undefined])
+			expect(runFailureReason(refused, "failed", false, {}, true, own)).toBe(TURNED_AWAY);
+		expect(runFailureReason(refused, "failed", false, { own: true }, false, true)).toMatch(PROVIDER_REFUSED);
 	});
 
 	it("keeps a usage limit a usage limit, and reads as before from an older cloud", () => {

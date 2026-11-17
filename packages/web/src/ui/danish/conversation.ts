@@ -214,8 +214,6 @@ export const CONVERSATION: Record<string, string> = {
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
 	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.":
 		"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden.",
-	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine. Send it again in a few minutes.":
-		"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden. Send den igen om et par minutter.",
 	"ChatGPT turned this run away because too many requests came at once. The login is fine.":
 		"ChatGPT afviste kørslen, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden.",
 	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.":
