@@ -21,6 +21,12 @@ export const CLAUDE_REPEAT_COMMAND =
 	"When you are woken because it was approved, run that exact command again with your Bash tool, unchanged and in the same folder. Made unchanged, it runs without another review.";
 export const CLAUDE_REPEAT_CHANGE =
 	"When you are woken because it was approved, make that exact change again with the same file tool and the same input. Made unchanged, it is saved without another review.";
+export const CLAUDE_REPEAT_ELSEWHERE =
+	"If it is approved, a follow-up of this worker can do this exact action unchanged without another review; nothing else of this run's work is picked up again.";
+export const CLAUDE_FILE_UNREADABLE =
+	"REVIEW_UNAVAILABLE: This file change could not be read whole for its safety review, so it did not happen. Make it smaller, or in parts.";
+export const CLAUDE_FILE_UNACCOUNTED =
+	"REVIEW_UNAVAILABLE: This change to the machine's files came from no file tool call that was reviewed, so it did not happen.";
 export const CLAUDE_REVIEW_FAILED =
 	"REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical action once more; if it fails again, say so in your report.";
 
@@ -76,8 +82,9 @@ export function cloudClaudeInvocationCommand(invocation: string): { command: str
 	const tail = CWD_FILE.exec(invocation);
 	if (!tail) return { command: invocation, shape };
 	const body = invocation.slice(0, tail.index);
-	const at = body.startsWith("eval ") ? 0 : body.indexOf(" && eval ") + 4;
-	if (at < 0 || (at > 0 && !SNAPSHOT.test(body))) return { command: invocation, shape };
+	const found = body.startsWith("eval ") ? 0 : body.indexOf(" && eval ");
+	if (found < 0 || (found > 0 && !SNAPSHOT.test(body))) return { command: invocation, shape };
+	const at = found === 0 ? 0 : found + 4;
 	const command = cloudClaudeShellWord(body.slice(at + 5));
 	return { command: command && command.length > 0 ? command : invocation, shape };
 }
@@ -102,7 +109,7 @@ export function cloudClaudeShellAction(
 ): CloudCodexHomeAction | undefined {
 	if (cloudClaudeSearchArguments(request.cmd)) return undefined;
 	const { command, shape } = cloudClaudeInvocationCommand(request.cmd);
-	return finishAction({
+	const action = finishAction({
 		tool: "home_command",
 		machine,
 		summary: command,
@@ -115,6 +122,7 @@ export function cloudClaudeShellAction(
 		step: { tool: "claude_code_bash", arguments: { command, workdir: request.cwd }, paths: [] },
 		repeat: CLAUDE_REPEAT_COMMAND,
 	});
+	return { ...action, repeatElsewhere: CLAUDE_REPEAT_ELSEWHERE };
 }
 
 export interface ClaudeFileCall {
@@ -124,7 +132,7 @@ export interface ClaudeFileCall {
 	readonly input: Readonly<Record<string, unknown>>;
 }
 
-export function cloudClaudeFileCall(hookText: string): ClaudeFileCall | undefined {
+export function cloudClaudeFileCall(hookText: string, realPath?: string): ClaudeFileCall | undefined {
 	let value: unknown;
 	try {
 		value = JSON.parse(hookText);
@@ -143,7 +151,10 @@ export function cloudClaudeFileCall(hookText: string): ClaudeFileCall | undefine
 	return {
 		id: typeof hook.tool_use_id === "string" && CALL_ID.test(hook.tool_use_id) ? hook.tool_use_id : randomUUID(),
 		tool: tool as ClaudeReviewedFileTool,
-		path: posix.resolve(cwd, named),
+		path:
+			realPath !== undefined && posix.isAbsolute(realPath) && !realPath.includes("\0")
+				? posix.normalize(realPath)
+				: posix.resolve(cwd, named),
 		input: input as Record<string, unknown>,
 	};
 }
@@ -174,7 +185,7 @@ export function cloudClaudeFileAction(machine: CloudCodexHomeMachine, call: Clau
 			mode: text(input.edit_mode) || "replace",
 			source: bounded(text(input.new_source), IDENTITY_TEXT_BYTES),
 		};
-	return finishAction({
+	const action = finishAction({
 		tool: "home_change",
 		machine,
 		summary: `Change 1 file: ${folderPath(call.path) ?? call.path}`,
@@ -184,6 +195,7 @@ export function cloudClaudeFileAction(machine: CloudCodexHomeMachine, call: Clau
 		step: { tool: `claude_code_${call.tool.toLowerCase()}`, arguments: { ...where }, paths: [call.path] },
 		repeat: CLAUDE_REPEAT_CHANGE,
 	});
+	return { ...action, repeatElsewhere: CLAUDE_REPEAT_ELSEWHERE };
 }
 
 const FXP = Object.freeze({
@@ -298,12 +310,17 @@ interface AdmittedCall {
 	allowed?: boolean;
 }
 
+const REVIEWED_ALONE = new Set(["fs/remove", "fs/removeDirectory", "fs/createDirectory"]);
+
 function belongsTo(change: ClaudeFileChange, file: string): boolean {
-	return change.paths.every(
-		(path) =>
-			path === file ||
-			(path.startsWith(`${file}.tmp.`) && !path.slice(file.length + 5).includes("/")) ||
-			(change.method === "fs/createDirectory" && file.startsWith(`${path}/`)),
+	return (
+		change.paths.length > 0 &&
+		change.paths.every(
+			(path) =>
+				path === file ||
+				(path.startsWith(`${file}.tmp.`) && !path.slice(file.length + 5).includes("/")) ||
+				(change.method === "fs/createDirectory" && file.startsWith(`${path}/`)),
+		)
 	);
 }
 
@@ -452,6 +469,7 @@ export class CloudClaudeFilesGate {
 		if (calls.length > 0) return (await (calls[0] as AdmittedCall).decision) ?? undefined;
 		this.counts.lone += 1;
 		this.onLone?.(change);
+		if (change.paths.length === 0 || !REVIEWED_ALONE.has(change.method)) return CLAUDE_FILE_UNACCOUNTED;
 		const action = cloudHomeFileAction(
 			this.#machine,
 			change.method,

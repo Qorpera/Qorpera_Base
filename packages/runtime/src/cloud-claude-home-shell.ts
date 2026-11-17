@@ -78,7 +78,9 @@ export interface CloudClaudeHomeChannel {
 /** A command's request as the prefix sends it, or undefined for anything else. */
 export function parseCloudClaudeShellRequest(
 	line: string,
-): { cmd: string; cwd: string; env: Record<string, string>; dropped: string[]; hook?: string } | undefined {
+):
+	| { cmd: string; cwd: string; env: Record<string, string>; dropped: string[]; hook?: string; real?: string }
+	| undefined {
 	let value: unknown;
 	try {
 		value = JSON.parse(line);
@@ -91,6 +93,7 @@ export function parseCloudClaudeShellRequest(
 	if (!isAbsolute(record.cwd) || record.cwd.length > VALUE_CHARS || record.cwd.includes("\0")) return undefined;
 	if (record.cmd.includes("\0")) return undefined;
 	if (record.hook !== undefined && typeof record.hook !== "string") return undefined;
+	if (record.real !== undefined && (typeof record.real !== "string" || !isAbsolute(record.real))) return undefined;
 	const env: Record<string, string> = {};
 	const dropped: string[] = [];
 	const given = record.env && typeof record.env === "object" && !Array.isArray(record.env) ? record.env : {};
@@ -110,6 +113,7 @@ export function parseCloudClaudeShellRequest(
 		env,
 		dropped,
 		...(typeof record.hook === "string" ? { hook: record.hook } : {}),
+		...(typeof record.real === "string" ? { real: record.real } : {}),
 	};
 }
 
@@ -128,7 +132,7 @@ export class CloudClaudeHomeShell {
 	readonly #machineId: string;
 	readonly #signal: AbortSignal;
 	readonly #review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
-	readonly #hook?: (text: string, signal: AbortSignal) => Promise<string | undefined>;
+	readonly #hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
 	#reviews = 0;
 	readonly #sockets = new Set<Socket>();
 	#server?: Server;
@@ -156,7 +160,7 @@ export class CloudClaudeHomeShell {
 		machineId: string;
 		signal: AbortSignal;
 		review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
-		hook?: (text: string, signal: AbortSignal) => Promise<string | undefined>;
+		hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
 	}) {
 		this.#channel = options.channel;
 		this.#sessionId = options.sessionId;
@@ -327,7 +331,7 @@ export class CloudClaudeHomeShell {
 				this.counts.hooks += 1;
 				const refusal =
 					this.#hook && request.hook !== undefined
-						? await this.#hook(request.hook, asked).catch(() => CLAUDE_REVIEW_FAILED)
+						? await this.#hook(request.hook, asked, request.real).catch(() => CLAUDE_REVIEW_FAILED)
 						: undefined;
 				if (asked.aborted) return;
 				if (refusal === undefined) {

@@ -31,6 +31,8 @@ import { extname, isAbsolute, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { CLOUD_ACTION_REVIEW_SPECIFICATION, type CloudActionReviewer } from "./cloud-action-review.ts";
 import {
+	CLAUDE_FILE_UNACCOUNTED,
+	CLAUDE_FILE_UNREADABLE,
 	CLAUDE_REVIEW_HOOK_PATH,
 	CLAUDE_REVIEW_HOOK_TOOLS,
 	type ClaudeFileChange,
@@ -957,16 +959,10 @@ async function startBox(
 			...(review
 				? {
 						review: { gate: review.gate, machine: review.machine },
-						hook: async (text: string, hookSignal: AbortSignal) => {
-							const call = cloudClaudeFileCall(text);
-							if (
-								!call ||
-								!CLAUDE_BOX_HOME_FOLDERS.some(
-									(folder) => call.path === folder || call.path.startsWith(`${folder}/`),
-								)
-							)
-								return undefined;
-							return gate ? await gate.admit(call, hookSignal) : undefined;
+						hook: async (text: string, hookSignal: AbortSignal, realPath?: string) => {
+							const call = cloudClaudeFileCall(text, realPath);
+							if (!call) return CLAUDE_FILE_UNREADABLE;
+							return gate ? await gate.admit(call, hookSignal) : CLAUDE_FILE_UNACCOUNTED;
 						},
 					}
 				: {}),

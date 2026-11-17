@@ -194,6 +194,7 @@ export interface CloudCodexHomeAction {
 	/** What a parked card tells the model to do when it is approved later: there is no tool of its own to call again,
 	 * so "call the same tool with the card's `call`" would be words it cannot act on (review round 1, F8). */
 	readonly repeat: string;
+	readonly repeatElsewhere?: string;
 }
 
 /** The review of one native action, as the run's own review gate answers it (cloud-action-review.ts). */
@@ -221,6 +222,7 @@ export function cloudHomeActionReview(
 							argumentSha256: action.argumentSha256,
 							callId: action.callId,
 							repeat: action.repeat,
+							...(action.repeatElsewhere === undefined ? {} : { repeatElsewhere: action.repeatElsewhere }),
 						},
 						signal,
 					)

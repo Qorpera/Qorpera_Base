@@ -15,7 +15,7 @@
 import { readFileSync, readlinkSync, realpathSync, writeSync } from "node:fs";
 import { connect } from "node:net";
 import { constants } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SOCKET = "/run/qorpera-home/shell.sock";
@@ -82,6 +82,34 @@ function hookInput(): string {
 	}
 }
 
+export function cloudClaudeHookRealPath(
+	input: string,
+	cwd: string,
+	real: (path: string) => string = realpathSync,
+): string | undefined {
+	let named: unknown;
+	let from = cwd;
+	try {
+		const hook = JSON.parse(input) as { cwd?: unknown; tool_input?: Record<string, unknown> };
+		named = hook.tool_input?.file_path ?? hook.tool_input?.notebook_path;
+		if (typeof hook.cwd === "string" && hook.cwd.startsWith("/")) from = hook.cwd;
+	} catch {
+		return undefined;
+	}
+	if (typeof named !== "string" || named.length === 0 || named.includes("\0")) return undefined;
+	let path = resolve(from, named);
+	const rest: string[] = [];
+	for (;;) {
+		try {
+			return join(real(path), ...rest.reverse());
+		} catch {
+			if (path === dirname(path)) return undefined;
+			rest.push(basename(path));
+			path = dirname(path);
+		}
+	}
+}
+
 function main(): void {
 	const hook = process.argv[2] === "--hook" || process.argv[2] === CLAUDE_HOME_REVIEW_HOOK;
 	const cmd = hook
@@ -101,6 +129,7 @@ function main(): void {
 	} catch {
 		// The folder went away on the home; the command runs in /company.
 	}
+	const realPath = input === undefined ? undefined : cloudClaudeHookRealPath(input, cwd);
 	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGPIPE"] as const)
 		process.on(signal, () => process.exit(128 + constants.signals[signal]));
 	const socket = connect(SOCKET);
@@ -111,7 +140,15 @@ function main(): void {
 		process.exit(255);
 	});
 	socket.on("connect", () =>
-		socket.write(`${JSON.stringify({ cmd, cwd, env, ...(input === undefined ? {} : { hook: input }) })}\n`),
+		socket.write(
+			`${JSON.stringify({
+				cmd,
+				cwd,
+				env,
+				...(input === undefined ? {} : { hook: input }),
+				...(realPath === undefined ? {} : { real: realPath }),
+			})}\n`,
+		),
 	);
 	socket.setEncoding("utf8");
 	socket.on("data", (chunk: string) => {

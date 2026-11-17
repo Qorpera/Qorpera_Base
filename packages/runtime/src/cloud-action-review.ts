@@ -1689,6 +1689,7 @@ export interface CloudActionCall {
 	 * the model's own to call again (lanes/agent-box-20261113, slice 4). Without it a parked card says what it has
 	 * always said: call the same tool again with the card's `call`. */
 	repeat?: string;
+	repeatElsewhere?: string;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -1812,6 +1813,7 @@ export class CloudActionReviewGate {
 				signal,
 				begin.cardElsewhere === true,
 				call.repeat,
+				call.repeatElsewhere,
 			);
 		if (begin.state !== "review") throw new Error("Action review response is invalid");
 		const requester = name((begin.requester as { name?: unknown } | null)?.name, "");
@@ -1924,6 +1926,8 @@ export class CloudActionReviewGate {
 			name(recorded.approverName, "an owner or admin"),
 			signal,
 			recorded.cardElsewhere === true,
+			undefined,
+			call.repeatElsewhere,
 		);
 	}
 
@@ -1934,9 +1938,10 @@ export class CloudActionReviewGate {
 		signal: AbortSignal,
 		elsewhere = false,
 		repeat?: string,
+		repeatElsewhere?: string,
 	): Promise<CloudActionGateResult> {
 		try {
-			return await this.#poll(reviewId, approver, signal, elsewhere, repeat);
+			return await this.#poll(reviewId, approver, signal, elsewhere, repeat, repeatElsewhere);
 		} catch (error) {
 			// The hold ended early (the run stopped, or the kernel refused the wait): park the
 			// card so its answer wakes the agent.
@@ -1975,6 +1980,7 @@ export class CloudActionReviewGate {
 		signal: AbortSignal,
 		elsewhere: boolean,
 		repeat?: string,
+		repeatElsewhere?: string,
 	): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
 		for (let parkFailures = 0; ; ) {
@@ -2018,7 +2024,7 @@ export class CloudActionReviewGate {
 					text: elsewhere
 						? // A worker's card, or one from a conversation that cannot hold it: the member answers it in the
 							// agent's thread, and the answer wakes the agent there to make the call.
-							`APPROVAL_PENDING: The action waits for approval from ${approver} on a card in the agent's own thread (members see it there, not here), so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again. Carry on with other work, and say in your reply or report what you could not do because this action waits for approval in the agent's thread. If it is approved, the agent makes this one call in its own thread; nothing else of this run's work is picked up again.`
+							`APPROVAL_PENDING: The action waits for approval from ${approver} on a card in the agent's own thread (members see it there, not here), so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again. Carry on with other work, and say in your reply or report what you could not do because this action waits for approval in the agent's thread. ${repeatElsewhere ?? "If it is approved, the agent makes this one call in its own thread; nothing else of this run's work is picked up again."}`
 						: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. ${
 								repeat ??
 								"When you are woken because it was approved, call the same tool again with the card's `call` field as its arguments, value for value (not its `arguments` text, which is the same call escaped; use that only when the card has no `call`); it will then run without another review."

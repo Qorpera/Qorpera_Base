@@ -587,9 +587,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		chownSync(join(B, "configs"), 65534, 65534);
 		// The stub's renewed tokens live one second, so every run renews at its start (and again before later requests):
 		// each run has a renewal to seal, and a run's seal lands only on the version it opened (the vault's compare-and-swap).
-		const scenario = (label: string, steps: unknown[], final: string, expiresIn = 1) => {
+		const scenario = (label: string, steps: unknown[], final: string, expiresIn = 1, extra: Record<string, unknown> = {}) => {
 			const path = join(P, `scen-c4c-${label}.json`);
-			writeFileSync(path, JSON.stringify({ label, nonce: randomBytes(4).toString("hex"), steps, final, expiresIn }), { mode: 0o444 });
+			writeFileSync(path, JSON.stringify({ label, nonce: randomBytes(4).toString("hex"), steps, final, expiresIn, ...extra }), { mode: 0o444 });
 			return path;
 		};
 		const out = (key: string) => `/company/QorperaOS/agents/alice/todos/onboarding/${key}`;
@@ -998,14 +998,17 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 					T("Write", "allowed-write", { file_path: `${out("checked")}/allowed.md`, content: "fine\n" }),
 					Bash("echo C4C-ASK > /company/c4c-asked.txt", "asked-shell"),
 					T("Read", "read", { file_path: `${out("checked")}/allowed.md` }),
+					T("Write", "proc-write", { file_path: "/proc/self/root/company/c4c-proc.md", content: "C4C-REFUSE\n" }),
 				],
 				"Checked work done.",
+				1,
+				{ strictRefresh: true },
 			),
 		);
 		if (r8.ok && r8.providerSessionId) complete(b8, r8.providerSessionId);
 		const told = (name: string) => (r8.stub?.results ?? []).find((result) => result.name === name);
 		const onHome = spawnSync("lxc", ["exec", PROOF_MACHINE, "--", "sh", "-c",
-			`for f in /company/c4c-refused.txt /company/c4c-allowed.txt /company/c4c-asked.txt ${out("checked")}/refused.md ${out("checked")}/allowed.md; do [ -e "$f" ] && echo "there $f" || echo "absent $f"; done`],
+			`for f in /company/c4c-refused.txt /company/c4c-allowed.txt /company/c4c-asked.txt /company/c4c-proc.md ${out("checked")}/refused.md ${out("checked")}/allowed.md; do [ -e "$f" ] && echo "there $f" || echo "absent $f"; done`],
 			{ encoding: "utf8" }).stdout;
 		const reviews8 = sessionJson<{ tool: string; decision: string; model: string; arguments: string }[]>(
 			`select coalesce(jsonb_agg(jsonb_build_object('tool', r.tool_name, 'decision', r.decision, 'model', r.reviewer_model,
@@ -1030,11 +1033,32 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			&& onHome.includes("absent /company/c4c-asked.txt"),
 			`a command that asks a member first waits, in words, and the run goes on: ${JSON.stringify(told("asked-shell"))}`);
 		check("review-records", reviews8.filter((r) => r.tool === "home_command").map((r) => r.decision).join() === "deny,allow,ask"
-			&& reviews8.filter((r) => r.tool === "home_change").map((r) => r.decision).join() === "deny,allow"
+			&& reviews8.filter((r) => r.tool === "home_change").map((r) => r.decision).join() === "deny,allow,deny"
 			&& reviews8.every((r) => r.model === "haiku"),
 			`the run's reviews as members see Codex's: ${JSON.stringify(reviews8.map((r) => [r.tool, r.decision, r.model]))}`);
+		check("review-proc-path", told("proc-write")?.isError === true && (told("proc-write")?.text ?? "").includes("REVIEW_DENIED")
+			&& onHome.includes("absent /company/c4c-proc.md"),
+			`a file tool aimed at the home through /proc/self/root is reviewed with its content like any other: ${JSON.stringify(told("proc-write"))}`);
+		const renewals = (label: string) => {
+			const lines = readFileSync(join(B, `stub-${label}.jsonl`), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as { kind: string });
+			return { renewed: lines.filter((line) => line.kind === "refresh").length, refused: lines.filter((line) => line.kind === "refresh-refused").length };
+		};
+		const renewed8 = renewals(`run${runCount}`);
+		check("review-renewals", renewed8.renewed > 1 && renewed8.refused === 0,
+			`the run and its reviewers renewed one sign-in side by side, each refresh token used once: ${JSON.stringify(renewed8)}`);
 		check("review-reviewer", (r8.stub?.reviews ?? []).length === reviews8.length && (r8.stub?.reviews ?? []).every((r) => r.ntools === 0),
 			`each review was one tool-less request of Claude Code's: ${JSON.stringify(r8.stub?.reviews?.map((r) => [r.decision, r.model, r.ntools]))}`);
+
+		drain();
+		const w9 = "c4c00000-0000-4000-8000-0000000000b9";
+		dispatch("checked-next", w9, "After the checked work");
+		drain();
+		const b9 = leased(start(w9));
+		const r9 = await runWorker(b9, scenario("checked-next", [Bash("echo after the checked run", "shell")], "Next checked done.", 1, { strictRefresh: true }));
+		if (r9.ok && r9.providerSessionId) complete(b9, r9.providerSessionId);
+		const renewed9 = renewals(`run${runCount}`);
+		check("review-sealed-live", r9.ok && resultsText("checked-next")?.includes("Next checked done.") === true && renewed9.refused === 0 && renewed9.renewed > 0,
+			`the next run renewed from the version the checked run sealed, with a refresh token not yet used: ${JSON.stringify(renewed9)} ${r9.providerSessionId ?? r9.error}`);
 
 		// 6. A revoked sign-in: the worker was dispatched on it; the run opens nothing and ends blocked in its words.
 		drain();

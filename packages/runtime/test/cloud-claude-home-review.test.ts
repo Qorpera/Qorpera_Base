@@ -1,6 +1,8 @@
 import {
+	CLAUDE_FILE_UNACCOUNTED,
 	CLAUDE_REPEAT_CHANGE,
 	CLAUDE_REPEAT_COMMAND,
+	CLAUDE_REPEAT_ELSEWHERE,
 	CLAUDE_REVIEW_HOOK_PATH,
 	type ClaudeFileChange,
 	CloudClaudeFilesGate,
@@ -12,7 +14,11 @@ import {
 	cloudClaudeShellWord,
 	cloudClaudeStatusPacket,
 } from "@qorpera/runtime/cloud-claude-home-review";
-import { CLAUDE_HOME_REVIEW_HOOK, cloudClaudeRipgrepCommand } from "@qorpera/runtime/cloud-claude-home-shell-client";
+import {
+	CLAUDE_HOME_REVIEW_HOOK,
+	cloudClaudeHookRealPath,
+	cloudClaudeRipgrepCommand,
+} from "@qorpera/runtime/cloud-claude-home-shell-client";
 import type { CloudCodexHomeAction } from "@qorpera/runtime/cloud-codex-home";
 import { expect, it, vi } from "vitest";
 
@@ -71,6 +77,7 @@ it("makes a command one home_command action whose approval holds for the same co
 	);
 	const elsewhere = cloudClaudeShellAction(MACHINE, { cmd: invocation("'npm test'"), cwd: "/tmp" }, "c3");
 	const other = cloudClaudeShellAction(MACHINE, { cmd: invocation("'npm run build'"), cwd: "/company" }, "c4");
+	expect(first?.repeatElsewhere).toBe(CLAUDE_REPEAT_ELSEWHERE);
 	expect(first).toMatchObject({
 		tool: "home_command",
 		summary: "npm test",
@@ -101,6 +108,15 @@ it("reads a file tool's call from its hook, and reviews the whole change it make
 		}),
 	);
 	expect(call).toMatchObject({ id: "toolu_1", tool: "Write", path: "/company/notes/a.md" });
+	expect(
+		cloudClaudeFileCall(writeHook("toolu_5", "/proc/self/root/company/deploy.sh"), "/company/deploy.sh")?.path,
+	).toBe("/company/deploy.sh");
+	expect(
+		cloudClaudeHookRealPath(writeHook("toolu_5", "/proc/self/root/company/new/deploy.sh"), "/", (path) => {
+			if (path === "/proc/self/root/company") return "/company";
+			throw new Error("ENOENT");
+		}),
+	).toBe("/company/new/deploy.sh");
 	const action = cloudClaudeFileAction(MACHINE, call as NonNullable<typeof call>);
 	expect(action).toMatchObject({
 		tool: "home_change",
@@ -208,10 +224,15 @@ it("lets every read through and lets a file tool's own writes through once its c
 	);
 	toHome.length = 0;
 	gate.fromMount(open(5, "/company/a.md", 0x02));
+	gate.fromMount(remove(6, "/company/old.md"));
 	await settle();
-	expect(lone).toEqual([{ method: "fs/writeFile", paths: ["/company/a.md"] }]);
+	expect(lone).toEqual([
+		{ method: "fs/writeFile", paths: ["/company/a.md"] },
+		{ method: "fs/remove", paths: ["/company/old.md"] },
+	]);
+	expect(toMount).toEqual([cloudClaudeStatusPacket(5, CLAUDE_FILE_UNACCOUNTED)]);
 	expect(check).toHaveBeenCalledTimes(2);
-	expect(toHome).toHaveLength(1);
+	expect(toHome).toEqual([remove(6, "/company/old.md")]);
 });
 
 it("answers a refused change with the protocol's own permission error and never lets it reach the home", async () => {
@@ -247,9 +268,20 @@ it("knows a handle's file, and leaves Claude Code's own working-folder file alon
 	gate.fromMount(open(5, "/tmp/claude-65534/-company/s1/tasks/b1.output", 0x02 | 0x08));
 	await settle();
 	expect(lone).toEqual([{ method: "fs/setAttributes", paths: ["/company/d.md"] }]);
-	expect(check).toHaveBeenCalledTimes(1);
-	expect(toHome).toHaveLength(5);
+	expect(check).not.toHaveBeenCalled();
+	expect(toHome).toHaveLength(4);
+	expect(toMount.at(-1)).toEqual(cloudClaudeStatusPacket(2, CLAUDE_FILE_UNACCOUNTED));
 	expect(gate.counts.ownFiles).toBe(3);
+	const call = cloudClaudeFileCall(writeHook("toolu_3", "/company/e.md"));
+	await gate.admit(call as NonNullable<typeof call>, new AbortController().signal);
+	toMount.length = 0;
+	gate.fromMount(fsetstat(6, "UNKNOWN"));
+	gate.fromMount(packet(200, 7, encodeString("copy-data")));
+	await settle();
+	expect(toMount).toEqual([
+		cloudClaudeStatusPacket(6, CLAUDE_FILE_UNACCOUNTED),
+		cloudClaudeStatusPacket(7, CLAUDE_FILE_UNACCOUNTED),
+	]);
 });
 
 it("stops at a stream that is not the protocol's", () => {

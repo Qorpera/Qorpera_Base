@@ -2424,6 +2424,45 @@ describe("the review step", () => {
 		});
 	});
 
+	it("tells a worker whose card waits in the agent's thread what its own harness does once it is approved", async () => {
+		const { calls } = gate({});
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: {
+				call: async (method, args) => {
+					calls.push({ method, args });
+					return method === "qorpera_begin_action_review"
+						? { state: "pending", reviewId: randomUUID(), approverName: "Ada", cardElsewhere: true }
+						: { state: "parked" };
+				},
+			},
+			reviewer: { review: vi.fn() },
+			request: "",
+			holdMs: 0,
+			pollMs: 1,
+		});
+		const call = {
+			tool: tool("home_command"),
+			parsed: { command: "x" },
+			argumentsText: '{"command":"x"}',
+			argumentSha256: "c".repeat(64),
+			callId: "claude-shell:2",
+		};
+		const own = await instance.check(
+			{ ...call, repeatElsewhere: "A follow-up of this worker can do it." },
+			new AbortController().signal,
+		);
+		expect(own).toMatchObject({
+			run: false,
+			text: expect.stringMatching(/agent's thread\. A follow-up of this worker can do it\.$/),
+		});
+		const codex = await instance.check(call, new AbortController().signal);
+		expect(codex).toMatchObject({
+			run: false,
+			text: expect.stringContaining("the agent makes this one call in its own thread"),
+		});
+	});
+
 	it("gives the reviewer everything a call would change when its arguments only name it, and never reviews a part", async () => {
 		const { calls, review } = gate({});
 		const control: CloudActionReviewControl = {
