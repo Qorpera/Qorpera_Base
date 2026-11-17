@@ -518,10 +518,7 @@ describe("the desktop's Chromium", () => {
 			const uid = entry.uid ?? 1001;
 			await writeFile(join(dir, "status"), `Name:\tchrome\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
 			const words = [chromium, ...(entry.argv ?? [profile, "--remote-debugging-port=0"])];
-			await writeFile(
-				join(dir, "cmdline"),
-				entry.titled ? `${words.join(" ")}\0\0\0\0` : `${words.join("\0")}\0`,
-			);
+			await writeFile(join(dir, "cmdline"), entry.titled ? `${words.join(" ")}\0\0\0\0` : `${words.join("\0")}\0`);
 			// Field 22, the start: the command name may hold spaces and parentheses.
 			await writeFile(
 				join(dir, "stat"),
@@ -572,10 +569,20 @@ describe("the desktop's Chromium", () => {
 						{
 							pid: 41,
 							titled: true,
-							argv: ["--enable-unsafe-swiftshader", profile, "--remote-debugging-port=0", "https://fill-check.test/"],
+							argv: [
+								"--enable-unsafe-swiftshader",
+								profile,
+								"--remote-debugging-port=0",
+								"https://fill-check.test/",
+							],
 							sockets: [7001],
 						},
-						{ pid: 42, titled: true, argv: ["--type=renderer", profile, "--remote-debugging-port=0"], sockets: [7002] },
+						{
+							pid: 42,
+							titled: true,
+							argv: ["--type=renderer", profile, "--remote-debugging-port=0"],
+							sockets: [7002],
+						},
 					],
 					[
 						{ port: 40200, inode: 7002 },

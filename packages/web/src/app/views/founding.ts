@@ -10,6 +10,7 @@ import { t } from "../../ui/preferences.ts";
 import type { FounderLive, FoundingController } from "../founding.ts";
 import { navigate } from "../router.ts";
 import { mountCrown } from "./crown.ts";
+import { claimStartCrown } from "./start-crown.ts";
 
 /* The founding table, drawn as writing the first message together (Jonas, 22 October 2026, hub round 3):
  * the company's name in a labelled field, then one box like qorpera.com's, with the Co-Founder's crown
@@ -580,7 +581,8 @@ export class FoundingView {
 		const table = state.table;
 		const mode = state.gone
 			? `gone:${state.gone}`
-			: state.autoStart && table?.phase !== "started"
+			: (state.autoStart && table?.phase !== "started") ||
+					(state.startedAlone && table?.phase === "started" && startsQuietly(table))
 				? "starting"
 				: !table
 					? "loading"
@@ -600,23 +602,34 @@ export class FoundingView {
 			this.#error.show(state.readError ?? "", () => (state.readError ? notice("danger", state.readError) : null));
 		else if (mode === "started") this.#started(table!);
 		else if (mode === "open") this.#open(table!);
-		else if (mode === "starting") this.#starting(table);
+		else if (mode === "starting") {
+			claimStartCrown();
+			this.#starting(table);
+		}
 	}
 
-	/** One founder, from the new-company box's arrow: no table, only the company starting, and the ChatGPT step
-	 * first when your account is not connected yet (Jonas, 9 Nov 2026). */
 	#starting(table: CompanyFounding | undefined): void {
 		const state = this.#founding.store.get();
 		const connect = table !== undefined && state.connectOpen === true;
 		const name = table?.companyName ?? "";
-		this.#startingSlot.show(`${name}\n${connect}`, () =>
+		const idea = (table?.vision || this.#founding.pendingVision || "").trim().split(/\r?\n/, 1)[0] ?? "";
+		const shownIdea = idea.toLocaleLowerCase() === name.toLocaleLowerCase() ? "" : idea;
+		const ready = table?.start?.companyReady === true;
+		this.#startingSlot.show(`${name}\n${shownIdea}\n${connect}\n${ready}`, () =>
 			h(
 				"header",
-				{ class: "founding-head" },
-				name ? h("h1", { class: "founding-name" }, name) : null,
+				{ class: "founding-head founding-start-head" },
+				name ? h("h1", { class: "founding-start-name" }, name) : null,
+				shownIdea ? h("p", { class: "founding-start-idea" }, shownIdea) : null,
 				connect
 					? h("p", { class: "founding-sub" }, t("Connect your ChatGPT account, and {name} starts.", { name }))
-					: spinner(name ? t("Starting {name}", { name }) : t("Starting your company")),
+					: h(
+							"div",
+							{ class: "founding-start-wait", role: "status" },
+							h("span", { class: "founding-start-bar", "aria-hidden": "true" }, h("i")),
+							h("p", null, t("Your Co-Founder is getting ready")),
+						),
+				ready && table ? openCompanyLater(name, table.profileId) : null,
 			),
 		);
 		if (table) this.#connectPanel(table, connect);
@@ -1132,4 +1145,19 @@ export class FoundingView {
 			);
 		});
 	}
+}
+
+function startsQuietly(table: CompanyFounding): boolean {
+	const start = table.start;
+	if (!start?.companyReady) return start?.companySetup !== "failed";
+	const firstRun = start.firstRun ?? null;
+	return !start.firstRunWaitsUntil && (firstRun === null || firstRun === "queued" || firstRun === "started");
+}
+
+function openCompanyLater(name: string, profileId: string): HTMLButtonElement {
+	const open = button(t("Open {name}", { name }), () => navigate({ name: "company", profileId, section: "home" }), {
+		primary: true,
+	});
+	open.classList.add("founding-start-open");
+	return open;
 }

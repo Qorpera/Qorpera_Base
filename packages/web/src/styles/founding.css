@@ -13,6 +13,31 @@
 .founding [hidden] { display: none !important; }
 
 .founding-head { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; width: 100%; }
+.founding-starting { position: relative; z-index: 2; padding-bottom: 18vh; }
+@keyframes founding-start-in { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+.founding-start-head { gap: 0; animation: founding-start-in 0.7s cubic-bezier(0.3, 1.25, 0.5, 1) 0.15s both; }
+.founding-start-name {
+	margin: 0; max-width: 100%; color: var(--text); font: 750 clamp(40px, 5vw, 72px) / 1 var(--font-display); letter-spacing: -0.04em;
+	overflow-wrap: anywhere; text-wrap: balance;
+}
+.founding-start-idea {
+	margin: 18px 0 0; max-width: 32em; color: var(--text-muted); font-size: 21px; line-height: 1.4; text-wrap: balance;
+	display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.founding-start-wait { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 40px; }
+.founding-start-wait p { margin: 0; color: var(--text-soft); font-size: 15px; }
+@keyframes founding-start-sweep { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+.founding-start-bar { position: relative; width: 220px; height: 4px; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.founding-start-bar i {
+	position: absolute; inset: 0; width: 40%; border-radius: 4px; background: #fcb51b;
+	animation: founding-start-sweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.founding-starting .founding-sub { margin-top: 28px; }
+.founding-start-open { margin-top: 28px; animation: founding-start-in 0.5s ease 3s both; }
+@media (prefers-reduced-motion: reduce) {
+	.founding-start-head, .founding-start-open { animation: none; }
+	.founding-start-bar i { animation: none; width: 100%; opacity: 0.5; }
+}
 .founding-name {
 	width: min(640px, 100%); margin: 0; padding: 2px 6px; border: 0; border-radius: 12px; background: transparent;
 	color: var(--text); text-align: center; font: 750 clamp(32px, 4vw, 46px) / 1.06 var(--font-display); letter-spacing: -0.035em;

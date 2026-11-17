@@ -94,6 +94,7 @@ import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.t
 import { SitesView } from "./views/settings-sites.ts";
 import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
+import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
@@ -962,6 +963,7 @@ export function mountApplication(
 
 	async function draw(): Promise<void> {
 		if (disposed) return;
+		settleStartCrown();
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
@@ -1025,8 +1027,10 @@ export function mountApplication(
 							const currentHub = hub;
 							void currentHub.refreshAfter().then(() => {
 								if (disposed || hub !== currentHub || location.hash !== page) return;
-								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId))
+								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId)) {
+									landStartCrown();
 									navigate({ name: "company", profileId, section: "home" }, true);
+								}
 							});
 						},
 					});

@@ -768,87 +768,88 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .company-tile-invitation:hover .company-decline, .company-decline:focus-visible { opacity: 1; }
 @media (hover: none) { .company-decline { opacity: 1; } }
 
-/* New company (hub round 3): qorpera.com's hero inside the app — the headline, one box for the idea with the
- * Co-Founder's crown looking over its edge, and the website's kinds of company under it. A member with no
- * company yet gets it as the hub itself. */
 .hub-welcome, .hub-new { align-items: flex-start; }
 /* Parts shown and hidden in place (the website's note, the invitations); an author display would beat [hidden]. */
 .hero [hidden] { display: none !important; }
 .hero {
-	width: 100%; max-width: 760px; margin: auto; display: flex; flex-direction: column; align-items: center;
-	text-align: center; padding: 28px 0 72px;
+	position: relative; z-index: 2; width: 100%; max-width: 680px; margin: auto; display: flex; flex-direction: column;
+	align-items: center; text-align: center; padding: 28px 0 18vh;
 }
-.hero-title { margin: 0; font: 750 clamp(34px, 4.2vw, 50px) / 1.02 var(--font-display); letter-spacing: -0.035em; text-wrap: balance; }
-.hero-sub { margin: 16px 0 0; max-width: 34em; color: var(--text-muted); font-size: 17px; line-height: 1.45; text-wrap: balance; }
-.hero-ask { position: relative; width: 100%; max-width: 600px; margin-top: 60px; }
-/* The company's name, over the idea box: a labelled field (Jonas, 9 Nov 2026). */
-.hero-name-field { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; max-width: 600px; margin-top: 36px; text-align: left; }
-.hero-name-label { display: block; padding-left: 6px; color: var(--text-muted); font: 600 13px / 1.2 var(--font-sans); }
+.hero-name-field, .hero-box { transition: opacity 0.35s ease, transform 0.5s cubic-bezier(0.65, 0, 0.35, 1); }
+.hero.is-leaving .hero-name-field, .hero.is-leaving .hero-box {
+	opacity: 0; transform: translateY(-22px) scale(0.97); pointer-events: none;
+}
+.hero-name-field { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; max-width: 480px; }
+.hero-name-label { display: block; color: var(--text-muted); font: 650 14px / 1.2 var(--font-sans); }
 .hero-name-box {
-	position: relative; display: flex; align-items: center; border: 1px solid var(--border-strong); border-radius: 16px;
+	position: relative; display: flex; align-items: center; width: 100%; border: 1px solid var(--border-strong); border-radius: 18px;
 	background: var(--overlay); transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
 .hero-name-box:hover { border-color: var(--text-soft); }
 .hero-name-box:focus-within { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
-.hero-name-box .icon { position: absolute; right: 16px; width: 18px; height: 18px; color: var(--text-soft); pointer-events: none; }
+.hero-name-box .icon { position: absolute; right: 22px; width: 19px; height: 19px; color: var(--text-soft); pointer-events: none; }
 input.hero-name {
-	width: 100%; min-height: 0; padding: 12px 46px 12px 18px; border: 0; border-radius: 16px; background: transparent;
-	color: var(--text); font: 650 18px / 1.3 var(--font-sans);
+	width: 100%; min-height: 0; padding: 18px 54px; border: 0; border-radius: 18px; background: transparent;
+	color: var(--text); font: 650 20px / 1.3 var(--font-sans); text-align: center;
 }
-input.hero-name::placeholder { color: var(--text-soft); font-weight: 500; }
+input.hero-name::placeholder { color: var(--text-soft); font-weight: 600; }
 input.hero-name:focus-visible { outline: none; }
 input.hero-name:disabled { opacity: 0.6; }
-.hero-crown { position: absolute; left: 18px; top: -40px; z-index: 2; width: 52px; pointer-events: none; }
 .hero-box {
-	position: relative; display: flex; flex-direction: column; gap: 10px; padding: 16px 8px 8px; border-radius: 26px;
-	background: var(--overlay); text-align: left;
-	box-shadow: 0 0 0 1px var(--border-strong), 0 24px 48px -28px rgba(10, 30, 80, 0.35);
-	transition: box-shadow var(--motion-fast) ease;
+	position: relative; display: flex; flex-direction: column; gap: 14px; width: 100%; margin-top: 36px;
+	padding: 24px 12px 12px; border-radius: 30px; background: var(--overlay); text-align: left;
+	box-shadow: 0 0 0 1px var(--border-strong), 0 32px 60px -32px rgba(10, 30, 80, 0.4);
 }
-.hero-box:focus-within { box-shadow: 0 0 0 2px var(--text), 0 24px 48px -28px rgba(10, 30, 80, 0.45); }
+.hero-box:focus-within { box-shadow: 0 0 0 2px var(--text), 0 32px 60px -32px rgba(10, 30, 80, 0.5); }
 .hero-from {
-	align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; padding: 3px 10px 3px 8px;
+	align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-left: 16px; padding: 3px 10px 3px 8px;
 	border-radius: var(--radius-pill); background: var(--hover); color: var(--text-muted); font-size: 12.5px;
 }
 .hero-from .icon { width: 13px; height: 13px; }
+.hero-idea-row { display: flex; align-items: flex-start; gap: 18px; min-height: 68px; padding: 0 16px; }
+.hero-idea-label { flex: none; padding-top: 7px; color: var(--text-muted); font: 650 14px / 16px var(--font-sans); cursor: text; }
 .hero-idea {
-	display: block; width: 100%; min-height: 26px; max-height: 240px; margin: 0; padding: 0 12px; border: 0; outline: none;
-	resize: none; background: transparent; color: var(--text); font: 18px / 26px var(--font-sans); overflow-y: auto;
+	display: block; flex: 1; min-width: 0; min-height: 30px; max-height: 260px; margin: 0; padding: 0; border: 0; outline: none;
+	resize: none; background: transparent; color: var(--text); font: 20px / 30px var(--font-sans); overflow-y: auto;
 }
 .hero-idea::placeholder { color: var(--text-soft); }
-/* The box itself shows focus; the field inside it draws no edge of its own (Jonas, 9 November 2026). */
 textarea.hero-idea:focus-visible { outline: none; }
+.start-crown {
+	--start-crown: min(630px, 72vh, 50vw);
+	position: fixed; z-index: 1; left: calc(var(--start-crown) * -0.31); bottom: calc(var(--start-crown) * -0.215);
+	pointer-events: none;
+}
+.start-crown .figure { width: var(--start-crown); height: var(--start-crown); }
+.cofounder-stand .figure.is-awaited { visibility: hidden; }
+@keyframes start-rail-in { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes start-main-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.start-arriving .rail { animation: start-rail-in 0.8s cubic-bezier(0.65, 0, 0.35, 1) both; }
+.start-arriving .main { animation: start-main-in 0.6s cubic-bezier(0.3, 1.25, 0.5, 1) 0.45s both; }
+@media (prefers-reduced-motion: reduce) {
+	.start-arriving .rail, .start-arriving .main { animation: none; }
+	.hero-name-field, .hero-box { transition: none; }
+}
 .hero-row { display: flex; align-items: center; gap: 10px; }
 .hero-invite {
-	display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 4px;
+	display: inline-flex; align-items: center; gap: 9px; height: 48px; padding: 0 16px 0 6px;
 	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: transparent; color: var(--text);
-	font: 600 14px var(--font-sans); cursor: pointer;
+	font: 600 15px var(--font-sans); cursor: pointer;
 }
 .hero-invite:hover:not(:disabled) { background: var(--hover); }
 .hero-invite-face { display: inline-flex; }
-.hero-invite-face .person-avatar { width: 30px; height: 30px; font-size: 11px; }
+.hero-invite-face .person-avatar { width: 34px; height: 34px; font-size: 12px; }
 .hero-plus, .founding-plus {
 	display: grid; place-items: center; width: 30px; height: 30px; margin-left: -12px; border-radius: 50%;
 	border: 1.5px dashed var(--border-strong); background: var(--overlay); color: var(--text-muted);
 }
 .hero-plus .icon, .founding-plus .icon { width: 14px; height: 14px; }
 .hero-go {
-	display: grid; place-items: center; width: 44px; height: 44px; margin-left: auto; border: 0; border-radius: 50%;
+	display: grid; place-items: center; width: 54px; height: 54px; margin-left: auto; border: 0; border-radius: 50%;
 	background: var(--primary); color: var(--on-primary); cursor: pointer; transition: transform var(--motion-base) var(--ease-spring);
 }
 .hero-go:hover:not(:disabled) { transform: scale(1.06); }
-.hero-go .icon { width: 20px; height: 20px; stroke-width: 2.6; }
+.hero-go .icon { width: 22px; height: 22px; stroke-width: 2.6; }
 .hero-go:disabled, .hero-invite:disabled { opacity: 0.5; cursor: default; }
-.hero-kinds { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 760px; margin-top: 20px; }
-.hero-kind {
-	display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 15px 0 11px; border: 0;
-	border-radius: var(--radius-pill); background: transparent; box-shadow: inset 0 0 0 1px var(--border-strong);
-	color: var(--text); font: 500 14px var(--font-sans); cursor: pointer;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
-}
-.hero-kind:hover:not(:disabled) { background: var(--hover); }
-.hero-kind[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); box-shadow: none; }
-.hero-kind .icon { width: 17px; height: 17px; }
 .hero-status { display: flex; flex-direction: column; align-items: center; gap: 10px; width: min(560px, 100%); margin-top: 22px; }
 .hero-status:empty { display: none; }
 .hero-status .notice { width: 100%; text-align: left; }
@@ -869,7 +870,9 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 	.company-grid { gap: 20px 14px; }
 	.company-card { width: 136px; }
 	.company-stage { width: 116px; height: 116px; border-radius: 32px; }
-	.hero-ask { margin-top: 52px; }
+	.hero { padding-bottom: 72px; }
+	input.hero-name, .hero-idea { font-size: 18px; }
+	.start-crown { --start-crown: min(220px, 52vw); }
 	.hero-invite { padding-right: 12px; }
 }
 

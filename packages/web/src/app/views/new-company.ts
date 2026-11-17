@@ -2,38 +2,21 @@ import { FOUNDING_NAME_MAX_CHARACTERS } from "../../cloud/company-founding.ts";
 import { button, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { IDEA_MAX_CHARACTERS } from "../router.ts";
-import { type CrownHandle, mountCrown } from "./crown.ts";
 import type { HubController } from "./hub.ts";
+import { cheerStartCrown, claimStartCrown } from "./start-crown.ts";
 
-/* Starting a company: qorpera.com's hero, inside the app (Jonas, 22 October 2026, hub round 3). One
- * headline, one box for the idea with the Co-Founder's crown looking over its edge, and the website's
- * kinds of company under it. The arrow opens a table named after the idea, where Start is one press for
- * a founder alone; "Invite friends" opens the table with the friends list, so friends write the first
- * message with you. What was typed and picked on qorpera.com arrives in the box: its arrow opens
- * `app.qorpera.com/?ide=…&kind=…` (and `#/new?idea=…` works too).
- *
- * A "Company name" field over the box names the company (Jonas, 9 Nov 2026: a company started alone never sees the
- * table, so it is named here); left empty, the name comes from the idea, as its placeholder shows.
- *
- * The view is built once per hub and kept: typing, the caret, an IME composition and focus survive
- * every refresh of the company list, a move between the hub and `#/new`, and a new language. Once the table is
- * open the box is empty again, so a second company never starts with the first one's words. */
-
-/** Who is signed in, for the avatar in the box. */
 export interface Viewer {
 	userId: string;
 	name: string;
 }
 
-/** The website's kinds of company (qorpera.com, landing/src/site/site.js), each with an idea to start from.
- * The ids are the website's own, as its link sends them (`kind=`). */
 const KINDS = [
-	{ id: "webshop", name: phrase("Webshop"), example: phrase("A webshop with ceramics"), icon: "shop" },
-	{ id: "marketing", name: phrase("Marketing agency"), example: phrase("A marketing agency"), icon: "megaphone" },
-	{ id: "cafe", name: phrase("Café and restaurant"), example: phrase("A café with takeaway"), icon: "cup" },
-	{ id: "radgivning", name: phrase("Consulting"), example: phrase("Sustainability consulting"), icon: "briefcase" },
-	{ id: "handvaerk", name: phrase("Trades"), example: phrase("A painting company in Aarhus"), icon: "brush" },
-	{ id: "app", name: phrase("App or software"), example: phrase("An app for dog walkers"), icon: "code" },
+	{ id: "webshop", example: phrase("A webshop with ceramics") },
+	{ id: "marketing", example: phrase("A marketing agency") },
+	{ id: "cafe", example: phrase("A café with takeaway") },
+	{ id: "radgivning", example: phrase("Sustainability consulting") },
+	{ id: "handvaerk", example: phrase("A painting company in Aarhus") },
+	{ id: "app", example: phrase("An app for dog walkers") },
 ] as const;
 
 /** What qorpera.com's box handed over: the idea typed there, and the kind of company picked. */
@@ -109,11 +92,8 @@ class NewCompanyView {
 	readonly #go: HTMLButtonElement;
 	readonly #invite: HTMLButtonElement;
 	readonly #inviteFace = h("span", { class: "hero-invite-face" });
-	readonly #kinds: HTMLButtonElement[];
 	readonly #status = h("div", { class: "hero-status" });
 	readonly #invitations = h("div", { class: "hero-invitations" });
-	readonly #crownStage = h("span", { class: "hero-crown", "aria-hidden": "true" });
-	#crown: CrownHandle | undefined;
 	/** qorpera.com's idea, while the box still holds it. */
 	#carried: string | undefined;
 	#viewerKey = "";
@@ -135,7 +115,6 @@ class NewCompanyView {
 			class: "hero-idea",
 			rows: 1,
 			maxlength: IDEA_MAX_CHARACTERS,
-			"aria-label": t("Your idea"),
 			oninput: () => {
 				this.#touch();
 				this.#changed();
@@ -178,24 +157,9 @@ class NewCompanyView {
 			h("span", { class: "hero-plus", "aria-hidden": "true" }, icon("plus")),
 			t("Invite friends"),
 		);
-		this.#kinds = KINDS.map((kind) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "hero-kind",
-					"aria-pressed": "false",
-					onclick: (event: MouseEvent) => this.#pick(kind.example, event.currentTarget as HTMLButtonElement),
-				},
-				icon(kind.icon),
-				t(kind.name),
-			),
-		);
 		this.el = h(
 			"div",
 			{ class: "hero" },
-			h("h1", { class: "hero-title" }, t("From idea to company.")),
-			h("p", { class: "hero-sub" }, t("Tell your Co-Founder the idea. Friends can write it with you.")),
 			h(
 				"div",
 				{ class: "hero-name-field" },
@@ -203,71 +167,55 @@ class NewCompanyView {
 				h("div", { class: "hero-name-box" }, this.#name, icon("edit")),
 			),
 			h(
-				"div",
-				{ class: "hero-ask" },
-				this.#crownStage,
-				h(
-					"form",
-					{
-						class: "hero-box",
-						onsubmit: (event: Event) => {
-							event.preventDefault();
-							this.#start();
-						},
+				"form",
+				{
+					class: "hero-box",
+					onsubmit: (event: Event) => {
+						event.preventDefault();
+						this.#start();
 					},
-					this.#from,
+				},
+				this.#from,
+				h(
+					"div",
+					{ class: "hero-idea-row" },
+					h("label", { for: "newCompanyIdea", class: "hero-idea-label" }, t("The idea")),
 					this.#idea,
-					h("div", { class: "hero-row" }, this.#invite, this.#go),
 				),
+				h("div", { class: "hero-row" }, this.#invite, this.#go),
 			),
-			h("div", { class: "hero-kinds", role: "group", "aria-label": t("What kind of company?") }, ...this.#kinds),
 			this.#status,
 			this.#invitations,
 		);
 		this.#placeholder();
 	}
 
-	/** Places the view in the container (once), with a live crown. */
 	mount(container: HTMLElement, wrapperClass: string): void {
 		const wrapper = this.el.parentElement;
 		if (wrapper?.parentElement === container && wrapper.className === wrapperClass) return;
-		// Moving the box takes focus from it: whoever is typing keeps typing where they were.
 		if (document.activeElement === this.#idea) this.#caret = caretOf(this.#idea);
 		container.replaceChildren(h("section", { class: wrapperClass, "data-form-owner": "new-company" }, this.el));
 		this.#restoreCaret();
-		// The crown stops when it leaves the page; a new one looks over the box each time it comes back.
-		this.#crown?.dispose();
-		this.#crownStage.replaceChildren();
-		this.#crown = mountCrown(this.#crownStage, { mirrored: false });
-		// Measured on the page: a box built away from it (a new language) has no height to go by.
 		this.#resize();
 		this.#placeholder();
 	}
 
-	/** What qorpera.com handed over: its kind is pressed, and its idea (or else the kind's example) goes into an
-	 * empty box. Whatever you typed here stays. Only the website's own words get the "from qorpera.com" note. */
 	carry(handoff: WebsiteHandoff): void {
-		const index = KINDS.findIndex((kind) => kind.id === handoff.kind);
-		if (index >= 0)
-			for (const [at, kind] of this.#kinds.entries()) kind.setAttribute("aria-pressed", String(at === index));
 		if (this.#idea.value.trim()) return;
-		const idea = handoff.idea ?? (index >= 0 ? t(KINDS[index]!.example) : "");
+		const kind = KINDS.find((each) => each.id === handoff.kind);
+		const idea = handoff.idea ?? (kind ? t(kind.example) : "");
 		if (!idea) return;
 		this.#idea.value = idea;
 		this.#carried = handoff.idea;
 		this.#changed();
 	}
 
-	/** Takes over another view's idea, note and kind (the same box, drawn again in a new language). */
 	adopt(other: NewCompanyView): void {
 		this.#idea.value = other.#idea.value;
 		this.#name.value = other.#name.value;
 		this.#carried = other.#carried;
 		this.#touched = other.#touched;
-		// Focus goes with the words: the new box takes it when it is put in the page.
 		if (document.activeElement === other.#idea) this.#caret = caretOf(other.#idea);
-		for (const [at, kind] of this.#kinds.entries())
-			kind.setAttribute("aria-pressed", other.#kinds[at]?.getAttribute("aria-pressed") ?? "false");
 		this.#changed();
 	}
 
@@ -290,7 +238,8 @@ class NewCompanyView {
 		}
 		this.#go.disabled = busy || paused;
 		this.#invite.disabled = busy || paused;
-		for (const kind of this.#kinds) kind.disabled = busy;
+		const leaving = state.creating?.intent === "start";
+		this.el.classList.toggle("is-leaving", leaving);
 		const viewerKey = viewer ? `${viewer.userId}\n${viewer.name}` : "";
 		if (viewerKey !== this.#viewerKey) {
 			this.#viewerKey = viewerKey;
@@ -299,6 +248,7 @@ class NewCompanyView {
 		const statusKey = [
 			state.creating?.name ?? "",
 			busy,
+			leaving,
 			paused,
 			state.error ?? "",
 			state.creationRetry?.name ?? "",
@@ -306,15 +256,8 @@ class NewCompanyView {
 		if (statusKey !== this.#statusKey) {
 			this.#statusKey = statusKey;
 			const parts: HTMLElement[] = [];
-			if (busy)
-				parts.push(
-					spinner(
-						state.creating!.intent === "start"
-							? t("Starting {name}", { name: state.creating!.name })
-							: t("Opening a table for {name}", { name: state.creating!.name }),
-					),
-				);
-			else if (paused) parts.push(notice("warn", t("Creating a company is paused. Try again later.")));
+			if (busy && !leaving) parts.push(spinner(t("Opening a table for {name}", { name: state.creating!.name })));
+			else if (paused && !busy) parts.push(notice("warn", t("Creating a company is paused. Try again later.")));
 			if (state.error) parts.push(notice("danger", state.error));
 			if (state.creationRetry && !busy) {
 				const retry = state.creationRetry;
@@ -339,23 +282,11 @@ class NewCompanyView {
 
 	#changed(): void {
 		this.#resize();
-		// Left empty, the company is named after the idea: the field shows that name.
 		const idea = this.#idea.value.trim();
 		this.#name.placeholder = idea ? companyNameFromIdea(idea) : t("Named after your idea");
 		if (this.#carried !== undefined && this.#idea.value.trim() !== this.#carried.trim()) this.#carried = undefined;
 		this.#from.hidden = this.#carried === undefined;
 		this.#placeholder();
-	}
-
-	#pick(example: string, pressed: HTMLButtonElement): void {
-		for (const kind of this.#kinds) kind.setAttribute("aria-pressed", String(kind === pressed));
-		const current = this.#idea.value.trim();
-		if (!current || KINDS.some((kind) => t(kind.example) === current)) {
-			this.#idea.value = t(example);
-			this.#changed();
-		}
-		this.#idea.focus();
-		this.#idea.setSelectionRange(this.#idea.value.length, this.#idea.value.length);
 	}
 
 	#start(): void {
@@ -364,6 +295,7 @@ class NewCompanyView {
 			this.#idea.focus();
 			return;
 		}
+		cheerStartCrown();
 		void this.#hub.startFromIdea(idea, "start", this.#name.value);
 	}
 
@@ -379,7 +311,6 @@ class NewCompanyView {
 		this.#idea.value = "";
 		this.#name.value = "";
 		this.#carried = undefined;
-		for (const kind of this.#kinds) kind.setAttribute("aria-pressed", "false");
 		this.#changed();
 	}
 
@@ -459,8 +390,6 @@ function caretOf(box: HTMLTextAreaElement): { start: number; end: number; direct
 
 const views = new WeakMap<HubController, NewCompanyView>();
 
-/** A new language builds the box again in it, with what the old one held: the idea, the website's note, the
- * kind pressed. */
 export function relabelNewCompany(hub: HubController): void {
 	const old = views.get(hub);
 	if (!old) return;
@@ -497,6 +426,7 @@ export function renderNewCompany(
 ): void {
 	const view = viewFor(hub);
 	view.mount(container, options.welcome ? "hub hub-welcome" : "hub hub-new");
+	claimStartCrown();
 	const handoff = takeWebsiteIdea();
 	if (handoff) view.carry(handoff);
 	view.update(viewer, options.invitations ?? []);
