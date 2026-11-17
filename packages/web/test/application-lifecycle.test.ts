@@ -12,7 +12,7 @@ import { tellAgent } from "../src/app/tell-agent.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { pageNoteCard } from "../src/app/views/page-note.ts";
 import { renderRail } from "../src/app/views/shell.ts";
-import { CloudRpcError } from "../src/cloud/client.ts";
+import { CloudRpcError, describeError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
@@ -21,6 +21,7 @@ import conversationCss from "../src/styles/conversation.css?raw";
 import { h } from "../src/ui/dom.ts";
 import { appCard, markdown } from "../src/ui/markdown.ts";
 import { PAGE_READY } from "../src/ui/page-frame.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
 	fixture,
@@ -1728,6 +1729,18 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		expect(rail.textContent).not.toContain("Can't reach Qorpera");
+	});
+
+	it("says a lost connection in the member's language once the app is mounted", () => {
+		mounted();
+		const lost = new CloudRpcError("qorpera_get_team", { message: "TypeError: Failed to fetch" }, 0);
+		setLanguagePreference("da");
+		try {
+			expect(describeError(lost)).toBe("Qorpera kan ikke nås lige nu. Tjek din forbindelse, og prøv igen.");
+		} finally {
+			setLanguagePreference("system");
+		}
+		expect(describeError(lost)).toBe("Qorpera can't be reached right now. Check your connection and try again.");
 	});
 
 	it("waits in Storage and the rail while the company cannot be reached, with no error and no empty list", async () => {
