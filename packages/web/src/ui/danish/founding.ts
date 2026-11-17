@@ -52,8 +52,6 @@ export const FOUNDING: Record<string, string> = {
 	"Their email address": "Deres e-mailadresse",
 	"This table is no longer available to you.": "Du har ikke længere adgang til dette bord.",
 	"Waiting for {names} to be ready": "Venter på, at {names} bliver klar",
-	"What is the company for? One line is enough to start.": "Hvad er virksomheden til? Én linje er nok til at starte.",
-	"What the company is for": "Hvad virksomheden er til",
 	Withdraw: "Træk tilbage",
 	"You are invited to start {company} together.": "Du er inviteret til at starte {company} sammen.",
 	"You declined the invitation.": "Du takkede nej til invitationen.",
