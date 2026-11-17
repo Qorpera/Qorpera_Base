@@ -6980,7 +6980,12 @@ bundle; no migration, host call or image moves.
 4. **A refusal names the next step.** A denial still says not to retry, reword or reach the action another way, and
    now says: when the work cannot go on without it, a worker reports its work blocked with the reason, and any other
    agent asks a member on a card (`ask_member`), or in its reply where it has no cards, in one line.
-5. **Not changed.** The agent's home (`home_command`) reads no files for its review; its commands are reviewed as
+5. **A review that cannot run waits first.** A review whose model turn ended at the provider's rate limit, usage limit
+   or an overload is asked again after 5, 10, 20, 30 and 30 seconds, within two minutes of the first ask, before the
+   call is refused as unavailable. A verdict, an invalid verdict, a timeout or another failure is never asked again. The
+   refusal tells the agent to say to a member that the step could not be checked just now, never that a safety review
+   was unavailable.
+6. **Not changed.** The agent's home (`home_command`) reads no files for its review; its commands are reviewed as
    before.
 
 ## 20. Enforcement matrix

@@ -10,8 +10,10 @@ import {
 	CLOUD_MACHINE_SCREEN_WORK_REASON,
 	CLOUD_MACHINE_WORK_REASON,
 	CLOUD_MACHINE_WORK_UNSEEN_REASON,
+	CLOUD_REVIEW_UNAVAILABLE,
 	CLOUD_WORKER_WORK_ASK_REASON,
 	type CloudActionGuards,
+	CloudActionReviewBusy,
 	type CloudActionReviewControl,
 	type CloudActionReviewer,
 	CloudActionReviewGate,
@@ -2122,6 +2124,8 @@ function gate(options: {
 	failMs?: number;
 	holdMs?: number;
 	reviewerFails?: boolean;
+	reviewAnswers?: unknown[];
+	reviewWaitsMs?: number[];
 	request?: string;
 	mandate?: string;
 }) {
@@ -2161,6 +2165,11 @@ function gate(options: {
 	};
 	const review = vi.fn<CloudActionReviewer["review"]>(async () => {
 		if (options.reviewerFails) throw new Error("PRIVATE_REVIEWER_FAILURE");
+		if (options.reviewAnswers) {
+			const answer = options.reviewAnswers.shift();
+			if (answer instanceof Error) throw answer;
+			return answer;
+		}
 		return options.verdict ?? { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" };
 	});
 	const instance = new CloudActionReviewGate({
@@ -2171,6 +2180,7 @@ function gate(options: {
 		...(options.mandate === undefined ? {} : { mandate: options.mandate }),
 		holdMs: options.holdMs ?? 0,
 		pollMs: 1,
+		...(options.reviewWaitsMs ? { reviewWaitsMs: options.reviewWaitsMs } : {}),
 		connectorEffects: new Map([["gmail_send_message", "write"]]),
 	});
 	const abort = new AbortController();
@@ -2538,6 +2548,33 @@ describe("the review step", () => {
 		expect(result).toEqual({ run: false, text: expect.stringMatching(/^REVIEW_UNAVAILABLE: /) });
 		expect(JSON.stringify(result)).not.toContain("PRIVATE");
 		expect(calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review"]);
+	});
+
+	it("asks a reviewer the provider turned away again, and never a verdict or a failure (17 November 2026)", async () => {
+		const allow = { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" };
+		const deny = { ...allow, decision: "deny", builtIn: "not_requested", reason: "No." };
+		const busy = () => new CloudActionReviewBusy();
+		const retried = gate({ reviewAnswers: [busy(), busy(), allow], reviewWaitsMs: [1, 1, 1] });
+		expect(await retried.check()).toEqual({ run: true, reviewId: undefined });
+		expect(retried.review).toHaveBeenCalledTimes(3);
+		const spent = gate({ reviewAnswers: [busy(), busy(), busy(), allow], reviewWaitsMs: [1, 1] });
+		expect(await spent.check()).toEqual({ run: false, text: CLOUD_REVIEW_UNAVAILABLE });
+		expect(spent.review).toHaveBeenCalledTimes(3);
+		expect(spent.calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review"]);
+		const denied = gate({
+			reviewAnswers: [deny, allow],
+			reviewWaitsMs: [1],
+			record: { decision: "deny", reason: "No." },
+		});
+		expect(await denied.check()).toMatchObject({ run: false, text: expect.stringMatching(/^REVIEW_DENIED: No\. /) });
+		expect(denied.review).toHaveBeenCalledTimes(1);
+		for (const answer of [{ decision: "maybe" }, new Error("PRIVATE_REVIEWER_FAILURE")]) {
+			const once = gate({ reviewAnswers: [answer, allow], reviewWaitsMs: [1] });
+			expect(await once.check()).toEqual({ run: false, text: CLOUD_REVIEW_UNAVAILABLE });
+			expect(once.review).toHaveBeenCalledTimes(1);
+		}
+		expect(CLOUD_REVIEW_UNAVAILABLE).toContain("could not be checked just now");
+		expect(CLOUD_REVIEW_UNAVAILABLE).toContain("never that a safety review or the platform was unavailable");
 	});
 
 	it("refuses an ask where no card can be raised", async () => {

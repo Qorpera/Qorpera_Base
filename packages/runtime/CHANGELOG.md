@@ -7,6 +7,9 @@
   machine rule never allows it; the approval and the run are bound to the reviewed bytes (`sha256sum -c` before the
   command, exit 125 when a file changed). A denial names the next step (a card, or a worker's blocked report). Runtime
   bundle only: no migration, host call, executor or image moves; it rolls with the next runtime release.
+- A review whose model turn met the provider's rate limit, usage limit or an overload is asked again after 5, 10, 20, 30
+  and 30 seconds, within two minutes, before the call is refused (2026-11-17 amendment, item 5); REVIEW_UNAVAILABLE now
+  tells the agent to say the step could not be checked just now. Runtime bundle only.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
