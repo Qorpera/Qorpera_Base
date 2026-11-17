@@ -15,6 +15,7 @@ import {
 import { timeZoneCity, timeZoneEntries } from "../../ui/time-zones.ts";
 import type { AuthController } from "../auth.ts";
 import { accountNameEditor } from "./account-name.ts";
+import { accountPasswordEditor } from "./account-password.ts";
 import { accountPicture } from "./account-picture.ts";
 
 /** Each language by its own name; the list shows it again in the interface's. */
@@ -118,6 +119,7 @@ export function renderAccount(
 	const user = auth.store.get().user;
 	const picture = accountPicture(user);
 	const name = accountNameEditor(auth, container);
+	const password = accountPasswordEditor(auth, container);
 	const { labels, language, timeZone } = pickersFor(container, setState);
 	const focused =
 		document.activeElement instanceof HTMLElement && container.contains(document.activeElement)
@@ -145,6 +147,8 @@ export function renderAccount(
 					),
 					picture.error,
 					name.error,
+					h("div", { class: "settings-rows" }, password.row),
+					password.feedback,
 				),
 				h(
 					"section",
