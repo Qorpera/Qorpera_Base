@@ -6,7 +6,8 @@
   them news with a file link; lanes/agent-messaging-volume-20261117). `send_coworker_message` requires `priority`: a call
   without it is refused with the reason, and the tool's text says true is for a request, a question, a handover the
   coworker waits for or a member's decision that changes its work, false (a note for its next turn) for other news, and
-  no message for what the files and todos show. The coworker paragraph and the coworker wake's protocol stop replies that
+  no message for what the files and todos show. An answer the asker waits for is sent with `priority` true (contract
+  14.6, the 2026-11-17 amendment). The coworker paragraph and the coworker wake's protocol stop replies that
   say received, agreed or done, and passing news on to a third coworker who need not act. `PLATFORM_UPDATES` tells the
   Co-Founder (`coworker-messages-wake-on-request`). The runtime bundle only; no migration.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
