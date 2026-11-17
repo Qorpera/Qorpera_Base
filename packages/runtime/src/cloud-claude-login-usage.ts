@@ -100,9 +100,14 @@ function modelName(value: unknown): string | undefined {
 }
 
 export function claudeUsageFromGetUsage(value: unknown, now = new Date()): ClaudeLoginUsage | undefined {
-	const limits = fields(fields(value)?.rate_limits);
+	const answer = fields(value);
+	const limits = fields(answer?.rate_limits);
 	if (!limits) return undefined;
-	const five = fields(limits.five_hour);
+	// WHY: get_usage sends five_hour as null while no 5-hour window is open, which is 0 % used.
+	const five =
+		limits.five_hour === null && answer?.rate_limits_available !== false
+			? { utilization: 0 }
+			: fields(limits.five_hour);
 	const week = fields(limits.seven_day);
 	const models: ClaudeUsageWindow[] = [];
 	const scoped = Array.isArray(limits.limits) ? limits.limits : [];
