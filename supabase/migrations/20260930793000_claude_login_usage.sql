@@ -66,7 +66,7 @@ alter table public.qorpera_claude_logins
 		and octet_length(last_reset::text) <= 512));
 
 alter table public.qorpera_native_account_refresh_requests
-	add column claude_login_id uuid references public.qorpera_claude_logins(id) on delete cascade,
+	add column claude_login_id uuid references public.qorpera_claude_logins(id),
 	add column claude_usage boolean not null default false,
 	add column claude_resets boolean not null default false,
 	add column claude_reset_kind text check (claude_reset_kind in ('session', 'weekly', 'fable', 'full')),
