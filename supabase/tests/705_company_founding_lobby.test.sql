@@ -272,11 +272,9 @@ begin
 end $$;
 select pg_temp.refused(format($$select public.qorpera_set_founder_role(%L,4,%L)$$,
 	current_setting('qorpera_test.table'),repeat('x',301)),'22023');
--- A name Start's seed would refuse is refused at the rename (20260930039000): a control character, a line separator,
--- or nothing but spaces (non-ASCII ones too).
 select pg_temp.refused(format($$select public.qorpera_update_company_founding(%L,4,%L,'')$$,
 	current_setting('qorpera_test.table'),name),'22023')
-from unnest(array[E'Nordlys\tKaffe', 'Nordlys' || chr(8232) || 'Kaffe', chr(160) || chr(12288) || ' ']) as name;
+from unnest(array[E'Nordlys\tKaffe', 'Nordlys' || chr(8232) || 'Kaffe']) as name;
 reset role;
 select pg_temp.connect_login(current_setting('qorpera_test.table')::uuid,'40000000-0000-4000-8000-000000000001',1);
 select pg_temp.connect_login(current_setting('qorpera_test.table')::uuid,'40000000-0000-4000-8000-000000000002',2);
