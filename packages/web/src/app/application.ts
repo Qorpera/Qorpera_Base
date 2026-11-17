@@ -975,8 +975,11 @@ export function mountApplication(
 		}
 		if (!authState.session) {
 			teardownCompany();
-			const container = h("div", { class: "brand-field" });
-			replace(root!, container);
+			let container = root!.querySelector<HTMLElement>(':scope > .auth:not([data-step="name"])');
+			if (!container) {
+				container = h("div", { class: "brand-field" });
+				replace(root!, container);
+			}
 			renderSignIn(auth, container);
 			return;
 		}

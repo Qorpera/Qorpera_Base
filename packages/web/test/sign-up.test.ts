@@ -76,6 +76,7 @@ describe("creating an account", () => {
 	it("sends the name with the account and waits for the email's code", async () => {
 		await signedOut();
 		click("Create an account");
+		await settle();
 		expect(root.querySelector("h1")!.textContent).toBe("Create your account");
 		type("signinName", " Mette Hansen ");
 		type("signinEmail", "Mette@Lerhave.dk");
@@ -95,6 +96,7 @@ describe("creating an account", () => {
 	it("refuses a short password before asking Auth", async () => {
 		await signedOut();
 		auth.showStep("create");
+		await settle();
 		type("signinName", "Mette");
 		type("signinEmail", "mette@lerhave.dk");
 		type("signinPassword", "short");
@@ -108,6 +110,7 @@ describe("creating an account", () => {
 		await signedOut();
 		calls.signUp.mockResolvedValueOnce({ data: { user: { id: "u", identities: [] }, session: null }, error: null });
 		auth.showStep("create");
+		await settle();
 		type("signinName", "Mette");
 		type("signinEmail", "mette@lerhave.dk");
 		type("signinPassword", "hemmeligt1");
@@ -123,6 +126,7 @@ describe("creating an account", () => {
 	it("proves the email when the last digit is typed", async () => {
 		await signedOut();
 		auth.store.set({ step: { name: "confirm", email: "mette@lerhave.dk" } });
+		await settle();
 		type("signinCode", "48 20a71");
 		await settle();
 		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "482071", type: "email" });
@@ -142,6 +146,7 @@ describe("signing in", () => {
 		expect(alert).toContain("That email and password don't match an account.");
 		expect(alert).not.toContain("raw");
 		click("create an account");
+		await settle();
 		expect(auth.store.get().step.name).toBe("create");
 		expect(root.querySelector<HTMLInputElement>("#signinEmail")!.value).toBe("mette@lerhave.dk");
 	});
@@ -206,6 +211,7 @@ describe("a new password", () => {
 		await signedOut();
 		calls.verifyOtp.mockResolvedValueOnce({ data: {}, error: authError("otp_expired") });
 		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" } });
+		await settle();
 		type("signinCode", "482071");
 		type("signinNewPassword", "nytkodeord1");
 		submit();

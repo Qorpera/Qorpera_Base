@@ -529,7 +529,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Your agents and teammates see this name. You can change it later in Settings.":
 		"Dine agenter og kolleger ser dette navn. Du kan ændre det senere under Indstillinger.",
 
-	"Save password": "Gem adgangskode",
 	"Password saved. Sign in with it next time.": "Adgangskoden er gemt. Log ind med den næste gang.",
 	"Sign in with your email and a password, or with a code by email.":
 		"Log ind med din e-mail og en adgangskode, eller med en kode på e-mail.",
