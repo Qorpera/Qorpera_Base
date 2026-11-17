@@ -416,7 +416,12 @@ function interpreterScript(
 	return {};
 }
 
-export function cloudCommandScripts(command: string, start: string | null = HOME, nested = false): CloudCommandScripts {
+export function cloudCommandScripts(
+	command: string,
+	start: string | null = HOME,
+	nested = false,
+	settled: ReadonlySet<string> = new Set(),
+): CloudCommandScripts {
 	const { simples } = lex(command);
 	const outer: { cwd: string | null; chain: string | null | undefined }[] = [];
 	const cdpath = /\bCDPATH\b/.test(command);
@@ -427,9 +432,14 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 	let cwd: string | null = start;
 	let chain: string | null | undefined;
 	let depth = 0;
+	let left = { before: cwd, count: 0, changed: false, neutral: true };
 	const unsettle = () => {
 		cwd = null;
 		if (chain !== undefined) chain = null;
+	};
+	const moved = (neutral: boolean) => {
+		left.changed = true;
+		if (!neutral) left.neutral = false;
 	};
 	const run = (word: Word, folder: string | null) => {
 		const located = locate(word, folder);
@@ -453,10 +463,17 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 			const saved = outer.pop();
 			cwd = saved ? saved.cwd : null;
 			chain = saved ? saved.chain : undefined;
+			left = { before: chain === undefined ? cwd : chain, count: 1, changed: false, neutral: true };
 			continue;
 		}
 		if (simple.joined === "start") chain = undefined;
-		else if (simple.joined === "||" && chain !== undefined) chain = null;
+		else if (simple.joined === "||") {
+			const current = chain === undefined ? cwd : chain;
+			chain = !left.changed ? current : left.count === 1 && left.neutral ? left.before : null;
+		}
+		if (simple.joined !== "&&")
+			left = { before: chain === undefined ? cwd : chain, count: 0, changed: false, neutral: true };
+		left.count += 1;
 		const words = [...simple.words];
 		const stripped = stripPrefixes(words, chain === undefined ? cwd : chain);
 		for (const keyword of stripped.keywords)
@@ -477,20 +494,25 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 			if (OPENS.has(name)) depth += 1;
 			continue;
 		}
+		const negated = stripped.keywords.includes("!");
+		if (["cd", "pushd", "popd", "eval", "source", "."].includes(name) && simple.alone) {
+			if ((name === "source" || name === ".") && words[1]?.text.includes("/")) run(words[1], folder);
+			if (lastpipe) unsettle();
+			continue;
+		}
 		if (name === "cd") {
-			if (simple.alone) {
-				if (lastpipe) unsettle();
-				continue;
-			}
 			const next = changeFolder(chain === undefined ? cwd : chain, words, cdpath);
-			if (depth === 0 && simple.joined === "start") cwd = next;
+			moved(true);
+			if (negated) unsettle();
+			else if (depth === 0 && simple.joined === "start") cwd = next;
 			else {
-				chain = simple.joined === "||" ? null : next;
+				chain = next;
 				cwd = null;
 			}
 			continue;
 		}
 		if (name === "pushd" || name === "popd") {
+			moved(true);
 			unsettle();
 			continue;
 		}
@@ -505,15 +527,20 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 		if (name === "eval") {
 			if (words.slice(1).some(printed))
 				notShown.add("eval runs code another program prints, which the review cannot see");
+			moved(false);
 			unsettle();
 			continue;
 		}
 		if (name === "source" || name === ".") {
 			const file = words[1];
+			const located = file ? locate(file, folder) : undefined;
 			if (file?.literal && !file.text.includes("/"))
 				notShown.add(`${line(file.text)}: the shell looks it up on its program path first`);
 			else if (file) run(file, folder);
-			unsettle();
+			if (!(located && "path" in located && settled.has(located.path) && file?.text.includes("/")) || negated) {
+				moved(false);
+				unsettle();
+			}
 			continue;
 		}
 		const interpreter = interpreterOf(name);
@@ -527,7 +554,7 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 						`${line(name)} runs code built from what another program prints, which the review cannot see`,
 					);
 				else {
-					const inner = cloudCommandScripts(code.text, folder, true);
+					const inner = cloudCommandScripts(code.text, folder, true, settled);
 					for (const reason of inner.notShown) notShown.add(reason);
 					for (const file of inner.files)
 						if (!written.has(file.path) && !files.some((known) => known.path === file.path)) files.push(file);
@@ -562,6 +589,19 @@ function quote(text: string): string {
 
 const READ_MARK = "QORPERA-REVIEW-READ";
 
+const MOVERS = new Set(["cd", "pushd", "popd", "source", ".", "eval"]);
+
+export function cloudScriptKeepsFolder(text: string): boolean {
+	return lex(text).simples.every((simple) => {
+		const words = [...simple.words];
+		stripPrefixes(words, null);
+		const program = words[0];
+		if (!program) return true;
+		if (!program.literal && program.text !== "[" && program.text !== "[[") return false;
+		return !MOVERS.has(program.text);
+	});
+}
+
 export function cloudScriptReadProgram(paths: readonly string[]): string {
 	return `echo ${READ_MARK}; { for f in ${paths.map(quote).join(" ")}; do if [ ! -e "$f" ]; then echo M; elif [ ! -f "$f" ] || [ ! -r "$f" ]; then echo X; else s=$(stat -c %s -- "$f") || s=0; if [ "$s" -gt ${CLOUD_SCRIPT_FILE_BYTES} ]; then echo "L $s"; else echo "F $s"; base64 -w 0 < "$f"; echo; fi; fi; done; } 2>/dev/null`;
 }
@@ -581,13 +621,17 @@ export function cloudScriptNotRead(files: readonly CloudCommandScriptRun[], why:
 	return files.map((file) => ({ path: file.path, notShown: why }));
 }
 
-export function parseCloudScriptRead(output: string, files: readonly CloudCommandScriptRun[]): CloudScriptRead {
+export function parseCloudScriptRead(
+	output: string,
+	files: readonly CloudCommandScriptRun[],
+	used = 0,
+): CloudScriptRead {
 	const mark = output.lastIndexOf(`${READ_MARK}\n`);
 	if (mark < 0 || (mark > 0 && output[mark - 1] !== "\n")) throw new Error("Script read differs");
 	const lines = output.slice(mark + READ_MARK.length + 1).split("\n");
 	const entries: CloudScriptEntry[] = [];
 	const texts = new Map<string, string>();
-	let total = 0;
+	let total = used;
 	let at = 0;
 	for (const file of files) {
 		const head = lines[at++] ?? "";

@@ -2880,6 +2880,73 @@ describe("the files a machine command runs, read for its review (17 November 202
 		}
 	});
 
+	it("reads where a sourced file leads in a second pass, within the same bounds (review r3 of #1924)", async () => {
+		const command = "cd /srv/app && source .venv/bin/activate && python3 main.py";
+		const activate = "/srv/app/.venv/bin/activate";
+		const main = "/srv/app/main.py";
+		const look = async (disk: Record<string, string>) => {
+			const f = fixture();
+			let program = "";
+			f.gateway.start.mockImplementation(async (scope, input) => {
+				if (input.command.startsWith("echo QORPERA-REVIEW-READ")) program = input.command;
+				return f.receipt(scope.machineId, input.commandId) as never;
+			});
+			f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async (scope, input) => {
+				const asked = [...program.matchAll(/'([^']*)'/g)].map((match) => match[1] as string);
+				const lines = asked.map((path) =>
+					disk[path] === undefined
+						? "M"
+						: `F ${Buffer.byteLength(disk[path] as string)}\n${Buffer.from(disk[path] as string).toString("base64")}`,
+				);
+				const output = `QORPERA-REVIEW-READ\n${lines.join("\n")}\n`;
+				return {
+					schema: "qorpera.machine-command-result/v1",
+					machineId: scope.machineId,
+					commandId: input.commandId,
+					inputSha256: "a".repeat(64),
+					state: "succeeded",
+					exitCode: 0,
+					output,
+					truncated: false,
+					log: {
+						offset: 0,
+						nextOffset: Buffer.byteLength(output),
+						totalBytes: Buffer.byteLength(output),
+						limitBytes: 67108864,
+						limitReached: false,
+					},
+				};
+			});
+			try {
+				const { tool, ready } = await prepareOf(f, { ...args, command });
+				const reads = f.execute.mock.calls.filter(([call]) =>
+					call.operation.logicalOperationKey.startsWith("review-read."),
+				).length;
+				return { contents: tool.reviewContents?.(ready) as Record<string, JsonValue>, reads };
+			} finally {
+				f.boundary.close();
+			}
+		};
+		const plain = await look({ [activate]: 'export VIRTUAL_ENV="/srv/app/.venv"\n', [main]: "print('EEG')\n" });
+		expect(plain.reads).toBe(2);
+		expect(plain.contents).toMatchObject({
+			files: [
+				{ path: activate, text: 'export VIRTUAL_ENV="/srv/app/.venv"\n' },
+				{ path: main, text: "print('EEG')\n" },
+			],
+		});
+		expect(plain.contents).not.toHaveProperty("notShown");
+		const moving = await look({ [activate]: "cd /tmp\n", [main]: "print('EEG')\n" });
+		expect(moving.reads).toBe(1);
+		expect(moving.contents.notShown).toEqual(["main.py: the folder it is in could not be told"]);
+		const unread = await look({});
+		expect(unread.reads).toBe(1);
+		expect(unread.contents.notShown).toEqual([
+			"main.py: the folder it is in could not be told",
+			`${activate}: it is not on the machine now`,
+		]);
+	});
+
 	it("never runs a card's approval on a file edited since: the identical call is reviewed again with the new text", async () => {
 		const f = fixture();
 		let script = SCRIPT;

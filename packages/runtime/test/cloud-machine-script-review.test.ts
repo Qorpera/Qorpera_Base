@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sha256 } from "../src/cloud-company-folder-client.ts";
 import {
@@ -12,6 +12,7 @@ import {
 	cloudScriptContents,
 	cloudScriptContentsIncomplete,
 	cloudScriptIdentity,
+	cloudScriptKeepsFolder,
 	cloudScriptReadProgram,
 	parseCloudPreparedScripts,
 	parseCloudScriptRead,
@@ -19,6 +20,80 @@ import {
 
 const digest = (text: string) => sha256(Buffer.from(text));
 const paths = (command: string) => cloudCommandScripts(command).files.map((file) => file.path);
+
+describe("the folder a file after another command is read in, checked against bash (review r3 of #1924)", () => {
+	it("names only the folder bash runs it in, or none, whatever comes first and however the two are joined", () => {
+		const root = mkdtempSync(join(tmpdir(), "qorpera-folder-table-"));
+		try {
+			mkdirSync(join(root, "a"));
+			writeFileSync(join(root, "env.sh"), "export READY=1\n");
+			writeFileSync(join(root, "go.sh"), `cd ${root}/a\n`);
+			const settled = new Set([join(root, "env.sh")]);
+			const firsts: Record<string, string> = {
+				"cd to a folder": `cd ${root}/a`,
+				"cd that fails": `cd ${root}/missing`,
+				"cd to a variable": 'cd "$QORPERA_UNSET"',
+				"source without a cd": "source ./env.sh",
+				"source with a cd": "source ./go.sh",
+				eval: `eval "cd ${root}/a"`,
+				pushd: `pushd ${root}/a >/dev/null`,
+				"a command that succeeds": "true",
+				"a command that fails": "false",
+			};
+			const joins: Record<string, (first: string, next: string) => string> = {
+				";": (first, next) => `${first}; ${next}`,
+				newline: (first, next) => `${first}\n${next}`,
+				"&&": (first, next) => `${first} && ${next}`,
+				"||": (first, next) => `${first} || ${next}`,
+				"|": (first, next) => `${first} | ${next}`,
+				"&": (first, next) => `${first} & ${next}`,
+				subshell: (first, next) => `( ${first} ); ${next}`,
+				group: (first, next) => `{ ${first}; }; ${next}`,
+				"if then": (first, next) => `if ${first}; then ${next}; fi`,
+				"if else": (first, next) => `if ${first}; then true; else ${next}; fi`,
+				"after if": (first, next) => `if true; then ${first}; fi; ${next}`,
+				"after for": (first, next) => `for i in 1; do ${first}; done; ${next}`,
+				while: (first, next) => `while ${first}; do ${next}; break; done`,
+				"! &&": (first, next) => `! ${first} && ${next}`,
+				"! ;": (first, next) => `! ${first}; ${next}`,
+			};
+			const known: Array<[string, string, string]> = [
+				["cd to a folder", ";", `${root}/a`],
+				["cd to a folder", "newline", `${root}/a`],
+				["cd to a folder", "&&", `${root}/a`],
+				["cd that fails", "||", root],
+				["cd to a variable", "||", root],
+				["pushd", "||", root],
+				["source without a cd", ";", root],
+				["source without a cd", "&&", root],
+				["a command that succeeds", ";", root],
+				["a command that fails", "||", root],
+				...Object.keys(firsts).flatMap((first) =>
+					["|", "&", "subshell"].map((join): [string, string, string] => [first, join, root]),
+				),
+			];
+			for (const [firstName, first] of Object.entries(firsts))
+				for (const [joinName, joined] of Object.entries(joins)) {
+					const label = `${firstName} ${joinName}`;
+					const found = cloudCommandScripts(joined(first, "python3 x.py"), root, false, settled);
+					const file = found.files.find((item) => item.path.endsWith("/x.py"));
+					const folder = file ? dirname(file.path) : null;
+					if (!file) expect(found.notShown, label).toContain("x.py: the folder it is in could not be told");
+					const ran = spawnSync("bash", ["-c", joined(first, "pwd")], { cwd: root, encoding: "utf8" });
+					const printed = ran.stdout.trim().split("\n").at(-1) ?? "";
+					if (folder !== null && printed !== "")
+						expect(
+							folder === printed || !existsSync(folder),
+							`${label}: read in ${folder}, bash ran in ${printed}`,
+						).toBe(true);
+					const certain = known.find(([one, two]) => one === firstName && two === joinName);
+					if (certain) expect(folder, label).toBe(certain[2]);
+				}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("the files a machine command runs", () => {
 	it("names the script of the mywave refusal and of production's usual script runs", () => {
@@ -105,6 +180,40 @@ describe("the files a machine command runs", () => {
 		expect(paths("bash -c 'cd /b' && python3 x.py")).toEqual(["/root/x.py"]);
 		expect(paths("echo $(cd /b) && python3 x.py")).toEqual(["/root/x.py"]);
 		expect(paths("bash <<'EOF'\ncd /b\nEOF\npython3 x.py")).toEqual(["/root/x.py"]);
+	});
+
+	it("follows a sourced file the review read whole and that moves no folder, and nothing else (review r3 of #1924)", () => {
+		const activate = "/srv/app/.venv/bin/activate";
+		const command = "cd /srv/app && source .venv/bin/activate && python3 main.py";
+		expect(cloudCommandScripts(command, undefined, false, new Set([activate]))).toEqual({
+			files: [
+				{ path: activate, mentioned: false },
+				{ path: "/srv/app/main.py", mentioned: false },
+			],
+			notShown: [],
+		});
+		expect(cloudCommandScripts(command)).toEqual({
+			files: [{ path: activate, mentioned: false }],
+			notShown: ["main.py: the folder it is in could not be told"],
+		});
+		expect(
+			cloudScriptKeepsFolder(
+				`# This file must be used with "source bin/activate"\nif [ "\${BASH_SOURCE-}" = "$0" ]; then echo "You must source this script"; exit 33; fi\ndeactivate () { unset VIRTUAL_ENV; }\nexport PATH="/srv/app/.venv/bin:$PATH"\nhash -r 2> /dev/null\n`,
+			),
+		).toBe(true);
+		for (const text of [
+			"cd /srv\n",
+			"x=1; pushd /a\n",
+			"source ./more.sh\n",
+			". ./more.sh\n",
+			'eval "$X"\n',
+			'"$TOOL" run\n',
+		])
+			expect(cloudScriptKeepsFolder(text), text).toBe(false);
+		expect(paths("cd /a || python3 x.py")).toEqual(["/root/x.py"]);
+		expect(cloudCommandScripts("cd /a && true || python3 x.py").notShown).toEqual([
+			"x.py: the folder it is in could not be told",
+		]);
 	});
 
 	it("skips a shell's own option values, such as its startup file", () => {
