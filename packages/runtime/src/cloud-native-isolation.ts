@@ -3,6 +3,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
+	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_EGRESS_HOSTS,
 	startNativeCodexEgress,
@@ -26,6 +27,9 @@ export const CHATGPT_PLAN_TOKEN_ENVIRONMENT = "QORPERA_CHATGPT_PLAN_ACCESS_TOKEN
  * fallback) the token itself, given to the process's environment and never to an argument. Either way the
  * run reaches OpenAI's API alone. */
 export type NativeChatGptPlanAccess = { readonly directory: string } | { readonly accessToken: string };
+
+export type NativeClaudeRead = "usage" | "screen";
+export const NATIVE_CLAUDE_TERMINAL = Object.freeze({ rows: 40, cols: 200 });
 
 /** A root-owned file no one else may write, every folder above it root's too (also the Claude Code box's check). */
 export async function rootOwnedFile(path: string): Promise<void> {
@@ -67,9 +71,35 @@ export async function privateDirectory(path: string): Promise<void> {
 export function nativeIsolationEgressHosts(
 	chatGptPlan: NativeChatGptPlanAccess | undefined,
 	harness?: "claude-code",
+	claudeRead?: NativeClaudeRead,
 ): readonly string[] {
-	if (harness === "claude-code") return NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS;
+	if (harness === "claude-code")
+		return claudeRead ? NATIVE_CLAUDE_CODE_EGRESS_HOSTS : NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS;
 	return chatGptPlan ? NATIVE_CHATGPT_PLAN_EGRESS_HOSTS : NATIVE_CODEX_EGRESS_HOSTS;
+}
+
+function claudeReadEnvironment(read: NativeClaudeRead | undefined): Record<string, string> {
+	if (read === "usage") return { DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" };
+	if (read === "screen")
+		return {
+			CLAUDE_CODE_SANDBOXED: "1",
+			TERM: "xterm-256color",
+			COLUMNS: String(NATIVE_CLAUDE_TERMINAL.cols),
+			LINES: String(NATIVE_CLAUDE_TERMINAL.rows),
+		};
+	return { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+}
+
+export function nativeTerminalCommand(program: string, args: readonly string[]): string[] {
+	const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+	const { rows, cols } = NATIVE_CLAUDE_TERMINAL;
+	return [
+		"-q",
+		"-e",
+		"-c",
+		`/usr/bin/stty rows ${rows} cols ${cols} && exec ${[program, ...args].map(quote).join(" ")}`,
+		"/dev/null",
+	];
 }
 
 /** What the namespace of one native process sees: bwrap's arguments and the environment bwrap starts with.
@@ -87,10 +117,12 @@ export function nativeIsolationInvocation(options: {
 	homeSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
 	harness?: "claude-code";
+	claudeRead?: NativeClaudeRead;
 }): { args: string[]; environment: Record<string, string> } {
 	const plan = options.chatGptPlan;
 	const claude = options.harness === "claude-code";
 	if (claude && (plan || options.fenceSocket || options.homeSocket)) throw new Error("A Claude sign-in runs alone");
+	if (options.claudeRead && !claude) throw new Error("A Claude read runs Claude Code");
 	if (options.homeSocket && dirname(options.homeSocket) !== options.scratchRoot)
 		throw new Error("The home's socket is the run's own");
 	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
@@ -167,7 +199,7 @@ export function nativeIsolationInvocation(options: {
 			? {
 					CLAUDE_CONFIG_DIR: options.codexHome,
 					DISABLE_AUTOUPDATER: "1",
-					CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+					...claudeReadEnvironment(options.claudeRead),
 				}
 			: { CODEX_HOME: options.codexHome }),
 		XDG_CONFIG_HOME: join(options.scratchRoot, "config"),
@@ -220,6 +252,7 @@ export async function launchIsolatedNativeProcess(options: {
 	chatGptPlan?: NativeChatGptPlanAccess;
 	/** A Claude sign-in: `codexHome` is Claude Code's config directory (the vault's helper only). */
 	harness?: "claude-code";
+	claudeRead?: NativeClaudeRead;
 	signal: AbortSignal;
 }): Promise<{
 	child: ChildProcessWithoutNullStreams;
@@ -239,6 +272,7 @@ export async function launchIsolatedNativeProcess(options: {
 		"/usr/bin/bwrap",
 		"/usr/bin/node",
 		...(planDirectory ? ["/usr/bin/cat"] : []),
+		...(options.claudeRead === "screen" ? ["/usr/bin/script", "/usr/bin/stty"] : []),
 		options.configuration.entryPoint,
 		options.command,
 	])
@@ -251,7 +285,7 @@ export async function launchIsolatedNativeProcess(options: {
 	const relay = await startNativeCodexEgress({
 		root: options.scratchRoot,
 		signal: options.signal,
-		hosts: nativeIsolationEgressHosts(plan, options.harness),
+		hosts: nativeIsolationEgressHosts(plan, options.harness, options.claudeRead),
 	});
 	let child: ChildProcessWithoutNullStreams | undefined;
 	try {
@@ -271,12 +305,20 @@ export async function launchIsolatedNativeProcess(options: {
 		}
 		const invocation = nativeIsolationInvocation({ ...options, relayPath: relay.path });
 		options.signal.throwIfAborted();
-		child = spawn("/usr/bin/bwrap", invocation.args, {
-			cwd: options.scratchRoot,
-			env: invocation.environment,
-			stdio: ["pipe", "pipe", "pipe"],
-			detached: true,
-		});
+		child =
+			options.claudeRead === "screen"
+				? spawn("/usr/bin/script", nativeTerminalCommand("/usr/bin/bwrap", invocation.args), {
+						cwd: options.scratchRoot,
+						env: { ...invocation.environment, SHELL: "/bin/sh" },
+						stdio: ["pipe", "pipe", "pipe"],
+						detached: true,
+					})
+				: spawn("/usr/bin/bwrap", invocation.args, {
+						cwd: options.scratchRoot,
+						env: invocation.environment,
+						stdio: ["pipe", "pipe", "pipe"],
+						detached: true,
+					});
 		const launched = child;
 		// Killing the namespace's init removes descendants, including processes
 		// that called setsid. The unit's cgroup is a second kill/resource boundary.

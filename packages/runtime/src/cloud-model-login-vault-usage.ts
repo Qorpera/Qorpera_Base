@@ -5,7 +5,16 @@ import {
 	parseNativeAccountRefreshDescription,
 	parseNativeAccountRefreshRequest,
 } from "@qorpera/cloud-client/native-account-refresh";
+import type { ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
+import {
+	CLAUDE_RESET_KINDS,
+	type ClaudeLoginResets,
+	type ClaudeLoginUsage,
+	type ClaudeResetKind,
+	type ClaudeResetOutcome,
+} from "./cloud-claude-login-usage.ts";
 import { MODEL_LOGIN_FIELD, parseCodexLogin } from "./cloud-model-login-vault.ts";
+import { CLAUDE_LOGIN_FIELD, checkClaudeLoginFiles } from "./cloud-model-login-vault-sign-in.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 import { nativeProviderAccountEmail, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from "./native-provider-usage.ts";
@@ -60,6 +69,110 @@ export interface ModelLoginUsageAuthority {
 	): Promise<unknown>;
 	/** The daily usage check's refresh, if a login is due one (qorpera_begin_model_login_usage_recheck). */
 	beginModelLoginUsageRecheck?(request: { capabilitySha256: string }, signal: AbortSignal): Promise<unknown>;
+	describeClaudeLoginRead?(
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	claimClaudeLoginReset?(
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	recordClaudeLoginRead?(
+		record: {
+			requestId: string;
+			capabilitySha256: string;
+			usage: ClaudeLoginUsage | null;
+			resets: ClaudeLoginResets | null;
+			reset: ClaudeResetOutcome | null;
+		},
+		signal: AbortSignal,
+	): Promise<unknown>;
+}
+
+const CLAUDE_READ_SCHEMA = "qorpera.claude-login-read-description/v1";
+const CLAUDE_READ_MS = 23_000;
+const CLAUDE_RESET_MS = 80_000;
+
+type ClaudeReadDescription =
+	| { readonly state: "none" | "completed" }
+	| {
+			readonly state: "open";
+			readonly claudeLoginId: string;
+			readonly ownerUserId: string;
+			readonly keyId: string;
+			readonly version: number;
+			readonly envelope: Uint8Array;
+			readonly usage: boolean;
+			readonly resets: boolean;
+			readonly reset: ClaudeResetKind | null;
+			readonly resetState: "asked" | "using" | "reset" | "failed" | "unconfirmed" | null;
+	  };
+
+function parseClaudeRead(value: unknown): ClaudeReadDescription {
+	const input = value as Record<string, unknown> | null;
+	if (!input || typeof input !== "object" || input.schema !== CLAUDE_READ_SCHEMA)
+		throw new Error("Vault Claude read is invalid");
+	if (input.state === "none" || input.state === "completed") {
+		record(input, ["schema", "state"], "Vault Claude read");
+		return { state: input.state };
+	}
+	record(
+		input,
+		[
+			"schema",
+			"state",
+			"claudeLoginId",
+			"ownerUserId",
+			"keyId",
+			"version",
+			"envelopeSha256",
+			"encryptedEnvelopeBase64",
+			"usage",
+			"resets",
+			"reset",
+			"resetState",
+		],
+		"Vault Claude read",
+	);
+	if (
+		input.state !== "open" ||
+		typeof input.keyId !== "string" ||
+		!KEY_ID.test(input.keyId) ||
+		typeof input.envelopeSha256 !== "string" ||
+		!SHA256.test(input.envelopeSha256) ||
+		typeof input.encryptedEnvelopeBase64 !== "string" ||
+		typeof input.usage !== "boolean" ||
+		typeof input.resets !== "boolean" ||
+		(input.reset !== null && !CLAUDE_RESET_KINDS.includes(input.reset as ClaudeResetKind)) ||
+		(input.resetState !== null &&
+			!["asked", "using", "reset", "failed", "unconfirmed"].includes(input.resetState as string)) ||
+		(input.reset === null) !== (input.resetState === null)
+	)
+		throw new Error("Vault Claude read is invalid");
+	const claudeLoginId = uuid(input.claudeLoginId, "Vault Claude read login");
+	const ownerUserId = uuid(input.ownerUserId, "Vault Claude read member");
+	const version = positive(input.version, "Vault Claude read version");
+	const envelope = Buffer.from(input.encryptedEnvelopeBase64, "base64");
+	if (
+		envelope.byteLength < 1 ||
+		envelope.byteLength > 131_072 ||
+		createHash("sha256").update(envelope).digest("hex") !== input.envelopeSha256
+	) {
+		envelope.fill(0);
+		throw new Error("Vault Claude read is invalid");
+	}
+	return {
+		state: "open",
+		claudeLoginId,
+		ownerUserId,
+		keyId: input.keyId,
+		version,
+		envelope,
+		usage: input.usage,
+		resets: input.resets,
+		reset: input.reset as ClaudeResetKind | null,
+		resetState: input.resetState as Extract<ClaudeReadDescription, { state: "open" }>["resetState"],
+	};
 }
 
 const RECHECK_SCHEMA = "qorpera.model-login-usage-recheck/v1";
@@ -201,11 +314,112 @@ export class CloudModelLoginUsage {
 	readonly #authority: ModelLoginUsageAuthority;
 	readonly #keys: CloudSecretKeyring;
 	readonly #fetch: typeof fetch;
+	readonly #claude: ClaudeLoginReads | undefined;
+	readonly #resetting = new Map<string, Promise<void>>();
 
-	constructor(options: { authority: ModelLoginUsageAuthority; keyring: CloudSecretKeyring; fetch?: typeof fetch }) {
+	constructor(options: {
+		authority: ModelLoginUsageAuthority;
+		keyring: CloudSecretKeyring;
+		fetch?: typeof fetch;
+		claude?: ClaudeLoginReads;
+	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
 		this.#fetch = options.fetch ?? fetch;
+		this.#claude = options.claude;
+	}
+
+	async #claudeDescription(
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<ClaudeReadDescription> {
+		if (!this.#claude || !this.#authority.describeClaudeLoginRead) return { state: "none" };
+		return parseClaudeRead(await this.#authority.describeClaudeLoginRead(request, signal));
+	}
+
+	async #claudeCredentials(claude: Extract<ClaudeReadDescription, { state: "open" }>): Promise<string> {
+		if (!this.#keys.hasMemberKey(claude.keyId)) throw new Error("The vault does not keep Claude logins");
+		return await this.#keys.useMember(
+			claude.envelope,
+			{ memberId: claude.ownerUserId, loginId: claude.claudeLoginId, version: claude.version, keyId: claude.keyId },
+			async (fields) => {
+				const text = fields[CLAUDE_LOGIN_FIELD];
+				if (Object.keys(fields).length !== 1 || typeof text !== "string")
+					throw new Error("Claude login envelope is another kind of login");
+				checkClaudeLoginFiles(text);
+				const credentials = (JSON.parse(text) as { files: Record<string, unknown> }).files[".credentials.json"];
+				if (typeof credentials !== "string") throw new Error("Claude login envelope is invalid");
+				return credentials;
+			},
+		);
+	}
+
+	async #claudeRead(
+		claude: Extract<ClaudeReadDescription, { state: "open" }>,
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<void> {
+		const reads = this.#claude;
+		const recordRead = this.#authority.recordClaudeLoginRead;
+		if (!reads || !recordRead || (!claude.usage && !claude.resets)) return;
+		try {
+			const read = await reads.readClaudeLogin(
+				{ credentials: await this.#claudeCredentials(claude), usage: claude.usage, resets: claude.resets },
+				AbortSignal.any([signal, AbortSignal.timeout(CLAUDE_READ_MS)]),
+			);
+			const usage = claude.usage ? read.usage : null;
+			const resets = claude.resets ? read.resets : null;
+			if (!usage && !resets) return;
+			await recordRead.call(
+				this.#authority,
+				{ ...request, usage, resets, reset: null },
+				AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
+			);
+		} catch {
+			return;
+		}
+	}
+
+	async #claudeReset(
+		claude: Extract<ClaudeReadDescription, { state: "open" }>,
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<"preparing" | "completed"> {
+		const reads = this.#claude;
+		const authority = this.#authority;
+		if (!reads || !authority.claimClaudeLoginReset || !authority.recordClaudeLoginRead) return "preparing";
+		if (claude.resetState !== "asked" && claude.resetState !== "using") {
+			await this.#authority.completeModelLoginAccountRefresh(
+				request,
+				AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
+			);
+			return "completed";
+		}
+		if (claude.resetState === "using" || this.#resetting.has(request.requestId)) return "preparing";
+		if ((await authority.claimClaudeLoginReset(request, signal)) !== true) return "preparing";
+		const kind = claude.reset as ClaudeResetKind;
+		const envelope = Buffer.from(claude.envelope);
+		const job = (async () => {
+			let outcome: ClaudeResetOutcome = { outcome: "failed" };
+			try {
+				const credentials = await this.#claudeCredentials({ ...claude, envelope });
+				outcome = { outcome: "unconfirmed" };
+				outcome = await reads.useClaudeReset({ credentials, kind }, AbortSignal.timeout(CLAUDE_RESET_MS));
+			} catch {
+				outcome = outcome.outcome === "failed" ? outcome : { outcome: "unconfirmed" };
+			} finally {
+				envelope.fill(0);
+			}
+			await authority.recordClaudeLoginRead?.(
+				{ ...request, usage: null, resets: null, reset: outcome },
+				AbortSignal.timeout(SAVE_DEADLINE_MS),
+			);
+			await authority.completeModelLoginAccountRefresh(request, AbortSignal.timeout(SAVE_DEADLINE_MS));
+		})()
+			.catch(() => undefined)
+			.finally(() => this.#resetting.delete(request.requestId));
+		this.#resetting.set(request.requestId, job);
+		return "preparing";
 	}
 
 	/** The daily usage check: the refresh of a login at its usage limit that is due a reading, run as a member's refresh
@@ -264,6 +478,7 @@ export class CloudModelLoginUsage {
 			request_id: refresh.requestId,
 			status,
 		});
+		let claude: ClaudeReadDescription = { state: "none" };
 		try {
 			if (
 				description.requestId !== refresh.requestId ||
@@ -275,13 +490,19 @@ export class CloudModelLoginUsage {
 				throw new Error("Vault account refresh crossed its authority");
 			if (description.status === "completed") return answer("completed");
 			if (description.status !== "pending") throw new Error("Vault account refresh has ended");
+			const claudeRequest = { requestId: refresh.requestId, capabilitySha256 };
+			claude = await this.#claudeDescription(claudeRequest, signal);
+			if (claude.state === "open" && claude.reset !== null)
+				return answer(await this.#claudeReset(claude, claudeRequest, signal));
 			// Every login is read at once, each on its own deadline inside the route's: one that
 			// fails to open or answer is unknown usage, and the refresh still settles.
-			await Promise.all(
-				description.logins.map((login) => this.#read(description, refresh, capabilitySha256, login, signal)),
-			);
+			await Promise.all([
+				...description.logins.map((login) => this.#read(description, refresh, capabilitySha256, login, signal)),
+				...(claude.state === "open" ? [this.#claudeRead(claude, claudeRequest, signal)] : []),
+			]);
 		} finally {
 			for (const login of description.logins) login.envelope.fill(0);
+			if (claude.state === "open") claude.envelope.fill(0);
 		}
 		await this.#authority.completeModelLoginAccountRefresh(
 			{ requestId: refresh.requestId, capabilitySha256 },

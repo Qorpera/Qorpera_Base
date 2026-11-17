@@ -24,6 +24,7 @@ import {
 	type ClaudeCodeBoxOptions,
 	claudeBoxStartStage,
 } from "./cloud-claude-box.ts";
+import { type ClaudeLoginUsage, claudeUsageFromRateLimitInfo } from "./cloud-claude-login-usage.ts";
 import type { ClaudeLoginFileName } from "./cloud-claude-login-vault.ts";
 import { cloudHomeRefusalWords } from "./cloud-codex-home.ts";
 import { sha256 } from "./cloud-company-folder-client.ts";
@@ -199,6 +200,7 @@ export class ClaudeWorkerStream {
 	signedOut = false;
 	/** A tool use or result came before the init line: the tools were never shown to be the eight. */
 	beforeInit = false;
+	usage: ClaudeLoginUsage | null = null;
 
 	constructor(now: () => number = () => performance.now()) {
 		this.#now = now;
@@ -222,6 +224,10 @@ export class ClaudeWorkerStream {
 					? event.tools.filter((tool): tool is string => typeof tool === "string")
 					: [],
 			};
+			return [];
+		}
+		if (event.type === "rate_limit_event") {
+			this.usage = claudeUsageFromRateLimitInfo(event.rate_limit_info) ?? this.usage;
 			return [];
 		}
 		const message = (event.message ?? {}) as Record<string, unknown>;
@@ -542,6 +548,7 @@ export interface ClaudeWorkerRunOptions {
 	readonly root: string;
 	/** Each step as it finishes, for the run's work log. Never throws back into the run. */
 	readonly step?: (step: ClaudeWorkerStep | { readonly start: { model: string; sessionId: string } }) => void;
+	readonly usage?: (usage: ClaudeLoginUsage) => void;
 	readonly signal: AbortSignal;
 	/** How long after the box starts a replaced credentials file is sealed back early (default 120 s). */
 	readonly earlySealMs?: number;
@@ -672,7 +679,9 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			try {
 				for await (const line of box.lines) {
 					const hadInit = stream.init !== null;
+					const usage = stream.usage;
 					for (const step of stream.push(line)) options.step?.(step);
+					if (stream.usage && stream.usage !== usage) options.usage?.(stream.usage);
 					if (stream.beforeInit) {
 						toolsWrong = true;
 						break;

@@ -261,6 +261,31 @@ describe("the stream", () => {
 		expect(out.signedOut).toBe(true);
 	});
 
+	it("keeps the plan's last usage from Claude Code's rate-limit lines, and nothing from a line out of shape", () => {
+		const stream = new ClaudeWorkerStream();
+		stream.push(init());
+		stream.push(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } }));
+		expect(stream.usage).toBeNull();
+		stream.push(
+			JSON.stringify({
+				type: "rate_limit_event",
+				rate_limit_info: {
+					status: "allowed",
+					unifiedWindows: {
+						five_hour: { utilization: 0.28, resetsAt: 1794921898, status: "allowed" },
+						seven_day: { utilization: 0.5, resetsAt: 1795272238, status: "allowed" },
+					},
+				},
+			}),
+		);
+		expect(stream.usage?.windows.map((window) => [window.id, window.usedPercent])).toEqual([
+			["five_hour", 28],
+			["seven_day", 50],
+		]);
+		stream.push(JSON.stringify({ type: "rate_limit_event", rate_limit_info: "nonsense" }));
+		expect(stream.usage?.windows).toHaveLength(2);
+	});
+
 	it("bounds what a step keeps", () => {
 		const stream = new ClaudeWorkerStream();
 		stream.push(use("t1", "Bash", { command: `echo ${"x".repeat(500)}` }));
@@ -391,6 +416,35 @@ async function root(): Promise<string> {
 const OK = [init(), use("t1", "Bash", { command: "make pdf" }), answer("t1"), result("Made it. Changed: a.pdf")];
 
 describe("a Claude Code worker's run", () => {
+	it("hands on each new usage reading Claude Code reports during the run", async () => {
+		const reading = (used: number) =>
+			JSON.stringify({
+				type: "rate_limit_event",
+				rate_limit_info: { unifiedWindows: { five_hour: { utilization: used, resetsAt: 1794921898 } } },
+			});
+		const box = standInBox([
+			init(),
+			reading(0.2),
+			use("t1", "Bash", { command: "make pdf" }),
+			answer("t1"),
+			reading(0.3),
+			result("Made it."),
+		]);
+		const runRoot = await root();
+		const usage: number[] = [];
+		await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins: vault().logins,
+			launch: box.launch,
+			root: runRoot,
+			usage: (reading) => usage.push(reading.windows[0]!.usedPercent),
+			signal: new AbortController().signal,
+		});
+		expect(usage).toEqual([20, 30]);
+		await rm(runRoot, { recursive: true });
+	});
+
 	it("puts the sign-in in a private folder for the box, seals nothing unchanged, and removes the folder", async () => {
 		const v = vault();
 		const box = standInBox(OK);
