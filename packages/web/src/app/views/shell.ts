@@ -42,6 +42,7 @@ import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.t
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
+import { companyDisplayName, companyInSentence, showCompanyName } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -794,7 +795,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 					items: [
 						...profiles.map(
 							(profile): MenuEntry => ({
-								label: profile.profileName,
+								label: companyDisplayName(profile.profileName),
 								checked: profile.profileId === company.profile.profileId,
 								select: () => {
 									if (profile.profileId !== company.profile.profileId)
@@ -1246,8 +1247,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.appsDrawer.classList.toggle("is-open", appsOpen);
 	// Closed, its icons can't be reached.
 	parts.appsDrawer.inert = !appsOpen;
-	if (parts.companyName.textContent !== company.profile.profileName)
-		parts.companyName.textContent = company.profile.profileName;
+	showCompanyName(parts.companyName, company.profile.profileName);
 	// Text in the field keeps it open, so a query never filters from a folded field.
 	if (parts.input.value) parts.searchOpen = true;
 	parts.toolbar.classList.toggle("is-searching", parts.searchOpen);
@@ -1620,7 +1620,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// After Reset sidebar: one line with Undo, until dismissed or the sidebar changes again.
 	const resetNotice = () => {
 		if (!state.sidebarReset) return null;
-		const text = t("Sidebar reset to {company}'s.", { company: company.profile.profileName });
+		const text = t("Sidebar reset to {company}'s.", { company: companyInSentence(company.profile.profileName) });
 		const kept = parts.notices.get("reset");
 		const entry =
 			kept?.text === text
@@ -2647,7 +2647,7 @@ function resetEntries(company: CompanyController, parts: RailParts): MenuEntry[]
 			: {
 					label: t("Reset sidebar"),
 					icon: "reset",
-					hint: t("You have {company}'s sidebar", { company: company.profile.profileName }),
+					hint: t("You have {company}'s sidebar", { company: companyInSentence(company.profile.profileName) }),
 					disabled: true,
 					select: () => {},
 				},
@@ -2698,7 +2698,7 @@ async function askResetSidebar(company: CompanyController, parts: RailParts): Pr
 	if (!own) return;
 	const sure = await confirmDialog(
 		t("Reset your sidebar? These changes of yours go away, and you get {company}'s sidebar:", {
-			company: company.profile.profileName,
+			company: companyInSentence(company.profile.profileName),
 		}),
 		t("Reset"),
 		false,

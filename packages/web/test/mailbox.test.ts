@@ -116,6 +116,7 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	document.body.append(main);
 	// The address and Digital Post calls behind Addresses: a mailbox for each address the mail lists, Digital Post not
 	// connected.
+	const handles: string[] = fake.addresses.length ? ["acme"] : [];
 	const hooks: EventHook[] = fake.addresses.map((address, n) => ({
 		id: id(950 + n),
 		name: `mail-${String(address.address).split("@")[0]}`,
@@ -244,9 +245,15 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 					createdAt: timestamp,
 				};
 				hooks.push(made);
+				const handle = name.split(".")[1];
+				if (handle && !handles.includes(handle)) handles.push(handle);
 				return made;
 			}),
 			setStatus: vi.fn(),
+			mailHandles: vi.fn(async () => ({ domain: "acme.example", handles: [...handles] })),
+			handleStatus: vi.fn(async (handle: string) =>
+				handles.includes(handle) ? ("ours" as const) : ("free" as const),
+			),
 		},
 		digitalPost: {
 			read: vi.fn(async () => ({
@@ -418,9 +425,9 @@ describe("the Inbox", () => {
 		await vi.waitFor(() => expect(button(none.main, "Add mailbox")).toBeDefined());
 		button(none.main, "Add mailbox")!.click();
 		const form = none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!;
-		// The name is all the form asks to be typed; who answers the address is picked on its chip.
 		expect([...form.querySelectorAll("input")].map((field) => field.getAttribute("aria-label"))).toEqual([
 			"Mailbox name",
+			"The company's part of the address",
 		]);
 		const answers = () => none.main.querySelector<HTMLButtonElement>("[data-focus-key='add-answerer']")!;
 		const picked = () => answers().querySelector(".mailbox-writer-name")?.textContent;
@@ -441,24 +448,26 @@ describe("the Inbox", () => {
 		expect(texts(openMenu()!.el, ".context-menu-label").at(-1)).toBe("How Bo answers");
 		openMenu()!.close();
 		type(none.main.querySelector('input[aria-label="Mailbox name"]')!, "hello");
-		none.fake.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		type(none.main.querySelector(`input[aria-label="The company's part of the address"]`)!, "acme");
+		await vi.waitFor(() => expect(none.main.querySelector(".hook-handle-check")?.textContent).toBe("Free"));
+		none.fake.addresses = [{ ...ADDRESS, address: "hello.acme@acme.example", handledBy: [], routines: [] }];
 		none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!.requestSubmit();
 		await vi.waitFor(() =>
-			expect(none.manage.hooks.createMailbox).toHaveBeenCalledWith("hello", "hello", expect.anything()),
+			expect(none.manage.hooks.createMailbox).toHaveBeenCalledWith("hello.acme", "hello.acme", expect.anything()),
 		);
 		await vi.waitFor(() => expect(none.main.querySelector(".mailbox-tabs")).not.toBeNull());
 		// The new address goes to the agent picked: a routine of Bo's that starts on its mail.
 		await vi.waitFor(() => expect(none.manage.routines!.save).toHaveBeenCalledTimes(1));
 		expect(vi.mocked(none.manage.routines!.save).mock.calls[0]?.[0]).toMatchObject({
 			staffAgentId: bo.id,
-			title: "Answer email to hello@acme.example",
+			title: "Answer email to hello.acme@acme.example",
 			prompt: expect.stringMatching(
-				/^Read each email that arrives at hello@acme\.example[\s\S]*\n\n## How to answer\n\nAnswer in Danish\.\nSign as the Acme team\.$/,
+				/^Read each email that arrives at hello\.acme@acme\.example[\s\S]*\n\n## How to answer\n\nAnswer in Danish\.\nSign as the Acme team\.$/,
 			),
 			trigger: { kind: "listener", source: "event", hookId: id(950), only: ["mail.received"] },
 		});
 		await vi.waitFor(() =>
-			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello@acme.example"),
+			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello.acme@acme.example"),
 		);
 		// Nothing of them stands on the page: they are in Bo's menu.
 		expect(none.main.querySelector(".mailbox-how-panel, textarea")).toBeNull();
@@ -1300,7 +1309,8 @@ describe("Sent, Addresses and Write", () => {
 		type(panel.querySelector("textarea")!, "Answer in Danish.");
 		button(panel, "Save")!.click();
 		type(none.main.querySelector('input[aria-label="Mailbox name"]')!, "hello");
-		none.fake.addresses = [{ ...ADDRESS, handledBy: [], routines: [] }];
+		type(none.main.querySelector(`input[aria-label="The company's part of the address"]`)!, "acme");
+		none.fake.addresses = [{ ...ADDRESS, address: "hello.acme@acme.example", handledBy: [], routines: [] }];
 		const save = vi.mocked(none.manage.routines!.save);
 		save.mockRejectedValueOnce(new Error("The company is paused."));
 		none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!.requestSubmit();
@@ -1314,7 +1324,7 @@ describe("Sent, Addresses and Write", () => {
 		card().querySelector<HTMLButtonElement>(".mailbox-answerer")!.click();
 		menuRow("Bo").click();
 		await vi.waitFor(() =>
-			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello@acme.example"),
+			expect(none.main.querySelector(".mailbox-toast")?.textContent).toBe("Bo answers hello.acme@acme.example"),
 		);
 		expect(
 			save.mock.calls.map((call) => call[0].prompt.endsWith("\n\n## How to answer\n\nAnswer in Danish.")),

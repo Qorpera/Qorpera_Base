@@ -1,6 +1,7 @@
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import { questionInput } from "../../cloud/interactions.ts";
 import {
 	type InterfaceChange,
 	type InterfaceChangeSubject,
@@ -3027,6 +3028,7 @@ export class ConversationView {
 				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
+				const address = questionInput(item.request) === "mail_address";
 				const cardKey = JSON.stringify([
 					item.request,
 					// What the card shows of an answer; the input it went out as is not shown.
@@ -3035,6 +3037,7 @@ export class ConversationView {
 					// Whose a secret saved here is: a coding value's card says which repositories get it (a role change
 					// moves it).
 					item.request.surface === "secret" ? this.#company.secretSavedForCompany(item.request) : null,
+					address ? this.#company.canChooseMailAddress() : null,
 					item.answerFailed,
 					item.chainStopped,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
@@ -3117,6 +3120,9 @@ export class ConversationView {
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
 											savesForCompany: this.#company.secretSavedForCompany(item.request),
 										}
+									: {}),
+								...(address && answers
+									? { mailAddress: this.#company.mailAddressCalls(this.#sessionId, item.id) }
 									: {}),
 							},
 						),

@@ -5,6 +5,7 @@ import {
 	type FounderSeat,
 } from "../../cloud/company-founding.ts";
 import type { FoundingField } from "../../cloud/founding-presence.ts";
+import { companyInSentence, companyNameText, isUnnamed } from "../../ui/company-name.ts";
 import { button, confirmDialog, fmtTime, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { FounderLive, FoundingController } from "../founding.ts";
@@ -462,11 +463,13 @@ export class FoundingView {
 		});
 		const cancel = () => {
 			const name = founding.store.get().table?.companyName ?? "";
-			void confirmDialog(t("Cancel {name}? It will not be started.", { name }), t("Cancel company"), true).then(
-				async (yes) => {
-					if (yes && (await founding.close())) navigate({ name: "hub" });
-				},
-			);
+			void confirmDialog(
+				t("Cancel {name}? It will not be started.", { name: companyInSentence(name) }),
+				t("Cancel company"),
+				true,
+			).then(async (yes) => {
+				if (yes && (await founding.close())) navigate({ name: "hub" });
+			});
 		};
 		this.#cancel = button(t("Cancel"), cancel, { danger: true });
 		this.#cancel.classList.add("founding-cancel");
@@ -612,6 +615,7 @@ export class FoundingView {
 		const state = this.#founding.store.get();
 		const connect = table !== undefined && state.connectOpen === true;
 		const name = table?.companyName ?? "";
+		const named = isUnnamed(name) ? "" : name;
 		const idea = (table?.vision || this.#founding.pendingVision || "").trim().split(/\r?\n/, 1)[0] ?? "";
 		const shownIdea = idea.toLocaleLowerCase() === name.toLocaleLowerCase() ? "" : idea;
 		const ready = table?.start?.companyReady === true;
@@ -619,10 +623,14 @@ export class FoundingView {
 			h(
 				"header",
 				{ class: "founding-head founding-start-head" },
-				name ? h("h1", { class: "founding-start-name" }, name) : null,
+				named ? h("h1", { class: "founding-start-name" }, named) : null,
 				shownIdea ? h("p", { class: "founding-start-idea" }, shownIdea) : null,
 				connect
-					? h("p", { class: "founding-sub" }, t("Connect your ChatGPT account, and {name} starts.", { name }))
+					? h(
+							"p",
+							{ class: "founding-sub" },
+							t("Connect your ChatGPT account, and {name} starts.", { name: companyInSentence(name) }),
+						)
 					: h(
 							"div",
 							{ class: "founding-start-wait", role: "status" },
@@ -706,7 +714,7 @@ export class FoundingView {
 		this.#nameSlot.show(joined ? "field" : `title\n${name}`, () => {
 			if (!joined) {
 				this.#name = undefined;
-				return h("h1", { class: "founding-name" }, name);
+				return companyNameText(name, "founding-name", "h1");
 			}
 			const field = h("input", {
 				id: "foundingName",
@@ -715,6 +723,7 @@ export class FoundingView {
 				maxlength: FOUNDING_NAME_MAX_CHARACTERS,
 				required: true,
 				autocomplete: "organization",
+				placeholder: t("No name yet"),
 			});
 			const syncedName = new SyncedField(
 				field,
@@ -734,15 +743,18 @@ export class FoundingView {
 				h("div", { class: "founding-name-box" }, field, icon("edit")),
 			);
 		});
-		this.#name?.show(table.companyName, followedName);
+		this.#name?.show(isUnnamed(table.companyName) ? "" : table.companyName, followedName);
 
 		const invitedBy = mySeat?.invitedByUserId;
 		const inviter = table.seats.find((seat) => seat.userId === invitedBy)?.displayName;
 		const sub = joined
 			? ""
 			: inviter
-				? t("{name} invited you to start {company} together.", { name: inviter, company: table.companyName })
-				: t("You are invited to start {company} together.", { company: table.companyName });
+				? t("{name} invited you to start {company} together.", {
+						name: inviter,
+						company: companyInSentence(table.companyName),
+					})
+				: t("You are invited to start {company} together.", { company: companyInSentence(table.companyName) });
 		if (this.#sub.textContent !== sub) this.#sub.textContent = sub;
 		this.#sub.hidden = !sub;
 		this.#invitation.show(`${table.me.state}`, () =>
@@ -906,7 +918,8 @@ export class FoundingView {
 			: ready
 				? t("Not ready after all")
 				: t("I'm ready for the table as it is now");
-		const startLabel = state.busy === "start" ? t("Starting…") : t("Start {name}", { name: table.companyName });
+		const startLabel =
+			state.busy === "start" ? t("Starting…") : t("Start {name}", { name: companyInSentence(table.companyName) });
 		if (this.#start.textContent !== startLabel) this.#start.textContent = startLabel;
 		this.#start.disabled = state.busy === "start" || (alone ? !connected : !table.me.canStart);
 		// Cancel is the table's owner's; with others still at it, their seats go first.
@@ -931,7 +944,9 @@ export class FoundingView {
 				? t("Waiting for {names} to be ready", { names: names(table, table.waitingFor, me) })
 				: t("Everyone is ready.");
 		this.#owners.hidden = alone;
-		this.#owners.textContent = t("Everyone at the table becomes a founder of {name}.", { name: table.companyName });
+		this.#owners.textContent = t("Everyone at the table becomes a founder of {name}.", {
+			name: companyInSentence(table.companyName),
+		});
 		this.#withdrawn.textContent = t("Invitations nobody has answered are withdrawn at Start.");
 		this.#withdrawn.hidden = !table.seats.some((seat) => seat.state === "invited");
 
@@ -944,7 +959,7 @@ export class FoundingView {
 							t("Leave the table"),
 							() =>
 								void confirmDialog(
-									t("Leave the table for {name}?", { name: table.companyName }),
+									t("Leave the table for {name}?", { name: companyInSentence(table.companyName) }),
 									t("Leave"),
 									true,
 								).then(async (yes) => {
@@ -1023,11 +1038,11 @@ export class FoundingView {
 		if (!open) return;
 		this.#connectText.textContent = this.#founding.store.get().autoStart
 			? t("Your own account, connected to {name}. It pays for the work you start there.", {
-					name: table.companyName,
+					name: companyInSentence(table.companyName),
 				})
 			: t(
 					"Your own account, connected to {name}. It pays for the work you start there. You can be Ready once it is connected.",
-					{ name: table.companyName },
+					{ name: companyInSentence(table.companyName) },
 				);
 		const panel = this.#founding.connections().el;
 		if (panel.parentElement !== this.#connectBody) this.#connectBody.replaceChildren(panel);
@@ -1068,10 +1083,10 @@ export class FoundingView {
 						"h1",
 						{ class: "founding-name" },
 						ready
-							? t("{name} has started", { name: table.companyName })
+							? t("{name} has started", { name: companyInSentence(table.companyName, true) })
 							: failed
-								? t("{name} could not be set up", { name: table.companyName })
-								: t("{name} is starting", { name: table.companyName }),
+								? t("{name} could not be set up", { name: companyInSentence(table.companyName, true) })
+								: t("{name} is starting", { name: companyInSentence(table.companyName, true) }),
 					),
 					h(
 						"p",
@@ -1126,7 +1141,7 @@ export class FoundingView {
 					{ class: "founding-bar" },
 					ready
 						? button(
-								t("Open {name}", { name: table.companyName }),
+								t("Open {name}", { name: companyInSentence(table.companyName) }),
 								() => navigate({ name: "company", profileId: table.profileId, section: "home" }),
 								{ primary: true },
 							)
@@ -1136,11 +1151,11 @@ export class FoundingView {
 									t(
 										"Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.",
 										{
-											name: table.companyName,
+											name: companyInSentence(table.companyName),
 										},
 									),
 								)
-							: spinner(t("Preparing {name}", { name: table.companyName })),
+							: spinner(t("Preparing {name}", { name: companyInSentence(table.companyName) })),
 				),
 			);
 		});
@@ -1155,9 +1170,11 @@ function startsQuietly(table: CompanyFounding): boolean {
 }
 
 function openCompanyLater(name: string, profileId: string): HTMLButtonElement {
-	const open = button(t("Open {name}", { name }), () => navigate({ name: "company", profileId, section: "home" }), {
-		primary: true,
-	});
+	const open = button(
+		t("Open {name}", { name: companyInSentence(name) }),
+		() => navigate({ name: "company", profileId, section: "home" }),
+		{ primary: true },
+	);
 	open.classList.add("founding-start-open");
 	return open;
 }

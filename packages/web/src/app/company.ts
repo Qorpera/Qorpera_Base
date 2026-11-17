@@ -22,6 +22,7 @@ import {
 	type EmailDraftEditor,
 	type EmailDraftState,
 } from "../cloud/email-drafts.ts";
+import { createWebEventHooks } from "../cloud/event-hooks.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
@@ -74,6 +75,7 @@ import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
+import { type MailAddressCalls, mailboxRefusal } from "../ui/mail-address.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
@@ -3050,6 +3052,41 @@ export class CompanyController {
 			throw error;
 		}
 		await this.answerInteraction(sessionId, interactionId, "provided", {});
+	}
+
+	canChooseMailAddress(): boolean {
+		const role = this.store.get().team?.role;
+		return role === "owner" || role === "admin";
+	}
+
+	mailAddressCalls(sessionId: string, interactionId: string): MailAddressCalls {
+		const hooks = createWebEventHooks(this.#api.cloud, this.profile);
+		return {
+			canChoose: this.canChooseMailAddress(),
+			handles: (signal) => hooks.mailHandles(signal),
+			status: (handle, signal) => hooks.handleStatus(handle, signal),
+			choose: (handle) => this.chooseMailAddress(sessionId, interactionId, handle),
+		};
+	}
+
+	async chooseMailAddress(sessionId: string, interactionId: string, handle: string): Promise<void> {
+		this.assertCanSend(sessionId);
+		this.conversation(sessionId).set({ interactionError: undefined });
+		const hooks = createWebEventHooks(this.#api.cloud, this.profile);
+		const localPart = `hello.${handle}`;
+		let address: string | undefined;
+		try {
+			this.#answerSponsor(sessionId);
+			const made =
+				(await hooks.list()).find(
+					(hook) => hook.proof === "mail" && hook.status === "active" && hook.email?.split("@")[0] === localPart,
+				) ?? (await hooks.createMailbox(localPart, "The company's main email"));
+			address = made.email;
+		} catch (error) {
+			throw new Error(mailboxRefusal(error));
+		}
+		if (!address) throw new Error(t("The address could not be made. Try again."));
+		await this.answerInteraction(sessionId, interactionId, "answered", { values: [address] });
 	}
 
 	/** The quotes of outside content in a conversation's draft: its records' words wherever they stand in «» marks. */

@@ -40,7 +40,10 @@ const mailbox: EventHook = {
 	lastReceivedAt: timestamp,
 };
 
-type HooksClientMock = Pick<WebEventHooks, "list" | "createHook" | "createMailbox" | "setStatus">;
+type HooksClientMock = Pick<
+	WebEventHooks,
+	"list" | "createHook" | "createMailbox" | "setStatus" | "mailHandles" | "handleStatus"
+>;
 
 const admin: HooksAccess = { canManage: () => true };
 
@@ -53,8 +56,13 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-function setup(hooks: EventHook[] = [], access: HooksAccess = admin, configure?: (client: HooksClientMock) => void) {
-	const state = { hooks: structuredClone(hooks) };
+function setup(
+	hooks: EventHook[] = [],
+	access: HooksAccess = admin,
+	configure?: (client: HooksClientMock) => void,
+	company: { handles?: string[]; unnamed?: boolean } = {},
+) {
+	const state = { hooks: structuredClone(hooks), handles: [...(company.handles ?? ["acme"])] };
 	const client: HooksClientMock = {
 		list: vi.fn(async () => structuredClone(state.hooks)),
 		createHook: vi.fn(async (name: string, purpose: string) => {
@@ -73,15 +81,21 @@ function setup(hooks: EventHook[] = [], access: HooksAccess = admin, configure?:
 				createdAt: timestamp,
 			};
 			state.hooks.push(hook);
+			const handle = localPart.split(".")[1];
+			if (handle && !state.handles.includes(handle)) state.handles.push(handle);
 			return structuredClone(hook);
 		}),
 		setStatus: vi.fn(async (hookId: string, status: string) => {
 			if (status === "removed") state.hooks = state.hooks.filter((hook) => hook.id !== hookId);
 			else for (const hook of state.hooks) if (hook.id === hookId) hook.status = status as EventHook["status"];
 		}),
+		mailHandles: vi.fn(async () => ({ domain: "acme.example.com", handles: [...state.handles] })),
+		handleStatus: vi.fn(async (handle: string) =>
+			state.handles.includes(handle) ? "ours" : handle === "brooks" ? "taken" : "free",
+		),
 	};
 	configure?.(client);
-	view = new HooksView(client, new AbortController().signal, { access });
+	view = new HooksView(client, new AbortController().signal, { access, unnamed: () => company.unnamed === true });
 	document.body.append(view.el);
 	return { client, state };
 }
@@ -361,12 +375,17 @@ describe("webhooks and mailboxes", () => {
 						message: "This mailbox name is reserved",
 						code: "22023",
 					}),
+				)
+				.mockRejectedValueOnce(
+					new CloudRpcError("qorpera_create_company_mailbox", {
+						message: "A new address is a name, a dot and the company's handle, like hello.acme",
+						code: "22023",
+					}),
 				);
 		});
 		await settle();
 		press(section("mailbox"), "Add mailbox");
-		expect(view!.el.querySelector("#hook-form-mailbox .hook-domain")?.textContent).toBe("@acme.example.com");
-		// The form asks for the name and nothing else.
+		expect(view!.el.querySelector("#hook-form-mailbox .hook-domain")?.textContent).toBe(".acme@acme.example.com");
 		expect(view!.el.querySelectorAll("#hook-form-mailbox input")).toHaveLength(1);
 
 		add("mailbox", "orders");
@@ -377,25 +396,96 @@ describe("webhooks and mailboxes", () => {
 		await settle();
 		expect(section("mailbox").textContent).toContain("This mailbox name is reserved. Choose another.");
 
-		add("mailbox", "a..b");
+		add("mailbox", "sales");
 		await settle();
 		expect(section("mailbox").textContent).toContain(
-			"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.",
+			"A new address is a name, a dot and the company's handle, like hello.acme.",
 		);
-		expect(client.createMailbox).toHaveBeenCalledTimes(2);
+
+		add("mailbox", "a.b");
+		await settle();
+		expect(section("mailbox").textContent).toContain(
+			"A mailbox name is lowercase letters, digits, hyphens and underscores, and starts and ends with a letter or digit.",
+		);
+		expect(client.createMailbox).toHaveBeenCalledTimes(3);
 
 		add("mailbox", "orders");
 		await settle();
-		// The kernel wants a purpose: the name is it.
-		expect(client.createMailbox).toHaveBeenLastCalledWith("orders", "orders", expect.any(AbortSignal));
+		expect(client.createMailbox).toHaveBeenLastCalledWith("orders.acme", "orders.acme", expect.any(AbortSignal));
 		expect(ids(section("mailbox"))).toEqual([mailbox.id, id(71)]);
 		expect(cardOf(id(71))?.textContent).toContain("The mailbox is ready.");
-		expect(cardOf(id(71))?.querySelector("strong")?.textContent).toBe("orders@acme.example.com");
+		expect(cardOf(id(71))?.querySelector("strong")?.textContent).toBe("orders.acme@acme.example.com");
 		// Its card says the name once, under it only its state; a mailbox with a purpose of its own keeps that line.
 		expect([...cardOf(id(71))!.querySelectorAll(".settings-copy small")].map((line) => line.className)).toEqual([
 			"hook-state",
 		]);
 		expect(cardOf(mailbox.id)?.querySelector(".settings-copy small")?.textContent).toBe("Invoices from suppliers");
+	});
+
+	it("asks a company with no handle for its part too, checks it as it is typed, and claims it with the first address", async () => {
+		const { client } = setup([], admin, undefined, { handles: [] });
+		await settle();
+		press(section("mailbox"), "Add mailbox");
+		const form = () => view!.el.querySelector<HTMLFormElement>("#hook-form-mailbox")!;
+		const handle = () => form().querySelectorAll<HTMLInputElement>("input")[1]!;
+		const check = () => form().querySelector(".hook-handle-check")?.textContent;
+		expect([...form().querySelectorAll("input")].map((field) => field.getAttribute("aria-label"))).toEqual([
+			"Mailbox name",
+			"The company's part of the address",
+		]);
+		expect([...form().querySelectorAll(".hook-domain")].map((part) => part.textContent)).toEqual([
+			".",
+			"@acme.example.com",
+		]);
+		handle().value = "Brooks Co";
+		handle().dispatchEvent(new Event("input"));
+		expect(handle().value).toBe("brooks-co");
+		expect(check()).toBe("Checking…");
+		await vi.waitFor(() => expect(check()).toBe("Free"));
+		expect(client.handleStatus).toHaveBeenLastCalledWith("brooks-co", expect.any(AbortSignal));
+		handle().value = "x";
+		handle().dispatchEvent(new Event("input"));
+		expect(check()).toBe("Use a–z, 0–9 and hyphens");
+
+		const fill = (box: string, part: string) => {
+			for (const [field, value] of [
+				[form().querySelectorAll<HTMLInputElement>("input")[0]!, box],
+				[handle(), part],
+			] as const) {
+				field.value = value;
+				field.dispatchEvent(new Event("input"));
+			}
+		};
+		fill("hello", "brooks");
+		await vi.waitFor(() => expect(check()).toBe("That one belongs to another company"));
+		form().requestSubmit();
+		await settle();
+		expect(form().querySelector(".service-outcome.is-error:not(.hook-handle-check)")?.textContent).toBe(
+			"That one belongs to another company",
+		);
+		expect(client.createMailbox).not.toHaveBeenCalled();
+
+		fill("hello", "acme");
+		await vi.waitFor(() => expect(check()).toBe("Free"));
+		form().requestSubmit();
+		await settle();
+		expect(client.createMailbox).toHaveBeenCalledWith("hello.acme", "hello.acme", expect.any(AbortSignal));
+		expect(cardOf(id(71))?.querySelector("strong")?.textContent).toBe("hello.acme@acme.example.com");
+		press(section("mailbox"), "Add mailbox");
+		expect(form().querySelectorAll("input")).toHaveLength(1);
+		expect(form().querySelector(".hook-domain")?.textContent).toBe(".acme@acme.example.com");
+	});
+
+	it("says a company with no name yet and no handle that its address waits for a name", async () => {
+		setup([], admin, undefined, { handles: [], unnamed: true });
+		await settle();
+		expect(labels(section("mailbox"))).not.toContain("Add mailbox");
+		expect(section("mailbox").querySelector(".hook-waits")?.textContent).toBe("Your email address waits for a name");
+		view?.dispose();
+		setup([], admin, undefined, { handles: ["acme"], unnamed: true });
+		await settle();
+		expect(labels(section("mailbox"))).toContain("Add mailbox");
+		expect(section("mailbox").querySelector(".hook-waits")).toBeNull();
 	});
 
 	it("shows a failed read with a way to try again", async () => {
@@ -518,6 +608,36 @@ describe("event hook client", () => {
 		cloud.rpc.mockClear();
 		await expect(hooks.setStatus("not-a-hook", "paused")).rejects.toThrow("Invalid hook.");
 		expect(cloud.rpc).not.toHaveBeenCalled();
+	});
+
+	it("reads the company's mail domain and handles, and checks a handle, refusing a malformed answer", async () => {
+		const answers: Record<string, unknown> = {
+			qorpera_company_mail_handles: { domain: "inbox.qorpera.com", handles: ["acme", "acme-shop"] },
+			qorpera_company_mail_handle_status: "taken",
+		};
+		const cloud = cloudWith((name) => answers[name]);
+		const hooks = createWebEventHooks(cloud, profile);
+		expect(await hooks.mailHandles()).toEqual({ domain: "inbox.qorpera.com", handles: ["acme", "acme-shop"] });
+		expect(cloud.rpc).toHaveBeenLastCalledWith("qorpera_company_mail_handles", { p_profile_id: id(10) });
+		expect(await hooks.handleStatus("brooks")).toBe("taken");
+		expect(cloud.rpc).toHaveBeenLastCalledWith("qorpera_company_mail_handle_status", {
+			p_profile_id: id(10),
+			p_handle: "brooks",
+		});
+		answers.qorpera_company_mail_handles = { domain: null, handles: [] };
+		expect(await hooks.mailHandles()).toEqual({ domain: null, handles: [] });
+		for (const wrong of [
+			{ handles: [] },
+			{ domain: "inbox.qorpera.com", handles: ["Acme"] },
+			{ domain: "inbox.qorpera.com", handles: "acme" },
+			{ domain: 7, handles: [] },
+			[],
+		]) {
+			answers.qorpera_company_mail_handles = wrong;
+			await expect(hooks.mailHandles()).rejects.toThrow("The cloud returned an invalid");
+		}
+		answers.qorpera_company_mail_handle_status = "maybe";
+		await expect(hooks.handleStatus("acme")).rejects.toThrow("The cloud returned an invalid mail handle status");
 	});
 
 	it("refuses a malformed list and a malformed company", async () => {

@@ -43,6 +43,7 @@
 	color: var(--text); text-align: center; font: 750 clamp(32px, 4vw, 46px) / 1.06 var(--font-display); letter-spacing: -0.035em;
 	text-overflow: ellipsis;
 }
+.founding-name.company-unnamed { color: var(--text-muted); font-style: italic; font-weight: 600; }
 /* Your company's name is a field: a label over it, an edge round it and a pencil in it, so it never reads as the
  * page's title (Jonas, 9 November 2026). */
 .founding-name-field { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: min(460px, 100%); }

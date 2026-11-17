@@ -506,8 +506,14 @@ export function companyColor(seed: string): string {
 
 /** A company's logo: its own, laid over its figure once the logo store has it (ui/company-logos.ts), else the figure
  * derived from its id. `seed` is the company's id. */
-export function companyLogo(seed: string, className = ""): HTMLElement {
-	const logo = figureElement(companyFigure(seed), companyColor(seed), { still: true });
+export function companyLogo(seed: string, className = "", unnamed = false): HTMLElement {
+	const logo = unnamed
+		? h(
+				"span",
+				{ class: "figure is-unnamed", "aria-hidden": "true" },
+				h("span", { class: "company-logo-unknown" }, "?"),
+			)
+		: figureElement(companyFigure(seed), companyColor(seed), { still: true });
 	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
 	attachCompanyLogo(logo, seed);
 	return logo;
