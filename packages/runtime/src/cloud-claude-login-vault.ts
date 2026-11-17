@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseRecord, parseUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import type { CloudClaudeLoginRenewer } from "./cloud-claude-login-renewal.ts";
 import { CLAUDE_LOGIN_FILES, CLAUDE_LOGIN_FILES_SCHEMA } from "./cloud-model-login-sign-in.ts";
 import { type ModelLoginRunBinding, parseModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { CLAUDE_LOGIN_FIELD, checkClaudeLoginFiles } from "./cloud-model-login-vault-sign-in.ts";
@@ -32,7 +33,7 @@ export type ClaudeLoginRefusal = "SIGNED_OUT" | "NOT_OPEN";
 /** The database's side (the company's broker authority on the shared vault). */
 export interface ClaudeLoginRunAuthority {
 	/** The open route's: only while the worker is at work. */
-	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown>;
+	openClaudeLoginForRun(binding: ModelLoginRunBinding, signal: AbortSignal, knownVersion?: number): Promise<unknown>;
 	/** The seal-back's re-open, and only the seal-back's: every check of the open but the worker at work. */
 	openClaudeLoginForSealBack(binding: ModelLoginRunBinding, signal: AbortSignal): Promise<unknown>;
 	sealClaudeLoginBack(
@@ -58,6 +59,12 @@ export type ClaudeLoginForRun =
 			readonly version: number;
 			readonly envelopeSha256: string;
 			readonly files: Readonly<Partial<Record<ClaudeLoginFileName, string>>>;
+	  }
+	| {
+			readonly schema: "qorpera.claude-login-files-for-run/v1";
+			readonly state: "current";
+			readonly claudeLoginId: string;
+			readonly version: number;
 	  }
 	| {
 			readonly schema: "qorpera.claude-login-files-for-run/v1";
@@ -150,22 +157,40 @@ export function claudeLoginSealFiles(value: unknown): Partial<Record<ClaudeLogin
 export class CloudClaudeLoginVault {
 	readonly #authority: ClaudeLoginRunAuthority;
 	readonly #keys: CloudSecretKeyring;
+	readonly #renewer: Pick<CloudClaudeLoginRenewer, "checkForRun"> | undefined;
 
-	constructor(options: { authority: ClaudeLoginRunAuthority; keyring: CloudSecretKeyring }) {
+	constructor(options: {
+		authority: ClaudeLoginRunAuthority;
+		keyring: CloudSecretKeyring;
+		renewer?: Pick<CloudClaudeLoginRenewer, "checkForRun">;
+	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
+		this.#renewer = options.renewer;
 	}
 
-	/** The run's login files, only when the database says this run may have them now. */
-	async open(request: { readonly binding: ModelLoginRunBinding }, signal: AbortSignal): Promise<ClaudeLoginForRun> {
-		const opened = await this.#opened(
-			parseModelLoginRunBinding(request.binding),
-			"open",
-			"Claude login for a run",
-			signal,
-		);
+	async open(
+		request: { readonly binding: ModelLoginRunBinding; readonly knownVersion?: number },
+		signal: AbortSignal,
+	): Promise<ClaudeLoginForRun> {
+		const binding = parseModelLoginRunBinding(request.binding);
+		const known =
+			request.knownVersion === undefined ? undefined : version(request.knownVersion, "Claude login for a run");
+		let opened = await this.#opened(binding, "open", "Claude login for a run", signal, known);
+		if (this.#renewer && !("reason" in opened)) {
+			const renewed = await this.#renewer.checkForRun(opened.claudeLoginId, known === undefined ? "open" : "poll");
+			if (renewed === "renewed")
+				opened = await this.#opened(binding, "open", "Claude login for a run", signal, known);
+		}
 		if ("reason" in opened)
 			return { schema: "qorpera.claude-login-files-for-run/v1", state: "refused", reason: opened.reason };
+		if ("current" in opened)
+			return {
+				schema: "qorpera.claude-login-files-for-run/v1",
+				state: "current",
+				claudeLoginId: opened.claudeLoginId,
+				version: opened.version,
+			};
 		return {
 			schema: "qorpera.claude-login-files-for-run/v1",
 			state: "open",
@@ -192,6 +217,7 @@ export class CloudClaudeLoginVault {
 		const current = await this.#opened(binding, "seal-back", label, signal);
 		if ("reason" in current)
 			return { schema: "qorpera.claude-login-seal/v1", state: "refused", reason: current.reason };
+		if ("current" in current) throw new Error(`${label} is invalid`);
 		if (current.claudeLoginId !== claudeLoginId) throw new Error("Claude login seal-back names another login");
 		// Another seal came first: nothing is sealed, the newer envelope stays.
 		if (current.version !== baseVersion || current.envelopeSha256 !== request.baseEnvelopeSha256)
@@ -265,8 +291,10 @@ export class CloudClaudeLoginVault {
 		purpose: "open" | "seal-back",
 		label: string,
 		signal: AbortSignal,
+		knownVersion?: number,
 	): Promise<
 		| { readonly reason: ClaudeLoginRefusal }
+		| { readonly current: true; readonly claudeLoginId: string; readonly version: number }
 		| {
 				readonly claudeLoginId: string;
 				readonly memberId: string;
@@ -278,12 +306,18 @@ export class CloudClaudeLoginVault {
 	> {
 		const answer = parseRecord(
 			await (purpose === "open"
-				? this.#authority.openClaudeLoginForRun(binding, signal)
+				? this.#authority.openClaudeLoginForRun(binding, signal, knownVersion)
 				: this.#authority.openClaudeLoginForSealBack(binding, signal)),
 			label,
 		);
 		const reason = refused(answer, "qorpera.claude-login-for-run/v1", label);
 		if (reason) return { reason };
+		if (answer.state === "current") {
+			exactKeys(answer, ["schema", "state", "claudeLoginId", "version"], label);
+			if (knownVersion === undefined || version(answer.version, label) !== knownVersion)
+				throw new Error(`${label} is invalid`);
+			return { current: true, claudeLoginId: parseUuid(answer.claudeLoginId, label), version: knownVersion };
+		}
 		exactKeys(
 			answer,
 			[

@@ -859,3 +859,42 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   wants them ended at once revokes Qorpera's access in their Claude account settings.
 - **Later (the coding harness):** it opens a Claude login only for a coding session its member started, and checks
   the allow-list again when it does.
+
+## Claude logins renewed in the vault; many Claude Code runs of one member at once (20260930790000)
+
+Design and the measurements behind it: `lanes/agent-box-20261113/claude-parallel/DESIGN.md`. The pinned Claude Code
+renews only in the last 5 minutes of its token, only at `POST platform.claude.com/v1/oauth/token`; with that host
+refused it goes on with the token it holds; it reads a replaced `.credentials.json` again before its next call.
+
+- **Runs cannot renew and never seal back.** A Claude Code worker's box reaches `api.anthropic.com` alone (its egress
+  relay refuses `platform.claude.com`). The run host asks the vault every 60 s for the version it holds
+  (`/v1/claude-logins/open` with `knownVersion`; the vault answers `current`, or the newer files) and replaces the
+  run's `.credentials.json` with a newer one. Nothing is read back from the run.
+- **The vault renews, by the official Claude Code.** At a run's open (when the login was last checked more than 30 s
+  ago) and at a run's poll (more than 90 s ago), while a lease of the member is live, and in the upkeep pass for an
+  active login not checked for 20 hours, the shared vault takes the login's renewal lock
+  (`qorpera_take_claude_login_renewal` / `qorpera_take_idle_claude_login_renewal`, its principal's own calls; one vault
+  host at a time, 2 minutes; another host's open waits up to 8 s for it and opens again), opens the login under the
+  member's key and has the helper run `claude auth status --json` on it in a private folder (`/v1/claude/check`, the
+  helper's isolation, Anthropic's sign-in hosts). The helper compares the credentials' bytes and reads `loggedIn` from
+  Claude Code's output, nothing else. A changed file is sealed as the next version, a compare-and-swap on the version
+  and envelope the lock was taken on (`qorpera_commit_claude_login_renewal`); anything else is recorded
+  (`qorpera_release_claude_login_renewal`: `unchanged`, `failed`, `refused`).
+- **Signed out:** Claude Code refusing the same version twice, at least 2 minutes apart, signs the login out as the
+  member's own sign-out does. A run's open or poll then answers `SIGNED_OUT`; a run already going ends at its token's
+  end in Claude Code's words ("their Claude sign-in has ended"); new Claude Code workers are refused at the dispatch.
+- **The cap:** `qorpera_claude_parallel_runs.cap` live Claude Code runs per member (slots of
+  `qorpera_claude_worker_leases`). The migration keeps 1; the release sets 4 (below). A worker waits only while its
+  member's live runs fill the cap.
+- **Deploy (in this order):**
+  1. Apply migration `20260930790000` (the cap stays 1: nothing changes for runs yet).
+  2. On both vault hosts, one at a time, the release's vault and helper build (the helper gains `/v1/claude/check`,
+     the vault its renewer). Restart the helper, then the broker; look for
+     `Model login helper: Claude sign-ins and Claude login checks on (pinned Claude Code).` Runs of the previous
+     runtime still renew and seal back meanwhile (the seal-back route stays for this release); the vault's
+     compare-and-swap and the two-refusal rule keep that safe.
+  3. The runtime bundle (and the runner image that carries it): from then on runs cannot renew.
+  4. `update public.qorpera_claude_parallel_runs set cap = 4, updated_at = statement_timestamp();`
+  Never 3 before 2: runs that cannot renew with nothing renewing for them end at their token's end.
+- **Rollback:** `update public.qorpera_claude_parallel_runs set cap = 1;` (one run per member again). The renewer
+  stays right for one run as for four. A later cleanup drops the seal-back route and functions.

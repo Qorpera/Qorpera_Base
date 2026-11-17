@@ -2,6 +2,11 @@ import { withAbortScope } from "./abort-scope.ts";
 import { CloudBankSyncs, logBankSyncPass } from "./cloud-bank-sync.ts";
 import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
+import {
+	type ClaudeLoginChecker,
+	type ClaudeLoginRenewalAuthority,
+	CloudClaudeLoginRenewer,
+} from "./cloud-claude-login-renewal.ts";
 import { CloudClaudeLoginVault } from "./cloud-claude-login-vault.ts";
 import type { DigitalPostClient } from "./cloud-connector-digital-post.ts";
 import type { EnableBankingClient } from "./cloud-connector-enable-banking.ts";
@@ -108,7 +113,26 @@ type SharedVaultPrincipal = Pick<
 	PostgresCloudSecretBrokerPrincipal,
 	"companies" | "register" | "authority" | "eventVerificationsDue" | "bankSyncsDue" | "digitalPostSyncsDue"
 > &
-	Partial<AccountModelLoginAuthority>;
+	Partial<AccountModelLoginAuthority> &
+	Partial<ClaudeLoginRenewalAuthority>;
+
+function claudeRenewalAuthority(principal: SharedVaultPrincipal): ClaudeLoginRenewalAuthority | undefined {
+	const { takeClaudeLoginRenewal, takeIdleClaudeLoginRenewal, commitClaudeLoginRenewal, releaseClaudeLoginRenewal } =
+		principal;
+	if (
+		!takeClaudeLoginRenewal ||
+		!takeIdleClaudeLoginRenewal ||
+		!commitClaudeLoginRenewal ||
+		!releaseClaudeLoginRenewal
+	)
+		return undefined;
+	return {
+		takeClaudeLoginRenewal: (request, signal) => takeClaudeLoginRenewal.call(principal, request, signal),
+		takeIdleClaudeLoginRenewal: (signal) => takeIdleClaudeLoginRenewal.call(principal, signal),
+		commitClaudeLoginRenewal: (commit, signal) => commitClaudeLoginRenewal.call(principal, commit, signal),
+		releaseClaudeLoginRenewal: (release, signal) => releaseClaudeLoginRenewal.call(principal, release, signal),
+	};
+}
 
 /** The principal's account login calls, when it has them all. */
 function accountAuthority(principal: SharedVaultPrincipal): AccountModelLoginAuthority | undefined {
@@ -150,7 +174,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #accountUpkeep: CloudModelLoginUpkeep | undefined;
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
-	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
+	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer & Partial<ClaudeLoginChecker>) | undefined;
+	readonly #claudeRenewer: CloudClaudeLoginRenewer | undefined;
 	readonly #chatGptPlan: ChatGptPlanOAuth | undefined;
 	readonly #revoker: Pick<CloudConnectorTokenRevoker, "revoke">;
 	readonly #bank: Pick<EnableBankingClient, "balances" | "transactions"> | undefined;
@@ -183,7 +208,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		keyring: CloudSecretKeyring;
 		adapters: readonly CloudSecretConnectorAdapter[];
 		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
-		helper?: ModelLoginSignInHelper & ModelLoginRenewer;
+		helper?: ModelLoginSignInHelper & ModelLoginRenewer & Partial<ClaudeLoginChecker>;
 		/** OpenAI's side of ChatGPT plan logins (built switched off). Absent, no plan sign-in starts and no
 		 * plan login is renewed or ended. */
 		chatGptPlan?: ChatGptPlanOAuth;
@@ -226,6 +251,16 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#now = options.now ?? Date.now;
 		const account = this.#account;
 		const helper = this.#helper;
+		const claude = claudeRenewalAuthority(options.principal);
+		const check = helper?.checkClaudeLogin?.bind(helper);
+		this.#claudeRenewer =
+			claude && check
+				? new CloudClaudeLoginRenewer({
+						authority: claude,
+						checker: { checkClaudeLogin: check },
+						keyring: this.#keyring,
+					})
+				: undefined;
 		if (account && helper) {
 			const vault = new CloudModelLoginVault({ accountAuthority: account, keyring: this.#keyring, renewer: helper });
 			this.#accountUpkeep = new CloudModelLoginUpkeep({
@@ -376,7 +411,11 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 							})
 						: undefined,
 				modelLoginUsage: usage,
-				claudeLogins: new CloudClaudeLoginVault({ authority, keyring: this.#keyring }),
+				claudeLogins: new CloudClaudeLoginVault({
+					authority,
+					keyring: this.#keyring,
+					...(this.#claudeRenewer ? { renewer: this.#claudeRenewer } : {}),
+				}),
 			},
 			// Its timer never runs: the shared upkeep loop runs each company's pass in turn. It also reads the usage of the
 			// company's logins at their usage limit that are due a reading (20260930575000).
@@ -416,6 +455,12 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	/** The account pass, then each company's upkeep pass in turn (accounts, switch-off, idle renewals). */
 	async upkeep(): Promise<void> {
 		if (this.#accountUpkeep && !this.#closed) await this.#accountUpkeep.pass();
+		if (this.#claudeRenewer && !this.#closed)
+			await this.#claudeRenewer.idle().catch((error: unknown) => {
+				console.error(
+					`Claude login upkeep: the idle pass stopped on an error (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
+				);
+			});
 		for (const served of [...this.#served.values()]) {
 			if (this.#closed) return;
 			// A company dropped since the pass began is not worked on.
