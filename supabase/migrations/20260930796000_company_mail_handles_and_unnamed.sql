@@ -96,6 +96,8 @@ begin
 		raise exception 'This address is taken' using errcode = '23505'; end if;
 	if p_claim_user_id is null then
 		raise exception 'Only a member can choose the company''s email handle' using errcode = '42501'; end if;
+	if (select count(*) from public.qorpera_company_mail_handles as owned where owned.profile_id = p_profile_id) >= 3 then
+		raise exception 'A company has at most 3 email handles' using errcode = '54000'; end if;
 	insert into public.qorpera_company_mail_handles (handle, profile_id, claimed_by_user_id)
 	values (v_handle, p_profile_id, p_claim_user_id)
 	on conflict (handle) do nothing;

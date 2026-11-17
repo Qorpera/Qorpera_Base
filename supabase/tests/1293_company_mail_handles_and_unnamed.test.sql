@@ -127,6 +127,16 @@ select pg_temp.base_assert(public.qorpera_company_mail_handles('92400000-0000-40
 		= '{"domain":"mail.example.test","handles":["base","gone"]}'::jsonb,
 	'a member reads the company''s handles, oldest first: '
 		|| public.qorpera_company_mail_handles('92400000-0000-4000-8000-000000000010')::text);
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	'hello.third', 'A third handle') \g /dev/null
+select pg_temp.base_error(pg_temp.mh_box('hello.fourth'), '54000', 'A company has at most 3 email handles');
+select pg_temp.base_assert(pg_temp.mh_owner('fourth') is null, 'a refused fourth handle is not claimed');
+select public.qorpera_set_event_hook_status((select hook_id from public.qorpera_company_mailboxes
+	where local_part = 'hello.third' and removed_at is null), 'removed') \g /dev/null
+select pg_temp.base_error(pg_temp.mh_box('hello.fifth'), '54000', 'A company has at most 3 email handles');
+select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	'sales.third', 'An owned handle stays usable past the cap') \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000005');
 select pg_temp.base_error($$select public.qorpera_company_mail_handle_status('92400000-0000-4000-8000-000000000010', 'base')$$,
 	'42501', 'Company mail addresses are unavailable');

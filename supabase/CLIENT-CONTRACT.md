@@ -898,7 +898,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   "A new address is a name, a dot and the company's handle, like hello.acme"); the reserved names and names that read
   as Qorpera are refused for the box and the handle each (22023, the messages above). A handle belongs to one company
   across the platform and stays its own while the company exists, also when its mailboxes are removed. An owner's or
-  admin's `qorpera_create_company_mailbox` with a free handle claims it for the company; a handle another company
+  admin's `qorpera_create_company_mailbox` with a free handle claims it for the company, up to 3 handles a company
+  (54000 "A company has at most 3 email handles"; removing mailboxes frees none); a handle another company
   owns, or that another company's live mailbox ends in or equals, is 23505 "This address is taken". An agent's
   `manage_hook` mailbox uses only a handle the company already owns (42501 "Only a member can choose the company's
   email handle"). Mailboxes made before this (no dot, such as `brooks`) keep working; each such address that is a
