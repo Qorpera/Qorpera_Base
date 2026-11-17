@@ -109,6 +109,8 @@ export const HISTORY_DAYS = 30;
 export const LANE_FOLDERS = `${HOME}/lanes`;
 export const LANE_KEEP = ".keep";
 export const LANE_IDLE_DAYS = 7;
+export const LANE_TIDY_STAMP = `${HOME}/.lane-tidy`;
+export const LANE_TIDY_EVERY_MINUTES = 60;
 export const LOW_DISK_MIB = 15 * 1024;
 /** Inside a machine, CLOSED takes it out of the automatic choice (maintenance, removal); --machine still reaches
  * it. It survives a reboot. Runs already queued there still run. A machine without SET_UP, which guest-setup.sh
@@ -427,10 +429,6 @@ export function treeDigest(root, files) {
  * node02's disk on 2026-10-09), hosted-db containers older than 6 hours, the cores files of --cores runs killed
  * before they could remove them (/run/lock is a small tmpfs every lock lives on), and run history days older than
  * HISTORY_DAYS, by the date in their name. */
-export function laneTidyLine({ lanes = LANE_FOLDERS, idleMinutes = LANE_IDLE_DAYS * 1440, sudo = "sudo -n " } = {}) {
-	return `for d in ${lanes}/*/; do d=\${d%/}; [ -d "$d" ] && [ ! -L "$d" ] && [ ! -e "$d/${LANE_KEEP}" ] || continue; recent=$(${sudo}find "$d" \\( -mmin -${idleMinutes} -o -cmin -${idleMinutes} \\) -print -quit 2>/dev/null) || continue; [ -z "$recent" ] && ${sudo}rm -rf -- "$d"; done`;
-}
-
 export function pruneScript() {
 	return [
 		"set -u",
@@ -445,6 +443,17 @@ export function pruneScript() {
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null; docker ps -aq --filter label=${RUN_LABEL} 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");
+}
+
+export function laneTidyLine({
+	lanes = LANE_FOLDERS,
+	idleMinutes = LANE_IDLE_DAYS * 1440,
+	sudo = "sudo -n ",
+	stamp = LANE_TIDY_STAMP,
+	everyMinutes = LANE_TIDY_EVERY_MINUTES,
+} = {}) {
+	const tidy = `for d in ${lanes}/*/; do d=\${d%/}; [ -d "$d" ] && [ ! -L "$d" ] || continue; ${sudo}test -e "$d/${LANE_KEEP}" && continue; recent=$(${sudo}find "$d" \\( -mmin -${idleMinutes} -o -cmin -${idleMinutes} \\) -print -quit 2>/dev/null) || continue; [ -z "$recent" ] && ${sudo}rm -rf -- "$d"; done`;
+	return `if [ -z "$(find ${stamp} -mmin -${everyMinutes} 2>/dev/null)" ]; then touch ${stamp}; ${tidy}; fi`;
 }
 
 /** Bash for the start of a run's session: `note_history CODE` appends the run's line to the machine's run history

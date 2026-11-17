@@ -1026,7 +1026,7 @@ test(
 	{ skip: flockNoFork ? false : "no util-linux flock(1) here; the test machines have it" },
 	async () => {
 		const dir = mkdtempSync(join(tmpdir(), "run-on-node-locks-"));
-		const paths = (root) => ({ locks: root, closed: join(root, "closed"), setUp: join(root, "versions"), arriving: join(root, "arriving") });
+		const paths = (root) => ({ locks: root, closed: join(root, "closed"), setUp: join(root, "versions"), arriving: join(root, "arriving"), home: root });
 		const ask = (root) => parseStatus(spawnSync("bash", ["-c", probeScript(paths(root))], { encoding: "utf8" }).stdout);
 		const holders = [];
 		// --no-fork: the shell that reports the lock is the process that holds it, and killing it frees it.
@@ -2249,8 +2249,10 @@ test("cleanup removes lane folders nothing was written in for 7 days, by the rea
 	assert.equal(LANE_IDLE_DAYS, 7);
 	const line = laneTidyLine();
 	assert.ok(pruneScript().split("\n").includes(line));
+	assert.match(line, /^if \[ -z "\$\(find \/home\/tester\/\.lane-tidy -mmin -60 2>\/dev\/null\)" \]; then touch \/home\/tester\/\.lane-tidy; /);
+	assert.match(line, /sudo -n test -e "\$d\/\.keep" && continue;/);
 	assert.match(line, /sudo -n find "\$d" \\\( -mmin -10080 -o -cmin -10080 \\\) -print -quit/);
-	assert.match(line, /sudo -n rm -rf -- "\$d"; done$/);
+	assert.match(line, /sudo -n rm -rf -- "\$d"; done; fi$/);
 	assert.equal(spawnSync("bash", ["-n", "-c", line]).status, 0);
 });
 
@@ -2269,8 +2271,10 @@ test("a stale lane goes; a kept, linked, fresh or unreadable one stays", { skip:
 		writeFileSync(join(outside, "precious"), "x");
 		symlinkSync(outside, join(lanes, "linked"));
 		writeFileSync(join(lanes, "notes.txt"), "x");
+		const stamp = join(root, "stamp");
 		const tidy = (options) => {
-			const result = spawnSync("bash", ["-c", laneTidyLine({ lanes, sudo: "", ...options })], { encoding: "utf8" });
+			rmSync(stamp, { force: true });
+			const result = spawnSync("bash", ["-c", laneTidyLine({ lanes, sudo: "", stamp, ...options })], { encoding: "utf8" });
 			assert.equal(result.stderr, "");
 		};
 		tidy({ idleMinutes: 60 });
@@ -2281,6 +2285,13 @@ test("a stale lane goes; a kept, linked, fresh or unreadable one stays", { skip:
 		assert.deepEqual(readdirSync(lanes).sort(), ["kept", "linked", "notes.txt"]);
 		assert.deepEqual(readdirSync(outside), ["precious"]);
 		assert.deepEqual(readdirSync(join(lanes, "kept")).sort(), [".keep", "data"]);
+		mkdirSync(join(lanes, "again"));
+		writeFileSync(join(lanes, "again", "file"), "x");
+		writeFileSync(stamp, "");
+		spawnSync("bash", ["-c", laneTidyLine({ lanes, sudo: "", stamp, idleMinutes: 0 })]);
+		assert.ok(existsSync(join(lanes, "again")));
+		tidy({ idleMinutes: 0, sudo: "env " });
+		assert.equal(existsSync(join(lanes, "again")), false);
 		rmSync(lanes, { recursive: true });
 		tidy({ idleMinutes: 0 });
 		assert.equal(existsSync(lanes), false);
