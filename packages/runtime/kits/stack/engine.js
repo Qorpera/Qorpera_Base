@@ -44,6 +44,7 @@ body{margin:0}
 .st-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .st--bare{padding:clamp(12px,1vw,16px)}
 .st--bare .st-head{display:none}
+.st .st-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .st-total{text-align:right}
 .st-total-n{font-size:clamp(30px,3.4vw,44px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
 .st-total-n small{margin-left:.25em;font-size:.48em;font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}

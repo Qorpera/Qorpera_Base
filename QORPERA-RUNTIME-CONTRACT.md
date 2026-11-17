@@ -2338,7 +2338,7 @@ A conversation's model is `gpt-6-astra`, `gpt-6.1-sol`, `claude-fable-5-2` or
 `claude-opus-5-5`; a conversation that holds `gpt-6-sol` or `gpt-6-luna` still
 reads and runs with it. Its effort is low, medium or high, and also xhigh or max
 with a Claude model only (the table and the setter refuse xhigh or max on GPT
-or on no model). Every writer may pick the GPT models. A Claude model may be
+or on no model; xhigh on GPT: the next amendment). Every writer may pick the GPT models. A Claude model may be
 picked only while the active bundle's model policy declares
 `claudeChoice: "thread"` and the member may run Claude Code in the company
 (`qorpera_member_may_pick_claude`: on the Claude sign-in list with sign-in
@@ -2366,6 +2366,30 @@ the recorded pick otherwise. A worker with no pick runs on Claude Code's own
 default. Migration 20260930784000. Built, not live: Claude goes live with the
 release cut whose bundle declares `claudeChoice`; GPT-6.1 Sol with the
 migration.
+
+2026-11-16 amendment: Extra high on GPT (founder, 16 November, asked "Extra
+high only for GPT, or Extra high and Max?": "Extra high only"). A conversation
+on a GPT model may pick effort `xhigh`; `max` stays Claude only, and `xhigh`
+needs a model (never no model). The setter takes `xhigh` on GPT only while the
+active bundle's model policy declares `threadEfforts: ["xhigh"]` (otherwise
+22023, as before). `threadEfforts` lists efforts that only a member's turn may
+take from its conversation, and only under `overrides: routine-and-thread`;
+the kernel's manifest check accepts it as an array whose only value is
+`xhigh`.
+`allowed` is unchanged (low, medium, high), so routines, the agent.md effort,
+chains and every run no member waits on keep exactly their efforts: their
+check (`qorpera_manifest_allows_reasoning_effort`) is unchanged. A member's
+turn (a session turn with a member's message, or a room delivery) under such a
+bundle pins `xhigh` on its run, and Codex runs with
+`model_reasoning_effort="xhigh"`; the native admission and the tool authority
+accept it for those two source kinds only (`qorpera_run_allows_reasoning_effort`),
+and the run table refuses `xhigh` on any other kind. Under a bundle without
+`threadEfforts` (an older bundle, or after a rollback) a conversation saved at
+`xhigh` runs at high (the bundle's default if it allows no high) and keeps its
+choice. The model menu's answers name `efforts`: for each model in `models`,
+the efforts this conversation may pick with it. Migration 20260930788000.
+Built, not live: GPT Extra high goes live with the release cut whose bundle
+declares `threadEfforts`.
 
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
@@ -6910,6 +6934,24 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    advice: keep only the newest line for each update, which keeps every decision. It writes the record as the run, under the call's receipt
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
+
+### 2026-11-16 amendment: the agent's home for every company
+
+Founder decision of 16 November 2026, to "Switch it on for every company in the next release, with the node 1 fix?":
+"Yes, next release". It goes live with migration `20260930789000`, in the release that carries #1880 (a Claude Code
+worker's run is claimed only by a shared execution host), never before it.
+
+1. **One more setting.** The platform's home switch (`qorpera_home_settings`) has `every_company`. A company has the
+   home when the platform switch is on and either `every_company` is on or the company is listed
+   (`qorpera_home_companies`), and slice 3's sharing rule exists, as before. A company made later has it as well.
+2. **Turned on where the switch is.** The migration sets `every_company` only where the platform switch's row is on; a
+   database whose switch is off or absent stays off. The listed companies keep their rows.
+3. **An earlier machine.** A machine whose disk was made from an image without the pinned Codex or `sftp-server`
+   answers its home `HOME_OUTDATED`. A run's home calls get those words and the run goes on with the company's own
+   tools; a Claude Code worker on such a machine ends blocked in those words. Waking the machine keeps its disk; a new
+   machine has the home.
+4. **The way back** is one statement, and leaves the listed companies on:
+   `update public.qorpera_home_settings set every_company = false where singleton;`
 
 ## 20. Enforcement matrix
 

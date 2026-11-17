@@ -174,7 +174,8 @@ It sorts after change 4 because it reads its bundle declarations.
 
 - **Dispatch roles.** `qorpera_set_runner_orchestrator_dispatch_role(orchestrator, 'fast' |
   'overflow' | null)` (service role). `fast` is a shared execution host; `overflow` is the
-  fresh-VM path. An orchestrator without a role claims exactly as before.
+  fresh-VM path. An orchestrator without a role claims exactly as before, except a Claude Code
+  worker's run (the claim turn's first rule below).
 - **Which fast hosts count.** Only fast hosts that are:
   - active and live (heartbeat within 30 s);
   - on a serving node;
@@ -192,9 +193,20 @@ It sorts after change 4 because it reads its bundle declarations.
     so this is the most free fast room. Ties go to the lower node id.
   - `NO_FAST_HOST`: none may take it.
 - **Claim turn**, a claim predicate:
+  - First, whatever the orchestrator's role (`20260930786000`, test 1283): an orchestrator with no
+    execution host principal (`qorpera_execution_host_principals`, a shared execution host's own
+    orchestrator) never claims a run whose worker is a Claude Code worker
+    (`qorpera_run_worker(run).harness = 'claude-code'`). The one-VM path (node 1's fresh VMs) has no
+    `/dev/fuse` and no box group, so such a run waits in the queue until a shared execution host
+    claims it: while that host is full, refuses it, is silent or drains for a roll. The day limit
+    still ends the wait ("No computer could start the run within a day"). A Claude Code worker's run
+    that the shared host can never take (a sponsor other than the Codex subscription harness, or a
+    login homed only on another adapter) therefore waits the whole day, holding its member's Claude
+    lease, so that member's other Claude Code workers wait behind it; no production path to that is
+    known today. The rules below apply to every other run.
   - A fast host claims at once on the preferred node. Elsewhere it claims after a 1.5 s head
     start, or at once when the preferred node's orchestrator refused.
-  - An overflow orchestrator claims when:
+  - An overflow orchestrator claims (never a Claude Code worker's run, above) when:
     - a fast host refused the run (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, or
       `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. For a full or
       retiring host, only once every fast host in the run's placement has refused it recently
@@ -252,7 +264,8 @@ It sorts after change 4 because it reads its bundle declarations.
    - node 1's fast host, once created: `fast`.
 
    With only node 2's fast host, runs whose login lives on node 1 still go to node 1 at once,
-   because no fast host may take them. Runs node 2's fast host refuses go to node 1 at once. With
+   because no fast host may take them. Runs node 2's fast host refuses go to node 1 at once, except a
+   Claude Code worker's run, which waits for node 2's host (`20260930786000`). With
    two fast hosts, work that fast hosts do not serve (proposal review, other harnesses) is refused
    by one of them first and then goes to the overflow at once; it may meet both fast hosts, as it
    does without roles.

@@ -574,10 +574,11 @@ the RPCs stay for the runtime's gate.
 - `qorpera_upsert_scoped_compute_identity`
 
 
-### Accounts, profiles, membership (19)
+### Accounts, profiles, membership (22)
 
 - `qorpera_accept_profile_invitation`
 - `qorpera_accept_profile_invitations`
+- `qorpera_add_pending_spectators`
 - `qorpera_can_authorize_profile`
 - `qorpera_can_read_profile`
 - `qorpera_can_write_profile`
@@ -585,9 +586,11 @@ the RPCs stay for the runtime's gate.
 - `qorpera_decline_profile_invitation`
 - `qorpera_delete_hosted_profile`
 - `qorpera_get_account_entitlement`
+- `qorpera_invite_pending_spectators`
 - `qorpera_invite_profile_member`
 - `qorpera_leave_hosted_profile`
 - `qorpera_list_hosted_profiles`
+- `qorpera_list_pending_spectators`
 - `qorpera_list_profile_invitations`
 - `qorpera_member_role`
 - `qorpera_profile_team_info`
@@ -2919,3 +2922,11 @@ above.
     (`qorpera_answer_action_review`, section 2). Older approval cards without
     `reviewId` keep the v75 path.
 
+- Pending spectators (20260930794000): people a founder picks, as a company is made, to follow it as viewers.
+  `qorpera_add_pending_spectators(profile, emails)` (owner or admin, at the founding table or later; a company keeps
+  at most 50 to invite, else 54000; a malformed or missing email is refused, 23514) keeps them on the company and
+  answers the whole list; `qorpera_list_pending_spectators(profile)` answers it to owners and admins, as invitations
+  are (everyone else gets an empty list); `qorpera_invite_pending_spectators(profile)`
+  (owner or admin) does nothing while the founding table is open, and after Start invites each as a viewer through
+  `qorpera_invite_profile_member`, an email the company already has or has invited counting as done, and takes each
+  off the list. It answers the emails it invited. Any other refusal rolls the whole call back and keeps the list.

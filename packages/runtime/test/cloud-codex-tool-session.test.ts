@@ -14,6 +14,7 @@ import {
 import {
 	CLOUD_CODEX_BOUNDARY_CONFIG,
 	CodexLineReader,
+	cloudCodexBoundaryConfig,
 	disposeCloudCodexSpares,
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
@@ -71,7 +72,7 @@ function run(
 	mode: string,
 	options: {
 		model?: string;
-		reasoningEffort?: "low" | "medium" | "high";
+		reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 		serviceTier?: "fast" | "standard";
 		timeoutMs?: number;
 		identityRoot?: string;
@@ -201,6 +202,18 @@ it("starts a routine turn at the effort its routine chose", async () => {
 	await expect(run("model-selection", { reasoningEffort: "max" as never }).result).rejects.toThrow(
 		"Invalid native boundary input",
 	);
+});
+
+it("starts a member's turn at extra high when the conversation chose it", async () => {
+	const { result, evidence } = run("model-selection", { model: "gpt-6.1-sol", reasoningEffort: "xhigh" });
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.threadParameters.model).toBe("gpt-6.1-sol");
+	expect(recorded).toMatchObject({
+		turnParameters: { effort: "xhigh" },
+		configuration: { model_reasoning_effort: "xhigh" },
+	});
+	expect(cloudCodexBoundaryConfig("xhigh")).toContain('model_reasoning_effort="xhigh"');
 });
 
 it("requires composition telemetry before admitting a model request", async () => {

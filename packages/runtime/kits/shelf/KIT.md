@@ -8,7 +8,7 @@ gallery: finished things, framed, with the maker's figure. A member taps a thing
 
 ## Fields
 
-- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): the page's name and one quiet line.
+- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): read only by screen readers; the page draws no title block.
 - `unit` (12): the unit after every thing's number, such as `"in stock"`. A thing's own `unit` wins.
 - `things`: 1 to 8 (6 read best), each:
   - `id`: letters, digits, `-`. `name` (24). `picture`: a picture file of the app, such as
