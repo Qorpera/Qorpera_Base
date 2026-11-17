@@ -48,6 +48,8 @@ $$;
 -- The calls the H2c hook got, and a seq it fails on.
 create temp table hook_calls (n bigserial, commit_id uuid, seq bigint, paused boolean, actor jsonb);
 
+update public.qorpera_folder_file_wake_settings set settle_seconds = 0;
+
 -- 1. Listeners: the trigger, activation, the refusals gone ------------------------------------------------------------------
 
 do $$
@@ -78,8 +80,6 @@ begin
 			where oid = 'public.qorpera_folder_run_resolve(uuid,uuid,jsonb)'::regprocedure) <> 0 then
 		raise exception 'The run resolve accepts file wakes'; end if;
 end $$;
-
-update public.qorpera_folder_file_wake_settings set settle_seconds = 0;
 
 -- 2. Matching: exact and subtree, siblings, moves from and into the watch, a copy at its target, a delete ----------------
 
