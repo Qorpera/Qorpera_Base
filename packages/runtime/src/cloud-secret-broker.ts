@@ -341,7 +341,11 @@ export interface CloudSecretBrokerAuthority {
 	storeHookCapture?: EventHookAuthority["storeHookCapture"];
 	/** Coding values an agent takes off a service's page (20260930695000, 20260930698000); without all four, every such
 	 * capture is refused as unavailable. */
-	describeGoogleMailboxTicket?(ticketId: string, captureCapabilitySha256: string, signal: AbortSignal): Promise<unknown>;
+	describeGoogleMailboxTicket?(
+		ticketId: string,
+		captureCapabilitySha256: string,
+		signal: AbortSignal,
+	): Promise<unknown>;
 	completeGoogleMailboxCapture?(
 		ticketId: string,
 		captureCapabilitySha256: string,
@@ -1242,7 +1246,15 @@ export class CloudSecretBroker {
 		try {
 			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
 			return parseGoogleMailboxConnection(
-				await complete.call(this.#authority, request.ticketId, capabilitySha256, envelope, envelopeSha256, address, signal),
+				await complete.call(
+					this.#authority,
+					request.ticketId,
+					capabilitySha256,
+					envelope,
+					envelopeSha256,
+					address,
+					signal,
+				),
 			);
 		} finally {
 			envelope.fill(0);
@@ -2543,7 +2555,11 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	describeGoogleMailboxTicket(ticketId: string, captureCapabilitySha256: string, signal: AbortSignal): Promise<unknown> {
+	describeGoogleMailboxTicket(
+		ticketId: string,
+		captureCapabilitySha256: string,
+		signal: AbortSignal,
+	): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_describe_google_mailbox_ticket($1::uuid,$2::text,$3::uuid,$4::text) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, ticketId, captureCapabilitySha256],
@@ -2588,12 +2604,21 @@ export class PostgresCloudSecretBrokerAuthority
 	): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_google_mail_known_among($1::uuid,$2::text,$3::uuid,$4::uuid,$5::jsonb) as result",
-			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, input.mailboxId, input.lease, JSON.stringify(input.gmailIds)],
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.mailboxId,
+				input.lease,
+				JSON.stringify(input.gmailIds),
+			],
 			signal,
 		);
 	}
 
-	bringInGoogleMail(input: Parameters<GmailMailboxAuthority["bringInGoogleMail"]>[0], signal: AbortSignal): Promise<unknown> {
+	bringInGoogleMail(
+		input: Parameters<GmailMailboxAuthority["bringInGoogleMail"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_bring_in_google_mail($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text,$7::boolean,$8::timestamptz,$9::text) as result",
 			[
@@ -2659,7 +2684,10 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	failGoogleMailSend(input: Parameters<GmailMailboxAuthority["failGoogleMailSend"]>[0], signal: AbortSignal): Promise<unknown> {
+	failGoogleMailSend(
+		input: Parameters<GmailMailboxAuthority["failGoogleMailSend"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_fail_google_mail_send($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::boolean,$7::boolean) as result",
 			[

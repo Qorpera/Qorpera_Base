@@ -79,7 +79,8 @@ export interface GmailHistoryPage {
 }
 
 function refusalOf(error: unknown): unknown {
-	if (error instanceof ConnectorRequestError && error.reason === "authorization_required") return new GmailSignInRefused();
+	if (error instanceof ConnectorRequestError && error.reason === "authorization_required")
+		return new GmailSignInRefused();
 	return error;
 }
 
@@ -155,7 +156,8 @@ export class GmailMailboxApi {
 			},
 		});
 		const estimate = page.resultSizeEstimate;
-		const next = typeof page.nextPageToken === "string" && PAGE_TOKEN.test(page.nextPageToken) ? page.nextPageToken : null;
+		const next =
+			typeof page.nextPageToken === "string" && PAGE_TOKEN.test(page.nextPageToken) ? page.nextPageToken : null;
 		return {
 			messages: listed(page.messages),
 			next,
@@ -188,7 +190,8 @@ export class GmailMailboxApi {
 				if (labels.some((label) => typeof label === "string" && SKIPPED_LABELS.has(label))) continue;
 				added.push(...listed([message]));
 			}
-		const next = typeof page.nextPageToken === "string" && PAGE_TOKEN.test(page.nextPageToken) ? page.nextPageToken : null;
+		const next =
+			typeof page.nextPageToken === "string" && PAGE_TOKEN.test(page.nextPageToken) ? page.nextPageToken : null;
 		return { added, historyId, next };
 	}
 
@@ -208,14 +211,21 @@ export class GmailMailboxApi {
 		}
 	}
 
-	async send(raw: string, threadId: string | null, signal: AbortSignal): Promise<{ id: string; threadId: string | null }> {
+	async send(
+		raw: string,
+		threadId: string | null,
+		signal: AbortSignal,
+	): Promise<{ id: string; threadId: string | null }> {
 		const sent = await this.#call("/gmail/v1/users/me/messages/send", signal, {
 			method: "POST",
 			body: JSON.stringify({ raw: encodeBase64Url(raw), ...(threadId ? { threadId } : {}) }),
 		});
 		if (typeof sent.id !== "string" || !GOOGLE_ID.test(sent.id))
 			throw new GmailMailboxError("Gmail did not confirm the send");
-		return { id: sent.id, threadId: typeof sent.threadId === "string" && GOOGLE_ID.test(sent.threadId) ? sent.threadId : null };
+		return {
+			id: sent.id,
+			threadId: typeof sent.threadId === "string" && GOOGLE_ID.test(sent.threadId) ? sent.threadId : null,
+		};
 	}
 
 	async messageId(id: string, signal: AbortSignal): Promise<string | null> {
@@ -501,7 +511,10 @@ export interface GmailMailboxLease {
 
 export interface GmailMailboxAuthority {
 	claimGoogleMailbox(signal: AbortSignal): Promise<unknown>;
-	googleMailKnownAmong(input: GmailMailboxLease & { gmailIds: readonly string[] }, signal: AbortSignal): Promise<unknown>;
+	googleMailKnownAmong(
+		input: GmailMailboxLease & { gmailIds: readonly string[] },
+		signal: AbortSignal,
+	): Promise<unknown>;
 	bringInGoogleMail(
 		input: GmailMailboxLease & {
 			gmailId: string;
@@ -623,14 +636,22 @@ function parseMailboxClaim(value: unknown): MailboxClaim | null {
 }
 
 function strings(value: unknown, limit: number): string[] | null {
-	if (!Array.isArray(value) || value.length > limit || value.some((item) => typeof item !== "string" || !ADDRESS.test(item)))
+	if (
+		!Array.isArray(value) ||
+		value.length > limit ||
+		value.some((item) => typeof item !== "string" || !ADDRESS.test(item))
+	)
 		return null;
 	return value as string[];
 }
 
 function parseSends(value: unknown): SendClaim[] {
 	const input = jsonRecord(value);
-	if (input.schema !== "qorpera.google-mail-sends/v1" || !Array.isArray(input.sends) || input.sends.length > GMAIL_SENDS_PER_PASS)
+	if (
+		input.schema !== "qorpera.google-mail-sends/v1" ||
+		!Array.isArray(input.sends) ||
+		input.sends.length > GMAIL_SENDS_PER_PASS
+	)
 		throw new GmailMailboxError("the Google mail sends are not readable");
 	return input.sends.map((item) => {
 		const send = jsonRecord(item);
@@ -654,7 +675,8 @@ function parseSends(value: unknown): SendClaim[] {
 					typeof content !== "string" ||
 					/[\r\n]/.test(content),
 			) ||
-			(send.gmailThreadId !== null && (typeof send.gmailThreadId !== "string" || !GOOGLE_ID.test(send.gmailThreadId)))
+			(send.gmailThreadId !== null &&
+				(typeof send.gmailThreadId !== "string" || !GOOGLE_ID.test(send.gmailThreadId)))
 		)
 			throw new GmailMailboxError("a Google mail send is not readable");
 		return {
@@ -746,7 +768,9 @@ export class CloudGmailMailboxes {
 		const spent = () => this.#now() - started >= this.#budgetMs || tally.messages >= this.#messagesPerPass;
 		while (!spent()) {
 			signal.throwIfAborted();
-			const claim = parseMailboxClaim(await this.#authority.claimGoogleMailbox(AbortSignal.any([signal, database()])));
+			const claim = parseMailboxClaim(
+				await this.#authority.claimGoogleMailbox(AbortSignal.any([signal, database()])),
+			);
 			if (!claim) break;
 			tally.mailboxes += 1;
 			await this.#read(claim, signal, spent, tally);
@@ -755,7 +779,11 @@ export class CloudGmailMailboxes {
 		return tally;
 	}
 
-	async #withApi<T>(signIn: SealedSignIn, signal: AbortSignal, work: (api: GmailMailboxApi) => Promise<T>): Promise<T> {
+	async #withApi<T>(
+		signIn: SealedSignIn,
+		signal: AbortSignal,
+		work: (api: GmailMailboxApi) => Promise<T>,
+	): Promise<T> {
 		const envelope = Buffer.from(signIn.encryptedEnvelopeBase64, "base64");
 		try {
 			if (createHash("sha256").update(envelope).digest("hex") !== signIn.envelopeSha256)
@@ -884,10 +912,7 @@ export class CloudGmailMailboxes {
 			if (spent()) return { outcome: "importing", historyId, pageToken, total };
 			const page = await api.list(pageToken, signal);
 			if (total === null) total = page.estimate;
-			for (const id of await this.#unknown(
-				claim,
-				[...new Set(page.messages.map((message) => message.id))],
-			)) {
+			for (const id of await this.#unknown(claim, [...new Set(page.messages.map((message) => message.id))])) {
 				if (count >= GMAIL_IMPORT_BOUND) return { outcome: "imported", historyId, pageToken: null, total };
 				if (spent()) return { outcome: "importing", historyId, pageToken, total };
 				const outcome = await this.#bring(api, claim, id, true, signal);
@@ -955,7 +980,10 @@ export class CloudGmailMailboxes {
 		);
 		for (const claimed of sends) {
 			const fail = (error: string, retryable: boolean, refused: boolean) =>
-				this.#authority.failGoogleMailSend({ mailId: claimed.mailId, lease: claimed.lease, error, retryable, refused }, database());
+				this.#authority.failGoogleMailSend(
+					{ mailId: claimed.mailId, lease: claimed.lease, error, retryable, refused },
+					database(),
+				);
 			try {
 				const sent = await this.#sendOne(claimed, signal);
 				await this.#authority.completeGoogleMailSend(
@@ -1049,7 +1077,8 @@ export async function logGmailMailboxPass(
 		const outcome = await mailboxes.pass(signal);
 		if (outcome.refused > 0)
 			console.error(`Google mail: Google refused ${outcome.refused} sign-in(s); the member signs in again.`);
-		if (outcome.failed > 0) console.error(`Google mail: ${outcome.failed} step(s) failed; they are tried again later.`);
+		if (outcome.failed > 0)
+			console.error(`Google mail: ${outcome.failed} step(s) failed; they are tried again later.`);
 	} catch {
 		console.error("Google mail: a pass stopped on an error; the next pass tries again.");
 	}

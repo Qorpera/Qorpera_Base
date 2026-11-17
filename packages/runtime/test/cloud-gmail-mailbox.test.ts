@@ -4,8 +4,8 @@ import {
 	CloudGmailMailboxes,
 	GMAIL_MESSAGE_MAX_BYTES,
 	GMAIL_SIGN_IN_AGAIN,
-	GmailMailboxClient,
 	type GmailMailboxAuthority,
+	GmailMailboxClient,
 	gmailEmailId,
 	gmailMailMessage,
 } from "@qorpera/runtime/cloud-gmail-mailbox";
@@ -66,7 +66,11 @@ class FakeGmail {
 		if (url.origin !== "https://gmail.googleapis.com") throw new Error(`unexpected ${url.href}`);
 		const path = url.pathname.replace("/gmail/v1/users/me", "");
 		if (path === "/profile")
-			return Response.json({ emailAddress: "Owner@Gmail.com", historyId: this.historyId, messagesTotal: this.messages.length });
+			return Response.json({
+				emailAddress: "Owner@Gmail.com",
+				historyId: this.historyId,
+				messagesTotal: this.messages.length,
+			});
 		if (path === "/messages") {
 			const offset = Number(url.searchParams.get("pageToken") ?? "0");
 			const size = Number(url.searchParams.get("maxResults"));
@@ -105,7 +109,10 @@ class FakeGmail {
 		const one = /^\/messages\/([A-Za-z0-9_-]+)$/.exec(path);
 		if (one) {
 			if (url.searchParams.get("format") === "metadata")
-				return Response.json({ id: one[1], payload: { headers: [{ name: "Message-ID", value: `<${one[1]}@mail.gmail.com>` }] } });
+				return Response.json({
+					id: one[1],
+					payload: { headers: [{ name: "Message-ID", value: `<${one[1]}@mail.gmail.com>` }] },
+				});
 			this.fetched.push(one[1] as string);
 			const message = [...this.messages, ...this.history.map((record) => record.message)].find(
 				(item) => item.id === one[1],
@@ -174,7 +181,7 @@ function fixture(options: {
 		claimGoogleMailbox: vi.fn(async () => claims.shift() ?? null),
 		googleMailKnownAmong: vi.fn(async ({ gmailIds }) => ({
 			schema: "qorpera.google-mail-known/v1",
-			known: gmailIds.filter((id) => stored.has(id)),
+			known: gmailIds.filter((id: string) => stored.has(id)),
 		})),
 		bringInGoogleMail: vi.fn(async (input) => {
 			if (stored.has(input.gmailId)) return { schema: "qorpera.google-mail-brought-in/v1", outcome: "duplicate" };
@@ -204,10 +211,16 @@ function fixture(options: {
 		}),
 	};
 	const keyring = {
-		use: vi.fn(async (_envelope: Uint8Array, identity: { companyId: string }, callback: (fields: Record<string, string>) => unknown) => {
-			expect(identity.companyId).toBe(COMPANY);
-			return callback({ refresh_token: "1//refresh-token-value-1234567890" });
-		}),
+		use: vi.fn(
+			async (
+				_envelope: Uint8Array,
+				identity: { companyId: string },
+				callback: (fields: Record<string, string>) => unknown,
+			) => {
+				expect(identity.companyId).toBe(COMPANY);
+				return callback({ refresh_token: "1//refresh-token-value-1234567890" });
+			},
+		),
 	};
 	const mailboxes = new CloudGmailMailboxes({
 		authority,
@@ -244,7 +257,9 @@ it("stops a pass within its bound and goes on from the page it was on", async ()
 	const f = fixture({ claims: [claim()], gmail, messagesPerPass: 150 });
 	await f.mailboxes.pass(signal);
 	expect(f.order).toHaveLength(150);
-	expect(f.finished).toEqual([expect.objectContaining({ outcome: "importing", historyId: "1000", pageToken: "100", total: 250 })]);
+	expect(f.finished).toEqual([
+		expect.objectContaining({ outcome: "importing", historyId: "1000", pageToken: "100", total: 250 }),
+	]);
 	const next = fixture({
 		claims: [claim({ historyId: "1000", pageToken: "100", broughtIn: 150, total: 250 })],
 		gmail,
@@ -387,7 +402,10 @@ it("writes a Gmail message as the mail door stores company mail, within 256 KiB"
 				{ name: "References", value: "<a@x> <b@x>" },
 				{ name: "In-Reply-To", value: "<b@x>" },
 				{ name: "List-Id", value: "<news.shop.example>" },
-				{ name: "Authentication-Results", value: "mx.google.com; dkim=pass header.i=@shop.example; spf=pass; dmarc=fail" },
+				{
+					name: "Authentication-Results",
+					value: "mx.google.com; dkim=pass header.i=@shop.example; spf=pass; dmarc=fail",
+				},
 			],
 			parts: [
 				{ mimeType: "text/plain", body: { data: base64url("Hello") } },
@@ -417,7 +435,14 @@ it("writes a Gmail message as the mail door stores company mail, within 256 KiB"
 		automated: true,
 		authentication: { spf: "pass", dkim: "pass", dmarc: "fail" },
 		attachments: [
-			{ id: "att-1", filename: "invoice.pdf", contentType: "application/pdf", size: 1234, disposition: "attachment", contentId: null },
+			{
+				id: "att-1",
+				filename: "invoice.pdf",
+				contentType: "application/pdf",
+				size: 1234,
+				disposition: "attachment",
+				contentId: null,
+			},
 		],
 		truncated: true,
 		text: "Hello",
@@ -432,7 +457,13 @@ afterEach(async () => {
 });
 
 function signIn(answer: Record<string, unknown>) {
-	const identity = { companyId: COMPANY, environmentId: randomUUID(), secretId: randomUUID(), version: 1, keyId: "k1" };
+	const identity = {
+		companyId: COMPANY,
+		environmentId: randomUUID(),
+		secretId: randomUUID(),
+		version: 1,
+		keyId: "k1",
+	};
 	const ticketId = randomUUID();
 	const capability = randomBytes(32).toString("base64url");
 	const keyring = new CloudSecretKeyring({ k1: randomBytes(32) });
@@ -544,7 +575,12 @@ it("creates the Google mailbox from the sign-in, with the address Google names, 
 
 it("re-links the mailbox when the same account signs in again", async () => {
 	const mailboxId = randomUUID();
-	const f = signIn({ schema: "qorpera.google-mailbox-connected/v1", outcome: "relinked", mailboxId, address: ADDRESS });
+	const f = signIn({
+		schema: "qorpera.google-mailbox-connected/v1",
+		outcome: "relinked",
+		mailboxId,
+		address: ADDRESS,
+	});
 	expect(((await (await connect(f)).json()) as { mailbox: { outcome: string } }).mailbox.outcome).toBe("relinked");
 	f.keyring.close();
 });
