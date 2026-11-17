@@ -491,6 +491,20 @@ export function createWebNativeSubscription(
 									response.status,
 								);
 						}
+						if (method === "qorpera_begin_claude_login_read") {
+							const failure = JSON.parse(
+								new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, deadline)),
+							) as { code?: unknown; message?: unknown } | null;
+							if (typeof failure?.code === "string" && /^[0-9A-Z]{5}$/.test(failure.code))
+								throw new CloudRpcError(
+									method,
+									{
+										message: typeof failure.message === "string" ? failure.message.slice(0, 200) : "",
+										code: failure.code,
+									},
+									response.status,
+								);
+						}
 						throw new Error("Cloud execution response was unavailable.");
 					}
 					const value: unknown = JSON.parse(
@@ -509,7 +523,9 @@ export function createWebNativeSubscription(
 		).catch((error: unknown) => {
 			if (
 				error instanceof CloudRpcError &&
-				(error.denied || (method === "qorpera_begin_native_account_refresh" && error.code === "55000"))
+				(error.denied ||
+					(method === "qorpera_begin_native_account_refresh" && error.code === "55000") ||
+					method === "qorpera_begin_claude_login_read")
 			)
 				throw error;
 			throw new Error("Cloud execution could not be confirmed. Refresh its status before trying again.");
@@ -1292,7 +1308,7 @@ export function createWebNativeSubscription(
 						await pause(poll);
 					}
 				},
-				reset ? 150_000 : 60_000,
+				reset ? 120_000 : 60_000,
 				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 			),
 		signOutClaude: async (loginId, signal) => {

@@ -456,7 +456,7 @@ describe("Claude reads and resets", () => {
 					polls++;
 					return Response.json({
 						schema: "qorpera.native-account-refresh-result/v1",
-						request_id: receipt.request_id,
+						request_id: body.request_id,
 						status: polls < 2 ? "preparing" : "completed",
 					});
 				}
