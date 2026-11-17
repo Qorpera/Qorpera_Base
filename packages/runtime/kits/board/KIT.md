@@ -27,7 +27,12 @@ app folder and are named by their path, such as `pictures/a.webp`. Text over its
 
 ## choose: two to four directions to pick from
 
-- One tall panel per item, in its own colours. Item: `line` (60), `logo`, `background` (hex), `palette` (up to 5
+- One panel per item, in its own colours. The page draws no title block: `title` and `line` are read only by screen
+  readers, so put nothing there a member must see.
+- When every item has a `poster` or a `video`, the pictures are the page: each as large as the screen allows, side by
+  side or stacked, with the logo, name and line small under it. Give every item one, in the same shape, and make it
+  show the direction itself. Without them, the panel shows the logo and name large.
+- Item: `line` (60), `logo`, `background` (hex), `palette` (up to 5
   `{"name" (16), "hex"}`), `poster` (a 16:10 still), `video` (mp4, plays muted on hover), `gallery` (up to 8
   `{"src", "caption" (18)}`), `type` (`{"name", "family": a CSS font stack of fonts the device has, "sample" (44)}`),
   `recommended: true` (one item only), `by` (24, who recommends it), `source`.

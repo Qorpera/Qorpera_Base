@@ -92,7 +92,12 @@ app folder and are named by their path, such as \`pictures/a.webp\`. Text over i
 
 ## choose: two to four directions to pick from
 
-- One tall panel per item, in its own colours. Item: \`line\` (60), \`logo\`, \`background\` (hex), \`palette\` (up to 5
+- One panel per item, in its own colours. The page draws no title block: \`title\` and \`line\` are read only by screen
+  readers, so put nothing there a member must see.
+- When every item has a \`poster\` or a \`video\`, the pictures are the page: each as large as the screen allows, side by
+  side or stacked, with the logo, name and line small under it. Give every item one, in the same shape, and make it
+  show the direction itself. Without them, the panel shows the logo and name large.
+- Item: \`line\` (60), \`logo\`, \`background\` (hex), \`palette\` (up to 5
   \`{"name" (16), "hex"}\`), \`poster\` (a 16:10 still), \`video\` (mp4, plays muted on hover), \`gallery\` (up to 8
   \`{"src", "caption" (18)}\`), \`type\` (\`{"name", "family": a CSS font stack of fonts the device has, "sample" (44)}\`),
   \`recommended: true\` (one item only), \`by\` (24, who recommends it), \`source\`.
@@ -3052,7 +3057,8 @@ body{margin:0}
 }
 
 /* choose */
-.bk-choose{padding-bottom:0;gap:clamp(14px,2.2vh,22px)}
+.bk-choose{padding-top:0;padding-bottom:0;gap:clamp(14px,2.2vh,22px)}
+.bk-choose>.bk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .bk-panels{flex:1 1 auto;display:flex;min-height:480px;margin:0 calc(-1 * var(--pad))}
 .bk-panel,.bk-world{--bg:var(--q-surface);--ink:var(--q-text);--soft:color-mix(in srgb,var(--ink) 66%,var(--bg));--faint:color-mix(in srgb,var(--ink) 12%,transparent)}
 .bk-panel{flex:1 1 0;min-width:0;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:16px;padding:clamp(18px,2.3vw,30px) clamp(18px,2.3vw,30px) 0;background:var(--bg);color:var(--ink);text-align:center;overflow:hidden;transition:flex-grow .65s var(--ease),opacity .45s,filter .45s}
@@ -3065,7 +3071,7 @@ body{margin:0}
 .bk-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .bk-chosen{display:none;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--ink);color:var(--bg);font-size:13px;font-weight:650;white-space:nowrap;margin-left:auto}
 .bk-chosen svg{width:14px;height:14px}
-.is-chosen>.bk-ptop .bk-chosen,.bk-wtop .bk-chosen.is-on{display:inline-flex}
+.is-chosen .bk-ptop .bk-chosen,.bk-wtop .bk-chosen.is-on{display:inline-flex}
 .bk-pmid{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-width:0;max-width:100%;padding-bottom:clamp(0px,2vh,24px)}
 .bk-plogo{display:block;width:clamp(72px,9.5vw,132px);height:clamp(72px,9.5vw,132px);margin-bottom:clamp(6px,1.6vh,18px);transition:transform .6s var(--ease)}
 .bk-plogo>img,.bk-plogo>.bk-ph{width:100%;height:100%;object-fit:contain}
@@ -3155,6 +3161,22 @@ body{margin:0}
 .bk-act{position:sticky;bottom:0;margin:0 calc(-1 * var(--pad)) calc(-1 * var(--pad));padding:14px var(--pad) calc(18px + env(safe-area-inset-bottom,0px));background:linear-gradient(color-mix(in srgb,var(--bg) 0%,transparent),var(--bg) 36%)}
 .bk-pick{width:100%}
 }
+
+.bk-choose .bk-panels.is-pics{display:grid;grid-template-columns:var(--tc,repeat(2,minmax(0,1fr)));grid-template-rows:var(--tr,minmax(0,1fr));transition:grid-template-columns .65s var(--ease),grid-template-rows .65s var(--ease);flex:none;height:max(420px,100vh);height:max(420px,100dvh);min-height:0}
+.bk-panels.is-odd>.bk-panel:last-child{grid-column:1/-1}
+.bk-panels.is-pics .bk-panel{flex:none;flex-direction:column;flex-wrap:nowrap;align-items:stretch;justify-content:center;gap:clamp(12px,1.8vh,18px);min-height:0;padding:clamp(14px,2.2vw,30px);text-align:left;box-shadow:inset 0 0 0 .5px var(--faint)}
+.bk-stage{position:relative;flex:1 1 0;min-height:0;align-self:stretch;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(12px,1.8vh,18px);container-type:size}
+.bk-panels.is-pics .bk-win{flex:none;order:0;width:min(100cqw,calc((100cqh - var(--lab,64px)) * var(--ar,1.6)));max-width:none;aspect-ratio:var(--ar,1.6);margin:0;border-radius:12px;box-shadow:0 0 0 1px var(--faint),0 34px 60px -38px color-mix(in srgb,var(--ink) 70%,transparent);transition:transform .5s var(--ease)}
+.bk-panels.is-pics .bk-win>img,.bk-panels.is-pics .bk-win>video{object-position:50% 50%}
+.bk-panels.is-pics .bk-win>.bk-ph{position:absolute;inset:0;border-radius:0}
+.bk-panels.is-pics .bk-ptop{position:absolute;top:12px;left:12px;right:12px;z-index:2;min-height:0;pointer-events:none}
+.bk-panels.is-pics .bk-badge{background:var(--bg)}
+.bk-panels.is-pics .bk-pmid{flex:none;order:0;max-width:100%;display:grid;grid-template-columns:minmax(0,auto);justify-content:center;justify-items:start;align-items:center;column-gap:12px;row-gap:2px;padding:0}
+.bk-panels.is-pics .bk-pmid:has(>.bk-plogo){grid-template-columns:auto minmax(0,auto)}
+.bk-panels.is-pics .bk-plogo{grid-row:1/span 2;width:clamp(30px,2.6vw,40px);height:clamp(30px,2.6vw,40px);margin:0}
+.bk-panels.is-pics .bk-pname{font-size:clamp(20px,1.9vw,28px);letter-spacing:-.015em}
+.bk-panels.is-pics .bk-pline{font-size:14px;max-width:48ch;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bk-panels.is-pics .bk-strip{height:6px}
 
 /* wall */
 .bk-wall{columns:4 220px;column-gap:14px}
@@ -4296,6 +4318,8 @@ body{margin:0}
 		const row = h("div", "bk-panels");
 		root.append(row);
 		const rec = (o) => (o.by ? \`\${WORDS.recommended} · \${o.by}\` : WORDS.recommended);
+		const pics = opts.length > 0 && opts.every((o) => o.poster || o.video);
+		row.classList.toggle("is-pics", pics);
 		const panels = opts.map((o, i) => {
 			const p = h("button", "bk-panel", { type: "button", "data-id": o.id, "aria-haspopup": "dialog", "aria-label": \`\${o.name}\${o.recommended ? \`, \${rec(o)}\` : ""}\${o.line ? \`. \${o.line}\` : ""}\` });
 			p.style.setProperty("--i", i);
@@ -4309,7 +4333,7 @@ body{margin:0}
 			if (o.type && o.type.family) name.style.fontFamily = o.type.family;
 			mid.append(name);
 			if (o.line) mid.append(h("span", "bk-pline", null, o.line));
-			p.append(top, mid);
+			if (!pics) p.append(top, mid);
 			let v = null;
 			let win = null;
 			if (o.poster || o.video) {
@@ -4321,7 +4345,10 @@ body{margin:0}
 					v.addEventListener("playing", () => win.classList.add("is-playing"), on);
 					win.append(v);
 				}
-				p.append(win);
+				if (pics) {
+					win.append(top);
+					p.append(h("span", "bk-stage", null, win, mid));
+				} else p.append(win);
 			}
 			if (o.palette.length) p.append(h("span", "bk-strip", { "aria-hidden": "true" }, ...o.palette.map((c) => Object.assign(h("i"), { style: \`background:\${c.hex}\` }))));
 			const start = () => play(v);
@@ -4336,8 +4363,74 @@ body{margin:0}
 			p.addEventListener("blur", stop, on);
 			p.addEventListener("click", () => openWorld(o.id), on);
 			row.append(p);
-			return { o, p };
+			return { o, p, mid, ar: 1.6 };
 		});
+		function shapeOf(o) {
+			const src = mediaFor(o.poster || o.video);
+			const [w, hh] = !src ? [0, 0] : src.tagName === "VIDEO" ? [src.videoWidth, src.videoHeight] : [src.naturalWidth, src.naturalHeight];
+			return w > 0 && hh > 0 ? Math.min(4, Math.max(0.25, w / hh)) : null;
+		}
+		function fit() {
+			if (!pics) return;
+			for (const P of panels) {
+				P.ar = shapeOf(P.o) || P.ar;
+				P.p.style.setProperty("--ar", P.ar.toFixed(4));
+			}
+			const W = row.clientWidth;
+			const H = row.clientHeight;
+			if (!W || !H) return;
+			const cs = getComputedStyle(panels[0].p);
+			const px = (k) => parseFloat(cs[k]) || 0;
+			const padX = px("paddingLeft") + px("paddingRight");
+			const padY = px("paddingTop") + px("paddingBottom");
+			const label = Math.max(0, ...panels.map((P) => P.mid.offsetHeight)) + (parseFloat(getComputedStyle(panels[0].mid.parentElement).rowGap) || 0);
+			row.style.setProperty("--lab", \`\${Math.ceil(label)}px\`);
+			const n = panels.length;
+			let best = n;
+			let most = -1;
+			for (let c = 1; c <= n; c++) {
+				const r = Math.ceil(n / c);
+				const high = H / r - padY - label;
+				let least = Infinity;
+				panels.forEach((P, i) => {
+					const wide = (i === n - 1 && n % c ? W : W / c) - padX;
+					const w = Math.max(0, Math.min(wide, high * P.ar));
+					least = Math.min(least, (w * w) / P.ar);
+				});
+				if (least > most * 1.04) [best, most] = [c, least];
+			}
+			cols = best;
+			row.classList.toggle("is-odd", n % best !== 0);
+			grow(near);
+		}
+		let cols = 1;
+		let near = -1;
+		function grow(i) {
+			near = i;
+			const rows = Math.ceil(panels.length / cols);
+			const track = (k, at) => Array.from({ length: k }, (_, j) => \`minmax(0,\${j === at ? 1.4 : 1}fr)\`).join(" ");
+			const wide = i >= 0 && !(i === panels.length - 1 && panels.length % cols);
+			row.style.setProperty("--tc", track(cols, wide ? i % cols : -1));
+			row.style.setProperty("--tr", track(rows, i >= 0 ? Math.floor(i / cols) : -1));
+		}
+		let watch = null;
+		if (pics) {
+			panels.forEach(({ p }, i) => {
+				p.addEventListener("pointerenter", (e) => e.pointerType === "mouse" && grow(i), on);
+				p.addEventListener("pointerleave", () => near === i && grow(-1), on);
+				p.addEventListener("focus", () => p.matches(":focus-visible") && grow(i), on);
+				p.addEventListener("blur", () => near === i && grow(-1), on);
+			});
+			for (const { o } of panels) {
+				const src = mediaFor(o.poster || o.video);
+				if (src) src.addEventListener(src.tagName === "VIDEO" ? "loadedmetadata" : "load", fit, on);
+			}
+			if (window.ResizeObserver) {
+				watch = new ResizeObserver(fit);
+				watch.observe(row);
+			} else window.addEventListener("resize", fit, on);
+			fit();
+		}
 		let world = null;
 		function canAnswer(o) {
 			return !!(S.q && S.q.options.some((x) => String(x.value) === o.id));
@@ -4561,6 +4654,7 @@ body{margin:0}
 			destroy() {
 				ac.abort();
 				clearTimeout(retry);
+				if (watch) watch.disconnect();
 				if (world) world.remove(true);
 			},
 		};

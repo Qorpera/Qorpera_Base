@@ -761,6 +761,47 @@ describe("the board kit's engine", () => {
 		expect(document.querySelector(".bk-pick")).toBeNull();
 	});
 
+	it("draws the pictures as the page, grows the one under the pointer and marks the chosen one on its picture", async () => {
+		resize(1700, 700);
+		const media = document.createElement("div");
+		media.id = "kit-media";
+		media.hidden = true;
+		media.innerHTML = ["lys", "ro"]
+			.map((id) => `<img data-kit-src="pictures/${id}.webp" src="data:image/webp;base64,AA==" alt="">`)
+			.join("");
+		document.body.append(media);
+		const pictures = JSON.stringify({
+			...JSON.parse(board),
+			line: "Two names",
+			items: [
+				{ id: "lys", name: "Lys", poster: "pictures/lys.webp" },
+				{ id: "ro", name: "Ro", poster: "pictures/ro.webp" },
+			],
+		});
+		const { qorpera } = await open("board", pictures, (bridge) => {
+			bridge.questions = [question];
+		});
+		const row = document.querySelector(".bk-panels") as HTMLElement;
+		expect(row.classList.contains("is-pics")).toBe(true);
+		expect(document.querySelector("h1")?.textContent).toBe("Names");
+		expect(getComputedStyle(document.querySelector(".bk-head") as Element).position).toBe("absolute");
+		expect(document.querySelector('.bk-panel[data-id="lys"] .bk-stage > .bk-win > .bk-ptop')).not.toBeNull();
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1fr)");
+		const enter = Object.assign(new Event("pointerenter"), { pointerType: "mouse" });
+		document.querySelector('.bk-panel[data-id="ro"]')?.dispatchEvent(enter);
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1.4fr)");
+		document.querySelector('.bk-panel[data-id="ro"]')?.dispatchEvent(new Event("pointerleave"));
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1fr)");
+		document.querySelector<HTMLButtonElement>('.bk-panel[data-id="lys"]')?.click();
+		document.querySelector<HTMLButtonElement>(".bk-world .bk-pick")?.click();
+		await settle();
+		expect(qorpera.answer).toHaveBeenCalledWith("q-1", "lys");
+		const chip = (id: string) =>
+			getComputedStyle(document.querySelector(`.bk-panel[data-id="${id}"] .bk-chosen`) as Element).display;
+		expect(chip("lys")).toBe("inline-flex");
+		expect(chip("ro")).toBe("none");
+	});
+
 	it("asks nothing more for a board it has drawn again", async () => {
 		const { now, change, qorpera } = await open("board", board, (bridge) => {
 			bridge.questions = new Error("Too many calls");
