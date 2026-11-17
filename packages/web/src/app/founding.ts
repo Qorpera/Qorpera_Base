@@ -167,6 +167,7 @@ function texts(value: unknown): string[] {
 
 /** Automatic tries at saving the idea the opening could not; after them it waits in the box as your draft. */
 const VISION_TRIES = 3;
+const SPECTATOR_TRIES = 3;
 
 /** The hint the Co-Founder's arrival reads once, so it plays from the start (agreed with Interfaces, 4 October 2026):
  * set when this tab's founder presses Start; the arrival removes it and ignores one older than ten minutes. */
@@ -213,7 +214,8 @@ export class FoundingController {
 	#founders: string[] = [];
 	#invitingFounders = false;
 	#spectators: string[] = [];
-	#spectatorsSent = false;
+	#spectatorsSending = false;
+	#spectatorTries = 0;
 	#spectatorsRead = false;
 	readonly #openedAt = Date.now();
 	#waitingForLogin = false;
@@ -405,23 +407,34 @@ export class FoundingController {
 	}
 
 	#keepSpectators(table: CompanyFounding): void {
-		if (this.#spectators.length && !this.#spectatorsSent && table.me.canManage) {
-			this.#spectatorsSent = true;
+		if (this.#spectators.length && !this.#spectatorsSending && table.me.canManage) {
+			this.#spectatorsSending = true;
 			const picked = [...this.#spectators];
 			void this.#api.addPendingSpectators(this.profileId, picked).then(
 				(spectators) => {
+					this.#spectatorsSending = false;
 					this.#spectators = [];
 					this.#keepIntent();
-					if (!this.disposed) this.store.set({ spectators });
+					if (this.disposed) return;
+					this.store.set({ spectators });
+					void this.refresh();
 				},
-				() => {
-					if (!this.disposed)
+				(error: unknown) => {
+					this.#spectatorsSending = false;
+					this.#spectatorTries++;
+					if (this.disposed) return;
+					const missing = error instanceof CloudRpcError && error.missing;
+					if (missing || this.#spectatorTries >= SPECTATOR_TRIES) {
+						this.#spectators = [];
+						this.#keepIntent();
+						if (!missing) this.#endAutoStart();
+						void this.refresh();
+					}
+					if (!missing)
 						this.store.set({
 							error: t(
 								"{emails} could not be kept to follow the company. Invite them from the team page once it starts.",
-								{
-									emails: picked.join(", "),
-								},
+								{ emails: picked.join(", ") },
 							),
 						});
 				},
@@ -465,6 +478,7 @@ export class FoundingController {
 			if (!this.#savingVision && this.#visionTries >= VISION_TRIES) this.#endAutoStart();
 			return;
 		}
+		if (this.#spectators.length && table.me.canManage) return;
 		if (!mine.modelLoginReady) {
 			// WHY: an account login is linked into a new company by the vault a few seconds after it is made (2 s on
 			// 16 Nov 2026), so the first reads say "not connected" for a member who is.

@@ -1230,6 +1230,47 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			);
 		});
 
+		it("starts alone only once the spectators picked are kept, and starts after they are", async () => {
+			const { api, cloud } = fixture();
+			const solo = soloTable(() => true);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			let keep!: (emails: string[]) => void;
+			vi.mocked(api.addPendingSpectators).mockImplementation(
+				() => new Promise<string[]>((resolve) => (keep = resolve)),
+			);
+			setFoundingIntent(table, { start: true, spectators: ["mom@example.test"] });
+			const controller = open(api);
+			await settle();
+			await settle();
+			expect(solo.calls).not.toContain("qorpera_start_company_founding");
+			keep(["mom@example.test"]);
+			await settle();
+			await settle();
+			await settle();
+			expect(solo.calls).toContain("qorpera_start_company_founding");
+			expect(controller.store.get().spectators).toEqual(["mom@example.test"]);
+		});
+
+		it("stops starting by itself, and says why, when the spectators cannot be kept", async () => {
+			const { api, cloud } = fixture();
+			const solo = soloTable(() => true);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			vi.mocked(api.addPendingSpectators).mockRejectedValue(new Error("offline"));
+			setFoundingIntent(table, { start: true, spectators: ["mom@example.test"] });
+			const controller = open(api);
+			for (let read = 0; read < 3; read++) {
+				await settle();
+				await controller.refresh();
+			}
+			await settle();
+			expect(api.addPendingSpectators).toHaveBeenCalledTimes(3);
+			expect(solo.calls).not.toContain("qorpera_start_company_founding");
+			expect(controller.store.get().autoStart).toBe(false);
+			expect(visibleText(container)).toContain(
+				"mom@example.test could not be kept to follow the company. Invite them from the team page once it starts.",
+			);
+		});
+
 		it("offers Open on the same scene once the company is ready, should the way into it not come", async () => {
 			const { api, cloud } = fixture();
 			const solo = soloTable(
