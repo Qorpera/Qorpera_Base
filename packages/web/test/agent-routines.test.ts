@@ -517,6 +517,8 @@ describe("agent routines section", () => {
 			createHook: vi.fn(),
 			createMailbox: vi.fn(),
 			setStatus: vi.fn(),
+			mailHandles: vi.fn(),
+			handleStatus: vi.fn(),
 		};
 		const stop = new AbortController();
 		const view = new AgentRoutines(
@@ -542,6 +544,8 @@ describe("agent routines section", () => {
 			createHook: vi.fn(),
 			createMailbox: vi.fn(),
 			setStatus: vi.fn(),
+			mailHandles: vi.fn(),
+			handleStatus: vi.fn(),
 		};
 		let manage = true;
 		const listeners = new Set<() => void>();

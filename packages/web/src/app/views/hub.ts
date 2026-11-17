@@ -7,6 +7,13 @@ import {
 } from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
+import {
+	companyDisplayName,
+	companyInSentence,
+	companyNameText,
+	isUnnamed,
+	UNNAMED_COMPANY,
+} from "../../ui/company-name.ts";
 import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
@@ -15,7 +22,7 @@ import { lobbyError, setFoundingIntent } from "../founding.ts";
 import { Reconnect } from "../reconnect.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
-import { companyNameFromIdea, renderNewCompany, type Viewer } from "./new-company.ts";
+import { renderNewCompany, type Viewer } from "./new-company.ts";
 
 /* The company hub: a simple company selector (Jonas, 22 October 2026, hub round 3). One tile per
  * company, founding table and invitation, each its figure and its name and nothing more, and a "New
@@ -103,7 +110,6 @@ export class HubController {
 				"table" in saved &&
 				saved.table === true &&
 				typeof saved.name === "string" &&
-				saved.name.trim() &&
 				typeof saved.clientCreationId === "string" &&
 				UUID_PATTERN.test(saved.clientCreationId)
 			) {
@@ -111,7 +117,7 @@ export class HubController {
 				const intent =
 					"intent" in saved && (saved.intent === "start" || saved.intent === "friends") ? saved.intent : undefined;
 				this.#creation = {
-					name: saved.name,
+					name: saved.name.trim(),
 					clientCreationId: saved.clientCreationId,
 					...(vision ? { vision } : {}),
 					...(intent ? { intent } : {}),
@@ -160,13 +166,14 @@ export class HubController {
 	async removeCompany(profile: HostedProfile): Promise<void> {
 		if (this.#disposed) return;
 		const deleting = profile.role === "owner";
+		const company = companyInSentence(profile.profileName);
 		const confirmed = await confirmDialog(
 			deleting
-				? t("Delete {company}? Type the company name to confirm.", { company: profile.profileName })
-				: t("Leave {company}? You lose access until someone invites you again.", { company: profile.profileName }),
+				? t("Delete {company}? Type the company name to confirm.", { company })
+				: t("Leave {company}? You lose access until someone invites you again.", { company }),
 			deleting ? t("Delete company") : t("Leave"),
 			true,
-			deleting ? profile.profileName : undefined,
+			deleting ? companyDisplayName(profile.profileName) : undefined,
 		);
 		if (!confirmed || this.#disposed) return;
 		this.store.set({ error: undefined });
@@ -268,26 +275,20 @@ export class HubController {
 		}
 	}
 
-	/** The new-company box: the table opens with the name typed over the box, or else one taken from the idea; the
-	 * founders can change it at the table. True once the table is open. */
 	startFromIdea(idea: string, intent: CreationIntent, name = ""): Promise<boolean> {
 		const vision = idea.trim();
-		// A pasted tab or new line becomes a space, as in a name taken from the idea: the cloud refuses control
-		// characters, and a refused name would stay as the pending creation.
 		const typed = name
 			.replace(/\p{Cc}/gu, " ")
 			.replace(/\s+/g, " ")
 			.trim()
 			.slice(0, FOUNDING_NAME_MAX_CHARACTERS)
 			.trim();
-		return this.createCompany(typed || companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
+		return this.createCompany(typed, { ...(vision ? { vision } : {}), intent });
 	}
 
-	/** True once the table is open. */
 	async createCompany(name: string, options: CreationOptions = {}): Promise<boolean> {
 		if (this.#disposed || this.store.get().creating) return false;
 		const trimmed = name.trim();
-		if (!trimmed) return false;
 		if (this.#creation && this.#creation.name !== trimmed) {
 			this.store.set({ error: t("Resume the pending company creation before starting another.") });
 			return false;
@@ -378,8 +379,8 @@ function tile(
 	return h(
 		tag,
 		attrs,
-		h("span", { class: "company-stage" }, companyLogo(profileId), extra ?? null),
-		h("span", { class: "company-name" }, name),
+		h("span", { class: "company-stage" }, companyLogo(profileId, "", isUnnamed(name)), extra ?? null),
+		companyNameText(name, "company-name"),
 	);
 }
 
@@ -401,8 +402,13 @@ function tableTile(hub: HubController, table: FoundingTableEntry): HTMLElement {
 				class: "company-card company-card-invite",
 				href,
 				"aria-label": by
-					? t("{company}: {name} invited you to start it together", { company: table.companyName, name: by })
-					: t("{company}: you are invited to start it together", { company: table.companyName }),
+					? t("{company}: {name} invited you to start it together", {
+							company: companyDisplayName(table.companyName),
+							name: by,
+						})
+					: t("{company}: you are invited to start it together", {
+							company: companyDisplayName(table.companyName),
+						}),
 			},
 			table.profileId,
 			table.companyName,
@@ -414,7 +420,7 @@ function tableTile(hub: HubController, table: FoundingTableEntry): HTMLElement {
 		{
 			class: "company-card company-card-table",
 			href,
-			"aria-label": t("{company}: your table, not started yet", { company: table.companyName }),
+			"aria-label": t("{company}: your table, not started yet", { company: companyDisplayName(table.companyName) }),
 		},
 		table.profileId,
 		table.companyName,
@@ -423,6 +429,8 @@ function tableTile(hub: HubController, table: FoundingTableEntry): HTMLElement {
 
 function invitationTile(hub: HubController, invitation: HostedIncomingProfileInvitation, busy: boolean): HTMLElement {
 	const role = t(ROLE_LABELS[invitation.role]);
+	const shown = companyDisplayName(invitation.profileName);
+	const company = companyInSentence(invitation.profileName);
 	return h(
 		"div",
 		{ class: "company-tile-invitation" },
@@ -432,12 +440,9 @@ function invitationTile(hub: HubController, invitation: HostedIncomingProfileInv
 				type: "button",
 				class: "company-card company-card-invite",
 				disabled: busy,
-				"aria-label": t("{company}: you are invited as {role}", { company: invitation.profileName, role }),
+				"aria-label": t("{company}: you are invited as {role}", { company: shown, role }),
 				onclick: () =>
-					void confirmDialog(
-						t("Join {company} as {role}?", { company: invitation.profileName, role }),
-						t("Join"),
-					).then((yes) => {
+					void confirmDialog(t("Join {company} as {role}?", { company, role }), t("Join")).then((yes) => {
 						if (yes) void hub.respondInvitation(invitation, true);
 					}),
 			},
@@ -451,16 +456,14 @@ function invitationTile(hub: HubController, invitation: HostedIncomingProfileInv
 				type: "button",
 				class: "company-decline",
 				disabled: busy,
-				"aria-label": t("Decline the invitation to {company}", { company: invitation.profileName }),
+				"aria-label": t("Decline the invitation to {company}", { company }),
 				title: t("Decline"),
 				onclick: () =>
-					void confirmDialog(
-						t("Decline the invitation to {company}?", { company: invitation.profileName }),
-						t("Decline"),
-						true,
-					).then((yes) => {
-						if (yes) void hub.respondInvitation(invitation, false);
-					}),
+					void confirmDialog(t("Decline the invitation to {company}?", { company }), t("Decline"), true).then(
+						(yes) => {
+							if (yes) void hub.respondInvitation(invitation, false);
+						},
+					),
 			},
 			icon("close"),
 		),
@@ -482,16 +485,16 @@ function welcomeInvitations(hub: HubController): HTMLElement[] {
 								table.invitedByDisplayName,
 								state.inviters?.[table.profileId] ?? table.invitedByDisplayName,
 							)
-						: companyLogo(table.profileId, "hero-invitation-logo"),
+						: companyLogo(table.profileId, "hero-invitation-logo", isUnnamed(table.companyName)),
 					h(
 						"span",
 						null,
 						table.invitedByDisplayName
 							? t("{name} saved you a seat at {company}.", {
 									name: table.invitedByDisplayName,
-									company: table.companyName,
+									company: companyInSentence(table.companyName),
 								})
-							: t("You have a seat at {company}.", { company: table.companyName }),
+							: t("You have a seat at {company}.", { company: companyInSentence(table.companyName) }),
 					),
 					h("span", { class: "btn btn-small" }, t("See the table")),
 				),
@@ -500,12 +503,12 @@ function welcomeInvitations(hub: HubController): HTMLElement[] {
 			h(
 				"div",
 				{ class: "hero-invitation" },
-				companyLogo(invitation.profileId, "hero-invitation-logo"),
+				companyLogo(invitation.profileId, "hero-invitation-logo", isUnnamed(invitation.profileName)),
 				h(
 					"span",
 					null,
 					t("You are invited to {company} as {role}.", {
-						company: invitation.profileName,
+						company: companyInSentence(invitation.profileName),
 						role: t(ROLE_LABELS[invitation.role]),
 					}),
 				),
@@ -534,7 +537,7 @@ function openCompanyMenu(hub: HubController, event: MouseEvent): void {
 	const deleting = profile.role === "owner";
 	const point = menuPoint(event, card);
 	openContextMenu({
-		label: profile.profileName,
+		label: companyDisplayName(profile.profileName),
 		x: point.x,
 		y: point.y,
 		opener: card,
@@ -595,7 +598,9 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 				state.error ? notice("danger", state.error) : null,
 				state.creationRetry && !state.creating
 					? button(
-							t("Resume creating {name}", { name: state.creationRetry.name }),
+							t("Resume creating {name}", {
+								name: companyInSentence(state.creationRetry.name || UNNAMED_COMPANY),
+							}),
 							() => void hub.createCompany(state.creationRetry!.name, state.creationRetry),
 						)
 					: null,

@@ -696,4 +696,13 @@ export const CONVERSATION: Record<string, string> = {
 	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
 	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
 	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
+	"The company's part of the address": "Virksomhedens del af adressen",
+	"Use this address": "Brug denne adresse",
+	"The address can be chosen in the chat.": "Adressen kan vælges i chatten.",
+	"The address could not be made. Try again.": "Adressen kunne ikke oprettes. Prøv igen.",
+	"Only founders and admins can choose the address": "Kun stiftere og administratorer kan vælge adressen",
+	Free: "Ledig",
+	"Already yours": "Allerede jeres",
+	"That one belongs to another company": "Den tilhører en anden virksomhed",
+	"Use a–z, 0–9 and hyphens": "Brug a–z, 0–9 og bindestreger",
 };

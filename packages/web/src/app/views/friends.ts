@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import type { HostedAccountMatch, HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
+import { companyDisplayName, companyNameText, isUnnamed } from "../../ui/company-name.ts";
 import { button, companyLogo, fmtDate, h, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { presentationLocale, presentationTimeZone, t, uiText } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
@@ -284,11 +285,11 @@ function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvi
 	return h(
 		"div",
 		{ class: "person-row" },
-		companyLogo(invitation.profileId, "person-company"),
+		companyLogo(invitation.profileId, "person-company", isUnnamed(invitation.profileName)),
 		h(
 			"div",
 			{ class: "person-copy" },
-			h("strong", null, invitation.profileName),
+			h("strong", null, companyNameText(invitation.profileName)),
 			h(
 				"span",
 				{ class: "muted small" },
@@ -427,7 +428,9 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 	const incoming = matching.filter((friend) => friend.status === "pending" && friend.direction === "incoming");
 	const outgoing = matching.filter((friend) => friend.status === "pending" && friend.direction === "outgoing");
 	const accepted = matching.filter((friend) => friend.status === "accepted");
-	const invitations = companies.invitations.filter((invitation) => matches(invitation.profileName));
+	const invitations = companies.invitations.filter((invitation) =>
+		matches(companyDisplayName(invitation.profileName)),
+	);
 	parts.submit.disabled = !invitable || state.sending === true;
 	const label = state.sending ? t("Sending…") : t("Send request");
 	if (parts.submit.textContent !== label) parts.submit.textContent = label;
