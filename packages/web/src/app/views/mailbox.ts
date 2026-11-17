@@ -2066,7 +2066,6 @@ function googleRow(page: Page): HTMLElement | null {
 	const state = company.store.get();
 	const google = manageViews.get(ui)?.calls.google;
 	if (state.team?.capabilities.authorize !== true || !google) return null;
-	if ((state.mail?.addresses ?? []).some((address) => address.google)) return null;
 	const open = ui.google !== "closed";
 	const starting = ui.google === "starting";
 	return h(

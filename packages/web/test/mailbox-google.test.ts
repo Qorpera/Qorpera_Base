@@ -152,12 +152,22 @@ describe("Mail at Google under Addresses", () => {
 		}
 	});
 
-	it("leaves the row out once a Google address is the company's", async () => {
-		const { main } = await mailbox((mail) => {
+	it("keeps the row for owners and admins once a Google address is the company's, for one more account", async () => {
+		const { main, google } = await mailbox((mail) => {
 			mail.addresses.unshift(googleAddress({ state: "live", broughtIn: 900, total: 900, lastWeek: 38 }));
 		});
 		await addresses(main, 2);
-		expect(googleRow(main)).toBeNull();
+		expect(texts(googleRow(main)!, "button")).toEqual(["Connect Google"]);
+		button(googleRow(main)!, "Connect Google")!.click();
+		button(googleRow(main)!, "Sign in at Google")!.click();
+		await vi.waitFor(() => expect(google.go).toHaveBeenCalledWith(SIGN_IN));
+		for (const dispose of cleanup.splice(0).reverse()) dispose();
+		document.body.replaceChildren();
+		const member = await mailbox((mail) => {
+			mail.addresses.unshift(googleAddress({ state: "live", broughtIn: 900, total: 900, lastWeek: 38 }));
+		}, "contributor");
+		await addresses(member.main, 2);
+		expect(googleRow(member.main)).toBeNull();
 	});
 
 	it("opens in place, and its button starts the sign-in at Google", async () => {
