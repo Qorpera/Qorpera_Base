@@ -63,7 +63,8 @@ begin
 		'pairSessionId',pending.pair_session_id) order by pending.created_at, pending.id)
 	into v_messages
 	from (select * from public.qorpera_pending_peer_messages where delivered_run_id = p_run.id
-		and (wake_id is not null or p_shown_pair is null or pair_session_id <> p_shown_pair or event_id not in (
+		and (wake_id is not null or char_length(text) > 400 or p_shown_pair is null or pair_session_id <> p_shown_pair
+			or event_id not in (
 			select event.event_id from public.qorpera_session_events event
 			where event.session_id = p_shown_pair and event.event_type = 'message'
 				and event.body #>> '{entry,delivery,schema}' = 'qorpera.peer-message/v1'

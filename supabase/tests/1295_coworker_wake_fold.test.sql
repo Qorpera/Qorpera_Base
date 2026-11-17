@@ -341,19 +341,24 @@ savepoint cf_notes;
 select pg_temp.cf_sent('h1', 'alice', repeat('ø', 1000), false);
 select pg_temp.cf_sent('h2', 'alice', repeat('x', 1600), false);
 select pg_temp.cf_sent('h3', 'alice', 'Alice: a short note.', false);
-select pg_temp.cf_sent('h4', 'bob', 'Bob: a question that wakes.');
+select pg_temp.cf_sent('h4', 'bob', repeat('Bob: a long note. ', 30), false);
+select pg_temp.cf_sent('h5', 'bob', 'Bob: a short note.', false);
+select pg_temp.cf_sent('h6', 'bob', 'Bob: a question that wakes.');
 do $$
 declare v_run uuid := pg_temp.cf_pass(); v_read jsonb; v_cut text;
 begin
 	v_read := pg_temp.cf_read(v_run);
 	v_cut := v_read #>> '{payload,heldMessages,0,text}';
 	perform pg_temp.base_assert(v_read #>> '{payload,text}' = 'Bob: a question that wakes.'
-		and jsonb_array_length(v_read #> '{payload,heldMessages}') = 3
+		and jsonb_array_length(v_read #> '{payload,heldMessages}') = 4
 		and octet_length(v_cut) <= 1600 and octet_length(v_cut) > 1500
 		and v_cut like 'øøø%' and v_cut like '% … [cut: the full message is in your transcript with this coworker]'
 		and v_read #>> '{payload,heldMessages,1,text}' = repeat('x', 1600)
-		and v_read #>> '{payload,heldMessages,2,text}' = 'Alice: a short note.',
-		'a note is shown up to 1600 bytes, and a cut one says where the rest is: ' || v_read::text);
+		and v_read #>> '{payload,heldMessages,2,text}' = 'Alice: a short note.'
+		and v_read #>> '{payload,heldMessages,3,text}' = repeat('Bob: a long note. ', 30)
+		and exists (select 1 from jsonb_array_elements(v_read #> '{payload,transcript}') t where t ->> 'text' = 'Bob: a short note.'),
+		'a note is shown up to 1600 bytes, a cut one says where the rest is, and one the transcript cuts is listed too: '
+			|| v_read::text);
 end $$;
 rollback to cf_notes;
 
