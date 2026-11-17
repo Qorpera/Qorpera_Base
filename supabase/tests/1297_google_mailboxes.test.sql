@@ -340,10 +340,16 @@ select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-00000000000
 select pg_temp.base_error($q$select public.qorpera_send_member_mail('92400000-0000-4000-8000-000000000020',
 	'{"sendId":"12970000-0000-4000-8000-000000000b03","from":"support.base@mail.example.test","to":["owner+notes@gmail.com"],
 	"subject":"Hello","text":"To myself"}')$q$, '42501', 'Email to your own company''s mailboxes is refused');
+select pg_temp.base_error($q$select public.qorpera_send_member_mail('92400000-0000-4000-8000-000000000020',
+	'{"sendId":"12970000-0000-4000-8000-000000000b04","from":"support.base@mail.example.test","to":["o.w.ner@googlemail.com"],
+	"subject":"Hello","text":"To myself"}')$q$, '42501', 'Email to your own company''s mailboxes is refused');
 select pg_temp.base_claims('service_role');
+select pg_temp.base_assert(public.qorpera_google_address_key('O.wner+x@GoogleMail.com') = 'owner@gmail.com'
+		and public.qorpera_google_address_key('o.wner+x@example.org') = 'o.wner@example.org',
+	'Gmail''s dots and googlemail.com read as the same Gmail address; other domains keep their dots');
 select pg_temp.base_error(format('select public.qorpera_send_agent_mail(%L::jsonb, %L, %L::jsonb)',
 	current_setting('qorpera_test.base_binding'), 'g-agent-own', jsonb_build_object('from', 'support.base@mail.example.test',
-		'to', jsonb_build_array('customer@example.org'), 'cc', jsonb_build_array('Owner@Gmail.com'), 'subject', 'Hello',
+		'to', jsonb_build_array('customer@example.org'), 'cc', jsonb_build_array('Ow.ner@Gmail.com'), 'subject', 'Hello',
 		'text', 'Loop')), '42501', 'Email to your own company''s mailboxes is refused; reach coworkers with send_coworker_message');
 select set_config('qorpera_test.g_agent_send', public.qorpera_send_agent_mail(current_setting('qorpera_test.base_binding')::jsonb,
 	'g-agent-1', jsonb_build_object('from', 'owner@gmail.com', 'to', jsonb_build_array('customer@example.org'),

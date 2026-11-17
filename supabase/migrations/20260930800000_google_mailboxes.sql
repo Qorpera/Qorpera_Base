@@ -116,6 +116,15 @@ $$;
 revoke all on function public.qorpera_google_mailbox_state(public.qorpera_google_mailboxes)
 	from public, anon, authenticated, service_role;
 
+create function public.qorpera_google_address_key(p_address text)
+returns text language sql immutable set search_path = '' as $$
+	select case when address.domain in ('gmail.com', 'googlemail.com')
+		then replace(address.local, '.', '') || '@gmail.com' else address.local || '@' || address.domain end
+	from (select split_part(split_part(lower(btrim(p_address)), '@', 1), '+', 1) as local,
+		split_part(lower(btrim(p_address)), '@', 2) as domain) as address
+$$;
+revoke all on function public.qorpera_google_address_key(text) from public, anon, authenticated, service_role;
+
 create function public.qorpera_google_mail_door()
 returns jsonb language sql stable set search_path = '' as $$
 	select nullif(current_setting('qorpera.google_mail_door', true), '')::jsonb
@@ -1192,7 +1201,7 @@ select pg_temp.google_mailbox_patch('public.qorpera_send_member_mail(uuid,jsonb)
 					and public.qorpera_mail_box_part(recipient) = mailbox.local_part)
 				or exists (select 1 from public.qorpera_google_mailboxes as google, unnest(v_to || v_cc) as recipient
 					where google.mailbox_id = mailbox.id and google.removed_at is null
-						and regexp_replace(recipient, '\+[^@]*@', '@') = google.address))) then$new$);
+						and public.qorpera_google_address_key(recipient) = public.qorpera_google_address_key(google.address)))) then$new$);
 select pg_temp.google_mailbox_patch('public.qorpera_send_agent_mail(jsonb,text,jsonb)'::regprocedure,
 	$old$			and exists (select 1 from unnest(v_to || v_cc) as recipient
 				where recipient = substring(recipient from '^[^@]+') || '@' || v_settings.domain
@@ -1202,7 +1211,7 @@ select pg_temp.google_mailbox_patch('public.qorpera_send_agent_mail(jsonb,text,j
 					and public.qorpera_mail_box_part(recipient) = mailbox.local_part)
 				or exists (select 1 from public.qorpera_google_mailboxes as google, unnest(v_to || v_cc) as recipient
 					where google.mailbox_id = mailbox.id and google.removed_at is null
-						and regexp_replace(recipient, '\+[^@]*@', '@') = google.address))) then$new$);
+						and public.qorpera_google_address_key(recipient) = public.qorpera_google_address_key(google.address)))) then$new$);
 
 select pg_temp.google_mailbox_patch('public.qorpera_event_hook_descriptor(public.qorpera_event_hooks,boolean)'::regprocedure,
 	$old$'email', (select mailbox.local_part || '@' || settings.domain from$old$,
