@@ -565,7 +565,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"4",
 		"held messages",
-		"wake.payload.heldMessages: messages coworkers left without waking you, already seen by members; answer one only when you were asked something.",
+		"wake.payload.heldMessages: more coworker messages for you, oldest first, already seen by members: notes left without waking you and messages that waited for this run; answer each one that asks you something.",
 		STAFF,
 	],
 	[

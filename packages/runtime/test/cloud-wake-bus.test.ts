@@ -1551,6 +1551,27 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 		expect(Buffer.byteLength(JSON.stringify(heavy.payload))).toBeGreaterThan(16384);
 		expect(parseCloudWakeEnvelope(heavy, identity).payload.heldMessages).toHaveLength(12);
 	});
+	it("reads a coworker wake carrying the most the kernel lets one run take: 19200 bytes of messages, some in full", () => {
+		const { identity, wake } = pairWakeFixture();
+		const transcript = Array.from({ length: 12 }, () => ({
+			eventId: randomUUID(),
+			staffAgentId: wake.actorStaffId as string,
+			text: "ø".repeat(400),
+			at: "2026-09-22T22:30:00.000000Z",
+		}));
+		const heldMessages = [
+			...Array.from({ length: 4 }, () => ({ ...heldLine(), text: "ø".repeat(2048) })),
+			...Array.from({ length: 2 }, () => ({ ...heldLine(), text: "ø".repeat(700) })),
+			...Array.from({ length: 6 }, () => ({ ...heldLine(), text: "ok" })),
+		];
+		expect(heldMessages.reduce((bytes, line) => bytes + Buffer.byteLength(line.text), 0)).toBeLessThanOrEqual(19200);
+		const full = {
+			...wake,
+			payload: { ...wake.payload, text: "ø".repeat(2048), transcript, heldMessages },
+		};
+		expect(Buffer.byteLength(JSON.stringify(full.payload))).toBeGreaterThan(32768);
+		expect(parseCloudWakeEnvelope(full, identity).payload.heldMessages).toEqual(heldMessages);
+	});
 	it("rejects a held message the agent supposedly left for itself", () => {
 		const human = fixture();
 		const self = human.authority.identity.staffAgentId;
