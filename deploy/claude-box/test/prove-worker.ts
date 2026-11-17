@@ -1330,7 +1330,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 
 		drain();
 		const wo = "c4c00000-0000-4000-8000-0000000000bc";
-		dispatch("otherpicture", wo, "A picture on another member's login");
+		dispatch("otherpicture", wo, "A picture on another login");
 		drain();
 		const bo = leased(start(wo));
 		const otherMember = sessionJson<string>(`select to_jsonb(m.user_id)::text from public.qorpera_profile_members m
