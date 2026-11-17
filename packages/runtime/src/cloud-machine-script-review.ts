@@ -90,6 +90,7 @@ interface Simple {
 	heredoc: boolean;
 	readonly bodies: string[];
 	alone: boolean;
+	background: boolean;
 	readonly piped: boolean;
 	readonly joined: Join;
 	readonly after: string;
@@ -136,6 +137,7 @@ function lex(command: string): { simples: Simple[]; complete: boolean } {
 	const end = (operator: string) => {
 		if (current) {
 			current.alone = current.piped || operator === "|" || operator === "|&" || operator === "&";
+			current.background = operator === "&";
 			simples.push(current);
 		}
 		if (current || operator !== "\n") {
@@ -152,6 +154,7 @@ function lex(command: string): { simples: Simple[]; complete: boolean } {
 				heredoc: false,
 				bodies: [],
 				alone: false,
+				background: false,
 				piped: false,
 				joined: "start",
 				after: operator,
@@ -518,8 +521,23 @@ function leadingFolder(simples: readonly Simple[], start: string | null): { coun
 	return { count, folder };
 }
 
-function inChain(simple: Simple): boolean {
-	return !simple.marker && !simple.alone && simple.joined === "&&";
+function chainOf(simples: readonly Simple[], from: number): boolean[] {
+	const chained = simples.map(() => false);
+	for (let at = from; at < simples.length; ) {
+		let end = at;
+		while (simples[end + 1]?.piped && !simples[end + 1]?.marker) end += 1;
+		const pipeline = simples.slice(at, end + 1);
+		const opened = pipeline.every((simple) => {
+			if (simple.marker) return false;
+			const words = [...simple.words];
+			const stripped = stripPrefixes(words, HOME);
+			return !stripped.grouped && stripped.keywords.length === 0;
+		});
+		if (!opened || pipeline[0]?.joined !== "&&" || pipeline.at(-1)?.background) break;
+		for (let index = at; index <= end; index += 1) chained[index] = true;
+		at = end + 1;
+	}
+	return chained;
 }
 
 export function cloudCommandScripts(
@@ -539,7 +557,7 @@ export function cloudCommandScripts(
 			: simples.slice(leading.count).find((simple) => simple.words[0] !== undefined)?.words[0]?.start;
 	const restMoves = movesFolder(rest === undefined ? "" : command.slice(rest), false);
 	let certain = leading.count === 0 ? !restMoves && start !== null : !restMoves && leading.folder !== null;
-	let chained = leading.count > 0;
+	const chained = leading.count > 0 ? chainOf(simples, leading.count) : [];
 	const run = (word: Word, folder: string | null) => {
 		const located = locate(word, folder);
 		if ("why" in located) {
@@ -553,11 +571,9 @@ export function cloudCommandScripts(
 	};
 	for (const [index, simple] of simples.entries()) {
 		if (index < leading.count) continue;
-		if (leading.count > 0) chained = chained && inChain(simple);
 		const words = [...simple.words];
-		const stripped = stripPrefixes(words, HOME);
-		if (stripped.grouped || stripped.keywords.length > 0) chained = false;
-		const folder = !certain ? null : leading.count === 0 ? start : chained ? leading.folder : null;
+		stripPrefixes(words, HOME);
+		const folder = !certain ? null : leading.count === 0 ? start : chained[index] ? leading.folder : null;
 		const program = words[0];
 		if (!program) continue;
 		if (!program.literal && program.text !== "[" && program.text !== "[[") {

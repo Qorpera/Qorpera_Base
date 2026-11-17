@@ -151,8 +151,36 @@ describe("a relative file is named only in a folder bash is in under every outco
 					`cd d1 && ( ${first} ) && `,
 				);
 			}
+			shapes.push(
+				"cd d1 && @ | tee log",
+				"cd d1 && @ 2>&1 | tail -40",
+				"cd d1 && @ |& head",
+				"cd d1 && test -e s2 | @",
+				"cd d1 && test -e s2 | @ | cat",
+				"cd d1 && cd d2 && @ | grep /",
+				"cd d1 && test -e s2 | cat && @",
+				"cd d1 && test -e s2 | cat && @ | cat",
+				"cd d1 && test -e s2 | cat ; @",
+				"cd d1 && test -e s2 | cat || @",
+				"cd d1 && test -e s2 | test -e s3 && @",
+				"cd d1 && set -o pipefail && test -e s2 | test -e s3 && @ | cat",
+				"set -o pipefail; cd d1 && @ | cat",
+				"cd d1 ; @ | tee log",
+				"cd d1 || @ | cat",
+				"cd d1 && @ | cat &",
+				"cd d1 && ! @ | cat",
+				"cd d1 && ! test -e s2 | cat && @",
+				"cd d1 && test -e s2 | cd d2 && @",
+				"test -e s1 | @",
+				"@ | cat",
+				"test -e s1 && @ | cat",
+			);
 			const line = (shape: string, next: string) =>
-				shape.startsWith("if ") && shape.endsWith("then ") ? `${shape}${next}; fi` : `${shape}${next}`;
+				shape.includes("@")
+					? shape.replace("@", next)
+					: shape.startsWith("if ") && shape.endsWith("then ")
+						? `${shape}${next}; fi`
+						: `${shape}${next}`;
 			const named = new Map<string, Array<string | null>>();
 			for (const shape of shapes)
 				named.set(
@@ -204,6 +232,21 @@ describe("a relative file is named only in a folder bash is in under every outco
 			expect(at("test -e s1 || ")).toBe(full);
 			expect(at("cd d1 && ")).toBe(join(full, "d1"));
 			expect(at("source ./env.sh && ")).toBe(full);
+			expect(at("cd d1 && @ | tee log")).toBe(join(full, "d1"));
+			expect(at("cd d1 && test -e s2 | @ | cat")).toBe(join(full, "d1"));
+			expect(at("cd d1 && test -e s2 | cat && @")).toBe(join(full, "d1"));
+			expect(at("cd d1 && set -o pipefail && test -e s2 | test -e s3 && @ | cat")).toBe(join(full, "d1"));
+			expect(at("cd d1 ; @ | tee log")).toBeNull();
+			for (const shape of [
+				"cd d1 && test -e s2 | cat ; @",
+				"cd d1 && test -e s2 | cat || @",
+				"set -o pipefail; cd d1 && @ | cat",
+				"cd d1 || @ | cat",
+				"cd d1 && @ | cat &",
+				"cd d1 && ! @ | cat",
+				"cd d1 && test -e s2 | cd d2 && @",
+			])
+				expect(at(shape), shape).toBeNull();
 			for (const joined of [" ; ", "\n", " || ", " | ", " & "]) expect(at(`cd d1${joined}`), joined).toBeNull();
 			for (const shape of [
 				"test -e s1 || cd d2 && ",
@@ -272,7 +315,6 @@ describe("the files a machine command runs", () => {
 			"cd /a && (python3 x.py)",
 			"cd /a && { python3 x.py; }",
 			"cd /a && ! python3 x.py",
-			"cd /a && python3 x.py | tee log",
 			"cd /a && python3 x.py &",
 			"cd /a && if true; then python3 x.py; fi",
 			"true && cd /a && python3 x.py",
@@ -302,6 +344,9 @@ describe("the files a machine command runs", () => {
 			notShown: [unknown("main.py")],
 		});
 		expect(paths("cd /a; python3 /tmp/x.py")).toEqual(["/tmp/x.py"]);
+		expect(paths("cd d1 && python3 x.py | tee log")).toEqual(["/root/d1/x.py"]);
+		expect(cloudCommandScripts("cd d1; python3 x.py | tee log").notShown).toEqual([unknown("x.py")]);
+		expect(paths("cd /a && python3 x.py 2>&1 | tail -40 && python3 y.py")).toEqual(["/a/x.py", "/a/y.py"]);
 	});
 
 	it("follows a sourced file only when the review read it whole and nothing in it can move a folder", () => {
