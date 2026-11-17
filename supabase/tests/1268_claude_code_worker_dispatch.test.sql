@@ -190,6 +190,9 @@ select pg_temp.base_commit(pg_temp.base_owner(), 'c4-todos', jsonb_build_array(
 		'{"kind":"todo","id":"12680000-0000-4000-8000-0000000000a1","title":"The onboarding PDF","status":"open","requestedBy":null,"detail":""}'),
 	jsonb_build_object('op', 'mkdir', 'path', 'QorperaOS/agents/alice/todos/onboarding'))) \g /dev/null
 
+insert into public.qorpera_execution_host_principals(host_id, provider_adapter, orchestrator_id, credential_sha256)
+values ('base-shared-host', 'process', '92400000-0000-4000-8000-000000000092', repeat('e', 64));
+
 -- The checks start here: a test that runs after this file's fixture part stops at this line.
 
 -- 1. The brief ---------------------------------------------------------------------------------------------------------
