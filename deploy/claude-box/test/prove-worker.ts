@@ -63,10 +63,13 @@ const check = (id: string, ok: boolean, text: string) => {
 class Database {
 	readonly #run: (sql: string) => string;
 	readonly #signatures = new Map<string, { names: string[]; nargs: number; defaults: number; set: boolean; void: boolean; types: string[] }[]>();
+	readonly #runAsync: (sql: string) => Promise<string>;
 	calls: string[] = [];
 	refusals: string[] = [];
-	constructor(run: (sql: string) => string) {
+	readonly slowest = new Map<string, number>();
+	constructor(run: (sql: string) => string, runAsync: (sql: string) => Promise<string>) {
 		this.#run = run;
+		this.#runAsync = runAsync;
 	}
 	query(sql: string): string {
 		return this.#run(sql).trim();
@@ -95,11 +98,11 @@ class Database {
 		return signature;
 	}
 	/** One function call, as PostgREST makes it; `session` runs it in another database session role (the vault's). */
-	rpc(method: string, args: Record<string, unknown>, session?: string): { status: number; value: unknown } {
+	#prepare(method: string, args: Record<string, unknown>, session?: string): string | undefined {
 		this.calls.push(method);
 		const keys = Object.keys(args);
 		const signature = this.#signature(method, keys);
-		if (!signature) return { status: 404, value: { code: "PGRST202", message: `No ${method}` } };
+		if (!signature) return undefined;
 		const tag = `q${randomBytes(6).toString("hex")}`;
 		const body = `$${tag}$${JSON.stringify(args)}$${tag}$::jsonb`;
 		const parameters = keys.map((key) => {
@@ -117,23 +120,52 @@ class Database {
 				: `select to_jsonb(${call});`;
 		// The native host's entry points are the anon role's, as PostgREST runs a call made with the publishable key.
 		const role = /^qorpera_native_(host_call|host_call_long|identity_call)$/.test(method) ? "anon" : "service_role";
-		try {
-			const out = this.query(`\\set VERBOSITY verbose
+		return `\\set VERBOSITY verbose
 				begin;
 				${session ? `set local session authorization ${session};` : ""}
 				${role === "anon" ? "set local role anon;" : ""}
 				select set_config('request.jwt.claims', '{"role":"${role}"}', true) \\g /dev/null
 				${select}
-				commit;`);
-			return { status: 200, value: out ? JSON.parse(out.split("\n").at(-1) ?? "null") : null };
+				commit;`;
+	}
+	#answer(out: string): { status: number; value: unknown } {
+		const text = out.trim();
+		return { status: 200, value: text ? JSON.parse(text.split("\n").at(-1) ?? "null") : null };
+	}
+	#refused(method: string, error: unknown): { status: number; value: unknown } {
+		const failed = /ERROR:\s+([0-9A-Z]{5}):\s*(.*)/.exec((error as Error)?.message ?? "");
+		if (!failed) throw error;
+		this.refusals.push(`${method}: ${failed[1]} ${failed[2]}`);
+		const code = failed[1] as string;
+		const status = code === "42501" ? 403 : code.startsWith("55") || code.startsWith("P0") ? 500 : 400;
+		return { status, value: { code, details: null, hint: null, message: failed[2] } };
+	}
+	rpc(method: string, args: Record<string, unknown>, session?: string): { status: number; value: unknown } {
+		const sql = this.#prepare(method, args, session);
+		if (sql === undefined) return { status: 404, value: { code: "PGRST202", message: `No ${method}` } };
+		try {
+			return this.#answer(this.#run(sql));
 		} catch (error) {
-			const failed = /ERROR:\s+([0-9A-Z]{5}):\s*(.*)/.exec((error as Error)?.message ?? "");
-			if (!failed) throw error;
-			this.refusals.push(`${method}: ${failed[1]} ${failed[2]}`);
-			const code = failed[1] as string;
-			const status = code === "42501" ? 403 : code.startsWith("55") || code.startsWith("P0") ? 500 : 400;
-			return { status, value: { code, details: null, hint: null, message: failed[2] } };
+			return this.#refused(method, error);
 		}
+	}
+	async rpcAsync(method: string, args: Record<string, unknown>, session?: string): Promise<{ status: number; value: unknown }> {
+		const sql = this.#prepare(method, args, session);
+		if (sql === undefined) return { status: 404, value: { code: "PGRST202", message: `No ${method}` } };
+		const started = Date.now();
+		try {
+			return this.#answer(await this.#runAsync(sql));
+		} catch (error) {
+			return this.#refused(method, error);
+		} finally {
+			const ms = Date.now() - started;
+			if (ms > (this.slowest.get(method) ?? 0)) this.slowest.set(method, ms);
+		}
+	}
+	async directAsync(method: string, args: Record<string, unknown>, session?: string): Promise<unknown> {
+		const { status, value } = await this.rpcAsync(method, args, session);
+		if (status === 200) return value;
+		throw Object.assign(new Error(String((value as { message?: string }).message)), { code: (value as { code?: string }).code });
 	}
 	direct(method: string, args: Record<string, unknown>, session?: string): unknown {
 		const { status, value } = this.rpc(method, args, session);
@@ -216,10 +248,32 @@ async function platform(): Promise<void> {
 	// Loaded from the repository as it is (bundled, its own file would no longer be its own: the warm copies hash it).
 	const cluster = join(REPO, "scripts", "test-hosted-db-cluster.mjs");
 	const { hostedDatabase } = (await import(cluster)) as {
-		hostedDatabase: (name: string) => Promise<{ cluster: { psql(db: string, sql: string, options: string[]): string }; close(): void }>;
+		hostedDatabase: (name: string) => Promise<{
+			cluster: { psql(db: string, sql: string, options: string[]): string; psqlArgs(db: string, options: string[]): string[] };
+			close(): void;
+		}>;
 	};
 	const database = await hostedDatabase(name);
-	const db = new Database((sql) => String(database.cluster.psql(name, sql, ["-qAt"])));
+	const db = new Database(
+		(sql) => String(database.cluster.psql(name, sql, ["-qAt"])),
+		(sql) =>
+			new Promise<string>((resolve, reject) => {
+				const child = spawn("docker", database.cluster.psqlArgs(name, ["-qAt"]), { stdio: ["pipe", "pipe", "pipe"] });
+				let out = "";
+				let err = "";
+				child.stdout.on("data", (chunk) => {
+					out += chunk;
+				});
+				child.stderr.on("data", (chunk) => {
+					err += chunk;
+				});
+				child.once("error", reject);
+				child.once("close", (code) =>
+					code === 0 ? resolve(out) : reject(new Error(`psql failed (exit ${code}):\n${(out + err).slice(-8000)}`)),
+				);
+				child.stdin.end(sql);
+			}),
+	);
 	const prelude = (binding: unknown) => `begin;
 ${helpers()}
 select set_config('qorpera_test.base_binding', '${JSON.stringify(binding)}', false) \\g /dev/null
@@ -384,19 +438,19 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			},
 			authority: {
 				takeClaudeLoginRenewal: async (request) =>
-					db.direct("qorpera_take_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
+					db.directAsync("qorpera_take_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
 						p_claude_login_id: request.claudeLoginId, p_purpose: request.purpose }, "qorpera_secret_broker"),
 				takeIdleClaudeLoginRenewal: async () =>
-					db.direct("qorpera_take_idle_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY },
+					db.directAsync("qorpera_take_idle_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY },
 						"qorpera_secret_broker"),
 				commitClaudeLoginRenewal: async (commit) =>
-					db.direct("qorpera_commit_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
+					db.directAsync("qorpera_commit_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
 						p_claude_login_id: commit.claudeLoginId, p_token: commit.token, p_base_version: commit.baseVersion,
 						p_base_envelope_sha256: commit.baseEnvelopeSha256, p_key_id: commit.keyId,
 						p_encrypted_envelope_base64: Buffer.from(commit.encryptedEnvelope).toString("base64"),
 						p_envelope_sha256: commit.envelopeSha256 }, "qorpera_secret_broker"),
 				releaseClaudeLoginRenewal: async (release) =>
-					db.direct("qorpera_release_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
+					db.directAsync("qorpera_release_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
 						p_claude_login_id: release.claudeLoginId, p_token: release.token, p_outcome: release.outcome }, "qorpera_secret_broker"),
 			},
 		});
@@ -405,7 +459,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			renewer,
 			authority: {
 				openClaudeLoginForRun: async (binding, _signal, knownVersion) =>
-					db.direct(
+					db.directAsync(
 						"qorpera_open_claude_login_for_run",
 						{
 							p_broker_authority_id: BROKER_AUTHORITY,
@@ -416,13 +470,13 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 						"qorpera_secret_broker",
 					),
 				openClaudeLoginForSealBack: async (binding) =>
-					db.direct(
+					db.directAsync(
 						"qorpera_open_claude_login_for_seal_back",
 						{ p_broker_authority_id: BROKER_AUTHORITY, p_broker_capability_sha256: BROKER_CAPABILITY, p_binding: binding },
 						"qorpera_secret_broker",
 					),
 				sealClaudeLoginBack: async (seal) =>
-					db.direct(
+					db.directAsync(
 						"qorpera_seal_claude_login_back",
 						{
 							p_broker_authority_id: BROKER_AUTHORITY,
@@ -488,14 +542,14 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 				return;
 			}
 			let answer: { status: number; value: unknown };
-			if (rpc) answer = db.rpc(rpc[1] as string, input);
+			if (rpc) answer = await db.rpcAsync(rpc[1] as string, input);
 			else if (control) {
 				const binding = input.binding as Record<string, unknown>;
 				const op = control[1];
-				const call: Record<string, () => { status: number; value: unknown }> = {
-					describeToolAuthority: () => db.rpc("qorpera_describe_native_tool_authority", { p_binding: binding }),
+				const call: Record<string, () => Promise<{ status: number; value: unknown }>> = {
+					describeToolAuthority: () => db.rpcAsync("qorpera_describe_native_tool_authority", { p_binding: binding }),
 					beginToolOperation: () =>
-						db.rpc("qorpera_begin_native_tool_operation", {
+						db.rpcAsync("qorpera_begin_native_tool_operation", {
 							p_binding: binding,
 							p_receipt_id: input.receiptId,
 							p_logical_operation_key: input.logicalOperationKey,
@@ -504,14 +558,14 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 							p_requires_company_revision: input.requiresCompanyRevision,
 						}),
 					completeToolOperation: () =>
-						db.rpc("qorpera_complete_native_tool_operation", {
+						db.rpcAsync("qorpera_complete_native_tool_operation", {
 							p_binding: binding,
 							p_receipt_id: input.receiptId,
 							p_input_sha256: input.inputSha256,
 							p_result: input.result,
 						}),
 					completeFolderToolOperation: () =>
-						db.rpc("qorpera_folder_complete_run_receipt", {
+						db.rpcAsync("qorpera_folder_complete_run_receipt", {
 							p_binding: binding,
 							p_receipt_id: input.receiptId,
 							p_input_sha256: input.inputSha256,
@@ -519,7 +573,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 							p_folder_commit_id: input.folderCommitId,
 						}),
 				};
-				answer = call[op as string]?.() ?? { status: 404, value: { message: "no such control" } };
+				answer = (await call[op as string]?.()) ?? { status: 404, value: { message: "no such control" } };
 			} else answer = { status: 404, value: { message: "no route" } };
 			response.writeHead(answer.status, { "content-type": "application/json" });
 			response.end(JSON.stringify(answer.value));
@@ -542,7 +596,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 					return;
 				}
 				const binding = JSON.parse(Buffer.from(String(request.headers["x-qorpera-native-binding"]), "base64url").toString("utf8"));
-				const { status } = db.rpc("qorpera_folder_confirm_object", {
+				const { status } = await db.rpcAsync("qorpera_folder_confirm_object", {
 					p_environment_id: environmentId,
 					p_actor: { kind: "run", runId: binding.runId, jobId: binding.jobId, runnerId: binding.runnerId, assignmentId: binding.assignmentId },
 					p_intent: request.headers["x-qorpera-upload-intent"],
@@ -601,7 +655,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		// instance on this test VM. Everything else (the session, the boot, the sharing rule) is SQL's answer as it is.
 		const dbControl = {
 			call: async (method: string, args: Record<string, unknown>) => {
-				const value = db.direct(method, args) as Record<string, unknown>;
+				const value = (await db.directAsync(method, args)) as Record<string, unknown>;
 				if (method === "qorpera_folder_home_session_window" && value?.state === "open")
 					return { ...value, placementId: PROOF_PLACEMENT };
 				return value;
@@ -1062,11 +1116,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			const versions = login()?.version ?? 0;
 			const t0 = Date.now();
 			const runs = await Promise.all(
-				bindings.map(async (binding, i) => {
-					// WHY: 5 s apart, as this proof's SQL stand-in runs every call through one synchronous psql; the runs overlap still.
-					await sleep(i * 5000);
-					return runWorker(binding, scenario(`${label}-${i}`, steps, `${final} ${i}.`, 1), { parallel: true });
-				}),
+				bindings.map((binding, i) =>
+					runWorker(binding, scenario(`${label}-${i}`, steps, `${final} ${i}.`, 1), { parallel: true }),
+				),
 			);
 			for (const [i, run] of runs.entries()) if (run.ok && run.providerSessionId) complete(bindings[i] as Record<string, string>, run.providerSessionId);
 			return { ids, startedIds, drained, runs, ms: Date.now() - t0, versionBefore: versions };
@@ -1147,6 +1199,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("canary-outputs", (everything.match(CANARY) ?? []).length === 0, `canaries in outputs, objects and steps: ${(everything.match(CANARY) ?? []).length}`);
 		check("canary-channels", sessions.canaryInChannels.length === 0, `canaries on the channels: ${sessions.canaryInChannels.length} of ${sessions.channelBytes} bytes, ${sessions.exec} channels`);
 		say(`refused SQL calls: ${db.refusals.slice(0, 12).join(" || ")}`);
+		say(`slowest stand-in calls (ms): ${JSON.stringify([...db.slowest].sort((a, b) => b[1] - a[1]).slice(0, 12))}`);
 		say(`renewals at the vault's stub: ${JSON.stringify(renewals().map((r) => `${r.sent}->${r.answer}`))}`);
 	} finally {
 		for (const child of children) child.kill();
