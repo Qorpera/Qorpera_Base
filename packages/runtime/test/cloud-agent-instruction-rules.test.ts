@@ -733,8 +733,18 @@ const RULES: [string, string, string, Run[]][] = [
 		ALL,
 	],
 	["5", "a live-data page's stand-in", "Playwright's addInitScript", ALL],
-	["5", "the official logo", "Only the brand's owner changes QorperaOS/brand/logo.svg.", ALL],
-	["5", "an app has no network", "An app has no network: put everything it needs in it.", ALL],
+	[
+		"5",
+		"the official logo",
+		"Only the brand's owner changes the logo: a square SVG of a drawn mark or one embedded picture (a data: URL), because nothing outside it loads, shown as small as about 34 px, so a detailed picture usually needs a simpler mark. Explore a logo in any medium; only the chosen mark becomes that file.",
+		ALL,
+	],
+	[
+		"5",
+		"an app has no network",
+		"An app has no network: put everything it needs in its folder, pictures and films too.",
+		ALL,
+	],
 	["5", "post_app", "Post an app with post_app when every member should keep coming back to it", STAFF],
 	["5", "going live waits for a yes", "it goes live on a member's yes, because customers cannot unsee it", STAFF],
 	[
@@ -765,8 +775,8 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	[
 		"5",
-		"the first concept on the day of the brief",
-		"whoever owns the product makes the first on the day of the first brief, opening on the key moments, never on the brief's text",
+		"the first concept in the owner's first run",
+		"whoever owns the product makes the first in its first run, from the founders' own words and before any document but the brief, opening on the key moments, never on the brief's text",
 		STAFF,
 	],
 	[
@@ -808,7 +818,12 @@ const RULES: [string, string, string, Run[]][] = [
 		"When something is hard, say what and how you will get there; never build something smaller instead.",
 		STAFF,
 	],
-	["5", "the solution first", "The solution comes first.", STAFF],
+	[
+		"5",
+		"the solution beside the first concept",
+		"The first concept comes at once, from what the founders described; the solution is worked out beside it and corrects it.",
+		STAFF,
+	],
 	[
 		"5",
 		"the need, never the method",
@@ -838,16 +853,52 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"four steps, none skipped",
-		"Then four steps, none skipped, because building before the idea is shaped gives a guess dressed up as a product:",
+		"Concepts take four steps, none skipped, because building before the idea is shaped gives a guess dressed up as a product:",
 		STAFF,
 	],
 	[
 		"5",
-		"the brief and the storyboard",
-		"show it as a storyboard in the concepts app (one screen or scene per moment, two or three words each, plainly a first sketch)",
+		"the first concept looks real",
+		"The first concept shows those moments as a customer will meet them: a physical product as a render of the thing in use that looks real, software as real screens of those moments to click through, in the look of the best products in its field; never wireframes, line drawings or form fields on a blank page.",
 		STAFF,
 	],
-	["5", "nothing further until the storyboard", "Build nothing further until it shows what they said.", STAFF],
+	[
+		"5",
+		"a first take asked about on a card",
+		"It is a first take: ask on a card that links the app whether this is their product and what is missing.",
+		STAFF,
+	],
+	["5", "nothing further until the first concept", "Build nothing further until it shows what they said.", STAFF],
+	[
+		"5",
+		"plans for later stages wait",
+		"plans for later stages (test and lab protocols, cost and resource models, production, support) wait for their answer unless a founder asks for one, because it can change all of them. This orders the work and caps none of it.",
+		STAFF,
+	],
+	[
+		"5",
+		"no notes on a concept's screens",
+		"What is simulated, unproven or undecided is said once in strategy/solution.md, never as notes on a concept's screens; only a generated picture still says it is an illustration.",
+		STAFF,
+	],
+	[
+		"5",
+		"judged by eye against the founders' words",
+		"Hold it against the founders' own words for how it should feel: would they know it at a glance? Contrast, licences and a size it must read at are checks, not that judgement.",
+		ALL,
+	],
+	[
+		"5",
+		"SVG only where the app draws the file",
+		"SVG is required only where the app draws the file itself: an app's icons and the logo, QorperaOS/brand/logo.svg; anything else you design takes whatever shows it best (a generated picture, a render, a photo, a film, canvas or WebGL).",
+		ALL,
+	],
+	[
+		"5",
+		"ideas on the company's own product",
+		"Each idea is shown on the company's own product and subject; never keep them out of a worker's pictures.",
+		STAFF,
+	],
 	["5", "the moodboard", "screenshots of the best products and other references in research/moodboard/", STAFF],
 	["5", "text is not looking", "Research that is only text is not looking.", STAFF],
 	["5", "directions picked by the founders", "picked by the founders on a card that previews them", STAFF],
@@ -1021,7 +1072,19 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the Co-Founder sees the concepts through",
-		"You see that the solution comes first, write the concept brief with the founders and see the concepts through (see Concepts).",
+		"You write the concept brief with the founders, see that the first concept reaches them at once with the solution worked out beside it, and see the concepts through (see Concepts).",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"builders' first assignments move the first concept",
+		"Each whose expertise the first concept needs gets a first assignment that moves it, not a foundation document (for a headband with an app: its form for the render, what the app may honestly show, the screens), and plans for later stages wait for the founders' answer to it.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"a blocked owner gets an answer in that run",
+		"When an owner tells you it is blocked, act in that run: another agent, a worker, another source, or the one exact step asked of the founders on a card.",
 		COFOUNDER,
 	],
 	[
@@ -1091,8 +1154,20 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	[
 		"7",
-		"the brand's first identity",
-		"the official logo at QorperaOS/brand/logo.svg (a square, self-contained SVG with no outside fonts, pictures or links, readable at 32 px",
+		"the brand's first directions",
+		"The Brand owner's first assignment is two to four clearly different directions, each the company's product in its world in that look, in a real picture (rendered or generated) or a short film with the feeling the founders' own words name, for the founders to pick from on a card (the board kit's choose).",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the chosen direction becomes the identity",
+		"Only the chosen one becomes the identity in QorperaOS/brand/: colours, fonts, a short guide and the official logo, QorperaOS/brand/logo.svg, which the app shows wherever the company appears.",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the product's builders move the first concept",
+		"add the product's builders once it is clear, with first assignments that move the first concept. Set up your daily plan routine.",
 		FOUNDING,
 	],
 	[
@@ -1309,6 +1384,18 @@ const RULES: [string, string, string, Run[]][] = [
 		EMPLOYEE,
 	],
 	["8", "no templates", "Make files when the work needs them, never templates in advance.", EMPLOYEE],
+	[
+		"8",
+		"plans for later stages wait for the first concept",
+		"Plans for later stages wait until the founders have said the first concept is their product (see Concepts).",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"a refused or blocked step: the outcome is still yours",
+		"When a step of your work, or of a worker's, is refused or blocked, the outcome is still yours: leave the refused step refused and reach the outcome another honest way (the web tools, another source, plain steps); when you cannot, ask a member on a card for the one thing you need, or tell the Co-Founder in one line when no member can give it. A todo marked blocked with nobody asked is no answer.",
+		EMPLOYEE,
+	],
 	[
 		"8",
 		"a real exception",
@@ -1813,6 +1900,9 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		["the hand-off once the founding is done", "close Start with the founders", ["cofounder-member-agreed"]],
 		["calling a skill by name", "/its-name", [...WORKERS, "read-only-worker"]],
 		["the Co-Founder's role", "# Your role: Co-Founder", [...EMPLOYEE, ...WORKERS]],
+		["the first team in one call without hire_team", "hire_team", [...COFOUNDER, ...EMPLOYEE, ...WORKERS]],
+		["a sketch for the first concept", "plainly a first sketch", [...STAFF, ...WORKERS]],
+		["the solution ahead of the first concept", "The solution comes first.", [...STAFF, ...WORKERS]],
 		// The reading is the Co-Founder's to keep, its senses too; the owner's wake question is the owner's.
 		[
 			"keeping the reading",

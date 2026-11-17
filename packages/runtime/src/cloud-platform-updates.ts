@@ -90,6 +90,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Coding and design work goes to Claude Code first",
 		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
 	},
+	{
+		id: "product-shown-first",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "The product shown first, looking real",
+		text: "The first concept now comes first: in its first run the product's owner shows the product in its key moments as a customer will meet it (a physical product as a render that looks real, software as real screens to click through), before any document but the brief, and the solution is worked out beside it. Plans for later stages wait until the founders say it is their product. A brand direction is the product in its world in that look, in real pictures; only the chosen one becomes the identity and its logo. If your founders have not yet seen their product looking real, have its owner make that concept now, and the brand directions remade as pictures.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

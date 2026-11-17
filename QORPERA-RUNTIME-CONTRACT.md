@@ -6953,6 +6953,31 @@ worker's run is claimed only by a shared execution host), never before it.
 4. **The way back** is one statement, and leaves the listed companies on:
    `update public.qorpera_home_settings set every_company = false where singleton;`
 
+### 2026-11-17 amendment: agents show the product first
+
+> The founder, 17 November 2026, on the lead's review of his test company mywave (the storyboard reached the founders
+> 53 minutes after the start, as form fields beside a line drawing, after more than 30 documents): "1-4 straight yes",
+> and "make sure they are not feeling forced to only use SVG". It adds to the 2026-10-22 amendment's item 3. The hire
+> overlay is v19. It goes live with the runtime bundle that carries it.
+
+1. **The first concept first.** The product's owner makes the first concept in its first run, before any document but
+   the brief: the product in its key moments as a customer will meet it, a physical product as a render that looks
+   real, software as real screens to click through. The solution (strategy/solution.md) is worked out beside it and
+   corrects it. Until the founders say it is their product, plans for later stages wait for their answer unless a
+   founder asks for one; that orders the work and caps none of it. What is simulated or undecided is said in the
+   solution, never as notes on a concept's screens.
+2. **The founding team.** The first assignments of the researcher, market watcher and strategist stay due within a day
+   or two. The product's builders get first assignments that move the first concept. The Brand owner's first assignment
+   is two to four directions, each the company's product in its world in a real picture or film, picked by the founders
+   on a card; only the chosen one becomes the identity in `QorperaOS/brand/` with its logo. A run offered `hire_team`
+   is told to hire the first team in one call and later hires one at a time.
+3. **Blocked work.** An owner whose step is refused or blocked still owns the outcome: the refused step stays refused,
+   and it reaches the outcome another honest way, or asks a member on a card, or tells the Co-Founder. The Co-Founder
+   acts in the run an owner tells it, besides the planning run's rule for a blocker reported twice.
+4. **SVG only where the app draws the file.** An app's icons and `QorperaOS/brand/logo.svg` are SVG; the logo may hold
+   a drawn mark or one embedded picture and nothing outside it. Anything else an agent designs takes whatever shows it
+   best.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

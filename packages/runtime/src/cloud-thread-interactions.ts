@@ -75,7 +75,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 					preview: chars(
 						1,
 						512,
-						"A picture of this option for a visual choice: the company file path of an image you made for it (an SVG sketch, a PNG), or app:<name> for an interface app that shows it. Options with pictures show as big boxes the member picks from.",
+						"A picture of this option for a visual choice: the company file path of an image you made for it (generated, rendered or drawn), or app:<name> for an interface app that shows it. Options with pictures show as big boxes the member picks from.",
 					),
 				}),
 			},
@@ -232,7 +232,7 @@ const ASK_MEMBER_WORDS = [
 	"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you. Then look, since I'm done is not proof of a sign-in. With no desktop computer, say so.",
 	"- draft: an email or message the member edits, then saves, sends or discards. Raise it directly, with no question before it. A card neither sends nor saves anything and asking for a draft never allows sending: report saved or sent only from a tool result or the card's outcome; a sent outcome is already sent.",
 	"Form and credential cards are refused. Passwords, tokens and one-time codes never go in chat or in a question's answer, and a question's answer never bypasses an approval the platform requires.",
-	"Say each thing once across title, body, text and chat. When the choice is visual (a look, a product, a layout), make a picture of each option first, an SVG sketch or an interface app, and set its preview: the card shows big pictures to pick from.",
+	"Say each thing once across title, body, text and chat. When the choice is visual (a look, a product, a layout), make a picture of each option first (generated, rendered or drawn) or an interface app, and set its preview: the card shows big pictures to pick from.",
 	"The answer wakes you as qorpera.interaction-answer/v1, as the next input or as the request with the card it answers: an outcome, and a question's chosen values. A secret's answer holds only the vault secret's id, version and connectorId (default vault), never the value. A declined, dismissed or expired card is an answer: do not raise it again at once. In your own shared thread only the member you answer can answer the card.",
 	"payload follows the closed schema of its surface; text limits count UTF-8 bytes.",
 ];
