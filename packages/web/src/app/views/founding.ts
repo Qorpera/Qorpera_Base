@@ -8,7 +8,6 @@ import type { FoundingField } from "../../cloud/founding-presence.ts";
 import { button, confirmDialog, fmtTime, h, icon, notice, personAvatar, personColor, spinner } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { FounderLive, FoundingController } from "../founding.ts";
-import { pendingSpectators } from "../pending-spectators.ts";
 import { navigate } from "../router.ts";
 import { mountCrown } from "./crown.ts";
 import { claimStartCrown } from "./start-crown.ts";
@@ -698,7 +697,7 @@ export class FoundingView {
 	}
 
 	#open(table: CompanyFounding): void {
-		const spectators = pendingSpectators(table.profileId, this.#founding.userId);
+		const spectators = this.#founding.store.get().spectators ?? [];
 		this.#pending.hidden = spectators.length === 0;
 		this.#pending.textContent = spectators.length
 			? t("{emails} will be invited to follow once the company starts.", { emails: spectators.join(", ") })

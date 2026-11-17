@@ -390,6 +390,27 @@ export class CloudApi {
 			.then(parseCompanyTimeZone);
 	}
 
+	addPendingSpectators(profileId: string, emails: readonly string[]): Promise<string[]> {
+		return this.cloud
+			.rpc("qorpera_add_pending_spectators", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_emails: [...emails],
+			})
+			.then(parseEmails);
+	}
+
+	listPendingSpectators(profileId: string): Promise<string[]> {
+		return this.cloud
+			.rpc("qorpera_list_pending_spectators", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseEmails);
+	}
+
+	invitePendingSpectators(profileId: string): Promise<string[]> {
+		return this.cloud
+			.rpc("qorpera_invite_pending_spectators", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseEmails);
+	}
+
 	inviteMember(
 		profileId: string,
 		email: string,
@@ -1066,4 +1087,10 @@ function parseSecretCaptureTicket(value: unknown): CloudSecretCaptureTicket {
 		version: scope.version as number,
 		expiresAt: input.expiresAt,
 	};
+}
+
+function parseEmails(value: unknown): string[] {
+	if (!Array.isArray(value) || !value.every((item) => typeof item === "string"))
+		throw new Error("The cloud answered something other than a list of emails.");
+	return value;
 }

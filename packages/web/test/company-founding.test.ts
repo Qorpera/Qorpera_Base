@@ -1200,21 +1200,34 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
 		});
 
-		it("says at the table who will be invited to follow once the company starts", async () => {
+		it("keeps the spectators picked in the box on the server, and says at the table who will follow", async () => {
 			const { api, cloud } = fixture();
 			vi.mocked(cloud.rpc).mockImplementation(async () =>
 				wire({ me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false } }),
 			);
-			localStorage.setItem(`qorpera:pending-spectators:${table}:${me}`, JSON.stringify(["mom@example.test"]));
-			try {
-				open(api);
-				await settle();
-				expect(visibleText(container)).toContain(
-					"mom@example.test will be invited to follow once the company starts.",
-				);
-			} finally {
-				localStorage.removeItem(`qorpera:pending-spectators:${table}:${me}`);
-			}
+			const kept = vi.mocked(api.addPendingSpectators).mockResolvedValue(["mom@example.test"]);
+			setFoundingIntent(table, { friends: true, spectators: ["mom@example.test"] });
+			open(api);
+			await settle();
+			await settle();
+			expect(kept).toHaveBeenCalledWith(table, ["mom@example.test"]);
+			expect(kept).toHaveBeenCalledTimes(1);
+			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
+			expect(visibleText(container)).toContain(
+				"mom@example.test will be invited to follow once the company starts.",
+			);
+		});
+
+		it("reads who will follow at a table someone else opened", async () => {
+			const { api, cloud } = fixture();
+			vi.mocked(cloud.rpc).mockImplementation(async () => wire());
+			vi.mocked(api.listPendingSpectators).mockResolvedValue(["gran@example.test"]);
+			open(api);
+			await settle();
+			await settle();
+			expect(visibleText(container)).toContain(
+				"gran@example.test will be invited to follow once the company starts.",
+			);
 		});
 
 		it("offers Open on the same scene once the company is ready, should the way into it not come", async () => {

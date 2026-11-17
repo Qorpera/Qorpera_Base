@@ -254,6 +254,9 @@ export function fixture() {
 		source: "fixture",
 	});
 	vi.spyOn(api, "getTeam").mockResolvedValue(team);
+	vi.spyOn(api, "listPendingSpectators").mockResolvedValue([]);
+	vi.spyOn(api, "addPendingSpectators").mockResolvedValue([]);
+	vi.spyOn(api, "invitePendingSpectators").mockResolvedValue([]);
 	vi.spyOn(api, "listStaff").mockResolvedValue([staff]);
 	vi.spyOn(api, "listSessions").mockResolvedValue([session]);
 	vi.spyOn(api, "getOrganization").mockResolvedValue(undefined);

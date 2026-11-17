@@ -17,7 +17,6 @@ import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, repl
 import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
 import { lobbyError, setFoundingIntent } from "../founding.ts";
-import { keepPendingSpectators, pendingSpectators } from "../pending-spectators.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { companyNameFromIdea, renderNewCompany, type Viewer } from "./new-company.ts";
@@ -365,12 +364,8 @@ export class HubController {
 				...(creation.intent === "start" ? { start: true } : {}),
 				...(pending ? { vision: pending } : {}),
 				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
+				...(creation.spectators?.length ? { spectators: [...creation.spectators] } : {}),
 			});
-			if (creation.spectators?.length && this.#userId)
-				keepPendingSpectators(table.profileId, this.#userId, [
-					...pendingSpectators(table.profileId, this.#userId),
-					...creation.spectators,
-				]);
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;
 		} catch (error) {

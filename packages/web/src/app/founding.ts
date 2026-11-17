@@ -16,7 +16,6 @@ import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { HostedFriend } from "../cloud/types.ts";
 import { t } from "../ui/preferences.ts";
-import { keepPendingSpectators } from "./pending-spectators.ts";
 import { Store } from "./state.ts";
 import { ConnectionsView, memberProviderSignIns } from "./views/settings-connections.ts";
 
@@ -92,6 +91,7 @@ export interface FoundingState {
 	 * the ChatGPT step before it) instead of the table (Jonas, 9 Nov 2026). */
 	autoStart?: boolean;
 	startedAlone?: boolean;
+	spectators?: readonly string[];
 	/** What the others are writing: one per person and field, newest first. */
 	liveText?: FounderLive[];
 }
@@ -114,13 +114,14 @@ export interface FoundingIntent {
 	vision?: string;
 	start?: boolean;
 	founders?: string[];
+	spectators?: string[];
 }
 
 const intents = new Map<string, FoundingIntent>();
 const intentKey = (profileId: string) => `qorpera:founding-intent:${profileId}`;
 
 export function setFoundingIntent(profileId: string, intent: FoundingIntent): void {
-	if (!intent.friends && !intent.vision && !intent.start && !intent.founders?.length) {
+	if (!intent.friends && !intent.vision && !intent.start && !intent.founders?.length && !intent.spectators?.length) {
 		intents.delete(profileId);
 		try {
 			sessionStorage.removeItem(intentKey(profileId));
@@ -145,11 +146,13 @@ function takeFoundingIntent(profileId: string): FoundingIntent | undefined {
 		if (!saved || typeof saved !== "object") return undefined;
 		const vision = "vision" in saved && typeof saved.vision === "string" ? saved.vision.trim() : "";
 		const founders = "founders" in saved ? texts(saved.founders) : [];
+		const spectators = "spectators" in saved ? texts(saved.spectators) : [];
 		return {
 			...("friends" in saved && saved.friends === true ? { friends: true } : {}),
 			...(vision ? { vision } : {}),
 			...("start" in saved && saved.start === true ? { start: true } : {}),
 			...(founders.length ? { founders } : {}),
+			...(spectators.length ? { spectators } : {}),
 		};
 	} catch {
 		return undefined;
@@ -209,6 +212,9 @@ export class FoundingController {
 	#autoStarting = false;
 	#founders: string[] = [];
 	#invitingFounders = false;
+	#spectators: string[] = [];
+	#spectatorsSent = false;
+	#spectatorsRead = false;
 	readonly #openedAt = Date.now();
 	#waitingForLogin = false;
 	/** The page's check for words in its fields that the table on the server does not have (FoundingView). */
@@ -244,6 +250,7 @@ export class FoundingController {
 		this.#pendingVision = intent?.vision?.trim() || undefined;
 		this.#autoStart = intent?.start === true;
 		this.#founders = intent?.founders ?? [];
+		this.#spectators = intent?.spectators ?? [];
 		// The friends list opens once; the idea stays kept until it is saved, the start until it is done.
 		this.#keepIntent();
 		if (this.#autoStart) this.store.set({ autoStart: true });
@@ -333,6 +340,7 @@ export class FoundingController {
 		this.#showPresence();
 		this.#savePendingVision(table);
 		this.#inviteFounders(table);
+		this.#keepSpectators(table);
 		this.#startByItself(table);
 		// Made, with its Co-Founder's first run queued or under way: the founders go straight to it (Jonas, 4 October
 		// 2026). A first run that waits for a login or failed keeps the page, which says why; so does one waiting for a
@@ -392,7 +400,42 @@ export class FoundingController {
 			...(this.#pendingVision ? { vision: this.#pendingVision } : {}),
 			...(this.#autoStart ? { start: true } : {}),
 			...(this.#founders.length ? { founders: this.#founders } : {}),
+			...(this.#spectators.length ? { spectators: this.#spectators } : {}),
 		});
+	}
+
+	#keepSpectators(table: CompanyFounding): void {
+		if (this.#spectators.length && !this.#spectatorsSent && table.me.canManage) {
+			this.#spectatorsSent = true;
+			const picked = [...this.#spectators];
+			void this.#api.addPendingSpectators(this.profileId, picked).then(
+				(spectators) => {
+					this.#spectators = [];
+					this.#keepIntent();
+					if (!this.disposed) this.store.set({ spectators });
+				},
+				() => {
+					if (!this.disposed)
+						this.store.set({
+							error: t(
+								"{emails} could not be kept to follow the company. Invite them from the team page once it starts.",
+								{
+									emails: picked.join(", "),
+								},
+							),
+						});
+				},
+			);
+			return;
+		}
+		if (this.#spectatorsRead || this.#spectators.length) return;
+		this.#spectatorsRead = true;
+		void this.#api.listPendingSpectators(this.profileId).then(
+			(spectators) => {
+				if (!this.disposed && spectators.length) this.store.set({ spectators });
+			},
+			() => undefined,
+		);
 	}
 
 	#inviteFounders(table: CompanyFounding): void {
@@ -886,7 +929,6 @@ export class FoundingController {
 	}
 
 	#gone(reason: NonNullable<FoundingState["gone"]>): void {
-		keepPendingSpectators(this.profileId, this.userId, []);
 		clearTimeout(this.#timer);
 		this.#closeConnections();
 		this.#leavePresence();

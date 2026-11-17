@@ -82,8 +82,8 @@ export const FOUNDING: Record<string, string> = {
 	"Your friends could not be read.": "Dine venner kunne ikke læses.",
 	"{emails} will be invited to follow once the company starts.":
 		"{emails} bliver inviteret til at følge med, når virksomheden starter.",
-	"{emails} could not be invited to follow. Invite them from the team page.":
-		"{emails} kunne ikke inviteres til at følge med. Inviter dem fra teamsiden.",
+	"{emails} could not be kept to follow the company. Invite them from the team page once it starts.":
+		"{emails} kunne ikke gemmes til at følge virksomheden. Inviter dem fra teamsiden, når den er startet.",
 	"A webshop with ceramics": "En webshop med keramik",
 	"A marketing agency": "Et marketingbureau",
 	"A café with takeaway": "En café med takeaway",

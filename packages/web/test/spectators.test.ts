@@ -2,82 +2,65 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import { invitePendingSpectators, keepPendingSpectators, pendingSpectators } from "../src/app/pending-spectators.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { fixture, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const profileId = profileA.profileId;
-const me = userA.id;
-const others = { ...team, profileId, members: [], invitations: [] };
 const cleanup: (() => void)[] = [];
 
 afterEach(() => {
 	for (const done of cleanup.splice(0)) done();
-	localStorage.clear();
 	document.body.replaceChildren();
 });
 
 describe("spectators picked as a company is made", () => {
-	it("are invited as viewers and forgotten once invited", async () => {
-		const { api } = fixture();
-		const invite = vi.spyOn(api, "inviteMember").mockResolvedValue({} as never);
-		keepPendingSpectators(profileId, me, ["mom@example.test", "mom@example.test", "dad@example.test"]);
-		expect(pendingSpectators(profileId, me)).toEqual(["mom@example.test", "dad@example.test"]);
-		expect(await invitePendingSpectators(api, others, me)).toEqual([]);
-		expect(invite).toHaveBeenCalledWith(profileId, "mom@example.test", "viewer");
-		expect(invite).toHaveBeenCalledWith(profileId, "dad@example.test", "viewer");
-		expect(pendingSpectators(profileId, me)).toEqual([]);
-	});
-
-	it("keeps those whose invite failed, for the next time the company opens", async () => {
-		const { api } = fixture();
-		vi.spyOn(api, "inviteMember").mockImplementation(async (_profile, email) => {
-			if (email === "dad@example.test") throw new Error("offline");
-			return {} as never;
-		});
-		keepPendingSpectators(profileId, me, ["mom@example.test", "dad@example.test"]);
-		expect(await invitePendingSpectators(api, others, me)).toEqual(["dad@example.test"]);
-		expect(pendingSpectators(profileId, me)).toEqual(["dad@example.test"]);
-	});
-
-	it("skip whoever the team already has, and take an invitation already there as done", async () => {
-		const { api } = fixture();
-		const invite = vi
-			.spyOn(api, "inviteMember")
-			.mockRejectedValue(
-				new CloudRpcError("qorpera_invite_profile_member", { code: "23505", message: "exists" }, 409),
-			);
-		keepPendingSpectators(profileId, me, ["mom@example.test", "dad@example.test"]);
-		const known = {
-			...others,
-			members: [{ ...team.members[0]!, email: "Mom@Example.test" }],
-		};
-		expect(await invitePendingSpectators(api, known, me)).toEqual([]);
-		expect(invite).toHaveBeenCalledTimes(1);
-		expect(invite).toHaveBeenCalledWith(profileId, "dad@example.test", "viewer");
-		expect(pendingSpectators(profileId, me)).toEqual([]);
-	});
-
-	it("belong to the person who picked them", () => {
-		keepPendingSpectators(profileId, me, ["mom@example.test"]);
-		expect(pendingSpectators(profileId, "someone-else")).toEqual([]);
-	});
-
-	it("are invited when an owner opens the company, from any page, and a failure says so", async () => {
+	it("are invited from the server's list when an owner opens the company, and the team is read again", async () => {
 		const f = fixture();
-		vi.spyOn(f.api, "inviteMember").mockRejectedValue(new Error("offline"));
-		keepPendingSpectators(profileId, me, ["mom@example.test"]);
+		const invite = vi.mocked(f.api.invitePendingSpectators).mockResolvedValue(["mom@example.test"]);
 		const company = new CompanyController(f.api, profileA, userA.id);
 		cleanup.push(() => company.stop());
 		await company.refreshTeam();
 		await settle();
-		expect(f.api.inviteMember).toHaveBeenCalledWith(profileId, "mom@example.test", "viewer");
+		expect(invite).toHaveBeenCalledWith(profileId);
+		expect(invite).toHaveBeenCalledTimes(1);
+		expect(f.api.getTeam).toHaveBeenCalledTimes(2);
+	});
+
+	it("says so when the invites could not go out, once, and says nothing on a cloud without the list", async () => {
+		const f = fixture();
+		vi.mocked(f.api.invitePendingSpectators).mockRejectedValue(new Error("offline"));
+		const company = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => company.stop());
+		await company.refreshTeam();
+		await settle();
 		expect(company.store.get().error).toBe(
-			"mom@example.test could not be invited to follow. Invite them from the team page.",
+			"The spectators picked for this company could not be invited yet. Opening it again tries once more.",
 		);
-		expect(pendingSpectators(profileId, me)).toEqual(["mom@example.test"]);
+		const older = fixture();
+		vi.mocked(older.api.invitePendingSpectators).mockRejectedValue(
+			new CloudRpcError("qorpera_invite_pending_spectators", { code: "PGRST202", message: "missing" }, 404),
+		);
+		const old = new CompanyController(older.api, profileA, userA.id);
+		cleanup.push(() => old.stop());
+		await old.refreshTeam();
+		await settle();
+		expect(old.store.get().error).toBeUndefined();
+	});
+
+	it("are never sent by someone who may not manage members", async () => {
+		const f = fixture();
+		vi.mocked(f.api.getTeam).mockResolvedValue({
+			...team,
+			role: "viewer",
+			capabilities: { ...team.capabilities, write: false, manageMembers: false },
+		});
+		const invite = vi.mocked(f.api.invitePendingSpectators);
+		const company = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => company.stop());
+		await company.refreshTeam();
+		expect(invite).not.toHaveBeenCalled();
 	});
 });
 

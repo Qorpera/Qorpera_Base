@@ -85,7 +85,6 @@ import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
 import { MemberChats } from "./member-chats.ts";
-import { invitePendingSpectators, pendingSpectators } from "./pending-spectators.ts";
 import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
 import {
 	appendQuoted,
@@ -1084,17 +1083,18 @@ export class CompanyController {
 	 * browser. */
 	async #invitePendingSpectators(team: HostedProfileTeam): Promise<void> {
 		if (this.#spectatorsInvited || !team.capabilities.manageMembers) return;
-		if (!pendingSpectators(this.profile.profileId, this.#userId).length) return;
 		this.#spectatorsInvited = true;
-		const missed = await invitePendingSpectators(this.#api, team, this.#userId);
-		if (this.#stopped) return;
-		if (missed.length)
+		try {
+			const invited = await this.#api.invitePendingSpectators(this.profile.profileId);
+			if (!this.#stopped && invited.length) void this.refreshTeam();
+		} catch (error) {
+			if (this.#stopped || (error instanceof CloudRpcError && error.missing)) return;
 			this.store.set({
-				error: t("{emails} could not be invited to follow. Invite them from the team page.", {
-					emails: missed.join(", "),
-				}),
+				error: t(
+					"The spectators picked for this company could not be invited yet. Opening it again tries once more.",
+				),
 			});
-		else void this.refreshTeam();
+		}
 	}
 
 	async #offerTimeZone(team: HostedProfileTeam): Promise<void> {
