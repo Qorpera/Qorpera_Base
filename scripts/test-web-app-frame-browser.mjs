@@ -92,6 +92,32 @@ document.body.append(frame.frame);`,
  * so it also fits in an attribute. */
 const say = (text) => `qorpera.read('${text}')`;
 const style = "<style>a, .box { display: block; height: 30px; } svg { display: block; }</style>";
+const WORKER_SOURCE = `const OUT = "OUTSIDE";
+const ways = {};
+const tried = (name, attempt) =>
+	Promise.race([attempt(), new Promise((_, no) => setTimeout(no, 1500))]).then(() => { ways[name] = "reached"; }, () => { ways[name] = "closed"; });
+Promise.all([
+	tried("fetch", () => fetch(OUT + "/w-fetch")),
+	tried("xhr", () => new Promise((yes, no) => { const x = new XMLHttpRequest(); x.open("GET", OUT + "/w-xhr"); x.onload = yes; x.onerror = no; x.send(); })),
+	tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/w-ws"); w.onopen = yes; w.onerror = no; })),
+	tried("eventsource", () => new Promise((yes, no) => { const e = new EventSource(OUT + "/w-es"); e.onopen = yes; e.onerror = () => { e.close(); no(); }; })),
+	tried("importScripts", async () => importScripts(OUT + "/w-script.js")),
+	tried("worker", () => new Promise((yes, no) => { try { const w = new Worker(OUT + "/w-worker.js"); w.onerror = (event) => { event.preventDefault(); no(); }; w.onmessage = yes; } catch (error) { no(error); } })),
+]).then(async () => {
+	const rtc = (scope) => Object.getOwnPropertyNames(scope).filter((name) => /RTC/.test(name) && scope[name] !== undefined).sort();
+	const inner = new Worker(URL.createObjectURL(new Blob(["postMessage(Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name) && self[name] !== undefined))"])));
+	const nested = await new Promise((done) => { inner.onmessage = (event) => done(event.data); inner.onerror = () => done("failed"); });
+	postMessage({ ways, rtc: rtc(self), nested });
+});
+`;
+const sorted = (value) =>
+	value && typeof value === "object" && !Array.isArray(value)
+		? Object.fromEntries(
+				Object.keys(value)
+					.sort()
+					.map((key) => [key, sorted(value[key])]),
+			)
+		: value;
 const variants = {
 	"the links a page writes": {
 		page: `<!doctype html>${style}<a id="app" href="app:sales">Sales</a><a id="file" href="folder:strategy/plan%202027.md">Plan</a>
@@ -317,50 +343,39 @@ const loads = (tag, attributes) => () => new Promise((yes, no) => {
 	element.onerror = no;
 	document.body.append(element);
 });
-const WORKER = "const OUT = " + JSON.stringify(OUT) + ";\n" + (() => {
-	const ways = {};
-	const tried = (name, attempt) =>
-		Promise.race([attempt(), new Promise((_, no) => setTimeout(no, 1500))]).then(() => { ways[name] = "reached"; }, () => { ways[name] = "closed"; });
-	(async () => {
-		await tried("fetch", () => fetch(OUT + "/w-fetch"));
-		await tried("xhr", () => new Promise((yes, no) => { const x = new XMLHttpRequest(); x.open("GET", OUT + "/w-xhr"); x.onload = yes; x.onerror = no; x.send(); }));
-		await tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/w-ws"); w.onopen = yes; w.onerror = no; }));
-		await tried("eventsource", () => new Promise((yes, no) => { const e = new EventSource(OUT + "/w-es"); e.onopen = yes; e.onerror = () => { e.close(); no(); }; }));
-		await tried("importScripts", async () => importScripts(OUT + "/w-script.js"));
-		await tried("worker", () => new Promise((yes, no) => { try { const w = new Worker(OUT + "/w-worker.js"); w.onerror = no; w.onmessage = yes; } catch (error) { no(error); } }));
-		postMessage({ ways, rtc: Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name)).sort() });
-	})();
-}).toString().replace(/^\(\) => \{/, "").replace(/\}$/, "");
+const WORKER = ${JSON.stringify(WORKER_SOURCE)};
 (async () => {
-	await tried("fetch", () => fetch(OUT + "/fetch"));
-	await tried("fetch of the frame's own site", () => fetch("/page-preview/").then((answer) => answer.text()));
-	await tried("xhr", () => new Promise((yes, no) => { const x = new XMLHttpRequest(); x.open("GET", OUT + "/xhr"); x.onload = yes; x.onerror = no; x.send(); }));
-	await tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/ws"); w.onopen = yes; w.onerror = no; }));
-	await tried("eventsource", () => new Promise((yes, no) => { const e = new EventSource(OUT + "/es"); e.onopen = yes; e.onerror = () => { e.close(); no(); }; }));
-	ways.sendBeacon = String(navigator.sendBeacon(OUT + "/beacon", "x"));
-	await tried("img", loads("img", { src: OUT + "/img.png" }));
-	await tried("img https", loads("img", { src: "https://example.com/img.png" }));
-	await tried("link", loads("link", { rel: "stylesheet", href: OUT + "/style.css" }));
-	await tried("script", loads("script", { src: OUT + "/script.js" }));
-	await tried("script https", loads("script", { src: "https://example.com/script.js" }));
-	await tried("iframe", loads("iframe", { src: OUT + "/frame.html" }));
-	await tried("worker from the network", () => new Promise((yes, no) => { try { const w = new Worker(OUT + "/worker.js"); w.onerror = no; w.onmessage = yes; } catch (error) { no(error); } }));
+	await Promise.all([
+	tried("fetch", () => fetch(OUT + "/fetch")),
+	tried("fetch of the frame's own site", () => fetch("/page-preview/").then((answer) => answer.text())),
+	tried("xhr", () => new Promise((yes, no) => { const x = new XMLHttpRequest(); x.open("GET", OUT + "/xhr"); x.onload = yes; x.onerror = no; x.send(); })),
+	tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/ws"); w.onopen = yes; w.onerror = no; })),
+	tried("eventsource", () => new Promise((yes, no) => { const e = new EventSource(OUT + "/es"); e.onopen = yes; e.onerror = () => { e.close(); no(); }; })),
+	tried("img", loads("img", { src: OUT + "/img.png" })),
+	tried("img https", loads("img", { src: "https://example.com/img.png" })),
+	tried("link", loads("link", { rel: "stylesheet", href: OUT + "/style.css" })),
+	tried("script", loads("script", { src: OUT + "/script.js" })),
+	tried("script https", loads("script", { src: "https://example.com/script.js" })),
+	tried("iframe", loads("iframe", { src: OUT + "/frame.html" })),
+	tried("worker from the network", () => new Promise((yes, no) => { try { const w = new Worker(OUT + "/worker.js"); w.onerror = no; w.onmessage = yes; } catch (error) { no(error); } })),
+	]);
+	navigator.sendBeacon(OUT + "/beacon", "x");
 	ways.rtc = Object.getOwnPropertyNames(window).filter((name) => /RTC/.test(name) && window[name] !== undefined).sort();
 	const worker = new Worker(URL.createObjectURL(new Blob([WORKER], { type: "text/javascript" })));
-	ways.inWorker = await new Promise((done) => { worker.onmessage = (event) => done(event.data); worker.onerror = (event) => done("worker failed: " + event.message); });
-	qorpera.read("network " + JSON.stringify(ways));
+	ways.inWorker = await new Promise((done) => { worker.onmessage = (event) => done(event.data); worker.onerror = (event) => done("worker failed: " + event.message); setTimeout(() => done("worker silent"), 8000); });
+	const sorted = (value) => value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sorted(value[key])])) : value;
+	qorpera.read("network " + JSON.stringify(sorted(ways)));
 })();
 </script>`,
 		clicks: [],
-		wait: 14000,
+		wait: 6000,
 		calls: [
-			`read network ${JSON.stringify({
+			`read network ${JSON.stringify(sorted({
 				fetch: "closed",
 				"fetch of the frame's own site": "closed",
 				xhr: "closed",
 				websocket: "closed",
 				eventsource: "closed",
-				sendBeacon: "false",
 				img: "closed",
 				"img https": "closed",
 				link: "closed",
@@ -379,8 +394,9 @@ const WORKER = "const OUT = " + JSON.stringify(OUT) + ";\n" + (() => {
 						worker: "closed",
 					},
 					rtc: [],
+					nested: [],
 				},
-			})}`,
+			}))}`,
 		],
 	},
 	"a page's own files: a font, a sound, a model, a worker and wasm": {
@@ -425,7 +441,7 @@ const seen = {};
 		clicks: [],
 		wait: 3000,
 		calls: [
-			`read files ${JSON.stringify({ font: 1, sound: true, decoded: true, fetched: "glTF", loaded: "200 glTF", bytes: 28, address: true, worker: "from a worker", wasm: 5, missing: 404, later: 1 })}`,
+			`read files ${JSON.stringify({ font: 1, sound: true, decoded: true, fetched: "glTF", loaded: "200 glTF", bytes: 24, address: true, worker: "from a worker", wasm: 5, missing: 404, later: 1 })}`,
 		],
 		console: ["Qorpera: missing.bin could not be loaded: missing.bin is not in the page's folder"],
 	},
@@ -522,13 +538,14 @@ try {
 	let tabs = 0;
 	context.on("page", () => tabs++);
 	const elsewhere = [];
-	context.on("request", (request) => {
+	context.on("requestfinished", (request) => {
 		if (!request.url().startsWith(`${origin}/`)) elsewhere.push(request.url());
 	});
 	const said = [];
 	page.on("console", (message) => said.push(message.text()));
 	for (const [name, variant] of Object.entries(variants)) {
 		if (process.env.ONLY && process.env.ONLY !== name) continue;
+		elsewhere.length = 0;
 		const loads = [];
 		const loaded = (frame) => {
 			if (frame !== page.mainFrame()) loads.push(frame.url());

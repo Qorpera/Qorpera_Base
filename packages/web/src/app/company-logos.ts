@@ -35,7 +35,6 @@ const FOLDER_CAP = 4;
 const BATCH = 100;
 /** The PNG everyone sees, square. */
 export const COMPANY_LOGO_SIZE = 512;
-/** The largest logo.svg the app draws; the folder takes text writes up to 512 KiB. */
 const MAX_SVG_BYTES = 512 * 1024;
 /** A chosen picture, wrapped in the SVG, stays under this so the text write fits. */
 const MAX_WRAPPED_BYTES = 360 * 1024;

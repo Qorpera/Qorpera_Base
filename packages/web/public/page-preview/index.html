@@ -79,6 +79,28 @@
 	for (const name of Object.getOwnPropertyNames(window)) if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);
 	// A picture-in-picture window would be a window of its own too.
 	if ("documentPictureInPicture" in window) define(window, "documentPictureInPicture", undefined);
+	// A worker has some of WebRTC's interfaces too. Each worker the page starts, and each worker one of those starts,
+	// first takes them away, then runs what the page gave it.
+	const guardWorkers = function guard(scope, source) {
+		for (const name of Object.getOwnPropertyNames(scope))
+			if (/^(?:webkit|moz)?RTC/.test(name))
+				try {
+					Object.defineProperty(scope, name, { value: undefined, writable: false, configurable: false });
+				} catch {}
+		const Real = scope.Worker;
+		if (typeof Real !== "function") return;
+		const make = scope.URL.createObjectURL;
+		const BlobOf = scope.Blob;
+		const quote = scope.JSON.stringify;
+		const started = function Worker(address, options) {
+			const run = options && options.type === "module" ? "await import(" : "importScripts(";
+			const body = `(${source})(self, ${quote(source)});\n${run}${quote(String(address))});`;
+			return new Real(make(new BlobOf([body], { type: "text/javascript" })), options);
+		};
+		started.prototype = Real.prototype;
+		Object.defineProperty(scope, "Worker", { value: started, writable: false, configurable: false });
+	};
+	guardWorkers(window, `${guardWorkers}`);
 
 	// A frame inside the page would be a window of its own, with WebRTC. Each one is taken out as soon as it is put
 	// into the page or into a shadow tree, before it loads: the document and every shadow root are watched from the
@@ -582,11 +604,13 @@
 			},
 			{ rootMargin: "100% 0px 100% 0px" },
 		);
-		// A media element's sources wait for it; a sound waits for its play, unless it plays by itself.
+		// A media element's sources wait for it; a sound with no controls on screen waits for its play, unless it plays
+		// by itself.
 		const take = (element) => {
 			const name = apply(nameOf, element, []);
 			const target = name === "source" || name === "track" ? apply(parentOf, element, []) || element : element;
-			if (apply(nameOf, target, []) !== "audio") apply(observeNear, near, [target]);
+			if (apply(nameOf, target, []) !== "audio" || apply(hasAttribute, target, ["controls"]))
+				apply(observeNear, near, [target]);
 			else if (apply(hasAttribute, target, ["autoplay"])) bring(target);
 		};
 		// An address a script gives an element: read now, and the element gets the file's own address once it is there.

@@ -274,9 +274,10 @@ const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastInd
 
 /** An app's files read at once, at most, while its page is put together. */
 const FILES_AT_ONCE = 8;
-export const PAGE_TEXT_INLINE_BYTES = 256 * 1024;
+export const PAGE_TEXT_INLINE_BYTES = 128 * 1024;
 export const PAGE_MEDIA_FILE_BYTES = 2 * 1024 * 1024;
 export const PAGE_MEDIA_BYTES = 16 * 1024 * 1024;
+export const PAGE_MEDIA_FILES = 24;
 const WHOLE_READ_BYTES = 8 * 1024 * 1024;
 
 /** What a round of reading ahead (`warmApps`) may still read, in bytes, across all the apps. */
@@ -608,6 +609,7 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 	}
 	const found = Promise.all(named.map((item) => fileOf(item.path)));
 	let inPage = 0;
+	let filesInPage = 0;
 	for (const [index, file] of (await found).entries()) {
 		const { element, attribute, path } = named[index]!;
 		if (file === null) {
@@ -617,8 +619,16 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 		}
 		const picture = attribute !== "src" || element.localName === "img";
 		const hidden = picture && element.closest("[hidden]") !== null;
-		if (hidden || (file.bytes <= PAGE_MEDIA_FILE_BYTES && inPage + file.bytes <= PAGE_MEDIA_BYTES)) {
-			if (!hidden) inPage += file.bytes;
+		if (
+			hidden ||
+			(file.bytes <= PAGE_MEDIA_FILE_BYTES &&
+				inPage + file.bytes <= PAGE_MEDIA_BYTES &&
+				filesInPage < PAGE_MEDIA_FILES)
+		) {
+			if (!hidden) {
+				inPage += file.bytes;
+				filesInPage++;
+			}
 			changes.push(
 				hand(path).then((token) => () => {
 					if (token) element.setAttribute(attribute, token);

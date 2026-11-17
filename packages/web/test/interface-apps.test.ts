@@ -272,6 +272,9 @@ describe("putting an app's page together", () => {
 		// A hidden picture is there for a script to read: it comes with the page, whatever its size.
 		expect(handed.get(page.querySelector("img[hidden]")?.getAttribute("src") ?? "")?.size).toBe(20 * 1024 * 1024);
 		expect(page.querySelectorAll("img:not([hidden])")).toHaveLength(200);
+		// The first 24 pictures come with the page; the rest when they come near the screen.
+		expect(page.querySelectorAll("img:not([hidden])[src]")).toHaveLength(24);
+		expect(page.querySelectorAll("img[data-qorpera-src]")).toHaveLength(176);
 		expect(progress.at(-1)?.[0]).toBe(progress.at(-1)?.[1]);
 	});
 

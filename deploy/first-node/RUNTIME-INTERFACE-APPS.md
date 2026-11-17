@@ -102,14 +102,17 @@ file of the app comes through the port when the page uses it (`file`, §5). Unti
 page named into it as `data:` URLs before anything showed.
 - `<link rel="stylesheet" href="x.css">` becomes `<style>` with the file's text, and each `url(...)` in it, in a
   `<style>` and in a `style` attribute names the file's mark; those files (pictures, fonts) come with the page.
-- `<script src="x.js">` becomes an inline `<script>` (its `type` kept) when it is at most 256 KiB
-  (`PAGE_TEXT_INLINE_BYTES`, chosen from a measurement in the change's lane); a larger one keeps its place and order
-  and comes as a file of its own (`text/javascript`).
+- `<script src="x.js">` becomes an inline `<script>` (its `type` kept) when it is at most 128 KiB
+  (`PAGE_TEXT_INLINE_BYTES`); a larger one keeps its place and order and comes as a file of its own
+  (`text/javascript`). Measured in headless Chromium on node 2 (17 November 2026, median of 9, hand-over to run): up
+  to 128 KiB inline and a file of its own take the same time (16 to 24 ms); from 256 KiB the file of its own is
+  faster (256 KiB 18 against 26 ms, 1 MiB 22 against 30, 4 MiB 29 against 63).
 - A picture (`img src`, a `video` poster, an SVG `image href`) comes with the page when it is in a `hidden` part of
   the page (it is there for a script to read: a kit's `#kit-media`), or when it is at most 2 MiB
   (`PAGE_MEDIA_FILE_BYTES`) and the page's pictures, video and sound sent with it so far stay within 16 MiB
-  (`PAGE_MEDIA_BYTES`). Video and sound (`video`, `audio`, `source`, `track` src) come with the page when at most
-  2 MiB, within the same 16 MiB. Anything else is marked to come later (`data-qorpera-src`, `-poster`, `-href`, with
+  (`PAGE_MEDIA_BYTES`) and 24 files (`PAGE_MEDIA_FILES`). Video and sound (`video`, `audio`, `source`, `track` src)
+  come with the page when at most 2 MiB, within the same 16 MiB and 24 files. These are budgets for the first paint,
+  never a reason a file does not load. Anything else is marked to come later (`data-qorpera-src`, `-poster`, `-href`, with
   its path in the app): the frame reads it when its element comes near the screen (a screen's height ahead), or for
   sound when it is played, loaded or plays by itself. A copy of a marked element (`cloneNode`) is marked too.
 - A file's mark is `qorpera-file-<the first 32 hex of its hash>-<its kind>`; the frame puts an address of its own
