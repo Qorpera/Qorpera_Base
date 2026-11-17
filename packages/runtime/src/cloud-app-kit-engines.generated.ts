@@ -3071,7 +3071,7 @@ body{margin:0}
 .bk-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .bk-chosen{display:none;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--ink);color:var(--bg);font-size:13px;font-weight:650;white-space:nowrap;margin-left:auto}
 .bk-chosen svg{width:14px;height:14px}
-.is-chosen>.bk-ptop .bk-chosen,.bk-wtop .bk-chosen.is-on{display:inline-flex}
+.is-chosen .bk-ptop .bk-chosen,.bk-wtop .bk-chosen.is-on{display:inline-flex}
 .bk-pmid{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-width:0;max-width:100%;padding-bottom:clamp(0px,2vh,24px)}
 .bk-plogo{display:block;width:clamp(72px,9.5vw,132px);height:clamp(72px,9.5vw,132px);margin-bottom:clamp(6px,1.6vh,18px);transition:transform .6s var(--ease)}
 .bk-plogo>img,.bk-plogo>.bk-ph{width:100%;height:100%;object-fit:contain}
