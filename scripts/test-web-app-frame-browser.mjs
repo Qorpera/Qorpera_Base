@@ -110,6 +110,28 @@ Promise.all([
 	postMessage({ ways, rtc: rtc(self), nested });
 });
 `;
+const SHARED_PROBE = `const OUT = "OUTSIDE";
+const ways = {};
+const tried = (name, attempt) =>
+	Promise.race([attempt(), new Promise((_, no) => setTimeout(no, 1500))]).then(() => { ways[name] = "reached"; }, () => { ways[name] = "closed"; });
+const ready = Promise.all([
+	tried("fetch", () => fetch(OUT + "/s-fetch")),
+	tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/s-ws"); w.onopen = yes; w.onerror = no; })),
+	tried("importScripts", async () => importScripts(OUT + "/s-script.js")),
+]);
+onconnect = (event) => ready.then(() => event.ports[0].postMessage({ ways, rtc: Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name) && self[name] !== undefined) }));
+`;
+const WORKLET_PROBE = `registerProcessor("probe", class extends AudioWorkletProcessor {
+	constructor() {
+		super();
+		this.port.postMessage({
+			reaches: ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "importScripts", "Worker", "navigator"].filter((name) => typeof globalThis[name] !== "undefined"),
+			rtc: Object.getOwnPropertyNames(globalThis).filter((name) => /RTC/.test(name)),
+		});
+	}
+	process() { return false; }
+});
+`;
 const sorted = (value) =>
 	value && typeof value === "object" && !Array.isArray(value)
 		? Object.fromEntries(
@@ -397,6 +419,59 @@ const WORKER = ${JSON.stringify(WORKER_SOURCE)};
 					nested: [],
 				},
 			}))}`,
+		],
+	},
+	"other workers: a shared worker, a service worker and an audio worklet": {
+		page: `<!doctype html><p>Workers</p><script>
+const OUT = "OUTSIDE";
+const seen = {};
+const blob = (text) => URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+const PROBE = ${JSON.stringify(SHARED_PROBE)};
+(async () => {
+	seen.sharedWorker = await new Promise((done) => {
+		try {
+			const shared = new SharedWorker(blob(PROBE));
+			shared.onerror = (event) => done("failed: " + (event.message || "error"));
+			shared.port.onmessage = (event) => done(event.data);
+			shared.port.start();
+			setTimeout(() => done("silent"), 8000);
+		} catch (error) {
+			done("refused: " + error.name);
+		}
+	});
+	seen.serviceWorker = await (async () => {
+		try {
+			if (!navigator.serviceWorker) return "absent";
+			await navigator.serviceWorker.register(blob("self.onfetch = () => {};"));
+			return "registered";
+		} catch (error) {
+			return "refused: " + error.name;
+		}
+	})();
+	seen.audioWorklet = await (async () => {
+		try {
+			const context = new OfflineAudioContext(1, 128, 8000);
+			await context.audioWorklet.addModule(blob(${JSON.stringify(WORKLET_PROBE)}));
+			const node = new AudioWorkletNode(context, "probe");
+			const said = new Promise((done) => (node.port.onmessage = (event) => done(event.data)));
+			node.connect(context.destination);
+			context.startRendering();
+			return await Promise.race([said, new Promise((done) => setTimeout(() => done("silent"), 5000))]);
+		} catch (error) {
+			return "refused: " + error.name;
+		}
+	})();
+	qorpera.read("other workers " + JSON.stringify(seen));
+})();
+</script>`,
+		clicks: [],
+		wait: 3000,
+		calls: [
+			`read other workers ${JSON.stringify({
+				sharedWorker: "refused: SecurityError",
+				serviceWorker: "refused: SecurityError",
+				audioWorklet: { reaches: [], rtc: [] },
+			})}`,
 		],
 	},
 	"a page's own files: a font, a sound, a model, a worker and wasm": {

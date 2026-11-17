@@ -79,8 +79,8 @@
 	for (const name of Object.getOwnPropertyNames(window)) if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);
 	// A picture-in-picture window would be a window of its own too.
 	if ("documentPictureInPicture" in window) define(window, "documentPictureInPicture", undefined);
-	// A worker has some of WebRTC's interfaces too. Each worker the page starts, and each worker one of those starts,
-	// first takes them away, then runs what the page gave it.
+	// WHY: a worker still has some of WebRTC's interfaces; each worker the page starts, and each it starts in turn,
+	// runs this first, from its own source text, before what the page gave it.
 	const guardWorkers = function guard(scope, source) {
 		for (const name of Object.getOwnPropertyNames(scope))
 			if (/^(?:webkit|moz)?RTC/.test(name))
@@ -357,8 +357,6 @@
 			apply(logError, consoleOf, [`Qorpera: ${text}`]);
 		} catch {}
 	};
-	// A page's own file by what its script names: a path relative to the page, or an address in this frame's folder,
-	// which a library makes from the frame's location. Null for anything else.
 	const ownPath = (value) => {
 		let text;
 		try {
@@ -533,7 +531,6 @@
 				const kept = (value) => (value === undefined || value === null ? null : String(value));
 				return call("tell", { about: String(given.about ?? ""), at: kept(given.at), text: kept(given.text) });
 			}),
-			// One of the page's own files by its path: an address the page can use, or its bytes.
 			file: freeze((path) => fileUrl(String(path), base)),
 			bytes: freeze((path) => apply(then, fileOf(String(path), base), [(blob) => apply(arrayBufferOf, blob, [])])),
 			onChange: freeze((listener) => {
@@ -546,11 +543,6 @@
 		return { page, follow, fileOf, fileUrl };
 	};
 
-	// The page's own files, read through the port when the page uses them (deploy/first-node/RUNTIME-INTERFACE-APPS.md
-	// §4): what the app marked to come later (data-qorpera-src, -poster, -href) once its element comes near the screen
-	// or is played, an address of the page's own that a script gives an element, and fetch and XMLHttpRequest of one.
-	// A file that can't be read fails alone, said in the console. Nothing here opens the network: the policy above
-	// refuses every address but data: and blob:.
 	const ownFiles = (live, base) => {
 		const pending = new WeakMapOf();
 		const fail = (path) => (error) =>
@@ -577,7 +569,6 @@
 		};
 		const waits = (element) =>
 			apply(matches, element, [WAITING]) || apply(count, apply(within, element, [WAITING]), []) > 0;
-		// What waits in an element, a media element's sources too; a media element then loads again.
 		const bring = (element) => {
 			const loads = later(element);
 			if (isMedia(element))
@@ -604,8 +595,6 @@
 			},
 			{ rootMargin: "100% 0px 100% 0px" },
 		);
-		// A media element's sources wait for it; a sound with no controls on screen waits for its play, unless it plays
-		// by itself.
 		const take = (element) => {
 			const name = apply(nameOf, element, []);
 			const target = name === "source" || name === "track" ? apply(parentOf, element, []) || element : element;
@@ -613,7 +602,6 @@
 				apply(observeNear, near, [target]);
 			else if (apply(hasAttribute, target, ["autoplay"])) bring(target);
 		};
-		// An address a script gives an element: read now, and the element gets the file's own address once it is there.
 		const give = (element, name, path) => {
 			const done = apply(then, live.fileUrl(path, base), [
 				(url) => apply(setAttribute, element, [name, url]),
@@ -720,8 +708,6 @@
 				]),
 			);
 		};
-		// An XMLHttpRequest of a file opens at once, on nothing, and at its send opens again on the file's own address
-		// with what was set on it.
 		const requests = new WeakMapOf();
 		XMLHttpRequest.prototype.open = function open(method, address, ...rest) {
 			const verb = apply(upper, toText(method), []);
@@ -731,6 +717,7 @@
 				return apply(xhrOpen, this, [method, address, ...rest]);
 			}
 			apply(setLink, requests, [this, { verb, path, headers: [], mime: null }]);
+			// WHY: the request must be open at once for its headers; it opens again on the file's own address at send.
 			return apply(xhrOpen, this, [verb, "data:,", true]);
 		};
 		XMLHttpRequest.prototype.setRequestHeader = function setRequestHeader(name, value) {
@@ -773,7 +760,6 @@
 		const port = event.ports && event.ports.length === 1 ? event.ports[0] : null;
 		const base = typeof data.base === "string" ? data.base : "";
 		const live = port ? bridge(port, base) : null;
-		// The files the app sent with the page, each at an address of this frame's own in place of its mark.
 		const handed = new Map();
 		if (Array.isArray(data.files))
 			for (const pair of data.files)
