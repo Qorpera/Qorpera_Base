@@ -27,6 +27,15 @@ describe("shared cloud runtime constitution", () => {
 		expect(CLOUD_RUNTIME_CONSTITUTION).toContain("the company's name is the first line of its vision");
 	});
 
+	it("tells every run that a company named No name yet has no name, and never to invent one", () => {
+		expect(CLOUD_RUNTIME_CONSTITUTION).toContain(
+			'While that line is # No name yet, the company has no name: call it "the company", and never invent or use a name for it in messages, files or email.',
+		);
+		expect(CLOUD_RUNTIME_WORKER_CONSTITUTION).toContain(
+			'A company whose name is No name yet has none: call it "the company", and never invent or use a name for it in messages, files or email.',
+		);
+	});
+
 	it("says who the members are and what good work is, before any rule", () => {
 		for (const said of [
 			"The members are mostly founders with an idea and little time, and often not experts in software, law or money, so write to them in plain words and bring them decisions, not homework",
