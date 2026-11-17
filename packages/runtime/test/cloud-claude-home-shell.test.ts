@@ -9,7 +9,11 @@ import {
 	CloudClaudeHomeShell,
 	parseCloudClaudeShellRequest,
 } from "@qorpera/runtime/cloud-claude-home-shell";
-import { CLAUDE_NO_PICTURES, CLAUDE_PICTURE_USAGE } from "@qorpera/runtime/cloud-claude-picture-command";
+import {
+	CLAUDE_NO_PICTURES,
+	CLAUDE_PICTURE_MAX_BYTES,
+	CLAUDE_PICTURE_USAGE,
+} from "@qorpera/runtime/cloud-claude-picture-command";
 import type { CloudCodexHomeAction } from "@qorpera/runtime/cloud-codex-home";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -433,5 +437,41 @@ it("writes a picture where a link leads on the home, never through the link", as
 			.filter((message) => message.method === "fs/writeFile")
 			.map((message) => (message.params as { path: string }).path),
 	).toEqual(["file:///company/real/chair.png"]);
+	await shell.close();
+});
+
+it("hashes only a readable file of a picture's size at the place, and answers anything else there as taken", async () => {
+	const home = fakeHome((message, send) => {
+		if (message.method !== "process/start") return;
+		const { processId, argv } = message.params as { processId: string; argv: string[] };
+		send({ id: message.id, result: {} });
+		send({
+			method: "process/output",
+			params: { processId, stream: "stdout", chunk: Buffer.from(`x ${argv[4]}`).toString("base64") },
+		});
+		send({ method: "process/exited", params: { processId, exitCode: 0 } });
+		send({ method: "process/closed", params: { processId } });
+	});
+	let made = 0;
+	const { shell } = await shellWith(home.channel, {
+		pictures: {
+			make: async () => {
+				made += 1;
+				return { png: PNG };
+			},
+		},
+	});
+	const result = await command(shell.socketPath, {
+		cmd: asClaudeCode("picture /company/fifo.png red"),
+		cwd: "/company",
+		env: {},
+	});
+	expect(result.code).toBe(1);
+	expect(result.err).toContain("PICTURE_EXISTS: nothing was made; /company/fifo.png is there already");
+	const script = (home.sent.find((message) => message.method === "process/start")?.params as { argv: string[] })
+		.argv[2];
+	expect(script).toContain('[ -f "$t" ] && [ -r "$t" ]');
+	expect(script).toContain(`-le ${CLAUDE_PICTURE_MAX_BYTES} ]`);
+	expect(made).toBe(0);
 	await shell.close();
 });

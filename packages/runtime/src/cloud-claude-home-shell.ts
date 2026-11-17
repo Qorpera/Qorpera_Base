@@ -31,6 +31,7 @@ import {
 } from "./cloud-claude-home-review.ts";
 import {
 	CLAUDE_PICTURE_FAILED,
+	CLAUDE_PICTURE_MAX_BYTES,
 	type ClaudePictureHome,
 	type ClaudePictureOutcome,
 	type CloudClaudePictures,
@@ -71,8 +72,12 @@ const MAX_CONNECTIONS = 64;
 const INITIALIZE_MS = 20_000;
 const PICTURE_PLACE_MS = 30_000;
 const PICTURE_WRITE_MS = 120_000;
-const PICTURE_PLACE =
-	't=$(realpath -m -- "$1") || exit 6; [ -d "$(dirname -- "$t")" ] || exit 3; [ -d "$t" ] && exit 5; h=-; [ -e "$t" ] && h=$(sha256sum < "$t" | cut -c1-64); printf "%s %s" "$h" "$t"';
+const PICTURE_PLACE = [
+	't=$(realpath -m -- "$1") || exit 6; [ -d "$(dirname -- "$t")" ] || exit 3; [ -d "$t" ] && exit 5;',
+	`if [ -f "$t" ] && [ -r "$t" ] && [ "$(stat -L -c %s -- "$t")" -le ${CLAUDE_PICTURE_MAX_BYTES} ];`,
+	'then h=$(sha256sum < "$t" | cut -c1-64); elif [ -e "$t" ] || [ -L "$t" ]; then h=x; else h=-; fi;',
+	'printf "%s %s" "$h" "$t"',
+].join(" ");
 
 /** The words a command shows when its home is not there; Claude Code shows them to the model as the command's stderr. */
 export const CLOUD_CLAUDE_SHELL_UNAVAILABLE =
@@ -356,7 +361,7 @@ export class CloudClaudeHomeShell {
 				if (ran?.code === 3) return "missing";
 				if (ran?.code === 5) return "folder";
 				if (ran?.code === 6) return "unresolved";
-				const found = ran?.code === 0 ? /^(-|[0-9a-f]{64}) (\/[^\0]*)$/.exec(ran.out) : null;
+				const found = ran?.code === 0 ? /^(-|x|[0-9a-f]{64}) (\/[^\0]*)$/.exec(ran.out) : null;
 				return found
 					? { file: found[1] === "-" ? null : (found[1] as string), real: found[2] as string }
 					: "unavailable";
