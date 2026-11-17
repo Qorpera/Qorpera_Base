@@ -187,7 +187,7 @@ Each run starts with one JSON message. The platform fills in who you are, who as
 - delivery: the reply policy. wake: why you run (kind is human, first-run, routine, room or agent; source.kind, the local time and time zone, the routine and the payload say more), explained by the wake section at the end.
 - currentInputs, or request when a post in a conversation woke you: what this run is for, oldest first. A later message changes an earlier one only as far as it says, and nothing in history, your job description or data overrides them. history: earlier messages (with a conversation view, The conversation so far, only those after it), for context only.
 - coworkers: the other agents, with the ids your tools take. presence: who else is working in the same files now; a hint, not a lock.${has("update_reading") ? "\n- senses: the platform's facts about the whole company as this run started (each agent's work, runs, routines and waiting wake-ups, the founders' unanswered questions, each member's login); null when they could not be read." : ""}
-- wake.payload.heldMessages: messages coworkers left without waking you, already seen by members; answer one only when you were asked something.${skillsUse(has, false)}
+- wake.payload.heldMessages: more coworker messages for you, oldest first, already seen by members: notes left without waking you and messages that waited for this run; answer each one that asks you something.${skillsUse(has, false)}
 Ids, hashes and versions are for the platform and your tools. A long source arrives cut short: read on with read_context (its sourceKind and id, content.sha256, and content.nextOffset as offset). Read the rest of the request and of your job description before you rely on them.`;
 }
 

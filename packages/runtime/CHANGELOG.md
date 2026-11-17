@@ -13,6 +13,24 @@
   not apply before `20260930786000`). The coding executor moves before the switch (its command authority takes a run at
   `xhigh`). The guest moves: the native provider host (`26e07eb7`), the ephemeral runner (`df616dab`, #1887) and the two
   LXD bootstraps; the native Codex stays `9c299f88`.
+- Coworker messages waiting for one agent are delivered in one run (the founder, 17 November 2026: "Build, no cap";
+  migration `20260930798000`, SQL test 1295; lanes/agent-messaging-volume-20261117/DESIGN-FOLD.md). An agent's coworker
+  wakes all go to its own thread, which runs one run at a time, so messages that arrive while it is busy used to start
+  one run each, one after another (prod, 16-17 Nov: 78 of 227). Now, when the run of a coworker wake reads its wake
+  (`qorpera_folder_read_wake` → `qorpera_coworker_take_waiting`), it takes over the other coworker wakes still queued in
+  that thread with the same payer, made no later than the run, oldest first: each passes its own run's checks under its
+  own row lock (`qorpera_wake_authorized`, its chain not stopped under the chain lock taken shared, its pair conversation
+  KEY SHARE SKIP LOCKED), its sender's folder reads are copied into the run under the taken wake's id (so the reads check
+  and erasure cover them), its message becomes a delivered row of `qorpera_pending_peer_messages` (new column `wake_id`)
+  and the wake is cancelled ("Delivered with another coworker message in run …"). The run sees them in
+  `wake.payload.heldMessages` in full, with their senders, oldest first, up to 12 lines and 19200 bytes of shown text;
+  the rest wait for the next run, which takes them the same way. A lone message, the send, its receipt and the
+  materializer are unchanged; no cap on chain depth or message count. A taken message whose run fails is offered again
+  to the next run, and a Stop withdraws it then, as for a held note. Held notes are now cut at 1600 bytes, not 400
+  characters, and a cut one ends ` … [cut: the full message is in your transcript with this coworker]`. The context
+  message's heldMessages line says the list also holds messages that waited for this run. Deploy order: either; the
+  payload keeps the shape every live bundle parses (`heldMessages`), so the migration works with the bundles live today
+  and the runtime text change needs no migration.
 - The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure
   they are running with bypass permissions, and all permissions turned ON"; lanes/agent-box-20261113/harness-permissions/
   AUDIT.md; the runtime bundle only). `CLAUDE_BOX_TOOLS` goes from 8 to 18: Task (sub-agents), WebSearch, Skill,
