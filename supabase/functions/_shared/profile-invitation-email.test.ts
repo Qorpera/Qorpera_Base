@@ -7,6 +7,7 @@ import {
 	invitationIdempotencyKey,
 	parseProfileInvitationDeliveryJobs,
 	SHOWN_NAME_LENGTH,
+	SUBJECT_LENGTH,
 	shownName,
 	type InvitationDeliveryStore,
 	type InvitationEmailProvider,
@@ -102,6 +103,17 @@ describe("profile invitation email delivery", () => {
 		assert.equal(graphemeCount(shortened), SHOWN_NAME_LENGTH);
 		assert.match(shortened, /^Café 🇩🇰.*🇩🇰…$/u);
 		assert.equal(shownName("a".repeat(200), 10), `${"a".repeat(9)}…`);
+	});
+
+	it("cuts a long subject without splitting an emoji", () => {
+		const [parsed] = parseProfileInvitationDeliveryJobs([
+			claimedRow({ profile_name: "🇩🇰".repeat(120), invited_by_display_name: "👨‍👩‍👧".repeat(200) }),
+		]).jobs;
+		assert.ok(parsed);
+		const { subject } = buildProfileInvitationEmail(parsed, "https://qorpera.com/invitation");
+		assert.ok(graphemeCount(subject) <= SUBJECT_LENGTH);
+		assert.ok(subject.isWellFormed());
+		assert.match(subject, /^(👨‍👩‍👧)+… invited you to (🇩🇰)+…/u);
 	});
 
 	it("escapes profile content and refuses non-HTTPS invitation links", () => {
