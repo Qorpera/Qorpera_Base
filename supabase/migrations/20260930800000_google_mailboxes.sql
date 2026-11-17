@@ -500,7 +500,7 @@ begin
 			history_id = case when imported_at is null then history_id end,
 			page_token = case when imported_at is null then page_token end,
 			import_count = case when imported_at is null then import_count else 0 end,
-			gap = imported_at is not null, imported_at = null, capped = false, due_at = clock_timestamp(),
+			gap = imported_at is not null, imported_at = null, due_at = clock_timestamp(),
 			lease_id = null, lease_until = null, attempts = 0, last_error = null, updated_at = clock_timestamp()
 		where mailbox_id = v_removed.mailbox_id;
 		v_mailbox_id := v_removed.mailbox_id;
@@ -745,7 +745,7 @@ begin
 	set state = case p_outcome when 'imported' then 'live' when 'refused' then 'sign_in_again' else state end,
 		imported_at = case when p_outcome = 'imported' then v_now else imported_at end,
 		gap = case when p_outcome = 'imported' then false else gap end,
-		capped = case when p_outcome = 'imported' then p_capped else capped end,
+		capped = case when p_outcome = 'imported' then p_capped or (gap and capped) else capped end,
 		history_id = coalesce(p_history_id, history_id),
 		page_token = case p_outcome when 'importing' then p_page_token when 'imported' then null else page_token end,
 		total = case when coalesce(p_total, total) is null then null

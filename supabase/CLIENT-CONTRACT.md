@@ -990,12 +990,12 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   company brings the address in) or `wrong_account` (with `address`, the one to sign in with, and `message`), and the
   usual `declined`, `expired`, `browser_mismatch`, `state_unknown`. A confirmed one answers `mailbox:
   {mailboxId, address, outcome}` beside `accountLabel`. In `qorpera_member_mail_addresses` every entry carries `kind`
-  (`qorpera` or `google`); a Google entry also carries `google: {state, broughtIn, total, lastWeek}`, `state` one of
+  (`qorpera` or `google`); a Google entry also carries `google: {state, broughtIn, total, capped, lastWeek}`, `state` one of
   `bringing_in`, `live`, `sign_in_again`, `paused`; `total` is the number of messages Gmail holds for the account
-  (sent mail and drafts included, never below `broughtIn`), so only `broughtIn` reaching 50,000 says the first import
-  stopped at its limit. Since the same migration (17 Nov, late) a Google entry also carries `capped: boolean`: true only
-  when the latest import (the first, or the one after a reconnect) stopped at its 50,000 limit with more mail at Google;
-  a reconnect clears it. Show "The newest 50,000 messages are here." when `state` is `live` and `capped`. `qorpera_pause_google_mailbox(p_mailbox_id, p_paused)` takes the
+  (sent mail and drafts included, never below `broughtIn`). `capped` is true when the first import stopped at its
+  50,000 limit with more mail at Google; a reconnect's import of the mail from while the address was removed keeps it,
+  since the older mail is still missing. Show "The newest 50,000 messages are here." when `state` is `live` and
+  `capped`. `qorpera_pause_google_mailbox(p_mailbox_id, p_paused)` takes the
   entry's `hookId` and stops or restarts bringing mail in. Remove is `qorpera_set_event_hook_status(hookId, 'removed')`:
   the Google sign-in ends, the mail brought in stays; when the same company connects the same address again, the same
   mailbox comes back (confirm `outcome: "relinked"`, same `hookId`) and brings in the mail of the time it was removed. Sending from a Google address leaves through Gmail; while the

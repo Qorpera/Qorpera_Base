@@ -527,12 +527,14 @@ select pg_temp.base_assert((current_setting('qorpera_test.g_claim')::jsonb ->> '
 		and (pg_temp.g_box('owner@gmail.com')).brought_in = 50001
 		and (pg_temp.g_box('owner@gmail.com')).import_count = 1,
 	'Mail from while it was removed comes in past a removed row''s 50,000, on a limit of its own');
+select pg_temp.base_assert((pg_temp.g_box('owner@gmail.com')).capped,
+	'A reconnect keeps capped while the gap comes in');
 select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'imported', '5000', null, 60000)
 		->> 'state' = 'live'
 		and not (pg_temp.g_box('owner@gmail.com')).gap
 		and (pg_temp.g_box('owner@gmail.com')).total = 60000
-		and not (pg_temp.g_entry('owner@gmail.com') #>> '{google,capped}')::boolean,
-	'The gap import ends at known mail, with Google''s count read again, and the reconnect cleared capped');
+		and (pg_temp.g_entry('owner@gmail.com') #>> '{google,capped}')::boolean,
+	'The gap import ends at known mail, with Google''s count read again, still capped: the older mail is still missing');
 select pg_temp.base_assert((select count(*) = 6 from public.qorpera_mail_received as received
 		where received.mailbox_id = (pg_temp.g_box('owner@gmail.com')).mailbox_id),
 	'Five messages from before and the one from the gap, none twice');
