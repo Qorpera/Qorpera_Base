@@ -291,6 +291,53 @@ begin
 end
 $$;
 rollback to savepoint rl_other_account;
+savepoint rl_skip;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.rl_login', public.qorpera_begin_native_provider_login(
+	'92400000-0000-4000-8000-000000000010', pg_temp.rl_id(20, 1), pg_temp.rl_id(20, 2),
+	(current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid, 'openai', 'codex-cli', repeat('d', 64),
+	900)::text, true) \g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+set local role service_role;
+select set_config('qorpera_test.rl_second', public.qorpera_complete_native_provider_login(
+	(current_setting('qorpera_test.rl_login')::jsonb ->> 'login_id')::uuid, repeat('d', 64), pg_temp.rl_id(20, 3),
+	'object://native-capsules/' || pg_temp.rl_id(20, 3), repeat('e', 64), 'fixture-openai-account-two',
+	'personal-subscription', 'qorpera-native-provider-consent/v1',
+	'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}')::text,
+	true) \g /dev/null
+reset role;
+insert into public.qorpera_provider_connection_versions
+select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+	to_jsonb(existing) || '{"version":2,"allow_autonomous":true}'::jsonb)).*
+from public.qorpera_provider_connection_versions as existing
+where existing.connection_id = (current_setting('qorpera_test.rl_second')::jsonb ->> 'connection_id')::uuid
+	and existing.version = 1;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.rl_second_sponsor', public.qorpera_create_member_execution_sponsor(
+	'92400000-0000-4000-8000-000000000010', pg_temp.rl_id(20, 4),
+	(current_setting('qorpera_test.rl_second')::jsonb ->> 'connection_id')::uuid, 2, true)::text, true) \g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+do $$
+declare v_pass jsonb; v_claim jsonb;
+begin
+	perform pg_temp.rl_ready();
+	perform public.qorpera_provider_account_rate_limited(pg_temp.rl_key(), clock_timestamp() + interval '10 minutes');
+	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031',
+		'Check the numbers.', (current_setting('qorpera_test.rl_second_sponsor')::jsonb ->> 'binding_id')::uuid, 1);
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(jsonb_array_length(v_pass -> 'run_ids') = 1
+		and public.qorpera_run_provider_account_key((v_pass -> 'run_ids' ->> 0)::uuid) <> pg_temp.rl_key(),
+		'a newer run on another account is queued: ' || v_pass::text);
+	v_claim := pg_temp.rl_claim();
+	perform pg_temp.base_assert(v_claim #>> '{work,run_id}' = v_pass -> 'run_ids' ->> 0,
+		'the claim passes over the older run of the cooling account to the other account''s: ' || coalesce(v_claim::text, 'none'));
+end
+$$;
+rollback to savepoint rl_skip;
 
 do $$
 declare v_next jsonb; v_recovery jsonb;
