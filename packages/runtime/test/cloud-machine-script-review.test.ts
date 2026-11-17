@@ -66,6 +66,27 @@ describe("the files a machine command runs", () => {
 		]);
 	});
 
+	it("never guesses the folder after a cd that may not have run (review r1 F3)", () => {
+		const unknown = (file: string) => ({ files: [], notShown: [`${file}: the folder it is in could not be told`] });
+		expect(cloudCommandScripts("cd /tmp/a || cd /tmp/b; python3 run.py")).toEqual(unknown("run.py"));
+		expect(cloudCommandScripts("mkdir -p /x && cd /x; python3 y.py")).toEqual(unknown("y.py"));
+		expect(cloudCommandScripts("true &&\ncd /a\npython3 y.py")).toEqual(unknown("y.py"));
+		expect(cloudCommandScripts("if [ -d /a ]; then cd /a; fi; python3 y.py")).toEqual(unknown("y.py"));
+		expect(cloudCommandScripts("while true; do cd /a; python3 y.py; done")).toEqual(unknown("y.py"));
+		expect(cloudCommandScripts("case $x in a) cd /a;; esac; python3 y.py")).toEqual(unknown("y.py"));
+		expect(cloudCommandScripts("cd -; python3 a.py")).toEqual(unknown("a.py"));
+		expect(cloudCommandScripts('cd "$D" && python3 a.py')).toEqual(unknown("a.py"));
+		expect(cloudCommandScripts("pushd /a; python3 a.py")).toEqual(unknown("a.py"));
+		expect(paths("cd /tmp/a || exit 1; python3 run.py")).toEqual(["/tmp/a/run.py"]);
+		expect(paths("mkdir -p /x && cd /x && python3 y.py")).toEqual(["/x/y.py"]);
+		expect(paths("if true; then cd /a && python3 y.py; fi")).toEqual(["/a/y.py"]);
+		expect(paths("cd /tmp/eeg\npython3 fetch.py")).toEqual(["/tmp/eeg/fetch.py"]);
+	});
+
+	it("skips a shell's own option values, such as its startup file", () => {
+		expect(paths("bash --rcfile /root/f x.sh; bash --init-file /root/f y.sh")).toEqual(["/root/x.sh", "/root/y.sh"]);
+	});
+
 	it("reads nothing the command itself shows, and leaves alone what it does not recognise", () => {
 		for (const command of [
 			"mkdir -p /tmp/s\ncat > /tmp/s/fetch.py <<'PY'\nimport os\nPY\npython3 /tmp/s/fetch.py",

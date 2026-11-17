@@ -14,6 +14,8 @@ const PROGRAMS = /^\/(usr|bin|sbin|lib|lib64|opt|snap)\/|^\/root\/(\.local|\.car
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "fi", "done", "esac"]);
 const SKIPPED = new Set(["for", "case", "select", "function", "alias", "export", "local", "declare", "readonly"]);
+const OPENS = new Set(["if", "while", "until", "for", "case", "select"]);
+const CLOSES = new Set(["fi", "done", "esac"]);
 
 interface Prefix {
 	readonly values: readonly string[];
@@ -46,7 +48,11 @@ interface Interpreter {
 	readonly stdin?: readonly string[];
 }
 
-const SHELL: Interpreter = { inline: ["-c"], values: ["-o", "+o", "-O", "+O"], stdin: ["-s"] };
+const SHELL: Interpreter = {
+	inline: ["-c"],
+	values: ["-o", "+o", "-O", "+O", "--rcfile", "--init-file"],
+	stdin: ["-s"],
+};
 const PYTHON: Interpreter = { inline: ["-c"], values: ["-W", "-X", "-Q"], module: ["-m"] };
 const NODE: Interpreter = {
 	inline: ["-e", "--eval", "-p", "--print"],
@@ -84,8 +90,11 @@ interface Simple {
 	heredoc: boolean;
 	alone: boolean;
 	readonly piped: boolean;
+	readonly joined: Join;
 	readonly marker?: "(" | ")";
 }
+
+type Join = "&&" | "||" | "start";
 
 export interface CloudCommandScriptRun {
 	readonly path: string;
@@ -104,10 +113,11 @@ function lex(command: string): { simples: Simple[] } {
 	const simples: Simple[] = [];
 	let current: Simple | undefined;
 	let piped = false;
+	let joined: Join = "start";
 	const pending: { delimiter: string; strip: boolean }[] = [];
 	let redirect: { kind: "in" | "out" | "heredoc" | "other" } | undefined;
 	const simple = (): Simple => {
-		current ??= { words: [], inputs: [], outputs: [], heredoc: false, alone: false, piped };
+		current ??= { words: [], inputs: [], outputs: [], heredoc: false, alone: false, piped, joined };
 		return current;
 	};
 	const end = (operator: string) => {
@@ -115,6 +125,7 @@ function lex(command: string): { simples: Simple[] } {
 			current.alone = current.piped || operator === "|" || operator === "|&" || operator === "&";
 			simples.push(current);
 		}
+		if (current || operator !== "\n") joined = operator === "&&" || operator === "||" ? operator : "start";
 		current = undefined;
 		piped = operator === "|" || operator === "|&";
 		if (operator === "(" || operator === ")")
@@ -125,6 +136,7 @@ function lex(command: string): { simples: Simple[] } {
 				heredoc: false,
 				alone: false,
 				piped: false,
+				joined: "start",
 				marker: operator,
 			});
 	};
@@ -322,13 +334,18 @@ function changeFolder(cwd: string | null, target: Word | undefined): string | nu
 	return cwd === null ? null : posix.resolve(cwd, text);
 }
 
-function stripPrefixes(words: Word[], folder: string | null): { folder: string | null; grouped: boolean } {
+function stripPrefixes(
+	words: Word[],
+	folder: string | null,
+): { folder: string | null; grouped: boolean; keywords: string[] } {
 	let grouped = false;
+	const keywords: string[] = [];
 	for (;;) {
 		while (words.length > 0 && ASSIGNMENT.test((words[0] as Word).text)) words.shift();
 		const first = words[0];
-		if (!first || !first.literal) return { folder, grouped };
+		if (!first || !first.literal) return { folder, grouped, keywords };
 		if (KEYWORDS.has(first.text)) {
+			keywords.push(first.text);
 			words.shift();
 			continue;
 		}
@@ -339,7 +356,7 @@ function stripPrefixes(words: Word[], folder: string | null): { folder: string |
 			continue;
 		}
 		const prefix = PREFIXES[basename(first.text)];
-		if (!prefix) return { folder, grouped };
+		if (!prefix) return { folder, grouped, keywords };
 		words.shift();
 		let operand = prefix.operand === true;
 		while (words.length > 0) {
@@ -395,6 +412,8 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 	const notShown = new Set<string>();
 	const written = new Set<string>();
 	let cwd: string | null = start;
+	let chain: string | null | undefined;
+	let depth = 0;
 	const run = (word: Word, folder: string | null) => {
 		const located = locate(word, folder);
 		if ("why" in located) {
@@ -408,27 +427,45 @@ export function cloudCommandScripts(command: string, start: string | null = HOME
 	};
 	for (const simple of simples) {
 		if (simple.marker === "(") {
-			outer.push(cwd);
+			outer.push(chain === undefined ? cwd : chain);
+			chain = undefined;
 			continue;
 		}
 		if (simple.marker === ")") {
 			cwd = outer.length > 0 ? (outer.pop() as string | null) : null;
+			chain = undefined;
 			continue;
 		}
+		if (simple.joined === "start") chain = undefined;
+		else if (simple.joined === "||" && chain !== undefined) chain = null;
 		const words = [...simple.words];
-		const stripped = stripPrefixes(words, cwd);
-		if (stripped.grouped) cwd = null;
+		const stripped = stripPrefixes(words, chain === undefined ? cwd : chain);
+		for (const keyword of stripped.keywords)
+			depth = Math.max(0, depth + (OPENS.has(keyword) ? 1 : CLOSES.has(keyword) ? -1 : 0));
+		if (stripped.grouped) {
+			cwd = null;
+			chain = undefined;
+		}
 		const folder = stripped.folder;
 		const program = words[0];
 		if (!program) continue;
-		if (!program.literal) {
+		if (!program.literal && program.text !== "[" && program.text !== "[[") {
 			notShown.add(`${line(program.text) || "a program"}: it is named through a variable or an expansion`);
 			continue;
 		}
 		const name = program.text;
-		if (SKIPPED.has(name)) continue;
+		if (SKIPPED.has(name)) {
+			if (OPENS.has(name)) depth += 1;
+			continue;
+		}
 		if (name === "cd") {
-			if (!simple.alone) cwd = changeFolder(cwd, words[1]);
+			if (simple.alone) continue;
+			const next = changeFolder(chain === undefined ? cwd : chain, words[1]);
+			if (depth === 0 && simple.joined === "start") cwd = next;
+			else {
+				chain = simple.joined === "||" ? null : next;
+				cwd = null;
+			}
 			continue;
 		}
 		if (name === "pushd" || name === "popd") {

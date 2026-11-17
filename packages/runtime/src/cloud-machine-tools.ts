@@ -121,6 +121,7 @@ const WAKE_SENT_MS = 2000;
  * after, each a step the executor tells of (agent-box B1). */
 const WAKE_WORDS = 3;
 const SCRIPT_READ_MS = 20_000;
+const SCRIPT_START_MS = 15_000;
 const SCRIPT_READ_POLL_MS = 300;
 const REMEMBERED_SCRIPTS = 64;
 /** How long a run gives its report of a wait (20260930755000): beside the answer, never holding it long. */
@@ -972,23 +973,41 @@ export function cloudMachineTools(options: {
 					target: { realm: "company_machine", machineId: machine.machineId },
 					requiresCompanyRevision: false,
 				},
-				signal: deadline,
+				signal: context.signal,
 				authorize: async (_operation, admitted) => {
 					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Machine command identity changed");
 				},
 				perform: async (_operation, effect) => {
-					const receipt = await options.gateway.start(
-						scope,
-						{
-							commandId: effect.receiptId,
-							inputSha256: effect.inputSha256,
-							command: program,
-							timeoutMs: SCRIPT_READ_MS,
-							notify: false,
-						},
-						effect.signal,
+					const bound = AbortSignal.any([effect.signal, AbortSignal.timeout(SCRIPT_START_MS)]);
+					const start = startWhileUnrecorded(
+						machine.name,
+						effect.receiptId,
+						() =>
+							options.gateway.start(
+								scope,
+								{
+									commandId: effect.receiptId,
+									inputSha256: effect.inputSha256,
+									command: program,
+									timeoutMs: SCRIPT_READ_MS,
+									notify: false,
+								},
+								bound,
+							),
+						bound,
+					).then(
+						(receipt): JsonValue => ({ commandId: receipt.commandId }),
+						(error: unknown): JsonValue => ({ refused: cloudMachineCommandRefusal(error) ?? "NOT_STARTED" }),
 					);
-					return { content: { kind: "json", value: { commandId: receipt.commandId } } };
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const late = new Promise<JsonValue>((resolve) => {
+						timer = setTimeout(() => resolve({ refused: "NOT_STARTED" }), SCRIPT_START_MS + 1000);
+					});
+					try {
+						return { content: { kind: "json", value: await Promise.race([start, late]) } };
+					} finally {
+						clearTimeout(timer);
+					}
 				},
 			});
 			const commandId = started.kind === "json" ? (started.value as Record<string, JsonValue>).commandId : null;
@@ -1095,7 +1114,7 @@ export function cloudMachineTools(options: {
 		},
 		async execute(value, context) {
 			check(context);
-			const input = value as Record<string, JsonValue>;
+			const { scripts: _scripts, ...input } = value as Record<string, JsonValue>;
 			const machine = await find(String(input.machine), context.signal);
 			if (!machine) return refused("MACHINE_NOT_FOUND", `no machine is named ${String(input.machine)}`);
 			if (machine.state !== "running")
