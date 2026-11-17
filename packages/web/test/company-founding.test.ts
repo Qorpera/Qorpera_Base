@@ -1205,7 +1205,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			vi.mocked(cloud.rpc).mockImplementation(async () =>
 				wire({ me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: false } }),
 			);
-			localStorage.setItem(`qorpera:pending-spectators:${table}`, JSON.stringify(["mom@example.test"]));
+			localStorage.setItem(`qorpera:pending-spectators:${table}:${me}`, JSON.stringify(["mom@example.test"]));
 			try {
 				open(api);
 				await settle();
@@ -1213,7 +1213,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 					"mom@example.test will be invited to follow once the company starts.",
 				);
 			} finally {
-				localStorage.removeItem(`qorpera:pending-spectators:${table}`);
+				localStorage.removeItem(`qorpera:pending-spectators:${table}:${me}`);
 			}
 		});
 

@@ -1084,9 +1084,9 @@ export class CompanyController {
 	 * browser. */
 	async #invitePendingSpectators(team: HostedProfileTeam): Promise<void> {
 		if (this.#spectatorsInvited || !team.capabilities.manageMembers) return;
-		if (!pendingSpectators(this.profile.profileId).length) return;
+		if (!pendingSpectators(this.profile.profileId, this.#userId).length) return;
 		this.#spectatorsInvited = true;
-		const missed = await invitePendingSpectators(this.#api, this.profile.profileId);
+		const missed = await invitePendingSpectators(this.#api, team, this.#userId);
 		if (this.#stopped) return;
 		if (missed.length)
 			this.store.set({

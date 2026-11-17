@@ -16,6 +16,7 @@ import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { HostedFriend } from "../cloud/types.ts";
 import { t } from "../ui/preferences.ts";
+import { keepPendingSpectators } from "./pending-spectators.ts";
 import { Store } from "./state.ts";
 import { ConnectionsView, memberProviderSignIns } from "./views/settings-connections.ts";
 
@@ -885,6 +886,7 @@ export class FoundingController {
 	}
 
 	#gone(reason: NonNullable<FoundingState["gone"]>): void {
+		keepPendingSpectators(this.profileId, this.userId, []);
 		clearTimeout(this.#timer);
 		this.#closeConnections();
 		this.#leavePresence();

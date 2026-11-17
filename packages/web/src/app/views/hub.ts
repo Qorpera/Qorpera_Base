@@ -366,8 +366,11 @@ export class HubController {
 				...(pending ? { vision: pending } : {}),
 				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
 			});
-			if (creation.spectators?.length)
-				keepPendingSpectators(table.profileId, [...pendingSpectators(table.profileId), ...creation.spectators]);
+			if (creation.spectators?.length && this.#userId)
+				keepPendingSpectators(table.profileId, this.#userId, [
+					...pendingSpectators(table.profileId, this.#userId),
+					...creation.spectators,
+				]);
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;
 		} catch (error) {

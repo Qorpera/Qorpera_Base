@@ -698,7 +698,7 @@ export class FoundingView {
 	}
 
 	#open(table: CompanyFounding): void {
-		const spectators = pendingSpectators(table.profileId);
+		const spectators = pendingSpectators(table.profileId, this.#founding.userId);
 		this.#pending.hidden = spectators.length === 0;
 		this.#pending.textContent = spectators.length
 			? t("{emails} will be invited to follow once the company starts.", { emails: spectators.join(", ") })

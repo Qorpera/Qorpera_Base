@@ -5,9 +5,12 @@ import { CompanyController } from "../src/app/company.ts";
 import { invitePendingSpectators, keepPendingSpectators, pendingSpectators } from "../src/app/pending-spectators.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import { fixture, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const profileId = profileA.profileId;
+const me = userA.id;
+const others = { ...team, profileId, members: [], invitations: [] };
 const cleanup: (() => void)[] = [];
 
 afterEach(() => {
@@ -20,12 +23,12 @@ describe("spectators picked as a company is made", () => {
 	it("are invited as viewers and forgotten once invited", async () => {
 		const { api } = fixture();
 		const invite = vi.spyOn(api, "inviteMember").mockResolvedValue({} as never);
-		keepPendingSpectators(profileId, ["mom@example.test", "mom@example.test", "dad@example.test"]);
-		expect(pendingSpectators(profileId)).toEqual(["mom@example.test", "dad@example.test"]);
-		expect(await invitePendingSpectators(api, profileId)).toEqual([]);
+		keepPendingSpectators(profileId, me, ["mom@example.test", "mom@example.test", "dad@example.test"]);
+		expect(pendingSpectators(profileId, me)).toEqual(["mom@example.test", "dad@example.test"]);
+		expect(await invitePendingSpectators(api, others, me)).toEqual([]);
 		expect(invite).toHaveBeenCalledWith(profileId, "mom@example.test", "viewer");
 		expect(invite).toHaveBeenCalledWith(profileId, "dad@example.test", "viewer");
-		expect(pendingSpectators(profileId)).toEqual([]);
+		expect(pendingSpectators(profileId, me)).toEqual([]);
 	});
 
 	it("keeps those whose invite failed, for the next time the company opens", async () => {
@@ -34,15 +37,38 @@ describe("spectators picked as a company is made", () => {
 			if (email === "dad@example.test") throw new Error("offline");
 			return {} as never;
 		});
-		keepPendingSpectators(profileId, ["mom@example.test", "dad@example.test"]);
-		expect(await invitePendingSpectators(api, profileId)).toEqual(["dad@example.test"]);
-		expect(pendingSpectators(profileId)).toEqual(["dad@example.test"]);
+		keepPendingSpectators(profileId, me, ["mom@example.test", "dad@example.test"]);
+		expect(await invitePendingSpectators(api, others, me)).toEqual(["dad@example.test"]);
+		expect(pendingSpectators(profileId, me)).toEqual(["dad@example.test"]);
+	});
+
+	it("skip whoever the team already has, and take an invitation already there as done", async () => {
+		const { api } = fixture();
+		const invite = vi
+			.spyOn(api, "inviteMember")
+			.mockRejectedValue(
+				new CloudRpcError("qorpera_invite_profile_member", { code: "23505", message: "exists" }, 409),
+			);
+		keepPendingSpectators(profileId, me, ["mom@example.test", "dad@example.test"]);
+		const known = {
+			...others,
+			members: [{ ...team.members[0]!, email: "Mom@Example.test" }],
+		};
+		expect(await invitePendingSpectators(api, known, me)).toEqual([]);
+		expect(invite).toHaveBeenCalledTimes(1);
+		expect(invite).toHaveBeenCalledWith(profileId, "dad@example.test", "viewer");
+		expect(pendingSpectators(profileId, me)).toEqual([]);
+	});
+
+	it("belong to the person who picked them", () => {
+		keepPendingSpectators(profileId, me, ["mom@example.test"]);
+		expect(pendingSpectators(profileId, "someone-else")).toEqual([]);
 	});
 
 	it("are invited when an owner opens the company, from any page, and a failure says so", async () => {
 		const f = fixture();
 		vi.spyOn(f.api, "inviteMember").mockRejectedValue(new Error("offline"));
-		keepPendingSpectators(profileId, ["mom@example.test"]);
+		keepPendingSpectators(profileId, me, ["mom@example.test"]);
 		const company = new CompanyController(f.api, profileA, userA.id);
 		cleanup.push(() => company.stop());
 		await company.refreshTeam();
@@ -51,7 +77,7 @@ describe("spectators picked as a company is made", () => {
 		expect(company.store.get().error).toBe(
 			"mom@example.test could not be invited to follow. Invite them from the team page.",
 		);
-		expect(pendingSpectators(profileId)).toEqual(["mom@example.test"]);
+		expect(pendingSpectators(profileId, me)).toEqual(["mom@example.test"]);
 	});
 });
 
