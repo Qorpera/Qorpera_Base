@@ -92,6 +92,8 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_company_is_folder_v2(uuid)', false, true, 'member: any signed-in user, a per-company flag with no membership check (low: one boolean per company id); the Storage policies that run as the member call it'),
 	('public.qorpera_company_logo_objects(uuid)', false, true, 'member: counts one company''s logo folder for the bucket''s upload policy (20260930696000)'),
 	('public.qorpera_company_logos(uuid[])', false, true, 'member: auth.uid() + who sees each company logo (20260930696000)'),
+	('public.qorpera_company_mail_handle_status(uuid,text)', false, true, 'member: auth.uid() + membership; read-only'),
+	('public.qorpera_company_mail_handles(uuid)', false, true, 'member: auth.uid() + membership; read-only'),
 	('public.qorpera_company_memory_mode(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_company_organization_json(uuid)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_company_presence_scope(uuid,jsonb,text[])', false, true, 'internal: self-scoped or pure helper'),

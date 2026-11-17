@@ -1,6 +1,61 @@
 # Changelog
 
 ## [Unreleased]
+- Release v254 (company mail handles and companies with no name yet, #1915 and #1921; a member's message waits at a
+  rate limit, #1916; each merged in the release branch at its approved head; and master since v253: pending spectators,
+  #1911; long company names in the invitation email, #1901; the kits' pages without a header, #1899; coworker messages
+  wake only on request, #1920; coworker messages close together fold into one wake, #1930): runtime bundle 254
+  `73401553e00450485082a7b3af00ada3b4aad05b26b37b42fdf47a4fe324ba1e` (activation `20260929025499`, previous 253
+  `ec5969910e64`). Its activation requires `20260930796000` (the kernel's question input `mail_address` and the company
+  mail handles). The roll's `migrate` runs `20260930794000` (pending spectators), `20260930796000`, `20260930798000` (the
+  coworker wake fold) and `20260930801000` (the rate-limit wait; #1902, its web half, is live before it) before the switch. The guest moves: the native provider
+  host (`5eb2561c`); the ephemeral runner, the two LXD bootstraps and the native Codex (`9c299f88`) stay.
+- A member's own message waits at a ChatGPT rate limit instead of failing (contract 17, the 2026-11-17 amendment "a
+  member's message waits at a rate limit"; migration `20260930801000`, SQL test 1289). On 17 Nov 2026 the founder's
+  "retry" in Produkt's thread (run `e5391a06`, `room_delivery`) failed in 2 s with `rate_limited` and only a failure card
+  showed. Now a started `session_turn` or `room_delivery` run turned away with `rate_limited` before any effect pauses on
+  the same login (`run_paused`, `pausedFor: "rate_limited"`, no attempt spent) for 1, 2, 4, 8, 15 minutes with jitter,
+  at most `rate_limit_waits` (5, `qorpera_member_rate_limit_settings`; 0 restores the old failure) times, then fails as
+  before. The recovery read says `rate_limited`; a waiting run's activity says `paused_for` and is never movable; a
+  usage reading does not release it. No account cool-down, turn cap, claim, routine or file-wake change. Deploy: the web
+  first (it reads both fields when present), then this migration on its own; no runtime bundle, runner, host, executor
+  or vault change.
+- A coworker message wakes the coworker only when the sender says so (the founder, 17 November 2026: "Build, no cap", after
+  213 of about 520 runs in two days were started by coworker messages, 91 of them in one company's first hour, most of
+  them news with a file link; lanes/agent-messaging-volume-20261117). `send_coworker_message` requires `priority`: a call
+  without it is refused with the reason, and the tool's text says true is for a request, a question, a handover the
+  coworker waits for or a member's decision that changes its work, false (a note for its next turn) for other news, and
+  no message for what the files and todos show. An answer the asker waits for is sent with `priority` true (contract
+  14.6, the 2026-11-17 amendment). The coworker paragraph and the coworker wake's protocol stop replies that
+  say received, agreed or done, and passing news on to a third coworker who need not act. `PLATFORM_UPDATES` tells the
+  Co-Founder (`coworker-messages-wake-on-request`). The runtime bundle only; no migration.
+- Coworker messages waiting for one agent are delivered in one run (the founder, 17 November 2026: "Build, no cap";
+  migration `20260930798000`, SQL test 1295; lanes/agent-messaging-volume-20261117/DESIGN-FOLD.md). An agent's coworker
+  wakes all go to its own thread, which runs one run at a time, so messages that arrive while it is busy used to start
+  one run each, one after another (prod, 16-17 Nov: 78 of 227). Now, when the run of a coworker wake reads its wake
+  (`qorpera_folder_read_wake` → `qorpera_coworker_take_waiting`), it takes over the other coworker wakes still queued in
+  that thread with the same payer, made no later than the run, oldest first: each passes its own run's checks under its
+  own row lock (`qorpera_wake_authorized`, its chain not stopped under the chain lock taken shared, its pair conversation
+  KEY SHARE SKIP LOCKED), its sender's folder reads are copied into the run under the taken wake's id (so the reads check
+  and erasure cover them), its message becomes a delivered row of `qorpera_pending_peer_messages` (new column `wake_id`)
+  that holds the wake: it stays queued under the run. The run sees them in
+  `wake.payload.heldMessages` in full, with their senders, oldest first, up to 12 lines and 19200 bytes of shown text;
+  the rest wait for the next run, which takes them the same way. When the taking run's job completes, the
+  materializer cancels a held wake as delivered ("Delivered with another coworker message in run …"). When the job
+  fails or is cancelled (a Stop of the run's chain included), the held wake becomes a run of its own, through the same
+  job-status wake-up and due scan that start any wake that waited behind a live run. It does not if its own chain is
+  stopped. The drain never offers a hold as a held note, so a message reaches one live run at a time. A taken message
+  is answered under the taking run's chain: what the agent sends from that run carries that run's causal root and hop
+  count. A Stop of the taken message's own chain after the take cancels its held wake but does not reach the taking run
+  or its answer; a Stop of the taking run's chain ends both (contract 14.6, the 2026-11-17 amendment). A lone message,
+  the send and its receipt are unchanged; no cap on chain depth or message count. Held notes are now cut at 1600 bytes, not 400
+  characters, and a cut one ends ` … [cut: the full message is in your transcript with this coworker]`; a note of the
+  pair whose transcript the wake shows is left out only when that transcript (400 characters a line) shows it whole. The context
+  message's heldMessages line and the coworker wake's protocol say the list also holds messages that waited for this
+  run, to be treated like the message that woke it; the note form of `send_coworker_message` no longer names 400
+  characters; contract 14.6 gains the amendment (the staff instruction pins and the tool catalog pins move). Deploy order: either; the
+  payload keeps the shape every live bundle parses (`heldMessages`), so the migration works with the bundles live today
+  and the runtime text change needs no migration.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
@@ -24,14 +79,16 @@
   file may hold (a drawn mark or one embedded picture, nothing outside it, shown as small as about 34 px). Ideas: never
   keep the company's product and subject out of a worker's pictures. The Co-Founder: the builders' first assignments
   move the first concept; the Brand owner's first assignment is two to four directions, each the product in its world in
-  a real picture or film, and only the chosen one becomes the identity and its logo; it acts in the run an owner says it
+  a real picture or film, and only the chosen one becomes the identity and its logo (with no name yet, a mark without
+  lettering); it acts in the run an owner says it
   is blocked; with `hire_team` offered, the first team is hired in one call. An owner: a refused or blocked step leaves
   the outcome its own. The board kit's choose guide says the poster carries the direction; ask_member no longer names an
   SVG sketch. Platform update `product-shown-first`. The overlay's version-history doc comment has no v19 entry: the
-  comment check refuses an edited comment there; this entry and the contract carry it. Staff instruction pins
-  `9cccae895f75` → `9e698f87bab233d3e1b9291bc899eb35a2c2b67ea55a9a824c5941860f31bbe3` (conversation and private), the
-  worker's `4ecdde26333c` → `1810f8f3dac607a9bdf99f10b9a4b522ec187c853e52a2585ba051bf8d7be2f4`, every prompt (overlay
-  v19), and both catalog pins (ask_member). The runtime bundle only; no SQL, no web, no node program.
+  comment check refuses an edited comment there; this entry and the contract carry it. Measured on master
+  b461b96e0 merged in: staff instruction pins `77714000b4b6` → `792d97afab4a8dd356eb09a9a4de178098e2a294895641e65905be7480fb1fc4`
+  (conversation and private), the worker's `4a15f2f4940a` →
+  `09ff6942a3b6feb0cfd748c49d6af01dd7858431506e8774bb262a49fde0c62a`, every prompt (overlay v19), and both catalog pins
+  (ask_member). The runtime bundle only; no SQL, no web, no node program.
 - The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure
   they are running with bypass permissions, and all permissions turned ON"; lanes/agent-box-20261113/harness-permissions/
   AUDIT.md; the runtime bundle only). `CLAUDE_BOX_TOOLS` goes from 8 to 18: Task (sub-agents), WebSearch, Skill,
@@ -45,6 +102,7 @@
   unchanged.
 - Extra high on GPT (contract 17, the second 2026-11-16 amendment; migration `20260930788000`, SQL test 1285). The model policy declares `threadEfforts: ["xhigh"]`; `allowed` stays low, medium, high (`CLOUD_RUNTIME_ROUTINE_EFFORTS`, the routine tools' set), and a run's effort may be `xhigh` (`CLOUD_RUNTIME_REASONING_EFFORTS`, the validators of a run's effort). Under a bundle that declares it, the setter takes `xhigh` on a GPT model and a member's turn pins it, so Codex runs with `model_reasoning_effort="xhigh"`; under one without it, a conversation saved at `xhigh` runs at high. The answers name `efforts` per listed model. Deploy order: (1) apply `20260930788000` (alone it changes nothing a member sees: the setter still refuses `xhigh` on GPT, `efforts` names GPT low to high); (2) the release cut regenerates the bundle (model policy hash changes) and guards its activation on `to_regprocedure('public.qorpera_model_policy_thread_efforts(jsonb)')`, since an older kernel refuses a manifest with `threadEfforts`; the native provider host (runner image) and the coding executor roll with it, both before the switch: each checks a run's effort (the provider host its admission and Codex's configuration, the executor every coding and machine command's tool authority, `parseCloudNativeToolAuthority`), and the live builds refuse `xhigh`, so an older executor would refuse every command of an extra-high turn; the shared vault's bytes move too (the policy constants) but it reads no effort, so it may stay; (3) the web (`efforts` in the answer) is safe before and after: it offers Extra high on GPT only when `efforts` names it.
 - The agent's home for every company (the founder, 16 November 2026, to "Switch it on for every company in the next release, with the node 1 fix?": "Yes, next release"; migration `20260930789000`, SQL test 1286; contract, the 2026-11-16 amendment "the agent's home for every company"). `qorpera_home_settings` gains `every_company` (boolean, not null, false by default), and `qorpera_company_home_allowed` is the platform switch AND (`every_company` OR the company's row in `qorpera_home_companies`) AND the sharing rule `qorpera_folder_home_shared`, as before; its signature, grants and security are unchanged. The migration turns `every_company` on only where the platform switch's row is on, so a database whose switch is off or absent stays off; the listed companies (Brooks) keep their rows. Everything that asks the gate follows it: a run's home (`qorpera_company_home_available`), the Claude Code worker's machine (`qorpera_claude_worker_home`) and the Claude models in a conversation (`qorpera_member_may_pick_claude`, still behind the Claude sign-in list). A machine made from an image without the pinned Codex or `sftp-server` answers its home `HOME_OUTDATED`: a Codex run's home calls get those words and the run goes on with the company's own tools; a Claude Code worker ends blocked with them and its agent is told. It rides the next release with #1880, never before it. The way back, one statement, leaves the listed companies on: `update public.qorpera_home_settings set every_company = false where singleton;`
+- Company mail handles and companies with no name yet (Jonas, 17 November 2026: "go with your picks, build it"; lanes/company-mail-handles-20261117, PR B; the database is PR A, migration `20260930796000`, the web PR C). A company named `No name yet` has no name: the constitution tells every run (a worker's too) to call it "the company" and never invent or use a name in messages, files or email. `ask_member`'s question takes an optional `input: {kind: "mail_address"}`, the address card, only with `allowCustom: true` (refused otherwise, with the reason, new card or stored); a new address card's options are handles (`^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])$`), each value the same as its label or left out; the member's answer is the address they made, as a custom answer. To keep `ask_member`'s schema under its 4600-byte bound (Codex drops field descriptions near 5000), an option's `preview` and `allowCustom` descriptions are shorter, saying the same, and `input` has no description of its own: the tool description's new line says what an address card is. The founding texts never name `ask_member`, since a group chat's instructions must not. The Co-Founder never opens the company's first address: once the company has a name and owns none, it asks the founder on an address card with one to three handles made from the name, and not while the company has no name; the hello is that card's text when the card goes out in the same run. Founding offers up to three names once on a question card with a Not yet option, asks again only when something waits for the name, can be agreed with no name (the first line stays `# No name yet`), and the Brand owner's first identity is then colours and a mark without lettering. After the founding, the Co-Founder's role says: when the company has a name and owns no email address, never open one itself but raise the same address card in its next run with the founders (runs with `manage_hook`), and while it has no name, offer names only when something waits for one. `manage_hook`'s mailbox `localPart` is `<box>.<handle>` under a handle the company owns (box 1 to 39, handle 2 to 24), its description and schema say so, and the database's two new refusals reach the model. The action reviewer's instructions no longer call the Co-Founder opening the company's main mailbox requested: the first address is a founder's, on the address card, so a first address under a new handle is not requested, and another under a handle the company owns is judged like any mailbox. `PLATFORM_UPDATES` entry `no-name-and-mail-handles` (a change in behaviour, 17 November 2026). The founding and constitution pins move.
 - Release v252 (conversation models GPT-6.1 Sol, Fable 5.2 and Opus 5.5, #1877; the move of all of a member's chats
   waiting on a used-up login, #1876, merged in the release branch; and master since v251): runtime bundle 252
   `ac0e54611d0dbf9ca095972482ebe4ed36ff93c428f019e5a29a513040ceb206` (activation `20260929025299`, previous 251

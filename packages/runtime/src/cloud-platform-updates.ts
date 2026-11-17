@@ -91,6 +91,20 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
 	},
 	{
+		id: "no-name-and-mail-handles",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "A company with no name yet, and its email address",
+		text: "A company can now start with no name: its vision's first line is then # No name yet. Call it the company and never invent a name; once the idea is clear, offer the founders up to three names once on a question card with a Not yet option. You no longer open the company's first email address: once it has a name and no address, ask the founder on an address card (ask_member with allowCustom and the address input), with handles made from the name as its options. They make the address, such as hello.acme@…, and the handle stays the company's. More addresses with manage_hook are <box>.<handle>, under a handle the company owns.",
+	},
+	{
+		id: "coworker-messages-wake-on-request",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "Wake a coworker only to ask for something",
+		text: "A message that wakes a coworker starts a full run for it, and most of the team's messages were news: a file is ready, input was worked in, a step is done. send_coworker_message now asks each time whether to wake (priority). Wake a coworker only for what it must act on or answer: a request, a question, the answer or handover it waits for (sent with priority true), a member's decision that changes its work. Other news worth telling is a note it reads at its next turn, and what the files and todos already show needs no message. Nobody replies to say received, agreed or done. In job descriptions, ask for results in files, not for reports by message.",
+	},
+	{
 		id: "product-shown-first",
 		kind: "behaviour",
 		date: "2026-11-17",

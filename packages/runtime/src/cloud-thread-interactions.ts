@@ -28,6 +28,7 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** Names in the cloud secret custody start with a letter. */
 const VAULT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FIELD_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+const MAIL_HANDLE_PATTERN = /^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])$/;
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 // NUL too: PostgreSQL text cannot hold it, and the final send of a card's sentence refuses it.
@@ -75,16 +76,17 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 					preview: chars(
 						1,
 						512,
-						"A picture of this option for a visual choice: the company file path of an image you made for it (generated, rendered or drawn), or app:<name> for an interface app that shows it. Options with pictures show as big boxes the member picks from.",
+						"A picture of this option: an image you made for it, by its company file path, or app:<name> for an interface app. Options with pictures show as big boxes to pick from.",
 					),
 				}),
 			},
 			multiSelect: { type: "boolean" },
 			allowCustom: {
 				type: "boolean",
-				description: "A field for the member's own answer beside the options; set it for an open question.",
+				description: "A field for the member's own answer; set it for an open question.",
 			},
 			dismissOnMoveOn: { type: "boolean" },
+			input: closedObject(["kind"], { kind: { type: "string", enum: ["mail_address"] } }),
 		},
 		"surface question: 1 to 6 likely answers; allowCustom adds a field for the member's own.",
 	),
@@ -231,6 +233,7 @@ const ASK_MEMBER_WORDS = [
 	"- secret: the member saves a value into the company vault; you never see it. It fills no page and signs in nowhere.",
 	"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you. Then look, since I'm done is not proof of a sign-in. With no desktop computer, say so.",
 	"- draft: an email or message the member edits, then saves, sends or discards. Raise it directly, with no question before it. A card neither sends nor saves anything and asking for a draft never allows sending: report saved or sent only from a tool result or the card's outcome; a sent outcome is already sent.",
+	"- An address card is a question with allowCustom: true and input {kind: mail_address}: each option a handle made from the company's name (label and value the same, such as acme); the member makes the company's email address in the card, and the answer is that address.",
 	"Form and credential cards are refused. Passwords, tokens and one-time codes never go in chat or in a question's answer, and a question's answer never bypasses an approval the platform requires.",
 	"Say each thing once across title, body, text and chat. When the choice is visual (a look, a product, a layout), make a picture of each option first (generated, rendered or drawn) or an interface app, and set its preview: the card shows big pictures to pick from.",
 	"The answer wakes you as qorpera.interaction-answer/v1, as the next input or as the request with the card it answers: an outcome, and a question's chosen values. A secret's answer holds only the vault secret's id, version and connectorId (default vault), never the value. A declined, dismissed or expired card is an answer: do not raise it again at once. In your own shared thread only the member you answer can answer the card.",
@@ -306,11 +309,22 @@ function closedKeys(container: Record<string, unknown>, keys: readonly string[])
 	return Object.keys(container).every((key) => keys.includes(key));
 }
 
+function questionInputIssue(payload: Record<string, unknown>): string | undefined {
+	if (!("input" in payload)) return undefined;
+	const input = record(payload.input);
+	if (!input || !closedKeys(input, ["kind"]) || input.kind !== "mail_address")
+		return "a question's input is {kind: mail_address}, the address card, and nothing else";
+	if (payload.allowCustom !== true)
+		return "an address card (input kind mail_address) needs allowCustom: true, since the member's answer is the address they make";
+	return undefined;
+}
+
 function payloadValid(surface: CloudInteractionSurface, payload: Record<string, unknown>): boolean {
 	switch (surface) {
 		case "question": {
 			if (
-				!closedKeys(payload, ["options", "multiSelect", "allowCustom", "dismissOnMoveOn"]) ||
+				!closedKeys(payload, ["options", "multiSelect", "allowCustom", "dismissOnMoveOn", "input"]) ||
+				questionInputIssue(payload) !== undefined ||
 				!Array.isArray(payload.options) ||
 				payload.options.length < 1 ||
 				payload.options.length > 6 ||
@@ -504,6 +518,8 @@ function interactionRequestIssue(data: Record<string, unknown>): string | undefi
 		return "expiresAt must be a UTC time such as 2026-09-25T12:00:00Z";
 	const surface = data.surface as CloudInteractionSurface;
 	const payload = record(data.payload);
+	const input = surface === "question" && payload ? questionInputIssue(payload) : undefined;
+	if (input) return input;
 	return payload && payloadValid(surface, payload) ? undefined : payloadRefusal(surface);
 }
 
@@ -546,6 +562,19 @@ function cardReadabilityIssue(card: Record<string, unknown>): string | undefined
 			return `body must be at most ${CLOUD_ASK_MEMBER_BODY_MAX_LINES} short lines of at most ${CLOUD_ASK_MEMBER_LINE_MAX_BYTES} UTF-8 bytes each, ${CLOUD_ASK_MEMBER_BODY_MAX_BYTES} in all: say what is being chosen and the one or two things that matter, and link the full draft or file, such as [Read the draft](folder:path/to/file.md)`;
 	}
 	const options = card.surface === "question" ? record(card.payload)?.options : undefined;
+	if (
+		Array.isArray(options) &&
+		record(card.payload)?.input !== undefined &&
+		options.some((candidate) => {
+			const option = record(candidate);
+			return (
+				typeof option?.label !== "string" ||
+				!MAIL_HANDLE_PATTERN.test(option.label) ||
+				("value" in option && option.value !== option.label)
+			);
+		})
+	)
+		return "an address card's options are handles made from the company's name: each label 2 to 24 lowercase letters, digits and inner hyphens, such as acme or acme-studio, and its value the same or left out";
 	if (
 		Array.isArray(options) &&
 		options.some(

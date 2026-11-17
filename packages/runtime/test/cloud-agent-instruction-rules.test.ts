@@ -565,7 +565,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"4",
 		"held messages",
-		"wake.payload.heldMessages: messages coworkers left without waking you, already seen by members; answer one only when you were asked something.",
+		"wake.payload.heldMessages: more coworker messages for you, oldest first, already seen by members: notes left without waking you and messages that waited for this run; answer each one that asks you something.",
 		STAFF,
 	],
 	[
@@ -1135,8 +1135,27 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "read the vision first", "In your first run, read the vision", FOUNDING],
 	[
 		"7",
-		"the main mailbox",
-		"Before your hello, open the company's email: manage_hook, action create, kind mailbox, localPart the company's name in lowercase",
+		"the main mailbox: a founder chooses it",
+		"Never open the company's first email address yourself: a founder chooses it. Once the company has a name and owns no address (list_hooks shows its mailboxes), ask the founder who opened it, in that run, on an address card",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the address card's handle suggestions",
+		"allowCustom: true, input {kind: mail_address}, and one to three options, each a handle made from the name as its label and value",
+		FOUNDING,
+	],
+	["7", "no address card without a name", "While the company has no name, do not ask.", FOUNDING],
+	[
+		"7",
+		"the name card",
+		"offer the founders up to three names, once, on a question card with allowCustom: true and a Not yet option",
+		FOUNDING,
+	],
+	[
+		"7",
+		"a brand with no name yet",
+		"with no name yet, the directions and that identity carry a mark without lettering",
 		FOUNDING,
 	],
 	[
@@ -1148,8 +1167,8 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "the hello", "Then a short, warm hello", FOUNDING],
 	[
 		"7",
-		"the address and the hires in the hello",
-		"Give the email address and, in a few lines, who you hired and what each finds out first.",
+		"the hires in the hello, the address card last",
+		"Say in a few lines who you hired and what each finds out first; when the address card goes out in the same run, raise it last, with your hello as its text.",
 		FOUNDING,
 	],
 	[
@@ -1161,7 +1180,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the chosen direction becomes the identity",
-		"Only the chosen one becomes the identity in QorperaOS/brand/: colours, fonts, a short guide and the official logo, QorperaOS/brand/logo.svg, which the app shows wherever the company appears.",
+		"Only the chosen one becomes the identity in QorperaOS/brand/: colours, fonts, a short guide and the official logo, QorperaOS/brand/logo.svg, which the app shows wherever the company appears; with no name yet, the directions and that identity carry a mark without lettering.",
 		FOUNDING,
 	],
 	[
@@ -1197,6 +1216,24 @@ const RULES: [string, string, string, Run[]][] = [
 		HAND_OFF,
 	],
 	["7", "never hire an owner twice", "check QorperaOS/agents/ first, so none is hired twice", HAND_OFF],
+	[
+		"7",
+		"the address card after the founding",
+		'When the company has a name and owns no email address (list_hooks shows its mailboxes), never open one yourself: raise the address card, a question card with a title such as "Your company\'s email address", allowCustom: true, input {kind: mail_address}',
+		["cofounder-member-agreed", "cofounder-routine-agreed"],
+	],
+	[
+		"7",
+		"names after the founding, only when something waits",
+		"While the vision's first line is # No name yet, offer names only when something waits for one (the email address, a logo with lettering, a website's address): up to three on a question card with allowCustom: true and a Not yet option",
+		["cofounder-member-agreed", "cofounder-routine-agreed"],
+	],
+	[
+		"7",
+		"agreed with no name",
+		"The founding can be agreed with no name: the first line then stays # No name yet.",
+		HAND_OFF,
+	],
 	[
 		"7",
 		"a failed founding step",
@@ -1700,7 +1737,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"10",
 		"a coworker message coordinates",
-		"To a coworker, write what you need, what you hand over or what changed for them",
+		"Write to a coworker when you need something from them, when they wait for something from you, or when what you found changes their work",
 		STAFF,
 	],
 	[
