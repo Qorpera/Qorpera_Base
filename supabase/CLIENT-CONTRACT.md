@@ -995,8 +995,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   (sent mail and drafts included, never below `broughtIn`), so only `broughtIn` reaching 50,000 says the first import
   stopped at its limit. `qorpera_pause_google_mailbox(p_mailbox_id, p_paused)` takes the
   entry's `hookId` and stops or restarts bringing mail in. Remove is `qorpera_set_event_hook_status(hookId, 'removed')`:
-  the Google sign-in ends, the mail brought in stays (and is taken over again when the same company connects the same
-  address). Sending from a Google address leaves through Gmail; while the
+  the Google sign-in ends, the mail brought in stays; when the same company connects the same address again, the same
+  mailbox comes back (confirm `outcome: "relinked"`, same `hookId`) and brings in the mail of the time it was removed. Sending from a Google address leaves through Gmail; while the
   state is `sign_in_again` a send answers 0A000 "Google asked you to sign in again."; a Google address carries no
   attachments. Both RPCs answer 42501 to a member who is not an owner or admin (`not_allowed`).
 
