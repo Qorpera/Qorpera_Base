@@ -421,6 +421,24 @@ describe("Google mail's states", () => {
 		expect(google.pause).not.toHaveBeenCalled();
 	});
 
+	it("keeps Sign in on a Google line paused at its hook while Google wants a new sign-in", async () => {
+		const { main, google, hookIds } = await mailbox((mail) => {
+			mail.addresses.unshift({
+				...googleAddress({ state: "sign_in_again", broughtIn: 10, total: 10, lastWeek: 1 }),
+				status: "paused",
+				hookPaused: true,
+			});
+		});
+		await addresses(main, 2);
+		const card = cardOf(main, hookIds[0]!)!;
+		expect(card.querySelector(".hook-note")?.textContent).toBe("Google asked you to sign in again");
+		expect(card.querySelector(".hook-state")?.textContent).toBe("Paused");
+		expect(texts(card, ".connection-actions button")).toEqual(["Sign in", "Remove"]);
+		button(card, "Sign in")!.click();
+		await vi.waitFor(() => expect(google.go).toHaveBeenCalledWith(SIGN_IN));
+		expect(vi.mocked(google.begin).mock.calls).toEqual([[expect.any(AbortSignal), hookIds[0]]]);
+	});
+
 	it("says when pausing failed", async () => {
 		const { main, google, hookIds } = await mailbox((mail) => {
 			mail.addresses.unshift(googleAddress({ state: "live", broughtIn: 10, total: 10, lastWeek: 1 }));

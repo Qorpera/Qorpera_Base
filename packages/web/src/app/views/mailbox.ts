@@ -2045,7 +2045,7 @@ function googleState(google: GoogleMail): string | null {
 function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAction | null {
 	const google = googleOf(page, hook);
 	const client = calls.google;
-	if (!google || !client || hook.status === "paused") return null;
+	if (!google || !client) return null;
 	if (google.state === "sign_in_again")
 		return {
 			label: t("Sign in"),
@@ -2056,6 +2056,7 @@ function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAc
 				if (!signal.aborted) client.go(url);
 			},
 		};
+	if (hook.status === "paused") return null;
 	const paused = google.state === "paused";
 	return {
 		label: paused ? t("Resume") : t("Pause"),
