@@ -56,11 +56,18 @@ window.reports = [];
 addEventListener("message", (event) => { if (event.data && typeof event.data.probe === "string") window.reports.push(event.data.probe); });
 const variant = new URLSearchParams(location.search).get("v");
 const { page } = await (await fetch("/variant/" + variant)).json();
-const bytes = new TextEncoder().encode(page);
 const hex = async (data) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-const file = { manifestSha256: await hex(new TextEncoder().encode("manifest")), fileSha256: await hex(bytes), bytes: bytes.length, mediaType: "text/html", executable: false };
-const entry = (path) => path === "pages/index.html" ? { path, kind: "file", version: "00000000-0000-4000-8000-000000000001", seq: 1, updatedAt: "2026-11-17T00:00:00Z", file, target: null } : null;
-const folder = { read: async (path) => ({ asOfSeq: 1, entry: entry(path) }), list: async () => ({ asOfSeq: 1, entries: [], next: null }), readFile: async () => bytes };
+const stored = new Map();
+for (const [path, text] of [["pages/index.html", page], ["pages/beside.txt", "beside"]]) {
+	const bytes = new TextEncoder().encode(text);
+	stored.set(path, { bytes, file: { manifestSha256: await hex(new TextEncoder().encode(path)), fileSha256: await hex(bytes), bytes: bytes.length, mediaType: "text/plain", executable: false } });
+}
+const entry = (path) => stored.has(path) ? { path, kind: "file", version: "00000000-0000-4000-8000-000000000001", seq: 1, updatedAt: "2026-11-17T00:00:00Z", file: stored.get(path).file, target: null } : null;
+const folder = {
+	read: async (path) => ({ asOfSeq: 1, entry: entry(path) }),
+	list: async () => ({ asOfSeq: 1, entries: [], next: null }),
+	readFile: async (file) => [...stored.values()].find((one) => one.file.fileSha256 === file.fileSha256).bytes,
+};
 const signal = new AbortController().signal;
 const assembled = await assembleApp(folder, { path: "pages", entry: "index.html" }, signal);
 if (!assembled.ok) window.reports.push("not live");
@@ -175,6 +182,14 @@ document.body.append(host); ${say('"root added"')};</script></body>`,
 <link rel="preconnect" href="https://preconnect-hint.leak.invalid"><link rel="prefetch" href="${origin}/probe/prefetch">
 <link rel="preload" as="fetch" href="${origin}/probe/preload"><link rel="modulepreload" href="${origin}/probe/modulepreload">
 <link rel="prerender" href="${origin}/probe/prerender"></head><body><script>${say('"hinted"')}</script></body>`,
+	"a page that reloads itself": () =>
+		`<!doctype html><p>Again</p><script>
+if (window.name !== "reloaded") {
+	window.name = "reloaded";
+	${say('"before reload"')};
+	location.reload();
+} else fetch("beside.txt").then((answer) => answer.text()).then((text) => ${say('"after reload, beside: " + text')}, () => ${say('"after reload, no file"')});
+</script>`,
 };
 const expected = {
 	runs: ["ran, rgb(1, 2, 3), no storage, no cookies"],
@@ -193,6 +208,7 @@ const expected = {
 	"webrtc from a declarative shadow root written during the parse": ["written"],
 	"webrtc from a declarative shadow root by setHTMLUnsafe": ["refused TypeError"],
 	"link hints in the markup": ["hinted"],
+	"a page that reloads itself": ["before reload", "after reload, beside: beside"],
 };
 
 let origin;

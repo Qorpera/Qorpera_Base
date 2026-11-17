@@ -90,6 +90,7 @@ export class AppFrame {
 		frame.addEventListener(
 			"load",
 			() => {
+				if (this.#again) return;
 				this.#loads++;
 				if (this.#loads > 2) this.#leave();
 				else if (this.#loads === 1 && this.#ready) this.#handOver();
@@ -136,11 +137,12 @@ export class AppFrame {
 			return;
 		}
 		if (data.type !== PAGE_READY) return;
-		if (this.#ready && this.#again) {
+		if (this.#again) {
 			this.#port?.close();
 			this.#port = undefined;
 			this.#handed = false;
-			this.#loads = 0;
+			this.#ready = true;
+			this.#handOver();
 			return;
 		}
 		if (this.#ready) {

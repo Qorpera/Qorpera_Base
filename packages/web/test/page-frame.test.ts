@@ -60,7 +60,7 @@ describe("an HTML page's frame", () => {
 		expect(frame.className).toBe("files-page-frame");
 	});
 
-	it("hands each frame its own page when it is ready, again when the page reloads itself, and nothing to anyone else", () => {
+	it("hands each frame its own page when it is ready, and nothing to anyone else", () => {
 		const one = standAlone("<p>One</p>", "Page: one.html");
 		const two = standAlone("<p>Two</p>", "Page: two.html");
 		const stranger = document.createElement("iframe");
@@ -69,7 +69,6 @@ describe("an HTML page's frame", () => {
 		const toTwo = vi.spyOn(two.frame.contentWindow!, "postMessage");
 		const toStranger = vi.spyOn(stranger.contentWindow!, "postMessage");
 		ready(two.frame.contentWindow);
-		loaded(two);
 		expect(toTwo).toHaveBeenCalledExactlyOnceWith(...handedAs("<p>Two</p>"));
 		expect(toOne).not.toHaveBeenCalled();
 		ready(stranger.contentWindow);
@@ -78,20 +77,123 @@ describe("an HTML page's frame", () => {
 		ready(null);
 		expect(toStranger).not.toHaveBeenCalled();
 		expect(toOne).not.toHaveBeenCalled();
-		ready(one.frame.contentWindow);
-		loaded(one);
-		loaded(one);
-		ready(one.frame.contentWindow);
-		expect(toOne).toHaveBeenCalledOnce();
-		loaded(one);
-		expect(toOne).toHaveBeenCalledTimes(2);
-		expect(toOne).toHaveBeenLastCalledWith(...handedAs("<p>One</p>"));
-		expect(one.signal.aborted).toBe(false);
 		two.dispose();
 		ready(two.frame.contentWindow);
 		loaded(two);
 		expect(toTwo).toHaveBeenCalledOnce();
 		one.dispose();
+	});
+
+	it("hands a page opened by itself over again when it reloads, whatever the order of ready and load", async () => {
+		const ports = (spy: { mock: { calls: unknown[][] } }) =>
+			spy.mock.calls.map((call) => (call[2] as MessagePort[])[0]);
+		const first = standAlone("<p>First</p>", "Page: first.html");
+		const second = standAlone("<p>Second</p>", "Page: second.html");
+		document.body.append(first.frame, second.frame);
+		const toFirst = vi.spyOn(first.frame.contentWindow!, "postMessage");
+		const toSecond = vi.spyOn(second.frame.contentWindow!, "postMessage");
+		ready(first.frame.contentWindow);
+		loaded(first);
+		expect(toFirst).toHaveBeenCalledExactlyOnceWith(...handedAs("<p>First</p>"));
+		loaded(second);
+		expect(toSecond).not.toHaveBeenCalled();
+		ready(second.frame.contentWindow);
+		expect(toSecond).toHaveBeenCalledExactlyOnceWith(...handedAs("<p>Second</p>"));
+		loaded(first);
+		loaded(first);
+		ready(first.frame.contentWindow);
+		ready(first.frame.contentWindow);
+		loaded(first);
+		loaded(first);
+		expect(toFirst).toHaveBeenCalledTimes(3);
+		expect(new Set(ports(toFirst)).size).toBe(3);
+		for (const call of toFirst.mock.calls) expect(call).toEqual(handedAs("<p>First</p>"));
+		expect(first.signal.aborted).toBe(false);
+		let give: (page: { html: string }) => void = () => {};
+		const pending = new AppFrame(
+			new Promise((resolve) => {
+				give = resolve;
+			}),
+			"Page: later.html",
+			"files-page-frame",
+			async () => ({ ok: false, error: "no" }),
+			() => {},
+			{ again: true },
+		);
+		document.body.append(pending.frame);
+		const toPending = vi.spyOn(pending.frame.contentWindow!, "postMessage");
+		ready(pending.frame.contentWindow);
+		loaded(pending);
+		ready(pending.frame.contentWindow);
+		expect(toPending).not.toHaveBeenCalled();
+		give({ html: "<p>Later</p>" });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(toPending).toHaveBeenCalledExactlyOnceWith(...handedAs("<p>Later</p>"));
+		let late: (page: { html: string }) => void = () => {};
+		const ended = new AppFrame(
+			new Promise((resolve) => {
+				late = resolve;
+			}),
+			"Page: ended.html",
+			"files-page-frame",
+			async () => ({ ok: false, error: "no" }),
+			() => {},
+			{ again: true },
+		);
+		document.body.append(ended.frame);
+		const toEnded = vi.spyOn(ended.frame.contentWindow!, "postMessage");
+		ready(ended.frame.contentWindow);
+		ended.dispose();
+		late({ html: "<p>Ended</p>" });
+		await Promise.resolve();
+		await Promise.resolve();
+		ready(ended.frame.contentWindow);
+		loaded(ended);
+		expect(toEnded).not.toHaveBeenCalled();
+		first.dispose();
+		ready(first.frame.contentWindow);
+		expect(toFirst).toHaveBeenCalledTimes(3);
+		second.dispose();
+		pending.dispose();
+	});
+
+	it("stops an app's frame whose page reloads itself, as before", () => {
+		let left = 0;
+		const app = new AppFrame(
+			{ html: "<p>App</p>" },
+			"App: shop",
+			"side-panel-frame",
+			async () => ({ ok: true, value: null }),
+			() => {
+				left++;
+			},
+		);
+		document.body.append(app.frame);
+		const toApp = vi.spyOn(app.frame.contentWindow!, "postMessage");
+		ready(app.frame.contentWindow);
+		expect(toApp).not.toHaveBeenCalled();
+		loaded(app);
+		expect(toApp).toHaveBeenCalledOnce();
+		loaded(app);
+		ready(app.frame.contentWindow);
+		expect(left).toBe(1);
+		expect(app.signal.aborted).toBe(true);
+		const reloaded = new AppFrame(
+			{ html: "<p>App</p>" },
+			"App: shop",
+			"side-panel-frame",
+			async () => ({ ok: true, value: null }),
+			() => {
+				left++;
+			},
+		);
+		document.body.append(reloaded.frame);
+		loaded(reloaded);
+		ready(reloaded.frame.contentWindow);
+		loaded(reloaded);
+		loaded(reloaded);
+		expect(left).toBe(2);
 	});
 
 	it("hands a page over without the link hints the browser would act on whatever the policy says", () => {
@@ -111,7 +213,6 @@ describe("an HTML page's frame", () => {
 		document.body.append(frame.frame);
 		const send = vi.spyOn(frame.frame.contentWindow!, "postMessage");
 		ready(frame.frame.contentWindow);
-		loaded(frame);
 		expect(send).toHaveBeenCalledExactlyOnceWith(...handedAs(handed));
 		frame.dispose();
 	});
