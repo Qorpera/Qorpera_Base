@@ -188,9 +188,7 @@ export function explainerNotes(scenes: string): string[] {
 			"The page makes the video (V) and starts it: take new Video(…) and V.start() out of scenes.js, which only adds parts and scenes to V.",
 		);
 	if (captions.length > EXPLAINER_MANY_CAPTIONS)
-		notes.push(
-			`${captions.length} captions: a video is best at 25 to 35. Cut it to the one thing it explains.`,
-		);
+		notes.push(`${captions.length} captions: a video is best at 25 to 35. Cut it to the one thing it explains.`);
 	const long = captions.filter((caption) => words(caption) > CAPTION_WORDS);
 	if (long.length > 0)
 		notes.push(
