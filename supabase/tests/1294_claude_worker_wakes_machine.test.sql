@@ -189,6 +189,19 @@ begin
 	end;
 	begin
 		perform pg_temp.cw_sleep('home-a');
+		delete from public.qorpera_claude_sign_in_members where user_id = pg_temp.c4_owner_id();
+		perform pg_temp.base_assert(not public.qorpera_claude_worker_machine_wakeable('92400000-0000-4000-8000-000000000010',
+			'92400000-0000-4000-8000-000000000030', pg_temp.h1_run()), '8: a member Claude Code is not open for wakes nothing');
+		perform pg_temp.cw_saved(pg_temp.cw_dispatch(8), '8: the default dispatch');
+		perform pg_temp.base_assert((pg_temp.cw_worker(8)).harness is null, '8: and the worker goes to Codex');
+		perform pg_temp.c4_drain();
+		perform pg_temp.base_assert((pg_temp.h1_machine('home-a')).desired_state = 'stopped'
+			and pg_temp.cw_events(8, 'machine_woken') = '[]'::jsonb, '8: nothing was woken');
+		raise exception 'cw-undo';
+	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;
+	end;
+	begin
+		perform pg_temp.cw_sleep('home-a');
 		update public.qorpera_company_machines set desired_state = 'deleted' where name = 'home-a' and removed_at is null;
 		perform pg_temp.cw_saved(pg_temp.cw_dispatch(5), '5: the default dispatch');
 		perform pg_temp.c4_drain();
