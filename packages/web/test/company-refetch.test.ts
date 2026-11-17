@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
+import { CloudRpcError, describeError } from "../src/cloud/client.ts";
 import type { PageCursor } from "../src/cloud/pagination.ts";
 import type { HostedSession, HostedSessionEvent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { event, fixture, id, profileA, session, settle, staff, userA } from "./fixtures.ts";
@@ -650,5 +651,87 @@ describe("a hidden tab", () => {
 		expect(seen).toBeGreaterThan(before.listStaffActivity ?? 0);
 		await vi.advanceTimersByTimeAsync(5_000);
 		expect(busy.rpcs().listStaffActivity ?? 0).toBeGreaterThan(seen);
+	});
+});
+
+describe("a dropped connection", () => {
+	const lost = () => new CloudRpcError("qorpera_list_shared_sessions", { message: "TypeError: Failed to fetch" }, 0);
+	const unreachable = async (realtime: "connected" | "degraded" = "connected") => {
+		const busy = await company(realtime, false);
+		const list = vi.mocked(busy.f.api.listSessions);
+		const reach = list.getMockImplementation()!;
+		list.mockImplementation(async () => {
+			throw lost();
+		});
+		void busy.controller.refreshSessions();
+		await vi.advanceTimersByTimeAsync(0);
+		return { ...busy, reads: () => list.mock.calls.length, restore: () => list.mockImplementation(reach) };
+	};
+
+	it("tells the member in plain words, never the browser's error", () => {
+		expect(describeError(lost())).toBe("Qorpera can't be reached right now. Check your connection and try again.");
+		expect(describeError(new TypeError("Load failed"))).not.toContain("Load failed");
+		expect(describeError(new Error("Network blip"))).toBe("Network blip");
+	});
+
+	it("shows it is reconnecting instead of an error, and reads again by itself, waiting longer each time", async () => {
+		const busy = await unreachable();
+		expect(busy.controller.store.get()).toMatchObject({ connectionLost: true, sessionsError: undefined });
+		const first = busy.reads();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(busy.reads()).toBe(first + 1);
+		await vi.advanceTimersByTimeAsync(1_900);
+		expect(busy.reads()).toBe(first + 1);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(busy.reads()).toBe(first + 2);
+		expect(busy.controller.store.get().connectionLost).toBe(true);
+		busy.restore();
+		expect(await secondsUntil(() => busy.controller.store.get().connectionLost === undefined)).toBeLessThanOrEqual(4);
+		expect(busy.controller.store.get().sessionsError).toBeUndefined();
+		expect(busy.controller.store.get().sessions).toHaveLength(2);
+	});
+
+	it("never waits more than fifteen seconds between tries", async () => {
+		const busy = await unreachable();
+		await vi.advanceTimersByTimeAsync(60_000);
+		const before = busy.reads();
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(busy.reads()).toBe(before + 1);
+	});
+
+	it("tries at once when the network comes back or the window is looked at again", async () => {
+		const busy = await unreachable();
+		await vi.advanceTimersByTimeAsync(3_000);
+		busy.restore();
+		window.dispatchEvent(new Event("online"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(busy.controller.store.get().connectionLost).toBeUndefined();
+		const again = await unreachable();
+		await vi.advanceTimersByTimeAsync(3_000);
+		again.restore();
+		window.dispatchEvent(new Event("focus"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(again.controller.store.get().connectionLost).toBeUndefined();
+	});
+
+	it("stays reconnecting while any of the company's reads still cannot get through", async () => {
+		const busy = await unreachable();
+		busy.restore();
+		vi.mocked(busy.f.api.listStaff).mockRejectedValue(lost());
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(busy.controller.store.get()).toMatchObject({ connectionLost: true, error: undefined });
+		vi.mocked(busy.f.api.listStaff).mockResolvedValue([staff]);
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(busy.controller.store.get().connectionLost).toBeUndefined();
+	});
+
+	it("tries no more once the company is closed", async () => {
+		const busy = await unreachable();
+		busy.controller.stop();
+		const before = busy.reads();
+		await vi.advanceTimersByTimeAsync(60_000);
+		window.dispatchEvent(new Event("online"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(busy.reads()).toBe(before);
 	});
 });

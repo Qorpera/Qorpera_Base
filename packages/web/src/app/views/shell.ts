@@ -1617,6 +1617,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		notices.set(about, entry);
 		return entry.element;
 	};
+	const connectionNotice = () => {
+		if (!state.connectionLost) return null;
+		const text = t("Can't reach Qorpera. Trying again…");
+		const kept = parts.notices.get("connection");
+		const entry = kept?.text === text ? kept : { text, element: notice("neutral", text) };
+		notices.set("connection", entry);
+		return entry.element;
+	};
 	// After Reset sidebar: one line with Undo, until dismissed or the sidebar changes again.
 	const resetNotice = () => {
 		if (!state.sidebarReset) return null;
@@ -1718,6 +1726,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	reconcile(
 		parts.list,
 		[
+			connectionNotice(),
 			errorNotice("sessions", state.sessionsError, () =>
 				button(t("Retry conversations"), () => void company.refreshSessions(), { small: true }),
 			),

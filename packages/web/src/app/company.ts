@@ -2,7 +2,7 @@ import type { CloudMemberDataDescription } from "@qorpera/cloud-client/cloud-mem
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
-import { CloudRpcError, describeError } from "../cloud/client.ts";
+import { CloudRpcError, connectionLost, describeError } from "../cloud/client.ts";
 import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import {
 	type CodingSession,
@@ -202,6 +202,7 @@ export interface CompanyState {
 	staff: HostedStaffAgent[];
 	sessions: HostedSession[];
 	sessionsError?: string;
+	connectionLost?: boolean;
 	groups?: Record<string, GroupChatDetails>;
 	/** Kept for diagnostics only; the rail does not show it (see shell.ts). */
 	groupsError?: string;
@@ -451,6 +452,8 @@ const OPEN_FULL_MS = 10_000;
 const WATCH_SKIP_MS = 1_500;
 /** The company's clock: its heartbeat with live hints, its recovery path without them. */
 const HEARTBEAT_MS = 30_000;
+const RECONNECT_FIRST_MS = 1_000;
+const RECONNECT_LAST_MS = 15_000;
 
 /** What a live hint reads: at once and then at most once an interval for someone looking, so a message shows as soon as
  * it is saved. A hidden tab keeps the wait, which also merges a burst of hints: nobody pays for reads nobody sees. */
@@ -621,6 +624,10 @@ export class CompanyController {
 	#hiddenAt: number | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
+	#reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+	#reconnectWaits = 0;
+	#reconnecting = false;
+	#connectionFailures = 0;
 	readonly #abort = new AbortController();
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
@@ -808,6 +815,9 @@ export class CompanyController {
 		await this.refreshAll();
 		if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
+		if (!this.#stopped && typeof window !== "undefined")
+			for (const event of ["online", "focus"])
+				window.addEventListener(event, () => void this.#reconnect(), { signal: this.signal });
 		if (!this.#stopped && typeof document !== "undefined") {
 			if (document.visibilityState === "hidden") this.#hiddenAt = Date.now();
 			document.addEventListener(
@@ -871,6 +881,7 @@ export class CompanyController {
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
 		clearTimeout(this.#openFullTimer);
+		clearTimeout(this.#reconnectTimer);
 		this.#invalidations.clear();
 		// Deliver a final access-loss update before dropping observers.
 		queueMicrotask(() => {
@@ -1069,7 +1080,7 @@ export class CompanyController {
 						earlierError: undefined,
 					}));
 				this.stop();
-			} else this.store.set({ error: describeError(error) });
+			} else if (!this.#lost(error)) this.store.set({ error: describeError(error) });
 		}
 	}
 
@@ -1104,7 +1115,7 @@ export class CompanyController {
 			this.store.set((state) => ({ staff, hierarchy: buildCompanyHierarchy(state.organization, staff) }));
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.staff) return;
-			this.store.set({ error: describeError(error) });
+			if (!this.#lost(error)) this.store.set({ error: describeError(error) });
 		}
 	}
 
@@ -1124,7 +1135,7 @@ export class CompanyController {
 				if (!this.store.get().loading) await this.refreshGroups();
 			} catch (error) {
 				if (this.#stopped || version !== this.#versions.sessions) return;
-				this.store.set({ sessionsError: describeError(error) });
+				this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
 			}
 		})();
 		this.#sessionsFullRead = read;
@@ -1196,10 +1207,45 @@ export class CompanyController {
 				await this.refreshGroups();
 			return changed;
 		} catch (error) {
-			if (!this.#stopped) this.store.set({ sessionsError: describeError(error) });
+			if (!this.#stopped) this.store.set({ sessionsError: this.#lost(error) ? undefined : describeError(error) });
 			// Unknown, not unchanged: what the hint would have read is read anyway.
 			return undefined;
 		}
+	}
+
+	#lost(error: unknown): boolean {
+		if (this.#stopped || !connectionLost(error)) return false;
+		this.#connectionFailures += 1;
+		if (!this.store.get().connectionLost) this.store.set({ connectionLost: true });
+		if (!this.#reconnecting) this.#reconnectLater();
+		return true;
+	}
+
+	#reconnectLater(): void {
+		if (this.#stopped || this.#reconnectTimer) return;
+		const wait = Math.min(RECONNECT_LAST_MS, RECONNECT_FIRST_MS * 2 ** this.#reconnectWaits);
+		this.#reconnectWaits += 1;
+		this.#reconnectTimer = setTimeout(() => void this.#reconnect(), wait);
+	}
+
+	async #reconnect(): Promise<void> {
+		if (this.#stopped || this.#reconnecting || !this.store.get().connectionLost) return;
+		clearTimeout(this.#reconnectTimer);
+		this.#reconnectTimer = undefined;
+		this.#reconnecting = true;
+		const failures = this.#connectionFailures;
+		try {
+			await this.refreshTeam();
+			await Promise.all([this.refreshSessions(), this.refreshStaff(), this.refreshOrganization()]);
+		} finally {
+			this.#reconnecting = false;
+		}
+		if (this.#stopped) return;
+		if (this.#connectionFailures !== failures) return this.#reconnectLater();
+		this.#reconnectWaits = 0;
+		this.store.set({ connectionLost: undefined });
+		for (const listener of this.#invalidations) listener("sessions");
+		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 	}
 
 	async refreshOrganization(): Promise<void> {
@@ -1221,7 +1267,7 @@ export class CompanyController {
 					organizationState: "not-deployed",
 					hierarchy: buildCompanyHierarchy(undefined, state.staff),
 				}));
-			} else {
+			} else if (!this.#lost(error)) {
 				this.store.set({ organizationState: "error", organizationError: describeError(error) });
 			}
 		}

@@ -200,7 +200,15 @@ export function createCloud(config: CloudConfig): Cloud {
 	};
 }
 
+const CONNECTION_LOST =
+	/^(?:TypeError: )?(?:Failed to fetch|NetworkError when attempting to fetch resource\.?|Load failed|The network connection was lost\.?|The Internet connection appears to be offline\.?|fetch failed|Network request failed)$/;
+
+export function connectionLost(error: unknown): boolean {
+	return error instanceof Error && CONNECTION_LOST.test(error.message);
+}
+
 export function describeError(error: unknown): string {
+	if (connectionLost(error)) return "Qorpera can't be reached right now. Check your connection and try again.";
 	if (error instanceof CloudRpcError) {
 		if (error.missing) return `${error.rpc} is not deployed on this cloud yet.`;
 		// A refusal usually says exactly what rule was hit, and that sentence is

@@ -1712,6 +1712,24 @@ describe("account and route ownership", () => {
 		expect(concepts(f.root)).toBeNull();
 	});
 
+	it("says in the rail that it is reconnecting when the conversations cannot be reached, and clears it once they can", async () => {
+		const f = mounted(`#/c/${profileA.profileId}`);
+		vi.mocked(f.api.listSessions).mockRejectedValue(
+			new CloudRpcError("qorpera_list_shared_sessions", { message: "TypeError: Failed to fetch" }, 0),
+		);
+		await draw();
+		await draw();
+		const rail = f.root.querySelector(".rail")!;
+		expect(rail.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(rail.textContent).not.toContain("Failed to fetch");
+		expect(rail.querySelector(".notice-danger")).toBeNull();
+		vi.mocked(f.api.listSessions).mockResolvedValue([session]);
+		window.dispatchEvent(new Event("online"));
+		await draw();
+		await draw();
+		expect(rail.textContent).not.toContain("Can't reach Qorpera");
+	});
+
 	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));
