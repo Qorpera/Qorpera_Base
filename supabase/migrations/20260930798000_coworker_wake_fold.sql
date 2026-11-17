@@ -5,8 +5,11 @@ do $$ begin
 	if md5(coalesce((select prosrc from pg_proc where oid = to_regprocedure(
 			'public.qorpera_drain_held_peer_messages(public.qorpera_execution_runs,uuid)')), '')) <> '367a70d02cc45766ff7349d39115bc1e'
 		or md5(coalesce((select prosrc from pg_proc where oid = to_regprocedure('public.qorpera_folder_read_wake(jsonb)')), ''))
-			<> 'ed2a1d46631413b9da5239bbcdcf0bbe' then
-		raise exception '20260930798000: the wake read or the held message drain differs from its pinned body'; end if;
+			<> 'ed2a1d46631413b9da5239bbcdcf0bbe'
+		or md5(coalesce((select prosrc from pg_proc where oid = to_regprocedure(
+			'public.qorpera_folder_materialize_company(uuid,integer)')), '')) <> '9b43bc2de980a49f1b510a29a8481a93' then
+		raise exception '20260930798000: the wake read, the held message drain or the materializer differs from its pinned body';
+	end if;
 end $$;
 
 set local lock_timeout = '3s';
@@ -46,7 +49,7 @@ begin
 			octet_length(public.qorpera_peer_message_shown(pending.text, pending.wake_id is not null)) as bytes
 		from public.qorpera_pending_peer_messages as pending
 		where pending.profile_id = p_run.profile_id and pending.recipient_staff_id = p_run.staff_agent_id
-			and (pending.delivered_run_id is null or exists (
+			and pending.wake_id is null and (pending.delivered_run_id is null or exists (
 				select 1 from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id
 				where run.id = pending.delivered_run_id and job.status in ('failed','cancelled')))
 		order by pending.created_at, pending.id limit 12 for update skip locked
@@ -91,6 +94,10 @@ begin
 			and waiting.requested_by_user_id = p_wake.requested_by_user_id
 			and waiting.sponsor_binding_id = p_wake.sponsor_binding_id and waiting.sponsor_version = p_wake.sponsor_version
 			and waiting.logical_computer_id is not distinct from p_wake.logical_computer_id
+			and not exists (select 1 from public.qorpera_pending_peer_messages as taken
+				join public.qorpera_execution_runs as carrier on carrier.id = taken.delivered_run_id
+				join public.qorpera_runner_jobs as job on job.id = carrier.job_id
+				where taken.wake_id = waiting.id and job.status not in ('failed', 'cancelled'))
 		order by waiting.created_at, waiting.id
 		for update skip locked
 	loop
@@ -128,13 +135,11 @@ begin
 					jsonb_agg(f order by public.qorpera_folder_key(f ->> 'path')), repeat('0', 64)
 				from jsonb_array_elements(v_pairs -> 'filed') f group by 4;
 			end if;
+			delete from public.qorpera_pending_peer_messages where wake_id = v_waiting.id;
 			insert into public.qorpera_pending_peer_messages(profile_id, environment_id, pair_session_id, event_id, sender_staff_id,
 				recipient_staff_id, text, created_at, delivered_run_id, delivered_at, wake_id)
 			values (p_run.profile_id, p_run.environment_id, v_pair, v_event, (v_waiting.payload ->> 'senderStaffId')::uuid,
 				p_run.staff_agent_id, v_text, v_waiting.created_at, p_run.id, clock_timestamp(), v_waiting.id);
-			update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp(),
-				blocked_reason = 'Delivered with another coworker message in run ' || p_run.id::text
-			where id = v_waiting.id;
 			v_count := v_count + 1;
 			v_bytes := v_bytes + octet_length(v_text);
 		exception when others then
@@ -160,6 +165,34 @@ select pg_temp.cwf_replace('public.qorpera_folder_read_wake(jsonb)'::regprocedur
 $old$,
 	$new$	perform public.qorpera_coworker_take_waiting(v_run, v_wake, v_tool -> 'resolved');
 	perform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id, v_tool -> 'resolved');
+$new$);
+
+select pg_temp.cwf_replace('public.qorpera_folder_materialize_company(uuid,integer)'::regprocedure,
+	$old$			if v_wake.wake_kind not in ('routine', 'agent', 'room') or not public.qorpera_wake_authorized(v_wake) then
+$old$,
+	$new$			if v_wake.source_kind = 'coworker' and exists (select 1 from public.qorpera_pending_peer_messages as taken
+					join public.qorpera_execution_runs as carrier on carrier.id = taken.delivered_run_id
+					join public.qorpera_runner_jobs as job on job.id = carrier.job_id
+					where taken.wake_id = v_wake.id and job.status in ('queued', 'leased')) then
+				v_skipped := v_skipped + 1;
+				continue;
+			end if;
+			if v_wake.source_kind = 'coworker' and exists (select 1 from public.qorpera_pending_peer_messages as taken
+					join public.qorpera_execution_runs as carrier on carrier.id = taken.delivered_run_id
+					join public.qorpera_runner_jobs as job on job.id = carrier.job_id
+					where taken.wake_id = v_wake.id and job.status = 'completed') then
+				update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp(),
+					blocked_reason = 'Delivered with another coworker message in run ' || (select taken.delivered_run_id::text
+						from public.qorpera_pending_peer_messages as taken where taken.wake_id = v_wake.id)
+				where id = v_wake.id;
+				v_cancelled := v_cancelled + 1;
+				continue;
+			end if;
+			if v_wake.source_kind = 'coworker' then
+				delete from public.qorpera_pending_peer_messages where id in (select taken.id
+					from public.qorpera_pending_peer_messages as taken where taken.wake_id = v_wake.id for update skip locked);
+			end if;
+			if v_wake.wake_kind not in ('routine', 'agent', 'room') or not public.qorpera_wake_authorized(v_wake) then
 $new$);
 
 drop function pg_temp.cwf_replace(regprocedure, text, text);

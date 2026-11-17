@@ -21,6 +21,21 @@ create function pg_temp.cf_queued() returns uuid[] language sql as $$
 	select coalesce(array_agg(id order by created_at, id), '{}') from public.qorpera_wake_occurrences
 	where staff_agent_id = '92400000-0000-4000-8000-000000000033' and source_kind = 'coworker' and status = 'queued'
 $$;
+create function pg_temp.cf_untaken() returns uuid[] language sql as $$
+	select coalesce(array_agg(wake.id order by wake.created_at, wake.id), '{}') from public.qorpera_wake_occurrences as wake
+	where wake.staff_agent_id = '92400000-0000-4000-8000-000000000033' and wake.source_kind = 'coworker' and wake.status = 'queued'
+		and not exists (select 1 from public.qorpera_pending_peer_messages as taken where taken.wake_id = wake.id)
+$$;
+create function pg_temp.cf_complete() returns void language sql as $$
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null
+	where status in ('queued', 'leased')
+		and run_id in (select id from public.qorpera_execution_runs where session_id = pg_temp.cf_session())
+$$;
+create function pg_temp.cf_job(p_run uuid) returns text language sql as $$
+	select job.status from public.qorpera_runner_jobs as job join public.qorpera_execution_runs as run on run.job_id = job.id
+	where run.id = p_run
+$$;
 create function pg_temp.cf_posted(p_staff uuid, p_text text) returns jsonb language plpgsql as $$
 declare v_wakes jsonb := pg_temp.base_post('92400000-0000-4000-8000-000000000001', p_staff, p_text); v_pass jsonb;
 	v_run uuid; v_binding jsonb;
@@ -143,13 +158,12 @@ begin
 		and v_read #>> '{payload,heldMessages,0,eventId}' = (pg_temp.cf_wake('w2')).payload ->> 'pairEventId'
 		and v_read #>> '{payload,heldMessages,0,pairSessionId}' = (pg_temp.cf_wake('w2')).payload ->> 'pairSessionId',
 		'one run carries all three messages, oldest first, each with its sender and in full: ' || v_read::text);
-	perform pg_temp.base_assert(pg_temp.cf_queued() = '{}'
-		and (select bool_and(status = 'cancelled' and run_id is null and finished_at is not null
-				and blocked_reason = 'Delivered with another coworker message in run ' || v_run::text)
-			from (select (pg_temp.cf_wake(n)).* from unnest(array['w2', 'w3']) n) w)
+	perform pg_temp.base_assert(pg_temp.cf_untaken() = '{}'
+		and pg_temp.cf_queued() = array[(pg_temp.cf_wake('w2')).id, (pg_temp.cf_wake('w3')).id]
 		and (select count(*) from public.qorpera_pending_peer_messages where delivered_run_id = v_run
-			and wake_id in ((pg_temp.cf_wake('w2')).id, (pg_temp.cf_wake('w3')).id)) = 2,
-		'the taken wakes are delivered with the run, not run again');
+			and wake_id in ((pg_temp.cf_wake('w2')).id, (pg_temp.cf_wake('w3')).id)) = 2
+		and pg_temp.cf_pass() is null,
+		'the taken wakes wait under the run, held, and no pass runs them while it lives');
 	v_again := public.qorpera_read_native_wake(current_setting('qorpera_test.cf_reader')::jsonb);
 	perform pg_temp.base_assert(pg_temp.cf_held(v_again) = v_held, 'a second read of the run shows the same messages');
 	perform set_config('qorpera_test.cf_x', v_run::text, true);
@@ -159,18 +173,20 @@ do $$
 declare v_x uuid := current_setting('qorpera_test.cf_x')::uuid; v_read jsonb; v_run uuid;
 begin
 	v_read := public.qorpera_read_native_wake(current_setting('qorpera_test.cf_reader')::jsonb);
-	perform pg_temp.base_assert(pg_temp.cf_queued() = array[(pg_temp.cf_wake('w4')).id]
+	perform pg_temp.base_assert(pg_temp.cf_untaken() = array[(pg_temp.cf_wake('w4')).id]
 		and jsonb_array_length(v_read #> '{payload,heldMessages}') = 2,
 		'a message sent after the run was made keeps its own wake');
 	perform pg_temp.cf_end();
 	v_run := pg_temp.cf_pass();
-	perform pg_temp.base_assert(v_run = (pg_temp.cf_wake('w4')).run_id and v_run <> v_x, 'it gets its own run after the first');
+	perform pg_temp.base_assert(v_run = (pg_temp.cf_wake('w2')).run_id and v_run <> v_x
+			and not exists (select 1 from public.qorpera_pending_peer_messages where wake_id = (pg_temp.cf_wake('w2')).id),
+		'the run failed: the oldest message it took gets its own run');
 	v_read := pg_temp.cf_read(v_run);
-	perform pg_temp.base_assert(v_read #>> '{payload,text}' = 'Alice: one more thing.'
+	perform pg_temp.base_assert(v_read #>> '{payload,text}' = repeat('Bob: the supplier answered. ', 100)
 		and pg_temp.cf_held(v_read) = jsonb_build_array(
-			pg_temp.cf_line('92400000-0000-4000-8000-000000000031', repeat('Bob: the supplier answered. ', 100)),
-			pg_temp.cf_line('92400000-0000-4000-8000-000000000032', 'Carol: please confirm the launch date.')),
-		'the messages of the failed run are offered again to the next run, in full: ' || v_read::text);
+			pg_temp.cf_line('92400000-0000-4000-8000-000000000032', 'Carol: please confirm the launch date.'),
+			pg_temp.cf_line('92400000-0000-4000-8000-000000000030', 'Alice: one more thing.')),
+		'and takes the rest, each once: ' || v_read::text);
 end $$;
 rollback to cf_three;
 
@@ -234,6 +250,86 @@ begin
 end $$;
 rollback to cf_withdrawn;
 
+savepoint cf_fail;
+select pg_temp.cf_sent('f1', 'alice', 'Alice: what do we ship first?');
+select pg_temp.cf_sent('f2', 'carol', 'Carol: is the shop name final?');
+do $$
+declare v_x uuid := pg_temp.cf_pass(); v_read jsonb; v_run uuid;
+begin
+	v_read := pg_temp.cf_read(v_x);
+	perform pg_temp.base_assert(pg_temp.cf_held(v_read) = jsonb_build_array(
+		pg_temp.cf_line('92400000-0000-4000-8000-000000000032', 'Carol: is the shop name final?')), 'the run takes Carol''s message');
+	perform pg_temp.cf_end();
+	v_run := pg_temp.cf_pass();
+	perform pg_temp.base_assert(v_run = (pg_temp.cf_wake('f2')).run_id, 'the run failed with nothing else to wake the Co-Founder: '
+		|| 'Carol''s message gets its own run');
+	v_read := pg_temp.cf_read(v_run);
+	perform pg_temp.base_assert(v_read #>> '{payload,text}' = 'Carol: is the shop name final?' and pg_temp.cf_held(v_read) = '[]',
+		'it is delivered once, as its own wake: ' || v_read::text);
+end $$;
+rollback to cf_fail;
+
+savepoint cf_done;
+select pg_temp.cf_sent('c1', 'alice', 'Alice: what do we ship first?');
+select pg_temp.cf_sent('c2', 'carol', 'Carol: is the shop name final?');
+do $$
+declare v_x uuid := pg_temp.cf_pass();
+begin
+	perform pg_temp.cf_read(v_x);
+	perform pg_temp.cf_complete();
+	perform pg_temp.base_assert(pg_temp.cf_pass() is null and (pg_temp.cf_wake('c2')).status = 'cancelled'
+			and (pg_temp.cf_wake('c2')).run_id is null
+			and (pg_temp.cf_wake('c2')).blocked_reason = 'Delivered with another coworker message in run ' || v_x::text
+			and exists (select 1 from public.qorpera_pending_peer_messages where wake_id = (pg_temp.cf_wake('c2')).id
+				and delivered_run_id = v_x),
+		'the run completed: the message it took is done and never runs again');
+end $$;
+rollback to cf_done;
+
+savepoint cf_stop_carrier;
+select pg_temp.cf_sent('a1', 'alice', 'Alice: what do we ship first?');
+select pg_temp.cf_sent('a2', 'carol', 'Carol: is the shop name final?');
+do $$
+declare v_x uuid := pg_temp.cf_pass(); v_run uuid; v_read jsonb;
+begin
+	perform pg_temp.cf_read(v_x);
+	perform pg_temp.cf_stop(current_setting('qorpera_test.cf_alice')::jsonb);
+	perform pg_temp.base_assert(pg_temp.cf_job(v_x) = 'cancelled' and (pg_temp.cf_wake('a2')).status = 'queued',
+		'a Stop of Alice''s chain ends the run that took Carol''s message, not the message');
+	v_run := pg_temp.cf_pass();
+	v_read := pg_temp.cf_read(v_run);
+	perform pg_temp.base_assert(v_run = (pg_temp.cf_wake('a2')).run_id
+			and v_read #>> '{payload,text}' = 'Carol: is the shop name final?' and pg_temp.cf_held(v_read) = '[]',
+		'Carol''s message gets its own run: ' || v_read::text);
+end $$;
+rollback to cf_stop_carrier;
+
+savepoint cf_stop_taken;
+select pg_temp.cf_sent('t1', 'alice', 'Alice: what do we ship first?');
+select pg_temp.cf_sent('t2', 'carol', 'Carol: is the shop name final?');
+do $$
+declare v_x uuid := pg_temp.cf_pass(); v_answer jsonb;
+begin
+	perform pg_temp.cf_read(v_x);
+	perform pg_temp.cf_stop(current_setting('qorpera_test.cf_carol')::jsonb);
+	perform pg_temp.base_assert(pg_temp.cf_job(v_x) = 'leased' and (pg_temp.cf_wake('t2')).status = 'cancelled'
+			and exists (select 1 from public.qorpera_pending_peer_messages where wake_id = (pg_temp.cf_wake('t2')).id
+				and delivered_run_id = v_x),
+		'a Stop of Carol''s chain after the take cancels her message''s own wake; the run that took it goes on');
+	v_answer := public.qorpera_send_coworker_message(current_setting('qorpera_test.cf_reader')::jsonb,
+		'92400000-0000-4000-8000-000000000032', 'cf-t-answer', 'Co-Founder: yes, the name is final.');
+	perform pg_temp.base_assert(v_answer ->> 'status' = 'queued'
+			and (select causal_root_id from public.qorpera_wake_occurrences where id = (v_answer ->> 'occurrenceId')::uuid)
+				= (pg_temp.cf_wake('t1')).causal_root_id
+			and (pg_temp.cf_wake('t1')).causal_root_id <> (pg_temp.cf_wake('t2')).causal_root_id
+			and (select status from public.qorpera_wake_occurrences where id = (v_answer ->> 'occurrenceId')::uuid) = 'queued',
+		'the answer joins the run''s own chain (Alice''s), which the Stop of Carol''s chain does not reach');
+	perform pg_temp.cf_end();
+	perform pg_temp.base_assert(pg_temp.cf_pass() is null and (pg_temp.cf_wake('t2')).run_id is null,
+		'when that run fails, the stopped message does not run again');
+end $$;
+rollback to cf_stop_taken;
+
 savepoint cf_reads;
 do $$
 declare v_f jsonb := pg_temp.cf_shared('cf1295-f', array['92400000-0000-4000-8000-000000000031'::uuid,
@@ -273,7 +369,7 @@ begin
 	v_read := pg_temp.cf_read(v_run);
 	perform pg_temp.base_assert(v_run = (pg_temp.cf_wake('r1')).run_id and pg_temp.cf_held(v_read) = jsonb_build_array(
 			pg_temp.cf_line('92400000-0000-4000-8000-000000000031', 'Bob: see the file I read.'))
-		and pg_temp.cf_queued() = array[(pg_temp.cf_wake('r3')).id],
+		and pg_temp.cf_untaken() = array[(pg_temp.cf_wake('r3')).id],
 		'the run takes the departed sender''s message and leaves the one it may not read: ' || v_read::text);
 	perform pg_temp.base_assert(exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
 			where rec.run_id = v_run and rec.release_id = v_r2
@@ -282,7 +378,7 @@ begin
 		and exists (select 1 from public.qorpera_folder_run_reads where run_id = v_run
 			and resource_id = (current_setting('qorpera_test.cf_f')::jsonb ->> 'resource')::uuid),
 		'the run inherits what the taken message''s sender read, filed under that message, so erasure finds the run');
-	perform pg_temp.cf_end();
+	perform pg_temp.cf_complete();
 	perform pg_temp.base_assert(pg_temp.cf_pass() is null and (pg_temp.cf_wake('r3')).status = 'cancelled'
 		and (pg_temp.cf_wake('r3')).blocked_reason = 'Wake recipient or source authority is unavailable',
 		'the message it left is refused on its own, as before');
@@ -302,9 +398,9 @@ begin
 	v_read := pg_temp.cf_read(v_run);
 	perform pg_temp.base_assert((select array_agg(left(m ->> 'text', 1) order by o)
 			from jsonb_array_elements(v_read #> '{payload,heldMessages}') with ordinality x(m, o)) = array['2', '3', '4', '5']
-		and pg_temp.cf_queued() = array[(pg_temp.cf_wake('b6')).id],
+		and pg_temp.cf_untaken() = array[(pg_temp.cf_wake('b6')).id],
 		'a run takes messages while 19200 bytes hold them; the next waits for its own run');
-	perform pg_temp.cf_end();
+	perform pg_temp.cf_complete();
 	v_run := pg_temp.cf_pass();
 	perform pg_temp.base_assert(v_run = (pg_temp.cf_wake('b6')).run_id, 'the message left over starts the next run');
 end $$;
@@ -332,7 +428,7 @@ begin
 	perform pg_temp.base_assert(v_read #>> '{payload,text}' = 'Alice: message 0.'
 		and (select array_agg(m ->> 'text' order by o) from jsonb_array_elements(v_read #> '{payload,heldMessages}') with ordinality x(m, o))
 			= array(select 'Alice: message ' || n || '.' from generate_series(1, 12) n)
-		and pg_temp.cf_queued() = array[(pg_temp.cf_wake('n13')).id],
+		and pg_temp.cf_untaken() = array[(pg_temp.cf_wake('n13')).id],
 		'a run takes twelve more messages at most: ' || v_read::text);
 end $$;
 rollback to cf_count;

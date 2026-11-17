@@ -31,11 +31,17 @@
   own row lock (`qorpera_wake_authorized`, its chain not stopped under the chain lock taken shared, its pair conversation
   KEY SHARE SKIP LOCKED), its sender's folder reads are copied into the run under the taken wake's id (so the reads check
   and erasure cover them), its message becomes a delivered row of `qorpera_pending_peer_messages` (new column `wake_id`)
-  and the wake is cancelled ("Delivered with another coworker message in run …"). The run sees them in
+  that holds the wake: it stays queued under the run. The run sees them in
   `wake.payload.heldMessages` in full, with their senders, oldest first, up to 12 lines and 19200 bytes of shown text;
-  the rest wait for the next run, which takes them the same way. A lone message, the send, its receipt and the
-  materializer are unchanged; no cap on chain depth or message count. A taken message whose run fails is offered again
-  to the next run, and a Stop withdraws it then, as for a held note. Held notes are now cut at 1600 bytes, not 400
+  the rest wait for the next run, which takes them the same way. When the taking run's job completes, the
+  materializer cancels a held wake as delivered ("Delivered with another coworker message in run …"). When the job
+  fails or is cancelled (a Stop of the run's chain included), the held wake becomes a run of its own, through the same
+  job-status wake-up and due scan that start any wake that waited behind a live run. It does not if its own chain is
+  stopped. The drain never offers a hold as a held note, so a message reaches one live run at a time. A taken message
+  is answered under the taking run's chain: what the agent sends from that run carries that run's causal root and hop
+  count. A Stop of the taken message's own chain after the take cancels its held wake but does not reach the taking run
+  or its answer; a Stop of the taking run's chain ends both (contract 14.6, the 2026-11-17 amendment). A lone message,
+  the send and its receipt are unchanged; no cap on chain depth or message count. Held notes are now cut at 1600 bytes, not 400
   characters, and a cut one ends ` … [cut: the full message is in your transcript with this coworker]`; a note of the
   pair whose transcript the wake shows is left out only when that transcript (400 characters a line) shows it whole. The context
   message's heldMessages line and the coworker wake's protocol say the list also holds messages that waited for this
