@@ -7,6 +7,7 @@ import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
+import { friendsCount } from "../../ui/friends-count.ts";
 import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
@@ -239,16 +240,17 @@ export class SettingsView {
 			uiText("Back to companies"),
 		);
 		nav.append(tablist, empty, back);
-		// Friends, a window of its own, beside Settings | Storage (Jonas, 9 Nov 2026): inside a company the friends
-		// button lives here rather than in the rail. Plain, with no fill or dot; its label says when invitations wait.
+		const friendsCountSlot = h("span", { class: "settings-friends-count" });
 		const friendsButton = h(
 			"button",
 			{ type: "button", class: "settings-friends", onclick: () => this.#openFriends() },
 			icon("friends"),
 			uiText(phrase("Friends")),
+			friendsCountSlot,
 		);
 		const countInvitations = () => {
 			const waiting = hub.store.get().invitations.length;
+			friendsCountSlot.replaceChildren(...(waiting > 0 ? [friendsCount(waiting)] : []));
 			const label =
 				waiting > 0 ? t("Friends: {count} company invitations waiting", { count: waiting }) : t("Friends");
 			friendsButton.setAttribute("aria-label", label);

@@ -10,10 +10,14 @@
 .account-friends .icon { width: 19px; height: 19px; }
 .account-friends:hover { background: var(--hover); color: var(--text); }
 .account-friends:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.account-friends-dot {
-	position: absolute; top: 6px; right: 5px; width: 8px; height: 8px; border-radius: 50%;
-	background: var(--accent); box-shadow: 0 0 0 2px var(--chrome);
+.friends-count {
+	display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+	border-radius: var(--radius-pill); background: var(--danger); color: #fff; font: 700 11px / 1 var(--font-sans);
+	box-shadow: 0 0 0 2px var(--chrome);
 }
+.account-friends .friends-count { position: absolute; top: 1px; right: 0; }
+.settings-friends-count:empty { display: none; }
+.settings-friends .friends-count { box-shadow: none; }
 /* Inside a company the friends button sits in Settings' header instead (Jonas, 9 Nov 2026). */
 .account-menu-rail .account-friends { display: none; }
 

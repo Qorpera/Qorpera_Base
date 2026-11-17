@@ -1219,7 +1219,7 @@ describe("settings session lifecycle", () => {
 		});
 		const f = await setup(fixtureState);
 		// The waiting invitation shows on the friends button and on the account menu's Friends item.
-		expect(f.root.querySelector(".account-friends .account-friends-dot")).not.toBeNull();
+		expect(f.root.querySelector(".account-friends .friends-count")?.textContent).toBe("1");
 		click(f.root, ".account-trigger");
 		expect(f.root.querySelector('[data-account-action="friends"] .account-count')?.textContent).toBe("1");
 		click(f.root, '[data-account-action="friends"]');
@@ -1230,11 +1230,11 @@ describe("settings session lifecycle", () => {
 		// The expiry sits in the second line, which stays visible on phones.
 		expect(row.querySelector(".person-copy > span")?.textContent).toMatch(/^Invited as contributor · expires \S/);
 		expect(row.querySelector(".person-meta")).toBeNull();
-		[...row.querySelectorAll("button")].find((button) => button.textContent === "Accept")!.click();
+		[...row.querySelectorAll("button")].find((button) => button.textContent === "Join")!.click();
 		await draw();
 		expect(accept).toHaveBeenCalledExactlyOnceWith(invitation.id);
 		expect(location.hash).toBe(`#/c/${profileB.profileId}`);
-		expect(f.root.querySelector(".account-friends .account-friends-dot")).toBeNull();
+		expect(f.root.querySelector(".account-friends .friends-count")).toBeNull();
 		// The company opens, and the Friends window gives way to it.
 		expect(f.root.querySelector(".friends-window")).toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
@@ -1269,7 +1269,7 @@ describe("settings session lifecycle", () => {
 		expect(decline).toHaveBeenCalledExactlyOnceWith(id(43));
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
-		expect(f.root.querySelector(".account-friends .account-friends-dot")).toBeNull();
+		expect(f.root.querySelector(".account-friends .friends-count")).toBeNull();
 		expect(f.root.querySelector(".friends-window")?.textContent).not.toContain(profileB.profileName);
 	});
 	it("sends a friend request only to an address an account holds", async () => {

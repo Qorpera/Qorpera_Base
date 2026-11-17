@@ -44,6 +44,7 @@ import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
+import { friendsCount } from "../../ui/friends-count.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { appIconEmblem, type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -226,11 +227,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 			: t("Friends");
 	accountFriends!.setAttribute("aria-label", friendsLabel);
 	accountFriends!.title = friendsLabel;
-	replace(
-		accountFriends!,
-		icon("friends"),
-		context.invitations > 0 ? h("span", { class: "account-friends-dot", "aria-hidden": "true" }) : null,
-	);
+	replace(accountFriends!, icon("friends"), context.invitations > 0 ? friendsCount(context.invitations) : null);
 	const settingsItem = (tab: SettingsTab, iconName: string, label: string, count = 0) =>
 		h(
 			"button",

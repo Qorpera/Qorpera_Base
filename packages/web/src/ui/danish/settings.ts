@@ -129,6 +129,9 @@ export const SETTINGS: Record<string, string> = {
 	Decline: "Afvis",
 	"Search friends, or type an email to add someone": "Søg efter venner, eller skriv en e-mail for at tilføje nogen",
 	"Company invitations": "Invitationer til virksomheder",
+	"{name} invited you as a spectator · no subscription needed":
+		"{name} har inviteret dig som tilskuer · intet abonnement",
+	"Invited as a spectator · no subscription needed": "Inviteret som tilskuer · intet abonnement",
 	"Requests for you": "Anmodninger til dig",
 	"asked {date}": "modtaget {date}",
 	Sent: "Sendt",

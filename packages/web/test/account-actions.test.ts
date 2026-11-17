@@ -60,7 +60,7 @@ describe("account actions with the shared stylesheets", () => {
 				profileName: profileA.profileName,
 				environmentName: profileA.environmentName,
 				email: userA.email!,
-				role: "contributor",
+				role: "viewer",
 				invitedByUserId: userB.id,
 				createdAt: timestamp,
 				expiresAt: "2099-01-01T00:00:00Z",
@@ -70,8 +70,7 @@ describe("account actions with the shared stylesheets", () => {
 		dispose = mountApplication(root, f.cloud, f.api);
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
-		// The friends button beside the account carries a dot while an invitation waits.
-		expect(root.querySelector(".account-friends .account-friends-dot")).not.toBeNull();
+		expect(root.querySelector(".account-friends .friends-count")?.textContent).toBe("1");
 		root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
 		const menuItem = root.querySelector<HTMLButtonElement>('[data-account-action="friends"]')!;
 		expect(menuItem.querySelector(".account-count")?.textContent).toBe("1");
@@ -84,9 +83,11 @@ describe("account actions with the shared stylesheets", () => {
 		expect(dialog.querySelector("h1")?.textContent).toBe("Friends");
 		const rows = [...dialog.querySelectorAll<HTMLElement>(".person-row")];
 		expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual([profileA.profileName, "Friend"]);
-		for (const row of rows) {
+		expect(rows[0]!.querySelector(".person-avatar")).not.toBeNull();
+		expect(rows[0]!.textContent).toContain("Friend invited you as a spectator · no subscription needed");
+		for (const [index, row] of rows.entries()) {
 			const actions = row.querySelector<HTMLElement>(".person-actions")!;
-			expect(actions.textContent).toContain("Accept");
+			expect(actions.textContent).toContain(index === 0 ? "Join" : "Accept");
 			expect(getComputedStyle(actions).opacity || "1").toBe("1");
 			actions.querySelector("button")!.focus();
 			expect(getComputedStyle(actions).opacity || "1").toBe("1");
