@@ -128,6 +128,7 @@ function lex(command: string): { simples: Simple[]; complete: boolean } {
 			heredoc: false,
 			bodies: [],
 			alone: false,
+			background: false,
 			piped,
 			joined,
 			after,
