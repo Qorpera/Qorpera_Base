@@ -721,11 +721,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		mkdirSync(join(B, "configs"), { recursive: true, mode: 0o700 });
 		chownSync(B, 65534, 65534);
 		chownSync(join(B, "configs"), 65534, 65534);
-		// The stub's renewed tokens live one second, so every run renews at its start (and again before later requests):
-		// each run has a renewal to seal, and a run's seal lands only on the version it opened (the vault's compare-and-swap).
-		const scenario = (label: string, steps: unknown[], final: string, expiresIn = 1, extra: Record<string, unknown> = {}) => {
+		const scenario = (label: string, steps: unknown[], final: string, expiresIn = 1) => {
 			const path = join(P, `scen-c4c-${label}.json`);
-			writeFileSync(path, JSON.stringify({ label, nonce: randomBytes(4).toString("hex"), steps, final, expiresIn, ...extra }), { mode: 0o444 });
+			writeFileSync(path, JSON.stringify({ label, nonce: randomBytes(4).toString("hex"), steps, final, expiresIn }), { mode: 0o444 });
 			return path;
 		};
 		const out = (key: string) => `/company/QorperaOS/agents/alice/todos/onboarding/${key}`;
