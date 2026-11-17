@@ -158,12 +158,13 @@ begin
 		v #>> '{renewal,token}', v ->> 'envelopeSha256', encode(convert_to('x', 'UTF8'), 'base64'), repeat('0', 64))) = '22023',
 		'3: an envelope that is not its digest is invalid');
 	c := pg_temp.p_commit(v, 'canary-1287-v2', p_token => extensions.gen_random_uuid());
-	perform pg_temp.base_assert(c ->> 'state' = 'stale' and (pg_temp.p_login()).version = 1, '3: another lock''s commit seals nothing');
-	c := pg_temp.p_commit(v, 'canary-1287-v2');
 	l := pg_temp.p_login();
 	perform pg_temp.base_assert(c ->> 'state' = 'sealed' and (c ->> 'version')::bigint = 2 and l.version = 2
 		and l.envelope_sha256 = pg_temp.p_sha('canary-1287-v2') and l.renewal_token is null and l.renewal_until is null
-		and l.checked_at is not null and l.renewed_at = l.checked_at, '3: the renewal seals version 2: ' || c::text);
+		and l.checked_at is not null and l.renewed_at = l.checked_at,
+		'3: a renewal on the base it was taken from seals version 2, also when another holds the lock now: ' || c::text);
+	perform pg_temp.base_assert(pg_temp.p_release(v, 'refused') ->> 'state' = 'stale' and (pg_temp.p_login()).refused_version is null,
+		'3: the lock''s holder then finds it gone and records no refusal');
 	perform pg_temp.base_assert(pg_temp.p_commit(v, 'canary-1287-v3') ->> 'state' = 'stale' and (pg_temp.p_login()).version = 2,
 		'3: a repeat of the lock seals nothing more');
 	v := pg_temp.p_open(1, 1);
@@ -203,6 +204,10 @@ begin
 	perform pg_temp.base_assert(pg_temp.p_release(v, 'failed') ->> 'state' = 'released'
 		and (pg_temp.p_login()).refused_version = 2 and (pg_temp.p_login()).checked_at < clock_timestamp() - interval '120 seconds',
 		'3: a failed check keeps the refusal and counts as no check');
+	perform pg_temp.base_assert((pg_temp.p_login()).failures = 1 and (pg_temp.p_login()).failed_at > clock_timestamp() - interval '5 seconds'
+		and pg_temp.p_take('poll') -> 'renewal' = 'null'::jsonb, '3: after a failed check the login rests a minute');
+	update public.qorpera_claude_logins set failed_at = clock_timestamp() - interval '70 seconds'
+	where id = '12870000-0000-4000-8000-0000000000c1';
 	update public.qorpera_claude_logins set version = 3, encrypted_envelope = convert_to('canary-1287-v3', 'UTF8'),
 		envelope_sha256 = pg_temp.p_sha('canary-1287-v3') where id = '12870000-0000-4000-8000-0000000000c1';
 	perform pg_temp.p_back(interval '130 seconds', interval '10 minutes');
@@ -254,6 +259,22 @@ begin
 	perform pg_temp.p_back(interval '1 hour');
 	perform pg_temp.base_assert(pg_temp.p_live() = 0 and pg_temp.p_take('poll') -> 'renewal' = 'null'::jsonb
 		and pg_temp.p_take('open') -> 'renewal' = 'null'::jsonb, '4: with no live run nothing but the idle pass checks');
+	insert into public.qorpera_claude_logins(id, owner_user_id, principal_id, client_connection_id, key_id, encrypted_envelope,
+		envelope_sha256, checked_at)
+	values ('12870000-0000-4000-8000-0000000000c2', (select m.user_id from public.qorpera_profile_members m
+			where m.profile_id = '92400000-0000-4000-8000-000000000010' and m.user_id <> pg_temp.c4_owner_id() order by m.user_id limit 1),
+		'12680000-0000-4000-8000-000000000050', extensions.gen_random_uuid(), 'vault-root-1', convert_to('canary-1287-b', 'UTF8'),
+		pg_temp.p_sha('canary-1287-b'), clock_timestamp() - interval '21 hours');
+	perform pg_temp.p_back(interval '22 hours');
+	v := pg_temp.p_idle();
+	perform pg_temp.base_assert(v ->> 'claudeLoginId' = '12870000-0000-4000-8000-0000000000c1'
+		and pg_temp.p_release(v, 'failed') ->> 'state' = 'released', '4: the older idle login first, and its check fails');
+	v := pg_temp.p_idle();
+	perform pg_temp.base_assert(v ->> 'claudeLoginId' = '12870000-0000-4000-8000-0000000000c2',
+		'4: the next idle take is the other login, while the failed one rests: ' || coalesce(v::text, 'none'));
+	perform pg_temp.base_assert(public.qorpera_release_claude_login_renewal('12680000-0000-4000-8000-000000000050', repeat('a', 64),
+		'12870000-0000-4000-8000-0000000000c2', (v #>> '{renewal,token}')::uuid, 'unchanged') ->> 'state' = 'released'
+		and pg_temp.p_idle() -> 'renewal' = 'null'::jsonb, '4: then nothing is due');
 end $$;
 grant execute on function pg_temp.p_s4() to qorpera_secret_broker;
 set local session authorization qorpera_secret_broker;
