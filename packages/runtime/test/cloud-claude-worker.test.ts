@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	CLAUDE_BOX_TOOLS,
 	type ClaudeCodeBox,
@@ -27,8 +28,13 @@ import {
 } from "@qorpera/runtime/cloud-claude-worker";
 import { CLOUD_HOME_OUTDATED } from "@qorpera/runtime/cloud-codex-home";
 import { CloudHomeChannelRefused } from "@qorpera/runtime/cloud-home-channel";
-import { assertNativeSocketPath, NATIVE_SOCKET_PATH_BYTES } from "@qorpera/runtime/cloud-native-egress";
+import {
+	assertNativeSocketPath,
+	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
+	NATIVE_SOCKET_PATH_BYTES,
+} from "@qorpera/runtime/cloud-native-egress";
 import { nativeRunRootPrefix } from "@qorpera/runtime/cloud-native-provider-host";
+import { CloudSecretBrokerBusyError } from "@qorpera/runtime/cloud-vault-database-failure";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const CANARY = `CANARY-C4C-${randomUUID()}`;
@@ -535,6 +541,61 @@ describe("a Claude Code worker's run", () => {
 		expect(counts.later).toBe(counts.afterRefusal);
 		expect(await readdir(runRoot)).toEqual([]);
 		await rm(runRoot, { recursive: true });
+	});
+
+	it("asks again when the vault answers busy because its renewal for the run still runs, then starts", async () => {
+		const v = vault();
+		const open = v.logins.open;
+		let busy = 2;
+		v.logins.open = async (signal, knownVersion) => {
+			if (knownVersion === undefined && busy-- > 0) throw new CloudSecretBrokerBusyError();
+			return open(signal, knownVersion);
+		};
+		const runRoot = await root();
+		const outcome = await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins: v.logins,
+			launch: standInBox(OK).launch,
+			root: runRoot,
+			signal: new AbortController().signal,
+			busyRetryMs: 5,
+		});
+		expect(outcome.outcome).toBe("succeeded");
+		expect(v.state.opens).toEqual([undefined]);
+		const never = vault();
+		never.logins.open = async () => {
+			throw new CloudSecretBrokerBusyError();
+		};
+		const launch = vi.fn();
+		expect(
+			await runClaudeWorker({
+				brief,
+				member: "Ada",
+				logins: never.logins,
+				launch,
+				root: runRoot,
+				signal: new AbortController().signal,
+				busyRetryMs: 1,
+			}),
+		).toMatchObject({ outcome: "blocked", claudeSide: "could_not_start" });
+		expect(launch).not.toHaveBeenCalled();
+		await rm(runRoot, { recursive: true });
+	});
+
+	it("lets no Claude Code box of a run, nor any reviewer beside it, reach the renewal host: only the vault renews", async () => {
+		expect(NATIVE_CLAUDE_CODE_EGRESS_HOSTS).toEqual(["api.anthropic.com"]);
+		const source = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+		const boxes = (await readdir(source)).filter((name) => name.startsWith("cloud-claude-") && name.endsWith(".ts"));
+		expect(boxes).toContain("cloud-claude-box.ts");
+		for (const name of boxes) {
+			const text = await readFile(join(source, name), "utf8");
+			expect({ name, signInHosts: text.includes("NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS") }).toEqual({
+				name,
+				signInHosts: false,
+			});
+		}
+		expect(await readFile(join(source, "cloud-claude-box.ts"), "utf8")).toContain("hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,");
 	});
 
 	it("removes the folder when the run is stopped in the middle", async () => {

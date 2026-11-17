@@ -874,12 +874,17 @@ refused it goes on with the token it holds; it reads a replaced `.credentials.js
   ago) and at a run's poll (more than 90 s ago), while a lease of the member is live, and in the upkeep pass for an
   active login not checked for 20 hours, the shared vault takes the login's renewal lock
   (`qorpera_take_claude_login_renewal` / `qorpera_take_idle_claude_login_renewal`, its principal's own calls; one vault
-  host at a time, 2 minutes; another host's open waits up to 8 s for it and opens again), opens the login under the
+  host at a time, 2 minutes; another host's poll waits up to 8 s for it and opens again, a run's first open up to 15 s,
+  after which the run host is answered `busy` and asks again), opens the login under the
   member's key and has the helper run `claude auth status --json` on it in a private folder (`/v1/claude/check`, the
   helper's isolation, Anthropic's sign-in hosts). The helper compares the credentials' bytes and reads `loggedIn` from
   Claude Code's output, nothing else. A changed file is sealed as the next version, a compare-and-swap on the version
   and envelope the lock was taken on (`qorpera_commit_claude_login_renewal`); anything else is recorded
-  (`qorpera_release_claude_login_renewal`: `unchanged`, `failed`, `refused`).
+  (`qorpera_release_claude_login_renewal`: `unchanged`, `failed`, `refused`; a `failed` check counts as no check, so
+  the next pass tries again). A changed file is kept even when Claude Code's status run ends badly (its refresh token
+  has already rotated). A renewal the database could not save is retried for 100 s under the lock, then kept in the
+  vault process and saved before that host's next check of the login or its next idle pass; a restart of the vault in
+  that window loses it (the member then signs in again).
 - **Signed out:** Claude Code refusing the same version twice, at least 2 minutes apart, signs the login out as the
   member's own sign-out does. A run's open or poll then answers `SIGNED_OUT`; a run already going ends at its token's
   end in Claude Code's words ("their Claude sign-in has ended"); new Claude Code workers are refused at the dispatch.
@@ -894,7 +899,7 @@ refused it goes on with the token it holds; it reads a replaced `.credentials.js
      runtime still renew and seal back meanwhile (the seal-back route stays for this release); the vault's
      compare-and-swap and the two-refusal rule keep that safe.
   3. The runtime bundle (and the runner image that carries it): from then on runs cannot renew.
-  4. `update public.qorpera_claude_parallel_runs set cap = 4, updated_at = statement_timestamp();`
+  4. `update public.qorpera_claude_parallel_runs set cap = 4;`
   Never 3 before 2: runs that cannot renew with nothing renewing for them end at their token's end.
 - **Rollback:** `update public.qorpera_claude_parallel_runs set cap = 1;` (one run per member again). The renewer
   stays right for one run as for four. A later cleanup drops the seal-back route and functions.

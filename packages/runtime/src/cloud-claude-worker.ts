@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_CODE_PIN,
@@ -13,6 +14,7 @@ import { CloudHomeChannelRefused } from "./cloud-home-channel.ts";
 import type { ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { type CloudRuntimeClaudeChoice, isCloudRuntimeClaudeChoice } from "./cloud-runtime-policy.ts";
 import { type ClaudeLoginRunClient, openClaudeLoginForRun } from "./cloud-secret-broker-http.ts";
+import { CloudSecretBrokerBusyError } from "./cloud-vault-database-failure.ts";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // What Claude Code is told
@@ -322,6 +324,24 @@ export interface ClaudeWorkerLogins {
 
 export { wipeClaudeLoginFolder };
 
+const BUSY_RETRY_MS = 5_000;
+const BUSY_RETRIES = 6;
+
+async function openWhenRenewed(
+	logins: ClaudeWorkerLogins,
+	signal: AbortSignal,
+	retryMs: number,
+): Promise<Awaited<ReturnType<ClaudeWorkerLogins["open"]>>> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			return await logins.open(signal);
+		} catch (error) {
+			if (!(error instanceof CloudSecretBrokerBusyError) || attempt >= BUSY_RETRIES) throw error;
+			await delay(retryMs, undefined, { signal });
+		}
+	}
+}
+
 class ClaudeWorkerLoginRefresher {
 	readonly #logins: ClaudeWorkerLogins;
 	readonly #folder: string;
@@ -347,7 +367,8 @@ class ClaudeWorkerLoginRefresher {
 			const credentials = next.files.get(".credentials.json");
 			if (!credentials || next.version <= this.#version) return;
 			const staged = join(this.#folder, ".credentials.json.qorpera-next");
-			await writeFile(staged, credentials, { mode: 0o600 });
+			await rm(staged, { force: true });
+			await writeFile(staged, credentials, { mode: 0o600, flag: "wx" });
 			await rename(staged, join(this.#folder, ".credentials.json"));
 			this.#version = next.version;
 			this.refreshed++;
@@ -395,6 +416,7 @@ export interface ClaudeWorkerRunOptions {
 	readonly step?: (step: ClaudeWorkerStep | { readonly start: { model: string; sessionId: string } }) => void;
 	readonly signal: AbortSignal;
 	readonly refreshMs?: number;
+	readonly busyRetryMs?: number;
 }
 
 export function claudeWorkerScratchPrefix(root: string): string {
@@ -442,7 +464,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 	signal.throwIfAborted();
 	let opened: Awaited<ReturnType<ClaudeWorkerLogins["open"]>>;
 	try {
-		opened = await options.logins.open(signal);
+		opened = await openWhenRenewed(options.logins, signal, options.busyRetryMs ?? BUSY_RETRY_MS);
 	} catch {
 		// The vault unreachable, or an answer out of shape: nothing of Claude Code ran. Only a stop throws.
 		signal.throwIfAborted();
@@ -502,18 +524,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			const watch = (async () => {
 				const every = options.refreshMs ?? 60_000;
 				while (!watching.signal.aborted && !keepFresh.ended) {
-					await new Promise((resolve) => {
-						const timer = setTimeout(resolve, every);
-						timer.unref?.();
-						watching.signal.addEventListener(
-							"abort",
-							() => {
-								clearTimeout(timer);
-								resolve(undefined);
-							},
-							{ once: true },
-						);
-					});
+					await delay(every, undefined, { signal: watching.signal, ref: false }).catch(() => undefined);
 					if (watching.signal.aborted) break;
 					await keepFresh.refresh(AbortSignal.any([signal, watching.signal])).catch(() => undefined);
 				}

@@ -17,7 +17,18 @@ import { CLAUDE_LOGIN_FILES_SCHEMA } from "@qorpera/runtime/cloud-model-login-si
 import type { ModelLoginRunBinding } from "@qorpera/runtime/cloud-model-login-vault";
 import { CLAUDE_LOGIN_FIELD } from "@qorpera/runtime/cloud-model-login-vault-sign-in";
 import { OfficialCliNativeHarnessDriver } from "@qorpera/runtime/cloud-native-provider-host";
+import {
+	CloudSecretBroker,
+	PostgresCloudSecretBrokerAuthority,
+	PostgresCloudSecretBrokerPrincipal,
+} from "@qorpera/runtime/cloud-secret-broker";
+import { HttpCloudSecretBrokerService, openClaudeLoginForRun } from "@qorpera/runtime/cloud-secret-broker-http";
+import {
+	type CloudSecretBrokerCompanies,
+	SharedCloudSecretBrokerCompanies,
+} from "@qorpera/runtime/cloud-secret-broker-shared";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
+import { CloudSecretBrokerBusyError, cloudVaultDatabaseBusy } from "@qorpera/runtime/cloud-vault-database-failure";
 import { afterEach, describe, expect, it } from "vitest";
 
 const CANARY = `CANARY-PARALLEL-${randomUUID()}`;
@@ -299,7 +310,7 @@ describe("the vault's Claude renewer", () => {
 		expect(db.login.version).toBe(3);
 	});
 
-	it("gives an open no longer than its wait, and goes on renewing after it", async () => {
+	it("gives a poll no longer than its wait and a first open longer, and goes on renewing after either", async () => {
 		const db = database();
 		let finish: (check: ClaudeLoginCheck) => void = () => undefined;
 		const renewer = new CloudClaudeLoginRenewer({
@@ -312,8 +323,14 @@ describe("the vault's Claude renewer", () => {
 			},
 			keyring: db.keyring,
 			openWaitMs: 20,
+			firstOpenWaitMs: 60,
 		});
-		expect(await renewer.checkForRun(db.login.id, "open")).toBe("not_renewed");
+		let started = Date.now();
+		expect(await renewer.checkForRun(db.login.id, "poll")).toBe("pending");
+		expect(Date.now() - started).toBeLessThan(55);
+		started = Date.now();
+		expect(await renewer.checkForRun(db.login.id, "open")).toBe("pending");
+		expect(Date.now() - started).toBeGreaterThanOrEqual(55);
 		const later = renewer.check(db.login.id, "open");
 		finish({ outcome: "renewed", credentials: b64(credentials("v2")) });
 		expect(await later).toBe("renewed");
@@ -333,8 +350,9 @@ describe("the vault's Claude renewer", () => {
 			checker: checker([]),
 			keyring: db.keyring,
 			openWaitMs: 5000,
+			firstOpenWaitMs: 5000,
 		});
-		expect(await renewer.checkForRun(db.login.id, "open")).toBe("renewed");
+		expect(await renewer.checkForRun(db.login.id, "open")).toBe("reopen");
 		expect(db.calls).toEqual(["take", "take", "take"]);
 		db.calls.length = 0;
 		busy = 100;
@@ -343,16 +361,55 @@ describe("the vault's Claude renewer", () => {
 			checker: checker([]),
 			keyring: db.keyring,
 			openWaitMs: 600,
+			firstOpenWaitMs: 600,
 		});
 		const started = Date.now();
-		expect(await short.checkForRun(db.login.id, "open")).toBe("renewed");
+		expect(await short.checkForRun(db.login.id, "open")).toBe("pending");
 		expect(Date.now() - started).toBeLessThan(2000);
 		db.authority.takeClaudeLoginRenewal = async () => ({
 			schema: "qorpera.claude-login-renewal/v1",
 			renewal: null,
 			busy: false,
 		});
-		expect(await short.checkForRun(db.login.id, "poll")).toBe("not_renewed");
+		expect(await short.checkForRun(db.login.id, "poll")).toBe("keep");
+	});
+
+	it("keeps a renewal it could not save and saves it before anything else, so the rotated token is never lost", async () => {
+		const db = database();
+		const commit = db.authority.commitClaudeLoginRenewal;
+		let away = true;
+		db.authority.commitClaudeLoginRenewal = async (request, signal) => {
+			if (away) throw new Error("database away");
+			return commit(request, signal);
+		};
+		const check = checker([{ outcome: "renewed", credentials: b64(credentials("v2")) }]);
+		const renewer = new CloudClaudeLoginRenewer({
+			authority: db.authority,
+			checker: check,
+			keyring: db.keyring,
+			commitRetryMs: 30,
+		});
+		expect(await renewer.check(db.login.id, "poll")).toBe("failed");
+		expect(db.login.version).toBe(1);
+		expect(output.join("\n")).toContain("a renewed login is not saved yet");
+		away = false;
+		expect(await renewer.check(db.login.id, "poll")).toBe("renewed");
+		expect(check.sent).toHaveLength(1);
+		expect(db.login.version).toBe(2);
+		expect(await db.opened()).toEqual({ ".credentials.json": credentials("v2"), ".claude.json": SETTINGS });
+		const idle = new CloudClaudeLoginRenewer({
+			authority: db.authority,
+			checker: checker([{ outcome: "renewed", credentials: b64(credentials("v3")) }]),
+			keyring: db.keyring,
+			commitRetryMs: 30,
+		});
+		db.login.checkedAt = Number.NEGATIVE_INFINITY;
+		away = true;
+		expect(await idle.idle()).toBe(1);
+		away = false;
+		db.login.checkedAt = Date.now();
+		await idle.idle();
+		expect(db.login.version).toBe(3);
 	});
 
 	it("checks idle logins in the upkeep pass, a few at a time", async () => {
@@ -420,6 +477,61 @@ describe("the open for a run", () => {
 		]);
 	});
 
+	it("answers SIGNED_OUT at once when the open's own check signs the login out", async () => {
+		const db = database();
+		db.login.refusedVersion = 1;
+		const vault = new CloudClaudeLoginVault({
+			authority: db.runAuthority,
+			keyring: db.keyring,
+			renewer: new CloudClaudeLoginRenewer({
+				authority: db.authority,
+				checker: checker([{ outcome: "refused" }]),
+				keyring: db.keyring,
+			}),
+		});
+		expect(await vault.open({ binding: binding() }, AbortSignal.timeout(5000))).toEqual({
+			schema: "qorpera.claude-login-files-for-run/v1",
+			state: "refused",
+			reason: "SIGNED_OUT",
+		});
+		expect(db.calls).toEqual(["open:-", "take:open", "release:refused", "open:-"]);
+	});
+
+	it("answers a first open busy while its renewal still runs, and a poll with what it has", async () => {
+		const db = database();
+		let finish: (check: ClaudeLoginCheck) => void = () => undefined;
+		let checks = 0;
+		const renewer = new CloudClaudeLoginRenewer({
+			authority: db.authority,
+			checker: {
+				checkClaudeLogin: () =>
+					checks++ === 0
+						? new Promise((resolve) => {
+								finish = resolve;
+							})
+						: Promise.resolve({ outcome: "unchanged" }),
+			},
+			keyring: db.keyring,
+			openWaitMs: 20,
+			firstOpenWaitMs: 40,
+		});
+		const vault = new CloudClaudeLoginVault({ authority: db.runAuthority, keyring: db.keyring, renewer });
+		const error = await vault
+			.open({ binding: binding() }, AbortSignal.timeout(5000))
+			.catch((caught: unknown) => caught);
+		expect(cloudVaultDatabaseBusy(error)).toBe(true);
+		expect(await vault.open({ binding: binding(), knownVersion: 1 }, AbortSignal.timeout(5000))).toMatchObject({
+			state: "current",
+			version: 1,
+		});
+		finish({ outcome: "renewed", credentials: b64(credentials("v2")) });
+		for (let i = 0; i < 100 && db.login.version === 1; i++) await new Promise((r) => setTimeout(r, 5));
+		expect(await vault.open({ binding: binding() }, AbortSignal.timeout(5000))).toMatchObject({
+			state: "open",
+			version: 2,
+		});
+	});
+
 	it("answers a signed-out login's refusal and checks nothing", async () => {
 		const db = database();
 		db.login.status = "revoked";
@@ -466,6 +578,10 @@ describe("the helper's check, with Claude Code's own status", () => {
 			[`echo '{"loggedIn": false, "authMethod": "none"}'; exit 1`, "refused"],
 			[`echo 'not json'`, "failed"],
 			[`echo '{"loggedIn": true}'; exit 3`, "failed"],
+			[
+				`printf '%s' '${credentials("v2")}' > "$CLAUDE_CONFIG_DIR/.credentials.json"; echo 'cut short'; exit 3`,
+				"renewed",
+			],
 			[`rm "$CLAUDE_CONFIG_DIR/.credentials.json"; echo '{"loggedIn": true}'`, "failed"],
 		];
 		for (const [script, outcome] of cases) {
@@ -532,5 +648,215 @@ describe("the helper's check, with Claude Code's own status", () => {
 		});
 		expect(() => parseClaudeLoginCheck({ schema: "qorpera.claude-login-check/v1", outcome: "renewed" })).toThrow();
 		expect(() => claudeLoginCheckFiles({ ".credentials.json": b64("x"), "notes.txt": b64("y") })).toThrow();
+	});
+});
+
+describe("the vault's database calls, its route and its upkeep", () => {
+	function recording() {
+		const queries: { text: string; values: readonly unknown[] }[] = [];
+		return {
+			queries,
+			database: {
+				async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[]) {
+					queries.push({ text, values });
+					return { rowCount: 1, rows: [{ result: { ok: true } } as unknown as Row] };
+				},
+			},
+		};
+	}
+
+	it("calls migration 790000's functions with their arguments in order", async () => {
+		const { queries, database } = recording();
+		const principalId = randomUUID();
+		const principal = new PostgresCloudSecretBrokerPrincipal({
+			database,
+			principalId,
+			principalSecret: randomBytes(32).toString("base64url"),
+		});
+		const loginId = randomUUID();
+		const token = randomUUID();
+		const signal = AbortSignal.timeout(5000);
+		await principal.takeClaudeLoginRenewal({ claudeLoginId: loginId, purpose: "poll" }, signal);
+		await principal.takeIdleClaudeLoginRenewal(signal);
+		await principal.commitClaudeLoginRenewal(
+			{
+				claudeLoginId: loginId,
+				token,
+				baseVersion: 3,
+				baseEnvelopeSha256: "a".repeat(64),
+				keyId: "vault-root-1",
+				encryptedEnvelope: Buffer.from("sealed"),
+				envelopeSha256: "b".repeat(64),
+			},
+			signal,
+		);
+		await principal.releaseClaudeLoginRenewal({ claudeLoginId: loginId, token, outcome: "refused" }, signal);
+		const capability = queries[0]?.values[1];
+		expect(queries.map((query) => query.text)).toEqual([
+			"select public.qorpera_take_claude_login_renewal($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			"select public.qorpera_take_idle_claude_login_renewal($1::uuid,$2::text) as result",
+			"select public.qorpera_commit_claude_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::text) as result",
+			"select public.qorpera_release_claude_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text) as result",
+		]);
+		expect(queries.map((query) => query.values)).toEqual([
+			[principalId, capability, loginId, "poll"],
+			[principalId, capability],
+			[
+				principalId,
+				capability,
+				loginId,
+				token,
+				3,
+				"a".repeat(64),
+				"vault-root-1",
+				Buffer.from("sealed").toString("base64"),
+				"b".repeat(64),
+			],
+			[principalId, capability, loginId, token, "refused"],
+		]);
+		expect(capability).toMatch(/^[0-9a-f]{64}$/);
+		const run = recording();
+		const authorityId = randomUUID();
+		const authority = new PostgresCloudSecretBrokerAuthority({
+			database: run.database,
+			brokerAuthorityId: authorityId,
+			brokerCapability: randomBytes(32).toString("base64url"),
+		});
+		const bound = binding();
+		await authority.openClaudeLoginForRun(bound, signal);
+		await authority.openClaudeLoginForRun(bound, signal, 4);
+		expect(run.queries.map((query) => query.text)).toEqual([
+			"select public.qorpera_open_claude_login_for_run($1::uuid,$2::text,$3::jsonb) as result",
+			"select public.qorpera_open_claude_login_for_run($1::uuid,$2::text,$3::jsonb,$4::bigint) as result",
+		]);
+		expect(run.queries[1]?.values).toEqual([authorityId, run.queries[0]?.values[1], JSON.stringify(bound), 4]);
+	});
+
+	it("serves a poll its current version and a first open busy over the route, and the client reads both", async () => {
+		const db = database();
+		let first = true;
+		const vault = new CloudClaudeLoginVault({
+			authority: db.runAuthority,
+			keyring: db.keyring,
+			renewer: {
+				checkForRun: async (_id, purpose) => {
+					if (purpose === "open" && first) {
+						first = false;
+						return "pending";
+					}
+					return "keep";
+				},
+			},
+		});
+		const refuse = async () => {
+			throw new Error("not in this test");
+		};
+		const companyId = randomUUID();
+		const companies: CloudSecretBrokerCompanies = {
+			resolve: async (id) =>
+				id === companyId
+					? {
+							companyId,
+							broker: new CloudSecretBroker({
+								authority: {
+									describeCapture: refuse,
+									completeCapture: refuse,
+									authorizeOperation: refuse,
+									authorizeRepositoryCredential: refuse,
+								},
+								keyring: db.keyring,
+								adapters: [],
+							}),
+							modelLogins: {} as never,
+							modelLoginSignIns: undefined,
+							modelLoginUsage: {} as never,
+							claudeLogins: vault,
+						}
+					: undefined,
+			signingIn: () => undefined,
+		};
+		const runtimeToken = randomBytes(32).toString("base64url");
+		const service = new HttpCloudSecretBrokerService(companies, runtimeToken, {
+			proveBinding: async () => undefined,
+		});
+		const port = await service.start();
+		try {
+			const run = binding();
+			const holder = `job.${run.jobId}.${randomBytes(32).toString("base64url")}`;
+			const client = {
+				origin: `http://127.0.0.1:${port}`,
+				runtimeToken,
+				companyId,
+				holder: () => holder,
+				allowLoopback: true,
+			};
+			await expect(openClaudeLoginForRun(client, run, AbortSignal.timeout(5000))).rejects.toBeInstanceOf(
+				CloudSecretBrokerBusyError,
+			);
+			const opened = await openClaudeLoginForRun(client, run, AbortSignal.timeout(5000));
+			if ("refused" in opened) throw new Error("refused");
+			expect(opened.version).toBe(1);
+			expect(await openClaudeLoginForRun(client, run, AbortSignal.timeout(5000), 1)).toEqual({
+				current: true,
+				claudeLoginId: db.login.id,
+				version: 1,
+			});
+			const newer = await openClaudeLoginForRun(client, run, AbortSignal.timeout(5000), 7);
+			expect("files" in newer && newer.version === 1).toBe(true);
+			expect(db.calls.filter((call) => call.startsWith("open:"))).toEqual(["open:-", "open:-", "open:1", "open:7"]);
+			const raw = await fetch(`http://127.0.0.1:${port}/v1/claude-logins/open?company=${companyId}`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${runtimeToken}`,
+					"x-qorpera-identity": holder,
+				},
+				body: JSON.stringify({ schema: "qorpera.claude-login-open-request/v1", binding: run, knownVersion: 0 }),
+			});
+			expect(raw.status).toBe(403);
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("runs the Claude idle pass in the shared vault's upkeep only with a helper that checks Claude logins", async () => {
+		const takes: string[] = [];
+		const principal = {
+			companies: async () => ({ schema: "qorpera.broker-principal-companies/v1", companies: [], register: [] }),
+			register: async () => undefined,
+			authority: () => ({}) as never,
+			eventVerificationsDue: async () => ({ companies: [] }),
+			bankSyncsDue: async () => ({ companies: [] }),
+			digitalPostSyncsDue: async () => ({ companies: [] }),
+			takeClaudeLoginRenewal: async () => ({ schema: "qorpera.claude-login-renewal/v1", renewal: null }),
+			takeIdleClaudeLoginRenewal: async () => {
+				takes.push("idle");
+				return { schema: "qorpera.claude-login-renewal/v1", renewal: null };
+			},
+			commitClaudeLoginRenewal: async () => ({}),
+			releaseClaudeLoginRenewal: async () => ({}),
+		};
+		const keyring = new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) });
+		const helper = {
+			renew: async () => ({ outcome: "transient" as const, reason: "unused" }),
+			beginSignIn: async () => ({ status: "preparing" as const }),
+			readSignIn: async () => ({ status: "unknown" as const }),
+			listCompletedSignIns: async () => [],
+			finishSignIn: async () => undefined,
+		};
+		await new SharedCloudSecretBrokerCompanies({
+			principal: principal as never,
+			keyring,
+			adapters: [],
+			helper,
+		}).upkeep();
+		expect(takes).toEqual([]);
+		await new SharedCloudSecretBrokerCompanies({
+			principal: principal as never,
+			keyring,
+			adapters: [],
+			helper: { ...helper, checkClaudeLogin: async () => ({ outcome: "unchanged" as const }) },
+		}).upkeep();
+		expect(takes).toEqual(["idle"]);
 	});
 });

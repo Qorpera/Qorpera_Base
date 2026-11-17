@@ -10,8 +10,7 @@ end $$;
 
 create table public.qorpera_claude_parallel_runs (
 	only_row boolean primary key default true check (only_row),
-	cap smallint not null default 1 check (cap between 1 and 16),
-	updated_at timestamptz not null default statement_timestamp()
+	cap smallint not null default 1 check (cap between 1 and 16)
 );
 insert into public.qorpera_claude_parallel_runs(only_row, cap) values (true, 1);
 alter table public.qorpera_claude_parallel_runs enable row level security;
@@ -43,6 +42,7 @@ declare v_taken uuid; v_cap integer := public.qorpera_claude_worker_run_cap(); v
 begin
 	if p_worker.harness is distinct from 'claude-code' or p_worker.requested_by_user_id is null or p_wake_id is null then
 		raise exception 'Only a Claude Code worker takes a Claude Code lease' using errcode = '22023'; end if;
+	perform pg_advisory_xact_lock(hashtextextended('qorpera_claude_worker_lease:' || p_worker.requested_by_user_id::text, 0));
 	-- WHY: a cap lowered while more runs are live starts nothing until they are fewer, though a lower slot is free.
 	if (select count(*) from public.qorpera_claude_worker_leases lease
 		where lease.owner_user_id = p_worker.requested_by_user_id and public.qorpera_claude_worker_lease_live(lease)) >= v_cap then
@@ -274,7 +274,8 @@ begin
 		return jsonb_build_object('schema', 'qorpera.claude-login-renewal-release/v1', 'state', 'signed_out');
 	end if;
 	update public.qorpera_claude_logins
-	set renewal_token = null, renewal_until = null, checked_at = v_now,
+	set renewal_token = null, renewal_until = null,
+		checked_at = case when p_outcome = 'failed' then checked_at else v_now end,
 		refused_version = case when p_outcome = 'refused' then version
 			when p_outcome = 'unchanged' then null else refused_version end,
 		refused_at = case when p_outcome = 'refused' then

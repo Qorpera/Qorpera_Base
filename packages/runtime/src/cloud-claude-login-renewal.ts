@@ -21,6 +21,8 @@ const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_CLAUDE_FILE_BYTES = 16 * 1024;
 const OPEN_WAIT_MS = 8_000;
+const FIRST_OPEN_WAIT_MS = 15_000;
+const COMMIT_RETRY_MS = 100_000;
 const CHECK_BUDGET_MS = 45_000;
 const SAVE_DEADLINE_MS = 15_000;
 const IDLE_PER_PASS = 4;
@@ -142,23 +144,22 @@ export async function checkClaudeLogin(
 				bytes.fill(0);
 			}
 		}
-		let status: Awaited<ReturnType<ClaudeLoginStatusDriver["claudeLoginStatus"]>>;
+		let status: Awaited<ReturnType<ClaudeLoginStatusDriver["claudeLoginStatus"]>> | undefined;
 		try {
 			status = await options.driver.claudeLoginStatus(root, signal);
 		} catch {
-			return { outcome: "failed" };
+			status = undefined;
 		}
-		if (status.loggedIn === false) return { outcome: "refused" };
-		if (!status.exitedOk || status.loggedIn !== true) return { outcome: "failed" };
 		try {
 			after = await claudeLoginFile(join(root, "claude", ".credentials.json"));
 		} catch {
-			return { outcome: "failed" };
+			after = undefined;
 		}
-		if (after.byteLength < 2) return { outcome: "failed" };
-		return after.equals(before)
-			? { outcome: "unchanged" }
-			: { outcome: "renewed", credentials: after.toString("base64") };
+		if (status?.loggedIn === false) return { outcome: "refused" };
+		if (after && after.byteLength >= 2 && !after.equals(before))
+			return { outcome: "renewed", credentials: after.toString("base64") };
+		if (!status?.exitedOk || status.loggedIn !== true || !after) return { outcome: "failed" };
+		return { outcome: "unchanged" };
 	} finally {
 		before.fill(0);
 		after?.fill(0);
@@ -255,23 +256,40 @@ function parseTaken(value: unknown): TakenRenewal | "busy" | null {
 
 export type ClaudeRenewalResult = "renewed" | "unchanged" | "refused" | "signed_out" | "failed" | "busy" | "none";
 
+interface PendingCommit {
+	readonly claudeLoginId: string;
+	readonly token: string;
+	readonly baseVersion: number;
+	readonly baseEnvelopeSha256: string;
+	readonly keyId: string;
+	readonly envelope: Buffer;
+	readonly envelopeSha256: string;
+}
+
 export class CloudClaudeLoginRenewer {
 	readonly #authority: ClaudeLoginRenewalAuthority;
 	readonly #checker: ClaudeLoginChecker;
 	readonly #keys: CloudSecretKeyring;
 	readonly #openWaitMs: number;
+	readonly #firstOpenWaitMs: number;
+	readonly #commitRetryMs: number;
 	readonly #inFlight = new Map<string, Promise<ClaudeRenewalResult>>();
+	readonly #pending = new Map<string, PendingCommit>();
 
 	constructor(options: {
 		authority: ClaudeLoginRenewalAuthority;
 		checker: ClaudeLoginChecker;
 		keyring: CloudSecretKeyring;
 		openWaitMs?: number;
+		firstOpenWaitMs?: number;
+		commitRetryMs?: number;
 	}) {
 		this.#authority = options.authority;
 		this.#checker = options.checker;
 		this.#keys = options.keyring;
 		this.#openWaitMs = options.openWaitMs ?? OPEN_WAIT_MS;
+		this.#firstOpenWaitMs = options.firstOpenWaitMs ?? FIRST_OPEN_WAIT_MS;
+		this.#commitRetryMs = options.commitRetryMs ?? COMMIT_RETRY_MS;
 	}
 
 	check(claudeLoginId: string, purpose: ClaudeRenewalPurpose): Promise<ClaudeRenewalResult> {
@@ -279,6 +297,12 @@ export class CloudClaudeLoginRenewer {
 		const running = this.#inFlight.get(id);
 		if (running) return running;
 		const started = (async (): Promise<ClaudeRenewalResult> => {
+			const pending = this.#pending.get(id);
+			if (pending) {
+				const kept = await this.#commitPending(pending);
+				if (kept === "renewed") return "renewed";
+				if (kept === "kept") return "failed";
+			}
 			const taken = parseTaken(
 				await this.#authority.takeClaudeLoginRenewal(
 					{ claudeLoginId: id, purpose },
@@ -292,8 +316,8 @@ export class CloudClaudeLoginRenewer {
 		return started;
 	}
 
-	async checkForRun(claudeLoginId: string, purpose: ClaudeRenewalPurpose): Promise<"renewed" | "not_renewed"> {
-		const until = Date.now() + this.#openWaitMs;
+	async checkForRun(claudeLoginId: string, purpose: ClaudeRenewalPurpose): Promise<"reopen" | "keep" | "pending"> {
+		const until = Date.now() + (purpose === "open" ? this.#firstOpenWaitMs : this.#openWaitMs);
 		let waitedOnAnother = false;
 		for (;;) {
 			const checking = this.check(claudeLoginId, purpose).catch((): ClaudeRenewalResult => "failed");
@@ -308,15 +332,17 @@ export class CloudClaudeLoginRenewer {
 			} finally {
 				clearTimeout(timer);
 			}
-			if (result === "renewed") return "renewed";
-			if (result !== "busy" || Date.now() + BUSY_RETRY_MS >= until)
-				return waitedOnAnother ? "renewed" : "not_renewed";
+			if (result === "renewed" || result === "signed_out") return "reopen";
+			if (result === "waited") return "pending";
+			if (result !== "busy") return waitedOnAnother ? "reopen" : "keep";
+			if (Date.now() + BUSY_RETRY_MS >= until) return "pending";
 			waitedOnAnother = true;
 			await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS).unref?.());
 		}
 	}
 
 	async idle(): Promise<number> {
+		for (const pending of [...this.#pending.values()]) await this.#commitPending(pending);
 		let checked = 0;
 		for (; checked < IDLE_PER_PASS; checked += 1) {
 			const taken = parseTaken(
@@ -348,54 +374,91 @@ export class CloudClaudeLoginRenewer {
 			const released = await this.#release(taken, check.outcome);
 			return released === "signed_out" ? "signed_out" : check.outcome;
 		}
-		const next: Partial<Record<ClaudeLoginFileName, string>> = { ...files, ".credentials.json": check.credentials };
-		const text = JSON.stringify({ schema: CLAUDE_LOGIN_FILES_SCHEMA, files: next });
-		checkClaudeLoginFiles(text);
-		const envelope = this.#keys.sealMember(
-			{ [CLAUDE_LOGIN_FIELD]: text },
-			{ memberId: taken.memberId, loginId: taken.claudeLoginId, version: taken.version + 1, keyId: taken.keyId },
-		);
-		const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
+		let pending: PendingCommit;
 		try {
-			for (let attempt = 0; ; attempt += 1) {
-				try {
-					const answer = parseRecord(
-						await this.#authority.commitClaudeLoginRenewal(
-							{
-								claudeLoginId: taken.claudeLoginId,
-								token: taken.token,
-								baseVersion: taken.version,
-								baseEnvelopeSha256: taken.envelopeSha256,
-								keyId: taken.keyId,
-								encryptedEnvelope: envelope,
-								envelopeSha256,
-							},
-							AbortSignal.timeout(SAVE_DEADLINE_MS),
-						),
-						"Claude login renewal commit",
-					);
-					if (answer.schema !== "qorpera.claude-login-renewal-commit/v1")
-						throw new Error("Claude login renewal commit is invalid");
-					if (answer.state === "sealed") {
-						if (answer.version !== taken.version + 1 || answer.envelopeSha256 !== envelopeSha256)
-							throw new Error("Claude login renewal commit is invalid");
-						return "renewed";
-					}
-					if (answer.state === "stale" || answer.state === "refused") return "none";
-					throw new Error("Claude login renewal commit is invalid");
-				} catch (error) {
-					if (attempt >= 2) throw error;
-					await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)).unref?.());
-				}
-			}
+			const next: Partial<Record<ClaudeLoginFileName, string>> = {
+				...files,
+				".credentials.json": check.credentials,
+			};
+			const text = JSON.stringify({ schema: CLAUDE_LOGIN_FILES_SCHEMA, files: next });
+			checkClaudeLoginFiles(text);
+			const envelope = Buffer.from(
+				this.#keys.sealMember(
+					{ [CLAUDE_LOGIN_FIELD]: text },
+					{
+						memberId: taken.memberId,
+						loginId: taken.claudeLoginId,
+						version: taken.version + 1,
+						keyId: taken.keyId,
+					},
+				),
+			);
+			pending = {
+				claudeLoginId: taken.claudeLoginId,
+				token: taken.token,
+				baseVersion: taken.version,
+				baseEnvelopeSha256: taken.envelopeSha256,
+				keyId: taken.keyId,
+				envelope,
+				envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+			};
 		} catch {
 			console.error(
-				"Claude login renewal: a renewed login could not be saved; its next check reads Claude Code again.",
+				"Claude login renewal: Claude Code renewed a login whose files could not be sealed; it is lost.",
 			);
+			await this.#release(taken, "failed");
 			return "failed";
-		} finally {
-			envelope.fill(0);
 		}
+		this.#pending.set(pending.claudeLoginId, pending);
+		const until = Date.now() + this.#commitRetryMs;
+		for (let attempt = 0; ; attempt += 1) {
+			const answer = await this.#commitPending(pending);
+			if (answer === "renewed") return "renewed";
+			if (answer === "dropped") return "none";
+			if (Date.now() >= until) break;
+			await new Promise((resolve) =>
+				setTimeout(resolve, Math.min(1000 * 2 ** attempt, 15_000, Math.max(0, until - Date.now()))).unref?.(),
+			);
+		}
+		console.error(
+			"Claude login renewal: a renewed login is not saved yet; this vault host keeps it and saves it before its next check of that login.",
+		);
+		return "failed";
+	}
+
+	async #commitPending(pending: PendingCommit): Promise<"renewed" | "dropped" | "kept"> {
+		let answer: Record<string, unknown>;
+		try {
+			answer = parseRecord(
+				await this.#authority.commitClaudeLoginRenewal(
+					{
+						claudeLoginId: pending.claudeLoginId,
+						token: pending.token,
+						baseVersion: pending.baseVersion,
+						baseEnvelopeSha256: pending.baseEnvelopeSha256,
+						keyId: pending.keyId,
+						encryptedEnvelope: pending.envelope,
+						envelopeSha256: pending.envelopeSha256,
+					},
+					AbortSignal.timeout(SAVE_DEADLINE_MS),
+				),
+				"Claude login renewal commit",
+			);
+		} catch {
+			return "kept";
+		}
+		const sealed =
+			answer.schema === "qorpera.claude-login-renewal-commit/v1" &&
+			answer.state === "sealed" &&
+			answer.version === pending.baseVersion + 1 &&
+			answer.envelopeSha256 === pending.envelopeSha256;
+		const ended =
+			answer.schema === "qorpera.claude-login-renewal-commit/v1" &&
+			(answer.state === "stale" || answer.state === "refused");
+		if (!sealed && !ended) return "kept";
+		if (this.#pending.get(pending.claudeLoginId) === pending) this.#pending.delete(pending.claudeLoginId);
+		pending.envelope.fill(0);
+		return sealed ? "renewed" : "dropped";
 	}
 
 	async #opened(taken: TakenRenewal): Promise<ClaudeLoginFiles> {
