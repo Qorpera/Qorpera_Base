@@ -3077,11 +3077,11 @@ export class CompanyController {
 		let address: string | undefined;
 		try {
 			this.#answerSponsor(sessionId);
-			const made =
-				(await hooks.list()).find(
-					(hook) => hook.proof === "mail" && hook.status === "active" && hook.email?.split("@")[0] === localPart,
-				) ?? (await hooks.createMailbox(localPart, "The company's main email"));
-			address = made.email;
+			const kept = (await hooks.list()).find(
+				(hook) => hook.proof === "mail" && hook.email?.split("@")[0] === localPart,
+			);
+			if (kept?.status === "paused") await hooks.setStatus(kept.id, "active");
+			address = (kept ?? (await hooks.createMailbox(localPart, "The company's main email"))).email;
 		} catch (error) {
 			throw new Error(mailboxRefusal(error));
 		}

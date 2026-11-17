@@ -488,6 +488,40 @@ describe("webhooks and mailboxes", () => {
 		expect(section("mailbox").querySelector(".hook-waits")).toBeNull();
 	});
 
+	it("offers no way to add an address until the company's handles are read, and a way to read them again", async () => {
+		const read = deferred<{ domain: string; handles: string[] }>();
+		const { client } = setup(
+			[],
+			admin,
+			(client) => {
+				vi.mocked(client.mailHandles)
+					.mockReturnValueOnce(read.promise)
+					.mockRejectedValueOnce(new Error("offline"))
+					.mockResolvedValue({ domain: "acme.example.com", handles: ["acme"] });
+			},
+			{ unnamed: true },
+		);
+		await settle();
+		expect(labels(section("mailbox"))).not.toContain("Add mailbox");
+		expect(section("mailbox").querySelector(".hook-waits")).toBeNull();
+		expect(section("mailbox").querySelector(".connection-add-area")?.textContent).toBe("Checking…");
+		read.reject(new Error("offline"));
+		await settle();
+		const error = section("mailbox").querySelector(".hook-handles-error");
+		expect(error?.textContent).toContain("The company's part of its addresses could not be read.");
+		expect(section("mailbox").querySelector(".hook-waits")).toBeNull();
+		press(section("mailbox"), "Try again");
+		await settle();
+		expect(section("mailbox").querySelector(".hook-handles-error")).not.toBeNull();
+		press(section("mailbox"), "Try again");
+		await settle();
+		expect(client.mailHandles).toHaveBeenCalledTimes(3);
+		expect(section("mailbox").querySelector(".hook-waits")).toBeNull();
+		press(section("mailbox"), "Add mailbox");
+		expect(view!.el.querySelectorAll("#hook-form-mailbox input")).toHaveLength(1);
+		expect(view!.el.querySelector("#hook-form-mailbox .hook-domain")?.textContent).toBe(".acme@acme.example.com");
+	});
+
 	it("shows a failed read with a way to try again", async () => {
 		const { client } = setup([webhook], admin, (client) => {
 			vi.mocked(client.list).mockRejectedValueOnce(new Error("offline"));

@@ -398,6 +398,7 @@ export const SETTINGS: Record<string, string> = {
 		"Den første del og så virksomhedens del, som alle virksomhedens adresser slutter med.",
 	"e.g. acme": "f.eks. acme",
 	"Your email address waits for a name": "Jeres e-mailadresse venter på et navn",
+	"The company's part of its addresses could not be read.": "Virksomhedens del af dens adresser kunne ikke hentes.",
 	Add: "Tilføj",
 	"Adding…": "Tilføjer…",
 	"A webhook name is lowercase letters, digits and hyphens, and starts with a letter.":

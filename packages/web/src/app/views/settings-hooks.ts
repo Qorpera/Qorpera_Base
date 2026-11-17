@@ -154,6 +154,7 @@ export class HooksView {
 	#drawnManage: boolean | undefined;
 	#hooks: EventHook[] | undefined;
 	#mail: MailHandles | undefined;
+	#mailRead: "loading" | "failed" | "loaded" = "loading";
 	readonly #handleCheck: HandleCheck;
 	#handleLine: HTMLElement | undefined;
 	#loading = true;
@@ -264,9 +265,7 @@ export class HooksView {
 
 	async #read(focusKey?: string): Promise<void> {
 		const signal = this.#lifetime.signal;
-		const mail = this.#kinds.includes("mailbox")
-			? this.#client.mailHandles(signal).catch(() => undefined)
-			: undefined;
+		const mail = this.#kinds.includes("mailbox") ? this.#readHandles() : undefined;
 		try {
 			const hooks = await this.#client.list(signal);
 			if (signal.aborted) return;
@@ -279,10 +278,21 @@ export class HooksView {
 			this.#loading = false;
 			if (!signal.aborted) this.#draw(focusKey);
 		}
-		const read = await mail;
-		if (!read || signal.aborted) return;
-		this.#mail = read;
-		this.#draw();
+		await mail;
+	}
+
+	async #readHandles(): Promise<void> {
+		const signal = this.#lifetime.signal;
+		try {
+			const read = await this.#client.mailHandles(signal);
+			if (signal.aborted) return;
+			this.#mail = read;
+			this.#mailRead = "loaded";
+		} catch {
+			if (signal.aborted) return;
+			if (this.#mailRead !== "loaded") this.#mailRead = "failed";
+		}
+		if (!this.#loading) this.#draw();
 	}
 
 	async #setStatus(hook: EventHook, status: EventHookStatus | "removed"): Promise<void> {
@@ -329,6 +339,7 @@ export class HooksView {
 		const text = KIND_TEXT[kind];
 		const draft = this.#drafts[kind];
 		const name = draft.name.trim().toLowerCase();
+		if (kind === "mailbox" && this.#mailRead !== "loaded") return;
 		const owned = this.#handle();
 		const handle = owned ?? draft.handle;
 		const localPart = `${name}.${handle}`;
@@ -636,7 +647,38 @@ export class HooksView {
 		const manage = this.#access.canManage();
 		const hooks = (this.#hooks ?? []).filter((hook) => kindOf(hook) === kind);
 		let addArea: HTMLElement | null = null;
-		if (manage && !this.#loading && kind === "mailbox" && this.#unnamed() && this.#handle() === undefined) {
+		const mailbox = kind === "mailbox";
+		const waiting = mailbox && this.#mailRead !== "loaded";
+		if (manage && !this.#loading && waiting) {
+			let line: HTMLElement;
+			if (this.#mailRead === "failed") {
+				const retry = button(
+					t("Try again"),
+					() => {
+						this.#mailRead = "loading";
+						this.#draw("hook-handles-retry");
+						void this.#readHandles();
+					},
+					{ small: true },
+				);
+				retry.dataset.focusKey = "hook-handles-retry";
+				line = h(
+					"p",
+					{ class: "connection-empty service-error hook-handles-error", role: "alert" },
+					t("The company's part of its addresses could not be read."),
+					" ",
+					retry,
+				);
+			} else line = h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"));
+			addArea = this.#top
+				? h(
+						"div",
+						{ class: "connection-add-area is-top" },
+						h("div", { class: "connection-add-row" }, line, this.#top.beside?.() ?? null),
+						this.#top.below?.() ?? null,
+					)
+				: h("div", { class: "connection-add-area" }, line);
+		} else if (manage && !this.#loading && mailbox && this.#unnamed() && this.#handle() === undefined) {
 			const waits = h("p", { class: "connection-empty muted hook-waits" }, t("Your email address waits for a name"));
 			addArea = this.#top
 				? h(
