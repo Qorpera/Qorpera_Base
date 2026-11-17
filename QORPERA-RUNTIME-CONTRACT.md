@@ -6953,6 +6953,36 @@ worker's run is claimed only by a shared execution host), never before it.
 4. **The way back** is one statement, and leaves the listed companies on:
    `update public.qorpera_home_settings set every_company = false where singleton;`
 
+### 2026-11-17 amendment: the review reads the script it judges
+
+Founder decision of 17 November 2026 on the mywave review ("A refusal must never be a dead end. The reviewer should
+read the script it judges…"): "1-4 straight yes." It amends the review of a command on a company machine
+(`machine_run`, reviewed as an outside effect since step 6d, and the fixed machine rule of 4 November 2026) and goes live with a runtime
+bundle; no migration, host call or image moves.
+
+1. **What the reviewer reads.** When a `machine_run` command runs a file (an interpreter and a path, `./x`, `source x`,
+   also behind `cd dir &&`, assignments, `timeout`/`nice`-style prefixes and `bash -c '…'`), the runtime reads that file
+   on the machine before the review, with one fixed read-only command of its own through the same receipts and command
+   gateway, and gives the reviewer its text in the action's `contents`: each file whole, at most 64 KiB a file, 128 KiB
+   and 8 files a command. Files they load or import are not shown, and the contents say so. A command the runtime does
+   not recognise as running a file is reviewed as before.
+2. **What it could not read is asked about.** A file that is missing, not a plain file, binary or over the bound, a
+   read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a variable
+   are listed in `contents.notShown`. The reviewer answers the guards from what it can see, never denies for what it
+   could not see alone, and asks. With `notShown`, the fixed machine rule never allows: an ask stays an ask, and a deny
+   with no guard true becomes an ask. A deny with a guard true, a built-in check and a cited Ask first rule stand.
+3. **What ran is what was reviewed.** The approval's identity (`argumentSha256` at begin and record) is the SHA-256 of
+   the call's own digest and each reviewed file's path and digest (or that it was not shown); the card's `call` stays
+   the model's own arguments. A woken agent that repeats the identical call has its files read again and matches its
+   approval only while they are unchanged; otherwise it is reviewed afresh. On the machine the command runs behind a
+   `sha256sum -c` of the reviewed bytes, in the same shell: a file changed since its review stops the command with
+   exit 125 and says so, and nothing of the command ran.
+4. **A refusal names the next step.** A denial still says not to retry, reword or reach the action another way, and
+   now says: when the work cannot go on without it, a worker reports its work blocked with the reason, and any other
+   agent asks a member on a card (`ask_member`), or in its reply where it has no cards, in one line.
+5. **Not changed.** The agent's home (`home_command`) reads no files for its review; its commands are reviewed as
+   before.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+- The review reads the script it judges (2026-11-17 amendment, brief A of the mywave review): a `machine_run` command
+  that runs a file has that file read on the machine before its review and shown whole to the reviewer (64 KiB a file,
+  128 KiB and 8 files a command); what it could not read is asked about, never refused for that alone, and the fixed
+  machine rule never allows it; the approval and the run are bound to the reviewed bytes (`sha256sum -c` before the
+  command, exit 125 when a file changed). A denial names the next step (a card, or a worker's blocked report). Runtime
+  bundle only: no migration, host call, executor or image moves; it rolls with the next runtime release.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its

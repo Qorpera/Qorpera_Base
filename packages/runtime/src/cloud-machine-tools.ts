@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	CLOUD_MACHINE_FOLDER_LIMITS,
 	CLOUD_MACHINE_FOLDER_LOST,
 	type CloudCodingCommandRead,
@@ -52,6 +53,19 @@ import {
 	parseMachineScreenAction,
 } from "./cloud-machine-screen.ts";
 import {
+	CLOUD_SCRIPT_FILES,
+	type CloudCommandScriptRun,
+	type CloudScriptEntry,
+	cloudCommandScripts,
+	cloudScriptContents,
+	cloudScriptGuard,
+	cloudScriptIdentity,
+	cloudScriptNotRead,
+	cloudScriptReadProgram,
+	parseCloudPreparedScripts,
+	parseCloudScriptRead,
+} from "./cloud-machine-script-review.ts";
+import {
 	CLOUD_TOOL_REQUEST_MAX_MS,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -63,6 +77,7 @@ import {
 	type CloudNativeTool,
 	type CloudToolContent,
 	type CloudToolContext,
+	CloudToolRefusal,
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
@@ -106,6 +121,10 @@ const WAKE_SENT_MS = 2000;
 /** How many times a waiting start asks the machine's executor for a word: a machine in line is placed first and boots
  * after, each a step the executor tells of (agent-box B1). */
 const WAKE_WORDS = 3;
+const SCRIPT_READ_MS = 20_000;
+const SCRIPT_READ_POLL_MS = 300;
+const REMEMBERED_SCRIPTS = 64;
+const MACHINE_COMMAND_BYTES = 16_384;
 /** How long a run gives its report of a wait (20260930755000): beside the answer, never holding it long. */
 const WAIT_REPORT_MS = 5000;
 
@@ -934,6 +953,83 @@ export function cloudMachineTools(options: {
 		},
 	};
 
+	const scriptTexts = new Map<string, string>();
+	const scriptsOf = (parsed: JsonValue) =>
+		parseCloudPreparedScripts((parsed as Record<string, JsonValue> | null)?.scripts ?? undefined);
+	const readScripts = async (
+		machine: MachineView,
+		files: readonly CloudCommandScriptRun[],
+		context: CloudToolContext,
+	): Promise<CloudScriptEntry[]> => {
+		const program = cloudScriptReadProgram(files.map((file) => file.path));
+		const deadline = AbortSignal.any([context.signal, AbortSignal.timeout(SCRIPT_READ_MS)]);
+		const scope = { machineId: machine.machineId };
+		try {
+			const started = await options.operations.execute({
+				operation: {
+					tool: "machine_run",
+					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
+					logicalOperationKey: `review-read.${randomUUID()}`,
+					arguments: { machine: machine.name, command: program, timeoutMs: SCRIPT_READ_MS, notify: false },
+					target: { realm: "company_machine", machineId: machine.machineId },
+					requiresCompanyRevision: false,
+				},
+				signal: deadline,
+				authorize: async (_operation, admitted) => {
+					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Machine command identity changed");
+				},
+				perform: async (_operation, effect) => {
+					const receipt = await options.gateway.start(
+						scope,
+						{
+							commandId: effect.receiptId,
+							inputSha256: effect.inputSha256,
+							command: program,
+							timeoutMs: SCRIPT_READ_MS,
+							notify: false,
+						},
+						effect.signal,
+					);
+					return { content: { kind: "json", value: { commandId: receipt.commandId } } };
+				},
+			});
+			const commandId = started.kind === "json" ? (started.value as Record<string, JsonValue>).commandId : null;
+			if (typeof commandId !== "string") throw new Error("Script read differs");
+			let output = "";
+			for (let offset = 0; ; ) {
+				const page = parseCloudMachineCommandReceipt(
+					await options.gateway.read(
+						scope,
+						parseCloudCodingCommandRead({ commandId, offset, limit: CLOUD_CODING_COMMAND_PAGE_BYTES }),
+						deadline,
+					),
+				);
+				if (
+					page.state === "running" ||
+					page.state === "unconfirmed" ||
+					page.companyFolder?.heldBack !== undefined
+				) {
+					await pause(SCRIPT_READ_POLL_MS, deadline);
+					continue;
+				}
+				if (page.state !== "succeeded" || page.exitCode !== 0) throw new Error("Script read failed");
+				output += page.output;
+				if (page.output === "" || page.log.nextOffset >= page.log.totalBytes) break;
+				offset = page.log.nextOffset;
+			}
+			const read = parseCloudScriptRead(output, files);
+			for (const [sha256, text] of read.texts) {
+				scriptTexts.delete(sha256);
+				scriptTexts.set(sha256, text);
+			}
+			while (scriptTexts.size > REMEMBERED_SCRIPTS) scriptTexts.delete(scriptTexts.keys().next().value as string);
+			return read.entries;
+		} catch {
+			context.signal.throwIfAborted();
+			return cloudScriptNotRead(files, "it could not be read just now");
+		}
+	};
+
 	const run: CloudNativeTool = {
 		name: "machine_run" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -972,9 +1068,42 @@ export function cloudMachineTools(options: {
 				throw new Error("Invalid machine command");
 			return { ...input, notify: input.notify === true };
 		},
+		async prepare(value, context) {
+			const input = value as Record<string, JsonValue>;
+			const found = cloudCommandScripts(String(input.command));
+			if (found.files.length === 0 && found.notShown.length === 0) return value;
+			check(context);
+			const machine = await find(String(input.machine), context.signal);
+			if (!machine) throw new CloudToolRefusal(`MACHINE_NOT_FOUND: no machine is named ${String(input.machine)}`);
+			if (machine.state !== "running")
+				throw new CloudToolRefusal(`MACHINE_NOT_RUNNING: ${machine.name} is ${machine.state}`);
+			const read = found.files.slice(0, CLOUD_SCRIPT_FILES);
+			const files = [
+				...(read.length > 0 ? await readScripts(machine, read, context) : []),
+				...cloudScriptNotRead(
+					found.files.slice(CLOUD_SCRIPT_FILES),
+					`the command runs more than the ${CLOUD_SCRIPT_FILES} files the review reads`,
+				),
+			];
+			if (Buffer.byteLength(`${cloudScriptGuard(files)}${String(input.command)}`) > MACHINE_COMMAND_BYTES)
+				throw new CloudToolRefusal(
+					`COMMAND_TOO_LONG: with the check of the files it runs, this command is over ${MACHINE_COMMAND_BYTES} bytes; make it shorter`,
+				);
+			return { ...input, scripts: { files, notShown: found.notShown } as unknown as JsonValue };
+		},
+		reviewContents(parsed) {
+			const scripts = scriptsOf(parsed);
+			return scripts === undefined ? undefined : cloudScriptContents(scripts, scriptTexts);
+		},
+		reviewIdentity(parsed) {
+			const scripts = scriptsOf(parsed);
+			return scripts === undefined ? undefined : cloudScriptIdentity(scripts);
+		},
 		async execute(value, context) {
 			check(context);
 			const input = value as Record<string, JsonValue>;
+			const scripts = scriptsOf(value);
+			const command = `${scripts === undefined ? "" : cloudScriptGuard(scripts.files)}${String(input.command)}`;
 			const machine = await find(String(input.machine), context.signal);
 			if (!machine) return refused("MACHINE_NOT_FOUND", `no machine is named ${String(input.machine)}`);
 			if (machine.state !== "running")
@@ -1007,7 +1136,7 @@ export function cloudMachineTools(options: {
 									{
 										commandId: effect.receiptId,
 										inputSha256: effect.inputSha256,
-										command: String(input.command),
+										command,
 										timeoutMs: input.timeoutMs === undefined ? null : Number(input.timeoutMs),
 										notify: input.notify === true,
 									},

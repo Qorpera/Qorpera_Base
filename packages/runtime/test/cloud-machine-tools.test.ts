@@ -2789,3 +2789,100 @@ describe("machine tools", () => {
 		}
 	});
 });
+
+describe("the files a machine command runs, read for its review (17 November 2026)", () => {
+	const SCRIPT = "import urllib.request\nprint('EEG makers')\n";
+	const sha = createHash("sha256").update(SCRIPT).digest("hex");
+	const readOutput = (output: string) =>
+		vi.fn<CloudMachineCommandGateway["read"]>(async (scope, input) => ({
+			schema: "qorpera.machine-command-result/v1",
+			machineId: scope.machineId,
+			commandId: input.commandId,
+			inputSha256: "a".repeat(64),
+			state: "succeeded",
+			exitCode: 0,
+			output,
+			truncated: false,
+			log: {
+				offset: 0,
+				nextOffset: Buffer.byteLength(output),
+				totalBytes: Buffer.byteLength(output),
+				limitBytes: 67108864,
+				limitReached: false,
+			},
+		}));
+	const args = { operationKey: "eeg", machine: "build-a", command: "cd /tmp/eeg && python3 fetch.py" };
+
+	it("reads the script with the runtime's own command, shows it to the review, and runs the call bound to it", async () => {
+		const f = fixture();
+		f.gateway.read = readOutput(`F ${Buffer.byteLength(SCRIPT)}\n${Buffer.from(SCRIPT).toString("base64")}\n`);
+		try {
+			expect((await f.boundary.invoke("r1", "qorpera", "machine_run", args)).success).toBe(true);
+			const [read, run] = f.execute.mock.calls.map(([call]) => call.operation);
+			expect(read).toMatchObject({
+				tool: "machine_run",
+				logicalOperationKey: expect.stringMatching(/^review-read\.[0-9a-f-]{36}$/),
+				arguments: { machine: "build-a", command: expect.stringContaining("'/tmp/eeg/fetch.py'"), notify: false },
+			});
+			const scripts = {
+				files: [{ path: "/tmp/eeg/fetch.py", sha256: sha, bytes: Buffer.byteLength(SCRIPT) }],
+				notShown: [],
+			};
+			expect(run).toMatchObject({ logicalOperationKey: "eeg", arguments: { ...args, scripts } });
+			const [readStart, runStart] = f.gateway.start.mock.calls.map(([, input]) => input.command);
+			expect(readStart).toBe(read?.arguments && (read.arguments as { command: string }).command);
+			expect(runStart).toBe(
+				`sha256sum -c --status 2>/dev/null <<'QORPERA_REVIEWED_FILES' || { echo 'A file this command runs changed after its review, so nothing ran. Call it again to have it reviewed as it is now.' >&2; exit 125; }\n${sha}  /tmp/eeg/fetch.py\nQORPERA_REVIEWED_FILES\ncd /tmp/eeg && python3 fetch.py`,
+			);
+			const tool = f.tools.find((item) => item.name === "machine_run")!;
+			expect(tool.reviewContents?.(run!.arguments)).toMatchObject({
+				files: [{ path: "/tmp/eeg/fetch.py", sha256: sha, text: SCRIPT }],
+			});
+			expect(tool.reviewContents?.(run!.arguments)).not.toHaveProperty("notShown");
+			expect(tool.reviewIdentity?.(run!.arguments)).toContain(sha);
+			expect(tool.reviewContents?.(tool.parseArguments({ ...args, command: "npm test" }))).toBeUndefined();
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("says a script it could not read is not shown, and runs the command without a check it cannot make", async () => {
+		const f = fixture();
+		f.gateway.read = vi.fn<CloudMachineCommandGateway["read"]>(async () => {
+			throw new CloudMachineCommandUnanswered();
+		});
+		try {
+			expect((await f.boundary.invoke("r1", "qorpera", "machine_run", args)).success).toBe(true);
+			const run = f.execute.mock.calls[1]?.[0].operation;
+			const tool = f.tools.find((item) => item.name === "machine_run")!;
+			expect(tool.reviewContents?.(run!.arguments)).toMatchObject({
+				files: [{ path: "/tmp/eeg/fetch.py", notShown: "it could not be read just now" }],
+				notShown: ["/tmp/eeg/fetch.py: it could not be read just now"],
+			});
+			expect(f.gateway.start.mock.calls[1]?.[1].command).toBe("cd /tmp/eeg && python3 fetch.py");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("refuses a script run on a machine that is not running before any read or review, and reads nothing for other commands", async () => {
+		const stopped = fixture([{ name: "build-a", state: "stopped" }]);
+		try {
+			const result = await stopped.boundary.invoke("r1", "qorpera", "machine_run", args);
+			expect(JSON.parse(result.contentItems[0].text).content.text).toBe(
+				"REFUSED: MACHINE_NOT_RUNNING: build-a is stopped",
+			);
+			expect(stopped.execute).not.toHaveBeenCalled();
+		} finally {
+			stopped.boundary.close();
+		}
+		const f = fixture();
+		try {
+			await f.boundary.invoke("r1", "qorpera", "machine_run", { ...args, command: "npm test" });
+			expect(f.execute).toHaveBeenCalledTimes(1);
+			expect(f.gateway.start.mock.calls[0]?.[1].command).toBe("npm test");
+		} finally {
+			f.boundary.close();
+		}
+	});
+});

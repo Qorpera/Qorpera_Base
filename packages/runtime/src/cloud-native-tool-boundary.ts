@@ -271,7 +271,8 @@ export interface CloudNativeTool {
 	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
 	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
 	 * never reviewed on a part. */
-	reviewContents?(parsed: JsonValue): JsonValue;
+	reviewContents?(parsed: JsonValue): JsonValue | undefined;
+	reviewIdentity?(parsed: JsonValue): string | undefined;
 	/** What the call would change, read from the company's current state before the automatic review (I8b's interface
 	 * save took its card and effect from the files it replaced; since the scope reset, C6b, no tool has one). Its value
 	 * takes the parsed arguments' place for the review, the work log and the effect; it changes nothing. A
@@ -307,7 +308,7 @@ export interface CloudNativeActionReview {
 		call: {
 			/** What the review needs of the tool: a full one satisfies it, and so does one of the home's own actions,
 			 * which is not a tool call of the model's at all (cloud-codex-home.ts, slice 4). */
-			tool: Pick<CloudNativeTool, "name" | "source" | "reviewContents">;
+			tool: Pick<CloudNativeTool, "name" | "source" | "reviewContents" | "reviewIdentity">;
 			parsed: JsonValue;
 			/** The exact canonical arguments the digest covers: repeating them repeats the call. */
 			argumentsText: string;
