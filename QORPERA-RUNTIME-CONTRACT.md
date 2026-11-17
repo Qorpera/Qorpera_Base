@@ -1853,9 +1853,9 @@ company-visible and answerable:
 - The receiver wakes **in its own shared thread** under the pair policy:
   initial send forbidden, final send optional, silence allowed (no count on
   public sends since bundle v92). It answers the coworker through the same peer channel, which
-  puts the answer in the pair transcript and wakes the sender in the sender's
-  thread under the same policy. A member post in either thread is a human wake
-  and starts a new causal root.
+  puts the answer in the pair transcript and, sent with `priority: true`, wakes
+  the sender in the sender's thread under the same policy. A member post in
+  either thread is a human wake and starts a new causal root.
 - An exchange is not bounded by "agent already visited". Until bundle v92 the
   kernel bounded it by **hops** (at most 6 peer messages per causal root and 20
   per pair per rolling hour). Since v92 (founder, 2026-09-24) there is no hop
@@ -1868,6 +1868,16 @@ company-visible and answerable:
   same way, it wakes nobody; the recipient reads it, as data, at the start of
   its next wake of any kind. Held messages extend no chain. Thanks, status
   and FYIs are sent held.
+- Amendment 2026-11-17 (the sender chooses, the founder: "Build, no cap").
+  `send_coworker_message` requires `priority` on every call; the runtime
+  refuses a call without it before dispatch, with the reason. `priority: true`
+  is for what the receiver must act on or answer for the work to go on: a
+  request, a question, the answer or handover it waits for, a member's decision
+  that changes its work. Everything else worth telling is sent held, and what
+  the files and todos already show is not sent. An answer wakes the agent that
+  asked only when it is sent with `priority: true`; the coworker wake's protocol
+  tells the answering agent to send it so. No reply says only received, agreed
+  or done. The database's default for an absent `p_priority` stays true.
 - **One Stop ends the chain** (2026-10-22 amendment, item 4). A member's Stop
   of a run in a conversation (7.3) ends that run's whole chain: every live run
   with the same causal root (the other agent's, the agents' workers'), every

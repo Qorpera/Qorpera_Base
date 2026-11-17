@@ -2091,7 +2091,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "3d2737d86cbfbc2f016417405ba7c9df6fa1bfa897acba16e03a8efa985354f4",
+			instructions: "e0d1e83a77a563fdb81019845049fba2a47291f35053a47f90e265193c3b2e3f",
 			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
 		},
 	],
@@ -2107,7 +2107,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "3d2737d86cbfbc2f016417405ba7c9df6fa1bfa897acba16e03a8efa985354f4",
+			instructions: "e0d1e83a77a563fdb81019845049fba2a47291f35053a47f90e265193c3b2e3f",
 			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
 		},
 	],
@@ -2197,7 +2197,7 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 		"answer a member who writes in another language in theirs, and write for outsiders in theirs",
 		"Apart from that acknowledgement, never send only to say that work started, goes on or has not changed",
 		"Say each thing once: a correction goes in one line of your next message",
-		"To a coworker, write what you need, what you hand over or what changed for them",
+		"Write to a coworker when you need something from them, when they wait for something from you, or when what you found changes their work",
 		"pass a member's request on in their own words",
 	])
 		expect(instructions).toContain(rule);
