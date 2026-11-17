@@ -10,8 +10,8 @@ provisional pictures) until the founder drags them or presses "Try an example".
 
 Write \`model.json\`. Every number comes from the company's files. What is not known is \`"unknown"\`, never a guess.
 
-- \`lang\` (such as "da"), \`title\` (≤40), \`line\` (≤60), \`unit\`: currency word (≤8, "kr"), \`source\`: optional \`folder:\` or
-  \`https:\` link. \`title\` and \`line\` are read only by screen readers; \`source\` is not drawn.
+- \`lang\` (such as "da"), \`unit\`: currency word (≤8, "kr"). \`title\` (≤40) and \`line\` (≤60) are read only by screen
+  readers. A top-level \`source\` is not drawn.
 - \`words\`: optional, the page's words in the company's language: \`example\`, \`hint\` ("{n}" = count), \`hintLast\`,
   \`assumed\`, \`unknown\`, \`known\`, \`yours\`, \`provisional\`, \`reset\`, \`resetOne\`, \`breakEven\`, \`never\`, \`below\`, \`save\`,
   \`saving\`, \`saved\`, \`error\`, \`empty\`, \`tell\`, \`told\`.
