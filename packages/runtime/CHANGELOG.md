@@ -1,6 +1,16 @@
 # Changelog
 
 ## [Unreleased]
+- A member's own message waits at a ChatGPT rate limit instead of failing (contract 17, the 2026-11-17 amendment "a
+  member's message waits at a rate limit"; migration `20260930792000`, SQL test 1289). On 17 Nov 2026 the founder's
+  "retry" in Produkt's thread (run `e5391a06`, `room_delivery`) failed in 2 s with `rate_limited` and only a failure card
+  showed. Now a started `session_turn` or `room_delivery` run turned away with `rate_limited` before any effect pauses on
+  the same login (`run_paused`, `pausedFor: "rate_limited"`, no attempt spent) for 1, 2, 4, 8, 15 minutes with jitter,
+  at most `rate_limit_waits` (5, `qorpera_member_rate_limit_settings`; 0 restores the old failure) times, then fails as
+  before. The recovery read says `rate_limited`; a waiting run's activity says `paused_for` and is never movable; a
+  usage reading does not release it. No account cool-down, turn cap, claim, routine or file-wake change. Deploy: the web
+  first (it reads both fields when present), then this migration on its own; no runtime bundle, runner, host, executor
+  or vault change.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
