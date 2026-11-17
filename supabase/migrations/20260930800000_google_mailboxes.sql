@@ -253,6 +253,38 @@ revoke all on function public.qorpera_google_mail_outbox_route() from public, an
 create trigger qorpera_google_mail_outbox_route before insert on public.qorpera_company_mail_outbox
 	for each row execute function public.qorpera_google_mail_outbox_route();
 
+create function public.qorpera_google_mailbox_adopt(p_mailbox_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+	v_google public.qorpera_google_mailboxes%rowtype;
+	v_old public.qorpera_google_mailboxes%rowtype;
+begin
+	select google.* into strict v_google from public.qorpera_google_mailboxes as google
+	where google.mailbox_id = p_mailbox_id;
+	for v_old in
+		select google.* from public.qorpera_google_mailboxes as google
+		where google.profile_id = v_google.profile_id and google.environment_id = v_google.environment_id
+			and google.address = v_google.address and google.removed_at is not null
+		order by google.created_at, google.mailbox_id
+		for update
+	loop
+		update public.qorpera_event_deliveries set hook_id = v_google.hook_id where hook_id = v_old.hook_id;
+		update public.qorpera_mail_received set mailbox_id = v_google.mailbox_id where mailbox_id = v_old.mailbox_id;
+		update public.qorpera_mail_threads set mailbox_id = v_google.mailbox_id where mailbox_id = v_old.mailbox_id;
+		update public.qorpera_company_mail_outbox set mailbox_id = v_google.mailbox_id where mailbox_id = v_old.mailbox_id;
+		update public.qorpera_google_mail_messages set mailbox_id = v_google.mailbox_id
+		where mailbox_id = v_old.mailbox_id;
+		update public.qorpera_google_mailboxes
+		set brought_in = greatest(brought_in, v_old.brought_in),
+			total = case when v_old.total is null then total else greatest(coalesce(total, 0), v_old.total) end
+		where mailbox_id = v_google.mailbox_id;
+		delete from public.qorpera_google_mailboxes where mailbox_id = v_old.mailbox_id;
+	end loop;
+end
+$$;
+revoke all on function public.qorpera_google_mailbox_adopt(uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 create function public.qorpera_begin_google_mailbox(p_environment_id uuid, p_mailbox_id uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -486,6 +518,7 @@ begin
 			state, due_at, created_by_user_id)
 		values (v_mailbox_id, v_hook.id, v_ticket.profile_id, v_ticket.environment_id, v_address, v_secret_id,
 			'bringing_in', clock_timestamp(), v_ticket.created_by_user_id);
+		perform public.qorpera_google_mailbox_adopt(v_mailbox_id);
 		v_outcome := coalesce(v_outcome, 'created');
 	end if;
 	return jsonb_build_object('schema', 'qorpera.google-mailbox-connected/v1', 'outcome', v_outcome,
@@ -1050,21 +1083,28 @@ select pg_temp.google_mailbox_patch('public.qorpera_purge_event_deliveries(integ
 $old$,
 	$new$		where delivery.received_at < v_now - interval '30 days'
 			and not exists (select 1 from public.qorpera_google_mailboxes as google
-				where google.hook_id = delivery.hook_id and google.removed_at is null)
+				where google.hook_id = delivery.hook_id)
 $new$);
 select pg_temp.google_mailbox_patch('public.qorpera_purge_event_deliveries(integer)'::regprocedure,
 	$old$			and delivery.received_at < v_now - interval '7 days'
 $old$,
 	$new$			and delivery.received_at < v_now - interval '7 days'
 			and not exists (select 1 from public.qorpera_google_mailboxes as google
-				where google.hook_id = delivery.hook_id and google.removed_at is null)
+				where google.hook_id = delivery.hook_id)
+$new$);
+
+select pg_temp.google_mailbox_patch('public.qorpera_purge_event_deliveries(integer)'::regprocedure,
+	$old$		where removed.status = 'removed' and removed.removed_at < v_now - interval '30 days'
+$old$,
+	$new$		where removed.status = 'removed' and removed.removed_at < v_now - interval '30 days'
+			and not exists (select 1 from public.qorpera_google_mailboxes as google where google.hook_id = removed.id)
 $new$);
 
 select pg_temp.google_mailbox_patch('public.qorpera_claim_company_mail(integer,uuid)'::regprocedure,
 	$old$		where last_at < v_now - interval '30 days' order by last_at limit 500);$old$,
 	$new$		where last_at < v_now - interval '30 days'
 			and not exists (select 1 from public.qorpera_google_mailboxes as google
-				where google.mailbox_id = qorpera_mail_threads.mailbox_id and google.removed_at is null)
+				where google.mailbox_id = qorpera_mail_threads.mailbox_id)
 		order by last_at limit 500);$new$);
 select pg_temp.google_mailbox_patch('public.qorpera_claim_company_mail(integer,uuid)'::regprocedure,
 	$old$		where mail.status in ('pending', 'retrying', 'delivering')

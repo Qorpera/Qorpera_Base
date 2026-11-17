@@ -369,6 +369,52 @@ select pg_temp.base_assert(pg_temp.g_box('owner@gmail.com') is null
 			where known.address = 'owner@gmail.com')
 		and pg_temp.g_entry('owner@gmail.com') is null,
 	'Remove ends the Google sign-in and keeps the mail brought in');
+select set_config('qorpera_test.g_old_box', (select google.mailbox_id::text from public.qorpera_google_mailboxes as google
+	where google.address = 'owner@gmail.com'), true) \g /dev/null
+select public.qorpera_purge_event_deliveries(1000) \g /dev/null
+select public.qorpera_claim_company_mail(10, '12970000-0000-4000-8000-000000000c02') \g /dev/null
+select pg_temp.base_assert((select count(*) = 4 from public.qorpera_mail_received as received
+			join public.qorpera_google_mail_messages as known on known.delivery_id = received.delivery_id
+			where known.address = 'owner@gmail.com')
+		and (select count(*) = 1 from public.qorpera_mail_received as received
+			join public.qorpera_mail_threads as thread on thread.id = received.thread_id
+			where received.received_at < clock_timestamp() - interval '39 days'),
+	'The mail brought in stays after Remove, the purge and the thread clean-up included');
+update public.qorpera_google_mailboxes set due_at = null where address = 'agents@gmail.com';
+select set_config('qorpera_test.g_back', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
+	'92400000-0000-4000-8000-000000000020')::text, true) \g /dev/null
+select pg_temp.base_assert(pg_temp.g_complete(current_setting('qorpera_test.g_back')::jsonb, 'owner@gmail.com')
+		->> 'outcome' = 'created',
+	'The same company connects the removed address again');
+select pg_temp.base_assert((pg_temp.g_box('owner@gmail.com')).mailbox_id::text <> current_setting('qorpera_test.g_old_box')
+		and (pg_temp.g_box('owner@gmail.com')).brought_in = 2
+		and not exists (select 1 from public.qorpera_google_mailboxes as google
+			where google.mailbox_id = current_setting('qorpera_test.g_old_box')::uuid)
+		and (select count(*) = 4 from public.qorpera_mail_received as received
+			where received.mailbox_id = (pg_temp.g_box('owner@gmail.com')).mailbox_id)
+		and not exists (select 1 from public.qorpera_mail_received as received
+			where received.mailbox_id = current_setting('qorpera_test.g_old_box')::uuid)
+		and not exists (select 1 from public.qorpera_mail_threads as thread
+			where thread.mailbox_id = current_setting('qorpera_test.g_old_box')::uuid)
+		and (select count(*) = 4 from public.qorpera_event_deliveries as delivery
+			where delivery.hook_id = (pg_temp.g_box('owner@gmail.com')).hook_id),
+	'The new mailbox takes over the mail brought in before');
+select set_config('qorpera_test.g_claim', pg_temp.g_claim()::text, true) \g /dev/null
+select pg_temp.base_assert(current_setting('qorpera_test.g_claim')::jsonb ->> 'address' = 'owner@gmail.com'
+		and pg_temp.g_broker(format('select public.qorpera_google_mail_known_among(%L, %L, %L, %L, %L)',
+			'12970000-0000-4000-8000-0000000000d1', repeat('1', 64),
+			current_setting('qorpera_test.g_claim')::jsonb ->> 'mailboxId',
+			current_setting('qorpera_test.g_claim')::jsonb ->> 'lease', '["a1","a2","a5","n1","z9"]'))
+			-> 'known' = '["a1", "a2", "a5", "n1"]'::jsonb
+		and pg_temp.g_bring(current_setting('qorpera_test.g_claim')::jsonb, 'a1', true,
+			clock_timestamp() - interval '40 days') ->> 'outcome' = 'duplicate',
+	'Reading again skips what came in before: nothing is lost and nothing twice');
+select pg_temp.base_assert((select count(*) = 4 from public.qorpera_mail_received as received
+		where received.mailbox_id = (pg_temp.g_box('owner@gmail.com')).mailbox_id),
+	'Still four messages after reading again');
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select public.qorpera_set_event_hook_status((pg_temp.g_box('owner@gmail.com')).hook_id, 'removed') \g /dev/null
+select pg_temp.base_claims('service_role');
 select pg_temp.base_assert(pg_temp.g_complete(current_setting('qorpera_test.g_other')::jsonb, 'owner@gmail.com')
 		->> 'outcome' = 'created',
 	'A removed address may be brought in by another company');
