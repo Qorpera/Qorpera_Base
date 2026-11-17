@@ -1149,7 +1149,9 @@ export class ConnectionsView {
 							expired
 								? t("Reset passed · awaiting updated usage")
 								: resetIn === undefined
-									? t("Reset time unavailable")
+									? window.id === "five_hour" && window.usedPercent === 0
+										? t("Starts when you next use Claude")
+										: t("Reset time unavailable")
 									: t("Resets in {time}", { time: resetCountdown(resetIn) }),
 						),
 						h("span", { title: t("Last checked {time}", { time: checked }) }, value),

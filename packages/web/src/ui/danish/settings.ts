@@ -262,6 +262,7 @@ export const SETTINGS: Record<string, string> = {
 	"Resets in {time}": "Nulstilles om {time}",
 	"Reset passed · awaiting updated usage": "Nulstillet · venter på opdateret forbrug",
 	"Reset time unavailable": "Tidspunkt for nulstilling ikke tilgængeligt",
+	"Starts when you next use Claude": "Starter, når du bruger Claude næste gang",
 	"{label} remaining usage": "{label}: resterende forbrug",
 	"Preparing sign-in. The first time can take a minute or two.":
 		"Gør login klar. Første gang kan tage et minut eller to.",

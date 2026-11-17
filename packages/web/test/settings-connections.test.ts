@@ -1789,6 +1789,25 @@ describe("Claude usage and limit resets on the Claude card", () => {
 	const bars = () =>
 		[...claudeCard().querySelectorAll(".connection-usage-window")].map((window) => window.textContent);
 
+	it("says an unused 5-hour window starts at the next use instead of a missing reset time", async () => {
+		await claudeView(
+			login({
+				usage: {
+					observedAt: new Date().toISOString(),
+					windows: [
+						{ id: "five_hour", label: "5 hours", usedPercent: 0 },
+						{ id: "seven_day", label: "Weekly", usedPercent: 4, resetAt: hours(100) },
+					],
+				},
+			}),
+		);
+		expect(bars()).toEqual([
+			expect.stringMatching(/^5 hours.*Starts when you next use Claude.*100% left$/),
+			expect.stringMatching(/^Weekly.*96% left$/),
+		]);
+		expect(claudeCard().textContent).not.toContain("Reset time unavailable");
+	});
+
 	it("shows Claude Code's 5-hour, weekly and per-model bars, and reads them again when Settings opens", async () => {
 		const { client } = await claudeView(login());
 		expect(bars()).toEqual([
