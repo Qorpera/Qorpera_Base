@@ -30,6 +30,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/runner-control/runner-control.test.ts",
 	"supabase/functions/artifact-gc-worker/artifact-gc-worker.test.ts",
 	"supabase/functions/site-serve/site-serve.test.ts",
+	"supabase/functions/_shared/profile-invitation-email.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",
