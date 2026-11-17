@@ -1558,8 +1558,8 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .is-asking .interaction-secret-row .btn { padding: 0 16px; border-radius: 999px; font-size: 14px; }
 .is-asking .interaction-field { min-height: 38px; font-size: 14px; }
 .interaction-address {
-	display: flex; align-items: center; min-width: 0; margin: 10px 0 8px; padding: 0 12px; border: 1px solid var(--border-strong);
-	border-radius: 12px; background: var(--bg); font: 14px/1.3 var(--font-mono); cursor: text;
+	display: flex; flex-direction: row; align-items: center; gap: 0; min-width: 0; margin: 10px 0 8px; padding: 0 12px;
+	border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg); font: 400 14px/1.3 var(--font-mono); cursor: text;
 }
 .interaction-address:focus-within { outline: 2px solid var(--ring); outline-offset: 1px; }
 .interaction-address-box, .interaction-address-domain { flex: none; color: var(--text-muted); white-space: nowrap; }

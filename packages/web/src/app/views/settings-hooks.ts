@@ -263,23 +263,26 @@ export class HooksView {
 	}
 
 	async #read(focusKey?: string): Promise<void> {
+		const signal = this.#lifetime.signal;
+		const mail = this.#kinds.includes("mailbox")
+			? this.#client.mailHandles(signal).catch(() => undefined)
+			: undefined;
 		try {
-			const signal = this.#lifetime.signal;
-			const [hooks, mail] = await Promise.all([
-				this.#client.list(signal),
-				this.#kinds.includes("mailbox") ? this.#client.mailHandles(signal).catch(() => this.#mail) : undefined,
-			]);
+			const hooks = await this.#client.list(signal);
 			if (signal.aborted) return;
 			this.#hooks = hooks;
-			this.#mail = mail;
 			this.#error = undefined;
 		} catch {
-			if (this.#lifetime.signal.aborted) return;
+			if (signal.aborted) return;
 			this.#error = t("The company's webhooks and mailboxes could not be read.");
 		} finally {
 			this.#loading = false;
-			if (!this.#lifetime.signal.aborted) this.#draw(focusKey);
+			if (!signal.aborted) this.#draw(focusKey);
 		}
+		const read = await mail;
+		if (!read || signal.aborted) return;
+		this.#mail = read;
+		this.#draw();
 	}
 
 	async #setStatus(hook: EventHook, status: EventHookStatus | "removed"): Promise<void> {

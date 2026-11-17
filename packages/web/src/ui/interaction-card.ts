@@ -289,6 +289,8 @@ export function refreshAppPreviews(root: ParentNode, apps: AppReader, read?: Pic
 	}
 }
 
+const FIRST_BOX = "hello.";
+
 function mailAddressParts(
 	options: readonly QuestionOption[],
 	calls: MailAddressCalls | undefined,
@@ -378,7 +380,7 @@ function mailAddressParts(
 			h(
 				"label",
 				{ class: "interaction-address" },
-				h("span", { class: "interaction-address-box" }, "hello."),
+				h("span", { class: "interaction-address-box" }, FIRST_BOX),
 				input,
 				domain,
 			),

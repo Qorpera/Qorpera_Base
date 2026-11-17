@@ -393,6 +393,7 @@
 .hook-form .service-outcome { grid-column: auto; }
 .hook-form-row.is-address { gap: 2px; }
 .hook-form-row.is-address input { flex: 1 1 6ch; }
+.hook-form-row.is-address input:first-child { flex: 0 1 14ch; text-align: right; }
 /* Language & region: rows in one card, each value a small button that opens
    a searchable list (preference-picker.ts), as the desktop reference does. */
 .settings-rows { border-radius: 13px; background: #f1f1ef; }

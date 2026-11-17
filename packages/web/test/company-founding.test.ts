@@ -195,6 +195,7 @@ describe("founding table", () => {
 		field.blur();
 		await settle();
 		expect(named("qorpera_update_company_founding")).toEqual([]);
+		field.focus();
 		field.value = "Lerværket";
 		field.dispatchEvent(new Event("input"));
 		field.blur();
@@ -862,6 +863,17 @@ describe("hub with founding tables", () => {
 		const kept = new HubController(api, me);
 		expect(kept.store.get().creationRetry).toEqual({ name: "Table", clientCreationId: id(951) });
 		kept.dispose();
+		sessionStorage.setItem(
+			key,
+			JSON.stringify({ name: "", clientCreationId: id(952), table: true, intent: "start" }),
+		);
+		const unnamed = new HubController(api, me);
+		expect(unnamed.store.get().creationRetry).toEqual({ name: "", clientCreationId: id(952), intent: "start" });
+		const container = document.createElement("div");
+		unnamed.store.set({ loading: false, loaded: true, profiles: [{ ...profileA }] });
+		renderHub(unnamed, container, { userId: me, name: "Anna" });
+		expect(visibleText(container)).toContain("Resume creating the company");
+		unnamed.dispose();
 		sessionStorage.removeItem(key);
 	});
 
@@ -1736,7 +1748,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
 			if (name === "qorpera_open_company_founding") {
 				names.push(args.p_company_name);
-				return wire({ companyName: String(args.p_company_name), vision: "" });
+				return wire({ companyName: String(args.p_company_name) || "No name yet", vision: "" });
 			}
 			if (name === "qorpera_update_company_founding") return wire({ vision: String(args.p_vision), revision: 5 });
 			throw new Error(`Unexpected RPC ${name}`);
@@ -1786,7 +1798,7 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 		vi.mocked(cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
 			if (name === "qorpera_open_company_founding") {
 				names.push(args.p_company_name);
-				return wire({ companyName: String(args.p_company_name), vision: "" });
+				return wire({ companyName: String(args.p_company_name) || "No name yet", vision: "" });
 			}
 			if (name === "qorpera_update_company_founding") return wire({ vision: String(args.p_vision), revision: 5 });
 			throw new Error(`Unexpected RPC ${name}`);
