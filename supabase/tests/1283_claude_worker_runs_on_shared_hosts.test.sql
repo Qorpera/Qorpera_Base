@@ -28,7 +28,7 @@ do $$
 declare v_result jsonb; v_run uuid;
 begin
 	v_result := pg_temp.c4_dispatch(pg_temp.c4_alice(), 'cs-dispatch', 'QorperaOS/agents/alice/todos/onboarding/pdf',
-		pg_temp.c4_brief('12830000-0000-4000-8000-0000000000b1'));
+		pg_temp.c4_brief('12830000-0000-4000-8000-0000000000b1', 'claude-code'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the Claude Code dispatch: ' || v_result::text);
 	perform pg_temp.c4_drain();
 	perform pg_temp.base_materialize();
@@ -115,7 +115,7 @@ begin
 	perform public.qorpera_set_runner_orchestrator_dispatch_role('92400000-0000-4000-8000-000000000092', null);
 	perform public.qorpera_set_runner_orchestrator_dispatch_role('12830000-0000-4000-8000-0000000000a1', null);
 	v_result := pg_temp.c4_dispatch(pg_temp.c4_alice(), 'cs-dispatch-codex', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12830000-0000-4000-8000-0000000000b2', null, 'Write the notes'));
+		pg_temp.c4_brief('12830000-0000-4000-8000-0000000000b2', 'codex', 'Write the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '5: the Codex dispatch: ' || v_result::text);
 	perform pg_temp.c4_drain();
 	perform pg_temp.base_materialize();

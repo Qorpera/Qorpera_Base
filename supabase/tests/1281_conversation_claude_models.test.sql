@@ -348,7 +348,7 @@ begin
 	perform pg_temp.base_assert(w.harness = 'claude-code' and w.claude_model = 'claude-opus-5-5' and w.claude_effort = 'xhigh',
 		'4: the worker records the pick: ' || to_jsonb(w)::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'cm-dispatch-plain', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12810000-0000-4000-8000-0000000000b2', null, 'Read the notes'));
+		pg_temp.c4_brief('12810000-0000-4000-8000-0000000000b2', 'codex', 'Read the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved'
 		and (pg_temp.c4_worker('12810000-0000-4000-8000-0000000000b2')).claude_model is null,
 		'4: a Codex worker records none: ' || v_result::text);
