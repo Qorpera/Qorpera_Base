@@ -834,6 +834,12 @@ function manageOf(page: Page): ManageViews | null {
 				note: (hook) =>
 					googleOf(drawn(), hook)?.state === "sign_in_again" ? t("Google asked you to sign in again") : null,
 				action: (hook) => googleAction(drawn(), calls, hook),
+				removal: (hook) =>
+					googleOf(drawn(), hook)
+						? t("Remove {name}? The mail already brought in stays, and the sign-in at Google ends.", {
+								name: hook.email ?? hook.name,
+							})
+						: null,
 				// Adding an address comes first, with Digital Post beside it: its card opens under them.
 				top: { beside: () => postPill(drawn()), below: () => postCard(drawn()) },
 				// The new address goes to the agent its form named, with the words on how it answers.

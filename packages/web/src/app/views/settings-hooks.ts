@@ -140,6 +140,7 @@ export class HooksView {
 	readonly #mark: ((hook: EventHook) => HTMLElement | null) | undefined;
 	readonly #note: ((hook: EventHook) => string | null) | undefined;
 	readonly #action: ((hook: EventHook) => HookAction | null) | undefined;
+	readonly #removal: ((hook: EventHook) => string | null) | undefined;
 	readonly #stateOf: ((hook: EventHook, text: string) => string | null) | undefined;
 	readonly #top: HooksTop | undefined;
 	readonly #formExtra: ((kind: HookKind) => HTMLElement | null) | undefined;
@@ -174,6 +175,7 @@ export class HooksView {
 			mark?: (hook: EventHook) => HTMLElement | null;
 			note?: (hook: EventHook) => string | null;
 			action?: (hook: EventHook) => HookAction | null;
+			removal?: (hook: EventHook) => string | null;
 			/** What a hook's state line says, from what it says here (`text`); none for no line (the Mailbox: a paused
 			 * mailbox only). */
 			state?: (hook: EventHook, text: string) => string | null;
@@ -193,6 +195,7 @@ export class HooksView {
 		this.#mark = options.mark;
 		this.#note = options.note;
 		this.#action = options.action;
+		this.#removal = options.removal;
 		this.#stateOf = options.state;
 		this.#top = options.top;
 		this.#formExtra = options.form;
@@ -272,7 +275,7 @@ export class HooksView {
 		if (
 			status === "removed" &&
 			!(await confirmDialog(
-				t(KIND_TEXT[kind].remove, { name: title(hook) }),
+				this.#removal?.(hook) ?? t(KIND_TEXT[kind].remove, { name: title(hook) }),
 				t("Remove"),
 				true,
 				undefined,

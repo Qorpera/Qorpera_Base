@@ -403,12 +403,30 @@ describe("Google mail's states", () => {
 		await addresses(main, 2);
 		button(cardOf(main, hookIds[0]!)!, "Remove")!.click();
 		await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).not.toBeNull());
-		expect(dialog().textContent).toContain(`Remove the mailbox ${GMAIL}?`);
+		expect(dialog().textContent).toContain(
+			`Remove ${GMAIL}? The mail already brought in stays, and the sign-in at Google ends.`,
+		);
+		expect(dialog().textContent).not.toContain("Email sent to it afterwards");
 		button(dialog(), "Remove")!.click();
 		await vi.waitFor(() =>
 			expect(manage.hooks.setStatus).toHaveBeenCalledWith(hookIds[0], "removed", expect.any(AbortSignal)),
 		);
 		expect(google.pause).not.toHaveBeenCalled();
+	});
+
+	it("keeps the usual question for removing an address that is not Google's", async () => {
+		const { main, manage, hookIds } = await mailbox((mail) => {
+			mail.addresses.unshift(googleAddress({ state: "live", broughtIn: 10, total: 10, lastWeek: 1 }));
+		});
+		await addresses(main, 2);
+		button(cardOf(main, hookIds[1]!)!, "Remove")!.click();
+		await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).not.toBeNull());
+		expect(dialog().textContent).toContain(`Remove the mailbox ${ADDRESS.address}?`);
+		expect(dialog().textContent).not.toContain("sign-in at Google");
+		button(dialog(), "Remove")!.click();
+		await vi.waitFor(() =>
+			expect(manage.hooks.setStatus).toHaveBeenCalledWith(hookIds[1], "removed", expect.any(AbortSignal)),
+		);
 	});
 
 	it("asks for a new sign-in when Google wants one, and starts it from the line", async () => {
