@@ -312,6 +312,15 @@ select pg_temp.base_assert(current_setting('qorpera_test.g_done')::jsonb ->> 'co
 			from public.qorpera_company_mail_outbox as mail
 			where mail.id = (current_setting('qorpera_test.g_sent')::jsonb ->> 'mailId')::uuid),
 	'The send through Gmail is recorded');
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select pg_temp.base_error($q$select public.qorpera_send_member_mail('92400000-0000-4000-8000-000000000020',
+	'{"sendId":"12970000-0000-4000-8000-000000000b03","from":"support.base@mail.example.test","to":["owner+notes@gmail.com"],
+	"subject":"Hello","text":"To myself"}')$q$, '42501', 'Email to your own company''s mailboxes is refused');
+select pg_temp.base_claims('service_role');
+select pg_temp.base_error(format('select public.qorpera_send_agent_mail(%L::jsonb, %L, %L::jsonb)',
+	current_setting('qorpera_test.base_binding'), 'g-agent-own', jsonb_build_object('from', 'support.base@mail.example.test',
+		'to', jsonb_build_array('customer@example.org'), 'cc', jsonb_build_array('Owner@Gmail.com'), 'subject', 'Hello',
+		'text', 'Loop')), '42501', 'Email to your own company''s mailboxes is refused; reach coworkers with send_coworker_message');
 select set_config('qorpera_test.g_agent_send', public.qorpera_send_agent_mail(current_setting('qorpera_test.base_binding')::jsonb,
 	'g-agent-1', jsonb_build_object('from', 'owner@gmail.com', 'to', jsonb_build_array('customer@example.org'),
 		'subject', 'Hello', 'text', 'From the agent'))::text, true) \g /dev/null
