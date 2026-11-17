@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isUuid } from "@qorpera/contracts";
 import type { ClaudeLoginReads } from "@qorpera/runtime/cloud-claude-login-reader";
 import type { ClaudeLoginUsage } from "@qorpera/runtime/cloud-claude-login-usage";
 import { ModelLoginHelperClient, ModelLoginHelperService } from "@qorpera/runtime/cloud-model-login-helper";
@@ -414,7 +415,7 @@ describe("the vault's Claude read and reset", () => {
 		expect(w.authority.claimClaudeLoginReset).toHaveBeenCalledTimes(2);
 		const [first, second] = w.authority.claimClaudeLoginReset.mock.calls.map(([request]) => request.claim);
 		expect(first).toBe(second);
-		expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
+		expect(isUuid(first)).toBe(true);
 		await vi.waitFor(() => expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1), {
 			timeout: 8_000,
 		});
