@@ -1212,13 +1212,18 @@ describe("a kit's page as a concept", () => {
 		return found !== null && getComputedStyle(found).display !== "none";
 	};
 
-	it.each(KITS)("of %s draws its title block and its own padding when the page is no concept", async (kit) => {
+	it.each(KITS)("of %s keeps its title for screen readers only when the page is no concept", async (kit) => {
 		await open(kit, example(kit));
 		drawFrames(3);
 		const root = document.querySelector("main") as HTMLElement;
 		expect(root.className).not.toContain("--bare");
-		expect(shows(BARE[kit].header)).toBe(true);
+		const header = document.querySelector(kit === "object" ? ".ok-head h1" : BARE[kit].header) as Element;
+		expect(getComputedStyle(header).position).toBe("absolute");
+		expect(getComputedStyle(header).width).toBe("1px");
+		if (kit === "object")
+			expect(getComputedStyle(document.querySelector(".ok-head p") as Element).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toBe(titleOf(example(kit)));
+		expect(document.querySelector(BARE[kit].kept)).not.toBeNull();
 	});
 
 	it.each(KITS)("of %s draws no title block when the page is a concept, and keeps what a member does", async (kit) => {
@@ -1801,6 +1806,7 @@ describe("the map kit's engine", () => {
 			}),
 		);
 		expect(document.querySelector("main")?.classList.contains("is-still")).toBe(true);
+		expect(getComputedStyle(document.querySelector(".mp-head") as Element).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toMatch(/^We have stood still since .+\.$/);
 		expect(document.querySelector(".mp-line")?.textContent).toBe(
 			"Sofie's ChatGPT is full, so none of us can work. It opens again on November 20.",
@@ -1813,11 +1819,14 @@ describe("the map kit's engine", () => {
 
 	it("opens a thing into its layer, names the way back, and goes up with Escape to the thing it came from", async () => {
 		await openMap(company(parts), reading());
+		const head = document.querySelector(".mp-head") as Element;
+		expect(getComputedStyle(head).position).toBe("absolute");
 		const dive = thing("tracker")?.querySelector<HTMLButtonElement>("button.mp-hit");
 		expect(dive?.getAttribute("aria-label")).toBe("The repair tracker, On paper, opens");
 		// a thing with no layer does not open
 		expect(thing("needs")?.querySelector("button")).toBeNull();
 		dive?.click();
+		expect(getComputedStyle(head).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toBe("The repair tracker");
 		expect(document.querySelector(".mp-line")?.textContent).toBe("Its parts");
 		expect(document.querySelector(".mp-trail")?.textContent).toBe(
