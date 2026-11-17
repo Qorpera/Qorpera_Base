@@ -108,6 +108,8 @@ export class AuthController {
 		} = this.#cloud.supabase.auth.onAuthStateChange((_event, session) => {
 			this.store.set({ session, user: session?.user ?? null, ready: true });
 			if (session) return;
+			if (this.store.get().step.name === "reset")
+				this.store.set({ step: { name: "signin" }, error: undefined, errorKind: undefined });
 			// Signed out, however it came about: no file read as the member stays in this tab.
 			forgetMemberFiles();
 			void this.#loadProviders();
@@ -320,12 +322,14 @@ export class AuthController {
 		if (code.length !== CODE_LENGTH) return this.#fail(t("Enter the 6-digit code from the email."));
 		if (password.length < PASSWORD_MIN) return this.#fail(t("Use at least 8 characters for your password."));
 		await this.#run(async () => {
-			const verified = await this.#cloud.supabase.auth.verifyOtp({
-				email: step.email,
-				token: code,
-				type: "recovery",
-			});
-			if (verified.error) throw verified.error;
+			if (!this.store.get().session) {
+				const verified = await this.#cloud.supabase.auth.verifyOtp({
+					email: step.email,
+					token: code,
+					type: "recovery",
+				});
+				if (verified.error) throw verified.error;
+			}
 			const { error } = await this.#cloud.supabase.auth.updateUser({ password });
 			if (error) throw error;
 			this.store.set({ step: { name: "signin" }, resendAt: undefined, message: undefined });

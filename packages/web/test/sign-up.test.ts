@@ -3,7 +3,7 @@ import { AuthError } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { renderNameAsk, renderSignIn } from "../src/app/views/signin.ts";
-import { fixture, settle } from "./fixtures.ts";
+import { fixture, settle, userA } from "./fixtures.ts";
 
 vi.mock("../src/app/views/crown.ts", () => ({ mountCrown: () => ({ dispose() {} }) }));
 
@@ -29,7 +29,7 @@ function stubAuth(f: ReturnType<typeof fixture>) {
 	return methods;
 }
 
-async function signedOut(): Promise<void> {
+async function signedOut(): Promise<ReturnType<typeof fixture>> {
 	const f = fixture();
 	f.auth(null);
 	calls = stubAuth(f);
@@ -42,6 +42,7 @@ async function signedOut(): Promise<void> {
 	await auth.start();
 	await settle();
 	renderSignIn(auth, root);
+	return f;
 }
 
 function type(id: string, value: string): void {
@@ -221,10 +222,46 @@ describe("a new password", () => {
 	});
 });
 
+describe("a new password that is refused after the code signed in", () => {
+	it("keeps the reset screen with the reason, and tries the password again without the used code", async () => {
+		const f = await signedOut();
+		calls.verifyOtp.mockImplementationOnce(async () => {
+			f.auth(userA);
+			return { data: {}, error: null };
+		});
+		calls.updateUser.mockResolvedValueOnce({ data: { user: null }, error: authError("same_password") });
+		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" } });
+		await settle();
+		type("signinCode", "482071");
+		type("signinNewPassword", "gammelkode1");
+		submit();
+		await settle();
+		expect(auth.store.get().session).not.toBeNull();
+		expect(auth.store.get().step.name).toBe("reset");
+		expect(root.querySelector(".auth-alert")!.textContent).toContain("That's your current password.");
+		type("signinNewPassword", "nytkodeord1");
+		submit();
+		await settle();
+		expect(calls.verifyOtp).toHaveBeenCalledOnce();
+		expect(calls.updateUser).toHaveBeenLastCalledWith({ password: "nytkodeord1" });
+		expect(auth.store.get().step.name).toBe("signin");
+	});
+
+	it("lets the reset step go when the member is signed out", async () => {
+		const f = await signedOut();
+		f.auth(userA);
+		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" }, error: "old" });
+		f.auth(null);
+		await settle();
+		expect(auth.store.get().step.name).toBe("signin");
+		expect(auth.store.get().error).toBeUndefined();
+	});
+});
+
 describe("a member without a name", () => {
 	it("is asked once and goes on when it is saved", async () => {
 		const f = fixture();
-		f.auth({ ...(await import("./fixtures.ts")).userA, user_metadata: {} });
+		f.auth({ ...userA, user_metadata: {} });
 		calls = stubAuth(f);
 		auth = new AuthController(f.cloud);
 		const done = vi.fn();
