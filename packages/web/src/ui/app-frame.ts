@@ -5,10 +5,6 @@ import { PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "./page-fr
  * safe to answer: the page is handed over once, with one end of a MessageChannel. The frame document keeps that port
  * from the page and reads through it with a frozen `qorpera` object (public/page-preview/index.html); the app answers
  * only on its own end, never on window messages, which every sandboxed frame on the page could send.
- * - One frame, one hand-over: a frame made here is answered the first time it says it is ready, and never again.
- * - A frame that says it is ready a second time, or loads a second time, has left the document it was handed (it
- *   reloaded or went somewhere): its port is closed and `left` is called, and the panel shows a new frame only when the
- *   member asks (Reload). A document the frame shows later has no port.
  * - Escape in the page reaches the frame as Escape (page-frame.ts' rule), so the panel closes as it does elsewhere.
  * - The frame follows no link. A link the member clicks in the page comes over the port as one more call (`open`),
  *   which the frame document alone sends, and the host opens what it allows (app/interface-apps.ts `appLink`).
@@ -84,9 +80,6 @@ export class AppFrame {
 		this.frame = frame;
 		const signal = this.#lifetime.signal;
 		window.addEventListener("message", (event) => this.#message(event), { signal });
-		// The frame document's load, then the page's own (written into it, it loads once more): any load after the page's
-		// own means another document. The page is handed over only once the frame document has said it is ready and has
-		// loaded, so the two loads never run together.
 		frame.addEventListener(
 			"load",
 			() => {
