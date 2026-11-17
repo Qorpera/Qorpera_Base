@@ -2509,6 +2509,19 @@ it("has a founder choose the company's email address on a card once it has a nam
 	])
 		expect(cofounder).toContain(words);
 	expect(cofounder).not.toContain("localPart the company's name in lowercase");
+	const role = (visionAgreed: boolean, has: (tool: string) => boolean = () => true) =>
+		cloudRuntimeHireBehavior("cofounder", { has, visionAgreed });
+	const later =
+		"When the company has a name and owns no email address (list_hooks shows its mailboxes), never open one yourself: raise the address card, a question card with";
+	const names = "While the vision's first line is # No name yet, offer names only when something waits for one";
+	expect(role(true)).toContain(later);
+	expect(role(true)).toContain("Raise it in your next run with the founders.");
+	expect(role(true)).toContain(names);
+	expect(role(true)).not.toContain("# Founding the company");
+	expect(role(false)).not.toContain(later);
+	expect(role(false)).not.toContain(names);
+	expect(role(true, (tool) => tool !== "manage_hook")).not.toContain(later);
+	expect(role(true, (tool) => tool !== "manage_hook")).toContain(names);
 });
 
 it("has the finance owner set up the CVR and bank account and keep the Bank page's progress file (10 November 2026)", () => {

@@ -1143,6 +1143,18 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "never hire an owner twice", "check QorperaOS/agents/ first, so none is hired twice", HAND_OFF],
 	[
 		"7",
+		"the address card after the founding",
+		'When the company has a name and owns no email address (list_hooks shows its mailboxes), never open one yourself: raise the address card, a question card with a title such as "Your company\'s email address", allowCustom: true, input {kind: mail_address}',
+		["cofounder-member-agreed", "cofounder-routine-agreed"],
+	],
+	[
+		"7",
+		"names after the founding, only when something waits",
+		"While the vision's first line is # No name yet, offer names only when something waits for one (the email address, a logo with lettering, a website's address): up to three on a question card with allowCustom: true and a Not yet option",
+		["cofounder-member-agreed", "cofounder-routine-agreed"],
+	],
+	[
+		"7",
 		"agreed with no name",
 		"The founding can be agreed with no name: the first line then stays # No name yet.",
 		HAND_OFF,
