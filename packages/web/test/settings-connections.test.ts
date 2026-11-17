@@ -15,6 +15,7 @@ import {
 	ChatGptPlanSignInError,
 	ClaudeCodeError,
 	PlanSwitchBusyError,
+	type WebClaudeLogin,
 	type WebExecutionConnections,
 	type WebMemberConnection,
 	type WebNativeProviderLogin,
@@ -1737,5 +1738,168 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 		await settle();
 		expect(client.signOutClaude).toHaveBeenCalledWith(id(95), expect.any(AbortSignal));
 		expect(card("Claude · coding only")).toBeUndefined();
+	});
+});
+
+describe("Claude usage and limit resets on the Claude card", () => {
+	const hours = (count: number) => new Date(Date.now() + count * 3_600_000).toISOString();
+	function login(overrides: Partial<WebClaudeLogin> = {}): WebClaudeLogin {
+		return {
+			loginId: id(97),
+			clientConnectionId: id(98),
+			createdAt: timestamp,
+			providerAccountEmail: "member@example.com",
+			usage: {
+				observedAt: new Date().toISOString(),
+				windows: [
+					{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: hours(2.7) },
+					{ id: "seven_day", label: "Weekly", usedPercent: 87, resetAt: hours(100) },
+					{ id: "seven_day_model", label: "Weekly · Fable", usedPercent: 9, resetAt: hours(100) },
+				],
+			},
+			...overrides,
+		};
+	}
+	const fullReset = {
+		kind: "full" as const,
+		left: 3,
+		refills: "5-hour and weekly limits",
+		weekStays: "2026-11-21T10:00:00.000Z",
+		useBy: "2026-11-30T10:00:00.000Z",
+		usable: "now" as const,
+	};
+	async function claudeView(listed: WebClaudeLogin, readClaude = vi.fn(async () => id(99))) {
+		const logins = { signInOpen: true, readable: true, logins: [listed] };
+		const client = {
+			listConnections: vi.fn(async () => structuredClone(observed([]))),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+			listClaudeLogins: vi.fn(async () => structuredClone(logins)),
+			signOutClaude: vi.fn(async () => undefined),
+			readClaude,
+		};
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		return { client, logins };
+	}
+	const claudeCard = () => card("Claude · coding only");
+	const bars = () =>
+		[...claudeCard().querySelectorAll(".connection-usage-window")].map((window) => window.textContent);
+
+	it("shows Claude Code's 5-hour, weekly and per-model bars, and reads them again when Settings opens", async () => {
+		const { client } = await claudeView(login());
+		expect(bars()).toEqual([
+			expect.stringMatching(/^5 hours.*72% left$/),
+			expect.stringMatching(/^Weekly.*13% left$/),
+			expect.stringMatching(/^Weekly · Fable.*91% left$/),
+		]);
+		expect(client.readClaude).toHaveBeenCalledWith({ force: false }, expect.any(AbortSignal));
+		expect(claudeCard().querySelector(".connection-resets")).toBeNull();
+	});
+
+	it("offers a reset the account holds, with what it refills, and uses it on one click", async () => {
+		const finish = deferred<string>();
+		const readClaude = vi.fn(async (options: { reset?: string }) => (options.reset ? finish.promise : id(99)));
+		const { client, logins } = await claudeView(
+			login({ resets: { observedAt: new Date().toISOString(), entries: [fullReset] } }),
+			readClaude,
+		);
+		const row = claudeCard().querySelector<HTMLElement>(".connection-resets")!;
+		expect(row.classList.contains("is-ready")).toBe(false);
+		expect(row.querySelector("strong")!.textContent).toBe("3 resets");
+		expect(row.querySelector("small")!.textContent).toMatch(
+			/^Refills your 5-hour and weekly limits · your weekly reset day stays \S+ · use by /,
+		);
+		row.querySelector<HTMLButtonElement>("button")!.click();
+		await settle();
+		expect(readClaude).toHaveBeenLastCalledWith({ reset: "full" }, expect.any(AbortSignal));
+		expect(claudeCard().querySelector(".connection-resets")).toBeNull();
+		expect(claudeCard().querySelectorAll(".connection-usage-meter.refilling")).toHaveLength(2);
+		expect(claudeCard().textContent).toContain("Using a reset…");
+		logins.logins[0]!.lastReset = {
+			requestId: id(90),
+			kind: "full",
+			outcome: "reset",
+			left: 0,
+			at: new Date().toISOString(),
+		};
+		finish.resolve(id(90));
+		await settle();
+		expect(claudeCard().querySelector(".reset-done")!.textContent).toContain("Reset used · no resets left");
+		expect(readClaude).toHaveBeenLastCalledWith({ force: true }, expect.any(AbortSignal));
+		expect(client.signOutClaude).not.toHaveBeenCalled();
+	});
+
+	it("lifts the row onto its own tile at a limit, and says only once a limit is hit for a reset saved for one", async () => {
+		await claudeView(
+			login({
+				usage: {
+					observedAt: new Date().toISOString(),
+					limitResetAt: hours(3.2),
+					windows: [{ id: "five_hour", label: "5 hours", usedPercent: 100, resetAt: hours(3.2) }],
+				},
+				resets: {
+					observedAt: new Date().toISOString(),
+					entries: [{ ...fullReset, kind: "session", left: 1, refills: "5-hour limit" }],
+				},
+			}),
+		);
+		expect(claudeCard().querySelector(".connection-usage-limit")!.textContent).toMatch(
+			/^Usage limit reached · resets in/,
+		);
+		const tile = claudeCard().querySelector<HTMLElement>(".connection-resets.is-ready")!;
+		expect(tile.querySelector("strong")!.textContent).toBe("Keep going now with a reset");
+		expect(tile.querySelector("small")!.textContent).toMatch(/^1 reset · refills your 5-hour limit · use by /);
+		expect(tile.querySelector("button")!.classList.contains("btn-primary")).toBe(true);
+		view.dispose();
+		document.body.replaceChildren();
+		await claudeView(
+			login({
+				resets: {
+					observedAt: new Date().toISOString(),
+					entries: [{ ...fullReset, kind: null, left: 1, refills: null, weekStays: null, usable: "at_limit" }],
+				},
+			}),
+		);
+		const saved = claudeCard().querySelector<HTMLElement>(".connection-resets")!;
+		expect(saved.querySelector("strong")!.textContent).toBe("1 reset");
+		expect(saved.querySelector("small")!.textContent).toMatch(/^Usable once you reach a limit · use by /);
+		expect(saved.querySelector("button")).toBeNull();
+	});
+
+	it("says nothing was used and offers another try, or points to the bars when Claude Code could not confirm", async () => {
+		const outcome = { value: "failed" as "failed" | "unconfirmed" };
+		const readClaude = vi.fn(async (options: { reset?: string }) => (options.reset ? id(91) : id(99)));
+		const { logins } = await claudeView(
+			login({ resets: { observedAt: new Date().toISOString(), entries: [fullReset] } }),
+			readClaude,
+		);
+		logins.logins[0]!.lastReset = {
+			requestId: id(91),
+			kind: "full",
+			outcome: outcome.value,
+			left: null,
+			at: timestamp,
+		};
+		claudeCard().querySelector<HTMLButtonElement>(".connection-resets button")!.click();
+		await settle();
+		const failed = claudeCard().querySelector<HTMLElement>(".connection-resets.is-ready")!;
+		expect(failed.querySelector("strong")!.textContent).toBe("Couldn't reset your limits");
+		expect(failed.querySelector("small")!.textContent).toBe("Nothing was used · 3 resets · try again in a moment");
+		expect(failed.querySelector("button")!.textContent).toBe("Try again");
+		logins.logins[0]!.lastReset = {
+			requestId: id(91),
+			kind: "full",
+			outcome: "unconfirmed",
+			left: null,
+			at: timestamp,
+		};
+		failed.querySelector<HTMLButtonElement>("button")!.click();
+		await settle();
+		const unconfirmed = claudeCard().querySelector<HTMLElement>(".connection-resets.is-ready")!;
+		expect(unconfirmed.querySelector("strong")!.textContent).toBe("Couldn't confirm the reset went through");
+		expect(unconfirmed.querySelector("button")).toBeNull();
+		expect(readClaude.mock.calls.filter(([options]) => options.reset)).toHaveLength(2);
 	});
 });
