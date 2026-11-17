@@ -921,14 +921,14 @@ export class CloudGmailMailboxes {
 		spent: () => boolean,
 		tally: { messages: number },
 	): Promise<PassEnd> {
-		const historyId = claim.historyId ?? (await api.profile(signal)).historyId;
-		let total = claim.total;
+		const profile = claim.historyId === null || claim.total === null ? await api.profile(signal) : null;
+		const historyId = claim.historyId ?? (profile as GmailProfile).historyId;
+		const total = claim.total ?? profile?.messagesTotal ?? null;
 		let pageToken = claim.pageToken;
 		let count = claim.broughtIn;
 		for (;;) {
 			if (spent()) return { outcome: "importing", historyId, pageToken, total };
 			const page = await api.list(pageToken, signal);
-			if (total === null) total = page.estimate;
 			for (const id of await this.#unknown(claim, [...new Set(page.messages.map((message) => message.id))])) {
 				if (count >= GMAIL_IMPORT_BOUND) return { outcome: "imported", historyId, pageToken: null, total };
 				if (spent()) return { outcome: "importing", historyId, pageToken, total };

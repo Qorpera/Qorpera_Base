@@ -689,7 +689,9 @@ begin
 		p_imported)
 	on conflict do nothing;
 	if p_imported and v_google.state = 'bringing_in' and v_item ->> 'outcome' = 'accepted' then
-		update public.qorpera_google_mailboxes set brought_in = brought_in + 1, updated_at = clock_timestamp()
+		update public.qorpera_google_mailboxes
+		set brought_in = brought_in + 1, total = case when total is null then null else greatest(total, brought_in + 1) end,
+			updated_at = clock_timestamp()
 		where mailbox_id = v_google.mailbox_id;
 	end if;
 	return jsonb_build_object('schema', 'qorpera.google-mail-brought-in/v1', 'outcome', v_item ->> 'outcome',
@@ -737,7 +739,8 @@ begin
 		imported_at = case when p_outcome = 'imported' then v_now else imported_at end,
 		history_id = coalesce(p_history_id, history_id),
 		page_token = case p_outcome when 'importing' then p_page_token when 'imported' then null else page_token end,
-		total = coalesce(p_total, total),
+		total = case when coalesce(p_total, total) is null then null
+			else greatest(coalesce(p_total, total), brought_in) end,
 		due_at = case p_outcome
 			when 'importing' then v_now
 			when 'imported' then v_now

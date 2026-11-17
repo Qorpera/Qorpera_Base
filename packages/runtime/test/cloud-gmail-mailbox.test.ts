@@ -42,6 +42,7 @@ class FakeGmail {
 	history: { id: string; message: FakeMessage }[] = [];
 	historyGone = false;
 	tokenRefused = false;
+	listEstimate: number | null = null;
 	readonly sent: { raw: string; threadId: string | null }[] = [];
 	readonly fetched: string[] = [];
 	readonly calls: string[] = [];
@@ -83,7 +84,7 @@ class FakeGmail {
 			return Response.json({
 				messages: page.map((message) => ({ id: message.id, threadId: message.threadId })),
 				...(offset + size < this.messages.length ? { nextPageToken: String(offset + size) } : {}),
-				resultSizeEstimate: this.messages.length,
+				resultSizeEstimate: this.listEstimate ?? this.messages.length,
 			});
 		}
 		if (path === "/history") {
@@ -245,6 +246,7 @@ function fixture(options: {
 
 it("brings in the first import newest first, a page at a time, through the mail door, skipping what is here", async () => {
 	const gmail = new FakeGmail(250);
+	gmail.listEstimate = 201;
 	const f = fixture({ claims: [claim()], gmail, known: ["m0249", "m0248"] });
 	const outcome = await f.mailboxes.pass(signal);
 	expect(outcome).toEqual({ mailboxes: 1, messages: 248, sent: 0, refused: 0, failed: 0 });
