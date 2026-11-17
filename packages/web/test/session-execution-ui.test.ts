@@ -2565,6 +2565,19 @@ describe("a run waiting at its login's usage limit", () => {
 		expect(continueButton(f.view)).toBeNull();
 	});
 
+	it("says a rate-limit wait tries again by itself and offers no other login, even when the cloud says movable", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		f.company.store.set({ activity: [paused(id(100), { rateLimited: true, movable: true })] });
+		await settle();
+		expect(title(f.view)).toBe("Fixture agent is waiting to go on");
+		expect(reason(f.view)).toBe(
+			"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.",
+		);
+		expect(continueButton(f.view)).toBeNull();
+		expect(buttons(f.view)).toEqual([]);
+	});
+
 	it("offers only logins the move can use, and none for work that cannot move", async () => {
 		const f = setup(false, away(withUsage([0, 40])));
 		await settle();

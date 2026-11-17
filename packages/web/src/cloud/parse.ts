@@ -464,7 +464,6 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 	});
 }
 
-/** A queued run waiting at its login's usage limit (20260930703000); an older cloud says nothing of it. */
 function pausedRun(activity: Record<string, unknown>): { paused?: PausedRun } {
 	if (activity.paused_until === undefined || activity.paused_until === null) return {};
 	if (activity.job_status !== "queued") throw new CloudShapeError("a paused run that is not queued");

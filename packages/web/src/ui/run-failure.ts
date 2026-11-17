@@ -209,9 +209,6 @@ export function runFailureReason(
 	return t((payer.own === true ? undefined : REASONS_FOR_OTHERS[kind]) ?? REASONS[kind]);
 }
 
-/** Why a run waits at its login's usage limit, until `until` (20260930703000): it goes on by itself, on the same login,
- * then. The member whose own login pays may continue it now with another login of theirs (the card's "Continue with …",
- * `payer.continuable`); anyone else reads who can. */
 export function runWaitingReason(until: string, payer: RunPayer = {}, rateLimited?: boolean): string {
 	if (rateLimited === true) return t(RATE_LIMIT_WAIT);
 	const time = fmtTime(until);
