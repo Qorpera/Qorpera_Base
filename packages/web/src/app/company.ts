@@ -96,6 +96,7 @@ import {
 	type QuoteRecord,
 	takeQuoteRecords,
 } from "./quotes.ts";
+import { Reconnect } from "./reconnect.ts";
 import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store, throttle } from "./state.ts";
 
@@ -452,8 +453,6 @@ const OPEN_FULL_MS = 10_000;
 const WATCH_SKIP_MS = 1_500;
 /** The company's clock: its heartbeat with live hints, its recovery path without them. */
 const HEARTBEAT_MS = 30_000;
-const RECONNECT_FIRST_MS = 1_000;
-const RECONNECT_LAST_MS = 15_000;
 
 /** What a live hint reads: at once and then at most once an interval for someone looking, so a message shows as soon as
  * it is saved. A hidden tab keeps the wait, which also merges a burst of hints: nobody pays for reads nobody sees. */
@@ -624,11 +623,9 @@ export class CompanyController {
 	#hiddenAt: number | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
-	#reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-	#reconnectWaits = 0;
-	#reconnecting = false;
 	#connectionFailures = 0;
 	readonly #abort = new AbortController();
+	readonly #reconnect = new Reconnect(() => this.#tryAgain(), this.#abort.signal);
 	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
@@ -815,9 +812,6 @@ export class CompanyController {
 		await this.refreshAll();
 		if (!this.#stopped && this.store.get().team?.capabilities.read) this.#atComputers.read();
 		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), HEARTBEAT_MS);
-		if (!this.#stopped && typeof window !== "undefined")
-			for (const event of ["online", "focus"])
-				window.addEventListener(event, () => void this.#reconnect(), { signal: this.signal });
 		if (!this.#stopped && typeof document !== "undefined") {
 			if (document.visibilityState === "hidden") this.#hiddenAt = Date.now();
 			document.addEventListener(
@@ -881,7 +875,6 @@ export class CompanyController {
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
 		clearTimeout(this.#openFullTimer);
-		clearTimeout(this.#reconnectTimer);
 		this.#invalidations.clear();
 		// Deliver a final access-loss update before dropping observers.
 		queueMicrotask(() => {
@@ -1217,35 +1210,19 @@ export class CompanyController {
 		if (this.#stopped || !connectionLost(error)) return false;
 		this.#connectionFailures += 1;
 		if (!this.store.get().connectionLost) this.store.set({ connectionLost: true });
-		if (!this.#reconnecting) this.#reconnectLater();
+		this.#reconnect.lost();
 		return true;
 	}
 
-	#reconnectLater(): void {
-		if (this.#stopped || this.#reconnectTimer) return;
-		const wait = Math.min(RECONNECT_LAST_MS, RECONNECT_FIRST_MS * 2 ** this.#reconnectWaits);
-		this.#reconnectWaits += 1;
-		this.#reconnectTimer = setTimeout(() => void this.#reconnect(), wait);
-	}
-
-	async #reconnect(): Promise<void> {
-		if (this.#stopped || this.#reconnecting || !this.store.get().connectionLost) return;
-		clearTimeout(this.#reconnectTimer);
-		this.#reconnectTimer = undefined;
-		this.#reconnecting = true;
+	async #tryAgain(): Promise<boolean> {
 		const failures = this.#connectionFailures;
-		try {
-			await this.refreshTeam();
-			await Promise.all([this.refreshSessions(), this.refreshStaff(), this.refreshOrganization()]);
-		} finally {
-			this.#reconnecting = false;
-		}
-		if (this.#stopped) return;
-		if (this.#connectionFailures !== failures) return this.#reconnectLater();
-		this.#reconnectWaits = 0;
+		await this.refreshTeam();
+		await Promise.all([this.refreshSessions(), this.refreshStaff(), this.refreshOrganization()]);
+		if (this.#stopped || this.#connectionFailures !== failures) return false;
 		this.store.set({ connectionLost: undefined });
 		for (const listener of this.#invalidations) listener("sessions");
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
+		return true;
 	}
 
 	async refreshOrganization(): Promise<void> {
@@ -2592,6 +2569,7 @@ export class CompanyController {
 								...(hasEarlier === undefined ? {} : { hasEarlier }),
 							}
 						: {};
+				this.#lost(error);
 				store.set({ ...read, loading: false, complete: false, error: describeError(error) });
 				return;
 			}

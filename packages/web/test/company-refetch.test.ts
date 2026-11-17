@@ -725,6 +725,25 @@ describe("a dropped connection", () => {
 		expect(busy.controller.store.get().connectionLost).toBeUndefined();
 	});
 
+	it("reads the open conversation again once a lost read of it can get through", async () => {
+		const busy = await company("connected", false);
+		const events = vi.mocked(busy.f.api.readSessionEvents);
+		const reach = events.getMockImplementation()!;
+		events.mockImplementation(async () => {
+			throw lost();
+		});
+		busy.write(open.sessionId);
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(busy.controller.store.get().connectionLost).toBe(true);
+		expect(busy.store.get().events).toHaveLength(0);
+		events.mockImplementation(reach);
+		window.dispatchEvent(new Event("online"));
+		await vi.advanceTimersByTimeAsync(100);
+		expect(busy.controller.store.get().connectionLost).toBeUndefined();
+		expect(busy.store.get().events).toHaveLength(1);
+		expect(busy.store.get().error).toBeUndefined();
+	});
+
 	it("tries no more once the company is closed", async () => {
 		const busy = await unreachable();
 		busy.controller.stop();

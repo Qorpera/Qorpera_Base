@@ -394,6 +394,42 @@ describe("account and route ownership", () => {
 		expect(container.querySelector(".hub-welcome")).not.toBeNull();
 		expect(container.querySelector(".skeleton-companies")).toBeNull();
 	});
+	it("keeps the company placeholders and says it is reconnecting while the company list cannot be reached", async () => {
+		const f = mounted("#/");
+		vi.mocked(f.api.listProfiles).mockRejectedValue(
+			new CloudRpcError(
+				"qorpera_list_hosted_profiles",
+				{ message: "TimeoutError: Qorpera did not answer in time." },
+				0,
+			),
+		);
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		await hub.refresh();
+		renderHub(hub, container);
+		expect(placeholderLabel(container)).toBe("Loading companies");
+		expect(container.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(container.querySelector(".notice-danger")).toBeNull();
+		expect(container.querySelector(".hub-welcome")).toBeNull();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA]);
+		window.dispatchEvent(new Event("online"));
+		await vi.waitFor(() => expect(hub.store.get().connectionLost).toBeUndefined());
+		renderHub(hub, container);
+		expect(container.querySelector(".company-card")?.textContent).toContain(profileA.profileName);
+		expect(container.querySelector(".notice-neutral")).toBeNull();
+		hub.dispose();
+	});
+	it("shows any other failure of the company list as an error", async () => {
+		const f = mounted("#/");
+		vi.mocked(f.api.listProfiles).mockRejectedValue(new Error("Companies unavailable"));
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		await hub.refresh();
+		renderHub(hub, container);
+		expect(hub.store.get().connectionLost).toBeUndefined();
+		expect(container.querySelector(".notice-danger")?.textContent).toBe("Companies unavailable");
+		hub.dispose();
+	});
 	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
 		const home = `#/c/${profileA.profileId}`;
 		const f = mounted(home);
