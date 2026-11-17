@@ -3143,14 +3143,28 @@ describe("company sites (20260930550000)", () => {
 			describeCloudAction(tool("hire_team"), {
 				operationKey: "k",
 				hires: [
-					{ name: "Market", role: "Market research", jobDescription: "Own the market.", firstAssignment: "Size it.", figure: "acorn" },
-					{ name: "Brand", role: "Brand owner", jobDescription: "Own the brand.", firstAssignment: "Name it.\nThen more." },
+					{
+						name: "Market",
+						role: "Market research",
+						jobDescription: "Own the market.",
+						firstAssignment: "Size it.",
+						figure: "acorn",
+					},
+					{
+						name: "Brand",
+						role: "Brand owner",
+						jobDescription: "Own the brand.",
+						firstAssignment: "Name it.\nThen more.",
+					},
 				],
 			}),
 		).toEqual({
 			title: "Hire a team of 2 agents",
 			target: "Market and Brand",
-			details: { Market: "Market research · first task: Size it.", Brand: "Brand owner · first task: Name it. Then more." },
+			details: {
+				Market: "Market research · first task: Size it.",
+				Brand: "Brand owner · first task: Name it. Then more.",
+			},
 		});
 		const twelve = Array.from({ length: 12 }, (_, n) => ({
 			name: `Area ${n}`,

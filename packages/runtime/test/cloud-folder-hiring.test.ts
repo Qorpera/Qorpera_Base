@@ -469,15 +469,26 @@ const member = (name: string, assignment = `Start on ${name}.`): CloudFolderTeam
 });
 const TEAM: CloudFolderTeamHire = {
 	operationKey: "team-1",
-	hires: ["Market", "Brand", "Brand research", "Product", "Customer research", "Strategy", "Industrial design", "App"].map(
-		(name) => member(name),
-	),
+	hires: [
+		"Market",
+		"Brand",
+		"Brand research",
+		"Product",
+		"Customer research",
+		"Strategy",
+		"Industrial design",
+		"App",
+	].map((name) => member(name)),
 };
 
 it("hires a team as one commit of new folders under one review, each with its own ids and handle", async () => {
 	const f = await fixture({ folders: ["QorperaOS/agents/market"] });
 	const result = parse(await f.hiring().hireTeam(TEAM, f.context));
-	expect(result).toMatchObject({ schema: "qorpera.agent-team-hire-receipt/v1", runId: f.identity.runId, outcome: "saved" });
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-team-hire-receipt/v1",
+		runId: f.identity.runId,
+		outcome: "saved",
+	});
 	expect(result.hires.map((hire: { folder: string }) => hire.folder)).toEqual([
 		"QorperaOS/agents/market-2",
 		"QorperaOS/agents/brand",
@@ -599,19 +610,25 @@ it("is the hire_team tool: two to twelve hires with hire_agent's fields, bound t
 		properties: { hires: { minItems: number; maxItems: number; items: { properties: Record<string, unknown> } } };
 	};
 	expect(schema.properties.hires).toMatchObject({ minItems: 2, maxItems: 12 });
-	const { operationKey: _, ...fields } = (hireAgent?.inputSchema as { properties: Record<string, unknown> }).properties;
+	const { operationKey: _, ...fields } = (hireAgent?.inputSchema as { properties: Record<string, unknown> })
+		.properties;
 	expect(schema.properties.hires.items.properties).toEqual(fields);
 	const args = { operationKey: "team-9", hires: [member("Market"), member("Brand")] };
 	expect(() => tool.parseArguments({ ...args, hires: [member("Market")] })).toThrow(
 		new CloudToolArgumentRefusal("hires holds 2 to 12 hires; hire one coworker with hire_agent"),
 	);
-	expect(() => tool.parseArguments({ ...args, hires: Array.from({ length: 13 }, (_, n) => member(`Area ${n}`)) })).toThrow(
-		CloudToolArgumentRefusal,
-	);
 	expect(() =>
-		tool.parseArguments({ ...args, hires: [member("Market"), { ...member("Brand"), firstAssignment: "Å".repeat(2001) }] }),
+		tool.parseArguments({ ...args, hires: Array.from({ length: 13 }, (_, n) => member(`Area ${n}`)) }),
+	).toThrow(CloudToolArgumentRefusal);
+	expect(() =>
+		tool.parseArguments({
+			...args,
+			hires: [member("Market"), { ...member("Brand"), firstAssignment: "Å".repeat(2001) }],
+		}),
 	).toThrow(new CloudToolArgumentRefusal("firstAssignment holds at most 4000 bytes in this company: shorten it"));
-	expect(() => tool.parseArguments({ ...args, hires: [member("Market"), { ...member("Brand"), extra: 1 }] })).toThrow();
+	expect(() =>
+		tool.parseArguments({ ...args, hires: [member("Market"), { ...member("Brand"), extra: 1 }] }),
+	).toThrow();
 	expect(() => tool.parseArguments({ ...args, extra: 1 })).toThrow();
 	const parsed = tool.parseArguments(args);
 	expect(parsed).toEqual({ operationKey: "team-9", hires: args.hires });
@@ -623,10 +640,14 @@ it("is the hire_team tool: two to twelve hires with hire_agent's fields, bound t
 	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toMatch(
 		/^Hire one new coworker, at any time as the company evolves, for a continuing responsibility that nobody owns/,
 	);
-	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toContain("To hire two or more at one time, above all the first team, use hire_team.");
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toContain(
+		"To hire two or more at one time, above all the first team, use hire_team.",
+	);
 	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toMatch(
 		/^Hire two or more new coworkers at one time, above all the company's first team, so that each starts knowing the others/,
 	);
-	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toContain("one hire, at any later time as the company evolves, goes by hire_agent");
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toContain(
+		"one hire, at any later time as the company evolves, goes by hire_agent",
+	);
 	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).not.toContain("send_coworker_message");
 });

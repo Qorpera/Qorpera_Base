@@ -10,11 +10,7 @@ import {
 	TEAM_HIRES_MIN,
 } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
-import {
-	type CloudNativeTool,
-	CloudToolArgumentRefusal,
-	type CloudToolContext,
-} from "./cloud-native-tool-boundary.ts";
+import { type CloudNativeTool, CloudToolArgumentRefusal, type CloudToolContext } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
@@ -133,7 +129,6 @@ export const CLOUD_END_ROLE_TOOL_DESCRIPTION = [
 ].join("\n");
 /** One sentence of why a role ends, in characters. */
 const END_ROLE_REASON_CHARS = 280;
-
 
 /** A company's hire, group chat and end of a role on the company folder (thin writers W4a, W4b; 20260930766000): each is
  * saved by its folder writer as the agent's or the chat's own folder, or the agent's agent.md, under the call's receipt

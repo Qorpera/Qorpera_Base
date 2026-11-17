@@ -12,10 +12,11 @@ import {
 	writeAgentFile,
 	writeTodoFile,
 } from "@qorpera/cloud-client/company-state-files";
-import type {
-	CloudCompanyFolderClient,
-	CloudCompanyFolderFileEntry,
-	CloudCompanyFolderUnit,
+import {
+	type CloudCompanyFolderClient,
+	type CloudCompanyFolderFileEntry,
+	type CloudCompanyFolderUnit,
+	sha256,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -83,8 +84,6 @@ export interface CloudFolderTeamHire {
 
 export const TEAM_HIRES_MIN = 2;
 export const TEAM_HIRES_MAX = 12;
-
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 const teamKey = (operationKey: string, index: number) => `${operationKey}:${index}`;
 
@@ -443,7 +442,9 @@ export class CloudFolderHiring {
 			).map((problem) => ({ message: `${hire.name.trim()}: ${problem.message}` })),
 		);
 		if (problems.length)
-			throw new CloudToolArgumentRefusal(invalidMessage(problems, "This team cannot be saved as the company's files"));
+			throw new CloudToolArgumentRefusal(
+				invalidMessage(problems, "This team cannot be saved as the company's files"),
+			);
 	}
 
 	async hireTeam(request: CloudFolderTeamHire, context: CloudToolContext): Promise<CloudToolContent> {
@@ -489,8 +490,8 @@ export class CloudFolderHiring {
 						name: hire.name,
 						role: hire.role,
 						figure: hire.figure,
-						jobDescriptionSha256: sha256(hire.jobDescription),
-						firstAssignmentSha256: sha256(hire.firstAssignment),
+						jobDescriptionSha256: sha256(Buffer.from(hire.jobDescription)),
+						firstAssignmentSha256: sha256(Buffer.from(hire.firstAssignment)),
 					})),
 				},
 				target: { agentIds: team.map(({ agentId }) => agentId) },
