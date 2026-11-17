@@ -14,8 +14,6 @@ const PROGRAMS = /^\/(usr|bin|sbin|lib|lib64|opt|snap)\/|^\/root\/(\.local|\.car
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "fi", "done", "esac"]);
 const SKIPPED = new Set(["for", "case", "select", "function", "alias", "export", "local", "declare", "readonly"]);
-const OPENS = new Set(["if", "while", "until", "for", "case", "select"]);
-const CLOSES = new Set(["fi", "done", "esac"]);
 
 interface Prefix {
 	readonly values: readonly string[];
@@ -30,7 +28,6 @@ const PREFIXES: Readonly<Record<string, Prefix>> = {
 	nice: { values: ["-n", "--adjustment"] },
 	ionice: { values: ["-c", "--class", "-n", "--classdata"] },
 	nohup: { values: [] },
-	builtin: { values: [] },
 	exec: { values: ["-a"] },
 	time: { values: ["-f", "--format", "-o", "--output"] },
 	command: { values: [] },
@@ -81,6 +78,8 @@ interface Word {
 	readonly text: string;
 	readonly literal: boolean;
 	readonly substituted: boolean;
+	readonly plain: boolean;
+	readonly bodies: readonly string[];
 	readonly start: number;
 }
 
@@ -89,9 +88,11 @@ interface Simple {
 	readonly inputs: Word[];
 	readonly outputs: Word[];
 	heredoc: boolean;
+	readonly bodies: string[];
 	alone: boolean;
 	readonly piped: boolean;
 	readonly joined: Join;
+	readonly after: string;
 	readonly marker?: "(" | ")";
 }
 
@@ -110,42 +111,52 @@ export interface CloudCommandScripts {
 const OPERATORS = ["&&", "||", "|&", ";;", ";", "|", "&", "(", ")"];
 const REDIRECTS = ["<<<", "<<-", "<<", "&>>", "&>", ">>", ">|", ">&", "<&", "<>", "<", ">"];
 
-function lex(command: string): { simples: Simple[] } {
+function lex(command: string): { simples: Simple[]; complete: boolean } {
 	const simples: Simple[] = [];
 	let current: Simple | undefined;
 	let piped = false;
 	let joined: Join = "start";
-	const pending: { delimiter: string; strip: boolean }[] = [];
+	let after = "start";
+	const pending: { delimiter: string; strip: boolean; owner: Simple }[] = [];
 	let redirect: { kind: "in" | "out" | "heredoc" | "other" } | undefined;
 	const simple = (): Simple => {
-		current ??= { words: [], inputs: [], outputs: [], heredoc: false, alone: false, piped, joined };
+		current ??= {
+			words: [],
+			inputs: [],
+			outputs: [],
+			heredoc: false,
+			bodies: [],
+			alone: false,
+			piped,
+			joined,
+			after,
+		};
 		return current;
 	};
-	let listStart = 0;
-	const marker = (operator: "(" | ")"): Simple => ({
-		words: [],
-		inputs: [],
-		outputs: [],
-		heredoc: false,
-		alone: false,
-		piped: false,
-		joined: "start",
-		marker: operator,
-	});
 	const end = (operator: string) => {
 		if (current) {
-			current.alone = current.piped || operator === "|" || operator === "|&";
+			current.alone = current.piped || operator === "|" || operator === "|&" || operator === "&";
 			simples.push(current);
 		}
-		if (operator === "&") {
-			simples.splice(listStart, 0, marker("("));
-			simples.push(marker(")"));
+		if (current || operator !== "\n") {
+			joined = operator === "&&" || operator === "||" ? operator : "start";
+			after = operator;
 		}
-		if (current || operator !== "\n") joined = operator === "&&" || operator === "||" ? operator : "start";
 		current = undefined;
 		piped = operator === "|" || operator === "|&";
-		if (operator === "(" || operator === ")") simples.push(marker(operator));
-		if (joined === "start" && operator !== "|" && operator !== "|&" && operator !== ")") listStart = simples.length;
+		if (operator === "(" || operator === ")")
+			simples.push({
+				words: [],
+				inputs: [],
+				outputs: [],
+				heredoc: false,
+				bodies: [],
+				alone: false,
+				piped: false,
+				joined: "start",
+				after: operator,
+				marker: operator,
+			});
 	};
 	let at = 0;
 	const length = command.length;
@@ -163,14 +174,17 @@ function lex(command: string): { simples: Simple[] } {
 			end("\n");
 			at += 1;
 			while (pending.length > 0) {
-				const { delimiter, strip } = pending.shift() as { delimiter: string; strip: boolean };
+				const { delimiter, strip, owner } = pending.shift() as { delimiter: string; strip: boolean; owner: Simple };
+				const body: string[] = [];
 				for (;;) {
-					if (at >= length) return { simples };
+					if (at >= length) return { simples, complete: false };
 					const next = command.indexOf("\n", at);
 					const line = command.slice(at, next < 0 ? length : next);
 					at = next < 0 ? length : next + 1;
 					if ((strip ? line.replace(/^\t+/, "") : line) === delimiter) break;
+					body.push(line);
 				}
+				owner.bodies.push(body.join("\n"));
 			}
 			continue;
 		}
@@ -191,7 +205,7 @@ function lex(command: string): { simples: Simple[] } {
 			if (redirection === "<<" || redirection === "<<-" || redirection === "<<<") {
 				simple().heredoc = true;
 				redirect = { kind: redirection === "<<<" ? "other" : "heredoc" };
-				if (redirection !== "<<<") pending.push({ delimiter: "", strip: redirection === "<<-" });
+				if (redirection !== "<<<") pending.push({ delimiter: "", strip: redirection === "<<-", owner: simple() });
 			} else if (redirection === "<") redirect = { kind: "in" };
 			else if (redirection === "<&" || redirection === ">&" || redirection === "<>") redirect = { kind: "other" };
 			else redirect = { kind: "out" };
@@ -207,32 +221,36 @@ function lex(command: string): { simples: Simple[] } {
 		let text = "";
 		let literal = true;
 		let substituted = false;
-		const skipSubstitution = () => {
-			literal = false;
-			substituted = true;
-			if (command[at] === "`") {
-				const close = command.indexOf("`", at + 1);
-				at = close < 0 ? length : close + 1;
-				return;
-			}
+		const bodies: string[] = [];
+		const skipParentheses = () => {
+			const open = at;
 			let depth = 0;
 			for (; at < length; at += 1) {
 				if (command[at] === "(") depth += 1;
 				else if (command[at] === ")" && --depth === 0) break;
 			}
+			bodies.push(command.slice(open + 1, at));
+			if (at >= length) bodies.push("(");
 			at += 1;
+		};
+		const skipSubstitution = () => {
+			literal = false;
+			substituted = true;
+			if (command[at] === "`") {
+				const close = command.indexOf("`", at + 1);
+				bodies.push(close < 0 ? "(" : command.slice(at + 1, close));
+				at = close < 0 ? length : close + 1;
+				return;
+			}
+			skipParentheses();
 		};
 		while (at < length) {
 			const c = command[at] as string;
 			if (c === " " || c === "\t" || c === "\r" || c === "\n" || ";&|".includes(c)) break;
 			if ((c === "<" || c === ">") && command[at + 1] === "(") {
 				literal = false;
-				let depth = 0;
-				for (; at < length; at += 1) {
-					if (command[at] === "(") depth += 1;
-					else if (command[at] === ")" && --depth === 0) break;
-				}
 				at += 1;
+				skipParentheses();
 				continue;
 			}
 			if (c === "(" || c === ")" || c === "<" || c === ">") break;
@@ -243,7 +261,7 @@ function lex(command: string): { simples: Simple[] } {
 			}
 			if (c === "'") {
 				const close = command.indexOf("'", at + 1);
-				if (close < 0) return { simples };
+				if (close < 0) return { simples, complete: false };
 				text += command.slice(at + 1, close);
 				at = close + 1;
 				continue;
@@ -266,7 +284,7 @@ function lex(command: string): { simples: Simple[] } {
 					text += d;
 					at += 1;
 				}
-				if (at >= length) return { simples };
+				if (at >= length) return { simples, complete: false };
 				at += 1;
 				continue;
 			}
@@ -283,11 +301,12 @@ function lex(command: string): { simples: Simple[] } {
 			at += 1;
 			continue;
 		}
-		const word: Word = { text, literal, substituted, start };
+		const plain = literal && !/[\\'"]/.test(command.slice(start, at));
+		const word: Word = { text, literal, substituted, plain, bodies, start };
 		if (redirect) {
 			if (redirect.kind === "heredoc") {
 				const last = pending.at(-1);
-				if (last) pending[pending.length - 1] = { delimiter: text, strip: last.strip };
+				if (last) pending[pending.length - 1] = { ...last, delimiter: text };
 			} else if (redirect.kind === "in") simple().inputs.push(word);
 			else if (redirect.kind === "out") simple().outputs.push(word);
 			redirect = undefined;
@@ -296,7 +315,7 @@ function lex(command: string): { simples: Simple[] } {
 		simple().words.push(word);
 	}
 	end("\n");
-	return { simples };
+	return { simples, complete: pending.length === 0 };
 }
 
 function basename(text: string): string {
@@ -333,18 +352,6 @@ function printed(word: Word): boolean {
 	return word.substituted && word.text.trim() === "";
 }
 
-function changeFolder(cwd: string | null, words: readonly Word[], cdpath: boolean): string | null {
-	let index = 1;
-	while (words[index] && /^-[LPe@]+$/.test((words[index] as Word).text)) index += 1;
-	if (words[index]?.text === "--") index += 1;
-	const target = words[index];
-	if (!target) return HOME;
-	if (!target.literal || target.text === "-") return null;
-	const text = target.text === "~" ? HOME : target.text.replace(/^~\//, `${HOME}/`);
-	if (text.startsWith("/")) return posix.resolve(text);
-	return cwd === null || cdpath ? null : posix.resolve(cwd, text);
-}
-
 function stripPrefixes(
 	words: Word[],
 	folder: string | null,
@@ -362,7 +369,6 @@ function stripPrefixes(
 		}
 		if (first.text === "{" || first.text === "}") {
 			grouped = true;
-			folder = null;
 			words.shift();
 			continue;
 		}
@@ -416,6 +422,106 @@ function interpreterScript(
 	return {};
 }
 
+const FOLDER_WORDS = new Set([
+	"cd",
+	"pushd",
+	"popd",
+	"eval",
+	"builtin",
+	"command",
+	"exec",
+	"alias",
+	"shopt",
+	"trap",
+	"function",
+]);
+
+function shellCode(words: readonly Word[]): readonly Word[] {
+	const interpreter = interpreterOf(words[0]?.text ?? "");
+	if (interpreter !== SHELL) return [];
+	const { code } = interpreterScript(interpreter, words);
+	return code ? [code] : [];
+}
+
+function movesFolder(text: string, sourced: boolean, depth = 0): boolean {
+	if (depth > 8) return true;
+	const { simples, complete } = lex(text);
+	if (!complete) return true;
+	let cases = 0;
+	let pattern = false;
+	for (let at = 0; at < simples.length; at += 1) {
+		const simple = simples[at] as Simple;
+		if (simple.marker === ")" && pattern) {
+			pattern = false;
+			continue;
+		}
+		if (simple.marker === "(" && simples[at + 1]?.marker === ")" && !sourced) return true;
+		if (simple.marker) continue;
+		const first = simple.words[0];
+		if (cases > 0 && (simple.after === ";;" || simple.after === ";&" || simple.after === ";;&")) pattern = true;
+		if (first?.plain && first.text === "esac" && cases > 0) {
+			cases -= 1;
+			pattern = false;
+		}
+		for (const word of simple.words) {
+			if (word.text.includes("CDPATH") || word.text === "--chdir") return true;
+			if (word.literal && FOLDER_WORDS.has(word.text) && !(sourced && word.text === "function")) return true;
+			for (const body of word.bodies) if (movesFolder(body, sourced, depth + 1)) return true;
+		}
+		const words = [...simple.words];
+		if (stripPrefixes(words, HOME).folder === null) return true;
+		const program = words[0];
+		if (!program) continue;
+		if (!pattern && !program.literal && program.text !== "[" && program.text !== "[[") return true;
+		if (sourced && (program.text === "source" || program.text === ".")) return true;
+		if (first?.plain && first.text === "case") {
+			cases += 1;
+			pattern = true;
+		}
+		for (const code of shellCode(words)) if (movesFolder(code.text, sourced, depth + 1)) return true;
+		if (interpreterOf(program.text) === SHELL)
+			for (const body of simple.bodies) if (movesFolder(body, sourced, depth + 1)) return true;
+	}
+	return false;
+}
+
+export function cloudScriptKeepsFolder(text: string): boolean {
+	return !movesFolder(text, true);
+}
+
+function leadingFolder(simples: readonly Simple[], start: string | null): { count: number; folder: string | null } {
+	let count = 0;
+	let folder = start;
+	for (const simple of simples) {
+		const words = simple.words;
+		const target = words[1]?.text === "--" ? words[2] : words[1];
+		const size = words[1]?.text === "--" ? 3 : 2;
+		if (
+			simple.marker ||
+			simple.alone ||
+			simple.joined !== (count === 0 ? "start" : "&&") ||
+			(count === 0 && simple !== simples[0]) ||
+			words.length !== size ||
+			words[0]?.text !== "cd" ||
+			!words[0].literal ||
+			!target ||
+			!target.literal ||
+			target.text === "-" ||
+			target.text.startsWith("-") ||
+			target.text === ""
+		)
+			break;
+		const located = locate(target, folder);
+		folder = "path" in located ? located.path : null;
+		count += 1;
+	}
+	return { count, folder };
+}
+
+function inChain(simple: Simple): boolean {
+	return !simple.marker && !simple.alone && simple.joined === "&&";
+}
+
 export function cloudCommandScripts(
 	command: string,
 	start: string | null = HOME,
@@ -423,24 +529,17 @@ export function cloudCommandScripts(
 	settled: ReadonlySet<string> = new Set(),
 ): CloudCommandScripts {
 	const { simples } = lex(command);
-	const outer: { cwd: string | null; chain: string | null | undefined }[] = [];
-	const cdpath = /\bCDPATH\b/.test(command);
-	const lastpipe = /\blastpipe\b/.test(command);
 	const files: CloudCommandScriptRun[] = [];
 	const notShown = new Set<string>();
 	const written = new Set<string>();
-	let cwd: string | null = start;
-	let chain: string | null | undefined;
-	let depth = 0;
-	let left = { before: cwd, count: 0, changed: false, neutral: true };
-	const unsettle = () => {
-		cwd = null;
-		if (chain !== undefined) chain = null;
-	};
-	const moved = (neutral: boolean) => {
-		left.changed = true;
-		if (!neutral) left.neutral = false;
-	};
+	const leading = leadingFolder(simples, start);
+	const rest =
+		leading.count === 0
+			? 0
+			: simples.slice(leading.count).find((simple) => simple.words[0] !== undefined)?.words[0]?.start;
+	const restMoves = movesFolder(rest === undefined ? "" : command.slice(rest), false);
+	let certain = leading.count === 0 ? !restMoves && start !== null : !restMoves && leading.folder !== null;
+	let chained = leading.count > 0;
 	const run = (word: Word, folder: string | null) => {
 		const located = locate(word, folder);
 		if ("why" in located) {
@@ -452,37 +551,13 @@ export function cloudCommandScripts(
 		const before = command.slice(0, word.start);
 		files.push({ path, mentioned: before.includes(path) || before.includes(word.text) });
 	};
-	for (const simple of simples) {
-		if (simple.marker === "(") {
-			outer.push({ cwd: chain === undefined ? cwd : null, chain });
-			if (chain !== undefined) cwd = chain;
-			chain = undefined;
-			continue;
-		}
-		if (simple.marker === ")") {
-			const saved = outer.pop();
-			cwd = saved ? saved.cwd : null;
-			chain = saved ? saved.chain : undefined;
-			left = { before: chain === undefined ? cwd : chain, count: 1, changed: false, neutral: true };
-			continue;
-		}
-		if (simple.joined === "start") chain = undefined;
-		else if (simple.joined === "||") {
-			const current = chain === undefined ? cwd : chain;
-			chain = !left.changed ? current : left.count === 1 && left.neutral ? left.before : null;
-		}
-		if (simple.joined !== "&&")
-			left = { before: chain === undefined ? cwd : chain, count: 0, changed: false, neutral: true };
-		left.count += 1;
+	for (const [index, simple] of simples.entries()) {
+		if (index < leading.count) continue;
+		if (leading.count > 0) chained = chained && inChain(simple);
 		const words = [...simple.words];
-		const stripped = stripPrefixes(words, chain === undefined ? cwd : chain);
-		for (const keyword of stripped.keywords)
-			depth = Math.max(0, depth + (OPENS.has(keyword) ? 1 : CLOSES.has(keyword) ? -1 : 0));
-		if (stripped.grouped) {
-			cwd = null;
-			chain = undefined;
-		}
-		const folder = stripped.folder;
+		const stripped = stripPrefixes(words, HOME);
+		if (stripped.grouped || stripped.keywords.length > 0) chained = false;
+		const folder = !certain ? null : leading.count === 0 ? start : chained ? leading.folder : null;
 		const program = words[0];
 		if (!program) continue;
 		if (!program.literal && program.text !== "[" && program.text !== "[[") {
@@ -490,32 +565,7 @@ export function cloudCommandScripts(
 			continue;
 		}
 		const name = program.text;
-		if (SKIPPED.has(name)) {
-			if (OPENS.has(name)) depth += 1;
-			continue;
-		}
-		const negated = stripped.keywords.includes("!");
-		if (["cd", "pushd", "popd", "eval", "source", "."].includes(name) && simple.alone) {
-			if ((name === "source" || name === ".") && words[1]?.text.includes("/")) run(words[1], folder);
-			if (lastpipe) unsettle();
-			continue;
-		}
-		if (name === "cd") {
-			const next = changeFolder(chain === undefined ? cwd : chain, words, cdpath);
-			moved(true);
-			if (negated) unsettle();
-			else if (depth === 0 && simple.joined === "start") cwd = next;
-			else {
-				chain = next;
-				cwd = null;
-			}
-			continue;
-		}
-		if (name === "pushd" || name === "popd") {
-			moved(true);
-			unsettle();
-			continue;
-		}
+		if (SKIPPED.has(name)) continue;
 		if ((name === "cat" || name === "tee") && simple.heredoc) {
 			const targets = name === "tee" ? words.slice(1).filter((word) => !word.text.startsWith("-")) : [];
 			for (const target of [...simple.outputs, ...targets]) {
@@ -527,8 +577,6 @@ export function cloudCommandScripts(
 		if (name === "eval") {
 			if (words.slice(1).some(printed))
 				notShown.add("eval runs code another program prints, which the review cannot see");
-			moved(false);
-			unsettle();
 			continue;
 		}
 		if (name === "source" || name === ".") {
@@ -537,10 +585,7 @@ export function cloudCommandScripts(
 			if (file?.literal && !file.text.includes("/"))
 				notShown.add(`${line(file.text)}: the shell looks it up on its program path first`);
 			else if (file) run(file, folder);
-			if (!(located && "path" in located && settled.has(located.path) && file?.text.includes("/")) || negated) {
-				moved(false);
-				unsettle();
-			}
+			if (!(file?.text.includes("/") && located && "path" in located && settled.has(located.path))) certain = false;
 			continue;
 		}
 		const interpreter = interpreterOf(name);
@@ -588,19 +633,6 @@ function quote(text: string): string {
 }
 
 const READ_MARK = "QORPERA-REVIEW-READ";
-
-const MOVERS = new Set(["cd", "pushd", "popd", "source", ".", "eval"]);
-
-export function cloudScriptKeepsFolder(text: string): boolean {
-	return lex(text).simples.every((simple) => {
-		const words = [...simple.words];
-		stripPrefixes(words, null);
-		const program = words[0];
-		if (!program) return true;
-		if (!program.literal && program.text !== "[" && program.text !== "[[") return false;
-		return !MOVERS.has(program.text);
-	});
-}
 
 export function cloudScriptReadProgram(paths: readonly string[]): string {
 	return `echo ${READ_MARK}; { for f in ${paths.map(quote).join(" ")}; do if [ ! -e "$f" ]; then echo M; elif [ ! -f "$f" ] || [ ! -r "$f" ]; then echo X; else s=$(stat -c %s -- "$f") || s=0; if [ "$s" -gt ${CLOUD_SCRIPT_FILE_BYTES} ]; then echo "L $s"; else echo "F $s"; base64 -w 0 < "$f"; echo; fi; fi; done; } 2>/dev/null`;

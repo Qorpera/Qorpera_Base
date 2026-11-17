@@ -6966,10 +6966,13 @@ bundle; no migration, host call or image moves.
    command gateway (its receipt always completes, also when the machine refuses or does not answer its start, so it
    never holds the run's later changes), and gives the reviewer its text in the action's `contents`: each file whole,
    at most 64 KiB a file, 128 KiB and 8 files a command. Files they load or import are not shown, and the contents say
-   so. A command the runtime does not recognise as running a file is reviewed as before. Known limit: the files are
-   read when the action is reviewed; a file changed between that read and the command's start in the same call is not
-   detected. A check of the bytes in the command itself would only close those seconds, while the files a script loads
-   stay unseen and unbound anyway, and it would put a platform line in front of the agent's command.
+   so. A command the runtime does not recognise as running a file is reviewed as before. A relative path is named only
+   when its folder is certain from the text alone: nothing anywhere in the command can change the folder, or the file
+   runs in an unbroken `&&` chain after leading `cd <literal path>` commands (a sourced file read whole that can change
+   no folder keeps that); otherwise it is not shown. Known limit: the files are read when the action is reviewed; a
+   file changed between that read and the command's start in the same call is not detected. A check of the bytes in the
+   command itself would only close those seconds, while the files a script loads stay unseen and unbound anyway, and it
+   would put a platform line in front of the agent's command.
 2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
    bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
    variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the

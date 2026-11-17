@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -21,76 +21,202 @@ import {
 const digest = (text: string) => sha256(Buffer.from(text));
 const paths = (command: string) => cloudCommandScripts(command).files.map((file) => file.path);
 
-describe("the folder a file after another command is read in, checked against bash (review r3 of #1924)", () => {
-	it("names only the folder bash runs it in, or none, whatever comes first and however the two are joined", () => {
-		const root = mkdtempSync(join(tmpdir(), "qorpera-folder-table-"));
+const VENV_ACTIVATE = `# This file must be used with "source bin/activate" *from bash*
+# You cannot run it directly
+
+deactivate () {
+    # reset old environment variables
+    if [ -n "\${_OLD_VIRTUAL_PATH:-}" ] ; then
+        PATH="\${_OLD_VIRTUAL_PATH:-}"
+        export PATH
+        unset _OLD_VIRTUAL_PATH
+    fi
+    if [ -n "\${_OLD_VIRTUAL_PYTHONHOME:-}" ] ; then
+        PYTHONHOME="\${_OLD_VIRTUAL_PYTHONHOME:-}"
+        export PYTHONHOME
+        unset _OLD_VIRTUAL_PYTHONHOME
+    fi
+
+    # Call hash to forget past locations. Without forgetting
+    # past locations the $PATH changes we made may not be respected.
+    # See "man bash" for more details. hash is usually a builtin of your shell
+    hash -r 2> /dev/null
+
+    if [ -n "\${_OLD_VIRTUAL_PS1:-}" ] ; then
+        PS1="\${_OLD_VIRTUAL_PS1:-}"
+        export PS1
+        unset _OLD_VIRTUAL_PS1
+    fi
+
+    unset VIRTUAL_ENV
+    unset VIRTUAL_ENV_PROMPT
+    if [ ! "\${1:-}" = "nondestructive" ] ; then
+    # Self destruct!
+        unset -f deactivate
+    fi
+}
+
+# unset irrelevant variables
+deactivate nondestructive
+
+# on Windows, a path can contain colons and backslashes and has to be converted:
+case "$(uname)" in
+    CYGWIN*|MSYS*|MINGW*)
+        # transform D:\\path\\to\\venv to /d/path/to/venv on MSYS and MINGW
+        # and to /cygdrive/d/path/to/venv on Cygwin
+        VIRTUAL_ENV=$(cygpath /srv/app/.venv)
+        export VIRTUAL_ENV
+        ;;
+    *)
+        # use the path as-is
+        export VIRTUAL_ENV=/srv/app/.venv
+        ;;
+esac
+
+_OLD_VIRTUAL_PATH="$PATH"
+PATH="$VIRTUAL_ENV/"bin":$PATH"
+export PATH
+
+VIRTUAL_ENV_PROMPT=v
+export VIRTUAL_ENV_PROMPT
+
+# unset PYTHONHOME if set
+# this will fail if PYTHONHOME is set to the empty string (which is bad anyway)
+# could use \`if (set -u; : $PYTHONHOME) ;\` in bash
+if [ -n "\${PYTHONHOME:-}" ] ; then
+    _OLD_VIRTUAL_PYTHONHOME="\${PYTHONHOME:-}"
+    unset PYTHONHOME
+fi
+
+if [ -z "\${VIRTUAL_ENV_DISABLE_PROMPT:-}" ] ; then
+    _OLD_VIRTUAL_PS1="\${PS1:-}"
+    PS1="("v") \${PS1:-}"
+    export PS1
+fi
+
+# Call hash to forget past commands. Without forgetting
+# past commands the $PATH changes we made may not be respected
+hash -r 2> /dev/null
+`;
+
+describe("a relative file is named only in a folder bash is in under every outcome (review r4 of #1924)", () => {
+	it("agrees with real bash for every shape and every outcome of the commands before the file", () => {
+		const base = mkdtempSync(join(tmpdir(), "qorpera-folder-outcomes-"));
 		try {
-			mkdirSync(join(root, "a"));
-			writeFileSync(join(root, "env.sh"), "export READY=1\n");
-			writeFileSync(join(root, "go.sh"), `cd ${root}/a\n`);
-			const settled = new Set([join(root, "env.sh")]);
-			const firsts: Record<string, string> = {
-				"cd to a folder": `cd ${root}/a`,
-				"cd that fails": `cd ${root}/missing`,
-				"cd to a variable": 'cd "$QORPERA_UNSET"',
-				"source without a cd": "source ./env.sh",
-				"source with a cd": "source ./go.sh",
-				eval: `eval "cd ${root}/a"`,
-				pushd: `pushd ${root}/a >/dev/null`,
-				"a command that succeeds": "true",
-				"a command that fails": "false",
+			const slots = 3;
+			const trees = Array.from({ length: 2 ** slots }, (_, outcome) => {
+				const tree = join(base, `t${outcome}`);
+				mkdirSync(tree);
+				writeFileSync(join(tree, "env.sh"), "export READY=1\n");
+				writeFileSync(join(tree, "go.sh"), "cd d1\n");
+				for (let slot = 0; slot < slots; slot += 1)
+					if (outcome & (1 << slot)) {
+						mkdirSync(join(tree, `d${slot + 1}`));
+						writeFileSync(join(tree, `s${slot + 1}`), "");
+					}
+				return tree;
+			});
+			const kinds = {
+				cd: (slot: number) => `cd d${slot}`,
+				status: (slot: number) => `test -e s${slot}`,
+				source: () => "source ./env.sh",
+				sourceCd: () => "source ./go.sh",
 			};
-			const joins: Record<string, (first: string, next: string) => string> = {
-				";": (first, next) => `${first}; ${next}`,
-				newline: (first, next) => `${first}\n${next}`,
-				"&&": (first, next) => `${first} && ${next}`,
-				"||": (first, next) => `${first} || ${next}`,
-				"|": (first, next) => `${first} | ${next}`,
-				"&": (first, next) => `${first} & ${next}`,
-				subshell: (first, next) => `( ${first} ); ${next}`,
-				group: (first, next) => `{ ${first}; }; ${next}`,
-				"if then": (first, next) => `if ${first}; then ${next}; fi`,
-				"if else": (first, next) => `if ${first}; then true; else ${next}; fi`,
-				"after if": (first, next) => `if true; then ${first}; fi; ${next}`,
-				"after for": (first, next) => `for i in 1; do ${first}; done; ${next}`,
-				while: (first, next) => `while ${first}; do ${next}; break; done`,
-				"! &&": (first, next) => `! ${first} && ${next}`,
-				"! ;": (first, next) => `! ${first}; ${next}`,
+			const joins = [" ; ", "\n", " && ", " || ", " | ", " & "];
+			const shapes: string[] = [];
+			const chains = (count: number, names: (keyof typeof kinds)[], joinSet: string[]) => {
+				const walk = (made: string, slot: number) => {
+					if (slot > count) {
+						shapes.push(made);
+						return;
+					}
+					for (const name of names)
+						for (const joined of joinSet) walk(`${made}${kinds[name](slot)}${joined}`, slot + 1);
+				};
+				walk("", 1);
 			};
-			const known: Array<[string, string, string]> = [
-				["cd to a folder", ";", `${root}/a`],
-				["cd to a folder", "newline", `${root}/a`],
-				["cd to a folder", "&&", `${root}/a`],
-				["cd that fails", "||", root],
-				["cd to a variable", "||", root],
-				["pushd", "||", root],
-				["source without a cd", ";", root],
-				["source without a cd", "&&", root],
-				["a command that succeeds", ";", root],
-				["a command that fails", "||", root],
-				...Object.keys(firsts).flatMap((first) =>
-					["|", "&", "subshell"].map((join): [string, string, string] => [first, join, root]),
-				),
-			];
-			for (const [firstName, first] of Object.entries(firsts))
-				for (const [joinName, joined] of Object.entries(joins)) {
-					const label = `${firstName} ${joinName}`;
-					const found = cloudCommandScripts(joined(first, "python3 x.py"), root, false, settled);
-					const file = found.files.find((item) => item.path.endsWith("/x.py"));
-					const folder = file ? dirname(file.path) : null;
-					if (!file) expect(found.notShown, label).toContain("x.py: the folder it is in could not be told");
-					const ran = spawnSync("bash", ["-c", joined(first, "pwd")], { cwd: root, encoding: "utf8" });
-					const printed = ran.stdout.trim().split("\n").at(-1) ?? "";
-					if (folder !== null && printed !== "")
-						expect(
-							folder === printed || !existsSync(folder),
-							`${label}: read in ${folder}, bash ran in ${printed}`,
-						).toBe(true);
-					const certain = known.find(([one, two]) => one === firstName && two === joinName);
-					if (certain) expect(folder, label).toBe(certain[2]);
+			chains(1, ["cd", "status", "source", "sourceCd"], joins);
+			chains(2, ["cd", "status", "source", "sourceCd"], joins);
+			chains(3, ["cd", "status"], [" ; ", " && ", " || ", " | "]);
+			for (const name of ["cd", "status", "sourceCd"] as const) {
+				const first = kinds[name](1);
+				shapes.push(
+					`( ${first} ); `,
+					`{ ${first}; }; `,
+					`if ${first}; then `,
+					`if true; then ${first}; fi; `,
+					`for i in 1; do ${first}; done; `,
+					`! ${first} && `,
+					`! ${first}; `,
+					`cd d1 && ( ${first} ) && `,
+				);
+			}
+			const line = (shape: string, next: string) =>
+				shape.startsWith("if ") && shape.endsWith("then ") ? `${shape}${next}; fi` : `${shape}${next}`;
+			const named = new Map<string, Array<string | null>>();
+			for (const shape of shapes)
+				named.set(
+					shape,
+					trees.map((tree) => {
+						const settled = new Set(
+							[join(tree, "env.sh"), join(tree, "go.sh")].filter((file) =>
+								cloudScriptKeepsFolder(readFileSync(file, "utf8")),
+							),
+						);
+						const found = cloudCommandScripts(line(shape, "python3 x.py"), tree, false, settled);
+						const file = found.files.find((item) => item.path.endsWith("/x.py"));
+						if (!file) expect(found.notShown, shape).toContain("x.py: the folder it is in could not be told");
+						return file ? dirname(file.path) : null;
+					}),
+				);
+			let combinations = 0;
+			let checked = 0;
+			for (const [outcome, tree] of trees.entries()) {
+				const script = shapes
+					.map((shape, index) => `echo "@${index}"\n( ${line(shape, "pwd")}\nwait ) 2>/dev/null`)
+					.join("\n");
+				const output = spawnSync("bash", ["-c", script], {
+					cwd: tree,
+					encoding: "utf8",
+					maxBuffer: 64 * 1024 * 1024,
+				}).stdout;
+				const ran = new Map<number, string>();
+				let current = -1;
+				for (const printed of output.split("\n")) {
+					const mark = /^@(\d+)$/.exec(printed);
+					if (mark) current = Number(mark[1]);
+					else if (printed.startsWith("/") && current >= 0) ran.set(current, printed);
 				}
+				for (const [index, shape] of shapes.entries()) {
+					combinations += 1;
+					const folder = named.get(shape)?.[outcome] ?? null;
+					const where = ran.get(index);
+					if (folder === null || where === undefined) continue;
+					checked += 1;
+					expect(where, `${JSON.stringify(shape)} in outcome ${outcome}`).toBe(folder);
+				}
+			}
+			expect(combinations).toBe(shapes.length * trees.length);
+			expect(checked).toBeGreaterThan(1000);
+			const full = trees[2 ** slots - 1] as string;
+			const at = (shape: string) => named.get(shape)?.[2 ** slots - 1];
+			expect(at("test -e s1 ; ")).toBe(full);
+			expect(at("test -e s1 || ")).toBe(full);
+			expect(at("cd d1 && ")).toBe(join(full, "d1"));
+			expect(at("source ./env.sh && ")).toBe(full);
+			for (const joined of [" ; ", "\n", " || ", " | ", " & "]) expect(at(`cd d1${joined}`), joined).toBeNull();
+			for (const shape of [
+				"test -e s1 || cd d2 && ",
+				"cd d1 || test -e s2 && ",
+				"( cd d1 ); ",
+				"{ cd d1; }; ",
+				"! cd d1 && ",
+				"source ./go.sh && ",
+				"cd d1 && ( cd d1 ) && ",
+			])
+				expect(at(shape), shape).toBeNull();
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			rmSync(base, { recursive: true, force: true });
 		}
 	});
 });
@@ -125,66 +251,63 @@ describe("the files a machine command runs", () => {
 		]);
 	});
 
-	it("follows the folder a command works in, and only where it lasts", () => {
-		expect(paths("(cd /srv && python3 app.py); python3 other.py")).toEqual(["/srv/app.py", "/root/other.py"]);
-		expect(paths("cd /a & python3 z.py")).toEqual(["/root/z.py"]);
-		expect(paths("cd /a | true; python3 z.py")).toEqual(["/root/z.py"]);
-		expect(cloudCommandScripts("f() { cd /a; }; python3 z.py")).toEqual({
+	it("names a relative file only where its folder is certain by construction (review r4 of #1924)", () => {
+		const unknown = (file: string) => `${file}: the folder it is in could not be told`;
+		expect(paths("python3 fetch.py; node b.js")).toEqual(["/root/fetch.py", "/root/b.js"]);
+		expect(paths("set -euo pipefail; python3 fetch.py")).toEqual(["/root/fetch.py"]);
+		expect(paths("cd /tmp/eeg && timeout 60 python3 fetch.py && node b.js")).toEqual([
+			"/tmp/eeg/fetch.py",
+			"/tmp/eeg/b.js",
+		]);
+		expect(paths("cd /a && cd b && python3 x.py")).toEqual(["/a/b/x.py"]);
+		expect(paths("cd /x && bash -c 'python3 y.py'")).toEqual(["/x/y.py"]);
+		for (const command of [
+			"true || cd /safe && python3 x.py",
+			"cd /srv/app || echo missing && python3 x.py",
+			"cd /a; python3 x.py",
+			"cd /a\npython3 x.py",
+			"cd /a || python3 x.py",
+			"cd /a | python3 x.py",
+			"cd /a & python3 x.py",
+			"cd /a && (python3 x.py)",
+			"cd /a && { python3 x.py; }",
+			"cd /a && ! python3 x.py",
+			"cd /a && python3 x.py | tee log",
+			"cd /a && python3 x.py &",
+			"cd /a && if true; then python3 x.py; fi",
+			"true && cd /a && python3 x.py",
+			"cd -P /a && python3 x.py",
+			'cd "$D" && python3 x.py',
+			"cd - && python3 x.py",
+			"cd /a && cd /b; python3 x.py",
+			"command -v python3 && python3 x.py",
+			"f() { true; }; python3 x.py",
+			"env -C /a python3 x.py",
+			"export CDPATH=/srv; python3 x.py",
+			"echo $(cd /b) && python3 x.py",
+			"bash -c 'cd /b' && python3 x.py",
+			"bash <<'EOF'\ncd /b\nEOF\npython3 x.py",
+			"eval true; python3 x.py",
+			"pushd /a; python3 x.py",
+			"trap 'cd /b' DEBUG; python3 x.py",
+			"x=1 case y; $CMD /a; python3 x.py",
+		])
+			expect(cloudCommandScripts(command).notShown, command).toContain(unknown("x.py"));
+		expect(cloudCommandScripts("true || cd /safe && python3 evil.py")).toEqual({
 			files: [],
-			notShown: ["z.py: the folder it is in could not be told"],
+			notShown: [unknown("evil.py")],
 		});
-		expect(cloudCommandScripts("cd $(mktemp -d) && python3 z.py").notShown).toEqual([
-			"z.py: the folder it is in could not be told",
-		]);
-		expect(cloudCommandScripts("env -C /a python3 z.py").notShown).toEqual([
-			"z.py: the folder it is in could not be told",
-		]);
-	});
-
-	it("never guesses the folder after a cd that may not have run (review r1 F3)", () => {
-		const unknown = (file: string) => ({ files: [], notShown: [`${file}: the folder it is in could not be told`] });
-		expect(cloudCommandScripts("cd /tmp/a || cd /tmp/b; python3 run.py")).toEqual(unknown("run.py"));
-		expect(cloudCommandScripts("mkdir -p /x && cd /x; python3 y.py")).toEqual(unknown("y.py"));
-		expect(cloudCommandScripts("true &&\ncd /a\npython3 y.py")).toEqual(unknown("y.py"));
-		expect(cloudCommandScripts("if [ -d /a ]; then cd /a; fi; python3 y.py")).toEqual(unknown("y.py"));
-		expect(cloudCommandScripts("while true; do cd /a; python3 y.py; done")).toEqual(unknown("y.py"));
-		expect(cloudCommandScripts("case $x in a) cd /a;; esac; python3 y.py")).toEqual(unknown("y.py"));
-		expect(cloudCommandScripts("cd -; python3 a.py")).toEqual(unknown("a.py"));
-		expect(cloudCommandScripts('cd "$D" && python3 a.py')).toEqual(unknown("a.py"));
-		expect(cloudCommandScripts("pushd /a; python3 a.py")).toEqual(unknown("a.py"));
-		expect(paths("cd /tmp/a || exit 1; python3 run.py")).toEqual(["/tmp/a/run.py"]);
-		expect(paths("mkdir -p /x && cd /x && python3 y.py")).toEqual(["/x/y.py"]);
-		expect(paths("if true; then cd /a && python3 y.py; fi")).toEqual(["/a/y.py"]);
-		expect(paths("cd /tmp/eeg\npython3 fetch.py")).toEqual(["/tmp/eeg/fetch.py"]);
-	});
-
-	it("keeps the folder unknown across every boundary a cd may or may not have crossed (review r2 of #1924)", () => {
-		const unknown = (file: string) => ({ files: [], notShown: [`${file}: the folder it is in could not be told`] });
-		expect(cloudCommandScripts("test -d b && cd b && (true); python3 run.py")).toEqual(unknown("run.py"));
-		expect(cloudCommandScripts("cd a && cd b && (y); python3 r.py")).toEqual(unknown("r.py"));
-		expect(paths("cd /a && (true) && python3 x.py")).toEqual(["/a/x.py"]);
-		expect(paths("cd /a && python3 x.py & python3 y.py")).toEqual(["/a/x.py", "/root/y.py"]);
-		expect(paths("(cd /a) & python3 z.py")).toEqual(["/root/z.py"]);
-		expect(paths("x; (cd a) && y & python3 z.py")).toEqual(["/root/z.py"]);
-		expect(cloudCommandScripts("cd /a && pushd /b && python3 x.py")).toEqual(unknown("x.py"));
-		expect(cloudCommandScripts("eval 'cd /b'; python3 x.py")).toEqual(unknown("x.py"));
-		expect(cloudCommandScripts("source ./env.sh; python3 x.py")).toEqual({
-			files: [{ path: "/root/env.sh", mentioned: false }],
-			notShown: ["x.py: the folder it is in could not be told"],
+		expect(cloudCommandScripts("cd /srv/app || echo missing && python3 main.py")).toEqual({
+			files: [],
+			notShown: [unknown("main.py")],
 		});
-		expect(cloudCommandScripts("export CDPATH=/srv; cd app && python3 x.py")).toEqual(unknown("x.py"));
-		expect(cloudCommandScripts("shopt -s lastpipe; true | cd /b; python3 x.py")).toEqual(unknown("x.py"));
-		expect(cloudCommandScripts("cd /a && { cd /b; } && python3 x.py")).toEqual(unknown("x.py"));
-		expect(paths("builtin cd /b && python3 x.py; cd -P /c && python3 y.py")).toEqual(["/b/x.py", "/c/y.py"]);
-		expect(paths("cd /a | true; python3 z.py")).toEqual(["/root/z.py"]);
-		expect(paths("bash -c 'cd /b' && python3 x.py")).toEqual(["/root/x.py"]);
-		expect(paths("echo $(cd /b) && python3 x.py")).toEqual(["/root/x.py"]);
-		expect(paths("bash <<'EOF'\ncd /b\nEOF\npython3 x.py")).toEqual(["/root/x.py"]);
+		expect(paths("cd /a; python3 /tmp/x.py")).toEqual(["/tmp/x.py"]);
 	});
 
-	it("follows a sourced file the review read whole and that moves no folder, and nothing else (review r3 of #1924)", () => {
+	it("follows a sourced file only when the review read it whole and nothing in it can move a folder", () => {
 		const activate = "/srv/app/.venv/bin/activate";
 		const command = "cd /srv/app && source .venv/bin/activate && python3 main.py";
+		expect(cloudScriptKeepsFolder(VENV_ACTIVATE)).toBe(true);
 		expect(cloudCommandScripts(command, undefined, false, new Set([activate]))).toEqual({
 			files: [
 				{ path: activate, mentioned: false },
@@ -197,10 +320,11 @@ describe("the files a machine command runs", () => {
 			notShown: ["main.py: the folder it is in could not be told"],
 		});
 		expect(
-			cloudScriptKeepsFolder(
-				`# This file must be used with "source bin/activate"\nif [ "\${BASH_SOURCE-}" = "$0" ]; then echo "You must source this script"; exit 33; fi\ndeactivate () { unset VIRTUAL_ENV; }\nexport PATH="/srv/app/.venv/bin:$PATH"\nhash -r 2> /dev/null\n`,
-			),
-		).toBe(true);
+			cloudCommandScripts(command.replace(" && python3", "; python3"), undefined, false, new Set([activate])),
+		).toEqual({
+			files: [{ path: activate, mentioned: false }],
+			notShown: ["main.py: the folder it is in could not be told"],
+		});
 		for (const text of [
 			"cd /srv\n",
 			"x=1; pushd /a\n",
@@ -208,10 +332,13 @@ describe("the files a machine command runs", () => {
 			". ./more.sh\n",
 			'eval "$X"\n',
 			'"$TOOL" run\n',
+			"export CDPATH=/elsewhere\n",
+			"shopt -s expand_aliases\nalias cd='cd /x'\n",
+			"shopt -s lastpipe\n",
 		])
 			expect(cloudScriptKeepsFolder(text), text).toBe(false);
-		expect(paths("cd /a || python3 x.py")).toEqual(["/root/x.py"]);
-		expect(cloudCommandScripts("cd /a && true || python3 x.py").notShown).toEqual([
+		expect(cloudCommandScripts("source ./env.sh && cd app && python3 x.py").notShown).toEqual([
+			"./env.sh: the folder it is in could not be told",
 			"x.py: the folder it is in could not be told",
 		]);
 	});
