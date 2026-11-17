@@ -325,6 +325,8 @@ export const WORKSPACE: Record<string, string> = {
 		"Denne adresse er allerede hentet ind af en anden virksomhed.",
 	"Google mail could not be brought in. Try again.": "Posten fra Google kunne ikke hentes ind. Prøv igen.",
 	"The sign-in at Google could not be started. Try again.": "Login hos Google kunne ikke startes. Prøv igen.",
+	"Sign in with {address}.": "Log ind med {address}.",
+	"Sign in with the Google account this address belongs to.": "Log ind med den Google-konto, adressen hører til.",
 	"No mail matches.": "Ingen post passer.",
 	"Nothing has been sent yet.": "Der er ikke sendt noget endnu.",
 	"Everything else": "Alt andet",

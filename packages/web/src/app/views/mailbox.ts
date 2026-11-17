@@ -1,6 +1,6 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { cloudRoutineTriggerOfFile } from "@qorpera/cloud-client/cloud-routine-file";
-import { describeError } from "../../cloud/client.ts";
+import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import { WebCompanyFolderRejectedError, withProblems } from "../../cloud/company-folder-writes.ts";
 import type { HostedConnectorReturn } from "../../cloud/connectors.ts";
 import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
@@ -1919,8 +1919,45 @@ export function noteGoogleMailReturn(outcome: HostedConnectorReturn | undefined)
 	googleReturn = outcome?.connector === "gmail" ? outcome : undefined;
 }
 
-function googleRefusal(reason: unknown): string {
+const GOOGLE_REFUSALS = [
+	"address_taken",
+	"wrong_account",
+	"declined",
+	"expired",
+	"not_allowed",
+	"browser_mismatch",
+	"state_unknown",
+] as const;
+const SIGNING_IN_AGAIN = "qorpera.google-mailbox-sign-in-again.v1";
+const OWNERS_ONLY = "Only founders and admins can add, pause or remove them.";
+
+function refusalOf(error: unknown): string | undefined {
+	const reason = (error as { reason?: unknown } | undefined)?.reason;
+	if (typeof reason === "string") return reason;
+	if (!(error instanceof CloudRpcError)) return undefined;
+	const said = [error.message, error.details, error.hint].join(" ");
+	return GOOGLE_REFUSALS.find((code) => said.includes(code)) ?? (error.code === "42501" ? "not_allowed" : undefined);
+}
+
+function signingInAgain(address: string | null): string | undefined {
+	try {
+		const before = sessionStorage.getItem(SIGNING_IN_AGAIN) ?? undefined;
+		if (address) sessionStorage.setItem(SIGNING_IN_AGAIN, address);
+		else sessionStorage.removeItem(SIGNING_IN_AGAIN);
+		return before;
+	} catch {
+		return undefined;
+	}
+}
+
+function googleRefusal(reason: unknown, expected?: string): string {
 	switch (reason) {
+		case "wrong_account":
+			return expected
+				? t("Sign in with {address}.", { address: expected })
+				: t("Sign in with the Google account this address belongs to.");
+		case "not_allowed":
+			return t(OWNERS_ONLY);
 		case "declined":
 			return t("Google was not given access. Nothing was brought in.");
 		case "expired":
@@ -1941,6 +1978,7 @@ async function finishGoogle(page: Page): Promise<void> {
 	const google = page.options.manage ? manageOf(page)?.calls.google : undefined;
 	if (!outcome || !google) return;
 	googleReturn = undefined;
+	const expected = signingInAgain(null);
 	const { company, ui } = page;
 	ui.open = null;
 	ui.letter = null;
@@ -1955,7 +1993,7 @@ async function finishGoogle(page: Page): Promise<void> {
 		if (company.signal.aborted) return;
 		ui.tab = "addresses";
 		ui.google = "open";
-		ui.googleError = googleRefusal((error as { reason?: unknown } | undefined)?.reason);
+		ui.googleError = googleRefusal(refusalOf(error), expected);
 	}
 	page.redraw();
 	await CompanyMail.of(company)?.reread();
@@ -1966,16 +2004,23 @@ async function startGoogle(page: Page, google: GoogleMailboxCalls): Promise<void
 	ui.google = "starting";
 	ui.googleError = null;
 	page.redraw("google-sign-in");
+	signingInAgain(null);
 	try {
 		const url = await google.begin(company.signal);
 		if (company.signal.aborted) return;
 		google.go(url);
-	} catch {
+	} catch (error) {
 		if (company.signal.aborted) return;
 		ui.google = "open";
-		ui.googleError = t("The sign-in at Google could not be started. Try again.");
+		ui.googleError = startRefusal(error);
 		page.redraw("google-sign-in");
 	}
+}
+
+function startRefusal(error: unknown): string {
+	return refusalOf(error) === "not_allowed"
+		? t(OWNERS_ONLY)
+		: t("The sign-in at Google could not be started. Try again.");
 }
 
 function googleOf(page: Page, hook: EventHook): GoogleMail | undefined {
@@ -1999,16 +2044,19 @@ function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAc
 		return {
 			label: t("Sign in"),
 			pill: true,
-			failed: t("The sign-in at Google could not be started. Try again."),
+			failed: startRefusal,
 			run: async (signal) => {
 				const url = await client.begin(signal);
-				if (!signal.aborted) client.go(url);
+				if (signal.aborted || !hook.email) return;
+				signingInAgain(hook.email);
+				client.go(url);
 			},
 		};
 	const paused = google.state === "paused";
 	return {
 		label: paused ? t("Resume") : t("Pause"),
-		failed: t("It could not be changed. Try again."),
+		failed: (error) =>
+			refusalOf(error) === "not_allowed" ? t(OWNERS_ONLY) : t("It could not be changed. Try again."),
 		run: () => client.pause(hook.id, !paused),
 	};
 }

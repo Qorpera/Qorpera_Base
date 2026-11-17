@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
 import { type MailboxManage, noteGoogleMailReturn, renderMailbox } from "../src/app/views/mailbox.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedConnectorReturn } from "../src/cloud/connectors.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
@@ -24,6 +25,7 @@ beforeEach(() => {
 afterEach(() => {
 	for (const dispose of cleanup.splice(0).reverse()) dispose();
 	noteGoogleMailReturn(undefined);
+	sessionStorage.clear();
 	document.body.replaceChildren();
 	location.hash = "";
 	Reflect.deleteProperty(document, "visibilityState");
@@ -242,6 +244,69 @@ describe("coming back from Google", () => {
 		const { main, google } = await mailbox(() => {});
 		await addresses(main, 1);
 		expect(google.finish).not.toHaveBeenCalled();
+	});
+
+	const refusal = (main: HTMLElement) =>
+		main.querySelector(".mailbox-google-open .mailbox-error, .mailbox-addresses .notice")?.textContent ?? null;
+	const close = () => {
+		for (const dispose of cleanup.splice(0).reverse()) dispose();
+		document.body.replaceChildren();
+	};
+
+	it("names the address to sign in with when Google was signed in with another account", async () => {
+		const first = await mailbox((mail) => {
+			mail.addresses.unshift(googleAddress({ state: "sign_in_again", broughtIn: 10, total: 10, lastWeek: 1 }));
+		});
+		await addresses(first.main, 2);
+		button(cardOf(first.main, first.hookIds[0]!)!, "Sign in")!.click();
+		await vi.waitFor(() => expect(first.google.go).toHaveBeenCalledWith(SIGN_IN));
+		close();
+		noteGoogleMailReturn(outcome({ connection: "failed", reason: "wrong_account" }));
+		const { main } = await mailbox((mail) => {
+			mail.addresses.unshift(googleAddress({ state: "sign_in_again", broughtIn: 10, total: 10, lastWeek: 1 }));
+		});
+		await vi.waitFor(() => expect(refusal(main)).toBe(`Sign in with ${GMAIL}.`));
+		expect(sessionStorage.length).toBe(0);
+	});
+
+	it("says each of the broker's refusals in the Mailbox's words", async () => {
+		const cases: [HostedConnectorReturn, string][] = [
+			[
+				outcome({ connection: "failed", reason: "wrong_account" }),
+				"Sign in with the Google account this address belongs to.",
+			],
+			[
+				outcome({ connection: "failed", reason: "not_allowed" }),
+				"Only founders and admins can add, pause or remove them.",
+			],
+			[
+				outcome({ connection: "failed", reason: "declined" }),
+				"Google was not given access. Nothing was brought in.",
+			],
+			[outcome({ connection: "failed", reason: "expired" }), "The sign-in took too long. Try again."],
+			[
+				outcome({ connection: "failed", reason: "somewhere_else" }),
+				"Google mail could not be brought in. Try again.",
+			],
+		];
+		for (const [back, words] of cases) {
+			noteGoogleMailReturn(back);
+			const { main } = await mailbox(() => {});
+			await vi.waitFor(() => expect(refusal(main)).toBe(words));
+			close();
+		}
+	});
+
+	it("says only owners and admins connect Google when the cloud refuses the start", async () => {
+		const { main, google } = await mailbox(() => {});
+		vi.mocked(google.begin).mockRejectedValueOnce(
+			new CloudRpcError("qorpera_begin_google_mailbox", { message: "not_allowed", code: "42501" }, 403),
+		);
+		await addresses(main, 1);
+		button(googleRow(main)!, "Connect Google")!.click();
+		button(googleRow(main)!, "Sign in at Google")!.click();
+		await vi.waitFor(() => expect(refusal(main)).toBe("Only founders and admins can add, pause or remove them."));
+		expect(google.go).not.toHaveBeenCalled();
 	});
 });
 

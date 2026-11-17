@@ -117,7 +117,7 @@ function addError(kind: Kind, error: unknown): string {
 export interface HookAction {
 	readonly label: string;
 	readonly pill?: boolean;
-	readonly failed: string;
+	readonly failed: (error: unknown) => string;
 	readonly run: (signal: AbortSignal) => Promise<void>;
 }
 
@@ -387,7 +387,7 @@ export class HooksView {
 					text:
 						error instanceof CloudRpcError && error.code === "42501"
 							? t("Only founders and admins can add, pause or remove them.")
-							: action.failed,
+							: action.failed(error),
 				};
 		} finally {
 			this.#working = undefined;
