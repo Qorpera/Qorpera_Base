@@ -1,9 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { parseCompanyStateFile, writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
-import { type CloudFolderHire, CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
+import {
+	type CloudFolderHire,
+	CloudFolderHiring,
+	type CloudFolderTeamHire,
+	type CloudFolderTeamMember,
+} from "@qorpera/runtime/cloud-folder-hiring";
 import {
 	CLOUD_END_ROLE_TOOL_DESCRIPTION,
+	CLOUD_HIRE_TEAM_TOOL_DESCRIPTION,
 	CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER,
 	cloudHiringTools,
 } from "@qorpera/runtime/cloud-hiring-tools";
@@ -432,7 +438,7 @@ it("tells the model an end that waits for a member not to call again, and is the
 		folderHiring: f.hiring(operations),
 		folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
 	});
-	expect(tools.map((tool) => tool.name)).toEqual(["hire_agent", "create_group_chat", "end_role"]);
+	expect(tools.map((tool) => tool.name)).toEqual(["hire_agent", "create_group_chat", "end_role", "hire_team"]);
 	const tool = tools[2]!;
 	expect(tool.description).toBe(CLOUD_END_ROLE_TOOL_DESCRIPTION);
 	expect(tool.description).toContain("agent is its folder name under QorperaOS/agents/; reason is one sentence");
@@ -452,4 +458,175 @@ it("tells the model an end that waits for a member not to call again, and is the
 		"Give it to an existing coworker only when it is the same kind of work and that coworker has room; otherwise hire.",
 	);
 	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).not.toContain("beats a new hire");
+});
+
+const member = (name: string, assignment = `Start on ${name}.`): CloudFolderTeamMember => ({
+	name,
+	role: `${name} owner`,
+	jobDescription: `Own ${name}.`,
+	firstAssignment: assignment,
+	figure: "acorn",
+});
+const TEAM: CloudFolderTeamHire = {
+	operationKey: "team-1",
+	hires: ["Market", "Brand", "Brand research", "Product", "Customer research", "Strategy", "Industrial design", "App"].map(
+		(name) => member(name),
+	),
+};
+
+it("hires a team as one commit of new folders under one review, each with its own ids and handle", async () => {
+	const f = await fixture({ folders: ["QorperaOS/agents/market"] });
+	const result = parse(await f.hiring().hireTeam(TEAM, f.context));
+	expect(result).toMatchObject({ schema: "qorpera.agent-team-hire-receipt/v1", runId: f.identity.runId, outcome: "saved" });
+	expect(result.hires.map((hire: { folder: string }) => hire.folder)).toEqual([
+		"QorperaOS/agents/market-2",
+		"QorperaOS/agents/brand",
+		"QorperaOS/agents/brand-research",
+		"QorperaOS/agents/product",
+		"QorperaOS/agents/customer-research",
+		"QorperaOS/agents/strategy",
+		"QorperaOS/agents/industrial-design",
+		"QorperaOS/agents/app",
+	]);
+	expect(result.hires.map((hire: { id: string }) => hire.id)).toEqual(
+		TEAM.hires.map((_, index) => hashedId("qorpera.folder-hire-team/v1", f.identity.runId, `team-1:${index}`)),
+	);
+	expect(new Set(result.hires.map((hire: { id: string }) => hire.id)).size).toBe(8);
+	expect(result.hires.every((hire: { outcome: string }) => hire.outcome === "saved")).toBe(true);
+	expect(f.commits).toHaveLength(1);
+	const [commit] = f.commits;
+	expect(commit).toMatchObject({ key: "hire-team-folder:team-1", receiptId: result.receiptId });
+	expect(commit?.units.map((unit) => unit.op)).toEqual(Array(8).fill("new_folder"));
+	expect(f.recordings).toHaveLength(1);
+	expect(f.recordings[0]?.p_request).toEqual({
+		actionReviewId: f.context.actionReviewId,
+		tool: "hire_team",
+		argumentSha256: f.context.argumentSha256,
+		units: commit?.units,
+	});
+	for (const [index, hire] of result.hires.entries()) {
+		const agent = parseCompanyStateFile(`${hire.folder}/agent.md`, f.text(`${hire.folder}/agent.md`) ?? "");
+		expect(agent?.ok && agent.file).toMatchObject({
+			kind: "agent",
+			id: hire.id,
+			name: TEAM.hires[index]?.name,
+			status: "active",
+			instructions: TEAM.hires[index]?.jobDescription,
+		});
+		const todo = parseCompanyStateFile(
+			`${hire.folder}/todos/first-assignment.md`,
+			f.text(`${hire.folder}/todos/first-assignment.md`) ?? "",
+		);
+		expect(todo?.ok && todo.file).toMatchObject({
+			kind: "todo",
+			id: hashedId("qorpera.folder-hire-team-todo/v1", f.identity.runId, `team-1:${index}`),
+			status: "open",
+			requestedBy: f.identity.requesterUserId,
+		});
+	}
+	expect(result.next).toContain("are hired, together:");
+	expect(result.next).toContain("each one's first run already lists the whole team as coworkers");
+	expect(result.next).toContain("No start message or introduction is needed. Tell the member who you hired and why.");
+	expect(result.next).toContain(
+		"Use send_coworker_message only for one that has not begun after a few minutes or needs more than its assignment says.",
+	);
+	expect(result.next).not.toContain("recipientStaffId");
+	const again = parse(await f.hiring().hireTeam(TEAM, f.context));
+	expect(again).toEqual(result);
+	expect(f.commits).toHaveLength(1);
+	expect(f.recordings).toHaveLength(1);
+});
+
+it("never shares an id with a hire_agent call under the same key", async () => {
+	const f = await fixture();
+	const single = parse(await f.hiring().hire({ ...HIRE, operationKey: "team-1:0" }, f.context));
+	const team = parse(
+		await f.hiring().hireTeam(TEAM, { ...f.context, callId: randomUUID(), actionReviewId: randomUUID() }),
+	);
+	expect(team.hires.map((hire: { id: string }) => hire.id)).not.toContain(single.agent.id);
+});
+
+it("says which hires a folder taken meanwhile kept out, and that the others are hired", async () => {
+	const f = await fixture();
+	vi.spyOn(f.folder, "listAll").mockResolvedValueOnce({ asOfSeq: 1, entries: [] });
+	f.folders.add("QorperaOS/agents/brand");
+	const result = parse(await f.hiring().hireTeam(TEAM, f.context));
+	expect(result.outcome).toBe("partly_saved");
+	expect(result.hires[1]).toMatchObject({ name: "Brand", outcome: "conflict", reason: "exists" });
+	expect(result.hires.filter((hire: { outcome: string }) => hire.outcome === "saved")).toHaveLength(7);
+	expect(result.next).toContain("Brand was not (Brand: QorperaOS/agents/brand is taken)");
+	expect(result.next).toContain("hire_agent for one, hire_team for several");
+	const g = await fixture();
+	vi.spyOn(g.folder, "listAll").mockResolvedValueOnce({ asOfSeq: 1, entries: [] });
+	for (const hire of TEAM.hires.slice(0, 2)) g.folders.add(`QorperaOS/agents/${hire.name.toLowerCase()}`);
+	const small = { operationKey: "team-2", hires: TEAM.hires.slice(0, 2) };
+	const none = parse(await g.hiring().hireTeam(small, g.context));
+	expect(none).toMatchObject({ outcome: "conflict" });
+	expect(none.next).toContain("Nothing was hired");
+});
+
+it("refuses before the review a team whose files cannot be saved or whose names repeat, and one without approval", async () => {
+	const f = await fixture();
+	const hiring = f.hiring();
+	expect(() => hiring.checkTeam({ ...TEAM, hires: [member("Market"), member(" market ")] })).toThrow(
+		new CloudToolArgumentRefusal(
+			"Two hires are named Market: name each by its own work, and never a name a coworker already has",
+		),
+	);
+	expect(() => hiring.checkTeam({ ...TEAM, hires: [member("Market"), member("Bad\tName")] })).toThrow(
+		/^This team cannot be saved as the company's files: Bad\tName: /,
+	);
+	expect(() => hiring.checkTeam(TEAM)).not.toThrow();
+	const { actionReviewId: _, ...unreviewed } = f.context;
+	await refuses(hiring.hireTeam(TEAM, unreviewed), "needs the automatic review's approval");
+	expect(f.commits).toEqual([]);
+	expect(f.recordings).toEqual([]);
+	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
+});
+
+it("is the hire_team tool: two to twelve hires with hire_agent's fields, bound to its key", async () => {
+	const f = await fixture();
+	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+	const tools = cloudHiringTools(f.identity, {
+		folderHiring: f.hiring(operations),
+		folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+	});
+	const [hireAgent] = tools;
+	const tool = tools.find((item) => item.name === "hire_team")!;
+	expect(tool.description).toBe(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION);
+	expect(tool.maxArgumentBytes).toBe(90 * 1024);
+	const schema = tool.inputSchema as {
+		properties: { hires: { minItems: number; maxItems: number; items: { properties: Record<string, unknown> } } };
+	};
+	expect(schema.properties.hires).toMatchObject({ minItems: 2, maxItems: 12 });
+	const { operationKey: _, ...fields } = (hireAgent?.inputSchema as { properties: Record<string, unknown> }).properties;
+	expect(schema.properties.hires.items.properties).toEqual(fields);
+	const args = { operationKey: "team-9", hires: [member("Market"), member("Brand")] };
+	expect(() => tool.parseArguments({ ...args, hires: [member("Market")] })).toThrow(
+		new CloudToolArgumentRefusal("hires holds 2 to 12 hires; hire one coworker with hire_agent"),
+	);
+	expect(() => tool.parseArguments({ ...args, hires: Array.from({ length: 13 }, (_, n) => member(`Area ${n}`)) })).toThrow(
+		CloudToolArgumentRefusal,
+	);
+	expect(() =>
+		tool.parseArguments({ ...args, hires: [member("Market"), { ...member("Brand"), firstAssignment: "Å".repeat(2001) }] }),
+	).toThrow(new CloudToolArgumentRefusal("firstAssignment holds at most 4000 bytes in this company: shorten it"));
+	expect(() => tool.parseArguments({ ...args, hires: [member("Market"), { ...member("Brand"), extra: 1 }] })).toThrow();
+	expect(() => tool.parseArguments({ ...args, extra: 1 })).toThrow();
+	const parsed = tool.parseArguments(args);
+	expect(parsed).toEqual({ operationKey: "team-9", hires: args.hires });
+	const result = parse((await tool.execute(parsed, f.context)) as { value: unknown });
+	expect(result).toMatchObject({ outcome: "saved" });
+	expect(() => tool.parseArguments({ ...args, hires: [member("Market"), member("Sales")] })).toThrow(
+		/check QorperaOS\/agents\/ before hiring again/,
+	);
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toMatch(
+		/^Hire one new coworker, at any time as the company evolves, for a continuing responsibility that nobody owns/,
+	);
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toContain("To hire two or more at one time, above all the first team, use hire_team.");
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toMatch(
+		/^Hire two or more new coworkers at one time, above all the company's first team, so that each starts knowing the others/,
+	);
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toContain("one hire, at any later time as the company evolves, goes by hire_agent");
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).not.toContain("send_coworker_message");
 });

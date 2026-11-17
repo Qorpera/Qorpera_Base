@@ -197,6 +197,7 @@ describe("which calls are reviewed", () => {
 		["manage_hook", { action: "resume", hook: "site-form", operationKey: "k" }, "internal"],
 		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
 		["hire_agent", {}, "delegation"],
+		["hire_team", { operationKey: "k", hires: [] }, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		// The company's reading of itself (20260930766000): saving it is bookkeeping; ending a role changes who works here.
 		["update_reading", { operationKey: "k", attention: "product" }, "internal"],
@@ -3138,6 +3139,28 @@ describe("company sites (20260930550000)", () => {
 				effect: "Its routines pause and its threads close; its files stay, and a member can bring it back",
 			},
 		});
+		expect(
+			describeCloudAction(tool("hire_team"), {
+				operationKey: "k",
+				hires: [
+					{ name: "Market", role: "Market research", jobDescription: "Own the market.", firstAssignment: "Size it.", figure: "acorn" },
+					{ name: "Brand", role: "Brand owner", jobDescription: "Own the brand.", firstAssignment: "Name it.\nThen more." },
+				],
+			}),
+		).toEqual({
+			title: "Hire a team of 2 agents",
+			target: "Market and Brand",
+			details: { Market: "Market research · first task: Size it.", Brand: "Brand owner · first task: Name it. Then more." },
+		});
+		const twelve = Array.from({ length: 12 }, (_, n) => ({
+			name: `Area ${n}`,
+			role: "Owner",
+			jobDescription: "Own it.",
+			firstAssignment: "x".repeat(900),
+		}));
+		const card = describeCloudAction(tool("hire_team"), { operationKey: "k", hires: twelve });
+		expect(Object.keys(card.details)).toEqual(twelve.map((hire) => hire.name));
+		expect(Object.values(card.details).every((value) => Buffer.byteLength(value) <= 600)).toBe(true);
 		// One already ended says so on its card (review r1 of #1819: it is answered after its receipt, not refused).
 		expect(
 			describeCloudAction(tool("end_role"), {

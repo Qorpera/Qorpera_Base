@@ -381,6 +381,7 @@ export function cloudActionEffect(
 		case "computer_desktop":
 			return ["move", "scroll"].includes(action.action as string) ? "read" : "external";
 		case "hire_agent":
+		case "hire_team":
 		case "create_group_chat":
 		// Ending an agent's role sets its agent.md to archived, a change of who works here (20260930766000).
 		case "end_role":
@@ -1123,6 +1124,17 @@ export function describeCloudAction(
 		// The job description is the new agent's charter; its first assignment is where it starts.
 		quote("intent", args.jobDescription, CONTENT_BYTES);
 		add("first task", args.firstAssignment);
+	} else if (tool.name === "hire_team") {
+		const hires = Array.isArray(args.hires) ? args.hires.map((hire) => record(hire)) : [];
+		title = `Hire a team of ${hires.length} agents`;
+		target = list(hires.map((hire) => text(hire.name)).filter(Boolean)) || null;
+		for (const hire of hires)
+			add(
+				text(hire.name, 160) || "a hire",
+				[text(hire.role), hire.firstAssignment ? `first task: ${text(hire.firstAssignment)}` : ""]
+					.filter(Boolean)
+					.join(" · "),
+			);
 	} else if (tool.name === "end_role") {
 		// Its prepared arguments (cloud-hiring-tools.ts): the agent's name as its agent.md has it, read before the review.
 		title = "End an agent's role";

@@ -90,6 +90,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Coding and design work goes to Claude Code first",
 		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
 	},
+	{
+		id: "hire-team",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "Hire a team in one step",
+		text: "hire_team hires two or more coworkers in one call: one review, and the whole team is saved together, so each one's first run already lists all the others as coworkers and nobody waits for a colleague who is still being hired. Use it whenever you hire several at once, above all the first team. hire_agent stays the way to hire one coworker at any time as the company grows: a later hire shows up among everyone's coworkers at their next run, with no message needed.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
