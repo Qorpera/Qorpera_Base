@@ -2815,7 +2815,9 @@ describe("the files a machine command runs, read for its review (17 November 202
 
 	it("reads the script with the runtime's own command, shows it to the review, and runs the call bound to it", async () => {
 		const f = fixture();
-		f.gateway.read = readOutput(`F ${Buffer.byteLength(SCRIPT)}\n${Buffer.from(SCRIPT).toString("base64")}\n`);
+		f.gateway.read = readOutput(
+			`QORPERA-REVIEW-READ\nF ${Buffer.byteLength(SCRIPT)}\n${Buffer.from(SCRIPT).toString("base64")}\n`,
+		);
 		try {
 			expect((await f.boundary.invoke("r1", "qorpera", "machine_run", args)).success).toBe(true);
 			const [read, run] = f.execute.mock.calls.map(([call]) => call.operation);

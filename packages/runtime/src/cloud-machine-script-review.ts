@@ -502,8 +502,10 @@ function quote(text: string): string {
 	return `'${text.replaceAll("'", `'\\''`)}'`;
 }
 
+const READ_MARK = "QORPERA-REVIEW-READ";
+
 export function cloudScriptReadProgram(paths: readonly string[]): string {
-	return `for f in ${paths.map(quote).join(" ")}; do if [ ! -e "$f" ]; then echo M; elif [ ! -f "$f" ] || [ ! -r "$f" ]; then echo X; else s=$(stat -c %s -- "$f") || s=0; if [ "$s" -gt ${CLOUD_SCRIPT_FILE_BYTES} ]; then echo "L $s"; else echo "F $s"; base64 -w 0 < "$f"; echo; fi; fi; done`;
+	return `echo ${READ_MARK}; { for f in ${paths.map(quote).join(" ")}; do if [ ! -e "$f" ]; then echo M; elif [ ! -f "$f" ] || [ ! -r "$f" ]; then echo X; else s=$(stat -c %s -- "$f") || s=0; if [ "$s" -gt ${CLOUD_SCRIPT_FILE_BYTES} ]; then echo "L $s"; else echo "F $s"; base64 -w 0 < "$f"; echo; fi; fi; done; } 2>/dev/null`;
 }
 
 export type CloudScriptEntry =
@@ -522,7 +524,9 @@ export function cloudScriptNotRead(files: readonly CloudCommandScriptRun[], why:
 }
 
 export function parseCloudScriptRead(output: string, files: readonly CloudCommandScriptRun[]): CloudScriptRead {
-	const lines = output.split("\n");
+	const mark = output.lastIndexOf(`${READ_MARK}\n`);
+	if (mark < 0 || (mark > 0 && output[mark - 1] !== "\n")) throw new Error("Script read differs");
+	const lines = output.slice(mark + READ_MARK.length + 1).split("\n");
 	const entries: CloudScriptEntry[] = [];
 	const texts = new Map<string, string>();
 	let total = 0;

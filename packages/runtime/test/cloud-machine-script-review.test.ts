@@ -117,6 +117,8 @@ describe("reading the files on the machine", () => {
 		const script = "import urllib.request\nprint('ok')\n";
 		const read = parseCloudScriptRead(
 			[
+				"Welcome to the machine",
+				"QORPERA-REVIEW-READ",
 				`F ${Buffer.byteLength(script)}`,
 				Buffer.from(script).toString("base64"),
 				"M",
@@ -136,14 +138,15 @@ describe("reading the files on the machine", () => {
 			{ path: "/tmp/a.out", notShown: "it is not text, so the review cannot read it" },
 		]);
 		expect(read.texts.get(sha256(script))).toBe(script);
-		expect(() => parseCloudScriptRead("F 3\nnot base64!\n", files("/tmp/a.py"))).toThrow();
-		expect(() => parseCloudScriptRead("?\n", files("/tmp/a.py"))).toThrow();
+		expect(() => parseCloudScriptRead("QORPERA-REVIEW-READ\nF 3\nnot base64!\n", files("/tmp/a.py"))).toThrow();
+		expect(() => parseCloudScriptRead("QORPERA-REVIEW-READ\n?\n", files("/tmp/a.py"))).toThrow();
+		expect(() => parseCloudScriptRead("F 0\n\n", files("/tmp/a.py"))).toThrow();
 	});
 
 	it("stops showing files past the bound for one command", () => {
 		const big = "x".repeat(CLOUD_SCRIPT_FILE_BYTES);
 		const line = `F ${big.length}\n${Buffer.from(big).toString("base64")}`;
-		const read = parseCloudScriptRead([line, line, line].join("\n"), [
+		const read = parseCloudScriptRead(["QORPERA-REVIEW-READ", line, line, line].join("\n"), [
 			{ path: "/a", mentioned: false },
 			{ path: "/b", mentioned: false },
 			{ path: "/c", mentioned: false },
