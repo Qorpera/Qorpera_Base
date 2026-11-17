@@ -3950,11 +3950,17 @@ export class ConversationView {
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit, {
-							...payer,
-							...(logins.length ? { continuable: true } : {}),
-							...(payerName ? { payerName } : {}),
-						})
+					? runFailureReason(
+							recovery.lastError,
+							recovery.jobStatus,
+							recovery.usageLimit,
+							{
+								...payer,
+								...(logins.length ? { continuable: true } : {}),
+								...(payerName ? { payerName } : {}),
+							},
+							recovery.rateLimited,
+						)
 					: undefined;
 		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
 		const continueNote = this.#continueNote?.runId === runId ? this.#continueNote?.text : undefined;
@@ -3967,7 +3973,7 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit);
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit, recovery.rateLimited);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -4103,11 +4109,15 @@ export class ConversationView {
 				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
 				: undefined;
 		const title = t("{name} is waiting to go on", { name: agentName });
-		const reason = runWaitingReason(paused.until, {
-			...payer,
-			...(logins.length ? { continuable: true } : {}),
-			...(payerName ? { payerName } : {}),
-		});
+		const reason = runWaitingReason(
+			paused.until,
+			{
+				...payer,
+				...(logins.length ? { continuable: true } : {}),
+				...(payerName ? { payerName } : {}),
+			},
+			paused.rateLimited,
+		);
 		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
 		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;
 		const key = JSON.stringify(["waiting", runId, title, reason, logins, moving, note]);

@@ -8,6 +8,7 @@ import { phrase, t } from "./preferences.ts";
 export type RunFailureKind =
 	| "computer_hours"
 	| "usage_limit"
+	| "rate_limited"
 	| "provider_refused"
 	| "connection"
 	| "login_unavailable"
@@ -26,6 +27,7 @@ export function classifyRunFailure(
 	lastError: string | undefined,
 	jobStatus: "failed" | "cancelled",
 	usageLimit?: boolean,
+	rateLimited?: boolean,
 ): RunFailureKind {
 	// The company ran out of computer hours and its hour to finish running work ended: the one
 	// code that decides the class, since it names the company's hours, not Qorpera's machinery.
@@ -34,6 +36,7 @@ export function classifyRunFailure(
 	// a spent budget, which a full context window shares. When the cloud says (true or false), it decides;
 	// only an older cloud, which says nothing, leaves it to the error text below.
 	if (usageLimit === true) return "usage_limit";
+	if (rateLimited === true) return "rate_limited";
 	// The run ended, but the cloud refused its completion because work was left unsettled, such as a save whose outcome
 	// is unknown (30 October 2026). The runner fails it at once with this code; it used to go silent and read as lost
 	// contact minutes later.
@@ -101,6 +104,7 @@ const REASONS: Record<RunFailureKind, string> = {
 	usage_limit: phrase(
 		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 	),
+	rate_limited: phrase("ChatGPT turned this run away because too many requests came at once. The login is fine."),
 	// The member whose login paid checks it or picks another one; the work never moves to another login by itself.
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
@@ -176,8 +180,9 @@ export function runFailureReason(
 	jobStatus: "failed" | "cancelled",
 	usageLimit?: boolean,
 	payer: RunPayer = {},
+	rateLimited?: boolean,
 ): string {
-	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
+	const kind = classifyRunFailure(lastError, jobStatus, usageLimit, rateLimited);
 	const resetsAt = payer.resetsAt;
 	const time = kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now() ? fmtTime(resetsAt) : undefined;
 	// The work never moves by itself. The member whose own login paid may continue it with another login of theirs that
@@ -207,7 +212,8 @@ export function runFailureReason(
 /** Why a run waits at its login's usage limit, until `until` (20260930703000): it goes on by itself, on the same login,
  * then. The member whose own login pays may continue it now with another login of theirs (the card's "Continue with …",
  * `payer.continuable`); anyone else reads who can. */
-export function runWaitingReason(until: string, payer: RunPayer = {}): string {
+export function runWaitingReason(until: string, payer: RunPayer = {}, rateLimited?: boolean): string {
+	if (rateLimited === true) return t(RATE_LIMIT_WAIT);
 	const time = fmtTime(until);
 	if (payer.own === true && payer.continuable === true)
 		return t(
@@ -225,6 +231,10 @@ export function runWaitingReason(until: string, payer: RunPayer = {}): string {
 	);
 }
 
+const RATE_LIMIT_WAIT = phrase(
+	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.",
+);
+
 // The coding executor's own words for a turn that ended with no coding_finish or
 // coding_ask, or that was stopped (runner-orchestrator coding-executor.ts). Any
 // other failure it reports carries the run's last error after its own prefix.
@@ -241,6 +251,9 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	),
 	usage_limit: phrase(
 		"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+	),
+	rate_limited: phrase(
+		"ChatGPT turned the session's request away because too many requests came at once. The login is fine. The workspace is kept; a follow-up continues it.",
 	),
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
@@ -414,10 +427,12 @@ export function runFailureInterrupted(
 	lastError: string | undefined,
 	jobStatus: "failed" | "cancelled",
 	usageLimit?: boolean,
+	rateLimited?: boolean,
 ): boolean {
-	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
+	const kind = classifyRunFailure(lastError, jobStatus, usageLimit, rateLimited);
 	return (
 		kind === "lost" ||
+		kind === "rate_limited" ||
 		kind === "completion_refused" ||
 		kind === "step_timeout" ||
 		kind === "connection" ||

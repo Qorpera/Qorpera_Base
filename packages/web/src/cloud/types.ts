@@ -257,6 +257,7 @@ export interface PausedRun {
 	paidWhileAway: boolean;
 	/** Its member may move it at all: a member's own login pays, it is no routine's run, and it still resumes. */
 	movable: boolean;
+	rateLimited?: true;
 }
 
 /** A worker's own run, for a member's Stop (qorpera_get_worker_run_control; gap 4b, 20260930002800). */
@@ -276,6 +277,7 @@ export interface HostedRunRecovery {
 	proposalId?: string;
 	/** The model account paying for the run reached its usage limit during it (20260929910000). */
 	usageLimit?: boolean;
+	rateLimited?: boolean;
 	/** A member's ChatGPT plan pays for the run (20260929993000); absent from an older cloud. */
 	paidByChatgptPlan?: boolean;
 	/** The member the run was started for, whose login pays for it. */

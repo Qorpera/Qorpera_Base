@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fmtTime } from "../src/ui/dom.ts";
 import {
+	classifyRunFailure,
 	codingFailureReason,
 	runFailureInterrupted,
 	runFailureReason,
@@ -291,6 +292,40 @@ describe("why a run stopped, in the member's words", () => {
 			expect(reason).not.toMatch(/moves? to another|switch|automatic/i);
 			expect(reason).not.toMatch(/Qorpera's side/);
 		}
+	});
+});
+
+describe("a run ChatGPT turned away for too many requests at once (20260930792000)", () => {
+	const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
+	const TURNED_AWAY = "ChatGPT turned this run away because too many requests came at once. The login is fine.";
+	const WAITS =
+		"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.";
+
+	it("tells every reader it was too many requests at once, never to check the login", () => {
+		expect(classifyRunFailure(refused, "failed", false, true)).toBe("rate_limited");
+		for (const payer of [{ own: true }, { own: false, payerName: "Anna" }, {}]) {
+			const reason = runFailureReason(refused, "failed", false, payer, true);
+			expect(reason).toBe(TURNED_AWAY);
+			expect(reason).not.toMatch(/Settings|check|another login|usage limit/i);
+		}
+	});
+
+	it("keeps a usage limit a usage limit, and reads as before from an older cloud", () => {
+		expect(runFailureReason(refused, "failed", true, { own: true }, true)).toMatch(/reached its usage limit/);
+		expect(runFailureReason(refused, "failed", false, { own: true })).toMatch(PROVIDER_REFUSED);
+		expect(runFailureReason(refused, "failed", false, { own: true }, false)).toMatch(PROVIDER_REFUSED);
+	});
+
+	it("is worth trying again as it is", () => {
+		expect(runFailureInterrupted(refused, "failed", false, true)).toBe(true);
+		expect(runFailureInterrupted(refused, "failed", false)).toBe(false);
+	});
+
+	it("says a waiting run tries again by itself in minutes, with no reset and no other login", () => {
+		const until = new Date(Date.now() + 90_000).toISOString();
+		for (const payer of [{ own: true, continuable: true }, { own: false, payerName: "Anna" }, {}])
+			expect(runWaitingReason(until, payer, true)).toBe(WAITS);
+		expect(runWaitingReason(until, { own: true })).toMatch(/reached its usage limit/);
 	});
 });
 
