@@ -27,7 +27,6 @@ export const FOUNDING: Record<string, string> = {
 	"Open {name}": "Åbn {name}",
 	"Opening a table for {name}": "Åbner et bord til {name}",
 	"Opening the table": "Åbner bordet",
-	"Preparing {name}": "Gør {name} klar",
 	"The Co-Founder begins by itself at {time}, when your ChatGPT resets.":
 		"Co-Founderen går i gang af sig selv {time}, når din ChatGPT nulstilles.",
 	"Your ChatGPT is used up until {time}. You can start now: the Co-Founder begins by itself then.":
@@ -64,7 +63,6 @@ export const FOUNDING: Record<string, string> = {
 	"{names} own it now.": "{names} ejer den nu.",
 	"{name} has started": "{name} er startet",
 	"{name} invited you to start {company} together.": "{name} har inviteret dig til at starte {company} sammen.",
-	"{name} is starting": "{name} starter",
 	"{name} owns it now.": "{name} ejer den nu.",
 	"Describe your idea": "Beskriv din idé",
 	"Your Co-Founder is getting ready": "Din Co-Founder gør sig klar",

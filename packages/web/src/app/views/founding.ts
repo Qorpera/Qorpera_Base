@@ -596,7 +596,7 @@ export class FoundingView {
 			this.#mode = mode;
 			this.#page.show(mode, () => this.#build(mode));
 		}
-		if (mode === "open" || mode === "starting") claimStartCrown();
+		if (mode === "loading" || mode === "open" || mode === "starting") claimStartCrown();
 		if (mode === "loading")
 			this.#error.show(state.readError ?? "", () => (state.readError ? notice("danger", state.readError) : null));
 		else if (mode === "started") this.#started(table!);
@@ -1056,12 +1056,10 @@ export class FoundingView {
 			role: before?.seats.find((earlier) => earlier.userId === seat.userId)?.role ?? "",
 		}));
 		const ready = table.start?.companyReady === true;
-		const failed = !ready && table.start?.companySetup === "failed";
 		const firstRun = ready ? (table.start?.firstRun ?? null) : null;
 		const waitsUntil = ready && firstRun === "queued" ? (table.start?.firstRunWaitsUntil ?? null) : null;
 		const key = [
 			ready,
-			failed,
 			firstRun,
 			waitsUntil,
 			table.companyName,
@@ -1084,9 +1082,7 @@ export class FoundingView {
 						{ class: "founding-name" },
 						ready
 							? t("{name} has started", { name: table.companyName })
-							: failed
-								? t("{name} could not be set up", { name: table.companyName })
-								: t("{name} is starting", { name: table.companyName }),
+							: t("{name} could not be set up", { name: table.companyName }),
 					),
 					h(
 						"p",
@@ -1145,17 +1141,12 @@ export class FoundingView {
 								() => navigate({ name: "company", profileId: table.profileId, section: "home" }),
 								{ primary: true },
 							)
-						: failed
-							? notice(
-									"danger",
-									t(
-										"Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.",
-										{
-											name: table.companyName,
-										},
-									),
-								)
-							: spinner(t("Preparing {name}", { name: table.companyName })),
+						: notice(
+								"danger",
+								t("Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.", {
+									name: table.companyName,
+								}),
+							),
 				),
 			);
 		});

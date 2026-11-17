@@ -11,6 +11,7 @@ import {
 	relabelNewCompany,
 	renderNewCompany,
 } from "../src/app/views/new-company.ts";
+import { settleStartCrown } from "../src/app/views/start-crown.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { CompanyFoundingApi, parseCompanyFounding } from "../src/cloud/company-founding.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -568,6 +569,25 @@ describe("founding table", () => {
 		await settle();
 		expect(controller!.store.get().gone).toBe("declined");
 		expect(seatChanges).toHaveBeenCalled();
+	});
+
+	it("keeps one crown from the table's first read to the open table", async () => {
+		const read = deferred<unknown>();
+		const { view } = mount(() => read.promise);
+		const crown = document.querySelector(".start-crown");
+		expect(crown?.isConnected).toBe(true);
+		settleStartCrown();
+		view.update();
+		await settle();
+		expect(crown?.isConnected).toBe(true);
+		read.resolve(wire());
+		await settle();
+		expect(container.querySelector("textarea.founding-vision")).not.toBeNull();
+		expect(document.querySelector(".start-crown")).toBe(crown);
+		controller!.dispose();
+		settleStartCrown();
+		await settle();
+		expect(crown?.isConnected).toBe(false);
 	});
 
 	it("after Start, shows the founders on the starting scene and opens the company once it is ready", async () => {
