@@ -303,6 +303,12 @@ export function renderInterface(
 	const state = company.store.get();
 	const profileId = company.profile.profileId;
 	const locale = presentationLocale();
+	if (state.connectionLost && (!state.team || !state.staff.length)) {
+		show(container, JSON.stringify(["reconnecting", profileId, locale]), () =>
+			h("section", { class: "page interface-waiting" }, spinner(t("Can't reach Qorpera. Trying again…"))),
+		);
+		return;
+	}
 	if (state.loading && !state.staff.length) {
 		show(container, JSON.stringify(["loading", profileId, locale]), () =>
 			h("section", { class: "page interface-waiting" }, spinner(t("Opening company"))),

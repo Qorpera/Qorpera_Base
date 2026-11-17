@@ -11,6 +11,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
+	CLOUD_COWORKER_PRIORITY_REQUIRED,
 	CLOUD_COWORKER_STARTING,
 	CLOUD_COWORKER_STARTING_WAIT_MS,
 	CLOUD_WAKE_SCHEMA,
@@ -1574,6 +1575,24 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 				identity,
 			),
 		).toThrow("Invalid held coworker messages");
+	});
+	it("refuses a message that does not say whether it wakes the coworker", async () => {
+		const { run, message, call, bus, createBoundary } = await coworkerFixture();
+		const { priority: _priority, ...undecided } = message;
+		const boundary = createBoundary();
+		try {
+			const response = await boundary.invoke("undecided_1", "qorpera", "send_coworker_message", undecided);
+			expect(response.success).toBe(false);
+			expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: `INVALID_ARGUMENTS: ${CLOUD_COWORKER_PRIORITY_REQUIRED}` },
+			});
+			expect(call).not.toHaveBeenCalled();
+			expect(bus.coworkerTool().inputSchema.required).toContain("priority");
+		} finally {
+			boundary.close();
+			run.close();
+		}
 	});
 	it("sends priority false to the kernel and accepts a held receipt", async () => {
 		const { binding, run, message, call, createBoundary } = await coworkerFixture();

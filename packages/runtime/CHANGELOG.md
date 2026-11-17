@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 - No cap on an interface app's files (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, 17 Nov 2026; Jonas: "also uncap the file-sizes"): `save_app` writes text files of any kind that is not binary, each as large as one call carries, lists the app's whole folder and releases only what the save drew on, and refuses no app for its count or size; `make_picture` no longer checks an app's room; an explainer's clips have no count bound. `company_write` and `company_edit` take as much text as one call carries (`MAX_TOOL_ARGUMENT_BYTES`, 960 KiB). save_app's words say so, and that fonts, sound and 3D models are files of the app; `PLATFORM_UPDATES` tells the Co-Founder. `MAX_CLOUD_PICTURE_BYTES` stays 12 MiB as the picture lane's own bound.
+- A coworker message wakes the coworker only when the sender says so (the founder, 17 November 2026: "Build, no cap", after
+  213 of about 520 runs in two days were started by coworker messages, 91 of them in one company's first hour, most of
+  them news with a file link; lanes/agent-messaging-volume-20261117). `send_coworker_message` requires `priority`: a call
+  without it is refused with the reason, and the tool's text says true is for a request, a question, a handover the
+  coworker waits for or a member's decision that changes its work, false (a note for its next turn) for other news, and
+  no message for what the files and todos show. An answer the asker waits for is sent with `priority` true (contract
+  14.6, the 2026-11-17 amendment). The coworker paragraph and the coworker wake's protocol stop replies that
+  say received, agreed or done, and passing news on to a third coworker who need not act. `PLATFORM_UPDATES` tells the
+  Co-Founder (`coworker-messages-wake-on-request`). The runtime bundle only; no migration.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
