@@ -46,6 +46,7 @@ export class AppFrame {
 	#asked = false;
 	readonly #handle: AppCallHandler;
 	readonly #left: () => void;
+	readonly #again: boolean;
 	readonly #lifetime = new AbortController();
 	#port: MessagePort | undefined;
 	#handed = false;
@@ -63,7 +64,9 @@ export class AppFrame {
 		className: string,
 		handle: AppCallHandler,
 		left: () => void,
+		options: { readonly again?: boolean } = {},
 	) {
+		this.#again = options.again === true;
 		if (page instanceof Promise)
 			void page.then((made) => {
 				this.#page = made;
@@ -133,6 +136,13 @@ export class AppFrame {
 			return;
 		}
 		if (data.type !== PAGE_READY) return;
+		if (this.#ready && this.#again) {
+			this.#port?.close();
+			this.#port = undefined;
+			this.#handed = false;
+			this.#loads = 0;
+			return;
+		}
 		if (this.#ready) {
 			this.#leave();
 			return;

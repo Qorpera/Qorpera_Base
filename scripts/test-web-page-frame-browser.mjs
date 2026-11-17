@@ -6,8 +6,6 @@
 // link hints in its markup. Each attempt aims at a listener here (HTTP, a STUN
 // port on UDP, a TCP port), and Chrome's net log shows every host name it looked up.
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-page-frame-browser.mjs
-// PAGE_FRAME_DOCUMENT=<file> serves another frame document, PAGE_FRAME_MODULE=<file> bundles another page-frame.ts (to
-// see a weaker one fail).
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -52,14 +50,24 @@ function headersFor(path) {
 // The app's side: the frame code as the web app ships it, in a page that hands the frame the variant's page.
 const parent = await build({
 	stdin: {
-		contents: `import { framePage, PageFrames } from ${JSON.stringify(process.env.PAGE_FRAME_MODULE ?? join(web, "src/ui/page-frame.ts"))};
+		contents: `import { assembleApp, PageFiles } from ${JSON.stringify(join(web, "src/app/interface-apps.ts"))};
+import { AppFrame } from ${JSON.stringify(join(web, "src/ui/app-frame.ts"))};
 window.reports = [];
 addEventListener("message", (event) => { if (event.data && typeof event.data.probe === "string") window.reports.push(event.data.probe); });
 const variant = new URLSearchParams(location.search).get("v");
 const { page } = await (await fetch("/variant/" + variant)).json();
-const handed = framePage(page);
-if (handed === null) window.reports.push("not live");
-else document.body.append(new PageFrames(new AbortController().signal).frame(handed, "Page", "page"));`,
+const bytes = new TextEncoder().encode(page);
+const hex = async (data) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+const file = { manifestSha256: await hex(new TextEncoder().encode("manifest")), fileSha256: await hex(bytes), bytes: bytes.length, mediaType: "text/html", executable: false };
+const entry = (path) => path === "pages/index.html" ? { path, kind: "file", version: "00000000-0000-4000-8000-000000000001", seq: 1, updatedAt: "2026-11-17T00:00:00Z", file, target: null } : null;
+const folder = { read: async (path) => ({ asOfSeq: 1, entry: entry(path) }), list: async () => ({ asOfSeq: 1, entries: [], next: null }), readFile: async () => bytes };
+const signal = new AbortController().signal;
+const assembled = await assembleApp(folder, { path: "pages", entry: "index.html" }, signal);
+if (!assembled.ok) window.reports.push("not live");
+else {
+	const files = new PageFiles(folder, "pages", signal);
+	document.body.append(new AppFrame(assembled.framed, "Page", "page", (call) => files.answer(call), () => {}, { again: true }).frame);
+}`,
 		resolveDir: repository,
 		loader: "ts",
 	},

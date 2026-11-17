@@ -79,6 +79,7 @@
 	for (const name of Object.getOwnPropertyNames(window)) if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);
 	// A picture-in-picture window would be a window of its own too.
 	if ("documentPictureInPicture" in window) define(window, "documentPictureInPicture", undefined);
+	if ("SharedWorker" in window) define(window, "SharedWorker", undefined);
 	// WHY: a worker still has some of WebRTC's interfaces; each worker the page starts, and each it starts in turn,
 	// runs this first, from its own source text, before what the page gave it.
 	const guardWorkers = function guard(scope, source) {
@@ -98,6 +99,7 @@
 			return new Real(make(new BlobOf([body], { type: "text/javascript" })), options);
 		};
 		started.prototype = Real.prototype;
+		Object.defineProperty(Real.prototype, "constructor", { value: started, writable: false, configurable: false });
 		Object.defineProperty(scope, "Worker", { value: started, writable: false, configurable: false });
 	};
 	guardWorkers(window, `${guardWorkers}`);
@@ -448,19 +450,27 @@
 		const nothing = () => {};
 		const files = new Map();
 		const urls = new WeakMap();
+		const readFile = (path, from) =>
+			new PromiseOf((resolve, reject) =>
+				ask(
+					"file",
+					{ path, base: from },
+					(value) => (value instanceof BlobOf ? resolve(value) : reject(new ErrorOf("The app could not read that"))),
+					reject,
+				),
+			);
 		const fileOf = (path, from) => {
 			const key = `${from}\n${path}`;
 			let known = apply(get, files, [key]);
 			if (!known) {
-				known = new PromiseOf((resolve, reject) =>
-					ask(
-						"file",
-						{ path, base: from },
-						(value) => (value instanceof BlobOf ? resolve(value) : reject(new ErrorOf("The app could not read that"))),
-						reject,
-					),
-				);
+				known = readFile(path, from);
 				apply(set, files, [key, known]);
+				apply(then, known, [
+					undefined,
+					() => {
+						if (apply(get, files, [key]) === known) apply(drop, files, [key]);
+					},
+				]);
 			}
 			return known;
 		};
@@ -532,7 +542,7 @@
 				return call("tell", { about: String(given.about ?? ""), at: kept(given.at), text: kept(given.text) });
 			}),
 			file: freeze((path) => fileUrl(String(path), base)),
-			bytes: freeze((path) => apply(then, fileOf(String(path), base), [(blob) => apply(arrayBufferOf, blob, [])])),
+			bytes: freeze((path) => apply(then, readFile(String(path), base), [(blob) => apply(arrayBufferOf, blob, [])])),
 			onChange: freeze((listener) => {
 				if (typeof listener === "function") apply(push, changes, [listener]);
 			}),
@@ -540,7 +550,7 @@
 		// Sent as a call, so the app counts it as one; nothing here waits for its answer.
 		const follow = (href) =>
 			apply(send, port, [{ type: "qorpera-app-call", id: ++next, method: "open", params: { href } }]);
-		return { page, follow, fileOf, fileUrl };
+		return { page, follow, fileUrl, readFile };
 	};
 
 	const ownFiles = (live, base) => {
@@ -689,7 +699,7 @@
 			const path = method === "GET" || method === "HEAD" ? ownPath(address) : null;
 			if (path === null) return apply(realFetch, window, [input, init]);
 			return new PromiseOf((resolve) =>
-				apply(then, live.fileOf(path, base), [
+				apply(then, live.readFile(path, base), [
 					(blob) =>
 						resolve(
 							new ResponseOf(method === "HEAD" ? null : blob, {
@@ -740,8 +750,12 @@
 				if (request.mime !== null) apply(xhrMime, this, [request.mime]);
 				apply(xhrSend, this, []);
 			};
-			apply(then, live.fileUrl(request.path, base), [
-				go,
+			apply(then, live.readFile(request.path, base), [
+				(blob) => {
+					const address = makeUrl(blob);
+					apply(listen, this, ["loadend", () => dropUrl(address)]);
+					go(address);
+				},
 				(error) => {
 					fail(request.path)(error);
 					const gone = makeUrl(new BlobOf([]));

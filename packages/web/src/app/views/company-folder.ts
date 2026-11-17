@@ -1399,6 +1399,7 @@ export class CompanyFolderBrowser {
 			className,
 			(call) => files.answer(call),
 			() => undefined,
+			{ again: true },
 		);
 		this.#frames.add(frame);
 		frame.frame.addEventListener("load", () => {

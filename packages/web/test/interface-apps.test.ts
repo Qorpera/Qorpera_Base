@@ -272,6 +272,41 @@ describe("putting an app's page together", () => {
 		expect(progress.at(-1)?.[0]).toBe(progress.at(-1)?.[1]);
 	});
 
+	it("reads a large file of the first paint piece by piece into its blob, never whole", async () => {
+		const big = new Uint8Array(9 * 1024 * 1024).fill(7);
+		const f = fakeFolder({
+			"apps/kit/index.html": '<div hidden><img src="sheet.webp"></div><img src="small.png">',
+			"apps/kit/sheet.webp": big,
+			"apps/kit/small.png": new Uint8Array(10),
+		});
+		const whole = vi.spyOn(f, "readFile");
+		const pieces = vi.fn(
+			async (
+				file: { bytes: number },
+				_signal: AbortSignal,
+				onPiece: (piece: Uint8Array, index: number, count: number) => void,
+			) => {
+				const count = Math.ceil(file.bytes / (4 * 1024 * 1024));
+				for (let index = 0; index < count; index++)
+					onPiece(big.subarray(index * 4 * 1024 * 1024, (index + 1) * 4 * 1024 * 1024), index, count);
+			},
+		);
+		const assembled = await assembleApp(
+			Object.assign(f, { readFilePieces: pieces }) as never,
+			{ path: "apps/kit", entry: "index.html" },
+			new AbortController().signal,
+		);
+		if (!assembled.ok) throw new Error(assembled.message);
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const handed = new Map(assembled.framed.files);
+		expect(handed.get(page.querySelector("[hidden] img")?.getAttribute("src") ?? "")?.size).toBe(big.byteLength);
+		expect(pieces).toHaveBeenCalledOnce();
+		expect(whole.mock.calls.map(([file]) => (file as { bytes: number }).bytes).sort()).toEqual(
+			[10, '<div hidden><img src="sheet.webp"></div><img src="small.png">'.length].sort(),
+		);
+		expect(assembled.files).toBe(3);
+	});
+
 	it("puts an explainer together as any app: its engine, its scenes and its voice clips, in a dark page", async () => {
 		// The page as save_app's explainer kit writes it (packages/runtime/src/cloud-app-kit-explainer.ts
 		// `explainerPage`, whose test holds this text): the web needs to know nothing of the kit.

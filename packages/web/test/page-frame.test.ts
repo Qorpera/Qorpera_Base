@@ -2,7 +2,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { framePage, PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY, PageFrames } from "../src/ui/page-frame.ts";
+import { AppFrame } from "../src/ui/app-frame.ts";
+import { framePage, PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
 
 // Read from the package root, where the tests run.
 const headers = readFileSync(resolve("public/_headers"), "utf8");
@@ -28,6 +29,22 @@ function ready(source: Window | null, data: unknown = { type: PAGE_READY }) {
 	window.dispatchEvent(event);
 }
 
+const standAlone = (html: string, title: string) =>
+	new AppFrame(
+		{ html },
+		title,
+		"files-page-frame",
+		async () => ({ ok: false, error: "Only an app in apps/ reads the company's data" }),
+		() => {},
+		{ again: true },
+	);
+const loaded = (frame: AppFrame) => frame.frame.dispatchEvent(new Event("load"));
+const handedAs = (html: string) => [
+	{ type: PAGE_CONTENT, html, files: [], missing: [], base: "" },
+	"*",
+	[expect.any(MessagePort)],
+];
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	document.body.replaceChildren();
@@ -35,51 +52,46 @@ afterEach(() => {
 
 describe("an HTML page's frame", () => {
 	it("runs scripts with no origin, sends no referrer, and loads the frame document", () => {
-		const stop = new AbortController();
-		const frame = new PageFrames(stop.signal).frame("<p>Hi</p>", "Page: hi.html", "files-page-frame");
+		const frame = standAlone("<p>Hi</p>", "Page: hi.html").frame;
 		expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
 		expect(frame.getAttribute("src")).toBe(PAGE_FRAME_URL);
 		expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
 		expect(frame.title).toBe("Page: hi.html");
 		expect(frame.className).toBe("files-page-frame");
-		stop.abort();
 	});
 
-	it("hands each frame its own page when it is ready, and nothing to anyone else", () => {
-		const stop = new AbortController();
-		const frames = new PageFrames(stop.signal);
-		const one = frames.frame("<p>One</p>", "Page: one.html", "files-page-frame");
-		const two = frames.frame("<p>Two</p>", "Page: two.html", "files-page-frame");
+	it("hands each frame its own page when it is ready, again when the page reloads itself, and nothing to anyone else", () => {
+		const one = standAlone("<p>One</p>", "Page: one.html");
+		const two = standAlone("<p>Two</p>", "Page: two.html");
 		const stranger = document.createElement("iframe");
-		document.body.append(one, two, stranger);
-		const toOne = vi.spyOn(one.contentWindow!, "postMessage");
-		const toTwo = vi.spyOn(two.contentWindow!, "postMessage");
+		document.body.append(one.frame, two.frame, stranger);
+		const toOne = vi.spyOn(one.frame.contentWindow!, "postMessage");
+		const toTwo = vi.spyOn(two.frame.contentWindow!, "postMessage");
 		const toStranger = vi.spyOn(stranger.contentWindow!, "postMessage");
-		ready(two.contentWindow);
-		expect(toTwo).toHaveBeenCalledExactlyOnceWith({ type: PAGE_CONTENT, html: "<p>Two</p>" }, "*");
+		ready(two.frame.contentWindow);
+		loaded(two);
+		expect(toTwo).toHaveBeenCalledExactlyOnceWith(...handedAs("<p>Two</p>"));
 		expect(toOne).not.toHaveBeenCalled();
-		// Another frame, another kind of message, or no window at all gets nothing.
 		ready(stranger.contentWindow);
-		ready(one.contentWindow, { type: PAGE_CONTENT, html: "<p>Mine</p>" });
-		ready(one.contentWindow, "qorpera-page-ready");
+		ready(one.frame.contentWindow, { type: PAGE_CONTENT, html: "<p>Mine</p>" });
+		ready(one.frame.contentWindow, "qorpera-page-ready");
 		ready(null);
 		expect(toStranger).not.toHaveBeenCalled();
 		expect(toOne).not.toHaveBeenCalled();
-		// A page that reloads itself asks again, and gets its page again.
-		ready(one.contentWindow);
-		ready(one.contentWindow);
+		ready(one.frame.contentWindow);
+		loaded(one);
+		loaded(one);
+		ready(one.frame.contentWindow);
+		expect(toOne).toHaveBeenCalledOnce();
+		loaded(one);
 		expect(toOne).toHaveBeenCalledTimes(2);
-		// A frame made before another is put in keeps its page; one that had its page and left is forgotten.
-		const three = frames.frame("<p>Three</p>", "Page: three.html", "files-page-frame");
-		const four = frames.frame("<p>Four</p>", "Page: four.html", "files-page-frame");
-		document.body.append(three, four);
-		const toThree = vi.spyOn(three.contentWindow!, "postMessage");
-		ready(three.contentWindow);
-		expect(toThree).toHaveBeenCalledExactlyOnceWith({ type: PAGE_CONTENT, html: "<p>Three</p>" }, "*");
-		// After the view ends, nothing is answered.
-		stop.abort();
-		ready(two.contentWindow);
+		expect(toOne).toHaveBeenLastCalledWith(...handedAs("<p>One</p>"));
+		expect(one.signal.aborted).toBe(false);
+		two.dispose();
+		ready(two.frame.contentWindow);
+		loaded(two);
 		expect(toTwo).toHaveBeenCalledOnce();
+		one.dispose();
 	});
 
 	it("hands a page over without the link hints the browser would act on whatever the policy says", () => {
@@ -95,14 +107,13 @@ describe("an HTML page's frame", () => {
 		expect(handed.startsWith('<!DOCTYPE html><html lang="da">')).toBe(true);
 		expect(handed).toContain('<link rel="icon" href="data:,">');
 		expect(handed).toContain('<p>Sales</p><script>const a = "<link rel=preconnect>";</script>');
-		// A frame is handed the page it was made with.
-		const stop = new AbortController();
-		const frame = new PageFrames(stop.signal).frame(handed, "Page: sales.html", "files-page-frame");
-		document.body.append(frame);
-		const send = vi.spyOn(frame.contentWindow!, "postMessage");
-		ready(frame.contentWindow);
-		expect(send).toHaveBeenCalledExactlyOnceWith({ type: PAGE_CONTENT, html: handed }, "*");
-		stop.abort();
+		const frame = standAlone(handed, "Page: sales.html");
+		document.body.append(frame.frame);
+		const send = vi.spyOn(frame.frame.contentWindow!, "postMessage");
+		ready(frame.frame.contentWindow);
+		loaded(frame);
+		expect(send).toHaveBeenCalledExactlyOnceWith(...handedAs(handed));
+		frame.dispose();
 	});
 
 	it("hands a page over with its declarative shadow roots left as plain templates, in templates too", () => {
@@ -148,28 +159,24 @@ describe("an HTML page's frame", () => {
 	});
 
 	it("hears Escape pressed in its own frames' pages as Escape pressed on the frame, and nothing else", () => {
-		const stop = new AbortController();
-		const frames = new PageFrames(stop.signal);
-		const one = frames.frame("<p>One</p>", "Page: one.html", "files-page-frame");
+		const one = standAlone("<p>One</p>", "Page: one.html");
 		const stranger = document.createElement("iframe");
-		document.body.append(one, stranger);
+		document.body.append(one.frame, stranger);
 		const keys: string[] = [];
 		document.body.addEventListener("keydown", (event) => {
 			keys.push(`${(event.target as HTMLElement).className || "stranger"} ${event.key} ${event.cancelable}`);
 		});
 		ready(stranger.contentWindow, { type: PAGE_ESCAPE });
 		ready(null, { type: PAGE_ESCAPE });
-		ready(one.contentWindow, PAGE_ESCAPE);
+		ready(one.frame.contentWindow, PAGE_ESCAPE);
 		expect(keys).toEqual([]);
-		ready(one.contentWindow, { type: PAGE_ESCAPE });
+		ready(one.frame.contentWindow, { type: PAGE_ESCAPE });
 		expect(keys).toEqual(["files-page-frame Escape true"]);
-		// The frame's page is not handed over again for it.
-		const toOne = vi.spyOn(one.contentWindow!, "postMessage");
-		ready(one.contentWindow, { type: PAGE_ESCAPE });
+		const toOne = vi.spyOn(one.frame.contentWindow!, "postMessage");
+		ready(one.frame.contentWindow, { type: PAGE_ESCAPE });
 		expect(toOne).not.toHaveBeenCalled();
-		// A view that ended hears nothing.
-		stop.abort();
-		ready(one.contentWindow, { type: PAGE_ESCAPE });
+		one.dispose();
+		ready(one.frame.contentWindow, { type: PAGE_ESCAPE });
 		expect(keys).toHaveLength(2);
 	});
 
