@@ -1654,10 +1654,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		unassignedRows.length +
 		hiddenCount +
 		sectionGroups.reduce((n, g) => n + g.rows.length, 0);
-	if (!state.loading || state.staff.length) parts.loading = undefined;
+	const waiting = (state.loading || state.connectionLost) && !state.staff.length;
+	if (!waiting) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
 	const empty =
-		!state.loading && !cofounderElement && !anyRows
+		!state.loading && !state.connectionLost && !cofounderElement && !anyRows
 			? railQuery
 				? t("No matching conversations.")
 				: t("No agents yet.")

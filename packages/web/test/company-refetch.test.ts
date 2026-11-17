@@ -5,6 +5,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { CloudRpcError, describeError } from "../src/cloud/client.ts";
 import type { PageCursor } from "../src/cloud/pagination.ts";
 import type { HostedSession, HostedSessionEvent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { event, fixture, id, profileA, session, settle, staff, userA } from "./fixtures.ts";
 
 /* Realtime hints carry no bodies, and every transcript event touches its conversation's row: a
@@ -672,6 +673,12 @@ describe("a dropped connection", () => {
 		expect(describeError(lost())).toBe("Qorpera can't be reached right now. Check your connection and try again.");
 		expect(describeError(new TypeError("Load failed"))).not.toContain("Load failed");
 		expect(describeError(new Error("Network blip"))).toBe("Network blip");
+		setLanguagePreference("da");
+		try {
+			expect(describeError(lost())).toBe("Qorpera kan ikke nås lige nu. Tjek din forbindelse, og prøv igen.");
+		} finally {
+			setLanguagePreference("system");
+		}
 	});
 
 	it("shows it is reconnecting instead of an error, and reads again by itself, waiting longer each time", async () => {

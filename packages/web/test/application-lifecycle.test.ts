@@ -1730,6 +1730,28 @@ describe("account and route ownership", () => {
 		expect(rail.textContent).not.toContain("Can't reach Qorpera");
 	});
 
+	it("waits in Storage and the rail while the company cannot be reached, with no error and no empty list", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/file`);
+		const lost = new CloudRpcError("qorpera_get_team", { message: "TypeError: Failed to fetch" }, 0);
+		vi.mocked(f.api.getTeam).mockRejectedValue(lost);
+		vi.mocked(f.api.listStaff).mockRejectedValue(lost);
+		await draw();
+		await draw();
+		const storage = f.root.querySelector(".settings-dialog")!;
+		expect(storage.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(storage.querySelector(".notice-danger")).toBeNull();
+		const rail = f.root.querySelector(".rail")!;
+		expect(rail.textContent).not.toContain("No agents yet.");
+		expect(rail.querySelector(".notice-danger")).toBeNull();
+		vi.mocked(f.api.getTeam).mockResolvedValue(team);
+		vi.mocked(f.api.listStaff).mockResolvedValue([staff]);
+		window.dispatchEvent(new Event("online"));
+		await draw();
+		await draw();
+		expect(storage.textContent).not.toContain("Can't reach Qorpera");
+		expect(rail.textContent).not.toContain("Can't reach Qorpera");
+	});
+
 	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));

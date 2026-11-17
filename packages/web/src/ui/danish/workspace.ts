@@ -408,6 +408,8 @@ export const WORKSPACE: Record<string, string> = {
 	"No agents yet.": "Ingen agenter endnu.",
 	"Retry conversations": "Hent samtaler igen",
 	"Can't reach Qorpera. Trying again…": "Kan ikke få forbindelse til Qorpera. Prøver igen…",
+	"Qorpera can't be reached right now. Check your connection and try again.":
+		"Qorpera kan ikke nås lige nu. Tjek din forbindelse, og prøv igen.",
 	"Retry company": "Hent virksomhed igen",
 	connecting: "forbinder",
 	"live updates degraded": "liveopdateringer virker ikke helt",
