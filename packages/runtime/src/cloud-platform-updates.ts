@@ -116,7 +116,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-17",
 		title: "The object kit draws a real 3D model",
-		text: "The object kit's page can show a product as a real 3D model, drawn live in the member's own browser in real light: they turn and tilt it by hand, zoom in, and tap its parts. Build the model in Blender on a machine, export it as one .glb into the app's folder and name it as model in object.json; each part names its object in the model as node, so no tracks are written. Keep the turntable or picture beside it: the page shows it while the model arrives and where a browser cannot draw 3D. app_guide about object says how.",
+		text: "The object kit's page can show a product as a real 3D model, drawn live in the member's own browser in real light: they turn and tilt it by hand, zoom in, and tap its parts. Build the model in Blender on a machine, export it into the app's folder as one glb file and name it as the data's model; each part names its object in the model as node, so no tracks are written. Keep the turntable or picture beside it: the page shows it while the model arrives and where a browser cannot draw 3D. app_guide about object says how.",
 	},
 ]);
 
