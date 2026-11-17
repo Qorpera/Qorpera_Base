@@ -7,7 +7,7 @@ begin
 	select b.* into strict v_active from public.qorpera_active_runtime_bundle a
 	join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;
 	v_manifest := case when p_claude then jsonb_set(v_active.manifest, '{modelPolicy,claudeChoice}', '"thread"')
-		else v_active.manifest #- '{modelPolicy,claudeChoice}' end;
+		else v_active.manifest #- '{modelPolicy,claudeChoice}' end #- '{modelPolicy,threadEfforts}';
 	insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
 	select v_active.bundle_key, max(version) + 1, v_manifest,
 		encode(extensions.digest(convert_to(v_manifest::text, 'utf8'), 'sha256'), 'hex')
@@ -164,7 +164,7 @@ begin
 		'2: the speed answer names the models too: ' || v_result::text);
 	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, model_id, reasoning_effort, version,'
 		' updated_by_user_id) values (%L, %L, %L, 1, %L)', pg_temp.cm_session('92400000-0000-4000-8000-000000000032'), 'gpt-6-astra',
-		'xhigh', pg_temp.cm_owner()), '23514');
+		'max', pg_temp.cm_owner()), '23514');
 	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, reasoning_effort, version,'
 		' updated_by_user_id) values (%L, %L, 1, %L)', pg_temp.cm_session('92400000-0000-4000-8000-000000000032'), 'max',
 		pg_temp.cm_owner()), '23514');
@@ -348,7 +348,7 @@ begin
 	perform pg_temp.base_assert(w.harness = 'claude-code' and w.claude_model = 'claude-opus-5-5' and w.claude_effort = 'xhigh',
 		'4: the worker records the pick: ' || to_jsonb(w)::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'cm-dispatch-plain', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12810000-0000-4000-8000-0000000000b2', null, 'Read the notes'));
+		pg_temp.c4_brief('12810000-0000-4000-8000-0000000000b2', 'codex', 'Read the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved'
 		and (pg_temp.c4_worker('12810000-0000-4000-8000-0000000000b2')).claude_model is null,
 		'4: a Codex worker records none: ' || v_result::text);

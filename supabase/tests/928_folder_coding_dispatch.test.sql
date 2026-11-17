@@ -163,7 +163,7 @@ begin
 	-- 5. No species, with a harness: an in-house worker cannot name one.
 	perform pg_temp.c3_refused(pg_temp.c3_commit(v_alice, 'c3-refuse-5', pg_temp.c3_units(v_alice, v_folder,
 			pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', 'in-house')),
-		pg_temp.c3_request(v_folder, pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', 'in-house'), '{"harness":"codex"}'),
+		pg_temp.c3_request(v_folder, pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', 'in-house'), '{"harness":"cursor"}'),
 		pg_temp.c3_review(v_alice, 'c3-refuse-5', pg_temp.c3_units(v_alice, v_folder,
 			pg_temp.c3_brief('92800000-0000-4000-8000-0000000000b1', 'in-house')))),
 		v_brief, 'Worker species is invalid');

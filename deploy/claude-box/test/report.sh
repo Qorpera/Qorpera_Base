@@ -15,6 +15,8 @@ for l in lines:
     if l["kind"] == "result":
         txt = l["text"].replace("\n", " | ")
         print(f"  [{l['step']:2}] {l['tool']:12} {l['name']:22} {l['ms']!s:>8} ms err={l['is_error']!s:5} tags={l['tags']} :: {txt[:500]}")
+    if l["kind"] == "sub-result":
+        print(f"  [sub] err={l['is_error']!s:5} tags={l['tags']} :: {l['text'].replace(chr(10), ' | ')[:500]}")
     if l["kind"] == "refresh":
         print(f"  REFRESH grant={l.get('grant')} auth={l['auth_tags']} body={l['body_tags']}")
 PY
