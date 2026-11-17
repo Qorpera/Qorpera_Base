@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+- A Claude Code worker can make a picture (the founder, 17 Nov 2026, "Yes, all three";
+  lanes/agent-box-20261113/CLAUDE-PICTURE-COMMAND-BRIEF.md; the runtime bundle only: no migration, no runner or machine
+  image). `picture <file.png under /company> <what to draw>` run with its Bash tool is answered by the run host's home
+  shell and never runs on the machine: the run's review gate checks it as Codex's `make_picture` (internal; delegation
+  into another agent's or a member's app), the member's own ChatGPT picture lane makes it (a light Codex session of the
+  run on the run's own Codex sign-in, started on the first picture, one picture at a time, ended 10 minutes after the
+  last), and the PNG is written at that path on the machine, whose folder program saves it to the company folder. A run
+  whose sign-in makes no pictures (no Codex login, a ChatGPT plan login) is told so in words and to render in Blender.
+  The worker's system note gains one sentence about it.
 - A Claude Code worker's commands and file changes on the agent's machine get the same per-action review as Codex's
   (the founder, 16 Nov 2026, "Same check"; lanes/agent-box-20261113/CLAUDE-HOME-CHECK-BRIEF.md; the runtime bundle only,
   no migration). The run host reviews each command before it reaches the home's exec channel, and each Write, Edit or

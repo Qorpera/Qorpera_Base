@@ -133,6 +133,25 @@ function pictureRefusal(error: unknown): never {
 	throw new CloudToolRefusal(words[error.reason]);
 }
 
+export async function cloudPictureForeignOwner(
+	folder: CloudCompanyFolderClient,
+	path: string,
+	owner: string,
+	signal: AbortSignal,
+): Promise<boolean> {
+	const app = appPath(path);
+	if (!app) return false;
+	await refuseRetiredPath(folder, path, signal, "saved");
+	let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
+	try {
+		stored = await folder.readText(`${APPS_FOLDER}/${app.name}/${APP_MANIFEST}`, APP_MANIFEST_MAX_BYTES, signal);
+	} catch (error) {
+		if (!(error instanceof CloudCompanyPathNotText)) unavailable(error, "saved");
+	}
+	const parsed = stored ? parseAppManifest(stored.text) : null;
+	return parsed?.ok === true && parsed.manifest.owner !== owner.toLowerCase();
+}
+
 interface PictureRequest {
 	readonly operationKey: string;
 	readonly path: string;
@@ -263,22 +282,7 @@ export function cloudPictureTool(options: {
 		// Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as PictureRequest;
-			const app = appPath(request.path);
-			if (!app) return value;
-			// A retired interface is the members' alone: refused before the review, and before a picture is paid for.
-			await refuseRetiredPath(folder, request.path, context.signal, "saved");
-			let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
-			try {
-				stored = await folder.readText(
-					`${APPS_FOLDER}/${app.name}/${APP_MANIFEST}`,
-					APP_MANIFEST_MAX_BYTES,
-					context.signal,
-				);
-			} catch (error) {
-				if (!(error instanceof CloudCompanyPathNotText)) unavailable(error, "saved");
-			}
-			const parsed = stored ? parseAppManifest(stored.text) : null;
-			return parsed?.ok === true && parsed.manifest.owner !== owner
+			return (await cloudPictureForeignOwner(folder, request.path, owner, context.signal))
 				? ({ ...request, foreignOwner: true } as unknown as JsonValue)
 				: value;
 		},

@@ -45,6 +45,7 @@ import {
 	CloudClaudeHomeShell,
 	type CloudClaudeHomeStream,
 } from "./cloud-claude-home-shell.ts";
+import type { CloudClaudePictures } from "./cloud-claude-picture-command.ts";
 import type { CloudCodexHomeMachine, CloudCodexHomeReview } from "./cloud-codex-home.ts";
 import {
 	assertNativeSocketPath,
@@ -781,6 +782,7 @@ export interface ClaudeCodeBoxOptions {
 		readonly machine: CloudCodexHomeMachine;
 		readonly attach: (reviewer: CloudActionReviewer | undefined) => void;
 	};
+	pictures?: CloudClaudePictures;
 	/** Proofs only: the egress transport (as startNativeCodexEgress takes it), a CA file the box trusts for the stub's
 	 * TLS, and the positive controls' weaker set-ups. */
 	proof?: {
@@ -956,6 +958,7 @@ async function startBox(
 			sessionId: options.sessionId,
 			machineId: options.machineId,
 			signal,
+			...(options.pictures ? { pictures: options.pictures } : {}),
 			...(review
 				? {
 						review: { gate: review.gate, machine: review.machine },

@@ -24,6 +24,7 @@ import { mkdtemp } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
+import { crc32, deflateSync } from "node:zlib";
 import { authorizeHomeSession } from "../../coding-worker/home-session-authority.ts";
 import { MachineCommandRouter } from "../../coding-worker/machine-command-routing.ts";
 import { LxdCompanyMachineHost } from "../../../packages/runner-orchestrator/src/company-machine-host.ts";
@@ -37,6 +38,7 @@ import { createCloudHomeChannel } from "../../../packages/runtime/src/cloud-home
 import { CLAUDE_LOGIN_FILES_SCHEMA } from "../../../packages/runtime/src/cloud-model-login-sign-in.ts";
 import { CLAUDE_LOGIN_FIELD } from "../../../packages/runtime/src/cloud-model-login-vault-sign-in.ts";
 import { CloudNativeCompanyRuntime } from "../../../packages/runtime/src/cloud-native-company-runtime.ts";
+import { CloudPictureFailure } from "../../../packages/runtime/src/cloud-picture-channel.ts";
 import { nativeRuntimeFailureMetadata } from "../../../packages/runtime/src/cloud-native-failure.ts";
 import { NativeHostDispatch } from "../../../packages/runtime/src/cloud-native-host-dispatch.ts";
 import { nativeRunRootPrefix } from "../../../packages/runtime/src/cloud-native-provider-host.ts";
@@ -62,6 +64,31 @@ const OWNER = "home-sftp-proof";
 const PROVIDER = "machine-node";
 const CANARY = new RegExp(`${"C2CAN"}ARY-[A-Z0-9]+-[0-9a-f]{8,}`, "g");
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+const proofPicture = (): Buffer => {
+	const width = 48;
+	const height = 32;
+	const rows = Buffer.alloc((width * 3 + 1) * height);
+	for (let y = 0; y < height; y++)
+		for (let x = 0; x < width; x++) rows.set([180, 90 + y, 40 + x], y * (width * 3 + 1) + 1 + x * 3);
+	const chunk = (type: string, data: Buffer) => {
+		const named = Buffer.concat([Buffer.from(type, "ascii"), data]);
+		const length = Buffer.alloc(4);
+		length.writeUInt32BE(data.length);
+		const crc = Buffer.alloc(4);
+		crc.writeUInt32BE(crc32(named));
+		return Buffer.concat([length, named, crc]);
+	};
+	const header = Buffer.alloc(13);
+	header.writeUInt32BE(width, 0);
+	header.writeUInt32BE(height, 4);
+	header.set([8, 2], 8);
+	return Buffer.concat([
+		Buffer.from("89504e470d0a1a0a", "hex"),
+		chunk("IHDR", header),
+		chunk("IDAT", deflateSync(rows)),
+		chunk("IEND", Buffer.alloc(0)),
+	]);
+};
 const say = (line: string) => process.stdout.write(`${new Date().toISOString().slice(11, 19)} ${line}\n`);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let failures = 0;
@@ -1060,6 +1087,67 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("review-sealed-live", r9.ok && resultsText("checked-next")?.includes("Next checked done.") === true && renewed9.refused === 0 && renewed9.renewed > 0,
 			`the next run renewed from the version the checked run sealed, with a refresh token not yet used: ${JSON.stringify(renewed9)} ${r9.providerSessionId ?? r9.error}`);
 
+		drain();
+		const wp = "c4c00000-0000-4000-8000-0000000000ba";
+		dispatch("picture", wp, "A picture");
+		drain();
+		const bp = leased(start(wp));
+		const pictureAt = "/company/c4c-pictures/chair.png";
+		const rp = await runWorker(
+			bp,
+			scenario("picture", [
+				Bash("mkdir -p /company/c4c-pictures", "picture-folder"),
+				T("Bash", "picture", {
+					command: `picture ${pictureAt} "a walnut lounge chair on a plain light grey background, soft daylight"`,
+					description: "picture",
+					timeout: 300000,
+				}),
+				T("Read", "look", { file_path: pictureAt }),
+			], "Picture work done."),
+			{ picture: true },
+		);
+		if (rp.ok && rp.providerSessionId) complete(bp, rp.providerSessionId);
+		const toldP = (name: string) => (rp.stub?.results ?? []).find((result) => result.name === name);
+		const pictureOnHome = spawnSync("lxc", ["exec", PROOF_MACHINE, "--", "sh", "-c",
+			`sha256sum ${pictureAt} 2>/dev/null || echo absent; stat -c '%U %s' ${pictureAt} 2>/dev/null`], { encoding: "utf8" }).stdout;
+		const reviewsP = sessionJson<{ tool: string; decision: string }[]>(
+			`select coalesce(jsonb_agg(jsonb_build_object('tool', r.tool_name, 'decision', r.decision) order by r.created_at), '[]')::text
+				from public.qorpera_action_reviews r where r.run_id = '${bp.runId}';`,
+		);
+		say(`picture run: results ${JSON.stringify(rp.stub?.results)}; reviews ${JSON.stringify(reviewsP)}; stub reviews ${JSON.stringify(rp.stub?.reviews)}; home ${pictureOnHome.replaceAll("\n", " | ")}`);
+		check("picture-run", rp.ok && resultsText("picture")?.includes("Picture work done.") === true, `the picture run: ${rp.providerSessionId ?? rp.error}`);
+		check("picture-made", toldP("picture")?.isError === false && (toldP("picture")?.text ?? "").includes(`Saved a new picture to ${pictureAt}`)
+			&& pictureOnHome.includes(sha256(proofPicture())),
+			`the picture command was answered by the run's host, made on the stub lane and written on the home as the agent: ${JSON.stringify(toldP("picture"))} ${pictureOnHome.replaceAll("\n", " | ")}`);
+		check("picture-read", toldP("look")?.isError === false && (toldP("look")?.text ?? "").includes('"type": "image"'),
+			`Claude Code opened the picture with Read and the model was shown an image: ${JSON.stringify(toldP("look"))}`);
+		check("picture-review", reviewsP.every((r) => r.tool !== "make_picture") && reviewsP.some((r) => r.tool === "home_command" && r.decision === "allow")
+			&& (rp.stub?.reviews ?? []).every((r) => !r.arguments.includes("walnut")),
+			`the picture went through the run's gate as Codex's make_picture (internal: no reviewer call, as for Codex), the mkdir as a reviewed command: ${JSON.stringify(reviewsP)}`);
+
+		drain();
+		const wn = "c4c00000-0000-4000-8000-0000000000bb";
+		dispatch("nopicture", wn, "No picture login");
+		drain();
+		const bn = leased(start(wn));
+		const rn = await runWorker(
+			bn,
+			scenario("nopicture", [
+				T("Bash", "no-picture", {
+					command: 'picture /company/c4c-pictures/none.png "a red chair"',
+					description: "no-picture",
+					timeout: 300000,
+				}),
+			], "No picture done."),
+		);
+		if (rn.ok && rn.providerSessionId) complete(bn, rn.providerSessionId);
+		const toldN = (rn.stub?.results ?? []).find((result) => result.name === "no-picture");
+		const noneOnHome = spawnSync("lxc", ["exec", PROOF_MACHINE, "--", "sh", "-c",
+			"[ -e /company/c4c-pictures/none.png ] && echo there || echo absent"], { encoding: "utf8" }).stdout;
+		check("picture-no-login", rn.ok && toldN?.isError === true && (toldN?.text ?? "").includes("NO_PICTURES")
+			&& (toldN?.text ?? "").includes("Blender") && noneOnHome.trim() === "absent",
+			`a run whose root holds no Codex login gets the words and no file: ${JSON.stringify(toldN)} ${noneOnHome.trim()}`);
+
 		// 6. A revoked sign-in: the worker was dispatched on it; the run opens nothing and ends blocked in its words.
 		drain();
 		const w4 = "c4c00000-0000-4000-8000-0000000000b4";
@@ -1121,6 +1209,7 @@ async function runProcess(): Promise<void> {
 		scenario: string;
 		stubPort: number;
 		stopAfterMs?: number;
+		picture?: boolean;
 	};
 	const t0 = Date.now();
 	const stubLog = join(B, `stub-${config.label}.jsonl`);
@@ -1217,6 +1306,15 @@ async function runProcess(): Promise<void> {
 				onLone: (change: { method: string; paths: readonly string[] }) => console.error(`LONE ${change.method} ${change.paths.join(" ")}`),
 				onReviewerFailure: (text: string) => console.error(`REVIEWER ${text.replaceAll("\n", " | ").slice(0, 3000)}`),
 			},
+			...(config.picture
+				? {
+						pictures: () => async (input: { prompt: string }) => {
+							console.error(`PICTURE asked: ${input.prompt}`);
+							if (!input.prompt.includes("walnut")) throw new CloudPictureFailure("refused");
+							return { png: proofPicture() };
+						},
+					}
+				: {}),
 		},
 	});
 	const b = config.binding;

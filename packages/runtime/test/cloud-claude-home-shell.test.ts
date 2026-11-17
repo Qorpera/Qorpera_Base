@@ -9,6 +9,7 @@ import {
 	CloudClaudeHomeShell,
 	parseCloudClaudeShellRequest,
 } from "@qorpera/runtime/cloud-claude-home-shell";
+import { CLAUDE_NO_PICTURES, CLAUDE_PICTURE_USAGE } from "@qorpera/runtime/cloud-claude-picture-command";
 import type { CloudCodexHomeAction } from "@qorpera/runtime/cloud-codex-home";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -68,7 +69,7 @@ afterEach(() => {
 
 async function shellWith(
 	channel: CloudClaudeHomeChannel,
-	more: Pick<ConstructorParameters<typeof CloudClaudeHomeShell>[0], "review" | "hook"> = {},
+	more: Pick<ConstructorParameters<typeof CloudClaudeHomeShell>[0], "review" | "hook" | "pictures"> = {},
 ) {
 	const root = mkdtempSync(join(tmpdir(), "claude-shell-"));
 	roots.push(root);
@@ -305,5 +306,108 @@ it("answers the file tools' hook on the host: on with 0, stopped with 2 and the 
 	expect(hook).toHaveBeenCalledTimes(2);
 	expect(home.opened).toEqual([]);
 	expect(shell.counts).toMatchObject({ hooks: 3, commands: 0 });
+	await shell.close();
+});
+
+const PNG = Buffer.from(
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+	"base64",
+);
+const asClaudeCode = (command: string) =>
+	`source /slot/config/shell-snapshots/snapshot-bash-1700000000000-abc123.sh && eval '${command.replaceAll("'", "'\\''")}' < /dev/null && pwd -P >| /tmp/claude-1a2b-cwd`;
+
+function pictureHome(place = 0) {
+	return fakeHome((message, send) => {
+		if (message.method === "process/start") {
+			const processId = (message.params as { processId: string }).processId;
+			send({ id: message.id, result: {} });
+			send({ method: "process/exited", params: { processId, exitCode: place } });
+			send({ method: "process/closed", params: { processId } });
+		} else if (message.method === "fs/writeFile") send({ id: message.id, result: {} });
+	});
+}
+
+it("answers a picture command itself: checked as make_picture, made, written on the home, never run there", async () => {
+	const home = pictureHome();
+	const reviewed: CloudCodexHomeAction[] = [];
+	const asked: string[] = [];
+	const { shell } = await shellWith(home.channel, {
+		review: {
+			gate: {
+				check: async (action) => {
+					reviewed.push(action);
+					return { run: true };
+				},
+			},
+			machine: { id: MACHINE, name: "studio" },
+		},
+		pictures: {
+			make: async (input) => {
+				asked.push(input.prompt);
+				return { png: PNG };
+			},
+		},
+	});
+	const result = await command(shell.socketPath, {
+		cmd: asClaudeCode(`picture designs/chair.png "a red chair, it's walnut"`),
+		cwd: "/company",
+		env: {},
+	});
+	expect(result.code).toBe(0);
+	expect(result.out).toContain("Saved a new picture to /company/designs/chair.png");
+	expect(asked).toEqual(["a red chair, it's walnut"]);
+	expect(reviewed.map((action) => action.tool)).toEqual(["make_picture"]);
+	const started = home.sent.filter((message) => message.method === "process/start");
+	expect(started).toHaveLength(1);
+	expect((started[0]?.params as { argv: string[] }).argv.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
+	expect((started[0]?.params as { argv: string[] }).argv.slice(3)).toEqual(["picture", "/company/designs/chair.png"]);
+	expect(JSON.stringify(home.sent)).not.toContain("a red chair");
+	const written = home.sent.filter((message) => message.method === "fs/writeFile");
+	expect(written.map((message) => message.params)).toEqual([
+		{ path: "file:///company/designs/chair.png", dataBase64: PNG.toString("base64") },
+	]);
+	expect(shell.counts).toMatchObject({ pictures: 1, picturesSaved: 1, commands: 0, reviewed: 0 });
+	await shell.close();
+});
+
+it("answers a malformed picture command with its usage and a member without pictures with the words", async () => {
+	const home = pictureHome();
+	const { shell } = await shellWith(home.channel, { pictures: { make: undefined } });
+	const usage = await command(shell.socketPath, {
+		cmd: asClaudeCode("picture /company/a.png $(cat words.txt)"),
+		cwd: "/company",
+		env: {},
+	});
+	expect(usage).toEqual({ out: "", err: `${CLAUDE_PICTURE_USAGE}\n`, code: 2 });
+	expect(home.opened).toEqual([]);
+	const none = await command(shell.socketPath, {
+		cmd: asClaudeCode("picture /company/a.png red"),
+		cwd: "/company",
+		env: {},
+	});
+	expect(none).toEqual({ out: "", err: `${CLAUDE_NO_PICTURES}\n`, code: 1 });
+	expect(home.sent.filter((message) => message.method === "fs/writeFile")).toEqual([]);
+	await shell.close();
+});
+
+it("says the picture's folder is missing on the home before any picture is made", async () => {
+	const home = pictureHome(3);
+	let made = 0;
+	const { shell } = await shellWith(home.channel, {
+		pictures: {
+			make: async () => {
+				made += 1;
+				return { png: PNG };
+			},
+		},
+	});
+	const result = await command(shell.socketPath, {
+		cmd: asClaudeCode("picture /company/new/a.png red"),
+		cwd: "/company",
+		env: {},
+	});
+	expect(result.code).toBe(1);
+	expect(result.err).toContain("PICTURE_FOLDER_MISSING: nothing was made; the folder /company/new does not exist");
+	expect(made).toBe(0);
 	await shell.close();
 });

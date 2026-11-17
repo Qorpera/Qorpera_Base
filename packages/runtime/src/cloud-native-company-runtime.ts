@@ -27,6 +27,8 @@ import {
 	launchClaudeCodeBox,
 } from "./cloud-claude-box.ts";
 import type { CloudClaudeHomeChannel } from "./cloud-claude-home-shell.ts";
+import type { CloudClaudePictures } from "./cloud-claude-picture-command.ts";
+import { CloudClaudePictureLane } from "./cloud-claude-picture-lane.ts";
 import {
 	CLAUDE_WORKER_CATALOG,
 	CLAUDE_WORKER_SYSTEM_NOTE,
@@ -83,7 +85,7 @@ import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
 import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
-import { cloudPictureTool } from "./cloud-folder-picture-tool.ts";
+import { cloudPictureForeignOwner, cloudPictureTool } from "./cloud-folder-picture-tool.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import {
 	CloudFolderReading,
@@ -214,6 +216,7 @@ export interface CloudClaudeWorkerHost {
 	readonly configuration?: ClaudeBoxConfiguration;
 	/** Proofs only: the box's egress transport and CA for a stub model. No production host sets it. */
 	readonly proof?: ClaudeCodeBoxOptions["proof"];
+	readonly pictures?: (identityRoot: string) => CloudClaudePictures["make"];
 }
 
 // The company runtime's control plane completes folder receipts: a folder-v2 run's writers commit under them.
@@ -1692,6 +1695,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		if (!host || !channelOf) throw new Error(CLAUDE_WORKER_NOT_CARRIED);
 		const brief = claudeWorkerBrief(wake.payload as Record<string, unknown>);
 		const run = await CloudNativeToolRun.open(binding, this.#control, signal, NATIVE_AUTHORITY_LEASE_SECONDS * 1000);
+		let pictureLane: CloudClaudePictureLane | undefined;
 		try {
 			const runSignal = AbortSignal.any([signal, run.signal]);
 			const operations = new CloudNativeToolOperations(run, this.#control);
@@ -1817,6 +1821,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					timeZone: wake.time.timeZone,
 				},
 			});
+			pictureLane =
+				home && !host.pictures
+					? await this.#claudePictureLane(identityRoot, binding, identity, runSignal)
+					: undefined;
+			const lane = pictureLane;
+			const pictures: CloudClaudePictures = {
+				make: host.pictures
+					? host.pictures(identityRoot)
+					: lane
+						? (picture, pictureSignal) => lane.make(picture, pictureSignal)
+						: undefined,
+				foreignOwner: (path, ownerSignal) =>
+					cloudPictureForeignOwner(folder, path, identity.staffAgentId, ownerSignal),
+			};
 			let outcome: ClaudeWorkerOutcome;
 			if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
 			else
@@ -1845,6 +1863,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								machine: { id: home.machineId, name: home.machine },
 								attach: (made) => reviewer.attach(made),
 							},
+							pictures,
 							// The run's one home session (both channels) is ended in SQL once both are closed.
 							endSession: async (id, reason) => {
 								await this.#paths.call(
@@ -1945,8 +1964,48 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				delivery: { messageCount: 0, finalMessageId: null },
 			};
 		} finally {
+			pictureLane?.close();
 			run.close();
 		}
+	}
+
+	async #claudePictureLane(
+		identityRoot: string,
+		binding: CloudNativeToolBinding,
+		identity: CloudNativeToolIdentity,
+		signal: AbortSignal,
+	): Promise<CloudClaudePictureLane | undefined> {
+		if (await chatGptPlanRun(identityRoot)) return undefined;
+		const login = await lstat(join(identityRoot, "codex", "auth.json")).catch(() => undefined);
+		if (!login?.isFile()) return undefined;
+		return new CloudClaudePictureLane({
+			signal,
+			start: async ({ pictures, light, signal: sessionSignal }) => {
+				const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+				await runCloudNativeRunToolSession({
+					binding,
+					controlPlane: this.#control,
+					beginExecution: async () => undefined,
+					tools: () => ({
+						tools: [],
+						assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
+						checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
+						recordContextView: (frame, outputs, requestSignal) =>
+							gateway.recordContextView(frame, outputs, requestSignal),
+						fenceContextView: (frame, outputs, requestSignal) =>
+							gateway.fenceContextView(frame, outputs, requestSignal),
+					}),
+					light: async (_ask, lightSignal) => light(lightSignal),
+					pictures,
+					command: this.#command,
+					binarySha256: this.#sha256,
+					identityRoot,
+					isolation: this.#isolation,
+					signal: sessionSignal,
+					timeoutMs: this.#timeoutMs,
+				});
+			},
+		});
 	}
 
 	/**

@@ -177,7 +177,7 @@ export interface CloudCodexHomeMachine {
  */
 export interface CloudCodexHomeAction {
 	/** How the review classifies it: a command on the machine, or a change to its files (cloud-action-review.ts). */
-	readonly tool: "home_command" | "home_change";
+	readonly tool: "home_command" | "home_change" | "make_picture";
 	/** What the card shows: the command, the words typed, or which files change. */
 	readonly summary: string;
 	/** What the review approves, whole, and shows the reviewer: the machine and everything the model chose for this

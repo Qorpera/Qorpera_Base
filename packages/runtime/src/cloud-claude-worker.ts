@@ -25,6 +25,7 @@ import {
 	claudeBoxStartStage,
 } from "./cloud-claude-box.ts";
 import type { ClaudeLoginFileName } from "./cloud-claude-login-vault.ts";
+import { CLAUDE_PICTURE_NOTE } from "./cloud-claude-picture-command.ts";
 import { cloudHomeRefusalWords } from "./cloud-codex-home.ts";
 import { sha256 } from "./cloud-company-folder-client.ts";
 import { CloudHomeChannelRefused } from "./cloud-home-channel.ts";
@@ -43,6 +44,7 @@ export const CLAUDE_WORKER_SYSTEM_NOTE = [
 	"Your file tools (Read, Write, Edit, NotebookEdit, Grep, Glob) see only /company, your home folder /var/lib/qorpera-agent and /tmp of that machine: use the shell for everything else on it. A file tool aimed at any other path reads or writes this program's own scratch space, not the machine.",
 	"Never write a password, key or token into /company.",
 	"sudo is yours on the machine.",
+	CLAUDE_PICTURE_NOTE,
 ].join("\n");
 
 /** The worker's brief, as its wake carries it (`qorpera.worker-dispatch/v1`). */

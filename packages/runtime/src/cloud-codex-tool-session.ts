@@ -3519,6 +3519,16 @@ export async function runCloudCodexToolSession(options: {
 		if (started.fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
+		const attachPictures = (): void => {
+			if (rpc.chatGptPlan || !options.pictures) return;
+			if (options.pictures.timeoutMs !== undefined) rpc.pictureMs = options.pictures.timeoutMs;
+			options.pictures.attach((input, pictureSignal) =>
+				rpc.picture(
+					{ ...input, cwd: started.workspace, model: options.model, codexHome: started.codexHome },
+					pictureSignal,
+				),
+			);
+		};
 		stage = "execution-admission";
 		await options.beforeModelStart?.(signal);
 		signal.throwIfAborted();
@@ -3526,6 +3536,7 @@ export async function runCloudCodexToolSession(options: {
 			// A light ask: each question is one fresh tool-less side thread, as a compactor's line is; the agent's thread
 			// never starts. The run's provider session is the last thread it asked in.
 			stage = "codex-turn-completion";
+			attachPictures();
 			let asked: string | undefined;
 			await options.light(async (instructions, text, askSignal) => {
 				if (
@@ -3613,15 +3624,7 @@ export async function runCloudCodexToolSession(options: {
 			options.voice.attach((input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal));
 		}
 		// Pictures the same way: Codex's image tool reaches the Codex login's ChatGPT backend, never a plan's token.
-		if (!rpc.chatGptPlan && options.pictures) {
-			if (options.pictures.timeoutMs !== undefined) rpc.pictureMs = options.pictures.timeoutMs;
-			options.pictures.attach((input, pictureSignal) =>
-				rpc.picture(
-					{ ...input, cwd: started.workspace, model: options.model, codexHome: started.codexHome },
-					pictureSignal,
-				),
-			);
-		}
+		attachPictures();
 		const startTurn = async (text: string): Promise<void> => {
 			const turnStarted = object(
 				await rpc.request(

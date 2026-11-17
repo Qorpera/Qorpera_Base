@@ -22,7 +22,21 @@ import { randomBytes } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
-import { CLAUDE_REVIEW_FAILED, CLAUDE_REVIEW_HOOK_PATH, cloudClaudeShellAction } from "./cloud-claude-home-review.ts";
+import { pathToFileURL } from "node:url";
+import {
+	CLAUDE_REVIEW_FAILED,
+	CLAUDE_REVIEW_HOOK_PATH,
+	cloudClaudeInvocationCommand,
+	cloudClaudeShellAction,
+} from "./cloud-claude-home-review.ts";
+import {
+	CLAUDE_PICTURE_FAILED,
+	type ClaudePictureHome,
+	type ClaudePictureOutcome,
+	type CloudClaudePictures,
+	cloudClaudePictureCall,
+	runClaudePictureCommand,
+} from "./cloud-claude-picture-command.ts";
 import type { CloudCodexHomeMachine, CloudCodexHomeReview } from "./cloud-codex-home.ts";
 import { assertNativeSocketPath } from "./cloud-native-egress.ts";
 
@@ -55,6 +69,10 @@ const VALUE_CHARS = 4096;
 const MAX_CONNECTIONS = 64;
 /** How long `initialize` may take on a fresh channel. */
 const INITIALIZE_MS = 20_000;
+const PICTURE_PLACE_MS = 30_000;
+const PICTURE_WRITE_MS = 120_000;
+const PICTURE_PLACE =
+	'd=$(dirname -- "$1"); [ -d "$d" ] || exit 3; [ -L "$1" ] && exit 4; [ -d "$1" ] && exit 5; exit 0';
 
 /** The words a command shows when its home is not there; Claude Code shows them to the model as the command's stderr. */
 export const CLOUD_CLAUDE_SHELL_UNAVAILABLE =
@@ -133,7 +151,9 @@ export class CloudClaudeHomeShell {
 	readonly #signal: AbortSignal;
 	readonly #review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
 	readonly #hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
+	readonly #pictures?: CloudClaudePictures;
 	#reviews = 0;
+	#pictureCalls = 0;
 	readonly #sockets = new Set<Socket>();
 	#server?: Server;
 	#path?: string;
@@ -150,6 +170,8 @@ export class CloudClaudeHomeShell {
 		reviewed: 0,
 		declined: 0,
 		hooks: 0,
+		pictures: 0,
+		picturesSaved: 0,
 	};
 	/** Why the channel would not open or ended, for this host's journal alone. */
 	cause?: string;
@@ -161,6 +183,7 @@ export class CloudClaudeHomeShell {
 		signal: AbortSignal;
 		review?: { readonly gate: CloudCodexHomeReview; readonly machine: CloudCodexHomeMachine };
 		hook?: (text: string, signal: AbortSignal, realPath?: string) => Promise<string | undefined>;
+		pictures?: CloudClaudePictures;
 	}) {
 		this.#channel = options.channel;
 		this.#sessionId = options.sessionId;
@@ -168,6 +191,7 @@ export class CloudClaudeHomeShell {
 		this.#signal = options.signal;
 		if (options.review) this.#review = options.review;
 		if (options.hook) this.#hook = options.hook;
+		if (options.pictures) this.#pictures = options.pictures;
 	}
 
 	get socketPath(): string {
@@ -298,6 +322,61 @@ export class CloudClaudeHomeShell {
 		}
 	}
 
+	#picture(
+		call: { readonly path: string; readonly prompt: string },
+		request: { cmd: string; cwd: string },
+		signal: AbortSignal,
+	): Promise<ClaudePictureOutcome> {
+		const pictures = this.#pictures as CloudClaudePictures;
+		return runClaudePictureCommand({
+			call,
+			command: cloudClaudeInvocationCommand(request.cmd).command,
+			cwd: request.cwd,
+			machine: this.#review?.machine ?? { id: this.#machineId, name: this.#machineId },
+			...(this.#review ? { review: this.#review.gate } : {}),
+			callId: `claude-picture:${this.#sessionId}:${++this.#pictureCalls}`,
+			pictures,
+			home: this.#pictureHome(),
+			signal,
+		});
+	}
+
+	#pictureHome(): ClaudePictureHome {
+		return {
+			place: async (path, signal) => {
+				let channel: Channel;
+				try {
+					channel = await this.#channelNow();
+				} catch {
+					return "unavailable";
+				}
+				const code = await quiet(channel, ["/bin/sh", "-c", PICTURE_PLACE, "picture", path], signal);
+				return code === 0
+					? "ok"
+					: code === 3
+						? "missing"
+						: code === 4
+							? "link"
+							: code === 5
+								? "folder"
+								: "unavailable";
+			},
+			write: async (path, png, signal) => {
+				let channel: Channel;
+				try {
+					channel = await this.#channelNow();
+				} catch {
+					return false;
+				}
+				const answer = await Promise.race([
+					call(channel, "fs/writeFile", { path: pathToFileURL(path).href, dataBase64: png.toString("base64") }),
+					aborted(AbortSignal.any([signal, AbortSignal.timeout(PICTURE_WRITE_MS)])),
+				]);
+				return answer !== undefined && !("error" in answer);
+			},
+		};
+	}
+
 	async #serve(socket: Socket): Promise<void> {
 		if (this.#sockets.size >= MAX_CONNECTIONS || this.#signal.aborted) {
 			socket.destroy();
@@ -338,6 +417,25 @@ export class CloudClaudeHomeShell {
 					send({ x: 0 });
 					socket.end();
 				} else fail(refusal, 2);
+				return;
+			}
+			const picture = this.#pictures
+				? cloudClaudePictureCall(cloudClaudeInvocationCommand(request.cmd).command, request.cwd)
+				: undefined;
+			if (picture) {
+				this.counts.pictures += 1;
+				const outcome: ClaudePictureOutcome | undefined =
+					"usage" in picture
+						? { err: picture.usage, code: 2 }
+						: await this.#picture(picture, request, asked).catch(() =>
+								asked.aborted ? undefined : { err: CLAUDE_PICTURE_FAILED, code: 1 },
+							);
+				if (asked.aborted || !outcome) return;
+				if (outcome.saved !== undefined) this.counts.picturesSaved += 1;
+				if (outcome.out) send({ o: Buffer.from(outcome.out).toString("base64") });
+				if (outcome.err) send({ e: Buffer.from(`${outcome.err}\n`).toString("base64") });
+				send({ x: outcome.code });
+				socket.end();
 				return;
 			}
 			const refusal = await this.#reviewed(request, asked);
@@ -440,6 +538,52 @@ function call(channel: Channel, method: string, params: Record<string, unknown>)
 		channel.pending.set(id, resolve);
 		channel.stream.write(JSON.stringify({ id, method, params }));
 	});
+}
+
+function aborted(signal: AbortSignal): Promise<undefined> {
+	return new Promise((resolve) => {
+		if (signal.aborted) resolve(undefined);
+		else signal.addEventListener("abort", () => resolve(undefined), { once: true });
+	});
+}
+
+async function quiet(channel: Channel, argv: readonly string[], signal: AbortSignal): Promise<number | undefined> {
+	const processId = `claude-picture-${randomBytes(6).toString("hex")}`;
+	let exitCode: number | undefined;
+	let lost = false;
+	let closed: () => void = () => undefined;
+	const done = new Promise<void>((resolve) => {
+		closed = resolve;
+	});
+	channel.processes.set(processId, (message) => {
+		const params = (message.params ?? {}) as Record<string, unknown>;
+		if (message.method === "process/exited" && typeof params.exitCode === "number") exitCode = params.exitCode;
+		else if (message.method === "process/closed") {
+			lost = message.lost === true;
+			closed();
+		}
+	});
+	const until = AbortSignal.any([signal, AbortSignal.timeout(PICTURE_PLACE_MS)]);
+	try {
+		const started = await call(channel, "process/start", {
+			processId,
+			argv,
+			cwd: "file:///",
+			env: { ...CLOUD_CLAUDE_SHELL_ENVIRONMENT },
+			tty: false,
+			pipeStdin: false,
+			arg0: null,
+		});
+		if ("error" in started) return undefined;
+		const stopped = await Promise.race([done.then(() => false), aborted(until).then(() => true)]);
+		if (stopped) {
+			if (!channel.closed) await call(channel, "process/terminate", { processId });
+			return undefined;
+		}
+		return lost ? undefined : exitCode;
+	} finally {
+		channel.processes.delete(processId);
+	}
 }
 
 /** The request line, read without taking more of the socket than that line; undefined past REQUEST_BYTES. */
