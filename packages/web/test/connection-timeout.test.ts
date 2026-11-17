@@ -23,6 +23,7 @@ function silentCloud(): { cloud: Cloud; asked: string[] } {
 	vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
 		asked.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 		return new Promise<Response>((_, reject) => {
+			if (init?.signal?.aborted) reject(init.signal.reason);
 			init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
 		});
 	});
