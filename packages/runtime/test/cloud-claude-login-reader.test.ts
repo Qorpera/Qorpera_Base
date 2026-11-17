@@ -58,7 +58,7 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function reader(scenario: Record<string, unknown>) {
+async function reader(scenario: Record<string, unknown>, settleMs = 300) {
 	const root = await mkdtemp(join(tmpdir(), "claude-reader-"));
 	roots.push(root);
 	const claude = join(root, "claude");
@@ -70,7 +70,7 @@ async function reader(scenario: Record<string, unknown>) {
 		claudePath: claude,
 		temporaryRoot: root,
 		environment: { FAKE_SCENARIO: scenarioPath },
-		timings: { screenMs: 5_000, claimMs: 3_000, settleMs: 300 },
+		timings: { screenMs: 5_000, claimMs: 3_000, settleMs },
 	});
 	const log = async () => (await readFile(`${scenarioPath}.log`, "utf8").catch(() => "")).split("\n");
 	return { read, log, root };
@@ -117,7 +117,6 @@ describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and p
 		for (const scenario of [
 			{ screens: { weekly: confirm("full reset", "3 full resets") } },
 			{ screens: { full: confirm("full reset", "3 full resets", false) } },
-			{ screens: FULL, changeAfterMs: 100, changeTo: "Something else" },
 		]) {
 			const kind = "weekly" in scenario.screens ? "weekly" : "full";
 			const { read, log } = await reader(scenario);
@@ -126,6 +125,13 @@ describe.skipIf(process.platform !== "linux")("Claude Code's screens, read and p
 			});
 			expect((await log()).filter((line) => line === 'KEY "\\r"')).toEqual([]);
 		}
+		const changing = await reader({ screens: FULL, changeAfterMs: 500, changeTo: "Something else" }, 800);
+		const started = Date.now();
+		expect(await changing.read.useClaudeReset({ credentials, kind: "full" }, AbortSignal.timeout(20_000))).toEqual({
+			outcome: "failed",
+		});
+		expect(Date.now() - started).toBeLessThan(4_000);
+		expect((await changing.log()).filter((line) => line === 'KEY "\\r"')).toEqual([]);
 	});
 
 	it("says a reset is not confirmed when Claude Code answers nothing it knows after Enter", async () => {

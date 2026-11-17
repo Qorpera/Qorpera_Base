@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
 	nativeAccountRefreshBody,
@@ -319,6 +319,7 @@ export class CloudModelLoginUsage {
 	readonly #fetch: typeof fetch;
 	readonly #claude: ClaudeLoginReads | undefined;
 	readonly #resetting = new Map<string, Promise<void>>();
+	readonly #claimSecret = randomBytes(32);
 
 	constructor(options: {
 		authority: ModelLoginUsageAuthority;
@@ -339,10 +340,17 @@ export class CloudModelLoginUsage {
 		if (!this.#claude || !this.#authority.describeClaudeLoginRead) return { state: "none" };
 		try {
 			return parseClaudeRead(await this.#authority.describeClaudeLoginRead(request, signal));
-		} catch {
-			signal.throwIfAborted();
-			return { state: "none" };
+		} catch (error) {
+			if ((error as { code?: unknown } | null)?.code === "42501") return { state: "none" };
+			throw error;
 		}
+	}
+
+	#claimToken(request: { requestId: string; capabilitySha256: string }): string {
+		const digest = createHmac("sha256", this.#claimSecret)
+			.update(`${request.requestId}:${request.capabilitySha256}`)
+			.digest("hex");
+		return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 	}
 
 	async #claudeCredentials(claude: Extract<ClaudeReadDescription, { state: "open" }>): Promise<string> {
@@ -404,7 +412,7 @@ export class CloudModelLoginUsage {
 			return "completed";
 		}
 		if (claude.resetState === "using" || this.#resetting.has(request.requestId)) return "preparing";
-		const claim = randomUUID();
+		const claim = this.#claimToken(request);
 		let claimed = false;
 		for (let attempt = 0; attempt < CLAUDE_SAVE_ATTEMPTS && !claimed; attempt++) {
 			try {
@@ -516,6 +524,7 @@ export class CloudModelLoginUsage {
 				throw new Error("Vault account refresh crossed its authority");
 			if (description.status === "completed") return answer("completed");
 			if (description.status !== "pending") throw new Error("Vault account refresh has ended");
+			if (this.#resetting.has(refresh.requestId)) return answer("preparing");
 			const claudeRequest = { requestId: refresh.requestId, capabilitySha256 };
 			claude = await this.#claudeDescription(claudeRequest, signal);
 			if (claude.state === "open" && claude.reset !== null)

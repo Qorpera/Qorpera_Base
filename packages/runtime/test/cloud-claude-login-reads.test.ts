@@ -326,6 +326,43 @@ describe("the vault's Claude read and reset", () => {
 		expect(w.state.resetState).toBe("failed");
 	});
 
+	it("never completes a request while its reset runs, even when a later look at it fails", async () => {
+		const w = vaultWorld({ reset: "full" });
+		let finish: (value: { outcome: "reset"; left: number }) => void = () => undefined;
+		const reads = {
+			readClaudeLogin: vi.fn(),
+			useClaudeReset: vi.fn(
+				() =>
+					new Promise<{ outcome: "reset"; left: number }>((resolve) => {
+						finish = resolve;
+					}),
+			),
+		};
+		const usage = new CloudModelLoginUsage({ authority: w.authority, keyring: w.keyring, claude: reads });
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("preparing");
+		await vi.waitFor(() => expect(reads.useClaudeReset).toHaveBeenCalledTimes(1));
+		w.authority.describeClaudeLoginRead.mockRejectedValueOnce(new Error("the database did not answer"));
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("preparing");
+		w.authority.describeClaudeLoginRead.mockRejectedValueOnce(Object.assign(new Error("refused"), { code: "42501" }));
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("preparing");
+		expect(w.authority.completeModelLoginAccountRefresh).not.toHaveBeenCalled();
+		finish({ outcome: "reset", left: 1 });
+		await vi.waitFor(() => expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1));
+		expect(w.state.resetState).toBe("reset");
+	});
+
+	it("fails a refresh whose Claude description could not be read for another reason than a refusal", async () => {
+		const w = vaultWorld();
+		w.authority.describeClaudeLoginRead.mockRejectedValueOnce(new Error("the database did not answer"));
+		const usage = new CloudModelLoginUsage({
+			authority: w.authority,
+			keyring: w.keyring,
+			claude: { readClaudeLogin: vi.fn(), useClaudeReset: vi.fn() },
+		});
+		await expect(usage.refresh(w.request, AbortSignal.timeout(5_000))).rejects.toThrow("the database did not answer");
+		expect(w.authority.completeModelLoginAccountRefresh).not.toHaveBeenCalled();
+	});
+
 	it("goes on with the refresh when the database no longer lets the vault read the Claude login", async () => {
 		const w = vaultWorld();
 		w.authority.describeClaudeLoginRead.mockRejectedValueOnce(Object.assign(new Error("refused"), { code: "42501" }));
@@ -349,6 +386,7 @@ describe("the vault's Claude read and reset", () => {
 		expect(w.authority.claimClaudeLoginReset).toHaveBeenCalledTimes(2);
 		const [first, second] = w.authority.claimClaudeLoginReset.mock.calls.map(([request]) => request.claim);
 		expect(first).toBe(second);
+		expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
 		await vi.waitFor(() => expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1), {
 			timeout: 8_000,
 		});

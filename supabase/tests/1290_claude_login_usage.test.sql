@@ -268,3 +268,11 @@ select pg_temp.base_assert(pg_temp.cu_state($q$select pg_temp.cu_begin(repeat('6
 select pg_temp.base_assert(jsonb_array_length(public.qorpera_list_claude_logins('92400000-0000-4000-8000-000000000010')
 	-> 'logins') = 0, 'and lists none of it');
 reset role;
+
+select pg_temp.base_assert(position('previous.claude_login_id is null' in
+		pg_get_functiondef('public.qorpera_begin_native_account_refresh(uuid,uuid,text)'::regprocedure)) > 0,
+	'a ChatGPT refresh''s short cache never answers with a Claude read');
+select pg_temp.base_assert((length(pg_get_functiondef('public.qorpera_begin_model_login_usage_recheck(uuid,text,text)'::regprocedure))
+		- length(replace(pg_get_functiondef('public.qorpera_begin_model_login_usage_recheck(uuid,text,text)'::regprocedure),
+			'recent.claude_login_id is null', ''))) / length('recent.claude_login_id is null') = 2,
+	'a Claude read never holds off the daily usage recheck');
