@@ -3959,6 +3959,7 @@ export class ConversationView {
 								...(payerName ? { payerName } : {}),
 							},
 							recovery.rateLimited,
+							recovery.sourceKind,
 						)
 					: undefined;
 		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;

@@ -2212,6 +2212,33 @@ describe("a failed run at its login's usage limit", () => {
 		expect([...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent)).toEqual([
 			"Dismiss",
 		]);
+		const turnedAway = {
+			...recovery,
+			usageLimit: false,
+			rateLimited: true,
+			sponsorBindingId: id(100),
+			lastError: "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+		};
+		f.company.store.set({ recoveries: { [run.runId]: turnedAway } });
+		await settle();
+		expect(reason()).toBe(
+			"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.",
+		);
+		f.company.store.set({
+			activity: [{ ...run, sourceKind: "room_delivery" as const }],
+			recoveries: { [run.runId]: { ...turnedAway, sourceKind: "room_delivery" as const } },
+		});
+		await settle();
+		expect(reason()).toBe(
+			"Your message didn't go through: ChatGPT got too many requests at once. The login is fine. Send it again in a few minutes.",
+		);
+		f.company.store.set({
+			activity: [{ ...run, sourceKind: "wake" as const }],
+			recoveries: { [run.runId]: { ...turnedAway, sourceKind: "wake" as const } },
+		});
+		await settle();
+		expect(reason()).toBe("ChatGPT turned this run away because too many requests came at once. The login is fine.");
+		f.company.store.set({ activity: [run] });
 		// Another member's login refused: the card is the agent's, so this member reads who can act.
 		f.company.store.set({
 			recoveries: {

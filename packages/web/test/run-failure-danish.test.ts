@@ -18,6 +18,12 @@ describe("a run ChatGPT turned away for too many requests at once, in Danish", (
 		expect(runWaitingReason(new Date(Date.now() + 90_000).toISOString(), {}, true)).toBe(
 			"ChatGPT har travlt med for mange forespørgsler på én gang. Arbejdet venter et par minutter og prøver så igen af sig selv. Loginnet er i orden.",
 		);
+		expect(runFailureReason(REFUSED, "failed", false, {}, true, "room_delivery")).toBe(
+			"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden. Send den igen om et par minutter.",
+		);
+		expect(runFailureReason(REFUSED, "failed", false, {}, true, "session_turn")).toBe(
+			"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden.",
+		);
 		expect(untranslated()).toEqual([]);
 	});
 });

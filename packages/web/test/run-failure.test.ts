@@ -310,6 +310,19 @@ describe("a run ChatGPT turned away for too many requests at once (2026093079200
 		}
 	});
 
+	it("tells a member plainly that their own message didn't go through", () => {
+		const message = "Your message didn't go through: ChatGPT got too many requests at once. The login is fine.";
+		expect(runFailureReason(refused, "failed", false, { own: true }, true, "session_turn")).toBe(message);
+		expect(runFailureReason(refused, "failed", false, {}, true, "room_delivery")).toBe(
+			`${message} Send it again in a few minutes.`,
+		);
+		for (const kind of ["wake", "proposal_review", undefined])
+			expect(runFailureReason(refused, "failed", false, {}, true, kind)).toBe(TURNED_AWAY);
+		expect(runFailureReason(refused, "failed", false, { own: true }, false, "session_turn")).toMatch(
+			PROVIDER_REFUSED,
+		);
+	});
+
 	it("keeps a usage limit a usage limit, and reads as before from an older cloud", () => {
 		expect(runFailureReason(refused, "failed", true, { own: true }, true)).toMatch(/reached its usage limit/);
 		expect(runFailureReason(refused, "failed", false, { own: true })).toMatch(PROVIDER_REFUSED);
