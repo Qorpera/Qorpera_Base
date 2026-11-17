@@ -275,6 +275,25 @@ select pg_temp.base_assert((select mail.route = 'gmail' and mail.from_address = 
 	'A member''s reply from the Google address is queued for Gmail');
 select pg_temp.base_assert(public.qorpera_claim_company_mail(10, '12970000-0000-4000-8000-000000000c01') = '[]'::jsonb,
 	'The platform''s outbox leaves it to the broker');
+insert into public.qorpera_cloud_secret_broker_principals(id, service_origin, key_id, capability_sha256,
+	registers_companies_created_after)
+values ('12970000-0000-4000-8000-0000000000e9', 'https://vault.qorpera.test', 'vault-root-1', repeat('9', 64),
+	'2099-01-01 00:00:00+00');
+update public.qorpera_cloud_secret_broker_authorities set principal_id = '12970000-0000-4000-8000-0000000000e9'
+where id = '12970000-0000-4000-8000-0000000000d1';
+update public.qorpera_google_mailboxes set due_at = null where address = 'owner@gmail.com';
+update public.qorpera_mail_settings set sending = false;
+select pg_temp.base_assert(pg_temp.g_broker($q$select public.qorpera_claim_google_mail_sends(
+		'12970000-0000-4000-8000-0000000000d1', repeat('1', 64), 10)$q$) -> 'sends' = '[]'::jsonb
+		and pg_temp.g_broker($q$select public.qorpera_broker_principal_google_mailboxes_due(
+			'12970000-0000-4000-8000-0000000000e9', repeat('9', 64))$q$) -> 'companyIds' = '[]'::jsonb,
+	'With sending switched off nothing leaves through Gmail, and no company is due for it');
+update public.qorpera_mail_settings set sending = true;
+select pg_temp.base_assert(pg_temp.g_broker($q$select public.qorpera_broker_principal_google_mailboxes_due(
+		'12970000-0000-4000-8000-0000000000e9', repeat('9', 64))$q$) -> 'companyIds'
+		= '["92400000-0000-4000-8000-000000000010"]'::jsonb,
+	'With sending on, the company with a queued Gmail send is due');
+update public.qorpera_cloud_secret_broker_authorities set principal_id = null where id = '12970000-0000-4000-8000-0000000000d1';
 select set_config('qorpera_test.g_sends', pg_temp.g_broker($q$select public.qorpera_claim_google_mail_sends(
 	'12970000-0000-4000-8000-0000000000d1', repeat('1', 64), 10)$q$)::text, true) \g /dev/null
 select pg_temp.base_assert(jsonb_array_length(current_setting('qorpera_test.g_sends')::jsonb -> 'sends') = 1

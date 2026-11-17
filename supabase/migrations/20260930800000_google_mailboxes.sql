@@ -804,6 +804,9 @@ begin
 	v_authority := public.qorpera_google_mailbox_authority(p_broker_authority_id, p_broker_capability_sha256);
 	if p_limit is null or p_limit not between 1 and 10 then
 		raise exception 'Google mail claim is invalid' using errcode = '22023'; end if;
+	if not exists (select 1 from public.qorpera_mail_settings as settings where settings.enabled and settings.sending) then
+		return jsonb_build_object('schema', 'qorpera.google-mail-sends/v1', 'sends', '[]'::jsonb);
+	end if;
 	with candidates as (
 		select mail.id
 		from public.qorpera_company_mail_outbox as mail
@@ -953,6 +956,7 @@ begin
 			union all
 			select mail.profile_id from public.qorpera_company_mail_outbox as mail
 			where mail.route = 'gmail' and mail.status in ('pending', 'retrying', 'delivering')
+				and exists (select 1 from public.qorpera_mail_settings as settings where settings.enabled and settings.sending)
 				and mail.next_attempt_at <= clock_timestamp()
 				and (mail.lease_expires_at is null or mail.lease_expires_at <= clock_timestamp())
 		) as waiting
