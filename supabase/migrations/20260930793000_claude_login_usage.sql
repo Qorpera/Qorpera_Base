@@ -63,7 +63,8 @@ alter table public.qorpera_claude_logins
 	add column usage jsonb check (usage is null or public.qorpera_claude_usage_valid(usage)),
 	add column resets jsonb check (resets is null or public.qorpera_claude_resets_valid(resets)),
 	add column last_reset jsonb check (last_reset is null or (jsonb_typeof(last_reset) = 'object'
-		and octet_length(last_reset::text) <= 512));
+		and octet_length(last_reset::text) <= 512)),
+	add column usage_read_at timestamptz;
 
 alter table public.qorpera_native_account_refresh_requests
 	add column claude_login_id uuid references public.qorpera_claude_logins(id),
@@ -71,6 +72,7 @@ alter table public.qorpera_native_account_refresh_requests
 	add column claude_resets boolean not null default false,
 	add column claude_reset_kind text check (claude_reset_kind in ('session', 'weekly', 'fable', 'full')),
 	add column claude_reset_state text check (claude_reset_state in ('asked', 'using', 'reset', 'failed', 'unconfirmed')),
+	add column claude_reset_claim uuid,
 	add constraint qorpera_account_refresh_claude_read check (claude_login_id is not null
 		or (not claude_usage and not claude_resets and claude_reset_kind is null)),
 	add constraint qorpera_account_refresh_claude_reset check ((claude_reset_kind is null) = (claude_reset_state is null)
@@ -90,6 +92,24 @@ $$;
 revoke all on function public.qorpera_claude_login_listed(public.qorpera_claude_logins)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
+create function public.qorpera_claude_login_readable(p_profile_id uuid, p_user_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select public.qorpera_claude_sign_in_open(p_profile_id, p_user_id)
+		and public.qorpera_model_login_vault_url(p_profile_id) is not null
+		and exists (select 1 from public.qorpera_profile_members as member
+			where member.profile_id = p_profile_id and member.user_id = p_user_id
+				and member.role in ('owner', 'admin', 'contributor'))
+		and exists (select 1 from public.qorpera_member_compute_identities as identity
+			where identity.profile_id = p_profile_id and identity.ownership_kind = 'member'
+				and identity.owner_user_id = p_user_id and identity.status = 'active'
+				and identity.recovery_pending_id is null)
+		and exists (select 1 from public.qorpera_claude_logins as claude
+			where claude.owner_user_id = p_user_id and claude.status = 'active'
+				and claude.principal_id = public.qorpera_company_account_vault(p_profile_id))
+$$;
+revoke all on function public.qorpera_claude_login_readable(uuid, uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 create or replace function public.qorpera_list_claude_logins(p_profile_id uuid)
 returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
@@ -104,10 +124,7 @@ begin
 	return jsonb_build_object(
 		'schema', 'qorpera.claude-logins/v1',
 		'signInOpen', public.qorpera_claude_sign_in_open(p_profile_id, v_user),
-		'readable', public.qorpera_model_login_vault_url(p_profile_id) is not null and exists (
-			select 1 from public.qorpera_claude_logins as claude
-			where claude.owner_user_id = v_user and claude.status = 'active'
-				and claude.principal_id = public.qorpera_company_account_vault(p_profile_id)),
+		'readable', public.qorpera_claude_login_readable(p_profile_id, v_user),
 		'logins', coalesce((select jsonb_agg(public.qorpera_claude_login_listed(claude) order by claude.created_at, claude.id)
 			from public.qorpera_claude_logins as claude
 			where claude.owner_user_id = v_user and claude.status = 'active'), '[]'::jsonb)
@@ -142,6 +159,8 @@ begin
 	select claude.* into v_login from public.qorpera_claude_logins as claude
 	where claude.owner_user_id = auth.uid() and claude.status = 'active'
 	for update;
+	if not public.qorpera_claude_sign_in_open(p_profile_id, auth.uid()) then
+		raise exception 'Claude login read unavailable' using errcode = '42501'; end if;
 	if v_login.id is null or v_login.principal_id is distinct from public.qorpera_company_account_vault(p_profile_id)
 		or public.qorpera_model_login_vault_url(p_profile_id) is null then
 		raise exception 'No Claude login to read here' using errcode = '55000'; end if;
@@ -162,8 +181,8 @@ begin
 		where item.entry ->> 'kind' = p_reset_kind and item.entry ->> 'usable' = 'now'
 			and (item.entry ->> 'left')::int > 0) then
 		raise exception 'No such Claude reset to use' using errcode = '55000'; end if;
-	v_usage := p_reset_kind is null and (coalesce(p_force, false) or v_login.usage is null
-		or (v_login.usage ->> 'observedAt')::timestamptz <= statement_timestamp() - interval '60 seconds');
+	v_usage := p_reset_kind is null and (coalesce(p_force, false) or v_login.usage_read_at is null
+		or v_login.usage_read_at <= statement_timestamp() - interval '60 seconds');
 	v_resets := p_reset_kind is null and (coalesce(p_force, false) or v_login.resets is null
 		or (v_login.resets ->> 'observedAt')::timestamptz <= statement_timestamp() - interval '10 minutes');
 	update public.qorpera_native_account_refresh_requests set status = 'expired'
@@ -206,6 +225,7 @@ begin
 	where authority.id = p_broker_authority_id;
 	select claude.* into v_login from public.qorpera_claude_logins as claude where claude.id = v_request.claude_login_id;
 	if v_login.id is null or v_login.status <> 'active' or v_login.owner_user_id <> v_request.requested_by_user_id
+		or not public.qorpera_claude_sign_in_open(v_request.profile_id, v_request.requested_by_user_id)
 		or v_login.principal_id is distinct from v_authority.principal_id
 		or public.qorpera_company_account_vault(v_authority.profile_id) is distinct from v_login.principal_id then
 		raise exception 'Claude login read is unavailable' using errcode = '42501'; end if;
@@ -239,14 +259,19 @@ begin
 end $$;
 
 create function public.qorpera_claim_claude_login_reset(p_broker_authority_id uuid, p_broker_capability_sha256 text,
-	p_request_id uuid, p_capability_sha256 text)
+	p_request_id uuid, p_capability_sha256 text, p_claim uuid)
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare v_request public.qorpera_native_account_refresh_requests%rowtype;
 begin
+	if p_claim is null then raise exception 'Claude reset claim is invalid' using errcode = '22023'; end if;
 	v_request := public.qorpera_claude_login_read_request(p_broker_authority_id, p_broker_capability_sha256,
 		p_request_id, p_capability_sha256, true);
+	if v_request.status = 'pending' and v_request.claude_reset_state = 'using' then
+		return v_request.claude_reset_claim = p_claim; end if;
 	if v_request.status <> 'pending' or v_request.claude_reset_state is distinct from 'asked' then return false; end if;
-	update public.qorpera_native_account_refresh_requests set claude_reset_state = 'using' where id = v_request.id;
+	update public.qorpera_native_account_refresh_requests set claude_reset_state = 'using', claude_reset_claim = p_claim
+	where id = v_request.id;
+	update public.qorpera_claude_logins set resets = null where id = v_request.claude_login_id;
 	return true;
 end $$;
 
@@ -285,6 +310,7 @@ begin
 		usage = case when p_usage is not null and (claude.usage is null
 			or (claude.usage ->> 'observedAt')::timestamptz < (p_usage ->> 'observedAt')::timestamptz)
 			then p_usage else claude.usage end,
+		usage_read_at = case when p_usage is not null then statement_timestamp() else claude.usage_read_at end,
 		resets = case when p_reset is not null and v_outcome = 'reset' then null
 			when p_resets is not null then p_resets else claude.resets end,
 		last_reset = case when p_reset is not null then jsonb_build_object('requestId', v_request.id,
@@ -296,12 +322,12 @@ begin
 end $$;
 revoke all on function
 	public.qorpera_describe_claude_login_read(uuid, text, uuid, text),
-	public.qorpera_claim_claude_login_reset(uuid, text, uuid, text),
+	public.qorpera_claim_claude_login_reset(uuid, text, uuid, text, uuid),
 	public.qorpera_record_claude_login_read(uuid, text, uuid, text, jsonb, jsonb, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function
 	public.qorpera_describe_claude_login_read(uuid, text, uuid, text),
-	public.qorpera_claim_claude_login_reset(uuid, text, uuid, text),
+	public.qorpera_claim_claude_login_reset(uuid, text, uuid, text, uuid),
 	public.qorpera_record_claude_login_read(uuid, text, uuid, text, jsonb, jsonb, jsonb)
 	to qorpera_secret_broker;
 
@@ -326,7 +352,8 @@ begin
 	update public.qorpera_claude_logins as claude set usage = jsonb_set(p_usage, '{windows}',
 		(p_usage -> 'windows') || coalesce((select jsonb_agg(item.window_row)
 			from jsonb_array_elements(claude.usage -> 'windows') as item(window_row)
-			where item.window_row ->> 'id' = 'seven_day_model'), '[]'::jsonb))
+			where item.window_row ->> 'id' = 'seven_day_model'
+				and claude.usage_read_at > statement_timestamp() - interval '10 minutes'), '[]'::jsonb))
 	where claude.id = v_worker.claude_login_id and claude.status = 'active'
 		and claude.owner_user_id = v_worker.requested_by_user_id
 		and (claude.usage is null or (claude.usage ->> 'observedAt')::timestamptz < (p_usage ->> 'observedAt')::timestamptz);
@@ -349,4 +376,29 @@ begin
 	if v_count <> 1 then raise exception 'Account refresh chooser source differs (% matches)', v_count; end if;
 	execute replace(v_definition, v_anchor,
 		'(' || v_anchor || ' or v_session.claude_login_id is not null)');
+end $$;
+
+do $$
+declare
+	v_patches text[][] := array[
+		array['public.qorpera_begin_native_account_refresh(uuid,uuid,text)',
+			'previous.status=''completed'' and previous.completed_at>clock_timestamp()-interval ''45 seconds''',
+			'previous.status=''completed'' and previous.claude_login_id is null and previous.completed_at>clock_timestamp()-interval ''45 seconds''', '1'],
+		array['public.qorpera_get_native_account_refresh(uuid)',
+			'r.expires_at>statement_timestamp() and r.status in (''pending'',''completed'')',
+			'r.expires_at>statement_timestamp() and r.status in (''pending'',''completed'') and r.claude_login_id is null', '1'],
+		array['public.qorpera_begin_model_login_usage_recheck(uuid,text,text)',
+			'recent.created_at > clock_timestamp() - interval ''3 hours''',
+			'(recent.created_at > clock_timestamp() - interval ''3 hours'' and recent.claude_login_id is null)', '2']];
+	v_definition text;
+	v_count integer;
+begin
+	for v_i in 1 .. array_length(v_patches, 1) loop
+		v_definition := pg_get_functiondef(v_patches[v_i][1]::regprocedure);
+		v_count := (length(v_definition) - length(replace(v_definition, v_patches[v_i][2], '')))
+			/ length(v_patches[v_i][2]);
+		if v_count <> v_patches[v_i][4]::integer then
+			raise exception '% source differs (% matches)', v_patches[v_i][1], v_count; end if;
+		execute replace(v_definition, v_patches[v_i][2], v_patches[v_i][3]);
+	end loop;
 end $$;

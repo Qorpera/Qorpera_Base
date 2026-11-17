@@ -2793,12 +2793,18 @@ export class PostgresCloudSecretBrokerAuthority
 	}
 
 	claimClaudeLoginReset(
-		request: { requestId: string; capabilitySha256: string },
+		request: { requestId: string; capabilitySha256: string; claim: string },
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_claim_claude_login_reset($1::uuid,$2::text,$3::uuid,$4::text) as result",
-			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.requestId, request.capabilitySha256],
+			"select public.qorpera_claim_claude_login_reset($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.requestId,
+				request.capabilitySha256,
+				request.claim,
+			],
 			signal,
 		);
 	}

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
 	NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
 	nativeAccountRefreshBody,
@@ -74,7 +74,7 @@ export interface ModelLoginUsageAuthority {
 		signal: AbortSignal,
 	): Promise<unknown>;
 	claimClaudeLoginReset?(
-		request: { requestId: string; capabilitySha256: string },
+		request: { requestId: string; capabilitySha256: string; claim: string },
 		signal: AbortSignal,
 	): Promise<unknown>;
 	recordClaudeLoginRead?(
@@ -92,6 +92,9 @@ export interface ModelLoginUsageAuthority {
 const CLAUDE_READ_SCHEMA = "qorpera.claude-login-read-description/v1";
 const CLAUDE_READ_MS = 23_000;
 const CLAUDE_RESET_MS = 80_000;
+const CLAUDE_SAVE_ATTEMPTS = 6;
+const CLAUDE_SAVE_RETRY_MS = 2_000;
+const CLAUDE_CLAIM_RETRY_MS = 300;
 
 type ClaudeReadDescription =
 	| { readonly state: "none" | "completed" }
@@ -334,7 +337,12 @@ export class CloudModelLoginUsage {
 		signal: AbortSignal,
 	): Promise<ClaudeReadDescription> {
 		if (!this.#claude || !this.#authority.describeClaudeLoginRead) return { state: "none" };
-		return parseClaudeRead(await this.#authority.describeClaudeLoginRead(request, signal));
+		try {
+			return parseClaudeRead(await this.#authority.describeClaudeLoginRead(request, signal));
+		} catch {
+			signal.throwIfAborted();
+			return { state: "none" };
+		}
 	}
 
 	async #claudeCredentials(claude: Extract<ClaudeReadDescription, { state: "open" }>): Promise<string> {
@@ -396,7 +404,18 @@ export class CloudModelLoginUsage {
 			return "completed";
 		}
 		if (claude.resetState === "using" || this.#resetting.has(request.requestId)) return "preparing";
-		if ((await authority.claimClaudeLoginReset(request, signal)) !== true) return "preparing";
+		const claim = randomUUID();
+		let claimed = false;
+		for (let attempt = 0; attempt < CLAUDE_SAVE_ATTEMPTS && !claimed; attempt++) {
+			try {
+				claimed = (await authority.claimClaudeLoginReset({ ...request, claim }, signal)) === true;
+				if (!claimed) return "preparing";
+			} catch {
+				signal.throwIfAborted();
+				await new Promise((resolveWait) => setTimeout(resolveWait, CLAUDE_CLAIM_RETRY_MS));
+			}
+		}
+		if (!claimed) return "preparing";
 		const kind = claude.reset as ClaudeResetKind;
 		const envelope = Buffer.from(claude.envelope);
 		const job = (async () => {
@@ -410,11 +429,18 @@ export class CloudModelLoginUsage {
 			} finally {
 				envelope.fill(0);
 			}
-			await authority.recordClaudeLoginRead?.(
-				{ ...request, usage: null, resets: null, reset: outcome },
-				AbortSignal.timeout(SAVE_DEADLINE_MS),
-			);
-			await authority.completeModelLoginAccountRefresh(request, AbortSignal.timeout(SAVE_DEADLINE_MS));
+			for (let attempt = 0; attempt < CLAUDE_SAVE_ATTEMPTS; attempt++) {
+				try {
+					await authority.recordClaudeLoginRead?.(
+						{ ...request, usage: null, resets: null, reset: outcome },
+						AbortSignal.timeout(SAVE_DEADLINE_MS),
+					);
+					await authority.completeModelLoginAccountRefresh(request, AbortSignal.timeout(SAVE_DEADLINE_MS));
+					return;
+				} catch {
+					await new Promise((resolveWait) => setTimeout(resolveWait, CLAUDE_SAVE_RETRY_MS));
+				}
+			}
 		})()
 			.catch(() => undefined)
 			.finally(() => this.#resetting.delete(request.requestId));

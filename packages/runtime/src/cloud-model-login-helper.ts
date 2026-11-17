@@ -52,7 +52,7 @@ const CLAUDE_READ_ANSWER_MS = 22_000;
 const CLAUDE_READ_CLIENT_WAIT_MS = CLAUDE_READ_ANSWER_MS + 3_000;
 const CLAUDE_RESET_ANSWER_MS = 70_000;
 const CLAUDE_RESET_CLIENT_WAIT_MS = CLAUDE_RESET_ANSWER_MS + 5_000;
-const CLAUDE_READ_LIMIT = 4;
+const CLAUDE_READ_LIMIT = 2;
 const CREDENTIALS = /^[A-Za-z0-9+/]{4,21848}={0,2}$/;
 
 function claudeRequest(value: unknown, reset: boolean): Record<string, unknown> {
@@ -524,11 +524,12 @@ export class ModelLoginHelperService {
 		} catch {
 			return { status: 400, body: { schema: "qorpera.model-login-helper-error/v1", error: "invalid" } };
 		}
-		if (this.#claudeRunning >= CLAUDE_READ_LIMIT)
+		if (this.#claudeRunning >= CLAUDE_READ_LIMIT || this.#running >= this.#concurrency)
 			return reset
 				? { status: 200, body: { schema: "qorpera.claude-login-reset/v1", outcome: "failed" } }
 				: { status: 200, body: { schema: "qorpera.claude-login-read/v1", usage: null, resets: null } };
 		this.#claudeRunning += 1;
+		this.#running += 1;
 		try {
 			if (reset) {
 				const outcome = await reads.useClaudeReset(
@@ -558,6 +559,7 @@ export class ModelLoginHelperService {
 				: { status: 200, body: { schema: "qorpera.claude-login-read/v1", usage: null, resets: null } };
 		} finally {
 			this.#claudeRunning -= 1;
+			this.#running -= 1;
 		}
 	}
 }

@@ -96,6 +96,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #beforeLaunch: (() => Promise<void>) | undefined;
 	readonly #environment: Readonly<Record<string, string>>;
+	readonly #timings: { readonly screenMs: number; readonly claimMs: number; readonly settleMs: number };
 
 	constructor(options: {
 		claudePath: string;
@@ -103,6 +104,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 		isolation?: NativeIsolationConfiguration;
 		beforeLaunch?: () => Promise<void>;
 		environment?: Readonly<Record<string, string>>;
+		timings?: { readonly screenMs: number; readonly claimMs: number; readonly settleMs: number };
 	}) {
 		this.#claudePath = absolute(options.claudePath, "Claude Code path");
 		this.#temporaryRoot = absolute(options.temporaryRoot, "Claude read root");
@@ -110,6 +112,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 		this.#beforeLaunch = options.beforeLaunch;
 		if (options.isolation && options.environment) throw new Error("An isolated Claude read takes no environment");
 		this.#environment = options.environment ?? {};
+		this.#timings = options.timings ?? { screenMs: SCREEN_MS, claimMs: CLAIM_MS, settleMs: SETTLE_MS };
 	}
 
 	async readClaudeLogin(
@@ -139,12 +142,12 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 				const shown = await this.#until(
 					watch,
 					(screen) => screen.kind === "confirm" || (screen.kind === "answer" && !!claudeResetAnswer(screen.line)),
-					SCREEN_MS,
+					this.#timings.screenMs,
 					signal,
 				);
 				if (shown?.kind !== "confirm" || shown.reset !== request.kind || !shown.yesFocused)
 					return { outcome: "failed" };
-				await pause(SETTLE_MS, signal);
+				await pause(this.#timings.settleMs, signal);
 				const still = watch.screen();
 				if (still?.kind !== "confirm" || still.reset !== request.kind || !still.yesFocused)
 					return { outcome: "failed" };
@@ -152,7 +155,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 				const answered = await this.#until(
 					watch,
 					(screen) => screen.kind === "answer" && !!claudeResetAnswer(screen.line),
-					CLAIM_MS,
+					this.#timings.claimMs,
 					signal,
 				);
 				const answer = answered?.kind === "answer" ? claudeResetAnswer(answered.line) : undefined;
@@ -365,7 +368,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 			return await this.#until(
 				this.#watch(run),
 				(screen) => screen.kind !== "answer" || !!claudeResetAnswer(screen.line),
-				SCREEN_MS,
+				this.#timings.screenMs,
 				signal,
 			);
 		} finally {

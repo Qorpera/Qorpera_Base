@@ -67,9 +67,10 @@ returns jsonb language sql as $$
 	select public.qorpera_record_claude_login_read('12680000-0000-4000-8000-000000000040', repeat('c', 64), p_request,
 		p_capability, p_usage, p_resets, p_reset)
 $$;
-create function pg_temp.cu_claim(p_request uuid, p_capability text) returns boolean language sql as $$
+create function pg_temp.cu_claim(p_request uuid, p_capability text,
+	p_claim uuid default '12900000-0000-4000-8000-0000000000aa') returns boolean language sql as $$
 	select public.qorpera_claim_claude_login_reset('12680000-0000-4000-8000-000000000040', repeat('c', 64), p_request,
-		p_capability)
+		p_capability, p_claim)
 $$;
 create function pg_temp.cu_complete(p_request uuid, p_capability text) returns boolean language sql as $$
 	select public.qorpera_complete_model_login_account_refresh('12680000-0000-4000-8000-000000000040', repeat('c', 64),
@@ -77,7 +78,7 @@ create function pg_temp.cu_complete(p_request uuid, p_capability text) returns b
 $$;
 grant execute on function pg_temp.cu_state(text), pg_temp.cu_usage(text, numeric, boolean), pg_temp.cu_resets(text),
 	pg_temp.cu_now(), pg_temp.cu_begin(text, boolean, text), pg_temp.cu_describe(uuid, text),
-	pg_temp.cu_record(uuid, text, jsonb, jsonb, jsonb), pg_temp.cu_claim(uuid, text), pg_temp.cu_complete(uuid, text),
+	pg_temp.cu_record(uuid, text, jsonb, jsonb, jsonb), pg_temp.cu_claim(uuid, text, uuid), pg_temp.cu_complete(uuid, text),
 	pg_temp.base_assert(boolean, text)
 	to qorpera_secret_broker, service_role, authenticated;
 
@@ -91,7 +92,7 @@ begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		perform pg_temp.base_assert(not has_function_privilege(v_role,
 			'public.qorpera_describe_claude_login_read(uuid,text,uuid,text)', 'execute')
-			and not has_function_privilege(v_role, 'public.qorpera_claim_claude_login_reset(uuid,text,uuid,text)', 'execute')
+			and not has_function_privilege(v_role, 'public.qorpera_claim_claude_login_reset(uuid,text,uuid,text,uuid)', 'execute')
 			and not has_function_privilege(v_role,
 				'public.qorpera_record_claude_login_read(uuid,text,uuid,text,jsonb,jsonb,jsonb)', 'execute'),
 			v_role || ' calls the vault''s Claude reads');
@@ -185,13 +186,17 @@ begin
 	perform pg_temp.base_assert(pg_temp.cu_state(format($q$select pg_temp.cu_record(%L, repeat('5', 64), null, null, %L)$q$,
 		v_request, '{"outcome":"reset","left":2}')) = '22023', 'no outcome before the reset was claimed');
 	perform pg_temp.base_assert(pg_temp.cu_claim(v_request, repeat('5', 64)), 'the vault claims the reset');
-	perform pg_temp.base_assert(not pg_temp.cu_claim(v_request, repeat('5', 64)), 'once only');
+	perform pg_temp.base_assert(pg_temp.cu_claim(v_request, repeat('5', 64)), 'a lost answer is claimed again with its token');
+	perform pg_temp.base_assert(not pg_temp.cu_claim(v_request, repeat('5', 64), '12900000-0000-4000-8000-0000000000bb'),
+		'another claim is refused');
 	perform pg_temp.base_assert(pg_temp.cu_state(format($q$select pg_temp.cu_record(%L, repeat('5', 64), null, null, %L)$q$,
 		v_request, '{"outcome":"spent"}')) = '22023', 'an outcome Claude Code never gives');
 	perform pg_temp.cu_record(v_request, repeat('5', 64), null, null, '{"outcome":"reset","left":2}');
 	perform pg_temp.base_assert(pg_temp.cu_state(format($q$select pg_temp.cu_record(%L, repeat('5', 64), null, null, %L)$q$,
 		v_request, '{"outcome":"failed"}')) = '22023', 'an outcome is recorded once');
 	perform pg_temp.base_assert(not pg_temp.cu_claim(v_request, repeat('5', 64)), 'a used reset is not claimed again');
+	perform pg_temp.base_assert(not pg_temp.cu_claim(v_request, repeat('5', 64), '12900000-0000-4000-8000-0000000000bb'),
+		'nor by another claim');
 	perform pg_temp.cu_complete(v_request, repeat('5', 64));
 end $$;
 reset session authorization;
@@ -225,6 +230,36 @@ begin
 	perform pg_temp.base_assert(pg_temp.cu_state(format($q$select public.qorpera_record_claude_run_usage(%L, %L)$q$,
 		v_binding, pg_temp.cu_usage('2099-01-01T00:00:00.000Z', 5))) = '22023', 'a reading from the future');
 end $$;
+
+select pg_temp.base_claims('authenticated', pg_temp.c4_owner_id());
+set local role authenticated;
+select pg_temp.base_assert(public.qorpera_get_native_account_refresh('92400000-0000-4000-8000-000000000010') is null,
+	'a ChatGPT refresh never waits on a Claude read');
+reset role;
+select pg_temp.base_claims('service_role');
+update public.qorpera_account_model_login_settings set enabled = false;
+select pg_temp.base_claims('authenticated', pg_temp.c4_owner_id());
+set local role authenticated;
+select pg_temp.base_assert(not (public.qorpera_list_claude_logins('92400000-0000-4000-8000-000000000010') ->> 'readable')::boolean,
+	'with account logins off the card reads nothing');
+select pg_temp.base_assert(pg_temp.cu_state($q$select pg_temp.cu_begin(repeat('7', 64))$q$) = '42501',
+	'with account logins off no read begins');
+reset role;
+select pg_temp.base_claims('service_role');
+update public.qorpera_account_model_login_settings set enabled = true;
+select pg_temp.base_claims('authenticated', pg_temp.c4_owner_id());
+set local role authenticated;
+select pg_temp.cu_begin(repeat('8', 64)) \g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+delete from public.qorpera_claude_sign_in_members where user_id = pg_temp.c4_owner_id();
+select set_config('qorpera_test.cu_late', (pg_temp.cu_request(repeat('8', 64))).id::text, false) \g /dev/null
+set local session authorization qorpera_secret_broker;
+select pg_temp.base_assert(pg_temp.cu_state(format($q$select pg_temp.cu_describe(%L, repeat('8', 64))$q$,
+	current_setting('qorpera_test.cu_late'))) = '42501', 'a member taken off the Claude list: the vault opens nothing');
+reset session authorization;
+select pg_temp.base_claims('service_role');
+insert into public.qorpera_claude_sign_in_members(user_id) values (pg_temp.c4_owner_id());
 
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
 set local role authenticated;

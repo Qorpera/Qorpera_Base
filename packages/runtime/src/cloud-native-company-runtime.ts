@@ -198,11 +198,11 @@ import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/
 import { memoryPromptCacheKey } from "./memory-tree/view.ts";
 import { memoryZoomTool } from "./memory-tree/zoom.ts";
 
-/** A plain worker Claude Code does (20260930770000) on a node without its composition (no vault route for Claude
- * sign-ins, or no home channel): refused, never run on Codex. */
 const CLOUD_CLAUDE_USAGE_MS = 10_000;
 const CLOUD_CLAUDE_USAGE_EVERY_MS = 60_000;
 
+/** A plain worker Claude Code does (20260930770000) on a node without its composition (no vault route for Claude
+ * sign-ins, or no home channel): refused, never run on Codex. */
 export const CLAUDE_WORKER_NOT_CARRIED =
 	"Claude Code workers run in their own composition, which this node does not carry; nothing ran on Codex";
 

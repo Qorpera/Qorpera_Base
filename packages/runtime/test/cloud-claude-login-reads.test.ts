@@ -152,6 +152,9 @@ function vaultWorld(options: { reset?: "full" | null; resetState?: string | null
 	const state = {
 		resetState: options.resetState ?? (options.reset ? "asked" : null),
 		status: options.status ?? "pending",
+		claim: "",
+		claimLost: false,
+		recordFails: 0,
 	};
 	const authority = {
 		describeModelLoginAccountRefresh: vi.fn(async () => ({
@@ -183,13 +186,25 @@ function vaultWorld(options: { reset?: "full" | null; resetState?: string | null
 			reset: options.reset ?? null,
 			resetState: state.resetState,
 		})),
-		claimClaudeLoginReset: vi.fn(async () => {
+		claimClaudeLoginReset: vi.fn(async (request: { claim: string }) => {
+			if (state.claimLost) {
+				state.claimLost = false;
+				state.resetState = "using";
+				state.claim = request.claim;
+				throw new Error("the answer was lost");
+			}
+			if (state.resetState === "using") return state.claim === request.claim;
 			if (state.resetState !== "asked") return false;
 			state.resetState = "using";
+			state.claim = request.claim;
 			return true;
 		}),
 		recordClaudeLoginRead: vi.fn(
 			async (record: Parameters<NonNullable<ModelLoginUsageAuthority["recordClaudeLoginRead"]>>[0]) => {
+				if (state.recordFails > 0) {
+					state.recordFails -= 1;
+					throw new Error("the database did not answer");
+				}
 				if (record.reset) state.resetState = record.reset.outcome;
 				return true;
 			},
@@ -309,5 +324,36 @@ describe("the vault's Claude read and reset", () => {
 		await vi.waitFor(() => expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1));
 		expect(reads.useClaudeReset).not.toHaveBeenCalled();
 		expect(w.state.resetState).toBe("failed");
+	});
+
+	it("goes on with the refresh when the database no longer lets the vault read the Claude login", async () => {
+		const w = vaultWorld();
+		w.authority.describeClaudeLoginRead.mockRejectedValueOnce(Object.assign(new Error("refused"), { code: "42501" }));
+		const reads = { readClaudeLogin: vi.fn(), useClaudeReset: vi.fn() };
+		const usage = new CloudModelLoginUsage({ authority: w.authority, keyring: w.keyring, claude: reads });
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("completed");
+		expect(reads.readClaudeLogin).not.toHaveBeenCalled();
+		expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("claims again with the same token after a lost answer, and records an outcome again until the database takes it", async () => {
+		const w = vaultWorld({ reset: "full" });
+		w.state.claimLost = true;
+		w.state.recordFails = 1;
+		const reads = {
+			readClaudeLogin: vi.fn(),
+			useClaudeReset: vi.fn(async () => ({ outcome: "reset" as const, left: 1 })),
+		};
+		const usage = new CloudModelLoginUsage({ authority: w.authority, keyring: w.keyring, claude: reads });
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("preparing");
+		expect(w.authority.claimClaudeLoginReset).toHaveBeenCalledTimes(2);
+		const [first, second] = w.authority.claimClaudeLoginReset.mock.calls.map(([request]) => request.claim);
+		expect(first).toBe(second);
+		await vi.waitFor(() => expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1), {
+			timeout: 8_000,
+		});
+		expect(reads.useClaudeReset).toHaveBeenCalledTimes(1);
+		expect(w.authority.recordClaudeLoginRead).toHaveBeenCalledTimes(2);
+		expect(w.state.resetState).toBe("reset");
 	});
 });
