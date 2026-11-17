@@ -29,7 +29,7 @@
   the outcome its own. The board kit's choose guide says the poster carries the direction; ask_member no longer names an
   SVG sketch. Platform update `product-shown-first`. The overlay's version-history doc comment has no v19 entry: the
   comment check refuses an edited comment there; this entry and the contract carry it. Staff instruction pins
-  `9cccae895f75` → `2c902ed2fb1ccae64b5292cec87db37d82a2252646cbd843d1f46c22d4a703ff` (conversation and private), the
+  `9cccae895f75` → `9e698f87bab233d3e1b9291bc899eb35a2c2b67ea55a9a824c5941860f31bbe3` (conversation and private), the
   worker's `4ecdde26333c` → `1810f8f3dac607a9bdf99f10b9a4b522ec187c853e52a2585ba051bf8d7be2f4`, every prompt (overlay
   v19), and both catalog pins (ask_member). The runtime bundle only; no SQL, no web, no node program.
 - The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure

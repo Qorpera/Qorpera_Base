@@ -560,7 +560,7 @@ function cardReadabilityIssue(card: Record<string, unknown>): string | undefined
 			return typeof preview === "string" && !optionPreviewValid(preview);
 		})
 	)
-		return "an option's preview is the company file path of an image you made for it (.svg, .png, .jpg, .gif or .webp), such as sketches/colour-duo.svg, or app:<name> for an interface app";
+		return "an option's preview is the company file path of an image you made for it (.svg, .png, .jpg, .gif or .webp), such as looks/colour-duo.png, or app:<name> for an interface app";
 	return undefined;
 }
 

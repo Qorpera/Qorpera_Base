@@ -872,7 +872,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"plans for later stages wait",
-		"plans for later stages (test and lab protocols, cost and resource models, production, support) wait for their answer unless a founder asks for one, because it can change all of them. This orders the work and caps none of it.",
+		"plans for later stages (test and lab protocols, cost and resource models, production, support) wait for their answer unless a founder asks for one, because it can change all of them; a card left unanswered for two working days no longer holds them. This orders the work and caps none of it.",
 		STAFF,
 	],
 	[
@@ -1078,7 +1078,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"builders' first assignments move the first concept",
-		"Each whose expertise the first concept needs gets a first assignment that moves it, not a foundation document (for a headband with an app: its form for the render, what the app may honestly show, the screens), and plans for later stages wait for the founders' answer to it.",
+		"Each whose expertise the first concept needs gets a first assignment that moves it, not a foundation document (for a device with an app: its form for the render, what the app can truly show, the screens), and plans for later stages wait for the founders' answer to it.",
 		COFOUNDER,
 	],
 	[
@@ -1943,6 +1943,11 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);
 	});
 
+	it("points to Concepts only where the Concepts section is", () => {
+		for (const [run, text] of compiled)
+			if (text.includes("(see Concepts)")) expect(text, run).toContain("\n# Concepts\n");
+	});
+
 	it("names only kits save_app takes", () => {
 		const named = new Set<string>();
 		const NOT_A_KIT = new Set(["a", "the", "no", "each", "one", "any", "its", "that", "this", "another", "which"]);
@@ -1995,4 +2000,21 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 				if (!held.has(tool) && !MEANT.has(tool)) expect(text.includes(tool), `${run} names ${tool}`).toBe(false);
 		}
 	});
+});
+
+it("keeps an owner's later-stage plans waiting only before the vision is agreed, and only beside Concepts", () => {
+	const words =
+		"Plans for later stages wait until the founders have said the first concept is their product (see Concepts).";
+	const every = () => true;
+	const noApps = (tool: string) => tool !== "save_app";
+	expect(cloudRuntimeHireBehavior("employee")).toContain(words);
+	expect(cloudRuntimeHireBehavior("employee", { has: every, visionAgreed: false })).toContain(
+		`Make files when the work needs them, never templates in advance. ${words}\nThe company's reading`,
+	);
+	expect(cloudRuntimeHireBehavior("employee", { has: every, visionAgreed: true })).not.toContain(words);
+	const withoutApps = cloudRuntimeHireBehavior("employee", { has: noApps, visionAgreed: false });
+	expect(withoutApps).not.toContain("(see Concepts)");
+	expect(withoutApps).toContain(
+		"Make files when the work needs them, never templates in advance.\nThe company's reading",
+	);
 });
