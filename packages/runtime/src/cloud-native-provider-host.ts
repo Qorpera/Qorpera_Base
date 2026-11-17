@@ -1028,8 +1028,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 				() => true,
 				() => false,
 			);
-			signal.throwIfAborted();
-			return { exitedOk, loggedIn: claudeStatusLoggedIn(capture.output()) };
+			return { exitedOk: exitedOk && !signal.aborted, loggedIn: claudeStatusLoggedIn(capture.output()) };
 		} finally {
 			signal.removeEventListener("abort", stop);
 			await launched.close();

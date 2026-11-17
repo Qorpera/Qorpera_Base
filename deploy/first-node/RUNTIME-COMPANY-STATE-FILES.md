@@ -2540,9 +2540,10 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
   4. one block per worker: the dispatch wake of a row with none (a worker with `harness: claude-code` first takes its
-     member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: one
-     Claude Code run per member at a time; a take lost to another drain is `skipped`, and the worker starts on a later
-     pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries, and, when the worker recorded
+     member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: up to
+     `qorpera_claude_parallel_runs.cap` Claude Code runs per member at once (20260930790000: one slot row per live run,
+     the first free slot up to the cap, under a per-member advisory lock; the cap is 1 until the release sets 4); a take
+     lost to another drain is `skipped`, and the worker starts on a later pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries, and, when the worker recorded
      its conversation's Claude pick, `claude: {model, effort}`, 20260930784000; a defaulted worker that a Claude Code run
      handed back with `qorpera_claude_worker_fall_back` (a Claude-side block: signed out, not open, plan limit, could not
      start; 20260930787000) has no harness and `claude_fallback_sequence` equal to its sequence, and its wake takes the

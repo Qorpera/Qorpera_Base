@@ -5,6 +5,7 @@ import { CLAUDE_LOGIN_FILES, CLAUDE_LOGIN_FILES_SCHEMA } from "./cloud-model-log
 import { type ModelLoginRunBinding, parseModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { CLAUDE_LOGIN_FIELD, checkClaudeLoginFiles } from "./cloud-model-login-vault-sign-in.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
+import { markCloudVaultDatabaseFailure } from "./cloud-vault-database-failure.ts";
 
 /**
  * A member's Claude sign-in for ONE run of a Claude Code worker (agent-box slice C4b, migration 20260930771000; the
@@ -178,8 +179,13 @@ export class CloudClaudeLoginVault {
 			request.knownVersion === undefined ? undefined : version(request.knownVersion, "Claude login for a run");
 		let opened = await this.#opened(binding, "open", "Claude login for a run", signal, known);
 		if (this.#renewer && !("reason" in opened)) {
-			const renewed = await this.#renewer.checkForRun(opened.claudeLoginId, known === undefined ? "open" : "poll");
-			if (renewed === "renewed")
+			const checked = await this.#renewer.checkForRun(opened.claudeLoginId, known === undefined ? "open" : "poll");
+			if (checked === "pending" && known === undefined)
+				throw markCloudVaultDatabaseFailure(
+					new Error("The Claude login's renewal is still running"),
+					"call deadline",
+				);
+			if (checked === "reopen")
 				opened = await this.#opened(binding, "open", "Claude login for a run", signal, known);
 		}
 		if ("reason" in opened)
