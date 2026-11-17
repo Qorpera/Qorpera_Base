@@ -1,6 +1,21 @@
 # Changelog
 
 ## [Unreleased]
+- A ChatGPT rate limit makes work wait, not fail (contract 17, the 2026-11-17 amendment; migration `20260930792000`,
+  SQL test 1289). On 17 Nov 2026 51 runs in two companies on one OpenAI account failed with `rate_limited` and waited
+  for review. Now a started run turned away with `rate_limited` before any effect (no receipt but a cancelled one, no
+  public message, no open proposal) pauses on the same login (`run_paused`, `pausedFor: "rate_limited"`, no attempt
+  spent) for 1, 2, 4, 8, 15 minutes with jitter, at most `rate_limit_waits` (5) times, then fails as before. A
+  `rate_limited` signal cools the provider account (`qorpera_provider_account_key`: the account identity the host
+  records plus the login's owner, else the model login, else the connection) for 1 to 15 minutes in every company
+  (`qorpera_provider_account_cooldowns`); the orchestrator claim starts no run of a cooling account, and at most
+  `max_concurrent_turns` (6) runs of one account hold a turn at once (a worker of a running parent borrows its turn).
+  An agent's once-routine does not count a run that ended turned away. The recovery read says `rate_limited`, a waiting
+  run's activity `paused_for`; a rate-limit wait is never movable and a usage reading does not release it. Settings:
+  `qorpera_provider_account_turn_settings` (`rate_limit_waits = 0` restores today's failure). Deploy: the web first
+  (#1902, reads both fields when present), then this migration on its own; no runtime bundle, runner, host, executor
+  or vault change. A runner of any version reaches it through `qorpera_fail_runner_job`; without the migration it fails
+  as before.
 - Release v252 (conversation models GPT-6.1 Sol, Fable 5.2 and Opus 5.5, #1877; the move of all of a member's chats
   waiting on a used-up login, #1876, merged in the release branch; and master since v251): runtime bundle 252
   `ac0e54611d0dbf9ca095972482ebe4ed36ff93c428f019e5a29a513040ceb206` (activation `20260929025299`, previous 251

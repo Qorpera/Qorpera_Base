@@ -2458,6 +2458,13 @@ member's other login); the 2026-10-04 amendment below settles it.
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 6, 11 and 12.
 
+> **Amended 2026-11-17.** "Transient rate limiting (retry)" is built: a run
+> the provider turns away for too many requests waits and runs again on the
+> same login, the provider account behind that login cools in every company,
+> and turns on one provider account are capped. See the
+> [rate-limit amendment](#2026-11-17-amendment-a-rate-limit-makes-work-wait-not-fail)
+> in section 19.
+
 > **Scope reset, 2026-10-17.** The note above is part of the optional beta. It
 > holds only for the runs recorded in **Shared context — Beta**, and its resume
 > work does not hold the core. With **Agent notebooks**, the default, this
@@ -6910,6 +6917,42 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    advice: keep only the newest line for each update, which keeps every decision. It writes the record as the run, under the call's receipt
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
+
+### 2026-11-17 amendment: a rate limit makes work wait, not fail
+
+> The founder, 17 November 2026: "overnight I had a ton of failed runs, despite my GPT login still having usage. look
+> into it"; shown the findings (51 runs in two companies on one OpenAI account, each turned away with a rate limit, not
+> a usage limit, nothing retried, and a card that sent him to check a healthy login), to "Build the fix?": "Yes, build
+> it". It builds section 17's "transient rate limiting (retry)" and amends the 2026-10-01 amendment's last sentences:
+> a rate limit is still not a usage limit, and now it does not stop the work either. It goes live with migration
+> `20260930792000` alone (no runtime bundle, runner, host or image changes), after the web that reads it.
+
+1. **The signal.** As before: the native adapter records `rate_limited` against the attempt's exact lease before the
+   run fails (Codex's pinned 429), never from provider text, and never retries inside the run.
+2. **A wait, not a failure.** A started run whose attempt was turned away with `rate_limited`, and that has had no
+   effect yet (no operation receipt other than a cancelled one, no public message, no open proposal), and that can go on
+   from its log or receipts, pauses as a run at its usage limit does: the same `run_paused` event, marked
+   `pausedFor: "rate_limited"`, the same login and sponsor version (who pays never changes), no attempt spent. It comes
+   back after 1, 2, 4, 8 and then 15 minutes for its first to fifth wait, each 0.8 to 1.2 times that at random, and
+   never before its provider account's cool-down ends or a reset the provider named (at most 6 hours). After its last
+   wait (`rate_limit_waits`, 5), or when it had an effect, it fails as before and waits for review.
+3. **The provider account cools.** An account is the provider's own account behind a login
+   (`provider_account_identity`, which only the native host and the login vault write, after the provider's own client
+   confirmed the sign-in) together with the member who owns the login (a company login: its company); without a
+   reading, the member's model login; without that, the connection. No company and no agent can name another member's
+   account. A `rate_limited` signal cools the account for 1, 2, 4, 8 or 15 minutes (each signal under 30 minutes after
+   the last one cools it longer, and a signal while it already cools changes nothing) or until the provider's reset. No
+   run of that account starts in any company while it cools: its job stays queued in order.
+4. **A cap per provider account.** At most `max_concurrent_turns` (6) runs of one provider account hold a turn at once,
+   across companies: a job leased or claimed for a runner holds one. Further runs wait queued, in their order. A worker
+   whose dispatching run still holds a turn borrows that turn, so a run that waits on its own worker never waits on the
+   cap. Both numbers are one platform setting row (`qorpera_provider_account_turn_settings`).
+5. **Wakes and routines.** A waiting run keeps its wake, so a routine makes no new run meanwhile. A run of an agent's
+   once-routine that ended turned away is no attempt of the routine: it does not count towards the next run's delay,
+   number or limit, and the next run is not due before the account's cool-down ends.
+6. **What members read.** A waiting run's activity says `paused_for: "rate_limited"` and is never movable to another
+   login; the recovery read of a failed run says `rate_limited`. The thread says ChatGPT got too many requests at once,
+   that the work goes on by itself, and that the login is fine; never to check the login.
 
 ## 20. Enforcement matrix
 
