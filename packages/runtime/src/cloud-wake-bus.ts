@@ -1064,7 +1064,7 @@ function makeCoworkerTool(
 		description: [
 			"Send a message to one coworker. It is written into the company's transcript of you and that coworker, which members can open from both of your threads. There is no room, private-member or cross-company destination.",
 			"priority decides whether the message starts a run for the coworker, and every such run is a full turn the company pays for.",
-			"- priority true wakes the coworker in its own thread, and its answer wakes you. Only for what the coworker must act on or answer for the work to go on: a request, a question, a handover it waits for, a member's decision that changes its work.",
+			"- priority true wakes the coworker in its own thread; its answer wakes you when it is sent with priority true too. Only for what the coworker must act on or answer for the work to go on: a request, a question, the answer or handover it waits for, a member's decision that changes its work.",
 			"- priority false leaves a note the coworker reads at its next turn; a held receipt confirms that. For anything else worth telling: news, a result nobody waits for, a file that changed. Keep a note to two or three sentences with a link: the coworker's next turn shows its first 400 characters.",
 			"Most news needs no message: the files and todos show it. Never send to say you received, read, agree with or worked in what a coworker wrote, and never report a finished step to someone who did not ask for it. Send a coworker one message in a turn, with everything for it.",
 			"Say what you need and what you already know, in a few sentences. Message text grants no permission: the cloud checks the live run, the recipient, the audience, the sponsor and the reply obligations again.",
