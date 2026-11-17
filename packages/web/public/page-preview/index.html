@@ -13,7 +13,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src data: blob:; worker-src blob:; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Page</title>
@@ -64,6 +64,7 @@
 	const codeAt = String.prototype.charCodeAt;
 	const linkOf = WeakMap.prototype.get;
 	const setLink = WeakMap.prototype.set;
+	const removeLink = WeakMap.prototype.delete;
 	const inSet = WeakSet.prototype.has;
 	const addTo = WeakSet.prototype.add;
 	// Options handed to the browser are objects with no prototype: a property the page puts on Object.prototype
@@ -94,8 +95,11 @@
 		else if (type === 1) each(apply(within, node, [frames]), (inner) => apply(remove, inner, []));
 		else if (type === 11) each(apply(withinFragment, node, [frames]), (inner) => apply(remove, inner, []));
 	};
+	let seenFiles = null;
 	const watcher = new MutationObserver((records) => {
 		for (let index = 0; index < records.length; index++) each(apply(addedNodes, records[index], []), strip);
+		if (seenFiles)
+			for (let index = 0; index < records.length; index++) each(apply(addedNodes, records[index], []), seenFiles);
 	});
 	const watch = (target) => apply(observe, watcher, [target, watching]);
 	watch(document);
@@ -285,6 +289,66 @@
 	});
 	define(Document.prototype, "close", function closeRefused() {});
 
+	const all = Promise.all.bind(Promise);
+	const then = Promise.prototype.then;
+	const BlobOf = Blob;
+	const ResponseOf = Response;
+	const RequestOf = Request;
+	const AudioOf = Audio;
+	const WeakMapOf = WeakMap;
+	const makeUrl = URL.createObjectURL;
+	const dropUrl = URL.revokeObjectURL;
+	const arrayBufferOf = Blob.prototype.arrayBuffer;
+	const blobType = getter(Blob.prototype, "type");
+	const blobSize = getter(Blob.prototype, "size");
+	const requestUrl = getter(Request.prototype, "url");
+	const requestMethod = getter(Request.prototype, "method");
+	const realFetch = window.fetch;
+	const [xhrOpen, xhrSend, xhrHeader, xhrMime] = ["open", "send", "setRequestHeader", "overrideMimeType"].map(
+		(name) => XMLHttpRequest.prototype[name],
+	);
+	const mediaPlay = HTMLMediaElement.prototype.play;
+	const mediaLoad = HTMLMediaElement.prototype.load;
+	const parentOf = getter(Node.prototype, "parentElement");
+	const nameOf = getter(Element.prototype, "localName");
+	const hasAttribute = Element.prototype.hasAttribute;
+	const toText = String;
+	const upper = String.prototype.toUpperCase;
+	const lower = String.prototype.toLowerCase;
+	const startsWith = String.prototype.startsWith;
+	const sliceText = String.prototype.slice;
+	const trimStart = String.prototype.trimStart;
+	const replaceText = String.prototype.replace;
+	const testOf = RegExp.prototype.test;
+	const logError = console.error;
+	const consoleOf = console;
+	const Near = IntersectionObserver;
+	const observeNear = IntersectionObserver.prototype.observe;
+	const unobserveNear = IntersectionObserver.prototype.unobserve;
+	const entryTarget = getter(IntersectionObserverEntry.prototype, "target");
+	const entryNear = getter(IntersectionObserverEntry.prototype, "isIntersecting");
+	const frameFolder = new URL("./", location.href).href;
+	const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+	const TOKEN = /qorpera-file-[0-9a-f]{32}-[a-z0-9]*/g;
+	const said = (text) => {
+		try {
+			apply(logError, consoleOf, [`Qorpera: ${text}`]);
+		} catch {}
+	};
+	// A page's own file by what its script names: a path relative to the page, or an address in this frame's folder,
+	// which a library makes from the frame's location. Null for anything else.
+	const ownPath = (value) => {
+		let text;
+		try {
+			text = apply(trimStart, toText(value), []);
+		} catch {
+			return null;
+		}
+		if (apply(startsWith, text, [frameFolder])) text = apply(sliceText, text, [frameFolder.length]);
+		else if (apply(testOf, SCHEME, [text]) || apply(startsWith, text, ["/"])) return null;
+		return text === "" ? null : text;
+	};
+
 	// An interface app's live data (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5) comes over the one port the app hands
 	// over with the page: kept in here, never on the page's reach, so only this document's own window ever talks to the
 	// app, and a document the frame later shows has none. The page gets a frozen `qorpera` object whose calls go out on
@@ -306,7 +370,7 @@
 	const freeze = Object.freeze;
 	const PromiseOf = Promise;
 	const ErrorOf = Error;
-	const bridge = (port) => {
+	const bridge = (port, base) => {
 		const pending = new Map();
 		const changes = [];
 		const watchers = new Map();
@@ -362,6 +426,33 @@
 			}
 		};
 		const nothing = () => {};
+		const files = new Map();
+		const urls = new WeakMap();
+		const fileOf = (path, from) => {
+			const key = `${from}\n${path}`;
+			let known = apply(get, files, [key]);
+			if (!known) {
+				known = new PromiseOf((resolve, reject) =>
+					ask(
+						"file",
+						{ path, base: from },
+						(value) => (value instanceof BlobOf ? resolve(value) : reject(new ErrorOf("The app could not read that"))),
+						reject,
+					),
+				);
+				apply(set, files, [key, known]);
+			}
+			return known;
+		};
+		const urlOf = (blob) => {
+			let url = apply(linkOf, urls, [blob]);
+			if (url === undefined) {
+				url = makeUrl(blob);
+				apply(setLink, urls, [blob, url]);
+			}
+			return url;
+		};
+		const fileUrl = (path, from) => apply(then, fileOf(path, from), [urlOf]);
 		const watchQuestion = (name, params, listener, failed) => {
 			let stopped = false;
 			let id = null;
@@ -420,6 +511,9 @@
 				const kept = (value) => (value === undefined || value === null ? null : String(value));
 				return call("tell", { about: String(given.about ?? ""), at: kept(given.at), text: kept(given.text) });
 			}),
+			// One of the page's own files by its path: an address the page can use, or its bytes.
+			file: freeze((path) => fileUrl(String(path), base)),
+			bytes: freeze((path) => apply(then, fileOf(String(path), base), [(blob) => apply(arrayBufferOf, blob, [])])),
 			onChange: freeze((listener) => {
 				if (typeof listener === "function") apply(push, changes, [listener]);
 			}),
@@ -427,7 +521,225 @@
 		// Sent as a call, so the app counts it as one; nothing here waits for its answer.
 		const follow = (href) =>
 			apply(send, port, [{ type: "qorpera-app-call", id: ++next, method: "open", params: { href } }]);
-		return { page, follow };
+		return { page, follow, fileOf, fileUrl };
+	};
+
+	// The page's own files, read through the port when the page uses them (deploy/first-node/RUNTIME-INTERFACE-APPS.md
+	// §4): what the app marked to come later (data-qorpera-src, -poster, -href) once its element comes near the screen
+	// or is played, an address of the page's own that a script gives an element, and fetch and XMLHttpRequest of one.
+	// A file that can't be read fails alone, said in the console. Nothing here opens the network: the policy above
+	// refuses every address but data: and blob:.
+	const ownFiles = (live, base) => {
+		const pending = new WeakMapOf();
+		const fail = (path) => (error) =>
+			said(`${path} could not be loaded: ${error && typeof error.message === "string" ? error.message : "it could not be read"}`);
+		const NAMES = ["src", "poster", "href"];
+		const WAITING = "[data-qorpera-src], [data-qorpera-poster], [data-qorpera-href]";
+		const later = (element) => {
+			const loads = [];
+			for (let index = 0; index < NAMES.length; index++) {
+				const name = NAMES[index];
+				const path = apply(attribute, element, [`data-qorpera-${name}`]);
+				if (path === null) continue;
+				apply(removeAttribute, element, [`data-qorpera-${name}`]);
+				loads[loads.length] = apply(then, live.fileUrl(path, ""), [
+					(url) => apply(setAttribute, element, [name, url]),
+					fail(path),
+				]);
+			}
+			return loads;
+		};
+		const isMedia = (element) => {
+			const name = apply(nameOf, element, []);
+			return name === "video" || name === "audio";
+		};
+		const waits = (element) =>
+			apply(matches, element, [WAITING]) || apply(count, apply(within, element, [WAITING]), []) > 0;
+		// What waits in an element, a media element's sources too; a media element then loads again.
+		const bring = (element) => {
+			const loads = later(element);
+			if (isMedia(element))
+				each(apply(within, element, ["source, track"]), (inner) => {
+					const more = later(inner);
+					for (let index = 0; index < more.length; index++) loads[loads.length] = more[index];
+				});
+			const done = apply(then, all(loads), [
+				() => {
+					if (isMedia(element) && loads.length) apply(mediaLoad, element, []);
+				},
+			]);
+			apply(setLink, pending, [element, done]);
+			return done;
+		};
+		const near = new Near(
+			(entries) => {
+				for (let index = 0; index < entries.length; index++) {
+					if (!apply(entryNear, entries[index], [])) continue;
+					const element = apply(entryTarget, entries[index], []);
+					apply(unobserveNear, near, [element]);
+					bring(element);
+				}
+			},
+			{ rootMargin: "100% 0px 100% 0px" },
+		);
+		// A media element's sources wait for it; a sound waits for its play, unless it plays by itself.
+		const take = (element) => {
+			const name = apply(nameOf, element, []);
+			const target = name === "source" || name === "track" ? apply(parentOf, element, []) || element : element;
+			if (apply(nameOf, target, []) !== "audio") apply(observeNear, near, [target]);
+			else if (apply(hasAttribute, target, ["autoplay"])) bring(target);
+		};
+		// An address a script gives an element: read now, and the element gets the file's own address once it is there.
+		const give = (element, name, path) => {
+			const done = apply(then, live.fileUrl(path, base), [
+				(url) => apply(setAttribute, element, [name, url]),
+				fail(path),
+			]);
+			apply(setLink, pending, [element, done]);
+		};
+		const RELATIVE = "img[src], video[src], video[poster], audio[src], source[src], track[src]";
+		const fix = (element) => {
+			for (const name of ["src", "poster"]) {
+				const value = apply(attribute, element, [name]);
+				const path = value === null ? null : ownPath(value);
+				if (path === null) continue;
+				apply(removeAttribute, element, [name]);
+				give(element, name, path);
+			}
+		};
+		const seen = (node) => {
+			const type = apply(nodeType, node, []);
+			if (type !== 1 && type !== 11) return;
+			if (type === 1 && apply(matches, node, [WAITING])) take(node);
+			if (type === 1 && apply(matches, node, [RELATIVE])) fix(node);
+			const inside = type === 1 ? within : withinFragment;
+			each(apply(inside, node, [WAITING]), take);
+			each(apply(inside, node, [RELATIVE]), fix);
+		};
+		for (const [prototype, name] of [
+			[HTMLImageElement.prototype, "src"],
+			[HTMLMediaElement.prototype, "src"],
+			[HTMLSourceElement.prototype, "src"],
+			[HTMLTrackElement.prototype, "src"],
+			[HTMLVideoElement.prototype, "poster"],
+		]) {
+			const property = Object.getOwnPropertyDescriptor(prototype, name);
+			Object.defineProperty(prototype, name, {
+				configurable: true,
+				enumerable: true,
+				get: property.get,
+				set(value) {
+					const path = ownPath(value);
+					if (path === null) apply(property.set, this, [value]);
+					else give(this, name, path);
+				},
+			});
+		}
+		const loadsFile = (element, name) =>
+			name === "src"
+				? element instanceof HTMLImageElement ||
+					element instanceof HTMLMediaElement ||
+					element instanceof HTMLSourceElement ||
+					element instanceof HTMLTrackElement
+				: name === "poster" && element instanceof HTMLVideoElement;
+		Element.prototype.setAttribute = function setAttributeOwn(name, value) {
+			const named = apply(lower, toText(name), []);
+			const path = loadsFile(this, named) ? ownPath(value) : null;
+			if (path === null) return apply(setAttribute, this, [name, value]);
+			give(this, named, path);
+		};
+		window.Audio = function Audio(source) {
+			const made = new AudioOf();
+			if (source !== undefined) made.src = source;
+			return made;
+		};
+		window.Audio.prototype = AudioOf.prototype;
+		HTMLMediaElement.prototype.play = function play() {
+			const ready = apply(linkOf, pending, [this]) || (waits(this) ? bring(this) : null);
+			return ready ? apply(then, ready, [() => apply(mediaPlay, this, [])]) : apply(mediaPlay, this, []);
+		};
+		HTMLMediaElement.prototype.load = function load() {
+			if (waits(this)) bring(this);
+			else apply(mediaLoad, this, []);
+		};
+		window.fetch = function fetch(input, init) {
+			let address;
+			let method = "GET";
+			try {
+				if (input instanceof RequestOf) {
+					address = apply(requestUrl, input, []);
+					method = apply(requestMethod, input, []);
+				} else address = toText(input);
+				if (init && init.method !== undefined) method = apply(upper, toText(init.method), []);
+			} catch {
+				return apply(realFetch, window, [input, init]);
+			}
+			const path = method === "GET" || method === "HEAD" ? ownPath(address) : null;
+			if (path === null) return apply(realFetch, window, [input, init]);
+			return new PromiseOf((resolve) =>
+				apply(then, live.fileOf(path, base), [
+					(blob) =>
+						resolve(
+							new ResponseOf(method === "HEAD" ? null : blob, {
+								status: 200,
+								statusText: "OK",
+								headers: {
+									"content-type": apply(blobType, blob, []) || "application/octet-stream",
+									"content-length": toText(apply(blobSize, blob, [])),
+								},
+							}),
+						),
+					(error) => {
+						fail(path)(error);
+						resolve(new ResponseOf(null, { status: 404, statusText: "Not Found" }));
+					},
+				]),
+			);
+		};
+		// An XMLHttpRequest of a file opens at once, on nothing, and at its send opens again on the file's own address
+		// with what was set on it.
+		const requests = new WeakMapOf();
+		XMLHttpRequest.prototype.open = function open(method, address, ...rest) {
+			const verb = apply(upper, toText(method), []);
+			const path = (verb === "GET" || verb === "HEAD") && rest[0] !== false ? ownPath(address) : null;
+			if (path === null) {
+				apply(removeLink, requests, [this]);
+				return apply(xhrOpen, this, [method, address, ...rest]);
+			}
+			apply(setLink, requests, [this, { verb, path, headers: [], mime: null }]);
+			return apply(xhrOpen, this, [verb, "data:,", true]);
+		};
+		XMLHttpRequest.prototype.setRequestHeader = function setRequestHeader(name, value) {
+			const request = apply(linkOf, requests, [this]);
+			if (request) request.headers[request.headers.length] = [name, value];
+			return apply(xhrHeader, this, [name, value]);
+		};
+		XMLHttpRequest.prototype.overrideMimeType = function overrideMimeType(type) {
+			const request = apply(linkOf, requests, [this]);
+			if (request) request.mime = type;
+			return apply(xhrMime, this, [type]);
+		};
+		XMLHttpRequest.prototype.send = function send(body) {
+			const request = apply(linkOf, requests, [this]);
+			if (!request) return apply(xhrSend, this, [body]);
+			apply(removeLink, requests, [this]);
+			const go = (address) => {
+				apply(xhrOpen, this, [request.verb, address, true]);
+				for (let index = 0; index < request.headers.length; index++) apply(xhrHeader, this, request.headers[index]);
+				if (request.mime !== null) apply(xhrMime, this, [request.mime]);
+				apply(xhrSend, this, []);
+			};
+			apply(then, live.fileUrl(request.path, base), [
+				go,
+				(error) => {
+					fail(request.path)(error);
+					const gone = makeUrl(new BlobOf([]));
+					dropUrl(gone);
+					go(gone);
+				},
+			]);
+		};
+		return seen;
 	};
 
 	addEventListener("message", function take(event) {
@@ -435,9 +747,21 @@
 		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
 		removeEventListener("message", take);
 		const port = event.ports && event.ports.length === 1 ? event.ports[0] : null;
-		const live = port ? bridge(port) : null;
+		const base = typeof data.base === "string" ? data.base : "";
+		const live = port ? bridge(port, base) : null;
+		// The files the app sent with the page, each at an address of this frame's own in place of its mark.
+		const handed = new Map();
+		if (Array.isArray(data.files))
+			for (const pair of data.files)
+				if (Array.isArray(pair) && typeof pair[0] === "string" && pair[1] instanceof BlobOf)
+					handed.set(pair[0], makeUrl(pair[1]));
+		const html = handed.size ? data.html.replace(TOKEN, (token) => handed.get(token) ?? token) : data.html;
+		if (Array.isArray(data.missing))
+			for (const path of data.missing)
+				if (typeof path === "string") said(`${path} is not in the page's folder, so the page shows without it`);
 		apply(open, document, []);
 		if (live) {
+			seenFiles = ownFiles(live, base);
 			define(window, "qorpera", live.page);
 			// Only for a page handed a port (an app's; the app refuses the links of any other page it hands one).
 			// Listened for now: after the document is opened, which drops the window's listeners, and before the page
@@ -445,7 +769,7 @@
 			follow = live.follow;
 			apply(listen, window, ["click", hear, true]);
 		}
-		apply(write, document, [data.html]);
+		apply(write, document, [html]);
 		apply(close, document, []);
 		// Added once the page is written (opening the document drops the window's listeners). Passed on only after every
 		// handler of the page has had the key, also one it adds later: a page that takes Escape for itself (its own

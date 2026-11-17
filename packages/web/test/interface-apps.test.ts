@@ -21,6 +21,7 @@ import {
 	CompanyData,
 	type CompanyDataClient,
 	companyConcepts,
+	PageFiles,
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
@@ -91,6 +92,14 @@ function fakeFolder(files: Record<string, string | Uint8Array>) {
 		readFile: async (file: { fileSha256: string }) => byHash.get(file.fileSha256)!.data,
 	} as never as Parameters<typeof assembleApp>[0] & { reads: string[] };
 }
+
+const textOf = (blob: Blob | undefined) =>
+	new Promise<string>((resolve, reject) => {
+		if (!blob) return reject(new Error("no file"));
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result as string);
+		reader.readAsText(blob);
+	});
 
 describe("an app's paths", () => {
 	it("resolves a page's references inside the app's folder only", () => {
@@ -196,15 +205,18 @@ describe("putting an app's page together", () => {
 			"apps/secret.png": PNG,
 		});
 
-	it("puts an app's videos in, each up to its own limit, outside the limit of the rest", async () => {
-		const big = new Uint8Array(1024 * 1024);
+	it("sends small videos with the page, and marks large ones to come when their element needs them", async () => {
+		const small = new Uint8Array(1024 * 1024);
 		const assembled = await assembleApp(
 			fakeFolder({
 				"apps/ideas/index.html":
-					'<!doctype html><html><body><video src="a.mp4" controls></video><video><source src="clips/b.webm"></video><video src="../c.mp4"></video></body></html>',
-				"apps/ideas/a.mp4": big,
-				"apps/ideas/clips/b.webm": big,
-				"apps/c.mp4": big,
+					'<!doctype html><html><body><video src="a.mp4" controls></video><video><source src="clips/b.webm"></video><video src="../c.mp4"></video><video src="film.mp4" poster="still.avif"></video><audio src="voice.mp3"></audio><video src="none.mp4"></video></body></html>',
+				"apps/ideas/a.mp4": small,
+				"apps/ideas/clips/b.webm": small,
+				"apps/ideas/film.mp4": new Uint8Array(60 * 1024 * 1024),
+				"apps/ideas/still.avif": new Uint8Array(10),
+				"apps/ideas/voice.mp3": new Uint8Array(10),
+				"apps/c.mp4": small,
 			}) as never,
 			{ path: "apps/ideas", entry: "index.html" },
 			new AbortController().signal,
@@ -212,19 +224,55 @@ describe("putting an app's page together", () => {
 		expect(assembled.ok).toBe(true);
 		if (!assembled.ok) return;
 		const page = new DOMParser().parseFromString(assembled.page, "text/html");
-		expect(page.querySelector("video")?.getAttribute("src")?.startsWith("data:video/mp4;base64,")).toBe(true);
-		expect(page.querySelector("source")?.getAttribute("src")?.startsWith("data:video/webm;base64,")).toBe(true);
+		const videos = [...page.querySelectorAll("video")];
+		const handed = new Map(assembled.framed.files);
+		const sent = (token: string | null | undefined) => handed.get(token ?? "")?.type;
+		expect(sent(videos[0]?.getAttribute("src"))).toBe("video/mp4");
+		expect(sent(page.querySelector("source")?.getAttribute("src"))).toBe("video/webm");
+		expect(sent(videos[3]?.getAttribute("poster"))).toBe("image/avif");
+		expect(sent(page.querySelector("audio")?.getAttribute("src"))).toBe("audio/mpeg");
 		// Out of the app's own folder, it stays as written and the frame's policy blocks it.
-		expect(page.querySelectorAll("video")[2]?.getAttribute("src")).toBe("../c.mp4");
-		const tooBig = await assembleApp(
-			fakeFolder({
-				"apps/ideas/index.html": '<!doctype html><html><body><video src="a.mp4"></video></body></html>',
-				"apps/ideas/a.mp4": new Uint8Array(13 * 1024 * 1024),
-			}) as never,
-			{ path: "apps/ideas", entry: "index.html" },
+		expect(videos[2]?.getAttribute("src")).toBe("../c.mp4");
+		// 60 MiB: read when its element needs it, never with the page.
+		expect(videos[3]?.hasAttribute("src")).toBe(false);
+		expect(videos[3]?.getAttribute("data-qorpera-src")).toBe("film.mp4");
+		expect([...handed.values()].every((blob) => blob.size < 2 * 1024 * 1024)).toBe(true);
+		// A file the folder lacks is named for the frame's console, and its element loads nothing.
+		expect(videos[4]?.hasAttribute("src")).toBe(false);
+		expect(assembled.framed.missing).toEqual(["none.mp4"]);
+		// A change of the large file changes what the frame shows, though the page reads the same.
+		expect(assembled.key).toContain("film.mp4 ");
+	});
+
+	it("keeps no cap on an app: any number of files of any kind and size", async () => {
+		const files: Record<string, string | Uint8Array> = {
+			"apps/big/index.html": `<link rel="stylesheet" href="look.css">${Array.from({ length: 200 }, (_, n) => `<img src="p/${n}.webp">`).join("")}<script src="three.min.js"></script><img src="huge.png" hidden>`,
+			"apps/big/look.css": '@font-face{font-family:Brand;src:url("type/brand.woff2")}',
+			"apps/big/type/brand.woff2": new Uint8Array(40_000),
+			"apps/big/three.min.js": `window.T=${JSON.stringify("x".repeat(700_000))};`,
+			"apps/big/huge.png": new Uint8Array(20 * 1024 * 1024),
+		};
+		for (let n = 0; n < 200; n++) files[`apps/big/p/${n}.webp`] = new Uint8Array(20_000).fill(n);
+		const progress: [number, number][] = [];
+		const assembled = await assembleApp(
+			fakeFolder(files) as never,
+			{ path: "apps/big", entry: "index.html" },
 			new AbortController().signal,
+			undefined,
+			(read, of) => progress.push([read, of]),
 		);
-		expect(tooBig.ok).toBe(false);
+		if (!assembled.ok) throw new Error(assembled.message);
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const handed = new Map(assembled.framed.files);
+		// The large script comes as a file of its own, not as text in the page.
+		const script = page.querySelector("script");
+		expect(handed.get(script?.getAttribute("src") ?? "")?.type).toBe("text/javascript");
+		expect(handed.get(script?.getAttribute("src") ?? "")?.size).toBeGreaterThan(700_000);
+		expect(page.querySelector("style")?.textContent).toMatch(/url\("qorpera-file-[0-9a-f]{32}-woff2"\)/);
+		// A hidden picture is there for a script to read: it comes with the page, whatever its size.
+		expect(handed.get(page.querySelector("img[hidden]")?.getAttribute("src") ?? "")?.size).toBe(20 * 1024 * 1024);
+		expect(page.querySelectorAll("img:not([hidden])")).toHaveLength(200);
+		expect(progress.at(-1)?.[0]).toBe(progress.at(-1)?.[1]);
 	});
 
 	it("puts an explainer together as any app: its engine, its scenes and its voice clips, in a dark page", async () => {
@@ -257,7 +305,7 @@ describe("putting an app's page together", () => {
 				"apps/fee/engine.js": "window.Video = class {};",
 				"apps/fee/scenes.js": 'V.part("The fee");',
 				"apps/fee/voice/3f0a9c1e.mp4": new Uint8Array([0, 0, 0, 28]),
-				// The second clip is listed in the page and gone from the folder: it stays a name the frame can't load.
+				// The second clip is listed in the page and gone from the folder.
 			}) as never,
 			{ path: "apps/fee", entry: "index.html" },
 			new AbortController().signal,
@@ -279,7 +327,10 @@ describe("putting an app's page together", () => {
 		const clips = [...handed.querySelectorAll("audio[data-caption] > source")].map((source) =>
 			source.getAttribute("src"),
 		);
-		expect(clips).toEqual(["data:video/mp4;base64,AAAAHA==", "voice/0000beef.mp4"]);
+		expect(clips[0]).toMatch(/^qorpera-file-[0-9a-f]{32}-mp4$/);
+		expect(clips[1]).toBeNull();
+		expect(assembled.framed.missing).toEqual(["voice/0000beef.mp4"]);
+		expect(await textOf(new Map(assembled.framed.files).get(clips[0] ?? ""))).toBe("\0\0\0\u001c");
 		expect(handed.querySelector("audio")?.getAttribute("data-seconds")).toBe("5.42");
 	});
 
@@ -292,10 +343,12 @@ describe("putting an app's page together", () => {
 		expect(assembled.ok).toBe(true);
 		if (!assembled.ok) return;
 		const page = new DOMParser().parseFromString(assembled.page, "text/html");
-		expect(page.querySelector("style")?.textContent).toBe('body{background:url("data:image/png;base64,iVBORw==")}');
+		const logo = /url\("(qorpera-file-[0-9a-f]{32}-png)"\)/.exec(page.querySelector("style")?.textContent ?? "")?.[1];
+		expect(page.querySelector("style")?.textContent).toBe(`body{background:url("${logo}")}`);
+		expect(new Map(assembled.framed.files).get(logo ?? "")?.type).toBe("image/png");
 		expect(page.querySelector("link")?.getAttribute("href")).toBe("https://cdn.test/x.css");
 		const images = [...page.querySelectorAll("img")].map((image) => image.getAttribute("src"));
-		expect(images).toEqual(["data:image/png;base64,iVBORw==", "../secret.png"]);
+		expect(images).toEqual([logo, "../secret.png"]);
 		const script = page.querySelector("script");
 		expect(script?.hasAttribute("src")).toBe(false);
 		// A script's text can't end its own element early.
@@ -332,9 +385,13 @@ describe("putting an app's page together", () => {
 		expect(assembled.ok).toBe(true);
 		if (!assembled.ok) return;
 		const page = new DOMParser().parseFromString(assembled.page, "text/html");
-		const sources = [...page.querySelectorAll("img")].map((image) => atob(image.getAttribute("src")!.split(",")[1]!));
+		const handed = new Map(assembled.framed.files);
+		const sources = await Promise.all(
+			[...page.querySelectorAll("img")].map((image) => textOf(handed.get(image.getAttribute("src")!))),
+		);
 		expect(sources).toEqual([...names.map((_, index) => String.fromCharCode(65 + index)), "A"]);
-		expect(page.querySelector("style")?.textContent).toBe('b{background:url("data:image/png;base64,Qg==")}');
+		const second = page.querySelectorAll("img")[1]?.getAttribute("src");
+		expect(page.querySelector("style")?.textContent).toBe(`b{background:url("${second}")}`);
 		expect(most).toBeGreaterThan(1);
 		expect(most).toBeLessThanOrEqual(8);
 		expect(f.reads.filter((path) => path === "apps/many/p0.png")).toHaveLength(1);
@@ -455,6 +512,67 @@ describe("putting an app's page together", () => {
 	});
 });
 
+describe("a page opened from the company folder by itself", () => {
+	const files = () =>
+		fakeFolder({
+			"marketing/jordro/index.html":
+				'<link rel="stylesheet" href="look.css"><img src="hero.webp"><video src="film/ad.mp4"></video><img src="../secret.png">',
+			"marketing/jordro/look.css": "@font-face{font-family:J;src:url(type/j.woff2)}",
+			"marketing/jordro/type/j.woff2": new Uint8Array(30),
+			"marketing/jordro/hero.webp": new Uint8Array(20),
+			"marketing/jordro/film/ad.mp4": new Uint8Array(10),
+			"marketing/secret.png": new Uint8Array(5),
+			"bank/statement.pdf": new Uint8Array(5),
+			"QorperaOS/vision/vision.md": "x",
+		});
+
+	it("loads the files beside it and below it, as an app's page does", async () => {
+		const f = files();
+		const assembled = await assembleApp(
+			f,
+			{ path: "marketing/jordro", entry: "index.html" },
+			new AbortController().signal,
+		);
+		if (!assembled.ok) throw new Error(assembled.message);
+		expect([...new Map(assembled.framed.files).values()].map((blob) => blob.type).sort()).toEqual([
+			"font/woff2",
+			"image/webp",
+			"video/mp4",
+		]);
+		expect(assembled.page).toContain('src="../secret.png"');
+		expect(f.reads.every((path) => path.startsWith("marketing/jordro/"))).toBe(true);
+	});
+
+	it("reads only the files in its own folder and below, never a platform folder, and makes no other call", async () => {
+		const f = files();
+		const signal = new AbortController().signal;
+		const page = new PageFiles(f, "marketing/jordro", signal);
+		const read = (path: string, base: string) => page.answer({ method: "file", params: { path, base } });
+		const hero = await read("hero.webp", "");
+		expect(hero.ok && hero.value instanceof Blob && hero.value.type).toBe("image/webp");
+		expect((await read("j.woff2", "type")).ok).toBe(true);
+		for (const [path, base] of [
+			["../secret.png", ""] as const,
+			["../../bank/statement.pdf", ""],
+			["/marketing/secret.png", ""],
+			["hero.webp", "../.."],
+			["https://example.com/x.png", ""],
+			["missing.png", ""],
+		])
+			expect((await read(path, base)).ok, `${base} ${path}`).toBe(false);
+		for (const method of ["read", "list", "table", "agents", "todos", "query", "answer", "setRow", "tell", "open"])
+			expect((await page.answer({ method, params: { path: "hero.webp" } })).ok, method).toBe(false);
+		expect(f.reads.every((path) => path.startsWith("marketing/jordro/"))).toBe(true);
+		// A page in a folder the platform keeps reads nothing at all.
+		for (const root of ["bank", "QorperaOS/vision"]) {
+			const closed = new PageFiles(f, root, signal);
+			expect((await closed.answer({ method: "file", params: { path: "statement.pdf", base: "" } })).ok).toBe(false);
+			expect((await closed.answer({ method: "file", params: { path: "vision.md", base: "" } })).ok).toBe(false);
+		}
+		expect(f.reads.some((path) => path.startsWith("bank/") || path.startsWith("QorperaOS/"))).toBe(false);
+	});
+});
+
 describe("the company's apps", () => {
 	it("lists each app with its manifest, or its problems", async () => {
 		const f = fakeFolder({
@@ -521,11 +639,11 @@ describe("the company's apps", () => {
 	it("reads ahead the most recently changed apps first, and stops at the round's bytes", async () => {
 		const picture = (fill: number) => new Uint8Array(10 * 1024 * 1024).fill(fill);
 		const f = fakeFolder({
-			"apps/old/index.html": '<img src="a.png">',
+			"apps/old/index.html": '<img hidden src="a.png">',
 			"apps/old/a.png": picture(1),
-			"apps/mid/index.html": '<img src="a.png">',
+			"apps/mid/index.html": '<img hidden src="a.png">',
 			"apps/mid/a.png": picture(2),
-			"apps/new/index.html": '<img src="a.png">',
+			"apps/new/index.html": '<img hidden src="a.png">',
 			"apps/new/a.png": picture(3),
 		});
 		const parsed = parseAppManifest('name = "App"\n');
@@ -545,7 +663,7 @@ describe("the company's apps", () => {
 		const readFile = vi.spyOn(f, "readFile");
 		await warmApps(f, [app("old", 1), app("mid", 2), app("new", 3)], new AbortController().signal);
 		expect(readFile.mock.calls.map(([file]) => (file as { bytes: number }).bytes).sort()).toEqual(
-			[17, 17, 17, 10 * 1024 * 1024, 10 * 1024 * 1024].sort(),
+			[24, 24, 24, 10 * 1024 * 1024, 10 * 1024 * 1024].sort(),
 		);
 	});
 

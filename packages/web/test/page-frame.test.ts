@@ -231,13 +231,15 @@ describe("an HTML page's frame", () => {
 		expect(script).not.toMatch(/Event\.prototype\.preventDefault = |"defaultPrevented", \{|"returnValue"/);
 		// Only for a page handed a port: without one, nothing is noted, so nothing is stopped or sent.
 		expect(script).toContain("const noteLink = (click) => {\n\t\tif (!follow) return;");
-		expect(script).toContain('if (live) {\n\t\t\tdefine(window, "qorpera", live.page);');
+		expect(script).toContain(
+			'if (live) {\n\t\t\tseenFiles = ownFiles(live, base);\n\t\t\tdefine(window, "qorpera", live.page);',
+		);
 		// The link is noted on the click's way down, before any handler of the page: at the window, listened for once
 		// the document is opened (which drops the window's listeners) and before the page is written, and at each
 		// shadow tree's root. It is the innermost link on the click's whole path, a slot's surroundings included.
 		const heard = script.indexOf('apply(listen, window, ["click", hear, true]);');
 		expect(heard).toBeGreaterThan(script.indexOf("apply(open, document, []);"));
-		expect(heard).toBeLessThan(script.indexOf("apply(write, document, [data.html]);"));
+		expect(heard).toBeLessThan(script.indexOf("apply(write, document, [html]);"));
 		expect(script).toContain(
 			'if (apply(modeOf, root, []) === "closed") apply(addTo, closed, [root]);\n\t\tapply(listen, root, ["click", noteLink, true]);',
 		);
@@ -542,7 +544,13 @@ describe("an HTML page's frame", () => {
 		expect(directives).toContain("base-uri 'none'");
 		// No origin, no window, no network: nothing names this site, another site or a connection.
 		expect(header).not.toMatch(/allow-same-origin|allow-popups|allow-forms|allow-top-navigation|allow-modals/);
-		expect(header).not.toMatch(/connect-src|frame-src|child-src|worker-src|https?:|\*/);
+		expect(header).not.toMatch(/frame-src|child-src|https?:|wss?:|\*/);
+		// What a page reads of its own files comes as data: or blob: addresses, made in the frame: nothing names a host.
+		const sources = Object.fromEntries(directives.map((part) => [part.split(" ")[0], part.split(" ").slice(1)]));
+		for (const name of ["img-src", "font-src", "media-src", "connect-src", "worker-src"])
+			for (const source of sources[name] ?? []) expect(["data:", "blob:"], name).toContain(source);
+		expect(sources["script-src"]).toEqual(["'unsafe-inline'", "'unsafe-eval'", "blob:"]);
+		expect(sources["style-src"]).toEqual(["'unsafe-inline'", "data:"]);
 		expect(header.replace("frame-ancestors 'self'", "")).not.toContain("'self'");
 		// The document carries the same policy itself (a meta tag can't sandbox or limit framing), first in its head.
 		const meta = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(frameDocument)?.[1];

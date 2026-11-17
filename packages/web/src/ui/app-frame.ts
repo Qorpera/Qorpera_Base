@@ -25,6 +25,13 @@ export interface AppCall {
 
 export type AppAnswer = { ok: true; value: unknown } | { ok: false; error: string };
 
+export interface FramedPage {
+	readonly html: string;
+	readonly files?: readonly (readonly [string, Blob])[];
+	readonly missing?: readonly string[];
+	readonly base?: string;
+}
+
 /** What the host answers a page's calls with. */
 export type AppCallHandler = (call: AppCall) => Promise<AppAnswer>;
 
@@ -35,7 +42,7 @@ const MAX_REFUSED = 300;
 
 export class AppFrame {
 	readonly frame: HTMLIFrameElement;
-	readonly #page: string;
+	readonly #page: Promise<FramedPage>;
 	readonly #handle: AppCallHandler;
 	readonly #left: () => void;
 	readonly #lifetime = new AbortController();
@@ -49,8 +56,14 @@ export class AppFrame {
 	 * page may not close what it is shown in to dodge it (security review r1, L3). */
 	holdEscape = false;
 
-	constructor(page: string, title: string, className: string, handle: AppCallHandler, left: () => void) {
-		this.#page = page;
+	constructor(
+		page: FramedPage | Promise<FramedPage>,
+		title: string,
+		className: string,
+		handle: AppCallHandler,
+		left: () => void,
+	) {
+		this.#page = Promise.resolve(page);
 		this.#handle = handle;
 		this.#left = left;
 		const frame = document.createElement("iframe");
@@ -70,7 +83,7 @@ export class AppFrame {
 			() => {
 				this.#loads++;
 				if (this.#loads > 2) this.#leave();
-				else if (this.#loads === 1 && this.#ready) this.#handOver();
+				else if (this.#loads === 1 && this.#ready) void this.#handOver();
 			},
 			{ signal },
 		);
@@ -119,19 +132,25 @@ export class AppFrame {
 			return;
 		}
 		this.#ready = true;
-		if (this.#loads >= 1) this.#handOver();
+		if (this.#loads >= 1) void this.#handOver();
 	}
 
-	#handOver(): void {
+	async #handOver(): Promise<void> {
 		if (this.#handed) return;
 		this.#handed = true;
+		const { html, files = [], missing = [], base = "" } = await this.#page;
+		if (this.#lifetime.signal.aborted) return;
 		const channel = new MessageChannel();
 		this.#port = channel.port1;
 		channel.port1.addEventListener("message", (call) => void this.#call(call.data), {
 			signal: this.#lifetime.signal,
 		});
 		channel.port1.start();
-		this.frame.contentWindow?.postMessage({ type: PAGE_CONTENT, html: this.#page }, "*", [channel.port2]);
+		this.frame.contentWindow?.postMessage(
+			{ type: PAGE_CONTENT, html, files: files.map(([token, blob]) => [token, blob]), missing: [...missing], base },
+			"*",
+			[channel.port2],
+		);
 	}
 
 	async #call(data: unknown): Promise<void> {

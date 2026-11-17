@@ -13,13 +13,15 @@ import {
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import type { CodeDownloadCalls } from "../../cloud/code-downloads.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
+import { AppFrame } from "../../ui/app-frame.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { reducedMotion } from "../../ui/motion.ts";
-import { framePage, PageFrames } from "../../ui/page-frame.ts";
+import { framePage } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
+import { assembleApp, PageFiles } from "../interface-apps.ts";
 import { CodeDownload } from "./code-download.ts";
 import { CodeImport } from "./code-import.ts";
 
@@ -254,7 +256,7 @@ export class CompanyFolderBrowser {
 	/** Set while the window shows a file still being read, so what comes in fades in. */
 	#loading = false;
 	readonly #search: HTMLInputElement;
-	readonly #frames: PageFrames;
+	readonly #frames = new Set<AppFrame>();
 	/** A page's view, kept while the same page stays open. */
 	#pageView: "page" | "source" = "page";
 	/** The open page across the window. */
@@ -314,7 +316,14 @@ export class CompanyFolderBrowser {
 				spellcheck: "false",
 			});
 		this.#stop = new AbortController();
-		this.#frames = new PageFrames(this.#stop.signal);
+		this.#stop.signal.addEventListener(
+			"abort",
+			() => {
+				for (const frame of this.#frames) frame.dispose();
+				this.#frames.clear();
+			},
+			{ once: true },
+		);
 		this.#viewer = options.embedded
 			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1" }, this.#preview)
 			: null;
@@ -1244,7 +1253,7 @@ export class CompanyFolderBrowser {
 		const live = page !== undefined ? framePage(page) : null;
 		let body: HTMLElement;
 		if (opened.image) body = h("img", { class: "files-image", src: opened.image, alt: name });
-		else if (page !== undefined) body = this.#page(page, live, name);
+		else if (page !== undefined) body = this.#page(page, live, name, opened.path);
 		else if (opened.text !== undefined)
 			body = MARKDOWN.has(extension(opened.path))
 				? h("div", { class: "files-doc" }, markdown(opened.text))
@@ -1300,14 +1309,18 @@ export class CompanyFolderBrowser {
 				h("div", { class: "files-preview-actions" }, ...actions),
 			],
 			live !== null
-				? [this.#iconButton("expand", t("Show {name} large", { name }), () => this.#showLarge(live, name))]
+				? [
+						this.#iconButton("expand", t("Show {name} large", { name }), () =>
+							this.#showLarge(live, name, opened.path),
+						),
+					]
 				: [],
 		);
 	}
 
 	/** A page, live in its frame or as its source. The frame is made the first time the page shows and kept while the
 	 * source shows, so the page keeps its state. A page that can't be shown live shows its source, and says so. */
-	#page(html: string, live: string | null, name: string): HTMLElement {
+	#page(html: string, live: string | null, name: string, path: string): HTMLElement {
 		const stage = h("div", { class: "files-page-stage" });
 		const source = h("pre", { class: "files-text files-page-source" }, html);
 		if (live === null)
@@ -1326,8 +1339,9 @@ export class CompanyFolderBrowser {
 		const show = (view: "page" | "source") => {
 			this.#pageView = view;
 			if (view === "page" && !frame) {
-				frame = this.#frames.frame(live, t("Page: {name}", { name }), "files-page-frame");
-				stage.prepend(frame);
+				const made = this.#frame(path, live, t("Page: {name}", { name }), "files-page-frame");
+				frame = made;
+				stage.prepend(made);
 			}
 			if (frame) frame.hidden = view !== "page";
 			source.hidden = view !== "source";
@@ -1352,7 +1366,7 @@ export class CompanyFolderBrowser {
 
 	/** The page across the window, run afresh, in the dialog the attachment preview uses. `live`: what framePage handed
 	 * over. */
-	#showLarge(live: string, name: string): void {
+	#showLarge(live: string, name: string, path: string): void {
 		this.#large?.close(false);
 		const dialog = new SurfaceDialog(name, "file-preview-dialog page-preview-dialog", () => {
 			if (this.#large === dialog) this.#large = undefined;
@@ -1360,9 +1374,37 @@ export class CompanyFolderBrowser {
 		this.#large = dialog;
 		dialog.content.append(
 			h("h2", null, name),
-			this.#frames.frame(live, t("Page: {name}", { name }), "page-preview-frame"),
+			this.#frame(path, live, t("Page: {name}", { name }), "page-preview-frame"),
 		);
 		dialog.open();
+	}
+
+	#frame(path: string, live: string, title: string, className: string): HTMLIFrameElement {
+		for (const done of this.#frames)
+			if (!done.frame.isConnected && done.frame.dataset.shown) {
+				done.dispose();
+				this.#frames.delete(done);
+			}
+		const signal = this.#signal();
+		const root = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+		const folder = this.#client!;
+		const files = new PageFiles(folder, root, signal);
+		const page = assembleApp(folder, { path: root, entry: baseName(path) }, signal).then(
+			(assembled) => (assembled.ok ? assembled.framed : { html: live }),
+			() => ({ html: live }),
+		);
+		const frame = new AppFrame(
+			page,
+			title,
+			className,
+			(call) => files.answer(call),
+			() => undefined,
+		);
+		this.#frames.add(frame);
+		frame.frame.addEventListener("load", () => {
+			frame.frame.dataset.shown = "true";
+		});
+		return frame.frame;
 	}
 
 	async #reopen(path: string): Promise<void> {

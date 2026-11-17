@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- No cap on an interface app's files (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, 17 Nov 2026; Jonas: "also uncap the file-sizes"): `save_app` writes text files of any kind that is not binary, each as large as one call carries, lists the app's whole folder and releases only what the save drew on, and refuses no app for its count or size; `make_picture` no longer checks an app's room; an explainer's clips have no count bound. `company_write` and `company_edit` take as much text as one call carries (`MAX_TOOL_ARGUMENT_BYTES`, 960 KiB). save_app's words say so, and that fonts, sound and 3D models are files of the app; `PLATFORM_UPDATES` tells the Co-Founder. `MAX_CLOUD_PICTURE_BYTES` stays 12 MiB as the picture lane's own bound.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
