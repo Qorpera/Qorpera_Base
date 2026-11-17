@@ -295,7 +295,10 @@ begin
 		where id in (pg_temp.cw_id(16), pg_temp.cw_id(17));
 		perform pg_temp.c4_drain();
 		perform pg_temp.base_assert((pg_temp.cw_worker(16)).harness is null and (pg_temp.cw_worker(17)).harness is null
-			and (pg_temp.h1_machine(v_new.name)).desired_state = 'stopped',
+			and (pg_temp.h1_machine(v_new.name)).desired_state = 'stopped'
+			and pg_temp.cw_events(16, 'fell_back') -> 0 ->> 'machine' = 'limit' and pg_temp.cw_events(17, 'fell_back') -> 0 ->> 'machine' = 'limit'
+			and pg_temp.cw_events(17, 'fell_back') -> 0 ->> 'words'
+				= pg_temp.c4_words('<member>''s machine for Claude Code did not start within 5 minutes'),
 			'15: once none waits, the machine they made is no longer wanted: ' || to_jsonb(pg_temp.h1_machine(v_new.name))::text);
 		raise exception 'cw-undo';
 	exception when raise_exception then if sqlerrm <> 'cw-undo' then raise; end if;

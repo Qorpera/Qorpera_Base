@@ -2573,9 +2573,12 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      (`qorpera_claude_worker_machine_waits`) until the machine runs as its home, the machine is stopped, gone, failed to
      start (`start:` error since the wake), the company ran out of hours, or 5 minutes passed; then the drain starts it on
      Claude Code, or hands it to Codex at once (`claude_fallback_sequence`, event `fell_back` with reason `no_machine`,
-     the `:codex` key). A machine this wake alone wanted that is still not running at the 5 minutes is no longer wanted.
-     A refusal at the wake (no machines, the home off, too large, no hours) hands it to Codex in the same pass. Each
-     resolve starts the wait over. While a Claude Code worker's run is going with an open home session on the machine's
+     the `:codex` key); once 5 minutes passed the reason is the 5 minutes, whatever else happened. Every worker that
+     waits on a machine not yet running records its wanted time; the last of them still waiting stops the machine when
+     it is still not running, its wanted time is unchanged, no run waits to be told of it and no going run took it (all
+     read under the company's machine lock, the machine row `FOR UPDATE`). A refusal at the wake (a member problem
+     since the dispatch, in that problem's words; no machines; the home off; too large; no hours) hands it to Codex in
+     the same pass. Each resolve starts the wait over. While a Claude Code worker's run is going with an open home session on the machine's
      boot, the machine is at work: not due to sleep, and its stop is refused (`qorpera_company_machine_claude_at_work`);
      once that run's job ended it keeps nothing awake, and the idle rule decides as before.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain

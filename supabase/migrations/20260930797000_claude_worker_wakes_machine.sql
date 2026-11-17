@@ -136,12 +136,12 @@ begin
 		return 'running'; end if;
 	select * into v_machine from public.qorpera_company_machines where id = p_worker.claude_machine_id;
 	return case
+		when clock_timestamp() >= p_worker.claude_machine_since + interval '5 minutes' then 'limit'
 		when v_machine.id is null or v_machine.removed_at is not null or v_machine.desired_state = 'deleted' then 'gone'
 		when v_machine.desired_state <> 'running' then 'stopped'
 		when v_machine.last_error like 'start:%' and v_machine.last_error_at >= p_worker.claude_machine_since then 'failed'
 		when public.qorpera_company_machine_home_outdated(v_machine) then 'outdated'
-		when public.qorpera_company_at_zero(p_worker.profile_id, clock_timestamp()) then 'hours'
-		when clock_timestamp() >= p_worker.claude_machine_since + interval '5 minutes' then 'limit' end;
+		when public.qorpera_company_at_zero(p_worker.profile_id, clock_timestamp()) then 'hours' end;
 end $$;
 
 create function public.qorpera_claude_worker_machine_waits(p_worker public.qorpera_runtime_workers)
