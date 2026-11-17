@@ -6927,7 +6927,7 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    at every request. The provider's hosted search, whose results never pass the host, is not offered; its
    `web_search_call` item stays refused.
 3. **The record.** Each search is a `web_search` step of the run's work log, with its query and the envelope the model
-   got. Members see what was found in the agent's own words, never the steps.
+   got. Members see what was found in the agent's own words, never the steps. Every run's text names web.run beside the qorpera tools, for a run that has it.
 
 ## 20. Enforcement matrix
 
