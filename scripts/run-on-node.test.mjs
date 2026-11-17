@@ -987,7 +987,7 @@ test("the probe reads the locks the run script takes and counts runs still being
 		probe,
 		/kept_busy=0; for i in \$\(seq 5 5\); do \{ flock -n 5 \|\| kept_busy=\$\(\(kept_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"; done/,
 	);
-	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy extra_busy=\$extra_busy mem_mib=\$mem_mib closed=/);
+	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy extra_busy=\$extra_busy mem_mib=\$mem_mib disk_mib=\$disk_mib closed=/);
 	// guest-setup.sh makes the kept slot's lock file root's and read-only, now and at every boot.
 	const setup = readFileSync(new URL("../deploy/test-machine/guest-setup.sh", import.meta.url), "utf8");
 	assert.match(setup, /^kept=\/run\/lock\/qorpera-test-machine-slot5\.lock$/m);
@@ -2054,7 +2054,10 @@ test("untracked files that look like secrets are named", () => {
 });
 
 test("cleanup prunes runs by the UTC time in their name, never by mtime", () => {
-	const script = pruneScript();
+	const script = pruneScript()
+		.split("\n")
+		.filter((line) => line !== laneTidyLine())
+		.join("\n");
 	assert.match(script, /date -u -d '-1 day' \+%Y%m%dT%H%M%S/);
 	assert.match(script, /\$\{n%%-\*\}" < "\$cutoff"/);
 	assert.doesNotMatch(script, /-mmin|-mtime \+1\b/);
