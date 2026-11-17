@@ -119,7 +119,7 @@ begin
 		'qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,integer,text)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)',
-		'qorpera_finish_google_mailbox_pass(uuid,text,uuid,uuid,text,text,text,integer,text)',
+		'qorpera_finish_google_mailbox_pass(uuid,text,uuid,uuid,text,text,text,integer,boolean,text)',
 		'qorpera_folder_describe_coding_value_capture(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_folder_describe_hook_capture_key(uuid,text,jsonb,uuid)',
 		'qorpera_folder_describe_signed_hook(uuid,text,jsonb)',

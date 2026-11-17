@@ -292,7 +292,14 @@ it("brings in the first import newest first, a page at a time, through the mail 
 	expect(f.order.at(-1)).toBe("m0001");
 	expect(gmail.fetched).not.toContain("m0249");
 	expect(f.finished).toEqual([
-		expect.objectContaining({ outcome: "imported", historyId: "1000", pageToken: null, total: 250, error: null }),
+		expect.objectContaining({
+			outcome: "imported",
+			historyId: "1000",
+			pageToken: null,
+			total: 250,
+			capped: false,
+			error: null,
+		}),
 	]);
 	const stored = f.stored.get("m0250");
 	expect(stored?.imported).toBe(true);
@@ -326,11 +333,11 @@ it("ends the first import at 50,000 messages", async () => {
 	const counted = fixture({ claims: [claim({ broughtIn: 60_000, importCount: 49_999, historyId: "1000" })], gmail });
 	await counted.mailboxes.pass(signal);
 	expect(counted.order).toEqual(["m0005"]);
-	expect(counted.finished).toEqual([expect.objectContaining({ outcome: "imported", pageToken: null })]);
+	expect(counted.finished).toEqual([expect.objectContaining({ outcome: "imported", pageToken: null, capped: true })]);
 	const bounded = fixture({ claims: [claim({ historyId: "1000" })], gmail, bound: 2 });
 	await bounded.mailboxes.pass(signal);
 	expect(bounded.order).toEqual(["m0005", "m0004"]);
-	expect(bounded.finished).toEqual([expect.objectContaining({ outcome: "imported" })]);
+	expect(bounded.finished).toEqual([expect.objectContaining({ outcome: "imported", capped: true })]);
 });
 
 it("after a reconnect brings in the gap newest first until it reaches known mail, whatever came in before", async () => {

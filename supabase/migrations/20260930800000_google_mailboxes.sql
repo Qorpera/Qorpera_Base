@@ -34,6 +34,7 @@ create table public.qorpera_google_mailboxes (
 	brought_in integer not null default 0 check (brought_in >= 0),
 	import_count integer not null default 0 check (import_count between 0 and 50000),
 	gap boolean not null default false,
+	capped boolean not null default false,
 	total integer check (total >= 0),
 	imported_at timestamptz,
 	due_at timestamptz,
@@ -496,7 +497,7 @@ begin
 		update public.qorpera_company_mailboxes set removed_at = null where id = v_removed.mailbox_id;
 		update public.qorpera_google_mailboxes
 		set removed_at = null, secret_id = v_secret_id, state = 'bringing_in', paused = false, history_id = null,
-			page_token = null, imported_at = null, import_count = 0, gap = true, due_at = clock_timestamp(), lease_id = null, lease_until = null,
+			page_token = null, imported_at = null, import_count = 0, gap = true, capped = false, due_at = clock_timestamp(), lease_id = null, lease_until = null,
 			attempts = 0, last_error = null, updated_at = clock_timestamp()
 		where mailbox_id = v_removed.mailbox_id;
 		v_mailbox_id := v_removed.mailbox_id;
@@ -713,6 +714,7 @@ create function public.qorpera_finish_google_mailbox_pass(
 	p_history_id text,
 	p_page_token text,
 	p_total integer,
+	p_capped boolean,
 	p_error text
 )
 returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
@@ -728,7 +730,8 @@ begin
 		or (p_history_id is not null and p_history_id !~ '^[0-9]{1,20}$')
 		or (p_page_token is not null and (char_length(p_page_token) > 512 or p_page_token !~ '^[\x21-\x7e]+$'))
 		or (p_outcome <> 'importing' and p_page_token is not null)
-		or (p_total is not null and p_total < 0) then
+		or (p_total is not null and p_total < 0)
+		or p_capped is null or (p_capped and p_outcome <> 'imported') then
 		raise exception 'Google mailbox pass answer is invalid' using errcode = '22023'; end if;
 	v_google := public.qorpera_google_mailbox_leased(v_authority.profile_id, p_mailbox_id, p_lease_id);
 	if (p_outcome in ('importing', 'imported') and v_google.state <> 'bringing_in')
@@ -739,6 +742,7 @@ begin
 	set state = case p_outcome when 'imported' then 'live' when 'refused' then 'sign_in_again' else state end,
 		imported_at = case when p_outcome = 'imported' then v_now else imported_at end,
 		gap = case when p_outcome = 'imported' then false else gap end,
+		capped = case when p_outcome = 'imported' then p_capped else capped end,
 		history_id = coalesce(p_history_id, history_id),
 		page_token = case p_outcome when 'importing' then p_page_token when 'imported' then null else page_token end,
 		total = case when coalesce(p_total, total) is null then null
@@ -763,9 +767,9 @@ begin
 		'state', public.qorpera_google_mailbox_state(v_google), 'dueAt', v_google.due_at);
 end
 $$;
-revoke all on function public.qorpera_finish_google_mailbox_pass(uuid, text, uuid, uuid, text, text, text, integer, text)
+revoke all on function public.qorpera_finish_google_mailbox_pass(uuid, text, uuid, uuid, text, text, text, integer, boolean, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_finish_google_mailbox_pass(uuid, text, uuid, uuid, text, text, text, integer, text)
+grant execute on function public.qorpera_finish_google_mailbox_pass(uuid, text, uuid, uuid, text, text, text, integer, boolean, text)
 	to qorpera_secret_broker;
 
 create function public.qorpera_google_mail_thread(p_mail_id uuid)
@@ -1045,6 +1049,7 @@ begin
 		'state', public.qorpera_google_mailbox_state(google),
 		'broughtIn', google.brought_in,
 		'total', google.total,
+		'capped', google.capped,
 		'lastWeek', (select count(*) from (select 1 from public.qorpera_mail_received as received
 			where received.mailbox_id = mailbox.id and received.received_at > clock_timestamp() - interval '7 days'
 			limit 10000) as recent))) end

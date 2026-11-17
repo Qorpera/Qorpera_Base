@@ -87,10 +87,10 @@ create function pg_temp.g_bring(p_claim jsonb, p_gmail_id text, p_imported boole
 		coalesce(p_message, pg_temp.g_message(p_claim ->> 'address', p_gmail_id))))
 $$;
 create function pg_temp.g_finish(p_claim jsonb, p_outcome text, p_history text, p_token text default null,
-	p_total integer default null, p_error text default null) returns jsonb language sql as $$
-	select pg_temp.g_broker(format('select public.qorpera_finish_google_mailbox_pass(%L, %L, %L, %L, %L, %L, %L, %L, %L)',
+	p_total integer default null, p_error text default null, p_capped boolean default false) returns jsonb language sql as $$
+	select pg_temp.g_broker(format('select public.qorpera_finish_google_mailbox_pass(%L, %L, %L, %L, %L, %L, %L, %L, %L, %L)',
 		'12970000-0000-4000-8000-0000000000d1', repeat('1', 64), p_claim ->> 'mailboxId', p_claim ->> 'lease', p_outcome,
-		p_history, p_token, p_total, p_error))
+		p_history, p_token, p_total, p_capped, p_error))
 $$;
 
 select pg_temp.base_claims('service_role');
@@ -140,7 +140,8 @@ select pg_temp.base_assert((select secret.status = 'active' and secret.connector
 	'The sealed sign-in is a company Gmail connection labelled with the address');
 select pg_temp.base_assert(pg_temp.g_entry('owner@gmail.com') - array['hookId', 'handledBy', 'routines']
 		= jsonb_build_object('address', 'owner@gmail.com', 'status', 'active', 'kind', 'google', 'last7Days', 0,
-			'google', jsonb_build_object('state', 'bringing_in', 'broughtIn', 0, 'total', null, 'lastWeek', 0)),
+			'google', jsonb_build_object('state', 'bringing_in', 'broughtIn', 0, 'total', null, 'capped', false,
+				'lastWeek', 0)),
 	'A viewer reads the Google address with its fields: ' || coalesce(pg_temp.g_entry('owner@gmail.com')::text, 'none'));
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
@@ -213,7 +214,7 @@ select pg_temp.base_assert((select count(*) = 2 and bool_and(received.delivered_
 			where usage.profile_id = '92400000-0000-4000-8000-000000000010'),
 	'Imported mail is stored with its own date, to the Google address, outside the hourly budget');
 select pg_temp.base_assert(pg_temp.g_entry('owner@gmail.com') -> 'google'
-		= jsonb_build_object('state', 'bringing_in', 'broughtIn', 2, 'total', null, 'lastWeek', 1),
+		= jsonb_build_object('state', 'bringing_in', 'broughtIn', 2, 'total', null, 'capped', false, 'lastWeek', 1),
 	'The listing counts what the import brought in: ' || (pg_temp.g_entry('owner@gmail.com') -> 'google')::text);
 select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'importing', '900', 'page-2', 3)
 		->> 'state' = 'bringing_in',
@@ -232,9 +233,14 @@ select pg_temp.base_assert(pg_temp.g_bring(current_setting('qorpera_test.g_claim
 		->> 'outcome' = 'bounded',
 	'The first import stops at 50,000 messages');
 update public.qorpera_google_mailboxes set import_count = 3 where address = 'owner@gmail.com';
-select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'imported', '950')
-		->> 'state' = 'live',
-	'The import is done: the mailbox is live');
+select pg_temp.base_error(format('select pg_temp.g_finish(%L::jsonb, %L, %L, null, null, null, true)',
+	current_setting('qorpera_test.g_claim'), 'importing', '950'), '22023', 'Google mailbox pass answer is invalid');
+select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'imported', '950', null, null,
+		null, true) ->> 'state' = 'live',
+	'The import is done at its limit: the mailbox is live');
+select pg_temp.base_assert((pg_temp.g_entry('owner@gmail.com') #>> '{google,capped}')::boolean
+		and pg_temp.g_entry('owner@gmail.com') #>> '{google,state}' = 'live',
+	'An import that stopped at its 50,000 limit with more at Google is capped');
 
 update public.qorpera_google_mailboxes set due_at = clock_timestamp() where address = 'owner@gmail.com';
 select set_config('qorpera_test.g_claim', pg_temp.g_claim()::text, true) \g /dev/null
@@ -507,8 +513,9 @@ select pg_temp.base_assert((current_setting('qorpera_test.g_claim')::jsonb ->> '
 select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'imported', '5000', null, 60000)
 		->> 'state' = 'live'
 		and not (pg_temp.g_box('owner@gmail.com')).gap
-		and (pg_temp.g_box('owner@gmail.com')).total = 60000,
-	'The gap import ends at known mail, with Google''s count read again');
+		and (pg_temp.g_box('owner@gmail.com')).total = 60000
+		and not (pg_temp.g_entry('owner@gmail.com') #>> '{google,capped}')::boolean,
+	'The gap import ends at known mail, with Google''s count read again, and the reconnect cleared capped');
 select pg_temp.base_assert((select count(*) = 6 from public.qorpera_mail_received as received
 		where received.mailbox_id = (pg_temp.g_box('owner@gmail.com')).mailbox_id),
 	'Five messages from before and the one from the gap, none twice');
@@ -527,7 +534,7 @@ begin
 		'public.qorpera_claim_google_mailbox(uuid,text)',
 		'public.qorpera_google_mail_known_among(uuid,text,uuid,uuid,jsonb)',
 		'public.qorpera_bring_in_google_mail(uuid,text,uuid,uuid,text,text,boolean,timestamp with time zone,text)',
-		'public.qorpera_finish_google_mailbox_pass(uuid,text,uuid,uuid,text,text,text,integer,text)',
+		'public.qorpera_finish_google_mailbox_pass(uuid,text,uuid,uuid,text,text,text,integer,boolean,text)',
 		'public.qorpera_claim_google_mail_sends(uuid,text,integer)',
 		'public.qorpera_complete_google_mail_send(uuid,text,uuid,uuid,text,text,text)',
 		'public.qorpera_record_google_mail_draft(uuid,text,uuid,uuid,text,text)',

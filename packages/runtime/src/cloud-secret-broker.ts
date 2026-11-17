@@ -2641,7 +2641,7 @@ export class PostgresCloudSecretBrokerAuthority
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_finish_google_mailbox_pass($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text,$7::text,$8::integer,$9::text) as result",
+			"select public.qorpera_finish_google_mailbox_pass($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text,$7::text,$8::integer,$9::boolean,$10::text) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,
@@ -2651,6 +2651,7 @@ export class PostgresCloudSecretBrokerAuthority
 				input.historyId,
 				input.pageToken,
 				input.total,
+				input.capped,
 				input.error,
 			],
 			signal,

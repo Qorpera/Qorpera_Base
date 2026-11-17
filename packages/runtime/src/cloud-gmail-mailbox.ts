@@ -589,6 +589,7 @@ export interface GmailMailboxAuthority {
 			historyId: string | null;
 			pageToken: string | null;
 			total: number | null;
+			capped: boolean;
 			error: string | null;
 		},
 		signal: AbortSignal,
@@ -815,6 +816,7 @@ type PassEnd = {
 	readonly historyId: string | null;
 	readonly pageToken: string | null;
 	readonly total: number | null;
+	readonly capped?: boolean;
 };
 
 const database = (): AbortSignal => AbortSignal.timeout(DATABASE_DEADLINE_MS);
@@ -917,8 +919,16 @@ export class CloudGmailMailboxes {
 		const finish = (end: PassEnd | { outcome: "failed" | "refused"; error: string }) =>
 			this.#authority.finishGoogleMailboxPass(
 				"error" in end
-					? { ...lease, outcome: end.outcome, historyId: null, pageToken: null, total: null, error: end.error }
-					: { ...lease, ...end, error: null },
+					? {
+							...lease,
+							outcome: end.outcome,
+							historyId: null,
+							pageToken: null,
+							total: null,
+							capped: false,
+							error: end.error,
+						}
+					: { ...lease, ...end, capped: end.capped ?? false, error: null },
 				database(),
 			);
 		let end: PassEnd;
@@ -998,12 +1008,14 @@ export class CloudGmailMailboxes {
 			const unknown = await this.#unknown(claim, ids);
 			const reached = claim.gap ? ids.findIndex((id) => !unknown.includes(id)) : -1;
 			for (const id of reached < 0 ? unknown : ids.slice(0, reached)) {
-				if (count >= GMAIL_IMPORT_BOUND) return { outcome: "imported", historyId, pageToken: null, total };
+				if (count >= GMAIL_IMPORT_BOUND)
+					return { outcome: "imported", historyId, pageToken: null, total, capped: true };
 				if (spent()) return { outcome: "importing", historyId, pageToken, total };
 				const outcome = await this.#bring(api, claim, id, true, signal);
 				tally.messages += 1;
 				if (outcome === "accepted") count += 1;
-				else if (outcome === "bounded") return { outcome: "imported", historyId, pageToken: null, total };
+				else if (outcome === "bounded")
+					return { outcome: "imported", historyId, pageToken: null, total, capped: true };
 				else if (outcome !== "duplicate" && outcome !== "gone")
 					throw new GmailMailboxError("the mail door did not take the message");
 			}
