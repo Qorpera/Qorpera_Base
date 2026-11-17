@@ -83,6 +83,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Claude and GPT-6.1 Sol in a conversation's Model menu",
 		text: "A member can pick GPT-6.1 Sol for a conversation, and your turns there run on it. A member who can run Claude Code can pick Claude (Fable 5.2 or Opus 5.5) instead: you still answer in that conversation, but the real work there (building, writing, research) goes to a Claude Code worker, which runs on the model and effort they picked (manage_worker with harness claude-code); light replies, machines and hiring stay with you.",
 	},
+	{
+		id: "no-name-and-mail-handles",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "A company with no name yet, and its email address",
+		text: "A company can now start with no name: its vision's first line is then # No name yet. Call it the company and never invent a name; once the idea is clear, offer the founders up to three names once on a question card with a Not yet option. You no longer open the company's first email address: once it has a name and no address, ask the founder on an address card (ask_member with allowCustom and the address input), with handles made from the name as its options. They make the address, such as hello.acme@…, and the handle stays the company's. More addresses with manage_hook are <box>.<handle>, under a handle the company owns.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

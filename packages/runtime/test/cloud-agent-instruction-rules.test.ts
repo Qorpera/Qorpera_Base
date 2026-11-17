@@ -1072,8 +1072,27 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "read the vision first", "In your first run, read the vision", FOUNDING],
 	[
 		"7",
-		"the main mailbox",
-		"Before your hello, open the company's email: manage_hook, action create, kind mailbox, localPart the company's name in lowercase",
+		"the main mailbox: a founder chooses it",
+		"Never open the company's first email address yourself: a founder chooses it. Once the company has a name and owns no address (list_hooks shows its mailboxes), ask the founder who opened it, in that run, on an address card",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the address card's handle suggestions",
+		"allowCustom: true, input {kind: mail_address}, and one to three options, each a handle made from the name as its label and value",
+		FOUNDING,
+	],
+	["7", "no address card without a name", "While the company has no name, do not ask.", FOUNDING],
+	[
+		"7",
+		"the name card",
+		"offer the founders up to three names, once, on a question card with allowCustom: true and a Not yet option",
+		FOUNDING,
+	],
+	[
+		"7",
+		"a brand with no name yet",
+		"with no name yet, that first identity is colours and a mark without lettering",
 		FOUNDING,
 	],
 	[
@@ -1085,8 +1104,8 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "the hello", "Then a short, warm hello", FOUNDING],
 	[
 		"7",
-		"the address and the hires in the hello",
-		"Give the email address and, in a few lines, who you hired and what each finds out first.",
+		"the hires in the hello, the address card last",
+		"Say in a few lines who you hired and what each finds out first; when the address card goes out in the same run, raise it last, with your hello as its text.",
 		FOUNDING,
 	],
 	[
@@ -1122,6 +1141,12 @@ const RULES: [string, string, string, Run[]][] = [
 		HAND_OFF,
 	],
 	["7", "never hire an owner twice", "check QorperaOS/agents/ first, so none is hired twice", HAND_OFF],
+	[
+		"7",
+		"agreed with no name",
+		"The founding can be agreed with no name: the first line then stays # No name yet.",
+		HAND_OFF,
+	],
 	[
 		"7",
 		"a failed founding step",

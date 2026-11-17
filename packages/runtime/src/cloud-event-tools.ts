@@ -40,7 +40,7 @@ const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 /** A hook's and a mailbox's names, as the database checks them (E1's rules): a mailbox's never has two dots in a row. */
 const HOOK_NAME = /^[a-z][a-z0-9-]{0,63}$/;
-const MAILBOX_NAME = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$/;
+const MAILBOX_NAME = /^[a-z0-9]([a-z0-9_-]{0,37}[a-z0-9])?\.[a-z0-9][a-z0-9-]{0,22}[a-z0-9]$/;
 /** The site a signed hook's secret may be typed into, as A1's account sites are (E3b). */
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 /** Where a Stripe hook's secret is read, and nowhere else (E3c). */
@@ -135,7 +135,7 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 
 export const CLOUD_LIST_HOOKS_TOOL_DESCRIPTION = [
 	"List your company's hooks and mailboxes: where other services send events (a website form, a payment provider, a monitoring alert) and where email arrives. Each has its id, name, what it is for, its proof, its status and when it last received something.",
-	"proof: address, anyone with the address may post; stripe, github or hmac-sha256, the sender signs; mail, a mailbox, which receives email at its address and at that address with a +tag (agents+stripe@… reaches agents@…), and sends with send_mail.",
+	"proof: address, anyone with the address may post; stripe, github or hmac-sha256, the sender signs; mail, a mailbox, which receives email at its address and at that address with a +tag (hello.acme+stripe@… reaches hello.acme@…), and sends with send_mail.",
 	"A signed hook's signingSecret says whether the vault holds its secret (ready). A Stripe hook's also has the version the vault read off Stripe's page, when (capturedAt), and the last event refused under it (lastRefusal: when and why); events refused after a capture usually mean the endpoint's secret changed at Stripe.",
 	"When an owner or admin started this run, each hook also has its address and path, and url, the full address a sending service posts to, once the platform has one; an address is never shared outside the company.",
 	"A routine wakes on a hook's events with manage_routine, trigger kind event and the hook's id.",
@@ -157,7 +157,7 @@ export const CLOUD_SEND_MAIL_TOOL_DESCRIPTION = [
 
 export const CLOUD_FIND_MAIL_TOOL_DESCRIPTION = [
 	"Find email that arrived at your company's mailboxes in the last days, such as the confirmation a website sends when you sign the company up.",
-	"Filters: mailbox (its address as list_hooks shows it); to, the address it was delivered to (a +tag address such as agents+stripe@… reaches agents@… and is found by its full address); from and subject, parts of them in any case; since, an instant with its offset (the last 24 hours by default, never more than 7 days back); before, an instant with its offset, to page back.",
+	"Filters: mailbox (its address as list_hooks shows it); to, the address it was delivered to (a +tag address such as hello.acme+stripe@… reaches hello.acme@… and is found by its full address); from and subject, parts of them in any case; since, an instant with its offset (the last 24 hours by default, never more than 7 days back); before, an instant with its offset, to page back.",
 	`waitSeconds (up to ${FIND_WAIT_SECONDS}) waits for a matching email to arrive before answering: give since as the moment you acted, so earlier mail does not count.`,
 	"The answer lists up to 10 emails, newest first, each with its deliveryId, mailbox, deliveredTo, from, subject, the sender's authentication (spf, dkim and dmarc verdicts) and receivedAt. more says there may be others: pass nextBefore as before for the next older ones. Read one whole with read_event.",
 ].join("\n");
@@ -165,7 +165,7 @@ export const CLOUD_FIND_MAIL_TOOL_DESCRIPTION = [
 export const CLOUD_MANAGE_HOOK_TOOL_DESCRIPTION = [
 	"Open a hook or a mailbox for your company, or pause, resume or remove one by its name (hook, as list_hooks shows it). Only a run that one of the company's owners or admins started changes hooks. Opening one is reviewed before it happens, like any action outside the company; a company has at most 50 hooks, mailboxes included, and at most 20 mailboxes.",
 	"- create, kind hook: an address where another service posts events, such as a website form, a monitoring alert or a no-code automation. Anyone with the address may post to it: the answer has its address and path, and url, the full address the sending service posts to, once the platform has one. Give it only to that service; list_hooks shows it again.",
-	"- create, kind mailbox: email at localPart@ the company's mail domain; its hook is named mail- and the localPart. find_mail and read_event read what arrives, and send_mail sends from it.",
+	"- create, kind mailbox: another address under a handle the company already owns, localPart <box>.<handle> such as sales.acme where the company's addresses end .acme@ (list_hooks shows them); a founder chooses the first address and its handle, never you. Email arrives at localPart@ the company's mail domain; its hook's name starts mail-. find_mail and read_event read what arrives, and send_mail sends from it.",
 	"- pause: the hook refuses what is sent to it until resume. remove: it ends for good and frees a mailbox's address for any company to take, so a removal is reviewed first too.",
 	"Signed hooks (proof github, hmac-sha256 or stripe) take only events signed with their secret. The vault makes the secret (Stripe makes a Stripe hook's) and keeps it: you never see it, and nobody can show it to you. No tool can type the secret into the sender's settings now, so a github or hmac-sha256 hook checks no event yet. A Stripe hook is opened per Stripe endpoint, test mode apart from live mode: add the endpoint at Stripe with the hook's url; the vault must then read its signing secret off the endpoint's page on dashboard.stripe.com, which no tool can do now, and until it has, the hook checks no event.",
 	"The same call again with the same operationKey gives the same answer. A routine wakes on a hook's events with manage_routine, trigger kind event and the hook's id.",
@@ -202,9 +202,9 @@ function parseHookRequest(value: JsonValue): JsonValue {
 	if (!purpose || [...purpose].length > 512 || /\p{Cc}/u.test(purpose))
 		throw new CloudToolArgumentRefusal("purpose is one line of 1 to 512 characters saying what it is for");
 	if (a.kind === "mailbox") {
-		if (typeof a.localPart !== "string" || !MAILBOX_NAME.test(a.localPart) || a.localPart.includes(".."))
+		if (typeof a.localPart !== "string" || !MAILBOX_NAME.test(a.localPart))
 			throw new CloudToolArgumentRefusal(
-				"localPart is 1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row",
+				"localPart is a box, a dot and a handle the company already owns, such as sales.acme: the box 1 to 39 lowercase letters, digits, hyphens and underscores, the handle 2 to 24 lowercase letters, digits and hyphens, each starting and ending with a letter or digit",
 			);
 		return { action: "create", kind: "mailbox", localPart: a.localPart, purpose, operationKey };
 	}
@@ -592,8 +592,9 @@ export function cloudEventTools(
 				localPart: {
 					type: "string",
 					pattern: MAILBOX_NAME.source,
+					maxLength: 64,
 					description:
-						"1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row.",
+						"<box>.<handle>, at most 64 characters, such as sales.acme: a box of lowercase letters, digits, hyphens and underscores, a dot, and a handle the company already owns.",
 				},
 				purpose: {
 					type: "string",

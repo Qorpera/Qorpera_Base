@@ -176,7 +176,7 @@ describe("which calls are reviewed", () => {
 		],
 		[
 			"manage_hook",
-			{ action: "create", kind: "mailbox", localPart: "sales", purpose: "Sales.", operationKey: "k" },
+			{ action: "create", kind: "mailbox", localPart: "sales.acme", purpose: "Sales.", operationKey: "k" },
 			"external",
 		],
 		// A signed hook too: the vault makes its secret, for one site (E3b).
@@ -484,13 +484,13 @@ describe("what the card shows", () => {
 			describeCloudAction(tool("manage_hook"), {
 				action: "create",
 				kind: "mailbox",
-				localPart: "sales",
+				localPart: "sales.acme",
 				purpose: "Sales mail from customers.",
 				operationKey: "k",
 			}),
 		).toEqual({
 			title: "Open a mailbox",
-			target: "sales",
+			target: "sales.acme",
 			details: {
 				purpose: "Sales mail from customers.",
 				effect: "Anyone may send email to this address; what arrives can wake the company's routines",
