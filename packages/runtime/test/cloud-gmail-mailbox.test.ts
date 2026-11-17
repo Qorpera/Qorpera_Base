@@ -71,6 +71,11 @@ class FakeGmail {
 				historyId: this.historyId,
 				messagesTotal: this.messages.length,
 			});
+		if (path === "/messages" && url.searchParams.get("q")?.startsWith("rfc822msgid:")) {
+			const wanted = `Message-ID: <${url.searchParams.get("q")?.slice("rfc822msgid:".length)}>\r\n`;
+			const found = this.sent.some((sent) => sent.raw.includes(wanted));
+			return Response.json(found ? { messages: [{ id: "sent1", threadId: "thread1" }] } : { resultSizeEstimate: 0 });
+		}
 		if (path === "/messages") {
 			const offset = Number(url.searchParams.get("pageToken") ?? "0");
 			const size = Number(url.searchParams.get("maxResults"));
@@ -168,6 +173,7 @@ function fixture(options: {
 	bound?: number;
 	sends?: Record<string, unknown>[];
 	messagesPerPass?: number;
+	completionFailures?: number;
 }) {
 	const claims = [...options.claims];
 	const stored = new Map<string, { imported: boolean; message: Record<string, unknown>; receivedAt: string }>();
@@ -177,6 +183,7 @@ function fixture(options: {
 	const completed: Record<string, unknown>[] = [];
 	const failed: Record<string, unknown>[] = [];
 	let imported = 0;
+	let failedCompletions = 0;
 	const authority: GmailMailboxAuthority = {
 		claimGoogleMailbox: vi.fn(async () => claims.shift() ?? null),
 		googleMailKnownAmong: vi.fn(async ({ gmailIds }) => ({
@@ -202,6 +209,10 @@ function fixture(options: {
 		}),
 		claimGoogleMailSends: vi.fn(async () => ({ schema: "qorpera.google-mail-sends/v1", sends: options.sends ?? [] })),
 		completeGoogleMailSend: vi.fn(async (input) => {
+			if ((options.completionFailures ?? 0) > failedCompletions) {
+				failedCompletions += 1;
+				throw new Error("database answer lost");
+			}
 			completed.push({ ...input });
 			return { schema: "qorpera.google-mail-send/v1", completed: true };
 		}),
@@ -365,6 +376,7 @@ it("sends a reply through Gmail in the thread it answers and records how it left
 	expect(raw).toContain("Subject: Re: Your order\r\n");
 	expect(raw).toContain("In-Reply-To: <q1@example.org>\r\n");
 	expect(raw).toContain("References: <root@example.org> <q1@example.org>\r\n");
+	expect(raw).toContain("Message-ID: <66666666-6666-4666-8666-666666666666.gmail@qorpera.com>\r\n");
 	expect(Buffer.from(raw.split("\r\n\r\n")[1] ?? "", "base64").toString("utf8")).toBe("On its way");
 	expect(f.completed).toEqual([
 		{
@@ -375,6 +387,27 @@ it("sends a reply through Gmail in the thread it answers and records how it left
 			messageId: "<sent1@mail.gmail.com>",
 		},
 	]);
+});
+
+it("never queues again a send Gmail confirmed, and finds it again instead of sending twice", async () => {
+	const gmail = new FakeGmail(0);
+	const lost = fixture({ claims: [], gmail, sends: [send()], completionFailures: 3 });
+	const outcome = await lost.mailboxes.pass(signal);
+	expect(gmail.sent).toHaveLength(1);
+	expect(lost.failed).toEqual([]);
+	expect(lost.completed).toEqual([]);
+	expect(outcome.failed).toBe(1);
+	const retried = fixture({ claims: [], gmail, sends: [send()], completionFailures: 2 });
+	expect((await retried.mailboxes.pass(signal)).sent).toBe(1);
+	expect(retried.completed).toHaveLength(1);
+	expect(gmail.sent).toHaveLength(2);
+	const again = fixture({ claims: [], gmail, sends: [send({ attemptCount: 2 })] });
+	expect((await again.mailboxes.pass(signal)).sent).toBe(1);
+	expect(gmail.sent).toHaveLength(2);
+	expect(again.completed).toEqual([expect.objectContaining({ gmailId: "sent1", gmailThreadId: "thread1" })]);
+	const fresh = fixture({ claims: [], gmail: new FakeGmail(0), sends: [send({ attemptCount: 2 })] });
+	await fresh.mailboxes.pass(signal);
+	expect(fresh.completed).toHaveLength(1);
 });
 
 it("holds a send for a new sign-in when Google refuses the token", async () => {

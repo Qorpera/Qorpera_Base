@@ -228,6 +228,13 @@ export class GmailMailboxApi {
 		};
 	}
 
+	async sentWith(messageId: string, signal: AbortSignal): Promise<{ id: string; threadId: string | null } | null> {
+		const found = await this.#call("/gmail/v1/users/me/messages", signal, {
+			query: { q: `rfc822msgid:${messageId.slice(1, -1)}`, includeSpamTrash: "true", maxResults: "1" },
+		});
+		return listed(found.messages)[0] ?? null;
+	}
+
 	async messageId(id: string, signal: AbortSignal): Promise<string | null> {
 		const message = await this.#call(`/gmail/v1/users/me/messages/${id}`, signal, {
 			query: { format: "metadata", metadataHeaders: ["Message-ID"] },
@@ -473,7 +480,12 @@ export function gmailMailMessage(
 	return { text: JSON.stringify(mail), receivedAt, threadId };
 }
 
+export function gmailOwnMessageId(mailId: string): string {
+	return `<${mailId}.gmail@qorpera.com>`;
+}
+
 export function gmailRawMessage(send: {
+	readonly mailId: string;
 	readonly fromName: string;
 	readonly address: string;
 	readonly to: readonly string[];
@@ -491,6 +503,7 @@ export function gmailRawMessage(send: {
 		...(send.cc.length > 0 ? [`Cc: ${send.cc.join(", ")}`] : []),
 		`Subject: ${headerValue(send.subject)}`,
 		`Date: ${send.date.toUTCString().replace("GMT", "+0000")}`,
+		`Message-ID: ${gmailOwnMessageId(send.mailId)}`,
 		...Object.entries(send.headers).map(([key, value]) => `${key}: ${headerValue(value)}`),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=UTF-8",
@@ -568,6 +581,7 @@ interface MailboxClaim extends SealedSignIn, GmailMailboxLease {
 interface SendClaim extends SealedSignIn {
 	readonly mailId: string;
 	readonly lease: string;
+	readonly attemptCount: number;
 	readonly address: string;
 	readonly fromName: string;
 	readonly to: readonly string[];
@@ -660,6 +674,8 @@ function parseSends(value: unknown): SendClaim[] {
 		const headers = jsonRecord(send.headers);
 		if (
 			![send.mailId, send.leaseId, send.mailboxId].every((id) => typeof id === "string" && UUID.test(id)) ||
+			!Number.isSafeInteger(send.attemptCount) ||
+			(send.attemptCount as number) < 1 ||
 			typeof send.address !== "string" ||
 			!MAILBOX_ADDRESS.test(send.address) ||
 			typeof send.fromName !== "string" ||
@@ -683,6 +699,7 @@ function parseSends(value: unknown): SendClaim[] {
 			...sealed(send, send.companyId, send.environmentId),
 			mailId: send.mailId as string,
 			lease: send.leaseId as string,
+			attemptCount: send.attemptCount as number,
 			address: send.address as string,
 			fromName: send.fromName as string,
 			to,
@@ -984,19 +1001,9 @@ export class CloudGmailMailboxes {
 					{ mailId: claimed.mailId, lease: claimed.lease, error, retryable, refused },
 					database(),
 				);
+			let sent: { id: string; threadId: string | null; messageId: string | null };
 			try {
-				const sent = await this.#sendOne(claimed, signal);
-				await this.#authority.completeGoogleMailSend(
-					{
-						mailId: claimed.mailId,
-						lease: claimed.lease,
-						gmailId: sent.id,
-						gmailThreadId: sent.threadId,
-						messageId: sent.messageId,
-					},
-					database(),
-				);
-				tally.sent += 1;
+				sent = await this.#sendOne(claimed, signal);
 			} catch (error) {
 				if (error instanceof GmailSignInRefused) {
 					tally.refused += 1;
@@ -1008,8 +1015,36 @@ export class CloudGmailMailboxes {
 					tally.failed += 1;
 					await fail(failurePhrase(error, signal), true, false);
 				}
+				continue;
 			}
+			if (await this.#complete(claimed, sent)) tally.sent += 1;
+			else tally.failed += 1;
 		}
+	}
+
+	async #complete(
+		claimed: SendClaim,
+		sent: { id: string; threadId: string | null; messageId: string | null },
+	): Promise<boolean> {
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const completed = await this.#authority
+				.completeGoogleMailSend(
+					{
+						mailId: claimed.mailId,
+						lease: claimed.lease,
+						gmailId: sent.id,
+						gmailThreadId: sent.threadId,
+						messageId: sent.messageId,
+					},
+					database(),
+				)
+				.then(
+					() => true,
+					() => false,
+				);
+			if (completed) return true;
+		}
+		return false;
 	}
 
 	async #sendOne(
@@ -1017,8 +1052,14 @@ export class CloudGmailMailboxes {
 		signal: AbortSignal,
 	): Promise<{ id: string; threadId: string | null; messageId: string | null }> {
 		return this.#withApi(claimed, signal, async (api) => {
-			const raw = gmailRawMessage({ ...claimed, date: new Date(this.#now()) });
-			const sent = await api.send(raw, claimed.gmailThreadId, signal);
+			const own = gmailOwnMessageId(claimed.mailId);
+			const sent =
+				(claimed.attemptCount > 1 ? await api.sentWith(own, signal) : null) ??
+				(await api.send(
+					gmailRawMessage({ ...claimed, date: new Date(this.#now()) }),
+					claimed.gmailThreadId,
+					signal,
+				));
 			let messageId: string | null = null;
 			try {
 				messageId = await api.messageId(sent.id, signal);
