@@ -1220,7 +1220,8 @@ describe("a kit's page as a concept", () => {
 		const header = document.querySelector(kit === "object" ? ".ok-head h1" : BARE[kit].header) as Element;
 		expect(getComputedStyle(header).position).toBe("absolute");
 		expect(getComputedStyle(header).width).toBe("1px");
-		if (kit === "object") expect(getComputedStyle(document.querySelector(".ok-head p") as Element).position).not.toBe("absolute");
+		if (kit === "object")
+			expect(getComputedStyle(document.querySelector(".ok-head p") as Element).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toBe(titleOf(example(kit)));
 		expect(document.querySelector(BARE[kit].kept)).not.toBeNull();
 	});
