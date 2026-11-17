@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -30,12 +30,6 @@ import { CloudHomeChannelRefused } from "@qorpera/runtime/cloud-home-channel";
 import { assertNativeSocketPath, NATIVE_SOCKET_PATH_BYTES } from "@qorpera/runtime/cloud-native-egress";
 import { nativeRunRootPrefix } from "@qorpera/runtime/cloud-native-provider-host";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-/*
- * Slice C4c: the Claude Code worker's composition. Its prompt and system note, the stream reader, the login folder's life
- * (made, filled, read back, sealed only when changed, removed, also on a stop and a failure) and each failure's words.
- * The sign-in is made-up canary text, never a real one; no output of these tests may carry it.
- */
 
 const CANARY = `CANARY-C4C-${randomUUID()}`;
 const credentials = (tag: string) =>
@@ -281,24 +275,22 @@ describe("the report's text", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The run, with a stand-in box and a stand-in vault (the vault's compare-and-swap on the version and envelope)
 
-function vault(
-	options: { refused?: "SIGNED_OUT" | "NOT_OPEN"; loseFirstSealAnswer?: boolean; otherSealFirst?: boolean } = {},
-) {
+function vault(options: { refused?: "SIGNED_OUT" | "NOT_OPEN" } = {}) {
 	const state = {
 		version: 1,
 		credentials: credentials("v1"),
 		settings: Buffer.from('{"hasCompletedOnboarding":true}'),
-		seals: [] as { base: number; credentials: string }[],
-		opens: 0,
+		opens: [] as (number | undefined)[],
 		openedBuffers: [] as Buffer[],
+		refused: options.refused as "SIGNED_OUT" | "NOT_OPEN" | undefined,
 	};
 	const envelope = () => sha(Buffer.concat([Buffer.from(String(state.version)), state.credentials]));
 	const logins: ClaudeWorkerLogins = {
-		open: async () => {
-			state.opens++;
-			if (options.refused) return { refused: options.refused };
+		open: async (_signal, knownVersion) => {
+			state.opens.push(knownVersion);
+			if (state.refused) return { refused: state.refused };
+			if (knownVersion === state.version) return { current: true, version: state.version };
 			const files = new Map([
 				[".credentials.json", Buffer.from(state.credentials)],
 				[".claude.json", Buffer.from(state.settings)],
@@ -312,23 +304,12 @@ function vault(
 				fileSha256: { ".credentials.json": sha(state.credentials), ".claude.json": sha(state.settings) },
 			} satisfies ClaudeWorkerOpenedLogin;
 		},
-		seal: async (base, bytes) => {
-			if (sha(bytes) === base.fileSha256[".credentials.json"]) return { state: "unchanged" };
-			if (options.otherSealFirst && state.seals.length === 0) {
-				state.version += 1;
-				state.credentials = credentials("other-run");
-				state.seals.push({ base: -1, credentials: "other" });
-			}
-			if (base.version !== state.version || base.envelopeSha256 !== envelope())
-				return { state: "stale", version: state.version };
-			state.version += 1;
-			state.credentials = Buffer.from(bytes);
-			state.seals.push({ base: base.version, credentials: sha(bytes) });
-			if (options.loseFirstSealAnswer && state.seals.length === 1) throw new Error("answer lost");
-			return { state: "sealed", version: state.version };
-		},
 	};
-	return { state, logins };
+	const renew = (tag: string) => {
+		state.version += 1;
+		state.credentials = credentials(tag);
+	};
+	return { state, logins, renew };
 }
 
 /** A stand-in box: it writes `lines` with a pause between them, runs `during` on its login folder, and ends; or it
@@ -392,7 +373,7 @@ async function root(): Promise<string> {
 const OK = [init(), use("t1", "Bash", { command: "make pdf" }), answer("t1"), result("Made it. Changed: a.pdf")];
 
 describe("a Claude Code worker's run", () => {
-	it("puts the sign-in in a private folder for the box, seals nothing unchanged, and removes the folder", async () => {
+	it("puts the sign-in in a private folder for the box, reads nothing back, and removes the folder", async () => {
 		const v = vault();
 		const box = standInBox(OK);
 		const runRoot = await root();
@@ -412,7 +393,7 @@ describe("a Claude Code worker's run", () => {
 			steps: 1,
 			model: "claude-sonnet-5-5",
 			sessionId: "s-1",
-			login: { sealed: 0, stale: 0 },
+			login: { refreshed: 0 },
 		});
 		expect(box.seen.files).toEqual({
 			".credentials.json": sha(credentials("v1")),
@@ -425,9 +406,8 @@ describe("a Claude Code worker's run", () => {
 			{ start: { model: "claude-sonnet-5-5", sessionId: "s-1" } },
 			expect.objectContaining({ tool: "Bash", what: "make pdf", ok: true }),
 		]);
-		// The opened files' buffers are zeroed once written; nothing was sealed; the login folder and the box's are gone.
 		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
-		expect(v.state.seals).toEqual([]);
+		expect(v.state.opens).toEqual([undefined]);
 		expect(await readdir(runRoot)).toEqual([]);
 		await rm(runRoot, { recursive: true });
 	});
@@ -457,20 +437,25 @@ describe("a Claude Code worker's run", () => {
 		]);
 	});
 
-	it("seals the renewed credentials early, then again at the end only when they changed again", async () => {
+	it("puts each newer version the vault renewed in place while Claude Code works, and only the credentials", async () => {
 		const v = vault();
-		const renew = async (folder: string, tag: string) => {
-			// As Claude Code renews: a new file renamed over the old one.
-			await writeFile(join(folder, ".credentials.json.tmp"), credentials(tag), { mode: 0o600 });
-			await rename(join(folder, ".credentials.json.tmp"), join(folder, ".credentials.json"));
-		};
-		let early = 0;
-		const box = standInBox([init(), use("t1", "Bash", { command: "sleep" })], async (folder) => {
-			await renew(folder, "renewed-1");
-			// The early seal lands while the box still works.
-			for (let i = 0; i < 100 && v.state.seals.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
-			early = v.state.seals.length;
-			await renew(folder, "renewed-2");
+		let seen: { credentials: string; settings: string; names: string[] } | undefined;
+		const box = standInBox([init(), use("t1", "Bash", { command: "long" })], async (folder) => {
+			v.renew("vault-2");
+			for (let i = 0; i < 400; i++) {
+				if (sha(await readFile(join(folder, ".credentials.json"))) === sha(credentials("vault-2"))) break;
+				await new Promise((r) => setTimeout(r, 5));
+			}
+			v.renew("vault-3");
+			for (let i = 0; i < 400; i++) {
+				if (sha(await readFile(join(folder, ".credentials.json"))) === sha(credentials("vault-3"))) break;
+				await new Promise((r) => setTimeout(r, 5));
+			}
+			seen = {
+				credentials: sha(await readFile(join(folder, ".credentials.json"))),
+				settings: sha(await readFile(join(folder, ".claude.json"))),
+				names: (await readdir(folder)).sort(),
+			};
 		});
 		const runRoot = await root();
 		const outcome = await runClaudeWorker({
@@ -490,62 +475,74 @@ describe("a Claude Code worker's run", () => {
 			},
 			root: runRoot,
 			signal: new AbortController().signal,
-			pollMs: 5,
+			refreshMs: 5,
 		});
-		expect(early).toBe(1);
-		expect(v.state.seals.map((seal) => seal.base)).toEqual([1, 2]);
-		expect(v.state.credentials).toEqual(credentials("renewed-2"));
-		expect(outcome.login).toEqual({ sealed: 2, stale: 0 });
+		expect(seen).toEqual({
+			credentials: sha(credentials("vault-3")),
+			settings: sha(v.state.settings),
+			names: [".claude.json", ".credentials.json"],
+		});
+		expect(outcome).toMatchObject({ outcome: "succeeded", login: { refreshed: 2 } });
+		expect(v.state.opens[0]).toBeUndefined();
+		expect(v.state.opens.slice(1).every((known) => known !== undefined)).toBe(true);
+		expect(v.state.opens).toContain(1);
+		expect(v.state.opens).toContain(2);
+		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
 		expect(await readdir(runRoot)).toEqual([]);
 		await rm(runRoot, { recursive: true });
 	});
 
-	it("tries a failed early seal again while the run goes on, so a run stopped later leaves the renewal sealed", async () => {
+	it("keeps the copy it has when the vault cannot be asked, and stops asking once the login is refused", async () => {
 		const v = vault();
-		const seal = v.logins.seal;
-		let failures = 3;
-		v.logins.seal = async (base, bytes, signal) => {
-			if (failures-- > 0) throw new Error("vault unavailable");
-			return seal(base, bytes, signal);
+		const open = v.logins.open;
+		let failures = 2;
+		v.logins.open = async (signal, knownVersion) => {
+			if (knownVersion !== undefined && failures-- > 0) throw new Error("vault unavailable");
+			return open(signal, knownVersion);
 		};
-		const controller = new AbortController();
-		const box = standInBox(
-			[init(), use("t1", "Bash", { command: "long" })],
-			async (folder) => {
-				await writeFile(join(folder, ".credentials.json.tmp"), credentials("renewed"), { mode: 0o600 });
-				await rename(join(folder, ".credentials.json.tmp"), join(folder, ".credentials.json"));
-				// The member's stop comes once the vault holds the renewal; from then on the vault would refuse this run.
-				for (let i = 0; i < 400 && v.state.seals.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
-				v.logins.seal = async () => ({ state: "refused", reason: "NOT_OPEN" });
-				controller.abort();
-			},
-			true,
-		);
+		const counts = { afterRefusal: -1, later: -2 };
+		const box = standInBox([init(), use("t1", "Bash", { command: "long" })], async () => {
+			for (let i = 0; i < 400 && failures > 0; i++) await new Promise((r) => setTimeout(r, 5));
+			v.state.refused = "SIGNED_OUT";
+			const asked = v.state.opens.length;
+			for (let i = 0; i < 400 && v.state.opens.length === asked; i++) await new Promise((r) => setTimeout(r, 5));
+			counts.afterRefusal = v.state.opens.length;
+			await new Promise((r) => setTimeout(r, 60));
+			counts.later = v.state.opens.length;
+		});
 		const runRoot = await root();
-		await expect(
-			runClaudeWorker({
-				brief,
-				member: "Ada",
-				logins: v.logins,
-				launch: box.launch,
-				root: runRoot,
-				signal: controller.signal,
-				pollMs: 5,
-			}),
-		).rejects.toThrow();
-		expect(v.state.seals).toEqual([{ base: 1, credentials: sha(credentials("renewed")) }]);
+		const outcome = await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins: v.logins,
+			launch: async (options) => {
+				const started = await box.launch(options);
+				return {
+					...started,
+					lines: (async function* () {
+						for await (const line of started.lines) yield line;
+						yield answer("t1");
+						yield result("Done.");
+					})(),
+				};
+			},
+			root: runRoot,
+			signal: new AbortController().signal,
+			refreshMs: 5,
+		});
+		expect(outcome).toMatchObject({ outcome: "succeeded", login: { refreshed: 0 } });
+		expect(failures).toBeLessThanOrEqual(0);
+		expect(counts.later).toBe(counts.afterRefusal);
 		expect(await readdir(runRoot)).toEqual([]);
 		await rm(runRoot, { recursive: true });
 	});
 
-	it("seals back and removes the folder when the run is stopped in the middle", async () => {
+	it("removes the folder when the run is stopped in the middle", async () => {
 		const v = vault();
 		const controller = new AbortController();
 		const box = standInBox(
 			[init(), use("t1", "Bash", { command: "long" })],
 			async (folder) => {
-				await writeFile(join(folder, ".credentials.json.tmp"), credentials("renewed"), { mode: 0o600 });
-				await rename(join(folder, ".credentials.json.tmp"), join(folder, ".credentials.json"));
 				await writeFile(join(folder, "transcript.jsonl"), "what Claude Code kept");
 				setTimeout(() => controller.abort(), 10);
 			},
@@ -560,49 +557,10 @@ describe("a Claude Code worker's run", () => {
 				launch: box.launch,
 				root: runRoot,
 				signal: controller.signal,
-				earlySealMs: 0,
+				refreshMs: 5,
 			}),
 		).rejects.toThrow();
-		expect(v.state.seals).toHaveLength(1);
-		expect(v.state.credentials).toEqual(credentials("renewed"));
 		expect(await readdir(runRoot)).toEqual([]);
-		await rm(runRoot, { recursive: true });
-	});
-
-	it("takes a seal whose answer was lost as its own, and a seal another run made first as no error", async () => {
-		const lost = vault({ loseFirstSealAnswer: true });
-		const renewing = (folder: string) =>
-			writeFile(join(folder, ".credentials.json"), credentials("renewed")).then(() => undefined);
-		let runRoot = await root();
-		let outcome = await runClaudeWorker({
-			brief,
-			member: "Ada",
-			logins: lost.logins,
-			launch: standInBox(OK, renewing).launch,
-			root: runRoot,
-			signal: new AbortController().signal,
-			earlySealMs: 0,
-		});
-		// The retry was answered stale with the next version; the vault's copy is ours, so nothing was lost.
-		expect(lost.state.seals).toHaveLength(1);
-		expect(outcome.login).toEqual({ sealed: 1, stale: 0 });
-		expect(lost.state.opens).toBe(2);
-		await rm(runRoot, { recursive: true });
-
-		const other = vault({ otherSealFirst: true });
-		runRoot = await root();
-		outcome = await runClaudeWorker({
-			brief,
-			member: "Ada",
-			logins: other.logins,
-			launch: standInBox(OK, renewing).launch,
-			root: runRoot,
-			signal: new AbortController().signal,
-			earlySealMs: 0,
-		});
-		expect(outcome.outcome).toBe("succeeded");
-		expect(outcome.login).toEqual({ sealed: 0, stale: 1 });
-		expect(other.state.credentials).toEqual(credentials("other-run"));
 		await rm(runRoot, { recursive: true });
 	});
 
@@ -643,7 +601,7 @@ describe("a Claude Code worker's run", () => {
 			...words(
 				"Claude Code could not start on Qorpera's side; nothing ran on the agent's machine. Try again later.",
 			),
-			login: { sealed: 0, stale: 0 },
+			login: { refreshed: 0 },
 			boxFailure: "box-unknown",
 			claudeSide: "could_not_start",
 		});
@@ -820,7 +778,6 @@ describe("review round 1 of #1835", () => {
 			open: async () => {
 				throw new Error("Cloud secret broker refused the Claude login");
 			},
-			seal: async () => ({ state: "unchanged" }),
 		};
 		const launch = vi.fn();
 		const runRoot = await root();
@@ -868,7 +825,6 @@ describe("review round 1 of #1835", () => {
 				signal.throwIfAborted();
 				return { refused: "NOT_OPEN" };
 			},
-			seal: async () => ({ state: "unchanged" }),
 		};
 		await expect(
 			runClaudeWorker({ brief, member: "Ada", logins: stopping, launch, root: runRoot, signal: stopped.signal }),

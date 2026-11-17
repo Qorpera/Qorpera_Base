@@ -1,22 +1,3 @@
-// C4c end-to-end proof: a Claude Code worker, from its dispatch in the real SQL to its results and the completion wake,
-// with Claude Code (unmodified, pinned) working on a real nested home through the coding executor's own route.
-//
-// Two processes, as on a real run host (prove-worker.sh runs them on a test VM, through run-on-node --sudo):
-//   platform (root): a migrated database (SQL test 1268's fixture: 924's company and Alice's live run, 1246's machine
-//     home-a, running for the owner, its boot the nested VM's real one); PostgREST stood in by psql (one call a request,
-//     as the service role); the object gateway's folder route stood in (bytes kept in memory, confirmed with the folder
-//     core as the gateway does); the shared vault's two Claude sign-in routes (the real HttpCloudSecretBrokerService and
-//     CloudClaudeLoginVault, a made-up member key, its SQL through psql in the vault's own database session); the coding
-//     executor's own ingress, router, machine host and LXD exec, its SQL the real one (qorpera_authorize_home_session,
-//     qorpera_folder_home_session_window), the placement's LXD name and owner mapped to the proof's nested VM. It
-//     dispatches, drains, materializes and starts each run (SQL test 1268's helpers), then completes its job as the
-//     native host does (qorpera_complete_runner_job_v6), and reads what the run left.
-//   run (nobody, a unit hardened like the company host): the runtime's own CloudNativeCompanyRuntime.execute for the
-//     run's request, with HTTP clients to the platform's stand-ins, and the box's parts as C2's proof installs them. The
-//     model is C2's stub (stub.py), reached through the box's own egress relay; it also answers Claude Code's renewal.
-// Made-up sign-ins only: the sealed login's files hold canaries ("C2CANARY-FILE-..."), and the stub's renewals mint
-// "C2CANARY-RFR-..." tokens. No real sign-in, no real model.
-
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, chownSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -29,6 +10,11 @@ import { MachineCommandRouter } from "../../coding-worker/machine-command-routin
 import { LxdCompanyMachineHost } from "../../../packages/runner-orchestrator/src/company-machine-host.ts";
 import { LxdUnixClient } from "../../../packages/runner-orchestrator/src/lxd-client.ts";
 import { CLAUDE_BOX_CONFIGURATION } from "../../../packages/runtime/src/cloud-claude-box.ts";
+import {
+	CloudClaudeLoginRenewer,
+	checkClaudeLogin,
+	claudeStatusLoggedIn,
+} from "../../../packages/runtime/src/cloud-claude-login-renewal.ts";
 import { CloudClaudeLoginVault } from "../../../packages/runtime/src/cloud-claude-login-vault.ts";
 import { HttpCloudCodingCommandService } from "../../../packages/runtime/src/cloud-coding-command-http.ts";
 import { HttpCloudCompanyFolderBytes } from "../../../packages/runtime/src/cloud-company-folder-bytes.ts";
@@ -42,7 +28,7 @@ import { NativeHostDispatch } from "../../../packages/runtime/src/cloud-native-h
 import { nativeRunRootPrefix } from "../../../packages/runtime/src/cloud-native-provider-host.ts";
 import { SupabaseNativeProviderControlPlane } from "../../../packages/runtime/src/cloud-native-provider-service.ts";
 import { CloudSecretBroker } from "../../../packages/runtime/src/cloud-secret-broker.ts";
-import { HttpCloudSecretBrokerService, sealClaudeLoginBack } from "../../../packages/runtime/src/cloud-secret-broker-http.ts";
+import { HttpCloudSecretBrokerService } from "../../../packages/runtime/src/cloud-secret-broker-http.ts";
 import { CloudSecretKeyring } from "../../../packages/runtime/src/cloud-secret-crypto.ts";
 
 const P = "/opt/qorpera-c2-proof";
@@ -240,6 +226,7 @@ select set_config('qorpera_test.base_binding', '${JSON.stringify(binding)}', fal
 select pg_temp.base_claims('service_role') \\g /dev/null
 `;
 	const sessions: { exec: number; channelBytes: number; canaryInChannels: string[] } = { exec: 0, channelBytes: 0, canaryInChannels: [] };
+	const children: ReturnType<typeof spawn>[] = [];
 	try {
 		// ---- The company, Alice's run, her machine home-a on the nested VM's boot, her todo (1268's fixture). ----------
 		const fixture = expandTestFixture("1268_claude_code_worker_dispatch.test.sql", (file: string) =>
@@ -320,13 +307,112 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 				`select coalesce((select jsonb_build_object('id', id, 'version', version, 'status', status) from public.qorpera_claude_logins
 					where owner_user_id = '${owner}' order by created_at desc limit 1), 'null')::text;`,
 			);
+		const renewalDir = join(B, "renewal");
+		mkdirSync(join(renewalDir, "checks"), { recursive: true, mode: 0o711 });
+		chmodSync(renewalDir, 0o711);
+		const renewalState = join(renewalDir, "state.json");
+		const renewalLog = join(renewalDir, "stub.jsonl");
+		const proxyLog = join(renewalDir, "proxy.jsonl");
+		writeFileSync(renewalState, JSON.stringify({ valid: "FILE", n: 0, refuse: false, steps: [], revoked: [], expiresIn: 320, exp: {} }));
+		writeFileSync(join(renewalDir, "allow"), "platform.claude.com\napi.anthropic.com\n");
+		const renewalStubPort = 20000 + Math.floor(Math.random() * 9000);
+		const renewalProxyPort = renewalStubPort + 1;
+		const startPython = async (script: string, args: string[]) => {
+			const child = spawn("/usr/bin/python3", ["-I", join(REPO, "deploy/claude-box/test", script), ...args], { stdio: ["ignore", "pipe", "inherit"] });
+			children.push(child);
+			const ready = await new Promise<boolean>((resolve) => {
+				let text = "";
+				child.stdout.on("data", (chunk) => {
+					text += chunk;
+					if (text.includes("READY")) resolve(true);
+				});
+				child.once("exit", () => resolve(false));
+				setTimeout(() => resolve(false), 15_000).unref();
+			});
+			if (!ready) throw new Error(`${script} did not start`);
+			return child;
+		};
+		await startPython("renewal-stub.py", [String(renewalStubPort), renewalState, renewalLog, `${P}/tls/server.pem`, `${P}/tls/server.key`]);
+		await startPython("renewal-proxy.py", [String(renewalProxyPort), String(renewalStubPort), join(renewalDir, "allow"), proxyLog]);
+		const renewals = () => {
+			try {
+				return readFileSync(renewalLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as { kind: string; sent?: string; answer?: string; bearer?: string; wall?: number })
+					.filter((line) => line.kind === "refresh");
+			} catch {
+				return [];
+			}
+		};
+		const statusAsNobody = {
+			claudeLoginStatus: async (root: string, signal: AbortSignal) => {
+				mkdirSync(join(root, "home"), { mode: 0o700 });
+				spawnSync("chown", ["-R", "65534:65534", root]);
+				const child = spawn("setpriv", ["--reuid=65534", "--regid=65534", "--clear-groups", `${P}/claude`, "auth", "status", "--json"], {
+					cwd: root,
+					env: {
+						HOME: join(root, "home"),
+						PATH: "/usr/bin:/bin",
+						CLAUDE_CONFIG_DIR: join(root, "claude"),
+						HTTPS_PROXY: `http://127.0.0.1:${renewalProxyPort}`,
+						NODE_EXTRA_CA_CERTS: `${P}/tls/ca.pem`,
+						DISABLE_AUTOUPDATER: "1",
+						CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+						DISABLE_TELEMETRY: "1",
+						DISABLE_ERROR_REPORTING: "1",
+						NO_COLOR: "1",
+					},
+					stdio: ["ignore", "pipe", "pipe"],
+					signal,
+				});
+				let text = "";
+				child.stdout.on("data", (chunk) => {
+					text += chunk;
+				});
+				child.stderr.on("data", (chunk) => {
+					text += chunk;
+				});
+				const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
+				return { exitedOk: code === 0, loggedIn: claudeStatusLoggedIn(text) };
+			},
+		};
+		const PRINCIPAL = "12680000-0000-4000-8000-000000000050";
+		const PRINCIPAL_CAPABILITY = "a".repeat(64);
+		const renewer = new CloudClaudeLoginRenewer({
+			keyring,
+			checker: {
+				checkClaudeLogin: (files, signal) =>
+					checkClaudeLogin({ driver: statusAsNobody, temporaryRoot: join(renewalDir, "checks") }, files, signal),
+			},
+			authority: {
+				takeClaudeLoginRenewal: async (request) =>
+					db.direct("qorpera_take_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
+						p_claude_login_id: request.claudeLoginId, p_purpose: request.purpose }, "qorpera_secret_broker"),
+				takeIdleClaudeLoginRenewal: async () =>
+					db.direct("qorpera_take_idle_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY },
+						"qorpera_secret_broker"),
+				commitClaudeLoginRenewal: async (commit) =>
+					db.direct("qorpera_commit_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
+						p_claude_login_id: commit.claudeLoginId, p_token: commit.token, p_base_version: commit.baseVersion,
+						p_base_envelope_sha256: commit.baseEnvelopeSha256, p_key_id: commit.keyId,
+						p_encrypted_envelope_base64: Buffer.from(commit.encryptedEnvelope).toString("base64"),
+						p_envelope_sha256: commit.envelopeSha256 }, "qorpera_secret_broker"),
+				releaseClaudeLoginRenewal: async (release) =>
+					db.direct("qorpera_release_claude_login_renewal", { p_principal_id: PRINCIPAL, p_capability_sha256: PRINCIPAL_CAPABILITY,
+						p_claude_login_id: release.claudeLoginId, p_token: release.token, p_outcome: release.outcome }, "qorpera_secret_broker"),
+			},
+		});
 		const vault = new CloudClaudeLoginVault({
 			keyring,
+			renewer,
 			authority: {
-				openClaudeLoginForRun: async (binding) =>
+				openClaudeLoginForRun: async (binding, _signal, knownVersion) =>
 					db.direct(
 						"qorpera_open_claude_login_for_run",
-						{ p_broker_authority_id: BROKER_AUTHORITY, p_broker_capability_sha256: BROKER_CAPABILITY, p_binding: binding },
+						{
+							p_broker_authority_id: BROKER_AUTHORITY,
+							p_broker_capability_sha256: BROKER_CAPABILITY,
+							p_binding: binding,
+							...(knownVersion === undefined ? {} : { p_known_version: knownVersion }),
+						},
 						"qorpera_secret_broker",
 					),
 				openClaudeLoginForSealBack: async (binding) =>
@@ -388,18 +474,14 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		const vaultPort = await vaultService.start();
 
 		// ---- PostgREST and the run's control plane, over HTTP, for the run's process -------------------------------------
-		let stopFrom = Number.POSITIVE_INFINITY;
 		const stopped: { runId: string; version: number }[] = [];
 		const rpcPort = await listen(async (request, response) => {
 			const url = new URL(String(request.url), "http://x");
 			const input = JSON.parse((await body(request)).toString("utf8") || "{}") as Record<string, unknown>;
 			const rpc = /^\/rest\/v1\/rpc\/(qorpera_[a-z0-9_]+)$/.exec(url.pathname);
 			const control = /^\/control\/([a-zA-Z]+)$/.exec(url.pathname);
-			// A member's stop, as the proof makes it: once the vault holds the version Claude Code renewed at its start (the
-			// early seal), the run's job is cancelled; then the run's process stops it through the run's own signal.
 			if (url.pathname === "/proof/stop") {
 				const runId = String(input.runId);
-				for (let i = 0; i < 300 && (login()?.version ?? 0) <= stopFrom; i++) await sleep(100);
 				session(`select pg_temp.c4_end_job('${runId}', 'cancelled');`);
 				stopped.push({ runId, version: login()?.version ?? 0 });
 				response.writeHead(200, { "content-type": "application/json" }).end("{}");
@@ -584,8 +666,6 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		mkdirSync(join(B, "configs"), { recursive: true, mode: 0o700 });
 		chownSync(B, 65534, 65534);
 		chownSync(join(B, "configs"), 65534, 65534);
-		// The stub's renewed tokens live one second, so every run renews at its start (and again before later requests):
-		// each run has a renewal to seal, and a run's seal lands only on the version it opened (the vault's compare-and-swap).
 		const scenario = (label: string, steps: unknown[], final: string, expiresIn = 1) => {
 			const path = join(P, `scen-c4c-${label}.json`);
 			writeFileSync(path, JSON.stringify({ label, nonce: randomBytes(4).toString("hex"), steps, final, expiresIn }), { mode: 0o444 });
@@ -695,6 +775,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("slot-unit", slotUnit.includes("PrivateTmp=yes") && slotUnit.includes("ProtectSystem=strict"), `the runs have qorpera-shared-run-host@11's hardening: ${slotUnit.filter((_, i) => i % 2).join(" ")}`);
 		const runWorker = async (binding: Record<string, string>, scenarioPath: string, extra: Record<string, unknown> = {}) => {
 			runCount++;
+			const stubPort = 18443 + runCount;
 			const label = `run${runCount}`;
 			const config = {
 				label,
@@ -706,7 +787,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 				executor: { url: `http://127.0.0.1:${executorPort}`, token: executorToken },
 				holder: `job.${binding.jobId}.${binding.leaseToken}`,
 				scenario: scenarioPath,
-				stubPort: 18443,
+				stubPort,
 				...extra,
 			};
 			const path = join(B, "configs", `${label}.json`);
@@ -748,7 +829,7 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			const result = line ? (JSON.parse(line.slice(7)) as RunResult) : ({ ok: false, error: "no RESULT line", outputs: text.slice(-3000), ms: 0 } as RunResult);
 			say(`${label}: ${result.ok ? `ok ${result.providerSessionId}` : `failed ${result.stage ?? ""} ${result.error?.slice(0, 300)}`} in ${Date.now() - t0} ms`);
 			if (!result.ok) say(`${label} output tail: ${text.slice(-2500).replaceAll("\n", " | ")}`);
-			slotRuns.push({ label, root: result.root, left: result.leftInSlot });
+			if (!extra.parallel) slotRuns.push({ label, root: result.root, left: result.leftInSlot });
 			return { ...result, text };
 		};
 
@@ -761,7 +842,6 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			`dispatch refused: ${JSON.stringify((noLogin as { units?: unknown[] }).units?.[0]).slice(0, 300)}`,
 		);
 
-		// 2. The member's sign-in, made up and expired: Claude Code renews it at its start (the stub answers).
 		insertLogin("c4c00000-0000-4000-8000-0000000000c1", loginFiles(canary("FILE"), Date.now() - 3600_000));
 		check("login-v1", login()?.version === 1, `the login: ${JSON.stringify(login())}`);
 
@@ -811,31 +891,6 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		})();
 		const r1 = await runWorker(b1, work);
 		const boundaryAt = await lastBoundary;
-		// A seal-back AFTER the worker's report, through the vault's own route and the real SQL, while the run's job and the
-		// member's lease are still this run's (the run host does it so when a renewal comes late): the run's composition
-		// wrote results.md above; the job is completed only after this.
-		const reported = worker(w1);
-		const head = sessionJson<{ id: string; version: number; envelopeSha256: string }>(`select jsonb_build_object('id', id,
-			'version', version, 'envelopeSha256', envelope_sha256)::text from public.qorpera_claude_logins where id = 'c4c00000-0000-4000-8000-0000000000c1';`);
-		const afterReport = await sealClaudeLoginBack(
-			{ origin: `http://127.0.0.1:${vaultPort}`, runtimeToken, companyId: COMPANY, holder: () => `job.${b1.jobId}.${b1.leaseToken}`, allowLoopback: true },
-			{
-				binding: {
-					leaseId: b1.leaseId as string,
-					runId: b1.runId as string,
-					jobId: b1.jobId as string,
-					runnerId: b1.runnerId as string,
-					assignmentId: b1.assignmentId as string,
-					credentialCapsuleId: b1.credentialCapsuleId as string,
-					computeIdentityId: b1.computeIdentityId as string,
-				},
-				opened: { claudeLoginId: head.id, version: head.version, envelopeSha256: head.envelopeSha256, fileSha256: {} },
-				files: new Map([[".credentials.json", Buffer.from(loginFiles(canary("RFR"), Date.now() - 3600_000)[".credentials.json"], "base64")]]),
-			},
-			AbortSignal.timeout(20_000),
-		).catch((error: Error) => ({ state: `error: ${error.message}` }));
-		check("seal-after-report", reported?.reported_at != null && afterReport.state === "sealed" && login()?.version === head.version + 1,
-			`the worker had reported (${String(reported?.state)}, ${String(reported?.reported_at)}); a seal-back then answered ${afterReport.state}; the login went ${head.version} -> ${login()?.version}`);
 		if (r1.ok && r1.providerSessionId) complete(b1, r1.providerSessionId);
 		const results1 = resultsText("pdf");
 		check("run-1", r1.ok && /^claude-code\/2\.1\.325\/[^/]+\/[^/]+$/.test(r1.providerSessionId ?? ""), `the run: ${r1.providerSessionId ?? r1.error}`);
@@ -844,7 +899,11 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			&& JSON.stringify((results("pdf")?.parse as { files?: unknown }).files) === JSON.stringify(["QorperaOS/agents/alice/todos/onboarding/pdf/onboarding.md"]),
 			`the report's file list holds what the view's last boundary committed ${boundaryAt ? "after the session closed" : ""}: ${JSON.stringify((results("pdf")?.parse as { files?: unknown } | null)?.files)}`);
 		const l1 = login();
-		check("sealed-early", (l1?.version ?? 0) >= 2, `Claude Code renewed the expired sign-in at its start and the run sealed it back: ${JSON.stringify(l1)}`);
+		const issued = () => new Set(["FILE", ...renewals().filter((r) => r.answer?.startsWith("R")).map((r) => r.answer as string)]);
+		check("vault-renewed", (l1?.version ?? 0) === 2 && renewals().length === 1 && renewals()[0]?.sent === "FILE" && renewals()[0]?.answer === "R1",
+			`the vault renewed the expired sign-in at the run's open, with Claude Code's own renewal: login ${JSON.stringify(l1)}; renewals ${JSON.stringify(renewals())}`);
+		check("run-cannot-renew", r1.stub?.refreshes === 0 && JSON.stringify(r1.stub?.authTags) === JSON.stringify(["R1"]),
+			`run 1 renewed nothing (its egress has no renewal host) and spoke with the vault's version only: ${JSON.stringify(r1.stub?.authTags)}, ${r1.stub?.refreshes} renewals`);
 		check("tools-ran", (r1.stub?.results ?? []).length === 5 && (r1.stub?.results ?? []).filter((r) => r.isError).map((r) => r.name).join() === "read-missing",
 			`stub saw the five results (one error): ${JSON.stringify(r1.stub?.results)}`);
 		check("root-left", (r1.leftInRoot ?? ["?"]).length === 0, `nothing left in the run's root: ${JSON.stringify(r1.leftInRoot)}`);
@@ -878,8 +937,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		const r2 = await runWorker(b2, scenario("short", [Bash("echo second run; id -un", "shell")], "Second run done."));
 		if (r2.ok && r2.providerSessionId) complete(b2, r2.providerSessionId);
 		check("run-2", r2.ok && resultsText("slides")?.includes("Second run done.") === true, `run 2: ${r2.providerSessionId ?? r2.error}`);
-		check("opened-v2", (r2.stub?.authTags ?? []).includes("RFR") && !(r2.stub?.authTags ?? []).includes("FILE") && (login()?.version ?? 0) > before2,
-			`run 2 spoke with the renewed token, not the first: ${JSON.stringify(r2.stub?.authTags)}; version ${before2} -> ${login()?.version}`);
+		check("opened-renewed", (r2.stub?.authTags ?? []).length > 0 && (r2.stub?.authTags ?? []).every((tag) => tag !== "FILE" && issued().has(tag))
+			&& r2.stub?.refreshes === 0 && (login()?.version ?? 0) >= before2,
+			`run 2 spoke with a version the vault renewed, never the first: ${JSON.stringify(r2.stub?.authTags)}; version ${before2} -> ${login()?.version}`);
 
 		// 4b. A follow-up of the first worker: a fresh Claude Code session told where its earlier work is and what it reported.
 		drain();
@@ -946,29 +1006,22 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 			say(`${label} stub: ${lines.filter((l) => l.kind === "failed").map((l) => l.status).join(",")} failed answers, ${lines.filter((l) => l.kind === "refresh").length} renewals`);
 		}
 
-		// 5. A run stopped in the middle, after its early seal: Claude Code renewed the expired sign-in at its start, the run
-		// sealed it back at once, then the member's stop cancels the job (from then on the vault seals nothing of this run)
-		// and the run's signal ends the box. The vault keeps the renewed version; nothing is left of the login folder.
 		const w3 = "c4c00000-0000-4000-8000-0000000000b3";
 		dispatch("stop", w3, "A long job");
 		drain();
 		const b3 = leased(start(w3));
 		const before3 = login()?.version ?? 0;
-		stopFrom = before3;
 		const r3 = await runWorker(
 			b3,
 			scenario("stop", [Bash("echo started; sleep 20; echo should-not-print", "long"), Bash("echo after", "after")], "not reached"),
 			{ stopAfterMs: 1000 },
 		);
-		stopFrom = Number.POSITIVE_INFINITY;
 		const after3 = login()?.version ?? 0;
-		check("stop", !r3.ok && stopped.length === 1 && (stopped[0]?.version ?? 0) > before3 && after3 >= (stopped[0]?.version ?? 0)
+		check("stop", !r3.ok && stopped.length === 1 && after3 >= before3 && login()?.status === "active"
 			&& (r3.leftInRoot ?? ["?"]).length === 0,
 			`stopped (${r3.stage}, ${r3.error?.split("\n")[0]?.slice(0, 80)}); login ${before3} -> ${after3} (at the stop ${stopped[0]?.version}); left ${JSON.stringify(r3.leftInRoot)}`);
 		const leftOnHome = spawnSync("lxc", ["exec", PROOF_MACHINE, "--", "sh", "-c", "pgrep -af 'sleep 20' | grep -v pgrep || echo none; systemctl list-units --all --plain --no-legend 'qorpera-machine-home-*' | wc -l"], { encoding: "utf8" }).stdout;
 		check("stop-home", leftOnHome.startsWith("none") && leftOnHome.trim().endsWith("0"), `the home after the stop: ${leftOnHome.replaceAll("\n", " | ")}`);
-		// The member's next run opens the version the stopped run sealed: it renews again from it (the stub's tokens live 30
-		// s), and its seal is the next version only if its base was that one (the vault's compare-and-swap).
 		drain();
 		const w5 = "c4c00000-0000-4000-8000-0000000000b5";
 		dispatch("next", w5, "After the stop");
@@ -976,8 +1029,85 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		const b5 = leased(start(w5));
 		const r5 = await runWorker(b5, scenario("next", [Bash("echo next run", "shell")], "Next run done."));
 		if (r5.ok && r5.providerSessionId) complete(b5, r5.providerSessionId);
-		check("after-stop", r5.ok && (login()?.version ?? 0) > after3 && (r5.stub?.authTags ?? []).includes("RFR"),
-			`the next run opened version ${after3} and sealed ${login()?.version}: ${r5.providerSessionId ?? r5.error}`);
+		check("after-stop", r5.ok && (login()?.version ?? 0) >= after3 && (r5.stub?.authTags ?? []).every((tag) => tag !== "FILE" && issued().has(tag))
+			&& r5.stub?.refreshes === 0,
+			`the next run opened version ${login()?.version} (${JSON.stringify(r5.stub?.authTags)}): ${r5.providerSessionId ?? r5.error}`);
+
+		session("update public.qorpera_claude_parallel_runs set cap = 4;");
+		const parallel = async (label: string, keys: string[], steps: unknown[], final: string) => {
+			drain();
+			const ids = keys.map((key, i) => `c4c00000-0000-4000-8000-0000000001${label === "two" ? "a" : "b"}${i}`);
+			keys.forEach((key, i) => dispatch(key, ids[i] as string, `${label} ${key}`));
+			const drained = drain();
+			const startedIds = ids.filter((id) => worker(id)?.occurrence_id !== null);
+			const runOf = new Map(
+				startedIds.map((id) => [
+					sessionJson<string>(`do $$ begin perform pg_temp.base_materialize(); end $$;
+						select to_jsonb((select run_id from public.qorpera_wake_occurrences
+							where id = (select occurrence_id from public.qorpera_runtime_workers where id = '${id}')))::text;`),
+					id,
+				]),
+			);
+			session(`set local session_replication_role = replica;
+				update public.qorpera_execution_runs set memory_mode = 'tree' where id in (${[...runOf.keys()].map((run) => `'${run}'`).join(", ")});
+				set local session_replication_role = origin;`);
+			const byWorker = new Map<string, Record<string, string>>();
+			for (let i = 0; i < startedIds.length; i++) {
+				const binding = sessionJson<Record<string, string>>("select pg_temp.base_start(null)::text;");
+				const id = runOf.get(binding.runId as string);
+				if (!id) throw new Error(`a started run is no worker's here: ${binding.runId}`);
+				byWorker.set(id, binding);
+			}
+			const bindings = startedIds.map((id) => leased(byWorker.get(id) as Record<string, string>));
+			const versions = login()?.version ?? 0;
+			const t0 = Date.now();
+			const runs = await Promise.all(
+				bindings.map(async (binding, i) => {
+					// WHY: 5 s apart, as this proof's SQL stand-in runs every call through one synchronous psql; the runs overlap still.
+					await sleep(i * 5000);
+					return runWorker(binding, scenario(`${label}-${i}`, steps, `${final} ${i}.`, 1), { parallel: true });
+				}),
+			);
+			for (const [i, run] of runs.entries()) if (run.ok && run.providerSessionId) complete(bindings[i] as Record<string, string>, run.providerSessionId);
+			return { ids, startedIds, drained, runs, ms: Date.now() - t0, versionBefore: versions };
+		};
+		const two = await parallel("two", ["two-a", "two-b"], [Bash("echo two at once; id -un", "shell"), Bash("sleep 5; echo done", "wait")], "Two at once");
+		check("two-at-once", two.startedIds.length === 2 && two.runs.every((run) => run.ok)
+			&& two.runs.every((run, i) => resultsText(`two-${i ? "b" : "a"}`)?.includes("outcome: succeeded") === true),
+			`both started by one drain and both succeeded: ${JSON.stringify(two.runs.map((run) => [run.ok, run.providerSessionId ?? run.error?.slice(0, 120), run.ms]))}`);
+		check("two-overlapped", two.ms < two.runs.reduce((sum, run) => sum + (run.ms ?? 0), 0),
+			`the two ran side by side: ${two.ms} ms for ${two.runs.map((run) => run.ms).join(" + ")} ms of runs`);
+		check("two-no-renewal", two.runs.every((run) => run.stub?.refreshes === 0 && (run.stub?.authTags ?? []).every((tag) => tag !== "FILE" && issued().has(tag))),
+			`neither run renewed; both spoke with the vault's versions: ${JSON.stringify(two.runs.map((run) => run.stub?.authTags))}`);
+		const long = Array.from({ length: 11 }, (_, i) => Bash(`sleep 15; echo step ${i}`, `wait-${i}`));
+		const four = await parallel("four", ["four-a", "four-b", "four-c", "four-d", "four-e"], long, "Four at once");
+		const fifth = four.ids[4] as string;
+		check("four-at-once", four.startedIds.length === 4 && !four.startedIds.includes(fifth) && four.runs.every((run) => run.ok),
+			`four started, the fifth waited (cap 4): started ${four.startedIds.map((id) => id.slice(-2)).join(",")}; ${JSON.stringify(four.runs.map((run) => [run.ok, run.ms, run.error?.slice(0, 120)]))}`);
+		check("four-in-place", four.runs.every((run) => (run.stub?.authTags ?? []).length >= 2 && run.stub?.refreshes === 0
+			&& (run.stub?.authTags ?? []).every((tag) => tag !== "FILE" && issued().has(tag))) && (login()?.version ?? 0) > four.versionBefore,
+			`each run spoke with two versions or more, the newer put in place while Claude Code worked, and renewed nothing itself: ${JSON.stringify(four.runs.map((run) => run.stub?.authTags))}; login ${four.versionBefore} -> ${login()?.version}`);
+		const slotAfter = readdirSync(SLOT_HOST);
+		check("four-slot-left", slotAfter.length === 0 && four.runs.every((run) => RUN_ROOT.test(run.root ?? "") && (run.leftInRoot ?? ["?"]).length === 0),
+			`after the parallel runs nothing is left in slot 11's host folder: ${JSON.stringify(slotAfter)}`);
+		drain();
+		check("fifth-starts", worker(fifth)?.occurrence_id !== null, "the fifth started once the four had ended");
+		const b5th = leased(start(fifth));
+		const r5th = await runWorker(b5th, scenario("fifth", [Bash("echo fifth", "shell")], "Fifth done."));
+		if (r5th.ok && r5th.providerSessionId) complete(b5th, r5th.providerSessionId);
+		check("fifth-run", r5th.ok && r5th.stub?.refreshes === 0, `the fifth ran: ${r5th.providerSessionId ?? r5th.error}`);
+		const refused = renewals().filter((r) => r.answer === "invalid_grant");
+		check("rotation-clean", refused.length === 0 && renewals().every((r, i, all) => i === 0 || r.sent === all[i - 1]?.answer),
+			`every renewal used the newest refresh token, none was refused: ${JSON.stringify(renewals().map((r) => `${r.sent}->${r.answer}`))}`);
+		const beforeIdle = login()?.version ?? 0;
+		session(`update public.qorpera_claude_logins set checked_at = clock_timestamp() - interval '21 hours' where owner_user_id = '${owner}' and status = 'active';`);
+		const lastRenewal = renewals().at(-1)?.wall ?? 0;
+		while (Date.now() / 1000 < lastRenewal + 25) await sleep(1000);
+		const idleChecked = await renewer.idle();
+		check("stays-signed-in", idleChecked === 1 && login()?.status === "active" && (login()?.version ?? 0) === beforeIdle + 1
+			&& renewals().at(-1)?.answer?.startsWith("R") === true,
+			`after all runs: the idle check renewed ${beforeIdle} -> ${login()?.version} (${renewals().at(-1)?.sent} -> ${renewals().at(-1)?.answer}); status ${login()?.status}`);
+		session("update public.qorpera_claude_parallel_runs set cap = 1;");
 
 		// 6. A revoked sign-in: the worker was dispatched on it; the run opens nothing and ends blocked in its words.
 		drain();
@@ -1017,7 +1147,9 @@ select pg_temp.base_claims('service_role') \\g /dev/null
 		check("canary-outputs", (everything.match(CANARY) ?? []).length === 0, `canaries in outputs, objects and steps: ${(everything.match(CANARY) ?? []).length}`);
 		check("canary-channels", sessions.canaryInChannels.length === 0, `canaries on the channels: ${sessions.canaryInChannels.length} of ${sessions.channelBytes} bytes, ${sessions.exec} channels`);
 		say(`refused SQL calls: ${db.refusals.slice(0, 12).join(" || ")}`);
+		say(`renewals at the vault's stub: ${JSON.stringify(renewals().map((r) => `${r.sent}->${r.answer}`))}`);
 	} finally {
+		for (const child of children) child.kill();
 		database.close();
 	}
 	say(failures ? `PROOF FAILED ${failures}` : "PROOF PASSED");

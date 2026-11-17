@@ -38,7 +38,6 @@ import {
 import {
 	assertNativeSocketPath,
 	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
-	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_EGRESS_SOCKET_NAME,
 	type NativeEgressTransport,
 	startNativeCodexEgress,
@@ -651,7 +650,7 @@ async function startBox(
 		const relay = await startNativeCodexEgress({
 			root: options.scratchRoot,
 			signal,
-			hosts: token !== undefined ? NATIVE_CLAUDE_CODE_EGRESS_HOSTS : NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
+			hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
 			...(options.proof?.transport ? { transport: options.proof.transport } : {}),
 		});
 		cleanups.push(() => relay.close());
