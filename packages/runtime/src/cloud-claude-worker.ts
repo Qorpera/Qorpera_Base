@@ -17,6 +17,7 @@
 
 import { lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { folderKey } from "@qorpera/contracts";
 import {
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_CODE_PIN,
@@ -784,6 +785,21 @@ export function claudeWorkerLogins(client: ClaudeLoginRunClient, binding: ModelL
 			return { state: "stale", version: answer.version };
 		},
 	};
+}
+
+const CLAUDE_CODE_TEMPORARY_FILE = /^(.+)\.tmp\.[1-9][0-9]{0,9}\.[0-9a-f]{12}$/;
+
+export function claudeWorkerReportedOutputs(paths: unknown, resultsFile: string): string[] {
+	const listed = (Array.isArray(paths) ? paths : []).filter(
+		(path): path is string =>
+			typeof path === "string" && path === path.trim() && !/[\r\n]/.test(path) && Buffer.byteLength(path) <= 256,
+	);
+	const written = new Set(listed.map(folderKey));
+	return listed.filter((path) => {
+		if (path === resultsFile) return false;
+		const file = CLAUDE_CODE_TEMPORARY_FILE.exec(path)?.[1];
+		return file === undefined || !written.has(folderKey(file));
+	});
 }
 
 /**

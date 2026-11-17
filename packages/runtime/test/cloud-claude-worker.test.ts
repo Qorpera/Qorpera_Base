@@ -19,6 +19,7 @@ import {
 	claudeWorkerBlocked,
 	claudeWorkerBrief,
 	claudeWorkerPrompt,
+	claudeWorkerReportedOutputs,
 	claudeWorkerReportText,
 	claudeWorkerScratchPrefix,
 	claudeWorkerSessionId,
@@ -916,6 +917,70 @@ describe("review round 1 of #1835", () => {
 		const stopped = new AbortController();
 		stopped.abort();
 		await expect(claudeWorkerSettledOutputs(async () => [], stopped.signal, { sleep })).rejects.toThrow();
+	});
+});
+
+describe("the report's file list", () => {
+	it("leaves out Claude Code's own temporary file of a file the run wrote (run 7a174bc9, 16 Nov)", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["product/backup-review.md.tmp.9.58b93b9e96db", "product/backup-review.md", "product/results.md"],
+				"product/results.md",
+			),
+		).toEqual(["product/backup-review.md"]);
+		expect(
+			claudeWorkerReportedOutputs(
+				["a/b.md", "a/b.md.tmp.123456.0123456789ab", "a/c.tmp.77.abcdefabcdef", "a/c"],
+				"w/results.md",
+			),
+		).toEqual(["a/b.md", "a/c"]);
+	});
+
+	it("leaves out Claude Code's temporary file of the results file too, and the results file", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["product/results.md", "product/results.md.tmp.9.58b93b9e96db", "product/plan.pdf"],
+				"product/results.md",
+			),
+		).toEqual(["product/plan.pdf"]);
+	});
+
+	it("pairs a temporary file with its file as the folder does, whatever the case", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["Product/Backup-Review.md", "product/backup-review.md.tmp.9.58b93b9e96db"],
+				"w/results.md",
+			),
+		).toEqual(["Product/Backup-Review.md"]);
+	});
+
+	it("keeps every other name, a member's own included", () => {
+		const kept = [
+			"notes/plan.md.tmp.9.58b93b9e96db",
+			"notes/report.md.tmp.9.58B93B9E96DB",
+			"notes/report.md.tmp.0.58b93b9e96db",
+			"notes/report.md.tmp.9.58b93b9e96d",
+			"notes/report.md.tmp.9.58b93b9e96dbe",
+			"notes/report.md.tmp.x.58b93b9e96db",
+			"notes/report.md.tmp",
+			"notes/report.md.tmp.9",
+			"notes/other.md",
+		];
+		expect(claudeWorkerReportedOutputs([...kept, "notes/report.md"], "w/results.md")).toEqual([
+			...kept,
+			"notes/report.md",
+		]);
+	});
+
+	it("keeps only well-formed names and never the results file", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["ok.md", 7, null, " lead.md", "trail.md ", "a\nb.md", "x".repeat(257), "w/results.md"],
+				"w/results.md",
+			),
+		).toEqual(["ok.md"]);
+		expect(claudeWorkerReportedOutputs(undefined, "w/results.md")).toEqual([]);
+		expect(claudeWorkerReportedOutputs({ outputs: ["a.md"] }, "w/results.md")).toEqual([]);
 	});
 });
 
