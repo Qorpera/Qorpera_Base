@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- A Claude Code worker wakes its agent's machine instead of going to Codex (the founder, 17 Nov 2026, to "Wake the agent's machine for Claude work instead of falling back to Codex?": "sure"; migration `20260930797000`, SQL test 1294). A defaulted write worker whose member can use Claude Code but whose agent has no machine running for that member is resolved to Claude Code; the worker drain wakes the agent's newest machine for that member (one made from an image without the home is passed over) or starts one new `<agent>-home` machine (2 CPUs, 4 GiB, 40 GiB), one per agent and member however many workers ask, waits up to 5 minutes for it, and hands the worker to Codex at once when the machine is refused, stopped, fails to start or does not run in time. A going Claude Code run with a home session keeps its machine from sleeping; once it ends the idle rule decides as before. SQL only: no bundle, image or node change.
 - Release v253 (Claude Code workers never on node 1, #1880; Claude first for coding and design work, #1882; a Claude Code
   worker's report without Claude Code's own temporary file, #1879; the Claude Code box's built-in tools, #1885; Extra high
   on GPT in a conversation, #1889; the agent's home for every company, #1895; each merged in the release branch at its
