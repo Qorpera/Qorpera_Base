@@ -218,15 +218,9 @@ select pg_temp.scl_replace('public.qorpera_claude_worker_login(uuid,uuid)'::regp
 	$old$where login.owner_user_id = p_member_user_id and login.status = 'active'$old$,
 	$new$where login.owner_user_id = p_member_user_id and login.status = 'active' and login.in_use$new$);
 
-do $$ begin
-	-- WHY: 20260930787000 (Claude-first) is on master but not under 20260930793000's branch;
-	-- a tree with it gets its picker patched too.
-	if to_regprocedure('public.qorpera_claude_worker_default_login(uuid,uuid,uuid,uuid)') is not null then
-		perform pg_temp.scl_replace('public.qorpera_claude_worker_default_login(uuid,uuid,uuid,uuid)'::regprocedure,
-			$old$where login.owner_user_id = p_member_user_id and login.status = 'active'$old$,
-			$new$where login.owner_user_id = p_member_user_id and login.status = 'active' and login.in_use$new$);
-	end if;
-end $$;
+select pg_temp.scl_replace('public.qorpera_claude_worker_default_login(uuid,uuid,uuid,uuid)'::regprocedure,
+	$old$where login.owner_user_id = p_member_user_id and login.status = 'active'$old$,
+	$new$where login.owner_user_id = p_member_user_id and login.status = 'active' and login.in_use$new$);
 
 create function public.qorpera_begin_claude_login_read(p_profile_id uuid, p_claude_login_id uuid, p_client_request_id uuid,
 	p_capability_sha256 text, p_force boolean, p_reset_kind text)

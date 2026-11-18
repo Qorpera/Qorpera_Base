@@ -280,14 +280,12 @@ begin
 		= '13000000-0000-4000-8000-0000000000a3'
 		and position('login.in_use' in pg_get_functiondef('public.qorpera_claude_worker_login(uuid,uuid)'::regprocedure)) > 0,
 		'6: the Claude Code picker reads In use');
-	if to_regprocedure('public.qorpera_claude_worker_default_login(uuid,uuid,uuid,uuid)') is not null then
-		perform pg_temp.base_assert(public.qorpera_claude_worker_default_login('92400000-0000-4000-8000-000000000010',
-			'92400000-0000-4000-8000-000000000030', (v_alice ->> 'runId')::uuid, pg_temp.sc_owner())
-			= '13000000-0000-4000-8000-0000000000a3'
-			and position('login.in_use' in pg_get_functiondef(
-				'public.qorpera_claude_worker_default_login(uuid,uuid,uuid,uuid)'::regprocedure)) > 0,
-			'6: the Claude-first picker reads In use');
-	end if;
+	perform pg_temp.base_assert(public.qorpera_claude_worker_default_login('92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000030', (v_alice ->> 'runId')::uuid, pg_temp.sc_owner())
+		= '13000000-0000-4000-8000-0000000000a3'
+		and position('login.in_use' in pg_get_functiondef(
+			'public.qorpera_claude_worker_default_login(uuid,uuid,uuid,uuid)'::regprocedure)) > 0,
+		'6: the Claude-first picker reads In use');
 	perform pg_temp.base_assert(public.qorpera_member_may_pick_claude('92400000-0000-4000-8000-000000000010',
 		pg_temp.sc_owner()) is not distinct from public.qorpera_company_home_allowed('92400000-0000-4000-8000-000000000010'),
 		'6: the model menu''s Claude check still means an active login');
