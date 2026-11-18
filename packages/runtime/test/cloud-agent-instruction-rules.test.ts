@@ -725,7 +725,13 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"look before linking, at two widths",
-		"open it from /company/apps/<name>/ in a browser on a machine at 1280 and 390 px wide, save both screenshots outside apps/, look at them with company_read, fix the weakest thing, look again.",
+		"open it from /company/apps/<name>/ in a browser on a machine at 1280 and 390 px wide, save both screenshots outside apps/, look at them with company_read, fix the weakest thing, look once more, then link it.",
+		ALL,
+	],
+	[
+		"5",
+		"a look on a machine is not a test in the app",
+		"A look on a machine sees the files, not the app as members open it: say it was looked at on a machine, never that it was tested in the app.",
 		ALL,
 	],
 	[
@@ -771,14 +777,14 @@ const RULES: [string, string, string, Run[]][] = [
 	["5", "concepts, never demos", "Call them concepts, never demos.", STAFF],
 	[
 		"5",
-		"the Concepts viewer",
-		'Each step is an app of its own with concept = true and a cover, titled with the product\'s name and "concepts", so it opens in the Concepts viewer',
+		"the concept apps in the Concepts viewer",
+		'The first concept, the directions and the build are each an app of its own with concept = true and a cover, titled with the product\'s name and "concepts", so they open in the Concepts viewer',
 		STAFF,
 	],
 	[
 		"5",
 		"the first concept in the owner's first run",
-		"whoever owns the product makes the first in its first run, from the founders' own words and before any document but the brief, opening on the key moments, never on the brief's text",
+		"The product's owner makes it in its first run, with its own workers, before any document but the brief; where parts have owners of their own, each makes its part in its own first run (the form rendered in use, the app's screens) and the product's owner puts them in one concept app.",
 		STAFF,
 	],
 	[
@@ -855,22 +861,64 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"four steps, none skipped",
-		"Concepts take four steps, none skipped, because building before the idea is shaped gives a guess dressed up as a product:",
+		"Concepts go in this order, each shaped by the founders' answer to the one before, and none is skipped, because building before the idea is shaped gives a guess dressed up as a product:",
 		STAFF,
 	],
 	[
 		"5",
 		"the first concept looks real",
-		"The first concept shows those moments as a customer will meet them: a physical product as a render of the thing in use that looks real, software as real screens of those moments to click through, in the look of the best products in its field; never wireframes, line drawings or form fields on a blank page.",
+		"It shows those moments as a customer will meet them: a physical product as a render of the thing in use that looks real, software as real screens of those moments to click through, in the look of the best products in its field; never wireframes, line drawings or form fields on a blank page.",
 		STAFF,
 	],
 	[
 		"5",
 		"a first take asked about on a card",
-		"It is a first take: ask on a card that links the app whether this is their product and what is missing.",
+		"Ask on a card that links the app whether this is their product and what is missing, in the run that first makes it viewable, even when more parts are coming: improving it comes after, in the open.",
 		STAFF,
 	],
 	["5", "nothing further until the first concept", "Build nothing further until it shows what they said.", STAFF],
+	[
+		"5",
+		"one first concept, the same hour",
+		"1. First concept: one take on the product, not several, shown to the founders the same hour its builders are hired. Its brief is strategy/concept-brief.md, for the team:",
+		STAFF,
+	],
+	[
+		"5",
+		"the first concept waits for nobody",
+		"Each works from the brief, the founders' words and its own judgement, and waits for nobody's input, no reference pictures, no brand and no finding, because the first concept exists to be corrected.",
+		STAFF,
+	],
+	[
+		"5",
+		"references come after the answer and are not a concept",
+		"2. Look, from their answer: screenshots of the best products and other references in research/moodboard/, each with a note on what works and what does not in its look and feel, shown with the board kit's wall in an app titled for what it holds, never with concept = true: other companies' products are references, not a concept.",
+		STAFF,
+	],
+	[
+		"5",
+		"directions from the founders' answer",
+		"3. Directions, from their answer: several clearly different, quick directions of the key moments, judged by looking against the brief, the founders' answer and the moodboard;",
+		STAFF,
+	],
+	[
+		"5",
+		"several ideas, never for the first concept",
+		"do not settle on the first idea; the one exception is the first concept, one take that the founders correct (step 1 of Concepts).",
+		STAFF,
+	],
+	[
+		"7",
+		"what the founders will see, in hours",
+		"When you tell the founders what the team does first, say what they will see and when, in hours.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"the brand's directions follow the first concept",
+		"It starts as soon as the first concept is shown and raises its card after the concept's, taking in what the founders say of it; the first concept never waits for it.",
+		FOUNDING,
+	],
 	[
 		"5",
 		"plans for later stages wait",
@@ -1074,13 +1122,13 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the Co-Founder sees the concepts through",
-		"You write the concept brief with the founders, see that the first concept reaches them at once with the solution worked out beside it, and see the concepts through (see Concepts).",
+		"You write the concept brief with the founders, see that the first concept reaches them the same hour the builders are hired, and see the concepts through (see Concepts).",
 		COFOUNDER,
 	],
 	[
 		"7",
 		"builders' first assignments move the first concept",
-		"Each whose expertise the first concept needs gets a first assignment that moves it, not a foundation document (for a device with an app: its form for the render, what the app can truly show, the screens), and plans for later stages wait for the founders' answer to it.",
+		"The product's owner's first assignment is the first concept; each builder whose part it shows makes that part in its own first run (for a device with an app: the form rendered in use, the app's screens), and the others work out the solution beside it: none gets a foundation document first or waits for another, and plans for later stages wait for the founders' answer to it.",
 		COFOUNDER,
 	],
 	[
@@ -1163,7 +1211,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the first team",
-		"a researcher for the customers and their problem, a market watcher, a strategist who weighs the options, and a Brand owner for the logo and the look",
+		"a researcher for the customers and their problem, a market watcher and a strategist who weighs the options, each with a first assignment due within a day or two, and a Brand owner for the logo and the look",
 		FOUNDING,
 	],
 	["7", "the hello", "Then a short, warm hello", FOUNDING],
@@ -1176,7 +1224,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the brand's first directions",
-		"The Brand owner's first assignment is two to four clearly different directions, each the company's product in its world in that look, in a real picture (rendered or generated) or a short film with the feeling the founders' own words name, for the founders to pick from on a card (the board kit's choose).",
+		"The Brand owner's first assignment is two to four clearly different directions, each the company's product as the first concept shows it, in its world in that look, in a real picture (rendered or generated) or a short film with the feeling the founders' own words name, for the founders to pick from on a card (the board kit's choose).",
 		FOUNDING,
 	],
 	[
@@ -1188,7 +1236,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the product's builders move the first concept",
-		"add the product's builders once it is clear, with first assignments that move the first concept.",
+		"add the product's builders once it is clear, with first assignments that make the first concept within the hour.",
 		FOUNDING,
 	],
 	[
@@ -1945,6 +1993,33 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		["the hand-off once the founding is done", "close Start with the founders", ["cofounder-member-agreed"]],
 		["calling a skill by name", "/its-name", [...WORKERS, "read-only-worker"]],
 		["the Co-Founder's role", "# Your role: Co-Founder", [...EMPLOYEE, ...WORKERS]],
+		[
+			"the four steps before anything is shown",
+			"four steps, none skipped",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"every step a concept app",
+			"Each step is an app of its own",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		["the brief as step 1", "1. Brief:", [...STAFF, ...WORKERS, "private-conversation", "read-only-worker"]],
+		[
+			"a first concept due at once",
+			"reaches them at once",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"the team's first assignments all due in days",
+			"each with a first assignment due within a day or two:",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"first assignments that move the first concept",
+			"first assignments that move the first concept",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		["the first concept for a worker", "1. First concept:", [...WORKERS, "read-only-worker"]],
 		[
 			"the first team in one call once the founding is done",
 			"hire_team",

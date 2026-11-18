@@ -7074,6 +7074,26 @@ worker's run is claimed only by a shared execution host), never before it.
    `company_write` and `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`),
    which stays below the native session's 1 MiB message.
 
+### 2026-11-18 amendment: the first concept really comes first
+
+> The founder, 17 November 2026, to "Show the product first. Within about ten minutes you should see a real render of
+> the headband on a person and real app screens.": "1-4 straight yes"; 18 November: "run a clean product-first test
+> company". That test (Spirekassen) showed the founder a wall of other companies' products after 31 minutes and nothing
+> of his own product. The hire overlay is v20. It goes live with the runtime bundle that carries it, and amends the
+> 2026-11-17 amendment "agents show the product first".
+
+1. **One first concept, with a maker, the same hour.** The product's owner makes one first concept in its first run,
+   from the founders' words and the brief; an owner of the physical form or of the app makes its part in its own first
+   run, and nobody waits for reference pictures, the brand or a finding. It reaches the founders the same hour the
+   product's builders are hired, on a card raised in the run that first makes it viewable, even when more parts are
+   coming. The Co-Founder tells the founders what they will see and when, in hours.
+2. **Then the rest, from their answer.** The look (references, never shown as a concept app), the directions and the
+   build follow the founders' answer. The several-ideas rule is never for the first concept. The Brand owner's
+   directions show the product as the first concept shows it, start once it is shown and come on their own card after
+   it. "Due within a day or two" stays for the research assignments only.
+3. **A look on a machine** is one round that ends in the link, and is reported as a look at the files on a machine,
+   never as a test in the app.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
