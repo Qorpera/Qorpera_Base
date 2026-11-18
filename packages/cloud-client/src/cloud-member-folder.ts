@@ -812,6 +812,7 @@ const CHUNKS_AT_ONCE = 4;
 const PIECES_AT_ONCE = 3;
 const UPLOAD_AHEAD_TRIES = 60;
 const PIECE_DEADLINE_MS = 40_000;
+const FINISH_SETTLE_MS = 120_000;
 const FINISH_OUTCOMES = ["saved", "exists", "denied", "refused", "conflict"] as const;
 
 export interface CloudMemberFolderUploadResult {
@@ -1221,6 +1222,7 @@ export class CloudMemberFolderClient {
 					);
 					uploadId = opened.uploadId;
 					await this.#putPieces(`${base}/${opened.uploadId}`, file, prepared, opened.have, options);
+					signal.throwIfAborted();
 					const answer = await this.#retried(
 						(requestSignal) =>
 							this.#send(
@@ -1229,7 +1231,7 @@ export class CloudMemberFolderClient {
 								JSON.stringify({ schema: "qorpera.member-program-finish/v1", operationKey }),
 								requestSignal,
 							),
-						signal,
+						AbortSignal.timeout(FINISH_SETTLE_MS),
 					);
 					return parseUploadFinish(answer);
 				} catch (error) {

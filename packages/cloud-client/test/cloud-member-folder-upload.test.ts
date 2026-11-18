@@ -37,6 +37,7 @@ function gateway(
 		piece?: (index: number, call: number) => Response | undefined | Promise<Response | undefined>;
 		open?: (call: number) => Response | undefined;
 		finish?: Record<string, unknown>;
+		finishHold?: Promise<unknown>;
 	} = {},
 ) {
 	const requests: { method: string; path: string; body: Uint8Array | null; type: string | null }[] = [];
@@ -81,6 +82,7 @@ function gateway(
 				if (scripted) return scripted;
 				return Response.json({ schema: "qorpera.member-program-piece/v1", piece: index, bytes: bytes?.length });
 			}
+			await options.finishHold;
 			return Response.json(
 				options.finish ?? { schema: "qorpera.member-program-finish/v1", outcome: "saved", version: commitId },
 			);
@@ -88,6 +90,11 @@ function gateway(
 	});
 	const put = () => requests.filter((request) => request.method === "PUT");
 	return { folder, requests, put };
+}
+
+async function until(check: () => boolean) {
+	for (let n = 0; n < 200 && !check(); n++) await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(check()).toBe(true);
 }
 
 const fileOf = (size: number) => {
@@ -243,6 +250,23 @@ describe("a member's program file going up", () => {
 			.catch((caught: unknown) => caught);
 		expect((error as CloudMemberFolderError).status).toBe(408);
 		expect(dead.put().length).toBeLessThan(12);
+	});
+
+	it("lets a finish already sent come back after the member's stop, so the caller knows whether the file was put", async () => {
+		const { blob } = fileOf(10);
+		const prepared = await prepareCloudMemberFolderUpload(blob, new AbortController().signal);
+		const stop = new AbortController();
+		let answer = () => {};
+		const g = gateway({
+			finishHold: new Promise<void>((resolve) => {
+				answer = resolve;
+			}),
+		});
+		const going = g.folder.uploadFile(path, blob, prepared, { operationKey: "web:k", signal: stop.signal });
+		await until(() => g.requests.some((request) => request.path === `/v1/member-program-uploads/${env}/${uploadId}`));
+		stop.abort(new Error("left the page"));
+		answer();
+		expect(await going).toEqual({ outcome: "saved", version: commitId, reason: null });
 	});
 
 	it("refuses a file past 256 MiB before any request, and gives a refusal its status without trying again", async () => {
