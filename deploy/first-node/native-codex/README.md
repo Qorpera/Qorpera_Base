@@ -193,15 +193,18 @@ event, or before the stream as an HTTP 429. Codex 0.155.1 maps only
   `provider_failed`.
 
 The patch adds that code to both places in `codex-api`:
-`sse/responses.rs`' `is_quota_exceeded_error` and `api_bridge.rs`' 429 code
+`sse/responses_error.rs`' `parse_failed_response` (since 0.170.0; it was
+`sse/responses.rs`' `is_quota_exceeded_error` on 0.155.1) and `api_bridge.rs`' 429 code
 list. Both give `ApiError::QuotaExceeded` / `CodexErr::QuotaExceeded`, which is
 not retried and which the app-server reports as `codexErrorInfo:
 usageLimitExceeded` (`willRetry: false`). The host reads that as a usage limit
 (`budget_exhausted`, `usage_limit`): the run stops and is not moved to another
 login. Only a response carrying this exact code takes the new path; every other
 code, `insufficient_quota` included, is handled as before, so Codex logins are
-unchanged. Not covered: Codex 0.155.1 ignores a top-level `error` stream event,
-so a limit sent that way would still be retried. OpenAI documents the code for
+unchanged. Not covered: a top-level `error` stream event. Codex 0.155.1 ignored
+it; 0.170.0 reads it only through `parse_terminal_provider_error`
+(`sse/responses.rs`' `"error"` arm), whose fixed code list does not hold the
+plan-limit code, so a limit sent that way is still ignored and retried. OpenAI documents the code for
 Sign in with ChatGPT; its live response shape cannot be checked before OpenAI
 approves the partner track, so the proof uses a synthetic provider.
 
@@ -308,8 +311,11 @@ real-binary runs on the node02 test VM are recorded in PR #1530 (run `20261112T1
 312 passed, none skipped; and with the run log's parser fixed, `scripts/prove-run-log-full-result.mjs`, run
 `20261112T172355-61541-8f6e1a35`: 13 of 13).
 
-The current [0.155.1 Linux proof](linux-x64-0.155.1-native-proof.json) records
-the pinned 318,891,312-byte release executable, SHA-256
+History (18 Nov 2026): the pinned executable is now the 0.170.0 build `9d6a86ec…`, whose proofs are the run IDs in the
+"0.170.0" section above. The paragraph below describes the 0.155.1 pin.
+
+The [0.155.1 Linux proof](linux-x64-0.155.1-native-proof.json) records
+the then-pinned 318,891,312-byte release executable, SHA-256
 `1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c`, run on the
 node02 test VM from a clean master commit. The five native test files pass 34
 of 34, none skipped, and the three standalone entrypoints (tool boundary,
