@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
+	type ClaimedInvitationDeliveries,
 	deliverProfileInvitationBatch,
 	InvitationEmailSendError,
 	parseProfileInvitationDeliveryJobs,
@@ -147,9 +148,9 @@ Deno.serve(async (request) => {
 	});
 	if (claimError) return jsonResponse({ error: "Invitation delivery claim failed" }, 503);
 
-	let jobs: ProfileInvitationDeliveryJob[];
+	let deliveries: ClaimedInvitationDeliveries;
 	try {
-		jobs = parseProfileInvitationDeliveryJobs(claimed);
+		deliveries = parseProfileInvitationDeliveryJobs(claimed);
 	} catch {
 		return jsonResponse({ error: "Invitation delivery claim was invalid" }, 503);
 	}
@@ -162,10 +163,10 @@ Deno.serve(async (request) => {
 			});
 			if (error) throw new Error("Invitation delivery completion failed");
 		},
-		fail: async (job, message, retryable) => {
+		fail: async (lease, message, retryable) => {
 			const { error } = await client.rpc("qorpera_fail_profile_invitation_delivery", {
-				p_invitation_id: job.invitationId,
-				p_lease_id: job.leaseId,
+				p_invitation_id: lease.invitationId,
+				p_lease_id: lease.leaseId,
 				p_error: message,
 				p_retryable: retryable,
 			});
@@ -173,7 +174,7 @@ Deno.serve(async (request) => {
 		},
 	};
 	const result = await deliverProfileInvitationBatch(
-		jobs,
+		deliveries,
 		config.invitationUrl,
 		new ResendInvitationEmailProvider(config.resendApiKey, config.from),
 		store,

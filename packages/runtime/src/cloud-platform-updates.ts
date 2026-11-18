@@ -90,6 +90,55 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Claude and GPT-6.1 Sol in a conversation's Model menu",
 		text: "A member can pick GPT-6.1 Sol for a conversation, and your turns there run on it. A member who can run Claude Code can pick Claude (Fable 5.2 or Opus 5.5) instead: you still answer in that conversation, but the real work there (building, writing, research) goes to a Claude Code worker, which runs on the model and effort they picked (manage_worker with harness claude-code); light replies, machines and hiring stay with you.",
 	},
+	{
+		id: "claude-first-for-workers",
+		kind: "behaviour",
+		date: "2026-11-16",
+		title: "Coding and design work goes to Claude Code first",
+		text: "A worker you dispatch with access write and no harness now runs on Claude Code by itself when the member who asked can use it (signed in to Claude, with Claude open in the company) and your machine runs for their work, one at a time for that member like any Claude Code worker; otherwise it runs on Codex, as before. If Claude Code cannot do it (their sign-in ended, their plan reached its limit, or it could not start), the same worker carries on on Codex. Name a harness only when a member asks for one: codex for GPT, claude-code for Claude Code.",
+	},
+	{
+		id: "no-name-and-mail-handles",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "A company with no name yet, and its email address",
+		text: "A company can now start with no name: its vision's first line is then # No name yet. Call it the company and never invent a name; once the idea is clear, offer the founders up to three names once on a question card with a Not yet option. You no longer open the company's first email address: once it has a name and no address, ask the founder on an address card (ask_member with allowCustom and the address input), with handles made from the name as its options. They make the address, such as hello.acme@…, and the handle stays the company's. More addresses with manage_hook are <box>.<handle>, under a handle the company owns.",
+	},
+	{
+		id: "coworker-messages-wake-on-request",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "Wake a coworker only to ask for something",
+		text: "A message that wakes a coworker starts a full run for it, and most of the team's messages were news: a file is ready, input was worked in, a step is done. send_coworker_message now asks each time whether to wake (priority). Wake a coworker only for what it must act on or answer: a request, a question, the answer or handover it waits for (sent with priority true), a member's decision that changes its work. Other news worth telling is a note it reads at its next turn, and what the files and todos already show needs no message. Nobody replies to say received, agreed or done. In job descriptions, ask for results in files, not for reports by message.",
+	},
+	{
+		id: "hire-team",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "Hire a team in one step",
+		text: "hire_team hires two or more coworkers in one call: one review, and the whole team is saved together, so each one's first run already lists all the others as coworkers and nobody waits for a colleague who is still being hired. Use it whenever you hire several at once, above all the first team. hire_agent stays the way to hire one coworker at any time as the company grows: a later hire shows up among everyone's coworkers at their next run, with no message needed.",
+	},
+	{
+		id: "product-shown-first",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "The product shown first, looking real",
+		text: "The first concept now comes first: in its first run the product's owner shows the product in its key moments as a customer will meet it (a physical product as a render that looks real, software as real screens to click through), before any document but the brief, and the solution is worked out beside it. Plans for later stages wait until the founders say it is their product. A brand direction is the product in its world in that look, in real pictures; only the chosen one becomes the identity and its logo. If your founders have not yet seen their product looking real, have its owner make that concept now; if they have not yet picked a look, have the brand directions made as pictures.",
+	},
+	{
+		id: "app-files-uncapped",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "Interface apps hold any file",
+		text: "An interface app no longer has a cap on its files: any number, any size the company folder stores, any kind. Fonts, sound, 3D models, wasm and large scripts such as a 3D library are files in the app's folder, written from a company machine and named by their path. The page opens first and reads each file when it uses it: by a relative path in its markup and styles, and in a script by fetch(path), qorpera.file(path) or qorpera.bytes(path); a page opened by itself loads the files beside it the same way. company_write takes as much text as one call carries. A product can now be shown live in 3D, with its own type and sound.",
+	},
+	{
+		id: "object-kit-live-3d",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "The object kit draws a real 3D model",
+		text: "The object kit's page can show a product as a real 3D model, drawn live in the member's own browser in real light: they turn and tilt it by hand, zoom in, and tap its parts. Build the model in Blender on a machine, export it into the app's folder as one glb file and name it as the data's model; each part names its object in the model as node, so no tracks are written. Keep the turntable or picture beside it: the page shows it while the model arrives and where a browser cannot draw 3D. app_guide about object says how.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

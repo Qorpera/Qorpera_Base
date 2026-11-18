@@ -7,71 +7,80 @@
 	width: 100%; max-width: 760px; margin: auto 0; display: flex; flex-direction: column; align-items: center; gap: 18px;
 	padding: 28px 0 32px;
 }
+.founding-page { position: relative; z-index: 2; padding-bottom: 18vh; }
 /* Parts of the page that are rebuilt on their own take no box of their own. */
 .founding-slot { display: contents; }
 /* The panels, the Start bar and its lines are shown and hidden in place. */
 .founding [hidden] { display: none !important; }
 
 .founding-head { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; width: 100%; }
+.founding-starting { position: relative; z-index: 2; padding-bottom: 18vh; }
+@keyframes founding-start-in { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+.founding-start-head { gap: 0; animation: founding-start-in 0.7s cubic-bezier(0.3, 1.25, 0.5, 1) 0.15s both; }
+.founding-start-name {
+	margin: 0; max-width: 100%; color: var(--text); font: 750 clamp(40px, 5vw, 72px) / 1 var(--font-display); letter-spacing: -0.04em;
+	overflow-wrap: anywhere; text-wrap: balance;
+}
+.founding-start-idea {
+	margin: 18px 0 0; max-width: 32em; color: var(--text-muted); font-size: 21px; line-height: 1.4; text-wrap: balance;
+	display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.founding-start-wait { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 40px; }
+.founding-start-wait p { margin: 0; color: var(--text-soft); font-size: 15px; }
+@keyframes founding-start-sweep { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+.founding-start-bar { position: relative; width: 220px; height: 4px; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.founding-start-bar i {
+	position: absolute; inset: 0; width: 40%; border-radius: 4px; background: #fcb51b;
+	animation: founding-start-sweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.founding-starting .founding-sub { margin-top: 28px; }
+.founding-start-founders { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 26px; }
+.founding-start-founders p { margin: 0; color: var(--text-muted); font-size: 15px; }
+.founding-start-faces { display: inline-flex; }
+.founding-start-faces .person-avatar { width: 40px; height: 40px; font-size: 13px; box-shadow: 0 0 0 3px var(--bg); }
+.founding-start-faces .person-avatar + .person-avatar { margin-left: -10px; }
+.founding-start-open { margin-top: 28px; animation: founding-start-in 0.5s ease 3s both; }
+@media (prefers-reduced-motion: reduce) {
+	.founding-start-head, .founding-start-open { animation: none; }
+	.founding-start-bar i { animation: none; width: 100%; opacity: 0.5; }
+}
 .founding-name {
 	width: min(640px, 100%); margin: 0; padding: 2px 6px; border: 0; border-radius: 12px; background: transparent;
 	color: var(--text); text-align: center; font: 750 clamp(32px, 4vw, 46px) / 1.06 var(--font-display); letter-spacing: -0.035em;
 	text-overflow: ellipsis;
 }
-/* Your company's name is a field: a label over it, an edge round it and a pencil in it, so it never reads as the
- * page's title (Jonas, 9 November 2026). */
-.founding-name-field { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: min(460px, 100%); }
-.founding-name-label { display: block; color: var(--text-muted); font: 600 13px / 1.2 var(--font-sans); }
-.founding-name-box {
-	position: relative; display: flex; align-items: center; border: 1px solid var(--border-strong); border-radius: 16px;
-	background: var(--overlay); transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
-}
-.founding-name-box:hover { border-color: var(--text-soft); }
-.founding-name-box:focus-within { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
-.founding-name-box .icon { position: absolute; right: 16px; width: 18px; height: 18px; color: var(--text-soft); pointer-events: none; }
-.founding-name-box:focus-within .icon { color: var(--text-muted); }
-input.founding-name {
-	width: 100%; min-height: 0; padding: 12px 46px; border: 0; border-radius: 16px; background: transparent;
-	font: 700 clamp(22px, 2.6vw, 28px) / 1.2 var(--font-display); letter-spacing: -0.02em;
-}
-input.founding-name:focus-visible { outline: none; }
+.founding-name.company-unnamed { color: var(--text-muted); font-style: italic; font-weight: 600; }
 .founding-sub { margin: 0; max-width: 34em; color: var(--text-muted); font-size: 17px; line-height: 1.45; text-wrap: balance; }
 .founding-invitation { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 
 /* The box: the idea and Invite friends. */
-.founding-ask { position: relative; width: 100%; max-width: 620px; margin-top: 50px; }
-.founding-crown { position: absolute; left: 18px; top: -40px; z-index: 2; width: 52px; pointer-events: none; }
-.founding-heads { position: absolute; right: 22px; top: -24px; z-index: 2; display: flex; align-items: flex-end; gap: 6px; }
+.founding-ask { position: relative; width: 100%; max-width: 680px; margin-top: 18px; }
+.founding-ask .hero-box { margin-top: 0; }
+.founding-heads { position: absolute; right: 26px; top: -24px; z-index: 2; display: flex; align-items: flex-end; gap: 6px; }
 .founding-heads .person-avatar {
 	width: 40px; height: 40px; font-size: 13px; box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color, var(--border-strong));
 	animation: founding-peek var(--motion-spring) var(--ease-spring) both;
 }
 .founding-heads .founding-head-invited { width: 34px; height: 34px; font-size: 11px; opacity: 0.5; box-shadow: 0 0 0 2px var(--overlay), 0 0 0 3px var(--border-strong); }
 @keyframes founding-peek { from { opacity: 0; transform: translateY(14px); } }
-.founding-box {
-	position: relative; display: flex; flex-direction: column; gap: 10px; padding: 22px 8px 8px; border-radius: 26px;
-	background: var(--overlay); text-align: left;
-	box-shadow: 0 0 0 1px var(--border-strong), 0 24px 48px -28px rgba(10, 30, 80, 0.35);
-	transition: box-shadow var(--motion-fast) ease;
-}
-.founding-box:focus-within { box-shadow: 0 0 0 2px var(--text), 0 24px 48px -28px rgba(10, 30, 80, 0.45); }
 .founding-vision {
-	display: block; width: 100%; margin: 0; padding: 0 12px; border: 0; outline: none; resize: none; overflow: hidden;
-	background: transparent; color: var(--text); font: 18px / 28px var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
+	display: block; width: 100%; margin: 0; padding: 0 16px; border: 0; outline: none; resize: none; overflow: hidden;
+	background: transparent; color: var(--text); font: 20px / 30px var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
 }
 .founding-vision::placeholder, .founding-name::placeholder { color: var(--text-soft); }
-textarea.founding-vision { min-height: 28px; }
+.founding-vision-field { min-height: 68px; }
+textarea.founding-vision { min-height: 30px; }
 /* The box itself shows focus; the field inside it draws no edge of its own (Jonas, 9 November 2026). */
 textarea.founding-vision:focus-visible { outline: none; }
-.founding-box-foot { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+.founding-box-foot { display: flex; align-items: center; gap: 10px; }
 .founding-invite {
-	display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 4px;
+	display: inline-flex; align-items: center; gap: 9px; height: 48px; padding: 0 16px 0 6px;
 	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: transparent; color: var(--text);
-	font: 600 14px var(--font-sans); cursor: pointer;
+	font: 600 15px var(--font-sans); cursor: pointer;
 }
 .founding-invite:hover, .founding-invite[aria-expanded="true"] { background: var(--hover); }
 .founding-invite-faces { display: inline-flex; }
-.founding-invite-faces .person-avatar { width: 30px; height: 30px; font-size: 11px; box-shadow: 0 0 0 2px var(--overlay); }
+.founding-invite-faces .person-avatar { width: 34px; height: 34px; font-size: 12px; box-shadow: 0 0 0 2px var(--overlay); }
 .founding-invite-faces .person-avatar + .person-avatar { margin-left: -12px; }
 
 /* Live presence (founding-presence.ts): the people here now have a ring in their colour over the box, someone writing
@@ -95,8 +104,8 @@ textarea.founding-vision:focus-visible { outline: none; }
 .founding-vision-field { position: relative; }
 /* A copy of the idea box's words laid exactly over it: only the carets and the tint show. */
 .founding-carets {
-	position: absolute; inset: 0; padding: 0 12px; pointer-events: none; color: transparent;
-	font: 18px / 28px var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
+	position: absolute; inset: 0; padding: 0 16px; pointer-events: none; color: transparent;
+	font: 20px / 30px var(--font-sans); overflow-wrap: anywhere; white-space: pre-wrap;
 }
 .founding-them {
 	color: inherit; border-radius: 5px; background: color-mix(in srgb, var(--line-color) 18%, transparent);
@@ -187,7 +196,9 @@ textarea.founding-vision:focus-visible { outline: none; }
 
 @media (max-width: 760px) {
 	.founding { padding: 4px 16px 32px; }
-	.founding-ask { margin-top: 46px; }
+	.founding-page { padding-bottom: 190px; }
+	.founding-ask { margin-top: 34px; }
+	.founding-vision, .founding-carets { font-size: 18px; }
 	.founding-heads { right: 14px; }
 	.founding-start { width: 100%; }
 	.founding-actions .founding-cancel { order: 1; width: 100%; }

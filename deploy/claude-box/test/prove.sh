@@ -58,7 +58,7 @@ if [[ ! -f $P/tls/ca.pem ]]; then
 		-extfile $P/tls/ext -out $P/tls/server.pem 2>/dev/null
 	chmod 0444 $P/tls/ca.pem $P/tls/server.pem $P/tls/server.key; chmod 0400 $P/tls/ca.key
 fi
-for k in shell files attack attack-next recon end bench2 alias stop; do python3 $P/test/scen.py $k $P/scen/$k.json /company >/dev/null; done
+for k in shell files attack attack-next recon end bench2 alias stop open open-monitor open-agent open-worktree open-rest; do python3 $P/test/scen.py $k $P/scen/$k.json /company >/dev/null; done
 python3 $P/test/scen.py second $P/scen/second.json /company $B/run-first >/dev/null
 chmod 0444 $P/scen/*.json
 

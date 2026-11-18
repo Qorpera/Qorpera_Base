@@ -485,6 +485,48 @@ describe("2D studio playback in the shell", () => {
 		advance(60_000);
 		expect(frames.size).toBe(1);
 	});
+	it("does a working figure's frame at most 60 times a second on a faster screen, and every one of them at 90 Hz", async () => {
+		const host = mount("Working", "fast-screen");
+		await settle();
+		show([host]);
+		advance(1000 / 60);
+		const canvas = host.querySelector("canvas")!;
+		const drawn = (step: number) => {
+			canvas.dataset.frame = "unpainted";
+			advance(step);
+			return canvas.dataset.frame !== "unpainted";
+		};
+		expect(drawn(6)).toBe(false);
+		expect(drawn(6)).toBe(false);
+		expect(frames.size).toBe(1);
+		expect(drawn(6)).toBe(true);
+		const framesPerSecond = (hz: number) => {
+			advance(1000);
+			let count = 0;
+			for (let refresh = 0; refresh < hz; refresh++) if (drawn(1000 / hz)) count++;
+			return count;
+		};
+		expect(framesPerSecond(60)).toBe(60);
+		for (const hz of [75, 90, 100, 120, 144, 165, 240]) {
+			const count = framesPerSecond(hz);
+			expect(count).toBeGreaterThanOrEqual(59);
+			expect(count).toBeLessThanOrEqual(62);
+		}
+	});
+	for (const start of [1, 8, 15.5, 16.5])
+		it(`draws every refresh of a screen a little faster than 60 Hz when the first comes ${start} ms after the figure starts`, async () => {
+			const host = mount("Working", `drifting-screen-${start}`);
+			await settle();
+			show([host]);
+			const canvas = host.querySelector("canvas")!;
+			let missed = 0;
+			for (const [index, step] of [start, ...Array<number>(600).fill(16.65)].entries()) {
+				canvas.dataset.frame = "unpainted";
+				advance(step);
+				if (index > 0 && canvas.dataset.frame === "unpainted") missed++;
+			}
+			expect(missed).toBe(0);
+		});
 	it("advances one shared agent clock once per frame and preserves it when a view refreshes", async () => {
 		const a = mount(),
 			b = mount();

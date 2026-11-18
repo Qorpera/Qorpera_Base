@@ -6,16 +6,13 @@
  * (Jonas, 10 November 2026: one Qorpera tool per capability), so nothing here names Codex's own tool.
  */
 
-import { APP_VIDEO_FILE_MAX_BYTES } from "@qorpera/cloud-client/interface-apps";
-
 /** What the side thread's model is told: it makes one picture and does nothing else. */
 export const CLOUD_PICTURE_MAKER_RULE =
 	"You make pictures and nothing else. Each message is the description of one picture. Call image_gen.imagegen exactly once, with that description as its prompt, word for word, and no other argument. Never answer in words, never ask a question and never use another tool.";
 
 /** What one picture's description may be: a few paragraphs of plain text. */
 export const MAX_CLOUD_PICTURE_PROMPT_BYTES = 4 * 1024;
-/** Every picture is held to the bound of one picture of an interface app. */
-export const MAX_CLOUD_PICTURE_BYTES = APP_VIDEO_FILE_MAX_BYTES;
+export const MAX_CLOUD_PICTURE_BYTES = 12 * 1024 * 1024;
 /** How long a call waits for its picture: a generation takes up to about two minutes. */
 export const CLOUD_PICTURE_MS = 4 * 60_000;
 

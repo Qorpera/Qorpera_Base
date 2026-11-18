@@ -55,8 +55,8 @@ begin
 	select count(*) into v_locks from pg_locks where locktype = 'advisory' and pid = pg_backend_pid() and granted;
 	if v_locks = 0 then raise exception 'A folder-v2 creation holds the company''s advisory lock'; end if;
 	v_box := public.qorpera_create_company_mailbox('70400000-0000-4000-8000-000000000010', '70400000-0000-4000-8000-000000000020',
-		'support', 'Customer support.');
-	if v_box ->> 'email' is distinct from 'support@inbox.example.test' then
+		'support.base', 'Customer support.');
+	if v_box ->> 'email' is distinct from 'support.base@inbox.example.test' then
 		raise exception 'An owner creates a folder company''s mailbox: %', v_box; end if;
 	perform set_config('qorpera_test.box', v_box ->> 'id', true);
 	if pg_temp.hook_marks('hook', (v_hook ->> 'id')::uuid) <> 1 or pg_temp.hook_marks('mailbox', (v_box ->> 'id')::uuid) <> 1
@@ -72,7 +72,7 @@ begin
 		'70400000-0000-4000-8000-000000000020', 'stripe-payments', 'Again.')$q$) <> '23505' then
 		raise exception 'A live name is taken'; end if;
 	if pg_temp.code($q$select public.qorpera_create_company_mailbox('70400000-0000-4000-8000-000000000010',
-		'70400000-0000-4000-8000-000000000020', 'support', 'Again.')$q$) <> '23505' then
+		'70400000-0000-4000-8000-000000000020', 'support.base', 'Again.')$q$) <> '23505' then
 		raise exception 'A live address is taken'; end if;
 end $$;
 
@@ -119,8 +119,8 @@ begin
 		->> 'finished')::boolean then raise exception 'The hook''s claim finishes by kind'; end if;
 	-- The mailbox's claim: its address, its own prefix.
 	c := pg_temp.claim();
-	if c ->> 'subjectKind' <> 'mailbox' or c ->> 'path' <> 'QorperaOS/connections/mailbox-support.md'
-		or c -> 'settings' ->> 'address' <> 'support@inbox.example.test' or c ->> 'operationKey' not like 'mailbox-file:%'
+	if c ->> 'subjectKind' <> 'mailbox' or c ->> 'path' <> 'QorperaOS/connections/mailbox-support-base.md'
+		or c -> 'settings' ->> 'address' <> 'support.base@inbox.example.test' or c ->> 'operationKey' not like 'mailbox-file:%'
 		or (c -> 'settings') ? 'proof' then
 		raise exception 'The mailbox''s claim: %', c; end if;
 	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', c ->> 'path', 'mailbox', c -> 'settings',
@@ -245,10 +245,10 @@ begin
 	update public.qorpera_mail_settings set domain = 'mail.example.test';
 	if pg_temp.hook_marks('mailbox', v_box) <> 1 then raise exception 'A new mail domain marks the mailbox''s file'; end if;
 	c := pg_temp.claim();
-	if c ->> 'subjectKind' <> 'mailbox' or c -> 'settings' ->> 'address' <> 'support@mail.example.test'
-		or c -> 'current' ->> 'path' <> 'QorperaOS/connections/mailbox-support.md' then
+	if c ->> 'subjectKind' <> 'mailbox' or c -> 'settings' ->> 'address' <> 'support.base@mail.example.test'
+		or c -> 'current' ->> 'path' <> 'QorperaOS/connections/mailbox-support-base.md' then
 		raise exception 'The mailbox''s claim after a new domain: %', c; end if;
-	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', 'QorperaOS/connections/mailbox-support.md', 'mailbox',
+	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', 'QorperaOS/connections/mailbox-support-base.md', 'mailbox',
 		c -> 'settings', 'Customer support.', (c -> 'current' ->> 'version')::uuid), 1, 'saved');
 end $$;
 

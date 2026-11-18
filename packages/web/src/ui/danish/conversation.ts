@@ -212,6 +212,12 @@ export const CONVERSATION: Record<string, string> = {
 		"Din seneste kørsel stoppede, fordi et login nåede sin forbrugsgrænse. Fortsæt venligst det arbejde.",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
+	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.":
+		"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT turned this run away because too many requests came at once. The login is fine.":
+		"ChatGPT afviste kørslen, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.":
+		"ChatGPT har travlt med for mange forespørgsler på én gang. Arbejdet venter et par minutter og prøver så igen af sig selv. Loginnet er i orden.",
 	"The run lost its connection while it was working. This is usually brief.":
 		"Kørslen mistede forbindelsen, mens den arbejdede. Det går som regel hurtigt over.",
 	"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.":
@@ -248,13 +254,20 @@ export const CONVERSATION: Record<string, string> = {
 	Low: "Lav",
 	Medium: "Mellem",
 	High: "Høj",
-	Speed: "Hastighed",
+	"Extra high": "Ekstra høj",
+	Max: "Maks",
+	Models: "Modeller",
+	"Choose model": "Vælg model",
+	"Choose model ({name})": "Vælg model ({name})",
+	"Switch to Claude": "Skift til Claude",
+	"Switch to GPT": "Skift til GPT",
+	"GPT answers light messages. Claude Code does the work, on your Claude plan.":
+		"GPT svarer på lette beskeder. Claude Code gør arbejdet, på dit Claude-abonnement.",
 	Fast: "Hurtig",
 	"{model}, Fast": "{model}, hurtig",
 	"{speed} speed": "{speed} hastighed",
 	"{speed} speed, uses more of your plan": "{speed} hastighed, bruger mere af dit abonnement",
 	"Faster replies": "Hurtigere svar",
-	"Only this conversation. Applies from your next message.": "Kun denne samtale. Gælder fra din næste besked.",
 	"Each agent's own": "Hver agents egen",
 	"Every agent in this group chat. Applies from your next message.":
 		"Alle agenter i denne gruppechat. Gælder fra din næste besked.",
@@ -282,6 +295,7 @@ export const CONVERSATION: Record<string, string> = {
 	"This app's app.toml has problems: {problems}": "Appens app.toml har fejl: {problems}",
 	"This can't be opened right now.": "Det kan ikke åbnes lige nu.",
 	"This page can't be shown here.": "Siden kan ikke vises her.",
+	"Opening… {percent}%": "Åbner… {percent}%",
 	"This page can't be shown live.": "Siden kan ikke vises direkte.",
 	"App: {name}": "App: {name}",
 	"This app reloaded itself. Press Reload to start it again.":
@@ -375,14 +389,9 @@ export const CONVERSATION: Record<string, string> = {
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
 	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
-	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
-		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
 	"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.":
 		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → AI-abonnementer.",
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
-	"Or use another of your logins now.": "Eller brug et andet af dine logins nu.",
-	"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.":
-		"Samtalens modelkonto har nået sin forbrugsgrænse. En besked, du sender nu, venter og fortsætter af sig selv, når grænsen nulstilles.",
 	"Your login {account} reached its usage limit. Work will go on by itself when it resets (about {time}).":
 		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
 	"Your login reached its usage limit. Work will go on by itself when it resets (about {time}).":
@@ -399,6 +408,24 @@ export const CONVERSATION: Record<string, string> = {
 	"{count} h": "{count} t.",
 	"{count} days": "{count} dage",
 	"Use {account}": "Brug {account}",
+	"Use {account} for all {count} chats waiting on this login":
+		"Brug {account} til alle {count} chats, der venter på dette login",
+	"This chat stays on its login: the work waiting in it can't move to {account}.":
+		"Denne chat bliver på sit login: det arbejde, der venter i den, kan ikke flyttes til {account}.",
+	"Out of usage until {time}": "Forbruget er brugt op indtil {time}",
+	"Out of usage": "Forbruget er brugt op",
+	"Keep going with {account}": "Fortsæt med {account}",
+	"All {count} chats": "Alle {count} chats",
+	"Just this one": "Kun denne",
+	"Or use {accounts}": "Eller brug {accounts}",
+	"A message you send now goes on when it resets.": "En besked, du sender nu, fortsætter, når grænsen nulstilles.",
+	"Sending resumes when it resets.": "Du kan sende igen, når grænsen nulstilles.",
+	"{count} chats moved to {account}": "{count} chats flyttet til {account}",
+	"{count} chat moved to {account}": "{count} chat flyttet til {account}",
+	"{count} other chats moved to {account}": "{count} andre chats flyttet til {account}",
+	"{count} other chat moved to {account}": "{count} anden chat flyttet til {account}",
+	"No chats were waiting on that login any more.": "Ingen chats ventede længere på det login.",
+	"The chats could not be moved. Try again.": "Chattene kunne ikke flyttes. Prøv igen.",
 	"Model account {number}": "Modelkonto {number}",
 
 	// The Login page of the composer's menu (app/views/composer-logins.ts)
@@ -670,4 +697,13 @@ export const CONVERSATION: Record<string, string> = {
 	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
 	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
 	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
+	"The company's part of the address": "Virksomhedens del af adressen",
+	"Use this address": "Brug denne adresse",
+	"The address can be chosen in the chat.": "Adressen kan vælges i chatten.",
+	"The address could not be made. Try again.": "Adressen kunne ikke oprettes. Prøv igen.",
+	"Only founders and admins can choose the address": "Kun stiftere og administratorer kan vælge adressen",
+	Free: "Ledig",
+	"Already yours": "Allerede jeres",
+	"That one belongs to another company": "Den tilhører en anden virksomhed",
+	"Use a–z, 0–9 and hyphens": "Brug a–z, 0–9 og bindestreger",
 };

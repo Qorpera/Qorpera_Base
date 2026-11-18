@@ -155,10 +155,12 @@ interface RoutePolicy {
 	forwardsOrigin?: boolean;
 	/** Only a member's own unexpired token of this project goes on (memberTokenShaped): the route asks no auth service. */
 	memberToken?: boolean;
+	passesBodyThrough?: boolean;
 }
 
 function route(path: string): RoutePolicy | undefined {
-	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"], unavailable: FOLDER_UNAVAILABLE };
+	if (FOLDER_OBJECT.test(path))
+		return { method: "GET", headers: ["authorization"], unavailable: FOLDER_UNAVAILABLE, passesBodyThrough: true };
 	if (FOLDER_COMMIT.test(path))
 		return {
 			method: "POST",
@@ -290,6 +292,87 @@ async function bytes(
 	}
 }
 
+interface UpstreamWatch {
+	readonly signal: AbortSignal;
+	wait(): void;
+	rest(): void;
+}
+
+function watchUpstream(caller: AbortSignal, quietMs: number): UpstreamWatch {
+	const upstream = new AbortController();
+	const leave = () => upstream.abort();
+	let quiet: ReturnType<typeof setTimeout> | undefined;
+	if (caller.aborted) leave();
+	else caller.addEventListener("abort", leave, { once: true });
+	upstream.signal.addEventListener("abort", () => caller.removeEventListener("abort", leave), { once: true });
+	return {
+		signal: upstream.signal,
+		wait() {
+			clearTimeout(quiet);
+			quiet = setTimeout(leave, quietMs);
+		},
+		rest() {
+			clearTimeout(quiet);
+		},
+	};
+}
+
+function passedThrough(
+	body: ReadableStream<Uint8Array>,
+	limit: number,
+	watch: UpstreamWatch,
+): ReadableStream<Uint8Array> {
+	const reader = body.getReader();
+	let passed = 0;
+	let over = false;
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			const stop = (error: unknown) => {
+				if (over) return;
+				over = true;
+				watch.rest();
+				void reader.cancel().catch(() => {});
+				controller.error(error);
+			};
+			watch.signal.addEventListener("abort", () => stop(watch.signal.reason), { once: true });
+			if (watch.signal.aborted) stop(watch.signal.reason);
+		},
+		async pull(controller) {
+			if (over) return;
+			watch.wait();
+			let failure: unknown;
+			try {
+				const chunk = await reader.read();
+				if (over) return;
+				watch.rest();
+				if (chunk.done) {
+					over = true;
+					controller.close();
+					return;
+				}
+				passed += chunk.value.byteLength;
+				if (passed <= limit) {
+					controller.enqueue(chunk.value);
+					return;
+				}
+				failure = new BodyTooLarge();
+			} catch (error) {
+				failure = error;
+			}
+			if (over) return;
+			over = true;
+			watch.rest();
+			void reader.cancel().catch(() => {});
+			controller.error(failure);
+		},
+		cancel(reason) {
+			over = true;
+			watch.rest();
+			return reader.cancel(reason).catch(() => {});
+		},
+	});
+}
+
 /** Public transport for the governed member routes only. The destination verifies the
  * original member JWT and current path authority. There are no service credentials,
  * public runtime routes, fallback destinations, or replayed writes. */
@@ -409,6 +492,7 @@ export async function forwardMemberCompanyGateway(
 			"Member gateway request could not be read",
 		);
 	}
+	const watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout) : undefined;
 	try {
 		const forwarded = new Headers();
 		for (const name of policy.headers) {
@@ -417,25 +501,37 @@ export async function forwardMemberCompanyGateway(
 		}
 		if (body) forwarded.set("content-length", String(body.byteLength));
 		if (policy.forwardsOrigin && origin) forwarded.set("origin", origin);
+		watch?.wait();
 		const response = await (options.fetchImplementation ?? fetch)(new URL(path, upstream), {
 			method: request.method,
 			headers: forwarded,
 			body,
-			signal,
+			signal: watch?.signal ?? signal,
 			redirect: "error",
 			credentials: "omit",
 		});
-		const content = await bytes(response, MAX_BYTES, signal);
+		watch?.rest();
+		const empty = [204, 205, 304].includes(response.status);
+		const answered = new Headers(headers);
 		for (const name of ["content-type", "x-qorpera-access-mode", "etag"]) {
 			const value = response.headers.get(name);
-			if (value !== null) headers.set(name, value);
+			if (value !== null) answered.set(name, value);
 		}
-		headers.set("access-control-expose-headers", "x-qorpera-access-mode, etag");
-		return new Response([204, 205, 304].includes(response.status) ? null : content, {
-			status: response.status,
-			headers,
-		});
+		answered.set("access-control-expose-headers", "x-qorpera-access-mode, etag");
+		if (watch && response.body && !empty) {
+			if (Number(response.headers.get("content-length") ?? "0") > MAX_BYTES) {
+				void response.body.cancel().catch(() => {});
+				return fail(502, policy.unavailable);
+			}
+			return new Response(passedThrough(response.body, MAX_BYTES, watch), {
+				status: response.status,
+				headers: answered,
+			});
+		}
+		const content = await bytes(response, MAX_BYTES, signal);
+		return new Response(empty ? null : content, { status: response.status, headers: answered });
 	} catch (error) {
+		watch?.rest();
 		return fail(error instanceof BodyTooLarge ? 502 : 503, policy.unavailable);
 	}
 }

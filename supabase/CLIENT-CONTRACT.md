@@ -225,6 +225,32 @@ opens it. Clients never call it; anything but a live, unredeemed pass answers nu
   usage last. `qorpera_list_member_native_execution_connections` reports each
   login's `recent_turns` (`{refused, completed}`), so a client orders its own list
   the same way.
+- `qorpera_count_member_sessions_on_account(p_profile_id, p_connection_id)` and
+  `qorpera_choose_member_sessions_account(p_profile_id, p_from_connection_id,
+  p_connection_id)` (20260930785000, one click for every chat on a login; Jonas,
+  16 Nov 2026): count answers how many of the caller's own open conversations
+  that they can read pay with that login of theirs now (0 for a login that is not
+  theirs), naming a conversation's login as select does: the login of their
+  oldest turn waiting there at a usage limit, else the one saved for it, and none
+  once the member disconnected it (select answers `null` there, and the
+  conversation waits for the member's own pick). Choose moves each of those that
+  pay with `from` to `p_connection_id` by choose's own rules, from the same
+  internal step as choose (one of the caller's own logins that could pay now,
+  whatever its usage; the conversation's waiting turns go with it, never onto or
+  off a ChatGPT plan, never from a login that may work while the member is away
+  onto one that may not, never one the materializer holds), and answers how many
+  conversations now pay with another login: one whose waiting turn could not go
+  with it still pays with `from` and is not counted. 0 when none is left on
+  `from`, or when `from` is `p_connection_id`. It reads the logins once, takes
+  the conversations' rows in id order and decides each again under its lock, so
+  a pick made meanwhile in another tab stands and two such calls never move a
+  conversation twice. 22023 "This login cannot pay for your conversation" for any
+  other login (checked before anything moves, and again under the locks), 42501
+  without a signed-in member. Other members' conversations, closed ones and
+  agents' routine runs are never touched. Nothing moves without the member's
+  click: the web offers it under a conversation whose own login is at its limit
+  or cannot pay, once another of their conversations waits on the same login,
+  and asks for the count once for each login the conversation is stuck on.
 - At a usage limit (20260930575000) the conversation still keeps its login, and a
   client may send on it: the message waits queued and goes on by itself, on the
   same login, once the limit resets or a usage reading shows room. The usage-limit notice (`provider_usage_limit`) also
@@ -548,10 +574,11 @@ the RPCs stay for the runtime's gate.
 - `qorpera_upsert_scoped_compute_identity`
 
 
-### Accounts, profiles, membership (19)
+### Accounts, profiles, membership (22)
 
 - `qorpera_accept_profile_invitation`
 - `qorpera_accept_profile_invitations`
+- `qorpera_add_pending_spectators`
 - `qorpera_can_authorize_profile`
 - `qorpera_can_read_profile`
 - `qorpera_can_write_profile`
@@ -559,9 +586,11 @@ the RPCs stay for the runtime's gate.
 - `qorpera_decline_profile_invitation`
 - `qorpera_delete_hosted_profile`
 - `qorpera_get_account_entitlement`
+- `qorpera_invite_pending_spectators`
 - `qorpera_invite_profile_member`
 - `qorpera_leave_hosted_profile`
 - `qorpera_list_hosted_profiles`
+- `qorpera_list_pending_spectators`
 - `qorpera_list_profile_invitations`
 - `qorpera_member_role`
 - `qorpera_profile_team_info`
@@ -585,7 +614,11 @@ charged before it (20260930010000).
 - `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
   a table with the caller's seat; repeat-safe per creation id. Needs a
   confirmed email. A creation id that already belongs to a company that is not
-  a table is refused (`23505`).
+  a table is refused (`23505`). Since 20260930796000 the name may be null,
+  empty or nothing but spaces: the company then opens with no name yet, its
+  name the exact text `No name yet` (in its profile, environment and vision),
+  and a client shows it as unnamed wherever it compares the name to that text.
+  It becomes named when its vision's first line gets another name.
 - `qorpera_read_company_founding(p_profile_id)` → `qorpera.company-founding/v1`:
   `companyName`, `vision` (the description draft), `phase` (`open`,
   `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
@@ -620,7 +653,9 @@ charged before it (20260930010000).
   `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
   A stale revision is `PT412`. A name is refused (`22023`) as Open and the
   seed refuse it: more than 120 characters, a control character or line
-  separator, or nothing but spaces (20260930039000). Ready needs the caller's
+  separator, or nothing but spaces (20260930039000); since 20260930796000 a
+  name of nothing but spaces (or null) is taken as `No name yet` instead.
+  Ready needs the caller's
   own usable ChatGPT
   account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
   for that revision: a change to the name, description, a role or who sits at
@@ -857,6 +892,23 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
   `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
   0A000 before the mail domain is set.
+- Company mail handles (20260930796000): a new mailbox's local part is `<box>.<handle>` (one dot), where the box
+  is 1–39 lowercase letters, digits, hyphens and underscores (letter or digit at both ends) and the handle is the
+  company's part of the address, 2–24 lowercase letters, digits and inner hyphens. Anything else is refused (22023
+  "A new address is a name, a dot and the company's handle, like hello.acme"); the reserved names and names that read
+  as Qorpera are refused for the box and the handle each (22023, the messages above). A handle belongs to one company
+  across the platform and stays its own while the company exists, also when its mailboxes are removed. An owner's or
+  admin's `qorpera_create_company_mailbox` with a free handle claims it for the company, up to 3 handles a company
+  (54000 "A company has at most 3 email handles"; removing mailboxes frees none); a handle another company
+  owns, or that another company's live mailbox ends in or equals, is 23505 "This address is taken". An agent's
+  `manage_hook` mailbox uses only a handle the company already owns (42501 "Only a member can choose the company's
+  email handle"). Mailboxes made before this (no dot, such as `brooks`) keep working; each such address that is a
+  valid handle became its company's handle.
+- `qorpera_company_mail_handle_status(p_profile_id, p_handle)` → `ours` (the company owns it), `free`, `taken` or
+  `invalid` (not a handle, reserved, or reads as Qorpera); read-only, for a live check while a member types.
+  `qorpera_company_mail_handles(p_profile_id)` → `{domain, handles}`: the mail domain (null before it is set) and the
+  company's handles, oldest first. Any member of the company (42501 "Company mail addresses are unavailable"
+  otherwise).
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
@@ -874,7 +926,9 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's, the sending member's or the company's name or the mailbox
-  reads as Qorpera.
+  reads as Qorpera. Since 20260930796000 an agent's email goes out from "<agent> at <company's short name>" (as a
+  member's, below), or "<agent>" while the company has no name yet, and its AI line names the company's whole name,
+  or "a new company" while it has none.
 - Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
   `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
   served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
@@ -908,7 +962,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `cancelled`) and sends nothing twice. `from` is one of the company's mailbox addresses, or its name alone; `to` is
   1 to 10 plain addresses and `cc` up to 9, 10 together; `subject` is one line of 1 to 200 characters; `text` is 1
   to 20,000 characters of plain text, sent as written. The email goes out from "<member> at <company>" with no AI
-  line, begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
+  line (since 20260930796000 the company's short name: without a trailing legal ending such as ApS or Inc, cut at
+  a word to at most 40 characters with "…"; just "<member>" while the company has no name yet), begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
   unavailable"), a viewer, a mailbox that is not the company's, the company's own mailboxes as recipients, or a
   name that reads as Qorpera; 22023 for a request of another shape; 0A000 while the mailbox is paused or sending is
   switched off; 54000 past the company's hourly or daily limit on recipients, with when the email can go. Show the
@@ -2407,7 +2462,7 @@ renders only these surfaces and never agent-authored HTML:
 
 | `surface` | `payload` (closed object) | Member outcomes | `answer` |
 | --- | --- | --- | --- |
-| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?` | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
+| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?`, `input?` (20260930796000: exactly `{kind: "mail_address"}`, only with `allowCustom: true`; an address card whose options are handle suggestions and whose answer is the created address as a custom value) | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
 | `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81), `repository?` (20260930693000: only with `connectorId: environment`, owner/name in lower case) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer. A coding value (`connectorId: environment`, a name `qorpera_coding_environment_name_allowed` takes) is an environment variable coding sessions get: with `repository`, an owner or admin saves it for the company and gives it to that repository (`qorpera_grant_coding_environment_secret`); otherwise it is the member's own, which reaches their coding sessions in every repository |
 | `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
 | `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |
@@ -2868,3 +2923,11 @@ above.
     (`qorpera_answer_action_review`, section 2). Older approval cards without
     `reviewId` keep the v75 path.
 
+- Pending spectators (20260930794000): people a founder picks, as a company is made, to follow it as viewers.
+  `qorpera_add_pending_spectators(profile, emails)` (owner or admin, at the founding table or later; a company keeps
+  at most 50 to invite, else 54000; a malformed or missing email is refused, 23514) keeps them on the company and
+  answers the whole list; `qorpera_list_pending_spectators(profile)` answers it to owners and admins, as invitations
+  are (everyone else gets an empty list); `qorpera_invite_pending_spectators(profile)`
+  (owner or admin) does nothing while the founding table is open, and after Start invites each as a viewer through
+  `qorpera_invite_profile_member`, an email the company already has or has invited counting as done, and takes each
+  off the list. It answers the emails it invited. Any other refusal rolls the whole call back and keeps the list.

@@ -12,7 +12,7 @@ import { tellAgent } from "../src/app/tell-agent.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { pageNoteCard } from "../src/app/views/page-note.ts";
 import { renderRail } from "../src/app/views/shell.ts";
-import { CloudRpcError } from "../src/cloud/client.ts";
+import { CloudRpcError, describeError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
@@ -21,6 +21,7 @@ import conversationCss from "../src/styles/conversation.css?raw";
 import { h } from "../src/ui/dom.ts";
 import { appCard, markdown } from "../src/ui/markdown.ts";
 import { PAGE_READY } from "../src/ui/page-frame.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
 	fixture,
@@ -392,6 +393,42 @@ describe("account and route ownership", () => {
 		renderHub(hub, container);
 		expect(container.querySelector(".hub-welcome")).not.toBeNull();
 		expect(container.querySelector(".skeleton-companies")).toBeNull();
+	});
+	it("keeps the company placeholders and says it is reconnecting while the company list cannot be reached", async () => {
+		const f = mounted("#/");
+		vi.mocked(f.api.listProfiles).mockRejectedValue(
+			new CloudRpcError(
+				"qorpera_list_hosted_profiles",
+				{ message: "TimeoutError: Qorpera did not answer in time." },
+				0,
+			),
+		);
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		await hub.refresh();
+		renderHub(hub, container);
+		expect(placeholderLabel(container)).toBe("Loading companies");
+		expect(container.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(container.querySelector(".notice-danger")).toBeNull();
+		expect(container.querySelector(".hub-welcome")).toBeNull();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA]);
+		window.dispatchEvent(new Event("online"));
+		await vi.waitFor(() => expect(hub.store.get().connectionLost).toBeUndefined());
+		renderHub(hub, container);
+		expect(container.querySelector(".company-card")?.textContent).toContain(profileA.profileName);
+		expect(container.querySelector(".notice-neutral")).toBeNull();
+		hub.dispose();
+	});
+	it("shows any other failure of the company list as an error", async () => {
+		const f = mounted("#/");
+		vi.mocked(f.api.listProfiles).mockRejectedValue(new Error("Companies unavailable"));
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		await hub.refresh();
+		renderHub(hub, container);
+		expect(hub.store.get().connectionLost).toBeUndefined();
+		expect(container.querySelector(".notice-danger")?.textContent).toBe("Companies unavailable");
+		hub.dispose();
 	});
 	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
 		const home = `#/c/${profileA.profileId}`;
@@ -1710,6 +1747,58 @@ describe("account and route ownership", () => {
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
 		expect(appPage(f.root)?.getAttribute("aria-label")).toBe("Sales board");
 		expect(concepts(f.root)).toBeNull();
+	});
+
+	it("says in the rail that it is reconnecting when the conversations cannot be reached, and clears it once they can", async () => {
+		const f = mounted(`#/c/${profileA.profileId}`);
+		vi.mocked(f.api.listSessions).mockRejectedValue(
+			new CloudRpcError("qorpera_list_shared_sessions", { message: "TypeError: Failed to fetch" }, 0),
+		);
+		await draw();
+		await draw();
+		const rail = f.root.querySelector(".rail")!;
+		expect(rail.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(rail.textContent).not.toContain("Failed to fetch");
+		expect(rail.querySelector(".notice-danger")).toBeNull();
+		vi.mocked(f.api.listSessions).mockResolvedValue([session]);
+		window.dispatchEvent(new Event("online"));
+		await draw();
+		await draw();
+		expect(rail.textContent).not.toContain("Can't reach Qorpera");
+	});
+
+	it("says a lost connection in the member's language once the app is mounted", () => {
+		mounted();
+		const lost = new CloudRpcError("qorpera_get_team", { message: "TypeError: Failed to fetch" }, 0);
+		setLanguagePreference("da");
+		try {
+			expect(describeError(lost)).toBe("Qorpera kan ikke nås lige nu. Tjek din forbindelse, og prøv igen.");
+		} finally {
+			setLanguagePreference("system");
+		}
+		expect(describeError(lost)).toBe("Qorpera can't be reached right now. Check your connection and try again.");
+	});
+
+	it("waits in Storage and the rail while the company cannot be reached, with no error and no empty list", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/file`);
+		const lost = new CloudRpcError("qorpera_get_team", { message: "TypeError: Failed to fetch" }, 0);
+		vi.mocked(f.api.getTeam).mockRejectedValue(lost);
+		vi.mocked(f.api.listStaff).mockRejectedValue(lost);
+		await draw();
+		await draw();
+		const storage = f.root.querySelector(".settings-dialog")!;
+		expect(storage.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(storage.querySelector(".notice-danger")).toBeNull();
+		const rail = f.root.querySelector(".rail")!;
+		expect(rail.textContent).not.toContain("No agents yet.");
+		expect(rail.querySelector(".notice-danger")).toBeNull();
+		vi.mocked(f.api.getTeam).mockResolvedValue(team);
+		vi.mocked(f.api.listStaff).mockResolvedValue([staff]);
+		window.dispatchEvent(new Event("online"));
+		await draw();
+		await draw();
+		expect(storage.textContent).not.toContain("Can't reach Qorpera");
+		expect(rail.textContent).not.toContain("Can't reach Qorpera");
 	});
 
 	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {

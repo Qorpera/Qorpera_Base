@@ -1,6 +1,7 @@
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import { questionInput } from "../../cloud/interactions.ts";
 import {
 	type InterfaceChange,
 	type InterfaceChangeSubject,
@@ -667,7 +668,6 @@ export class ConversationView {
 			actions.sessionModel,
 			this.#notificationSignal,
 			() => this.#setSubmenu(this.#models, true),
-			() => this.#setSubmenu(this.#models, false),
 			() => this.update(),
 		);
 		this.#logins = this.#execution
@@ -727,8 +727,12 @@ export class ConversationView {
 			) {
 				event.preventDefault();
 				const page = open?.el ?? this.#menuMain;
-				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
-				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+				const controls = [
+					...page.querySelectorAll<HTMLElement>(
+						'button:not(:disabled):not([hidden]), [role="slider"][tabindex="0"]:not([aria-disabled="true"])',
+					),
+				];
+				const current = controls.indexOf(document.activeElement as HTMLElement);
 				const index = matchesKey(event, "first")
 					? 0
 					: matchesKey(event, "last")
@@ -3024,6 +3028,7 @@ export class ConversationView {
 				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
+				const address = questionInput(item.request) === "mail_address";
 				const cardKey = JSON.stringify([
 					item.request,
 					// What the card shows of an answer; the input it went out as is not shown.
@@ -3032,6 +3037,7 @@ export class ConversationView {
 					// Whose a secret saved here is: a coding value's card says which repositories get it (a role change
 					// moves it).
 					item.request.surface === "secret" ? this.#company.secretSavedForCompany(item.request) : null,
+					address ? this.#company.canChooseMailAddress() : null,
 					item.answerFailed,
 					item.chainStopped,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
@@ -3114,6 +3120,9 @@ export class ConversationView {
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
 											savesForCompany: this.#company.secretSavedForCompany(item.request),
 										}
+									: {}),
+								...(address && answers
+									? { mailAddress: this.#company.mailAddressCalls(this.#sessionId, item.id) }
 									: {}),
 							},
 						),
@@ -3884,7 +3893,6 @@ export class ConversationView {
 		const company = this.#company.store.get();
 		const readable = !this.#isRoom && !company.accessLost && company.team?.capabilities.read;
 		const failed = readable ? this.#company.failedRunFor(session?.staffAgentId) : undefined;
-		// A run waiting at its login's usage limit is the agent's newest work: it shows above an earlier failure.
 		const waiting = readable ? this.#company.pausedRunFor(session?.staffAgentId) : undefined;
 		if (waiting?.paused && (!failed || failed.earlier)) {
 			this.#renderWaitingRun(session, waiting.runId, waiting.paused);
@@ -3947,11 +3955,19 @@ export class ConversationView {
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit, {
-							...payer,
-							...(logins.length ? { continuable: true } : {}),
-							...(payerName ? { payerName } : {}),
-						})
+					? runFailureReason(
+							recovery.lastError,
+							recovery.jobStatus,
+							recovery.usageLimit,
+							{
+								...payer,
+								...(logins.length ? { continuable: true } : {}),
+								...(payerName ? { payerName } : {}),
+							},
+							recovery.rateLimited,
+							(recovery.sourceKind === "session_turn" || recovery.sourceKind === "room_delivery") &&
+								recovery.requestedByUserId === this.#company.userId.toLowerCase(),
+						)
 					: undefined;
 		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
 		const continueNote = this.#continueNote?.runId === runId ? this.#continueNote?.text : undefined;
@@ -3964,7 +3980,7 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit);
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit, recovery.rateLimited);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -4074,10 +4090,6 @@ export class ConversationView {
 		}
 	}
 
-	/** The agent's run waiting at its login's usage limit (20260930703000): it goes on by itself at the reset, on the
-	 * same login. The member whose own login pays may move it now to another of theirs that can pay ("Continue with …"):
-	 * the run itself goes on there at once, from where it stopped, so it never also comes back on the old login. Anyone
-	 * else reads who can. Nothing to dismiss: the line goes when the run goes on. */
 	#renderWaitingRun(session: HostedSession | undefined, runId: string, paused: PausedRun): void {
 		const company = this.#company.store.get();
 		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
@@ -4087,7 +4099,7 @@ export class ConversationView {
 		// resumes, never onto or off a ChatGPT plan, and only onto a login that may work while its member is away when the
 		// paying one may.
 		const logins =
-			payer?.own === true && paused.movable && !paused.paidByChatgptPlan && canWrite
+			payer?.own === true && paused.movable && !paused.rateLimited && !paused.paidByChatgptPlan && canWrite
 				? (this.#execution?.continueLogins(
 						paused.sponsorBindingId,
 						(connection) =>
@@ -4100,11 +4112,15 @@ export class ConversationView {
 				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
 				: undefined;
 		const title = t("{name} is waiting to go on", { name: agentName });
-		const reason = runWaitingReason(paused.until, {
-			...payer,
-			...(logins.length ? { continuable: true } : {}),
-			...(payerName ? { payerName } : {}),
-		});
+		const reason = runWaitingReason(
+			paused.until,
+			{
+				...payer,
+				...(logins.length ? { continuable: true } : {}),
+				...(payerName ? { payerName } : {}),
+			},
+			paused.rateLimited,
+		);
 		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
 		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;
 		const key = JSON.stringify(["waiting", runId, title, reason, logins, moving, note]);
