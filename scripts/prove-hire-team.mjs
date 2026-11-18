@@ -189,7 +189,6 @@ const corrected = (refused) => {
 		hires: SHAPES[0][1].hires.map(({ [inside]: _, ...rest }) => rest),
 	};
 };
-};
 
 const refusals = () =>
 	proveCompanyRun({
