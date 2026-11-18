@@ -53,7 +53,6 @@ import {
 	parseMachineScreenAction,
 } from "./cloud-machine-screen.ts";
 import {
-	CLOUD_SCRIPT_FILES,
 	type CloudCommandScriptRun,
 	type CloudScriptEntry,
 	cloudCommandScripts,
@@ -1094,13 +1093,7 @@ export function cloudMachineTools(options: {
 			if (!machine) throw new CloudToolRefusal(`MACHINE_NOT_FOUND: no machine is named ${String(input.machine)}`);
 			if (machine.state !== "running")
 				throw new CloudToolRefusal(`MACHINE_NOT_RUNNING: ${machine.name} is ${machine.state}`);
-			const files = [
-				...(await readScripts(machine, found.files.slice(0, CLOUD_SCRIPT_FILES), context)),
-				...cloudScriptNotRead(
-					found.files.slice(CLOUD_SCRIPT_FILES),
-					`the command runs more than the ${CLOUD_SCRIPT_FILES} files the review reads`,
-				),
-			];
+			const files = await readScripts(machine, found.files, context);
 			return { ...input, scripts: { files, notShown: found.notShown } as unknown as JsonValue };
 		},
 		reviewContents(parsed) {

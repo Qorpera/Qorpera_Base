@@ -6,9 +6,8 @@ import { describe, expect, it } from "vitest";
 import { sha256 } from "../src/cloud-company-folder-client.ts";
 import {
 	CLOUD_COMMAND_NOT_PLAIN,
-	CLOUD_SCRIPT_FILE_BYTES,
+	CLOUD_SCRIPT_LATER,
 	CLOUD_SCRIPT_SHOWN,
-	CLOUD_SCRIPT_TOTAL_BYTES,
 	cloudCommandScripts,
 	cloudCommandTokens,
 	cloudScriptContents,
@@ -20,6 +19,7 @@ import {
 } from "../src/cloud-machine-script-review.ts";
 
 const digest = (text: string) => sha256(Buffer.from(text));
+const later = (word: string) => `${word}: ${CLOUD_SCRIPT_LATER}`;
 const paths = (command: string) => cloudCommandScripts(command).files.map((file) => file.path);
 
 describe("the characters a command may use before any file of it is named (review r6 of #1924)", () => {
@@ -95,7 +95,7 @@ describe("the characters a command may use before any file of it is named (revie
 	});
 });
 
-describe("a relative file is named only in a folder bash is in under every outcome (reviews r4 to r6 of #1924)", () => {
+describe("a file is named only for the first command after leading cds, in the folder bash is in under every outcome (reviews r4 to r8 of #1924)", () => {
 	it("agrees with real bash for every plain shape and every outcome of the commands before the file", () => {
 		const base = mkdtempSync(join(tmpdir(), "qorpera-folder-outcomes-"));
 		try {
@@ -171,6 +171,15 @@ describe("a relative file is named only in a folder bash is in under every outco
 				"cd d1 && cd -P d2 && @",
 				"cd d1 && X=1 cd d2 && @",
 				"cd d1 && test -e s2 && cd d2 && @",
+				"cd d1 && @ ; cd d2",
+				"cd d1 && cd d2 && @ && cd d3",
+				"cd d1 && @ | cd d2",
+				"cd d1 && cd d2 ; @",
+				"printf -v CDPATH /tmp && cd d1 && @",
+				"printf -v PATH /tmp && cd d1 && @",
+				"eval cd d2 && cd d1 && @",
+				"builtin cd d2 && cd d1 && @",
+				"true && cd d1 && @",
 			);
 			for (const shape of shapes) expect(cloudCommandTokens(shape.replace("@", "pwd")), shape).toBeDefined();
 			const named = new Map<string, Array<string | null>>();
@@ -212,16 +221,15 @@ describe("a relative file is named only in a folder bash is in under every outco
 				}
 			}
 			expect(combinations).toBe(shapes.length * trees.length);
-			expect(checked).toBeGreaterThan(500);
+			expect(checked).toBeGreaterThan(25);
 			const full = trees[2 ** slots - 1] as string;
 			const at = (shape: string) => named.get(shape)?.[2 ** slots - 1];
-			expect(at("test -e s1 ; @")).toBe(full);
-			expect(at("test -e s1 | @")).toBe(full);
 			expect(at("cd d1 && @")).toBe(join(full, "d1"));
+			expect(at("cd d1 && cd d2 && @")).toBe(join(full, "d1", "d2"));
+			expect(at("cd d1 && cd d2 && cd d3 && @")).toBe(join(full, "d1", "d2", "d3"));
 			expect(at("cd d1 && @ | tee log")).toBe(join(full, "d1"));
-			expect(at("cd d1 && test -e s2 | @ | cat")).toBe(join(full, "d1"));
-			expect(at("cd d1 && test -e s2 && cd d2 && @")).toBe(join(full, "d1", "d2"));
-			expect(at("cd d1 && cd -- d2 && @")).toBe(join(full, "d1", "d2"));
+			expect(at("cd d1 && @ ; cd d2")).toBe(join(full, "d1"));
+			expect(at("cd d1 && cd d2 && @ && cd d3")).toBe(join(full, "d1", "d2"));
 			expect(at("cd d1 && env A=1 nice -n 5 timeout 60 nohup @ 2> /dev/null")).toBe(join(full, "d1"));
 			expect(at("env A=1 nice timeout 5 @")).toBe(full);
 			for (const shape of [
@@ -229,6 +237,12 @@ describe("a relative file is named only in a folder bash is in under every outco
 				"cd d1\n@",
 				"cd d1 | @",
 				"cd d1 ; @ | tee log",
+				"cd d1 && cd d2 ; @",
+				"test -e s1 ; @",
+				"test -e s1 | @",
+				"test -e s1 && X=1 @",
+				"cd d1 && test -e s2 | @ | cat",
+				"cd d1 && test -e s2 && cd d2 && @",
 				"cd d1 && test -e s2 | cat ; @",
 				"source ./env.sh && @",
 				"cd d1 && source ./env.sh && @",
@@ -241,9 +255,15 @@ describe("a relative file is named only in a folder bash is in under every outco
 				"cd d1 && env -Cd2 @",
 				"cd d1 && env --chd=d2 @",
 				"env -C d1 @",
+				"cd d1 && cd -- d2 && @",
 				"cd d1 && cd -P d2 && @",
 				"cd d1 && X=1 cd d2 && @",
 				"cd d1 && set -o pipefail && test -e s2 | test -e s3 && @ | cat",
+				"printf -v CDPATH /tmp && cd d1 && @",
+				"printf -v PATH /tmp && cd d1 && @",
+				"eval cd d2 && cd d1 && @",
+				"builtin cd d2 && cd d1 && @",
+				"true && cd d1 && @",
 			])
 				expect(at(shape), shape).toBeNull();
 		} finally {
@@ -255,7 +275,7 @@ describe("a relative file is named only in a folder bash is in under every outco
 describe("the files a machine command runs", () => {
 	it("names the script of the mywave refusal and of production's usual plain script runs", () => {
 		expect(cloudCommandScripts("python3 /tmp/eeg/fetch.py")).toEqual({
-			files: [{ path: "/tmp/eeg/fetch.py", mentioned: false }],
+			files: [{ path: "/tmp/eeg/fetch.py" }],
 			notShown: [],
 		});
 		expect(paths("cd /tmp/eeg && FOO=1 timeout 60 nice -n 10 python3 -u fetch.py --all")).toEqual([
@@ -264,60 +284,100 @@ describe("the files a machine command runs", () => {
 		expect(paths("python3 /tmp/sensing-prices/fetch.py 'https://www.axonprofil.dk' > /tmp/batch9.log")).toEqual([
 			"/tmp/sensing-prices/fetch.py",
 		]);
-		expect(paths("desktop shot /company/x.png\nnode /tmp/check-storyboard.cjs\nxvfb-run -a node /tmp/b.js")).toEqual([
-			"/tmp/check-storyboard.cjs",
-			"/tmp/b.js",
-		]);
-		expect(paths("./run.sh && scripts/build.sh; /usr/bin/env python3 /tmp/a.py; deno run z.ts")).toEqual([
-			"/root/run.sh",
-			"/root/scripts/build.sh",
-			"/tmp/a.py",
-			"/root/z.ts",
-		]);
-		expect(paths("python3 x.py; node y.js; ruby z.rb; perl a.pl; php b.php")).toEqual([
-			"/root/x.py",
-			"/root/y.js",
-			"/root/z.rb",
-			"/root/a.pl",
-			"/root/b.php",
-		]);
-		expect(paths("cd /a && cd b && python3 x.py | tee log && python3 y.py")).toEqual(["/a/b/x.py", "/a/b/y.py"]);
-		expect(cloudCommandScripts("cd /a && python3 x.py; python3 y.py")).toEqual({
-			files: [{ path: "/a/x.py", mentioned: false }],
-			notShown: ["y.py: the folder it is in could not be told"],
+		expect(cloudCommandScripts("cd /a && python3 x.py | tee log; echo done")).toEqual({
+			files: [{ path: "/a/x.py" }],
+			notShown: [],
 		});
-		expect(paths("cd /a; python3 /tmp/x.py")).toEqual(["/tmp/x.py"]);
+		expect(paths("./run.sh --all")).toEqual(["/root/run.sh"]);
+		expect(paths("cd /a && scripts/build.sh")).toEqual(["/a/scripts/build.sh"]);
+		expect(paths("/usr/bin/env python3 /tmp/a.py")).toEqual(["/tmp/a.py"]);
+		expect(paths("deno run z.ts")).toEqual(["/root/z.ts"]);
 		expect(paths("python3 'my script.py'")).toEqual(["/root/my script.py"]);
+		for (const [command, file] of [
+			["python3 x.py", "/root/x.py"],
+			["node y.js", "/root/y.js"],
+			["ruby z.rb", "/root/z.rb"],
+			["perl a.pl", "/root/a.pl"],
+			["php b.php", "/root/b.php"],
+		])
+			expect(paths(command as string), command).toEqual([file]);
 	});
 
-	it("shows a sourced file and names no file after it, absolute or relative (review r7 of #1924)", () => {
-		const sourcedBefore = (path: string) => `${path}: a file sourced before it can change what runs`;
-		expect(cloudCommandScripts("cd /srv/app && source .venv/bin/activate && python3 main.py")).toEqual({
-			files: [{ path: "/srv/app/.venv/bin/activate", mentioned: false }],
-			notShown: [sourcedBefore("main.py")],
+	it("names only the first command's file: a later script, or one after any other command, is not shown (review r8 of #1924)", () => {
+		expect(cloudCommandScripts("python3 /a/x.py && python3 /a/y.py")).toEqual({
+			files: [{ path: "/a/x.py" }],
+			notShown: [later("/a/y.py")],
 		});
-		expect(cloudCommandScripts("cd /a && source ./env.sh && python3 x.py")).toEqual({
-			files: [{ path: "/a/env.sh", mentioned: false }],
-			notShown: [sourcedBefore("x.py")],
+		expect(cloudCommandScripts("cd /a && cd b && python3 x.py | tee log && python3 y.py; ./run.sh | sh")).toEqual({
+			files: [{ path: "/a/b/x.py" }],
+			notShown: [
+				later("y.py"),
+				later("./run.sh"),
+				"sh runs what another program prints into it, which the review cannot see",
+			],
+		});
+		expect(
+			cloudCommandScripts("desktop shot /company/x.png\nnode /tmp/check-storyboard.cjs\nxvfb-run -a node /tmp/b.js"),
+		).toEqual({
+			files: [],
+			notShown: [later("/tmp/check-storyboard.cjs"), later("/tmp/b.js")],
+		});
+		for (const command of [
+			"mkdir -p out && python3 x.py",
+			"pip install -r requirements.txt && python3 x.py",
+			"cd /a ; python3 x.py",
+			"cd /a\npython3 x.py",
+			"cd /a | python3 x.py",
+		])
+			expect(cloudCommandScripts(command), command).toEqual({ files: [], notShown: [later("x.py")] });
+		for (const [command, first] of [
+			["builtin source /a/env.sh && python3 /a/x.py", "builtin"],
+			["command . /a/env.sh && python3 /a/x.py", "command"],
+			["eval source /a/env.sh && python3 /a/x.py", "eval"],
+			['eval "source /a/env.sh" && python3 /a/x.py', "eval"],
+			['eval "hash -p /tmp/e/p python3" && python3 /a/x.py', "eval"],
+			["hash -p /tmp/p python3; python3 /a/x.py", "hash"],
+		])
+			expect(cloudCommandScripts(command as string), command).toEqual({
+				files: [],
+				notShown: [`${first}: the review does not follow what it runs`, later("/a/x.py")],
+			});
+		for (const command of [
+			'eval "x=1 PATH=/tmp/e" && python3 /a/x.py',
+			"printf -v PATH /tmp/e && python3 /a/x.py",
+			"read PATH && python3 /a/x.py",
+			"mapfile -t PATH && python3 /a/x.py",
+			"getopts a PATH && python3 /a/x.py",
+			"export PYTHONPATH=/x && python3 /a/x.py",
+			"PATH=/evil; python3 /a/x.py",
+		])
+			expect(cloudCommandScripts(command), command).toEqual({ files: [], notShown: [later("/a/x.py")] });
+		expect(cloudCommandScripts("printf -v CDPATH /safe && cd sub && python3 x.py")).toEqual({
+			files: [],
+			notShown: [later("x.py")],
+		});
+	});
+
+	it("shows a sourced file as the first command's file, and nothing after it (reviews r7 and r8 of #1924)", () => {
+		expect(cloudCommandScripts("cd /srv/app && source .venv/bin/activate && python3 main.py")).toEqual({
+			files: [{ path: "/srv/app/.venv/bin/activate" }],
+			notShown: [later("main.py")],
 		});
 		expect(cloudCommandScripts("source ./env.sh; python3 /tmp/x.py; /tmp/run.sh")).toEqual({
-			files: [{ path: "/root/env.sh", mentioned: false }],
-			notShown: [sourcedBefore("/tmp/x.py"), sourcedBefore("/tmp/run.sh")],
+			files: [{ path: "/root/env.sh" }],
+			notShown: [later("/tmp/x.py"), later("/tmp/run.sh")],
 		});
-		expect(cloudCommandScripts("python3 /tmp/a.py && . ./env.sh && . ./more.sh && ./run.sh")).toEqual({
-			files: [
-				{ path: "/tmp/a.py", mentioned: false },
-				{ path: "/root/env.sh", mentioned: false },
-			],
-			notShown: [sourcedBefore("./more.sh"), sourcedBefore("./run.sh")],
+		expect(cloudCommandScripts("python3 /tmp/a.py && . ./env.sh")).toEqual({
+			files: [{ path: "/tmp/a.py" }],
+			notShown: [later("./env.sh")],
 		});
 		expect(cloudCommandScripts("source activate && python3 /tmp/x.py").notShown).toEqual([
 			"activate: the shell looks it up on its program path first",
-			sourcedBefore("/tmp/x.py"),
+			later("/tmp/x.py"),
 		]);
 		expect(cloudCommandScripts("time source ./env.sh; python3 /tmp/x.py")).toEqual({
 			files: [],
-			notShown: ["source: the review does not follow what runs it", sourcedBefore("/tmp/x.py")],
+			notShown: ["source: the review does not follow what runs it", later("/tmp/x.py")],
 		});
 	});
 
@@ -332,18 +392,21 @@ describe("the files a machine command runs", () => {
 			["/usr/bin/../../root/evil/python3 x.py", "/usr/bin/../../root/evil/python3"],
 			["python3 ..", ".."],
 		])
-			expect(cloudCommandScripts(command), command).toEqual({ files: [], notShown: [climbs(word as string)] });
-		for (const command of [
-			"cd /root/sub/.. && python3 x.py",
-			"cd .. && python3 x.py",
-			"cd /a && cd ../b && python3 x.py",
-		])
-			expect(cloudCommandScripts(command), command).toEqual({
+			expect(cloudCommandScripts(command as string), command).toEqual({
 				files: [],
-				notShown: ["x.py: the folder it is in could not be told"],
+				notShown: [climbs(word as string)],
+			});
+		for (const [command, target] of [
+			["cd /root/sub/.. && python3 x.py", "/root/sub/.."],
+			["cd .. && python3 x.py", ".."],
+			["cd /a && cd ../b && python3 x.py", "../b"],
+		])
+			expect(cloudCommandScripts(command as string), command).toEqual({
+				files: [],
+				notShown: [climbs(target as string), later("x.py")],
 			});
 		expect(paths("python3 a..b.py ./c.py .../d.py")).toEqual(["/root/a..b.py"]);
-		expect(paths("cd /root/sub && python3 x.py && python3 /tmp/..x.py")).toEqual(["/root/sub/x.py", "/tmp/..x.py"]);
+		expect(paths("python3 /tmp/..x.py")).toEqual(["/tmp/..x.py"]);
 	});
 
 	it("names a script only when every word before its path is on the allow-list (review r5 of #1924)", () => {
@@ -403,9 +466,6 @@ describe("the files a machine command runs", () => {
 			"deno run -A evil.ts",
 			"zsh evil.sh",
 			"bun evil.ts",
-			"PATH=/evil; python3 /tmp/evil.py",
-			"export PYTHONPATH=/x && python3 /tmp/evil.py",
-			"hash -p /tmp/p python3; python3 /tmp/evil.py",
 			"HOME=/safe; python3 /tmp/evil.py",
 		])
 			expect(cloudCommandScripts(command).files, command).toEqual([]);
@@ -423,7 +483,7 @@ describe("the files a machine command runs", () => {
 });
 
 describe("reading the files on the machine", () => {
-	const files = (...names: string[]) => names.map((path) => ({ path, mentioned: false }));
+	const files = (...names: string[]) => names.map((path) => ({ path }));
 
 	it("shows a text file whole, by the digest of exactly the bytes read, and says why another is not shown", () => {
 		const script = "import urllib.request\nprint('ok')\n";
@@ -455,60 +515,37 @@ describe("reading the files on the machine", () => {
 		expect(() => parseCloudScriptRead("F 0\n\n", files("/tmp/a.py"))).toThrow();
 	});
 
-	it("stops showing files past the bound for one command", () => {
-		const big = "x".repeat(CLOUD_SCRIPT_FILE_BYTES);
-		const line = `F ${big.length}\n${Buffer.from(big).toString("base64")}`;
-		const read = parseCloudScriptRead(["QORPERA-REVIEW-READ", line, line, line].join("\n"), [
-			{ path: "/a", mentioned: false },
-			{ path: "/b", mentioned: false },
-			{ path: "/c", mentioned: false },
-		]);
-		expect(CLOUD_SCRIPT_TOTAL_BYTES).toBe(2 * CLOUD_SCRIPT_FILE_BYTES);
-		expect(read.entries.map((entry) => "sha256" in entry)).toEqual([true, true, false]);
-		expect(read.entries[2]).toEqual({
-			path: "/c",
-			notShown: "the files this command runs are more than the 128 KiB the review reads in all",
-		});
-	});
-
 	it("tells the reviewer what is shown and what is not, and counts a part as incomplete", () => {
 		const script = "print(1)\n";
-		const scripts = {
-			files: [
-				{ path: "/tmp/a.py", sha256: digest(script), bytes: 9, changedByCommand: true as const },
-				{ path: "/tmp/x.sh", notShown: "it is not on the machine now" },
-			],
-			notShown: ["sh runs what another program prints into it, which the review cannot see"],
+		const texts = new Map([[digest(script), script]]);
+		const shown = {
+			files: [{ path: "/tmp/a.py", sha256: digest(script), bytes: 9 }],
+			notShown: [later("/tmp/b.py")],
 		};
-		const contents = cloudScriptContents(scripts, new Map([[digest(script), script]]));
+		const contents = cloudScriptContents(shown, texts);
 		expect(contents).toEqual({
 			shown: CLOUD_SCRIPT_SHOWN,
-			files: [
-				{
-					path: "/tmp/a.py",
-					bytes: 9,
-					sha256: digest(script),
-					note: "This command changes or writes this path before it runs it: what it writes there is in the command.",
-					text: script,
-				},
-				{ path: "/tmp/x.sh", notShown: "it is not on the machine now" },
-			],
-			notShown: [
-				"sh runs what another program prints into it, which the review cannot see",
-				"/tmp/x.sh: it is not on the machine now",
-			],
+			files: [{ path: "/tmp/a.py", bytes: 9, sha256: digest(script), text: script }],
+			notShown: [later("/tmp/b.py")],
 		});
 		expect(cloudScriptContentsIncomplete(contents)).toBe(true);
-		const whole = cloudScriptContents(
-			{ files: [scripts.files[0]], notShown: [] },
-			new Map([[digest(script), script]]),
-		);
+		const missing = { files: [{ path: "/tmp/x.sh", notShown: "it is not on the machine now" }], notShown: [] };
+		expect(cloudScriptContents(missing, texts)).toEqual({
+			shown: CLOUD_SCRIPT_SHOWN,
+			files: [{ path: "/tmp/x.sh", notShown: "it is not on the machine now" }],
+			notShown: ["/tmp/x.sh: it is not on the machine now"],
+		});
+		const whole = cloudScriptContents({ files: shown.files, notShown: [] }, texts);
 		expect(whole).not.toHaveProperty("notShown");
 		expect(cloudScriptContentsIncomplete(whole)).toBe(false);
 		expect(cloudScriptContentsIncomplete(undefined)).toBe(false);
-		expect(() => cloudScriptContents(scripts, new Map())).toThrow("Reviewed file is gone");
-		expect(parseCloudPreparedScripts(scripts as never)).toEqual(scripts);
+		expect(() => cloudScriptContents(shown, new Map())).toThrow("Reviewed file is gone");
+		expect(parseCloudPreparedScripts(shown as never)).toEqual(shown);
+		expect(parseCloudPreparedScripts(missing as never)).toEqual(missing);
 		expect(() => parseCloudPreparedScripts({ files: [{ path: "x" }], notShown: [] })).toThrow();
+		expect(() =>
+			parseCloudPreparedScripts({ files: [...shown.files, ...missing.files], notShown: [] } as never),
+		).toThrow();
 	});
 
 	it("gives the approval an identity that changes with every reviewed file", () => {
@@ -537,7 +574,7 @@ describe("on a real shell (bash and coreutils)", () => {
 			writeFileSync(script, "echo fetched\n");
 			const read = shell(cloudScriptReadProgram([script, missing, dir]));
 			expect(read.status).toBe(0);
-			const files = [script, missing, dir].map((path) => ({ path, mentioned: false }));
+			const files = [script, missing, dir].map((path) => ({ path }));
 			const { entries, texts } = parseCloudScriptRead(read.stdout, files);
 			expect(entries[0]).toEqual({ path: script, sha256: digest("echo fetched\n"), bytes: 13 });
 			expect(texts.get(digest("echo fetched\n"))).toBe("echo fetched\n");

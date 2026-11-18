@@ -2880,7 +2880,7 @@ describe("the files a machine command runs, read for its review (17 November 202
 		}
 	});
 
-	it("shows a sourced activate in one read and does not show the file run after it (review r7 of #1924)", async () => {
+	it("shows a sourced activate in one read and does not show the file run after it (reviews r7 and r8 of #1924)", async () => {
 		const command = "cd /srv/app && source .venv/bin/activate && python3 main.py";
 		const activate = "/srv/app/.venv/bin/activate";
 		const main = "/srv/app/main.py";
@@ -2931,12 +2931,12 @@ describe("the files a machine command runs, read for its review (17 November 202
 		expect(shown.reads).toBe(1);
 		expect(shown.contents).toMatchObject({
 			files: [{ path: activate, text: "VIRTUAL_ENV=/srv/app/.venv\n" }],
-			notShown: ["main.py: a file sourced before it can change what runs"],
+			notShown: ["main.py: only the first command's file is shown"],
 		});
 		const unread = await look({});
 		expect(unread.reads).toBe(1);
 		expect(unread.contents.notShown).toEqual([
-			"main.py: a file sourced before it can change what runs",
+			"main.py: only the first command's file is shown",
 			`${activate}: it is not on the machine now`,
 		]);
 	});

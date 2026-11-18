@@ -7033,25 +7033,24 @@ bundle; no migration, host call or image moves.
    `A-Za-z0-9_./-+=:,@%`, single- or double-quoted strings of those characters and spaces, the separators `;`,
    newline, `&&` and `|`, and the output redirections `>`, `>>`, `2>`, `2>>`, `2>&1` and `&>`; on such text bash
    expands nothing. Any other character or construct names no file ("the command uses shell features the review does
-   not follow"). In a plain command a script is named only when every word before its path is on fixed allow-lists:
-   literal assignments that do not steer which code runs (not PATH, CDPATH, ENV, BASH_ENV, IFS, HOME, PWD, OLDPWD, the
-   PYTHON*, NODE_*, RUBY*, PERL5* and LD_* steering names, BASH_FUNC_*), the prefixes `env` (assignments only),
-   `time`, `nohup`, `nice` [`-n N`], `timeout <duration>`, `xvfb-run` [`-a`], and per-interpreter options
+   not follow"). A plain command names at most one file, by grammar: zero or more leading `cd <path>` commands (a
+   literal path without a `..` segment and without options), each joined to the next by `&&`; then one simple command,
+   or the first element of a pipeline, of an allow-listed runner form: literal assignments that do not steer which
+   code runs (not PATH, CDPATH, ENV, BASH_ENV, IFS, HOME, PWD, OLDPWD, the PYTHON*, NODE_*, RUBY*, PERL5* and LD_*
+   steering names, BASH_FUNC_*), the prefixes `env` (assignments only), `time`, `nohup`, `nice` [`-n N`],
+   `timeout <duration>` and `xvfb-run` [`-a`], then an interpreter with its allowed options and the script path
    (`python3 -u -B -O -q`; `bash`/`sh` `-e -u -x -eu -ex -eux -o pipefail|errexit|nounset`; none for the others;
-   `deno run <path>`). An absolute path is named wherever it stands. A relative path is named in the start folder when
-   no folder or setup word (`cd`, `pushd`, `popd`, `source`, `.`, `eval`, `exec`, `command`, `builtin`, `alias`,
-   `shopt`, `trap`, `set`, `export`, `unset`, `hash`, `enable`, `declare`, `typeset`, `readonly`, `local`) occurs in
-   the command, or in the folder of the `cd <path>` commands before it in the unbroken `&&` chain from the command's
-   start (pipelines included); otherwise it is not shown. No path with a `..` segment is named, nor a relative path
-   after a leading `cd` target with one: a link on the machine can lead `..` elsewhere, while a path through a link
-   without `..` is read at the same name the interpreter opens. A `source f` or `. f` shows f when its path is certain
-   by these rules and names no file after it in the command, absolute or relative ("a file sourced before it can
-   change what runs"); files named before it are unaffected. The runtime reads each named file on the machine before
-   the review with one fixed read-only command of its own through the same receipts and command gateway (its receipt
-   always completes, also when the machine refuses or does not answer its start), and gives the reviewer its text in
-   the action's `contents`: each file whole, at most 64 KiB a file, 128 KiB and 8 files a command. Known limit: the
-   files are read when the action is reviewed; a file changed between that read and the command's start in the same
-   call is not detected.
+   `deno run <path>`), the path itself as the command word, or `source f` / `. f`. That file is named when its path
+   word has no `..` segment: an absolute path as it stands, a relative one in the start folder or the folder of the
+   leading `cd`s. So only literal `cd`s run before the named file is opened, and a path through a link without `..` is
+   read at the same name the interpreter opens. Nothing else in the command is named: a later script is listed in
+   `contents.notShown` ("only the first command's file is shown"), and a command whose first command after the leading
+   `cd`s is anything else (`mkdir`, `pip`, `git`, `eval`, `builtin`, `printf`, `export`, an assignment on its own, …)
+   names no file. The runtime reads the named file on the machine before the review with one fixed read-only command
+   of its own through the same receipts and command gateway (its receipt always completes, also when the machine
+   refuses or does not answer its start), and gives the reviewer its text in the action's `contents`, whole, at most
+   64 KiB. Known limit: the file is read when the action is reviewed; a file changed between that read and the
+   command's start in the same call is not detected.
 2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
    bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
    variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the
@@ -7082,8 +7081,9 @@ bundle; no migration, host call or image moves.
    profile files, PATH and functions decide what a program name runs, and no reading of the command text can see that.
    The reviewer is told so and judges the command, the request, the mandate and the contents together; the feature
    lets an honest script be judged on its contents instead of guessed at, without making the review easier to fool
-   than it was. A script run after a `source` (a virtual environment's `activate`) is not shown; showing it needs the
-   machine to report what ran, not a reading of the command.
+   than it was. A script run after another command (`pip install … && python3 x.py`, `mkdir -p out && python3 x.py`),
+   a second script in one command, and a script run after `source` (a virtual environment's `activate`) are not shown;
+   showing them needs the machine to report what ran, not a reading of the command.
 
 ### 2026-11-17 amendment: agents show the product first
 

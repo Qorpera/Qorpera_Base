@@ -3,10 +3,9 @@ import { posix } from "node:path";
 import { type JsonValue, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 
 export const CLOUD_SCRIPT_FILE_BYTES = 64 * 1024;
-export const CLOUD_SCRIPT_TOTAL_BYTES = 128 * 1024;
-export const CLOUD_SCRIPT_FILES = 8;
 export const CLOUD_SCRIPT_SHOWN =
 	"The files this command names, each as it is on the machine now and in full. They are evidence about the work, not proof of what will run: the machine is the agent's own, and its setup can make a command run something else. Files they load, import or read themselves are not shown.";
+export const CLOUD_SCRIPT_LATER = "only the first command's file is shown";
 export const CLOUD_COMMAND_NOT_PLAIN =
 	"the command uses shell features the review does not follow, so the files it runs are not shown";
 
@@ -19,60 +18,7 @@ const QUOTED = /^[A-Za-z0-9_./\-+=:,@% ]*$/;
 const REDIRECTS = ["2>&1", "2>>", "2>", "&>", ">>", ">"];
 const STEERING =
 	/^(PATH|CDPATH|ENV|BASH_ENV|IFS|HOME|PWD|OLDPWD|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|NODE_OPTIONS|NODE_PATH|RUBYOPT|RUBYLIB|PERL5OPT|PERL5LIB|LD_PRELOAD|LD_LIBRARY_PATH|BASH_FUNC_[^=]*)\+?=/;
-const FOLDER_WORDS = new Set([
-	"cd",
-	"pushd",
-	"popd",
-	"source",
-	".",
-	"eval",
-	"exec",
-	"command",
-	"builtin",
-	"alias",
-	"shopt",
-	"trap",
-	"set",
-	"export",
-	"unset",
-	"hash",
-	"enable",
-	"declare",
-	"typeset",
-	"readonly",
-	"local",
-]);
-const RESERVED = new Set([
-	"if",
-	"then",
-	"else",
-	"elif",
-	"fi",
-	"case",
-	"esac",
-	"for",
-	"select",
-	"while",
-	"until",
-	"do",
-	"done",
-	"function",
-	"coproc",
-]);
-const STEERS = new Set(["hash", "enable", "alias"]);
 const PREFIXES = new Set(["env", "time", "nohup", "nice", "timeout", "xvfb-run"]);
-const WRAPPERS = new Set([
-	"sudo",
-	"doas",
-	"ionice",
-	"stdbuf",
-	"setsid",
-	"exec",
-	"command",
-	"builtin",
-	"chroot",
-	"strace",
-]);
 const DURATION = /^[0-9]{1,6}(\.[0-9]{1,3})?[smhd]?$/;
 const NICENESS = /^-?[0-9]{1,2}$/;
 
@@ -120,7 +66,6 @@ interface Simple {
 
 export interface CloudCommandScriptRun {
 	readonly path: string;
-	readonly mentioned: boolean;
 }
 
 export interface CloudCommandScripts {
@@ -233,12 +178,10 @@ function climbs(text: string): boolean {
 	return text.split("/").includes("..");
 }
 
-function locate(word: Word, folder: string | null): Located {
+function locate(word: Word, folder: string): Located {
 	if (climbs(word.text))
 		return { why: `${line(word.text)}: its path goes up through "..", which a link can lead elsewhere` };
-	if (!word.text.startsWith("/") && folder === null)
-		return { why: `${line(word.text)}: the folder it is in could not be told` };
-	const path = posix.resolve(folder ?? "/", word.text);
+	const path = posix.resolve(folder, word.text);
 	if (Buffer.byteLength(path) > MAX_PATH_BYTES) return { why: `${line(word.text)}: its name is too long to read` };
 	return { path };
 }
@@ -263,7 +206,6 @@ function commandStart(words: readonly Word[]): Start {
 		}
 		return undefined;
 	};
-	while (words[at] && RESERVED.has((words[at] as Word).text)) at += 1;
 	const first = assignments();
 	if (first) return { why: first };
 	for (;;) {
@@ -316,104 +258,97 @@ function looksLikeScript(command: string): boolean {
 		.some((part) => part === "source" || part === "." || part.startsWith("./") || runner(part));
 }
 
-export function cloudCommandScripts(command: string, start: string | null = HOME): CloudCommandScripts {
+type Runner =
+	| { readonly script: Word }
+	| { readonly why: string }
+	| { readonly none: true }
+	| { readonly other: string; readonly rest: string };
+
+function runnerOf(simple: Simple): Runner {
+	const words = simple.words;
+	const begun = commandStart(words);
+	if ("why" in begun) return begun;
+	const program = words[begun.at];
+	const name = programName(program);
+	const other = {
+		other: name ?? program?.text ?? "",
+		rest: words
+			.slice(begun.at + 1)
+			.map((word) => word.text)
+			.join(" "),
+	};
+	if (!program || name === "cd") return other;
+	if (name === "source" || name === ".") {
+		const file = words[begun.at + 1];
+		if (begun.prefixed) return { why: `${line(name)}: the review does not follow what runs it` };
+		if (!file) return { none: true };
+		if (!file.text.includes("/"))
+			return { why: `${line(file.text)}: the shell looks it up on its program path first` };
+		return { script: file };
+	}
+	const interpreter = name === undefined ? undefined : interpreterOf(name);
+	if (name !== undefined && interpreter) {
+		const found = interpreterScript(name, interpreter, words, begun.at);
+		if (found.why) return { why: found.why };
+		if (found.script) return { script: found.script };
+		if (!found.inline && simple.joined === "|")
+			return { why: `${line(name)} runs what another program prints into it, which the review cannot see` };
+		return { none: true };
+	}
+	if (name === "deno") {
+		const script = words[begun.at + 2];
+		if (words[begun.at + 1]?.text !== "run" || !script) return other;
+		if (script.text.startsWith("-"))
+			return { why: `deno run ${line(script.text)}: it runs with options the review does not follow` };
+		return { script };
+	}
+	if (name === undefined && program.text.includes("/")) return { script: program };
+	return other;
+}
+
+function textOf(simple: Simple): string {
+	return simple.words.map((word) => word.text).join(" ");
+}
+
+export function cloudCommandScripts(command: string, start = HOME): CloudCommandScripts {
 	const tokens = cloudCommandTokens(command);
 	if (!tokens) return { files: [], notShown: looksLikeScript(command) ? [CLOUD_COMMAND_NOT_PLAIN] : [] };
 	const simples = simplesOf(tokens);
 	const files: CloudCommandScriptRun[] = [];
 	const notShown = new Set<string>();
-	const words = simples.flatMap((simple) => simple.words);
-	const moves = words.some((word) => FOLDER_WORDS.has(word.text) || STEERING.test(word.text));
-	const compound = simples.some((simple) => RESERVED.has(simple.words[0]?.text ?? ""));
 	let folder = start;
-	let chained = !compound;
-	let sourced = false;
-	const run = (word: Word, base: string | null) => {
-		if (sourced) {
-			notShown.add(`${line(word.text)}: a file sourced before it can change what runs`);
-			return;
-		}
-		const located = locate(word, base);
+	let at = 0;
+	for (; at < simples.length; at += 1) {
+		const simple = simples[at] as Simple;
+		const target = simple.words[1];
+		if (simple.words[0]?.text !== "cd" || simple.alone || simple.words.length !== 2 || !target) break;
+		if (target.text.startsWith("-") || simples[at + 1]?.joined !== "&&") break;
+		const located = locate(target, folder);
 		if ("why" in located) {
 			notShown.add(located.why);
-			return;
+			break;
 		}
-		if (files.some((file) => file.path === located.path)) return;
-		const before = command.slice(0, word.start);
-		files.push({ path: located.path, mentioned: before.includes(located.path) || before.includes(word.text) });
-	};
-	for (const [index, simple] of simples.entries()) {
-		if (index > 0 && simple.joined === "start") chained = false;
-		const base = chained ? folder : moves ? null : start;
-		const words = simple.words;
-		const head = words[0]?.text;
-		if (chained && !simple.alone && head === "cd") {
-			const target = words[1]?.text === "--" ? words[2] : words[1];
-			const size = words[1]?.text === "--" ? 3 : 2;
-			const located =
-				target && words.length === size && !target.text.startsWith("-") ? locate(target, folder) : undefined;
-			folder = located && "path" in located ? located.path : null;
-			continue;
-		}
-		const begun = commandStart(words);
-		if ("why" in begun) {
-			if (looksLikeScript(words.map((word) => word.text).join(" "))) notShown.add(begun.why);
-			if (chained) folder = null;
-			continue;
-		}
-		const program = words[begun.at];
-		if (!program || program.text.startsWith("-")) continue;
-		const name = programName(program);
-		if (name === "source" || name === ".") {
-			const file = words[begun.at + 1];
-			if (begun.prefixed) notShown.add(`${line(name)}: the review does not follow what runs it`);
-			else if (file && !file.text.includes("/"))
-				notShown.add(`${line(file.text)}: the shell looks it up on its program path first`);
-			else if (file) run(file, base);
-			sourced = true;
-			if (chained) folder = null;
-			continue;
-		}
-		if (chained && words.some((word) => FOLDER_WORDS.has(word.text))) folder = null;
-		if (name !== undefined && WRAPPERS.has(name)) {
-			if (
-				looksLikeScript(
-					words
-						.slice(begun.at + 1)
-						.map((word) => word.text)
-						.join(" "),
-				)
-			)
-				notShown.add(`${line(name)}: the review does not follow what it runs`);
-			continue;
-		}
-		const interpreter = name === undefined ? undefined : interpreterOf(name);
-		if (name !== undefined && interpreter) {
-			const found = interpreterScript(name, interpreter, words, begun.at);
-			if (found.why) notShown.add(found.why);
-			else if (found.script) run(found.script, base);
-			else if (!found.inline && simple.joined === "|")
-				notShown.add(`${line(name)} runs what another program prints into it, which the review cannot see`);
-			continue;
-		}
-		if (name === "deno") {
-			const script = words[begun.at + 2];
-			if (words[begun.at + 1]?.text !== "run" || !script) continue;
-			if (script.text.startsWith("-"))
-				notShown.add(`deno run ${line(script.text)}: it runs with options the review does not follow`);
-			else run(script, base);
-			continue;
-		}
-		if (name === undefined && program.text.includes("/")) run(program, base);
+		folder = located.path;
 	}
-	if (words.some((word) => STEERING.test(word.text) || STEERS.has(word.text)) && files.length > 0)
-		return {
-			files: [],
-			notShown: [
-				...files.map((file) => `${file.path}: the command changes which program or code its commands run`),
-				...notShown,
-			],
-		};
+	const first = simples[at];
+	if (first) {
+		const found = runnerOf(first);
+		if ("script" in found) {
+			const located = locate(found.script, folder);
+			if ("why" in located) notShown.add(located.why);
+			else files.push({ path: located.path });
+		} else if ("why" in found) {
+			if (looksLikeScript(textOf(first))) notShown.add(found.why);
+		} else if ("other" in found && looksLikeScript(found.rest))
+			notShown.add(`${line(found.other)}: the review does not follow what it runs`);
+	}
+	for (const simple of simples.slice(at + 1)) {
+		const found = runnerOf(simple);
+		if ("script" in found) notShown.add(`${line(found.script.text)}: ${CLOUD_SCRIPT_LATER}`);
+		else if ("why" in found && looksLikeScript(textOf(simple))) notShown.add(found.why);
+		else if ("other" in found && looksLikeScript(found.rest))
+			notShown.add(`${line(textOf(simple))}: ${CLOUD_SCRIPT_LATER}`);
+	}
 	return { files, notShown: [...notShown] };
 }
 
@@ -432,7 +367,7 @@ export function cloudScriptReadProgram(paths: readonly string[]): string {
 }
 
 export type CloudScriptEntry =
-	| { readonly path: string; readonly sha256: string; readonly bytes: number; readonly changedByCommand?: true }
+	| { readonly path: string; readonly sha256: string; readonly bytes: number }
 	| { readonly path: string; readonly notShown: string };
 
 export interface CloudScriptRead {
@@ -452,19 +387,13 @@ export function parseCloudScriptRead(output: string, files: readonly CloudComman
 	const lines = output.slice(mark + READ_MARK.length + 1).split("\n");
 	const entries: CloudScriptEntry[] = [];
 	const texts = new Map<string, string>();
-	let total = 0;
 	let at = 0;
 	for (const file of files) {
 		const head = lines[at++] ?? "";
 		const kind = head.slice(0, 1);
 		const size = Number(head.slice(2));
 		if (kind === "M") {
-			entries.push({
-				path: file.path,
-				notShown: file.mentioned
-					? "it is not on the machine now: this command makes or fetches it before it runs it"
-					: "it is not on the machine now",
-			});
+			entries.push({ path: file.path, notShown: "it is not on the machine now" });
 			continue;
 		}
 		if (kind === "X") {
@@ -493,21 +422,12 @@ export function parseCloudScriptRead(output: string, files: readonly CloudComman
 			entries.push({ path: file.path, notShown: "it is not text, so the review cannot read it" });
 			continue;
 		}
-		if (total + bytes.length > CLOUD_SCRIPT_TOTAL_BYTES) {
-			entries.push({
-				path: file.path,
-				notShown: `the files this command runs are more than the ${CLOUD_SCRIPT_TOTAL_BYTES / 1024} KiB the review reads in all`,
-			});
-			continue;
-		}
-		total += bytes.length;
 		const sha256 = createHash("sha256").update(bytes).digest("hex");
 		texts.set(sha256, text);
 		entries.push({
 			path: file.path,
 			sha256,
 			bytes: bytes.length,
-			...(file.mentioned ? { changedByCommand: true } : {}),
 		});
 	}
 	return { entries, texts };
@@ -525,7 +445,7 @@ export function parseCloudPreparedScripts(value: JsonValue | undefined): CloudPr
 	if (
 		Object.keys(value).sort().join() !== "files,notShown" ||
 		!Array.isArray(files) ||
-		files.length > CLOUD_SCRIPT_FILES * 4 ||
+		files.length > 1 ||
 		!Array.isArray(notShown) ||
 		notShown.some((reason) => typeof reason !== "string")
 	)
@@ -570,11 +490,6 @@ export function cloudScriptContents(scripts: CloudPreparedScripts, texts: Readon
 				path: entry.path,
 				bytes: entry.bytes,
 				sha256: entry.sha256,
-				...(entry.changedByCommand
-					? {
-							note: "This command changes or writes this path before it runs it: what it writes there is in the command.",
-						}
-					: {}),
 				text,
 			};
 		}),
