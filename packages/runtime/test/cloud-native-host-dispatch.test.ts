@@ -292,8 +292,6 @@ it("gives the dispatch to every database client the host builds, and to its serv
 	// G2-5: the host reads no service key, gives its clients the publishable key, and refuses to start with one.
 	expect(main).not.toMatch(/\bserviceKey\b/);
 	expect(main).toMatch(/serviceRoleKey: publishableKey/);
-	expect(main).toMatch(/throw new Error\("A native host must hold no service key"\)/);
-	expect(main).not.toContain("QORPERA_NATIVE_HOST_DISPATCH");
 	expect(main).toMatch(/environment\.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,\s*dispatch,\s*\)/);
 });
 

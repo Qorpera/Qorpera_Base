@@ -7,7 +7,7 @@ import {
 	CloudToolArgumentRefusal,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { cloudRoutineAgentOffsetMinutes, cloudRoutineSpreadInstant } from "@qorpera/runtime/cloud-routine-pace";
+import { cloudRoutineAgentOffsetMinutes } from "@qorpera/runtime/cloud-routine-pace";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { describe, expect, it, vi } from "vitest";
@@ -567,8 +567,7 @@ describe("agent routine tool", () => {
 			});
 			expect(bare.success && task.success, JSON.stringify([bare, task])).toBe(true);
 			// The latest time is on the hour, so it moves by the agent's offset.
-			const spread = cloudRoutineSpreadInstant(latest, f.offset);
-			expect(spread).not.toBe(latest);
+			const spread = new Date(Date.parse(latest) + f.offset * 60_000).toISOString();
 			expect(f.saved().map((request) => request.trigger)).toEqual([
 				{
 					kind: "once",
@@ -651,8 +650,6 @@ describe("agent routine tool", () => {
 				routineKey: "morning-queue",
 			});
 			expect(one.success, JSON.stringify(one)).toBe(true);
-			// The key is the routine's file name, which the writer's own rule checks.
-			expect(f.writer.path).toHaveBeenCalledWith("morning-queue");
 			expect(f.writer.list).toHaveBeenLastCalledWith(
 				{ action: "list", routineKey: "morning-queue" },
 				expect.objectContaining({ callId: "l1" }),

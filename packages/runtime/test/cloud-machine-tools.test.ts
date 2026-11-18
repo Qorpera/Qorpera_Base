@@ -16,7 +16,6 @@ import {
 } from "../src/cloud-machine-command-http.ts";
 import {
 	CLOUD_MACHINE_DESKTOP_LEAST,
-	CLOUD_MACHINE_SCREEN_DESCRIPTION,
 	CLOUD_MACHINE_START_ANSWER_MS,
 	CLOUD_MACHINE_START_DESCRIPTION,
 	CLOUD_MACHINE_START_WORKER_DESCRIPTION,
@@ -1418,7 +1417,8 @@ describe("machine tools", () => {
 			expect(f.execute.mock.calls[0][0].operation.arguments).toEqual({
 				name: "shop-test",
 				purpose: "Try the shop as a customer",
-				...CLOUD_MACHINE_DESKTOP_LEAST,
+				cpus: 2,
+				memoryGiB: 4,
 				diskGiB: 40,
 				lifetime: "task",
 			});
@@ -2440,7 +2440,6 @@ describe("machine tools", () => {
 				expect(CLOUD_RUNTIME_TOOL_OPERATIONS).toContain("machine_screen");
 				const screen = agent.tools.find((tool) => tool.name === "machine_screen")!;
 				expect(screen.images).toBe(true);
-				expect(screen.description).toBe(CLOUD_MACHINE_SCREEN_DESCRIPTION);
 				expect(Buffer.byteLength(screen.description)).toBeLessThanOrEqual(4096);
 				for (const words of [
 					"look before you act again",

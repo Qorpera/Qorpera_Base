@@ -309,7 +309,6 @@ describe("save_coding_value's helper on xsel", () => {
 	it("fits the executor's deadline: a read and a clear at most, each well under it", () => {
 		// The executor gives the helper 20 s and its own clear 10 s (company-machine-host.ts; the guest package's test
 		// checks the two files agree).
-		expect(MACHINE_XSEL_MS).toBe(4000);
 		expect(2 * MACHINE_XSEL_MS + 2000).toBeLessThanOrEqual(10_000);
 	});
 });

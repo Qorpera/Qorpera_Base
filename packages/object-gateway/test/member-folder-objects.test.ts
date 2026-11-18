@@ -187,9 +187,6 @@ describe("a member's folder-v2 bytes", () => {
 		).toBe(404);
 		expect((await gateway.get(undefined, { method: "PUT", body: "x" })).status).toBe(405);
 		expect((await gateway.get(undefined, { headers: { authorization: "Basic x" } })).status).toBe(401);
-		// snapshot-v1's member routes are gone (legacy removal, step C).
-		for (const route of ["member-company-objects", "member-company-snapshot-objects"])
-			expect((await gateway.get(`/v1/${route}/${environmentId}/${companyId}/${sha256}`)).status).toBe(404);
 		expect(gateway.state.calls).toEqual([]);
 	});
 

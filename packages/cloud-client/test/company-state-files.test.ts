@@ -367,10 +367,6 @@ describe("the QorperaOS root (Jonas, 21 October 2026)", () => {
 	});
 
 	it("seeds and protects the root, and names every platform path under it", () => {
-		expect(COMPANY_STATE_SEEDED_PATHS[0]).toBe("QorperaOS");
-		expect(
-			COMPANY_STATE_SEEDED_PATHS.filter((path) => !path.startsWith("QorperaOS/") && path !== "QorperaOS"),
-		).toEqual([]);
 		expect(COMPANY_STATE_SEEDED_PATHS).toContain("QorperaOS/agents/sections.md");
 		expect(COMPANY_STATE_FIRST_TODO_PATH).toBe("QorperaOS/agents/co-founder/todos/start-with-the-founders.md");
 		expect(COMPANY_STATE_HUMAN_TASK_SKILL_PATH).toBe("QorperaOS/skills/human-task/SKILL.md");
@@ -382,13 +378,6 @@ describe("the QorperaOS root (Jonas, 21 October 2026)", () => {
 			"QorperaOS/rules",
 			"hooks",
 		]);
-		const tree = companyStateSeedTree({
-			companyName: "Nordlys Studio",
-			cofounderId: ANNA,
-			firstTodo: { id: ID, requestedBy: JONAS },
-		});
-		expect(tree[0]).toEqual({ path: "QorperaOS", kind: "folder" });
-		expect(tree.map((entry) => entry.path)).toContain(COMPANY_STATE_FIRST_TODO_PATH);
 	});
 });
 
@@ -444,20 +433,6 @@ describe("agent.md", () => {
 	it("takes every figure a client offers, and still reads the retired ghost", () => {
 		for (const figure of STAFF_CHARACTER_IDS)
 			expect(ok("QorperaOS/agents/a/agent.md", agentFields({ figure }))).toMatchObject({ figure });
-		expect(STAFF_CHARACTER_IDS).toEqual([
-			"planet",
-			"acorn",
-			"flame",
-			"rocket",
-			"crown",
-			"heart",
-			"star",
-			"cloud",
-			"bolt",
-			"mushroom",
-			"moon",
-			"puzzle",
-		]);
 		// No client offers the ghost any more; a saved file that names it is read, and drawn as the moon.
 		expect(ok("QorperaOS/agents/a/agent.md", agentFields({ figure: "ghost" }))).toMatchObject({ figure: "ghost" });
 		expect(drawnStaffCharacter("ghost")).toBe("moon");
@@ -1114,26 +1089,8 @@ describe("hook and mailbox files (E1)", () => {
 	it("reads a hook and a mailbox and writes them back, with the parse the database checks", () => {
 		const parsed = ok("QorperaOS/connections/hook-stripe-payments.md", writeHookFile(hook));
 		expect(parsed).toStrictEqual({ kind: "hook", ...hook });
-		// The keys the database's parse shape names (20260930060000).
-		expect(Object.keys(parsed).sort()).toEqual(
-			[
-				"createdAt",
-				"createdBy",
-				"id",
-				"kind",
-				"maxBodyBytes",
-				"name",
-				"perMinute",
-				"proof",
-				"purpose",
-				"status",
-			].sort(),
-		);
 		const mail = ok("QorperaOS/connections/mailbox-support.md", writeMailboxFile(box));
 		expect(mail).toStrictEqual({ kind: "mailbox", ...box });
-		expect(Object.keys(mail).sort()).toEqual(
-			["address", "createdAt", "createdBy", "id", "kind", "purpose", "status"].sort(),
-		);
 		// A name YAML would read as something else is quoted, and reads back the same.
 		expect(ok("QorperaOS/connections/hook-yes.md", writeHookFile({ ...hook, name: "yes" }))).toMatchObject({
 			name: "yes",

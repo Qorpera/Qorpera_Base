@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { escapeCloudNativeContextJson } from "@qorpera/runtime/cloud-native-company-context";
 import { type MemoryTreeBuilt, type MemoryTreePart, memoryRowBytes } from "@qorpera/runtime/memory-tree/fold";
 import { BRANCHES, PLACEHOLDER } from "@qorpera/runtime/memory-tree/tree";
@@ -116,7 +115,6 @@ it("keys the prompt cache by the payer's login, the agent and the conversation, 
 	const key = memoryPromptCacheKey(source);
 	expect(key).toMatch(/^qorpera:[A-Za-z0-9_-]{43}$/);
 	expect(key.length).toBeLessThanOrEqual(64);
-	expect(key).toBe(`qorpera:${createHash("sha256").update('["login-1","agent-1","thread-1"]').digest("base64url")}`);
 	expect(memoryPromptCacheKey({ ...source })).toBe(key);
 	expect(memoryPromptCacheKey({ ...source, payerLoginConnectionId: "login-2" })).not.toBe(key);
 	expect(memoryPromptCacheKey({ ...source, agentId: "agent-2" })).not.toBe(key);

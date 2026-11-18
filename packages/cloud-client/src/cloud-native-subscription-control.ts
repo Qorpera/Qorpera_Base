@@ -134,18 +134,6 @@ export interface CreateMemberComputeIdentityInput {
 	policy?: JsonValue;
 }
 
-export interface CreateScopedComputeIdentityInput {
-	profileId: string;
-	clientIdentityId?: string;
-	ownershipKind: Exclude<ComputeIdentityOwnershipKind, "member">;
-	ownerScopeKey?: string;
-	displayName: string;
-	templateKey?: string;
-	templateVersion?: string;
-	capabilities?: readonly string[];
-	policy?: JsonValue;
-}
-
 export interface BeginNativeProviderLoginInput {
 	profileId: string;
 	computeIdentityId: string;
@@ -169,15 +157,6 @@ export interface RevokeNativeProviderConnectionInput {
 	providerConnectionId: string;
 }
 
-export interface CreateCompanySponsorInput {
-	profileId: string;
-	clientBindingId?: string;
-	sponsorKind: "company_service_account" | "company_api_billing";
-	providerConnectionId: string;
-	providerConnectionVersion: number;
-	allowAutonomous?: boolean;
-}
-
 export interface RequestSponsoredSessionTurnInput {
 	sessionId: string;
 	clientInputId?: string;
@@ -199,13 +178,10 @@ export interface RequestSponsoredSessionTurnInput {
 
 type NativeControlRpc =
 	| "qorpera_upsert_member_compute_identity"
-	| "qorpera_upsert_scoped_compute_identity"
 	| "qorpera_begin_native_provider_login"
 	| "qorpera_create_member_execution_sponsor"
-	| "qorpera_create_execution_sponsor_binding"
 	| "qorpera_request_session_turn_v2"
 	| "qorpera_list_member_native_execution_connections"
-	| "qorpera_list_compute_identities"
 	| "qorpera_list_session_turn_requests"
 	| "qorpera_revoke_native_provider_connection";
 
@@ -437,36 +413,6 @@ export class NativeSubscriptionControlPlane {
 		return parseMemberComputeIdentity(value);
 	}
 
-	async createScopedComputeIdentity(input: CreateScopedComputeIdentityInput): Promise<NativeComputeIdentity> {
-		if (input.ownershipKind === "company" && input.ownerScopeKey !== undefined) {
-			throw new Error("Company compute identities cannot name a narrower owner scope");
-		}
-		if (input.ownershipKind !== "company" && !input.ownerScopeKey) {
-			throw new Error("Department and security-boundary compute identities require an owner scope");
-		}
-		return parseComputeIdentity(
-			await this.#transport.rpc("qorpera_upsert_scoped_compute_identity", {
-				p_profile_id: input.profileId,
-				p_client_identity_id: input.clientIdentityId ?? randomUUID(),
-				p_ownership_kind: input.ownershipKind,
-				p_owner_scope_key: nullable(input.ownerScopeKey),
-				p_display_name: input.displayName,
-				p_template_key: input.templateKey ?? "qorpera-company-linux",
-				p_template_version: input.templateVersion ?? "v1",
-				p_capabilities: [...(input.capabilities ?? ["agent_turn", "company_substrate"])],
-				p_policy: input.policy ?? {},
-			}),
-		);
-	}
-
-	async listComputeIdentities(profileId: string): Promise<readonly NativeComputeIdentity[]> {
-		const value = await this.#transport.rpc("qorpera_list_compute_identities", { p_profile_id: profileId });
-		if (!Array.isArray(value)) {
-			throw new Error("Native subscription control returned invalid compute identity list");
-		}
-		return value.map((identity) => parseComputeIdentity(identity));
-	}
-
 	async beginNativeProviderLogin(input: BeginNativeProviderLoginInput): Promise<NativeProviderLoginAuthorization> {
 		if (!PROVIDER_PATTERN.test(input.provider)) throw new Error("Native provider id is invalid");
 		const capability = btoa(String.fromCharCode(...globalThis.crypto.getRandomValues(new Uint8Array(32))))
@@ -531,24 +477,6 @@ export class NativeSubscriptionControlPlane {
 		return {
 			bindingId: uuid(value.binding_id, "member sponsor binding id"),
 			version: integer(value.version, "member sponsor version"),
-		};
-	}
-
-	async createCompanySponsor(input: CreateCompanySponsorInput): Promise<{ bindingId: string; version: number }> {
-		const value = record(
-			await this.#transport.rpc("qorpera_create_execution_sponsor_binding", {
-				p_profile_id: input.profileId,
-				p_client_binding_id: input.clientBindingId ?? randomUUID(),
-				p_sponsor_kind: input.sponsorKind,
-				p_provider_connection_id: input.providerConnectionId,
-				p_provider_connection_version: input.providerConnectionVersion,
-				p_allow_autonomous: input.allowAutonomous ?? false,
-			}),
-			"company sponsor",
-		);
-		return {
-			bindingId: uuid(value.binding_id, "company sponsor binding id"),
-			version: integer(value.version, "company sponsor version"),
 		};
 	}
 

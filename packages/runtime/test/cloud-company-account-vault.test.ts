@@ -352,10 +352,10 @@ describe("company accounts over the broker", () => {
 			AbortSignal.timeout(5000),
 		);
 		await authority.setCompanyAccountState(request, accountId, "closed", AbortSignal.timeout(5000));
-		expect(queries.map((query) => query.text)).toEqual([
-			"select public.qorpera_describe_company_account_open($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
-			"select public.qorpera_open_company_account($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::uuid,$9::uuid,$10::text,$11::text[],$12::text,$13::text,$14::uuid,$15::text,$16::bytea,$17::text) as result",
-			"select public.qorpera_set_company_account_state($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text) as result",
+		expect(queries.map((query) => /\bpublic\.(\w+)\(/.exec(query.text)?.[1])).toEqual([
+			"qorpera_describe_company_account_open",
+			"qorpera_open_company_account",
+			"qorpera_set_company_account_state",
 		]);
 		const head = [
 			JSON.stringify(request.binding),

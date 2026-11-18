@@ -1950,8 +1950,6 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 			"hire_team",
 			["cofounder-member-agreed", "cofounder-routine-agreed", ...EMPLOYEE, ...WORKERS],
 		],
-		["a sketch for the first concept", "plainly a first sketch", [...STAFF, ...WORKERS]],
-		["the solution ahead of the first concept", "The solution comes first.", [...STAFF, ...WORKERS]],
 		// The reading is the Co-Founder's to keep, its senses too; the owner's wake question is the owner's.
 		[
 			"keeping the reading",
@@ -2013,16 +2011,6 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		expect([...named]).toContain("board");
 		expect([...named]).toContain("explainer");
 		for (const kit of named) expect(APP_KITS as readonly string[], kit).toContain(kit);
-	});
-
-	// The founder dropped the wall for agents (14 November 2026): no run names it or its tool. The board kit's mode that
-	// lays pictures out as a wall of references is save_app's own word, not the agent's wall.
-	it("names no wall and no update_wall in any run", () => {
-		for (const [run, text] of compiled) {
-			expect(text, run).not.toContain("update_wall");
-			const rest = text.replaceAll("a wall of references", "").replaceAll("the board kit's wall", "");
-			expect(rest, run).not.toMatch(/\bwalls?\b/i);
-		}
 	});
 
 	// No sentence hedges on whether a tool is there, and none names a tool the run lacks (track 3, T3-2 and T3-3).

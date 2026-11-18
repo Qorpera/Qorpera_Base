@@ -260,21 +260,6 @@ describe("protected credential-free guest Git transfer", () => {
 			"CODING_GIT_GUEST_BOOT_CHANGED",
 		);
 	});
-	it("exports while the session's own commands keep running", async () => {
-		// A session standing by keeps its servers and long commands running while
-		// a turn publishes; the export bundles the exact submitted commit.
-		const f = await fixture();
-		await f.seed();
-		const request = {
-			...f.request,
-			action: "export" as const,
-			transferId: id(5),
-			bundleSha256: null,
-			bundleBytes: 0,
-		};
-		await f.stage(request);
-		expect((await runCodingGitGuest("export", id(1), request.transferId, f.ports))?.headSha).toBe(request.headSha);
-	});
 	it("exports from a volume seeded on an earlier machine of the member", async () => {
 		const f = await fixture();
 		await f.seed();

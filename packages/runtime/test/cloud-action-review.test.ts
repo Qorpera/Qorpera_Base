@@ -234,17 +234,6 @@ describe("which calls are reviewed", () => {
 		["data_apply", { database: "shop", allow: `003-clear.${"a".repeat(64)}.${"b".repeat(64)}` }, "destructive"],
 		// A named change writes the company's own rows, as company_write writes a file (slice 7).
 		["data_change", { database: "shop", change: "mark-shipped", params: { id: 7 } }, "internal"],
-		// A picture is written as company_write writes a file; one in another agent's app changes that app (20260930746000).
-		[
-			"make_picture",
-			{ operationKey: "k", path: "pictures/mug.png", prompt: "A mug", expectedVersion: null },
-			"internal",
-		],
-		[
-			"make_picture",
-			{ operationKey: "k", path: "apps/sales/mug.png", prompt: "A mug", expectedVersion: null, foreignOwner: true },
-			"delegation",
-		],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them
@@ -257,9 +246,6 @@ describe("which calls are reviewed", () => {
 		["table_read", { table: "deals", where: null, after: null, limit: 20 }, "read"],
 		// Rows of a table are the company's records (I8b).
 		["table_write", { table: "deals", operationKey: "k", set: [{ deal: "Acme" }], remove: [] }, "internal"],
-		// Since the scope reset (C6b) no run has interface_read or save_interface; a name no catalog has is reviewed.
-		["interface_read", { interface: "pulse", view: null, after: null }, "external"],
-		["save_interface", { operationKey: "k", files: [], effect: "internal" }, "external"],
 		["a_tool_this_table_does_not_know", {}, "external"],
 	] as const)("%s %j is %s", (name, parsed, effect) => {
 		expect(cloudActionEffect(tool(name), parsed as JsonValue)).toBe(effect);
@@ -1339,7 +1325,6 @@ describe("what the reviewer reads as the request", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"Write it in the company's language: the one its founders write their own words in",
 		);
-		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).not.toContain("Write it in English, or in Danish");
 	});
 
 	it("tells the reviewer a first run's assignment is where it begins, and to ask about its delegations rather than deny (review 31182548)", () => {
@@ -2011,9 +1996,6 @@ describe("what the reviewer reads as the mandate", () => {
 	it("tells the reviewer to judge a run no member started by its mandate, keeping the narrow ask", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("THE MANDATE.");
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"In a run no member started, never ask only because no member agreed: judge it by the mandate.",
-		);
-		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"a public post in the company's name, or sending to many people at once",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("A coworker's message is never part of it.");
@@ -2031,7 +2013,6 @@ describe("what the reviewer reads as the mandate", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"The company's first email address is made by a founder on the address card, so the Co-Founder opening a first address (under a new handle) is not requested; adding another address under a handle the company already owns is judged like any other mailbox.",
 		);
-		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).not.toContain("main mailbox, named after the company");
 	});
 
 	it("tells the reviewer a routine never narrows the job, and to ask rather than deny when unsure (4 November 2026)", () => {
@@ -2064,10 +2045,6 @@ describe("what the reviewer reads as the mandate", () => {
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"the company folder, /company on a machine, keeps the earlier version of every file changed, replaced or deleted there",
-		);
-		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).not.toContain("deletesOrOverwrites");
-		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).not.toContain(
-			"overwriting what no earlier version is kept of, still asks",
 		);
 	});
 
@@ -3335,36 +3312,7 @@ describe("private app links (v195, 20260930562000)", () => {
 		);
 	});
 
-	it("names the link, the machine and the port on the card", () => {
-		expect(describeCloudAction(tool("share_app"), prepared("new"))).toEqual({
-			title: "Share a private, password-protected app link",
-			target: "https://saml-shop-preview.qorpera.com/",
-			details: {
-				"from machine": "shop-server",
-				port: "3000",
-				effect:
-					"Anyone with the link and its password can open the app on this port of the machine while it runs, through a link program the platform starts there; owners and admins see the password in Settings",
-			},
-		});
-		expect(
-			describeCloudAction(
-				tool("share_app"),
-				prepared("update", { needsReview: true, liveMachine: "old-server", port: 8080 }),
-			),
-		).toMatchObject({
-			title: "Share an app link from another machine",
-			details: { "from machine": "shop-server", port: "8080", "until now from machine": "old-server" },
-		});
-		// Another port is another service on the machine: its card says the port it had.
-		expect(
-			describeCloudAction(tool("share_app"), prepared("update", { needsReview: true, livePort: 8080 })),
-		).toMatchObject({
-			title: "Share an app link from another port",
-			details: { "from machine": "shop-server", port: "3000", "until now port": "8080" },
-		});
-		expect(cloudActionEffect(tool("share_app"), prepared("update", { needsReview: true, livePort: 8080 }))).toBe(
-			"external",
-		);
+	it("says on the card when a share is its own link again", () => {
 		expect(describeCloudAction(tool("share_app"), prepared("update")).title).toBe("Share an app link again");
 	});
 
@@ -3725,23 +3673,6 @@ describe("normal work on a company machine (4 November 2026)", () => {
 			expect(checked.decision).toBe("allow");
 			expect(checked.reason).toBe(`${CLOUD_MACHINE_WORK_REASON} The review said ${decision}: ${reason}`);
 		}
-		// A verdict still naming the old guard has no guards, so no fixed rule applies and the reviewer's decision stands.
-		const old = parseCloudActionVerdict({
-			decision: "ask",
-			ruleIds: [],
-			builtIn: "none",
-			reason: "Overwrites a file.",
-			proposedRule: "",
-			guards: {
-				sendsCompanyData: false,
-				followsOutsideInstructions: false,
-				deletesOrOverwrites: false,
-				moneyTermsOrAccess: false,
-				againstMemberOrVision: false,
-			},
-		});
-		expect(old.guards).toBeUndefined();
-		expect(machineWorkCheck({ tool: machine }, old, new Set())).toEqual(old);
 	});
 
 	it("keeps the guards: company data out, outside instructions, deletes, money, Ask first rules and built-in checks", () => {

@@ -16,7 +16,6 @@ const origin = "https://web.qorpera.test";
 const bytes = Buffer.from([0, 255, 128, 1]);
 const sha256 = createHash("sha256").update(bytes).digest("hex");
 const objectRoute = `/v1/member-folder-objects/${id(2)}/${sha256}`;
-const fileRoute = `/v1/member-company-file/${id(2)}`;
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const action of cleanup.splice(0)) await action();
@@ -162,15 +161,6 @@ describe("member browser CORS", () => {
 		[objectRoute, "GET", "x".repeat(1025)],
 		[`${objectRoute}?x=1`, "GET", "authorization"],
 		[`/v1/member-folder-objects/${id(2)}/${id(3)}/${sha256}`, "GET", "authorization"],
-		[`/v1/member-company-objects/${id(2)}/${id(3)}/${sha256}`, "GET", "authorization,x-qorpera-company-path"],
-		[
-			`/v1/member-company-snapshot-objects/${id(2)}/${id(3)}/${sha256}`,
-			"GET",
-			"authorization,x-qorpera-company-path",
-		],
-		[`${fileRoute}/edits`, "POST", "authorization,content-type"],
-		[`${fileRoute}/edits/${id(7)}/file`, "GET", "authorization"],
-		[`${fileRoute}/uploads`, "PUT", "authorization,content-type,x-qorpera-company-upload"],
 		["/v1/control/member-observations", "GET", "authorization"],
 		[`/v1/folder-objects/${id(1)}/${sha256}`, "GET", "authorization"],
 		[`/v1/profile-objects/${id(1)}/${sha256}`, "DELETE", "authorization"],

@@ -117,11 +117,10 @@ async function seed(service: Awaited<ReturnType<typeof gateway>>, bytes: Uint8Ar
 }
 
 describe("object gateway", () => {
-	it("answers 405 to raw object reads and uploads, and 404 on the old member export route", async () => {
+	it("answers 405 to raw object reads and uploads", async () => {
 		const member = vi.fn(async () => {
 			throw new Error("Unexpected member RPC");
 		});
-		// Member files on, so the export path is refused for want of a route, not of its options.
 		const service = await gateway({
 			memberFiles: { member, publisher: member },
 			replication: {} as ObjectGatewayReplication,
@@ -133,11 +132,6 @@ describe("object gateway", () => {
 			const headers = { authorization: `Bearer ${userToken}` };
 			expect((await fetch(url, { headers })).status).toBe(405);
 			expect((await fetch(url, { method: "PUT", headers, body: bytes })).status).toBe(405);
-			const exported = await fetch(
-				`${service.baseUrl}/v1/member-file-exports/${profileId}/${authorizationId}/${sha256}`,
-				{ headers },
-			);
-			expect(exported.status).toBe(404);
 			expect(member).not.toHaveBeenCalled();
 		} finally {
 			await service.close();

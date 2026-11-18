@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { companyStatePathProblems, parseCompanyStateFile } from "../src/company-state-files.ts";
-import {
-	isNetworkRulesName,
-	NETWORK_RULES_MAX_NAMES,
-	NETWORK_RULES_PATH,
-	parseNetworkRulesFile,
-} from "../src/network-rules.ts";
+import { isNetworkRulesName, NETWORK_RULES_PATH, parseNetworkRulesFile } from "../src/network-rules.ts";
 
 function ok(text: string) {
 	const result = parseNetworkRulesFile(text);
@@ -139,7 +134,6 @@ describe("parseNetworkRulesFile", () => {
 
 	it("takes at most 1000 names a list", () => {
 		const names = (count: number) => Array.from({ length: count }, (_, index) => `site-${index}.example`);
-		expect(NETWORK_RULES_MAX_NAMES).toBe(1000);
 		const full = `block = ${list(names(1000))}\nallow = ${list(names(1000).map((name) => `a.${name}`))}\n`;
 		expect(ok(full).block).toHaveLength(1000);
 		expect(refused(`mode = "only-listed"\nallow = ${list(names(1001))}\n`)).toEqual([

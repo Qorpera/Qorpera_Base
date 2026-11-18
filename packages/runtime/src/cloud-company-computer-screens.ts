@@ -1,19 +1,10 @@
 import { connect } from "node:net";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { isDeepStrictEqual } from "node:util";
 import {
-	assertCompanyComputerScope,
-	assertCompanyComputerScreenBinding,
-	type CompanyComputerScope,
 	type CompanyComputerScreenBinding,
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import {
-	assertCompanyComputerScreenRegistry,
-	type CompanyComputerScreenRegistry,
-	companyComputerScreenBinding,
-} from "./cloud-company-computer-state.ts";
 
 /** TigerVNC display/port convention reused from codex/step3-remaining-ops. */
 export function companyComputerScreenDisplay(ordinal: number): string {
@@ -33,151 +24,6 @@ export interface CompanyComputerScreenSessionHandle {
 export interface CompanyComputerScreenLauncher {
 	/** Guest-only launcher; reuse the image's qorpera-screen-session wrapper and supervisor. */
 	launch(binding: CompanyComputerScreenBinding, signal: AbortSignal): Promise<CompanyComputerScreenSessionHandle>;
-}
-
-interface ManagedScreen {
-	binding: CompanyComputerScreenBinding;
-	session: CompanyComputerScreenSessionHandle;
-	ready: boolean;
-}
-
-/**
- * Adapted from the historical CloudCompanyComputerScreenManager. Registry state
- * survives service/VM replacement; no process id or stale local attachment is
- * authoritative. A failed display is retried on the next reconcile. Authority
- * outages may preserve pixels, but the independently expiring input leases stop
- * ALL agent/member actions. Never infer an open screen from missing state.
- */
-export class CloudCompanyComputerScreenManager {
-	readonly #scope: CompanyComputerScope;
-	readonly #launcher: CompanyComputerScreenLauncher;
-	readonly #sessions = new Map<number, ManagedScreen>();
-	readonly #stop = new AbortController();
-	#pending: Promise<void> = Promise.resolve();
-	#revision = 0;
-	#computerGeneration = 0;
-	#snapshot?: CompanyComputerScreenRegistry;
-
-	constructor(scope: CompanyComputerScope, launcher: CompanyComputerScreenLauncher) {
-		assertCompanyComputerScope(scope, scope);
-		this.#scope = Object.freeze({ ...scope });
-		this.#launcher = launcher;
-	}
-
-	isReady(binding: CompanyComputerScreenBinding): boolean {
-		assertCompanyComputerScope(binding, this.#scope);
-		const live = this.#sessions.get(binding.screenOrdinal);
-		if (!live?.ready) return false;
-		try {
-			assertCompanyComputerScreenBinding(binding, live.binding);
-		} catch {
-			return false;
-		}
-		return true;
-	}
-
-	liveOrdinals(): number[] {
-		return [...this.#sessions]
-			.filter(([, value]) => value.ready)
-			.map(([ordinal]) => ordinal)
-			.sort((a, b) => a - b);
-	}
-
-	reconcile(snapshot: CompanyComputerScreenRegistry, signal: AbortSignal): Promise<void> {
-		const registry = structuredClone(snapshot);
-		assertCompanyComputerScreenRegistry(registry);
-		assertCompanyComputerScope(registry.scope, this.#scope);
-		const combined = AbortSignal.any([signal, this.#stop.signal]);
-		const work = this.#pending.then(async () => {
-			combined.throwIfAborted();
-			if (
-				registry.revision < this.#revision ||
-				registry.computerGeneration < this.#computerGeneration ||
-				(registry.revision === this.#revision && !isDeepStrictEqual(registry, this.#snapshot))
-			) {
-				throw new Error("STALE_SCREEN_REGISTRY");
-			}
-			this.#revision = registry.revision;
-			this.#computerGeneration = registry.computerGeneration;
-			this.#snapshot = registry;
-			const desired = new Map(
-				registry.screens
-					.filter(
-						(screen) =>
-							registry.lifecycle === "active" &&
-							screen.status === "active" &&
-							screen.power === "open" &&
-							screen.staffAgentId !== null,
-					)
-					.map((screen) => [screen.ordinal, companyComputerScreenBinding(registry, screen)]),
-			);
-			for (const [ordinal, live] of this.#sessions) {
-				const expected = desired.get(ordinal);
-				let matches = expected !== undefined;
-				if (expected) {
-					try {
-						assertCompanyComputerScreenBinding(live.binding, expected);
-					} catch {
-						matches = false;
-					}
-				}
-				if (matches && live.ready) continue;
-				live.ready = false;
-				// Do not remove a still-running process after failed shutdown: it remains quarantined.
-				await live.session.stop();
-				if (this.#sessions.get(ordinal) === live) this.#sessions.delete(ordinal);
-			}
-			const failures: unknown[] = [];
-			for (const [ordinal, binding] of desired) {
-				combined.throwIfAborted();
-				if (this.#sessions.has(ordinal)) continue;
-				try {
-					const session = await this.#launcher.launch(binding, combined);
-					const live: ManagedScreen = { binding, session, ready: false };
-					this.#sessions.set(ordinal, live);
-					void session.exited.then(
-						() => {
-							if (this.#sessions.get(ordinal) === live) this.#sessions.delete(ordinal);
-						},
-						() => {
-							live.ready = false;
-						},
-					);
-					try {
-						await companyComputerRequest(() => session.ready, combined, 15_000);
-						combined.throwIfAborted();
-						if (this.#sessions.get(ordinal) !== live) throw new Error("SCREEN_EXITED_DURING_START");
-						live.ready = true;
-					} catch (error) {
-						await session.stop();
-						if (this.#sessions.get(ordinal) === live) this.#sessions.delete(ordinal);
-						throw error;
-					}
-				} catch (error) {
-					failures.push(error);
-				}
-			}
-			if (failures.length > 0) throw new AggregateError(failures, "SCREEN_START_FAILED");
-		});
-		this.#pending = work.catch(() => undefined);
-		return work;
-	}
-
-	async stopAll(): Promise<void> {
-		this.#stop.abort();
-		await this.#pending;
-		const failures: unknown[] = [];
-		for (const [ordinal, live] of this.#sessions) {
-			live.ready = false;
-			try {
-				await live.session.stop();
-				if (this.#sessions.get(ordinal) === live) this.#sessions.delete(ordinal);
-			} catch (error) {
-				failures.push(error);
-			}
-		}
-		if (failures.length) throw new AggregateError(failures, "SCREEN_STOP_FAILED");
-	}
 }
 
 /** Bounded private Unix-socket probe, including cancellation. A listening socket is not desktop readiness. */

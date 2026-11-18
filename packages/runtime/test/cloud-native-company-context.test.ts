@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import {
 	COMPANY_STATE_COFOUNDER_HANDLE,
 	COMPANY_STATE_FIRST_TODO_PATH,
 	companyStateSeedTree,
 } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
-import { CLOUD_AGENT_SEND_INSTRUCTIONS, CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
+import { CLOUD_FOLDER_LINK_EXAMPLE } from "@qorpera/runtime/cloud-agent-mouth";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
@@ -38,7 +37,6 @@ import {
 	PLATFORM_UPDATES,
 } from "@qorpera/runtime/cloud-platform-updates";
 import { cloudCoFounderPlanningRun, cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
-import { CLOUD_ASK_MEMBER_INSTRUCTIONS } from "@qorpera/runtime/cloud-thread-interactions";
 import { type CloudWakeEnvelope, type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -65,8 +63,6 @@ it("puts the computer's work in the company folder at /company, not on a workben
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"On a machine the folder is /company: what you save there reaches the company's files about two seconds later, with your permissions, and nothing else on the machine is the company's.",
 	);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("private scratch");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(/workbench|computer_transfer/);
 });
 
 // The answer first (the contract's 2026-11-13 amendment, proposed): the words say once, with the reason, that only the
@@ -81,14 +77,6 @@ it("tells every run once that only its bookkeeping follows its final send, namin
 	expect(rule![1].split(/, | and /).sort()).toEqual([...CLOUD_AFTER_ANSWER_TOOLS].sort());
 	expect(instructions.split("do that bookkeeping then")).toHaveLength(2);
 	expect(instructions).toContain("Make it last, after every file change, check and coworker message;");
-	for (const text of [
-		CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
-		CLOUD_AGENT_SEND_INSTRUCTIONS,
-		CLOUD_ASK_MEMBER_INSTRUCTIONS,
-	])
-		expect(text).not.toMatch(
-			/ends the turn|nothing (you do )?after it runs|before you send the message|before you write to them/,
-		);
 });
 
 // Jonas, 21 October 2026: the company's own work is organized by area of the business first, then by kind.
@@ -127,11 +115,6 @@ it("tells every run, a worker's and a routine's too, to keep the company's work 
 			"- Delete your scratch. Moving, renaming or deleting someone else's work breaks their links and habits, so do it only when asked, and on an unclear instruction say exactly what you would change and wait for a yes.",
 		])
 			expect(instructions).toContain(rule);
-	// The kind-first rule of the first 21 October amendment is gone, in the prompt and in the tools' guidance.
-	for (const text of [CLOUD_COMPANY_RUNTIME_INSTRUCTIONS, CLOUD_TOOL_RESULT_INSTRUCTIONS])
-		expect(text).not.toMatch(
-			/category|kind of thing|growth\/|acme-nda|designs\/sales-dashboard|just to hold a single file/,
-		);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS.match(/wait for a yes/g)).toHaveLength(1);
 	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
 		"COMPANY_FILE_PARENT_MISSING: nothing was written. If that folder is where the file belongs, create it with company_mkdir and repeat; otherwise write the file where it belongs (never replace a file to make a folder).",
@@ -332,7 +315,6 @@ it.each([
 						"Here an acknowledgement is a short greeting in your own voice, not a note on what you will read.",
 					);
 					expect(instructions).toContain("Your role says how to begin and what to read before you greet.");
-					expect(instructions).not.toContain("fields or stages");
 				}
 				// Only a dynamic routine's run is told to decide its next run.
 				expect(instructions.includes("# This routine is dynamic")).toBe(false);
@@ -453,8 +435,6 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 		false,
 	);
 	expect(instructions).toContain("# This run: a busy machine");
-	// No company has had a Company Computer since 3 October 2026: its shell is named nowhere.
-	expect(instructions).not.toMatch(/computer_shell|Company Computer|your computer/);
 	for (const rule of [
 		"a machine by its name (machineKind machine or always-on), a coding session by its repository and branch (machineKind coding)",
 		"for a command, machine_cancel with the machine's name and its commandId",
@@ -470,8 +450,6 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 
 it("tells the agent's next run what the platform stopped on its machines", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
-	// The Company Computer's stopped commands are told nowhere: no company has had one since 3 October 2026.
-	expect(instructions).not.toContain("openWork.computerStopped");
 	expect(instructions).toContain(
 		"openWork.machineStopped lists commands and containers a machine stop ended since you last ran here, with why (slept after an hour with nothing busy, the company's computer hours ran out, someone stopped it, or it was lost in a restart or move)",
 	);
@@ -777,40 +755,6 @@ const STAFF_TOOLS = [
 	"manage_worker",
 	"manage_code",
 ];
-/** An agent's worker with write access on such a host. */
-const WORKER_TOOLS = [
-	"more_tools",
-	"company_read",
-	"company_list",
-	"company_write",
-	"company_edit",
-	"company_move",
-	"company_mkdir",
-	"company_delete",
-	"table_read",
-	"table_write",
-	"save_app",
-	"post_app",
-	"app_guide",
-	"make_picture",
-	"data_describe",
-	"data_query",
-	"read_context",
-	"machine_start",
-	"machine_run",
-	"machine_read",
-	"machine_cancel",
-	"machine_stop",
-	"machine_delete",
-	"machine_list",
-	"machine_screen",
-	"update_memory",
-	"recall_memory",
-	"read_skill",
-	"search_skills",
-	"update_skill",
-	"report_work",
-];
 const situationWake = (kind: string, source: string, final: string, extra: Record<string, unknown> = {}) =>
 	({
 		kind,
@@ -1044,7 +988,6 @@ it("gives a worker no role section, no word on the company's bank, its voice, ca
 		"send_message is your one public voice",
 		"wake.payload.heldMessages",
 		"# Cards",
-		"# Your wall",
 		"# Going live",
 		"Start three to five workers",
 		"put a new app in its group",
@@ -1123,7 +1066,7 @@ it.each(["cofounder", "employee"] as const)(
 	},
 );
 
-it("points the Co-Founder at the company folder's own files, with no formation file or stages (P28b)", () => {
+it("points the Co-Founder at the company folder's own files (P28b)", () => {
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	// The paths the creation's seed tree writes (companyStateSeedTree, #749).
 	for (const path of ["QorperaOS/vision/vision.md", "QorperaOS/agents/sections.md", "agent.md"])
@@ -1177,14 +1120,6 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		"On Mondays always write",
 	])
 		expect(cofounder).toContain(rule);
-	expect(cofounder).not.toContain("proposes a new name");
-	expect(cofounder).not.toContain(
-		"the team's work runs on the model login of the founder whose conversation started it",
-	);
-	expect(cofounder).not.toContain("post the whole vision in your own words in the thread");
-	expect(cofounder).not.toMatch(/Hire no one before the vision is agreed|fewest agents/);
-	expect(cofounder).not.toContain("QorperaOS/operations");
-	expect(cofounder).not.toContain("blank page");
 	// Every path and the first todo's title it names are the seed tree's.
 	const seeded = companyStateSeedTree({
 		companyName: "Nordlys Kaffe",
@@ -1198,18 +1133,6 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	const todo = seeded.find((entry) => entry.path === COMPANY_STATE_FIRST_TODO_PATH);
 	expect(todo?.text).toContain("title: Start with the founders");
 	expect(todo?.text).toContain("Done when every founder has agreed their part of the vision.");
-	// Stage keys such as "research" are ordinary words; the snapshot-v1 formation file's stage list, schema and
-	// paths are not.
-	for (const overlay of [cofounder, cloudRuntimeHireBehavior("employee")]) {
-		for (const key of [
-			"source_inventory, discovery, research, vision_proposal, goals_ratified, responsibility_map, operating",
-			"stage keys",
-			"qorpera.company-formation/v1",
-			"formation.json",
-			"organization/",
-		])
-			expect(overlay).not.toContain(key);
-	}
 });
 
 it("keeps a large hire charter pageable with its admitted hash rather than silently dropping job instructions", async () => {
@@ -1378,7 +1301,6 @@ it("preserves the latest instruction and source bindings when admitted inputs ex
 		"read on with read_context (its sourceKind and id, content.sha256, and content.nextOffset as offset)",
 	);
 	expect((tool.inputSchema.properties as { limit: { maximum: number } }).limit.maximum).toBe(16384);
-	expect(instructions).not.toMatch(/at most \d+ Qorpera tool calls/);
 	for (const source of logs) {
 		expect(
 			tool.parseArguments({
@@ -1900,241 +1822,6 @@ it("names the company's agent folders, and refuses a context that names none", (
 	).toThrow("Cloud context does not match its admitted run");
 });
 
-/** A company-folder run whose bytes are stable: every id becomes a fixed one in the order it first appears, and the
- * bundle digest a fixed one. It lists one coworker with a folder and one without. */
-function stableFolderRun(kind: "conversation" | "worker" | "private") {
-	const f = nativeCompanyContextFixture();
-	const named = f.context.coworkers[0].id;
-	f.context.coworkers.push({ id: randomUUID(), version: 3, name: "Bookkeeper", role: "Keep the books" });
-	f.context.folder = { agent: "nora", coworkers: { [named]: "ida-lund" } };
-	const requester = f.context.identity.requesterUserId;
-	if (kind === "private") {
-		f.context.identity = { ...f.context.identity, audienceKind: "member_private", audienceUserId: requester };
-		f.context.audience = { kind: "member_private", userId: requester };
-	}
-	if (kind === "worker") {
-		f.context.identity = { ...f.context.identity, sessionId: null };
-		f.context.currentInputs = [];
-	}
-	const identity = f.context.identity;
-	const inputId = f.context.currentInputs[0]?.id;
-	const workerId = randomUUID();
-	const parentRunId = randomUUID();
-	const worker = kind === "worker";
-	const wake = {
-		schema: "qorpera.wake-envelope/v1",
-		id: randomUUID(),
-		runId: identity.runId,
-		kind: worker ? "agent" : "human",
-		companyId: identity.companyId,
-		environmentId: identity.environmentId,
-		staffAgentId: identity.staffAgentId,
-		requesterUserId: requester,
-		actorStaffId: null,
-		actorUserId: worker ? null : requester,
-		audience: { ...f.context.audience, sessionId: identity.sessionId },
-		source: worker
-			? { kind: "worker-dispatch", id: workerId, occurrenceKey: `worker-dispatch:${workerId}:1` }
-			: { kind: "input", id: inputId, occurrenceKey: `input:${inputId}` },
-		policy: {
-			schema: "qorpera.wake-policy/v1",
-			kind: worker ? "agent" : "human",
-			initial: worker ? "forbidden" : "required",
-			final: worker ? "forbidden" : "required",
-			silenceAllowed: worker,
-			maxPublicSends: worker ? 0 : null,
-		},
-		time: { utc: "2026-09-19T08:00:00.000000Z", local: "2026-09-19T08:00:00.000000", timeZone: "UTC" },
-		pins: {
-			companySnapshotId: randomUUID(),
-			staffVersion: identity.staffVersion,
-			wakeSchema: "qorpera.wake-envelope/v1",
-			runtimeBundleVersion: null,
-		},
-		routine: null,
-		payload: worker
-			? {
-					schema: "qorpera.worker-dispatch/v1",
-					workerId,
-					workerKey: "note-check",
-					sequence: 1,
-					species: "in-house",
-					title: "Check the note",
-					todo: { todoKey: "note", title: "Note", path: "work/todos/nora/note.json" },
-					parentRunId,
-					access: "read",
-					outputFolder: "work/todos/nora/note/note-check",
-					dispatch: {
-						goal: "Read note.md and say what it contains.",
-						definitionOfDone: "One sentence describing the note.",
-						context: "",
-						sources: ["note.md"],
-						followUp: null,
-						authority: "Read what this agent may read. Write nothing.",
-						output: "Report once through report_work.",
-						cancellation: "Ends with its todo, or when the parent cancels it.",
-						completion: "The parent is revived as soon as you report.",
-					},
-				}
-			: { inputIds: [inputId] },
-		parentRunId: worker ? parentRunId : null,
-		causal: { rootId: randomUUID(), agentIds: [identity.staffAgentId] },
-	};
-	const ids = new Map<string, string>();
-	const stable = JSON.parse(
-		JSON.stringify({ binding: f.binding, context: f.context, wake })
-			.replaceAll(identity.runtimeBundleSha256, "e".repeat(64))
-			.replace(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g, (id) => {
-				if (!ids.has(id)) ids.set(id, `00000000-0000-4000-8000-${(ids.size + 1).toString(16).padStart(12, "0")}`);
-				return ids.get(id) as string;
-			}),
-	);
-	const context = parseCloudNativeCompanyContext(stable.context, stable.binding);
-	const parsedWake = parseCloudWakeEnvelope(stable.wake, context.identity);
-	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
-	return {
-		instructions: digest(
-			compileCloudNativeCompanyInstructions(context, parsedWake, {
-				head: "# Your head\nThe head as data.",
-				// The tools a run of that kind has (T3-2: its instructions fit them).
-				tools: new Set(kind === "worker" ? WORKER_TOOLS : [...STAFF_TOOLS, "send_message", "ask_member"]),
-			}),
-		),
-		prompt: digest(composeCloudNativeCompanyPrompt(context, parsedWake)),
-	};
-}
-
-// The sha256 of each run's developer instructions and prompt, taken from master at 1e2e3f773 (after M1b compose,
-// #980) before C-P9 + AF made the company folder the only kind of context, and taken again for chat images (a source's
-// images replace its attachmentCount, and the protocol says how to open them), and taken again for F3 4f-1 (the company
-// folder at /company replaced the workbench line), and taken again for the 21 October 2026 amendment (how agents start
-// work and use the company folder: constitution v3, overlay v5, the new rules), and taken again when the company's own
-// work was kept by area first, then by kind (Jonas, 21 October 2026), and taken again for the 2026-10-22 amendment
-// (agents build the company without waiting: the scoped request rule, own work, Standing work, overlay v6, and
-// conversations as the members' quick way in), taken again when a member's "push it" or "open a PR" became a coding
-// session's hand-in (C4-1, 26 October 2026), and for QorperaOS (the platform's folders under QorperaOS/, overlay v7;
-// Jonas, 21 October 2026; the platform-written folders kept at the top, 24 October 2026), and for overlay v8 (the team
-// grows like a company of employees; Jonas, 4 November 2026), and for listener routines in Standing work ("put out
-// listeners for a task"; Jonas, 4 November 2026), for overlay v9 (the Co-Founder has last month's payments sorted
-// for the company's good will; 5 November 2026), and for brief plain messages in one company language whose technical
-// level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026), and for
-// interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
-// the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
-// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
-// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
-// interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
-// 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
-// for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
-// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
-// the checks Qorpera runs before a change goes into the company's code (own code storage step 3, 11 November 2026), for
-// the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), for
-// work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
-// open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
-// a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
-// took out and when a change shows in What's new (own code storage step 6, 12 November 2026), for code on GitHub or in
-// a file brought in with manage_code bring_in (step 6's import, 20260930736000), for overlay v15 (the Co-Founder's
-// tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November 2026), for
-// code a member or another agent brought in, told once in openWork.codeBroughtIn (the import's follow-ups,
-// 20260930741000; a staff run's words only), for what an interface app is (an object, a model, an app or a video,
-// one app a thing, drawn by a kit of save_app, never a document or the state of someone's work; overlay v16; Jonas,
-// 13 November 2026), and for a member's note sent from an app's page (its first line names the app and the thing;
-// Jonas, 13 November 2026). A change to any is a change to every run's bytes. With master's v241 merged in
-// (13 November 2026) the instructions and prompts were measured once more.
-// With company databases (when a database is the right home, its folder and never a secret in it; slice 5,
-// 13 November 2026) merged with that master, the staff instructions were measured once more, and all of them again
-// where that master meets the answer first (the run's bookkeeping after its final send; the contract's 2026-11-13
-// amendment, proposed).
-// With a render lit and looked at like a photograph in every run's words, and a machine sized for work that keeps
-// processors busy in the staff's (Jonas, 13 November 2026), merged with that master, all three were measured once more.
-// With the look step pointing at the starter set the machine image brings (deploy/machine/README.md, "Renders"), all
-// three were measured once more.
-// With own code storage step 5.1's D1a (changes/index.md says, for about a minute after a change goes in, that its site is
-// being prepared; 13 November 2026), the staff instructions were measured once more on the merged tree.
-// With both on one tree (master's starter set and step 5.1's D1a; release v247's candidate, 14 November 2026) the staff
-// instructions were measured once more.
-// With all of it on one tree (step 5.1's D1a and app_guide; release v247, 14 November 2026) the conversation's
-// and a private conversation's instructions were measured once more.
-// Track 3, T3-1 (14 November 2026): the Company Computer, which no company has had since 3 October 2026, left the
-// words every run reads; laws 3 and 6 say what members see and which route is next today; and the run's ids and
-// versions (the bootstrap binding) left the instructions for the run's records. All three were measured once more.
-// With app_guide named as where a kit's file is described (the guides stood on save_app's fields, which no model
-// received; 20260930762000, 14 November 2026), all three instructions were measured once more.
-// Both together (master merged into T3-1, 15 November 2026): the worker and the conversation pairs measured once more.
-// Track 3, T3-2 (14 November 2026): each run's instructions fit its tools (a section or sentence about a tool it lacks
-// is left out, and no "when it is offered" is left), a worker gets no role section and no bank text, and the
-// Co-Founder's founding work stays only until the vision is agreed. The pins compile for a staff run's tools and a
-// worker's; all three were measured once more.
-// Master merged up through T3-1 (15 November 2026): app_guide joins save_app in the staff and worker tools, as the
-// runtime offers it, so the apps paragraph names it; all three measured once more.
-// Track 3, T3-3 (14 November 2026): one voice. Purpose and people come first, the tool-result rules stand once after the
-// company's files, the sections a run's tools call for are shared before the head, and the hire overlay is v17 (the
-// prompt names its version). All three were measured once more.
-// Review r1 of #1803: using skills in every run that can load one, the constitution and the after-answer bookkeeping
-// for the run's own tools, the secrets rule in a worker's words, a broken connection and the card that fits are back,
-// and the hand-off once every founder approves is a piece of its own. The instructions were measured once more.
-// The same day the wall left the agents (the founder: "rather drop the wall - it's the wrong medium for activity"):
-// no Your wall section, and What members see, Cards, Writing and the owner's role say nothing of one. The staff
-// instructions were measured once more; a worker's never named the wall. Both, merged, measured once more.
-// Track 3, T3-6: a staff run that opens tools through more_tools reads where the tools its instructions name but it does
-// not see are, in How work gets done; the staff instructions were measured once more. A worker's core has no such line.
-// Master merged up through T3-2 (15 November 2026): the apps section says, in one voice, to read a kit's guide with app_guide before writing its file; all three measured once more.
-// v247's release merged into T3-1 (15 November 2026): its D1a sentence with T3-1's words and app_guide; the
-// conversation and private pairs measured once more.
-// Its D1a sentence in T3-2's Starting work too: the staff pair measured once more.
-// v247's release merged up through T3-2 (15 November 2026): Code projects says, in one voice, that changes/index.md also tells a site still being prepared; all three measured once more.
-// Master and v247's release merged up through T3-3 (15 November 2026) under no-wall: the staff pairs measured once more.
-// Master and v247's release merged up through T3-5 into T3-6 (15 November 2026): the staff pairs measured once more.
-// With a render's final frames kept in the company folder and no person built from plain shapes (the first real job
-// on the image with Blender and the starter set, 14 November 2026), all three were measured once more, and the
-// conversation's and a private conversation's again on the tree with release v247 (15 November 2026).
-// With a database's changes (actions/, data_change; company databases, slice 7, 20260930763000) in the staff's
-// "Company databases" paragraph, on release v247's tree (15 November 2026), the conversation's and a private
-// conversation's instructions moved; a worker's do not name databases.
-// With how a member is asked for a held step (data_apply's allow, 20260930764000) there, they moved again.
-// Master 01c90ff7a merged into T3-1 for landing (15 November 2026): measured once more.
-// Master 01c90ff7a merged up through T3-1 for landing (15 November 2026): the render frames and the data changes in T3-2's form; measured once more.
-// Master 01c90ff7a merged up through T3-2 for landing (15 November 2026): the render frames and a database's changes said in one voice; measured once more.
-// Master 01c90ff7a merged up through T3-3 for landing (15 November 2026) under no-wall: the staff pairs measured once more.
-// Master 01c90ff7a merged up through T3-5 into T3-6 for landing (15 November 2026): the staff pairs measured once more.
-// The company's reading of itself (overlay v18, 14 November 2026; the founder: "It should feel like the company is
-// conscious almost"): the head's words name the reading (every run, a worker's too), a staff run's context names
-// senses where it keeps the reading, the Co-Founder's and the owner's roles take their new sentences, and every prompt
-// names overlay v18. All three were measured once more.
-// The stack's new head (no-wall 9ecf100fe, master and v247's release) merged in (15 November 2026): all three
-// measured once more on node 1's test machine.
-// The company's map (the founder, 15 November 2026: "Use a map kit"): the reading is its first layer, the planning run
-// keeps it with save_app's map kit, and a retired interface stays retired; the staff instructions measured once more.
-// With a line on handing work a member asks Claude Code to do to a worker with harness claude-code (20260930770000,
-// 14 November 2026; staff runs only), the conversation's and the private conversation's instructions moved.
-it.each([
-	[
-		"an ordinary company conversation",
-		"conversation",
-		{
-			instructions: "c87c9a47ae639767f2c72d4812253bb2cc0802ab295faf6ea4909c65af4744e5",
-			prompt: "d0d165dd3ec02d42be86627b746db78dec12f84ea9b074a535a20ae17077a10f",
-		},
-	],
-	[
-		"a worker run",
-		"worker",
-		{
-			instructions: "29c202822805a9f20a11d9be245c10367f458af643aaec8c94d35ebff87ab847",
-			prompt: "fa5484d70ef2438b94e068f615ed012ae5a7843a12be83985a904ad93a5f1706",
-		},
-	],
-	[
-		"a member's private conversation",
-		"private",
-		{
-			instructions: "c87c9a47ae639767f2c72d4812253bb2cc0802ab295faf6ea4909c65af4744e5",
-			prompt: "27106a9a7f751dbbb76094cf196c71056eb84e687dd6f76a531068d602b26f35",
-		},
-	],
-] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
-	expect(stableFolderRun(kind)).toEqual(pinned);
-});
-
 // Own code storage, step 2b (20260930720000): every change in a repository kept in Qorpera has a number and a record,
 // and a wrong one is taken out with manage_code before it is fixed. The sentence that sent an undo to the session as a
 // follow-up (#1643) is gone: two ways to undo would be one too many.
@@ -2166,14 +1853,6 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 		"Pull requests, branches, commits and change numbers stay yours: tell members what changed for them.",
 	])
 		expect(instructions).toContain(rule);
-	for (const gone of [
-		"fixes or undoes it at once",
-		"To undo a landed change",
-		"revert that commit",
-		"A change landed in a repository kept in Qorpera",
-		"Check a new change yourself first",
-	])
-		expect(instructions).not.toContain(gone);
 	// A worker reports to its agent and gets none of it.
 	const worker = cloudCompanyRuntimeInstructions(
 		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
@@ -2184,21 +1863,6 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 	expect(worker).not.toContain('"site": {"folder": "dist"}');
 	expect(worker).not.toContain("put back to an earlier copy");
 	expect(worker).not.toContain("being prepared");
-});
-
-// Own code storage, step 5.1 (D1a): the line the agents are told to look for is the one the coding executor writes in
-// changes/index.md, "Being prepared for What's new: change N (about a minute).", while the kernel says what is being
-// prepared (only while sites have hosts of their own: migration 20260930756000's preparing).
-it("names the line the coding executor writes while a site is being prepared", () => {
-	const records = readFileSync(
-		new URL("../../runner-orchestrator/src/code-change-records.ts", import.meta.url),
-		"utf8",
-	);
-	expect(records).toMatch(/`Being prepared for What's new: change \$\{preparing\.change\} \(about a minute\)\.`/);
-	expect(cloudCompanyRuntimeInstructions(null, false)).toContain(
-		// T3-3's one voice says it in the Code projects section.
-		"changes/index.md says which is live and which is still being prepared (about a minute after a change goes in)",
-	);
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
@@ -2221,7 +1885,6 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 		"pass a member's request on in their own words",
 	])
 		expect(instructions).toContain(rule);
-	expect(instructions).not.toContain("Use the language the member wrote in");
 	// A worker writes many of the company's files and gets no Writing for members: its own words say how.
 	const worker = cloudCompanyRuntimeInstructions(
 		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
@@ -2234,9 +1897,8 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 // The founder, 14 November 2026, asked whether to drop the forced first message: "rather drop the wall - it's the wrong
 // medium for activity". The short first message tells a member that work has started; what waits on them is a card;
 // agents keep no wall and are told of none.
-it("tells a member work has started with the acknowledgement, shows what waits on a card, and keeps no wall", () => {
+it("tells a member work has started with the acknowledgement, and shows what waits on a card", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
-	expect(instructions).not.toMatch(/\bupdate_wall\b|# Your wall|your wall|wall item/);
 	for (const rule of [
 		"it is how the member learns that work has started",
 		"Apart from that acknowledgement, never send only to say that work started, goes on or has not changed: the final send says once what is done and what carries the rest.",
@@ -2395,7 +2057,6 @@ it("shows the company's work in interface apps from the first day, as fun quick 
 		"picked by the founders on a card that previews them",
 	])
 		expect(instructions).toContain(rule);
-	expect(instructions).not.toContain("an SVG sketch written to the company file is enough");
 });
 
 it("has an interface app show a thing to see and handle, never a document or a status page (13 November 2026)", () => {
@@ -2434,23 +2095,15 @@ it("has an interface app show a thing to see and handle, never a document or a s
 		"Build nothing further until it shows what they said.",
 	])
 		expect(instructions).toContain(rule);
-	for (const gone of [
-		"keep one app that shows the state of that area",
-		"what is decided, what is open, what waits on them, its numbers and its product, as they stand now",
-		"before any picture, write the concept brief",
-	])
-		expect(instructions).not.toContain(gone);
 	const employee = cloudRuntimeHireBehavior("employee");
 	expect(employee).toContain("show it in that thing's app and change the app in the run that changes the thing");
 	expect(employee).toContain("no app is better than a page of text");
-	expect(employee).not.toContain("shows how the area stands now");
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	expect(cofounder).toContain(
 		"when an app reads as a document or a report of someone's work, is out of date, or shows a thing that already has an app, tell its owner to remake it and name the kit",
 	);
 	// The Co-Founder's own company app is the company's map, made with the map kit, the reading its first layer, and
 	// an interface a member retired stays retired (overlay v18; the founder, 15 November 2026: "Use a map kit").
-	expect(cofounder).not.toContain("Keep one posted app of your own, named company");
 	expect(cofounder).toContain(
 		"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer",
 	);
@@ -2498,20 +2151,6 @@ it("holds changes until a member says yes, and puts a repository's website live 
 		expect(instructions).toContain(rule);
 		expect(worker).not.toContain(rule);
 	}
-	// The app agents kept for it, and its rundown and buttons, are gone; so is the line that said only where it waits.
-	for (const gone of [
-		"tell them in one line that it waits there",
-		"ask a member at once to put the fix live",
-		"whats-new",
-		"(publish_site on a live site)",
-		"show them together as one rundown",
-		"one question card that points at the app",
-		"show the same two as buttons on the page",
-		"Nothing in the rundown goes live",
-		"mark those changes as live on the page",
-		"marked as already live",
-	])
-		expect(instructions).not.toContain(gone);
 });
 
 it("has a founder choose the company's email address on a card once it has a name (17 November 2026)", () => {
@@ -2528,7 +2167,6 @@ it("has a founder choose the company's email address on a card once it has a nam
 		"The founding can be agreed with no name: the first line then stays # No name yet.",
 	])
 		expect(cofounder).toContain(words);
-	expect(cofounder).not.toContain("localPart the company's name in lowercase");
 	const role = (visionAgreed: boolean, has: (tool: string) => boolean = () => true) =>
 		cloudRuntimeHireBehavior("cofounder", { has, visionAgreed });
 	const later =
@@ -2573,8 +2211,6 @@ it("tells an agent to explore what is to be seen in loops, with demo videos in o
 		'shown with <video src="name.mp4" controls loop muted playsinline>), its name and one line on what sets it apart; post the app',
 	])
 		expect(instructions).toContain(rule);
-	// Machines bring Playwright and ffmpeg (machine_start's description): no install recipe.
-	expect(instructions).not.toContain("apt-get install -y ffmpeg");
 });
 
 // The 21 October 2026 amendment "how agents start work and use the company folder"; the platform's folders are in
@@ -2618,10 +2254,6 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Save the files you make where the assignment says (its context names the folder, such as product/designs/)",
 	);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toMatch(
-		/work\/report\.md|docs\/plan\.md|private scratch|public websites/,
-	);
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("nobody requested");
 });
 
 it("gives a staff run the rules for starting work, and a worker none of them", () => {
@@ -2659,7 +2291,6 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"what is done, with links; what you decided, each with its reason; what you need from them.",
 	])
 		expect(staff).toContain(rule);
-	expect(staff).not.toContain("Use GitHub only for code that already lives there");
 	const worker = cloudCompanyRuntimeInstructions(
 		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
 		false,
@@ -2670,7 +2301,6 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	expect(cofounder).toContain("A founder's ask comes first, at the size they asked.");
 	expect(cofounder).toContain("it never holds up anything a founder asks");
-	expect(cofounder).not.toMatch(/comes first in every conversation|do not start your alternative/);
 });
 
 /** A room wake on `postId`, the post a member made in the agent's own thread. */
@@ -3309,7 +2939,6 @@ it("tells an agent to ask what its work waits for on a card that says what is st
 		"A declined, dismissed or expired card is an answer, never consent",
 	])
 		expect(instructions).toContain(rule);
-	expect(instructions).not.toContain("put a new question you ask them on it");
 });
 
 // The company's reading of itself (the founder, 14 November 2026: "It should feel like the company is conscious

@@ -57,18 +57,6 @@ export interface AppGroupsFile {
 	readonly retired: readonly string[];
 }
 
-/** What the drawer draws: the file's items the company has, in its order, groups with nothing to draw left out, then
- * the keys the file does not list, loose, in the order given. */
-export type AppGroupsDrawnNode =
-	| { readonly kind: "item"; readonly key: string }
-	| {
-			readonly kind: "group";
-			readonly id: string;
-			readonly name: string;
-			readonly items: readonly AppGroupsDrawnNode[];
-			readonly colour?: AgentColour;
-	  };
-
 const GROUP_ID = /^[a-z0-9-]{1,40}$/;
 // Every pattern here runs in time linear in its line, whatever a line holds (a run of 60,000 spaces included): no two
 // quantifiers next to each other can take the same character. Trailing spaces, tabs and carriage returns are cut with
@@ -249,65 +237,6 @@ export function writeAppGroups(file: AppGroupsFile): string {
 		painted.length > 0 ? [`<!-- group colours: ${painted.join(", ")} -->`] : [],
 	].filter((block) => block.length > 0);
 	return blocks.length === 0 ? "" : `${blocks.map((block) => block.join("\n")).join("\n\n")}\n`;
-}
-
-/** Every group in the list with its parent (null at the top) and its level (0 at the top), in order. */
-export function appGroupsGroups(
-	items: readonly AppGroupNode[],
-): { readonly group: AppGroup; readonly parent: AppGroup | null; readonly level: number }[] {
-	const found: { group: AppGroup; parent: AppGroup | null; level: number }[] = [];
-	const walk = (nodes: readonly AppGroupNode[], parent: AppGroup | null, level: number) => {
-		for (const node of nodes)
-			if (node.kind === "group") {
-				found.push({ group: node, parent, level });
-				walk(node.items, node, level + 1);
-			}
-	};
-	walk(items, null, 0);
-	return found;
-}
-
-/** What the drawer draws from the file for a company that has `have` (its keys in the drawer's own order: pages, apps
- * by name, Concepts, Sites, What's new): the listed keys it has, groups with nothing to draw left out, then the rest
- * loose. `missing` is the drawer keys the file lists that the company does not have. */
-export function resolveAppGroups(
-	file: Pick<AppGroupsFile, "items">,
-	have: readonly string[],
-): { readonly items: readonly AppGroupsDrawnNode[]; readonly missing: readonly string[] } {
-	const present = new Set(have);
-	const seen = new Set<string>();
-	const missing: string[] = [];
-	const walk = (nodes: readonly AppGroupNode[]): AppGroupsDrawnNode[] =>
-		nodes.flatMap((node): AppGroupsDrawnNode[] => {
-			if (node.kind === "group") {
-				const items = walk(node.items);
-				return items.length > 0
-					? [
-							{
-								kind: "group",
-								id: node.id,
-								name: node.name,
-								items,
-								...(node.colour ? { colour: node.colour } : {}),
-							},
-						]
-					: [];
-			}
-			if (!isAppDrawerKey(node.key) || seen.has(node.key)) return [];
-			seen.add(node.key);
-			if (!present.has(node.key)) {
-				missing.push(node.key);
-				return [];
-			}
-			return [{ kind: "item", key: node.key }];
-		});
-	const items = walk(file.items);
-	for (const key of have)
-		if (!seen.has(key)) {
-			seen.add(key);
-			items.push({ kind: "item", key });
-		}
-	return { items, missing };
 }
 
 function bounded(text: string): string {

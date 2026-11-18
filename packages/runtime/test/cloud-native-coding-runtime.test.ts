@@ -317,17 +317,6 @@ describe("the coding composition of a native turn", () => {
 					"Neither is required: never hold work back for them.",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
-				// Step 1's words said nothing checks a landing; step 4's that a site links only relatively.
-				for (const gone of [
-					"nothing stands between your finish",
-					"since it would land",
-					"the landing is at once",
-					"never at the top of a domain",
-					"never with links that start with /",
-					"link from the top",
-					'base: "./"',
-				])
-					expect(options.runtimeInstructions).not.toContain(gone);
 				await options.beginExecution(
 					{
 						type: "namespace",

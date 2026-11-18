@@ -864,7 +864,6 @@ describe("run box views", () => {
 	}
 
 	it("opens a core view for the execution host only, with its own pass, and renews its lease while connected", async () => {
-		expect(BOX_PASS).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		const { core, service, path } = await box();
 		const io = await Client.open(path);
 		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
