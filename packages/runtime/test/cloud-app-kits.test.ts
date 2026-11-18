@@ -1751,27 +1751,30 @@ it("gives a map's app the company's reading where it draws the reading or an age
 const goal = (name: string, more: Record<string, JsonValue> = {}) => ({ name, state: "later", ...more });
 const ROADMAP = {
 	lang: "en",
-	title: "Paradise on earth",
-	picture: "pictures/paradise.png",
+	title: "Clean water in every home",
+	picture: "pictures/home.png",
 	stand: "side by side",
 	parts: [
 		{
-			name: "Qorpera",
-			picture: "pictures/europe.png",
+			name: "Filters",
+			picture: "pictures/filter.png",
 			state: "now",
 			agents: ["Co-Founder"],
 			stand: "in order",
 			kind: "Goal",
 			parts: [
-				goal("People try", {
+				goal("A family filter", {
 					state: "now",
-					picture: "pictures/try.png",
-					parts: [goal("A box of your own", { picture: "pictures/box.png" }), goal("Insured", { state: "open" })],
+					picture: "pictures/family.png",
+					parts: [
+						goal("A year's cartridge", { picture: "pictures/cartridge.png" }),
+						goal("Sold in village shops", { state: "open" }),
+					],
 				}),
-				goal("Europe competes", { picture: "pictures/rocket.png" }),
+				goal("Cities switch", { picture: "pictures/city.png" }),
 			],
 		},
-		goal("Land", { picture: "pictures/dome.png", parts: [goal("Snow to heat", { state: "open" })] }),
+		goal("Wells", { picture: "pictures/well.png", parts: [goal("A day's well", { state: "open" })] }),
 	],
 };
 
@@ -1788,44 +1791,44 @@ it("reads a roadmap's data, or says in words why it does not read", () => {
 	expect(problem({ ...ROADMAP, parts: {} })).toBe(
 		"roadmap.json has parts that are no list: the products or fields the ambition spans",
 	);
-	expect(problem({ ...ROADMAP, parts: [goal("Qorpera")] })).toBe(
+	expect(problem({ ...ROADMAP, parts: [goal("Filters")] })).toBe(
 		"roadmap.json needs 2 to 7 parts at its top, the products or fields the ambition spans: it has 1",
 	);
-	const top = (...parts: unknown[]) => ({ ...ROADMAP, parts: [goal("Mind"), ...parts] });
-	expect(problem(top("Land"))).toBe("roadmap.json has a part in its top that is no object (number 2)");
+	const top = (...parts: unknown[]) => ({ ...ROADMAP, parts: [goal("Pumps"), ...parts] });
+	expect(problem(top("Wells"))).toBe("roadmap.json has a part in its top that is no object (number 2)");
 	expect(problem(top({ state: "now" }))).toBe("roadmap.json has a part in its top with no name (number 2)");
-	expect(problem(top({ name: "Land" }))).toBe(
-		'roadmap.json has a part Land with no state: "done", "now", "later" or "open"',
+	expect(problem(top({ name: "Wells" }))).toBe(
+		'roadmap.json has a part Wells with no state: "done", "now", "later" or "open"',
 	);
-	expect(problem(top(goal("Land", { state: "soon" })))).toBe(
-		'roadmap.json has a part Land with a state the roadmap kit does not draw: "done", "now", "later" or "open"',
+	expect(problem(top(goal("Wells", { state: "soon" })))).toBe(
+		'roadmap.json has a part Wells with a state the roadmap kit does not draw: "done", "now", "later" or "open"',
 	);
 	for (const picture of ["https://example.com/a.png", "../a.png", "/a.png", "pictures/a.gif", "pictures/a"])
-		expect(problem(top(goal("Land", { picture }))), picture).toBe(
-			'roadmap.json has a picture in Land that is not the path of a .png, .jpg or .webp file in the app\'s folder, such as "pictures/tunnels.png"',
+		expect(problem(top(goal("Wells", { picture }))), picture).toBe(
+			'roadmap.json has a picture in Wells that is not the path of a .png, .jpg or .webp file in the app\'s folder, such as "pictures/well.png"',
 		);
-	expect(problem({ ...ROADMAP, picture: "paradise.mp4" })).toBe(
-		'roadmap.json has a picture at its top that is not the path of a .png, .jpg or .webp file in the app\'s folder, such as "pictures/tunnels.png"',
+	expect(problem({ ...ROADMAP, picture: "home.mp4" })).toBe(
+		'roadmap.json has a picture at its top that is not the path of a .png, .jpg or .webp file in the app\'s folder, such as "pictures/well.png"',
 	);
-	expect(problem(top(goal("Land", { stand: "in a row" })))).toBe(
-		'roadmap.json has a stand in Land that is not "in order" or "side by side"',
+	expect(problem(top(goal("Wells", { stand: "in a row" })))).toBe(
+		'roadmap.json has a stand in Wells that is not "in order" or "side by side"',
 	);
-	expect(problem(top(goal("Land", { due: "2027-01-01" })))).toBe(
-		"roadmap.json has a due in Land: a roadmap has no dates, the order of the parts is the order",
+	expect(problem(top(goal("Wells", { due: "2027-01-01" })))).toBe(
+		"roadmap.json has a due in Wells: a roadmap has no dates, the order of the parts is the order",
 	);
 	expect(problem({ ...ROADMAP, year: 2030 })).toBe(
 		"roadmap.json has a year at its top: a roadmap has no dates, the order of the parts is the order",
 	);
-	expect(problem(top(goal("Land", { agents: ["A", "B", "C", "D", "E"] })))).toBe(
-		"roadmap.json has agents in Land that are not 0 to 4 agents' names",
+	expect(problem(top(goal("Wells", { agents: ["A", "B", "C", "D", "E"] })))).toBe(
+		"roadmap.json has agents in Wells that are not 0 to 4 agents' names",
 	);
-	expect(problem(top(goal("Land", { agents: "Product" })))).toBe(
-		"roadmap.json has agents in Land that are not 0 to 4 agents' names",
+	expect(problem(top(goal("Wells", { agents: "Product" })))).toBe(
+		"roadmap.json has agents in Wells that are not 0 to 4 agents' names",
 	);
 	const many = (count: number) => Array.from({ length: count }, (_, k) => goal(`G${k + 1}`));
-	expect(problem(top(goal("Land", { parts: many(12) })))).toBeNull();
-	expect(problem(top(goal("Land", { parts: many(13) })))).toBe(
-		"roadmap.json has 13 parts in Land: the roadmap kit draws 12 at most in one layer",
+	expect(problem(top(goal("Wells", { parts: many(12) })))).toBeNull();
+	expect(problem(top(goal("Wells", { parts: many(13) })))).toBe(
+		"roadmap.json has 13 parts in Wells: the roadmap kit draws 12 at most in one layer",
 	);
 	expect(problem({ ...ROADMAP, parts: many(7) })).toBeNull();
 	expect(problem({ ...ROADMAP, parts: many(8) })).toBe(
@@ -1842,23 +1845,23 @@ it("reads a roadmap's data, or says in words why it does not read", () => {
 });
 
 it("names in a roadmap's page only its top layer's pictures, and the agents' figures when it names an agent", () => {
-	const page = kitPage("roadmap", "roadmap", "Roadmap", ROADMAP, (path) => path !== "pictures/dome.png");
-	for (const path of ["pictures/paradise.png", "pictures/europe.png"])
+	const page = kitPage("roadmap", "roadmap", "Roadmap", ROADMAP, (path) => path !== "pictures/well.png");
+	for (const path of ["pictures/home.png", "pictures/filter.png"])
 		expect(page).toContain(`<img data-kit-src="${path}" src="${path}" alt="">`);
-	for (const path of ["pictures/dome.png", "pictures/try.png", "pictures/box.png", "pictures/rocket.png"])
+	for (const path of ["pictures/well.png", "pictures/family.png", "pictures/cartridge.png", "pictures/city.png"])
 		expect(page).not.toContain(`data-kit-src="${path}"`);
 	for (const [id, url] of Object.entries(KIT_FIGURES))
 		expect(page).toContain(`<img data-kit-src="figure:${id}" src="${url}" alt="">`);
-	const nobody = { ...ROADMAP, parts: [goal("Mind"), goal("Land")] };
+	const nobody = { ...ROADMAP, parts: [goal("Pumps"), goal("Wells")] };
 	expect(kitPage("roadmap", "roadmap", "Roadmap", nobody, () => true)).not.toContain("figure:");
 	expect(KIT_ENGINE_JS.roadmap).toBe(kitFile("roadmap", "engine.js"));
 	expect(kitMedia(ROADMAP)).toEqual([
-		"pictures/paradise.png",
-		"pictures/europe.png",
-		"pictures/try.png",
-		"pictures/box.png",
-		"pictures/rocket.png",
-		"pictures/dome.png",
+		"pictures/home.png",
+		"pictures/filter.png",
+		"pictures/family.png",
+		"pictures/cartridge.png",
+		"pictures/city.png",
+		"pictures/well.png",
 	]);
 });
 
@@ -1867,12 +1870,12 @@ it("tells a roadmap's maker which parts reached have no picture", () => {
 	const bare = {
 		...ROADMAP,
 		parts: [
-			goal("Mind", { state: "done" }),
-			goal("Land", { state: "now", parts: [goal("Tunnels", { state: "done" })] }),
+			goal("Pumps", { state: "done" }),
+			goal("Wells", { state: "now", parts: [goal("Pipes", { state: "done" })] }),
 		],
 	};
 	expect(kitNotes("roadmap", bare, () => true)).toEqual([
-		"3 parts that are done or now have no picture (Mind, Land, Tunnels): a part reached is shown by a picture of the world it made. Make them with make_picture into the app's pictures/ folder, name them in picture and save again.",
+		"3 parts that are done or now have no picture (Pumps, Wells, Pipes): a part reached is shown by a picture of the world it made. Make them with make_picture into the app's pictures/ folder, name them in picture and save again.",
 	]);
 });
 
@@ -1885,7 +1888,7 @@ it("makes a roadmap, and gives its app the company's reading where a part names 
 	};
 	const f = await fixture({
 		folders: ["apps", "apps/roadmap", "apps/roadmap/pictures"],
-		files: { "apps/roadmap/pictures/paradise.png": "PNG", "apps/roadmap/pictures/europe.png": "PNG" },
+		files: { "apps/roadmap/pictures/home.png": "PNG", "apps/roadmap/pictures/filter.png": "PNG" },
 	});
 	const made = read(
 		await f.call(
@@ -1901,10 +1904,10 @@ it("makes a roadmap, and gives its app the company's reading where a part names 
 	expect(f.text("apps/roadmap/engine.js")).toBe(KIT_ENGINE_JS.roadmap);
 	expect(f.text("apps/roadmap/index.html")).toBe(
 		kitPage("roadmap", "roadmap", "Roadmap", ROADMAP, (path) =>
-			["pictures/paradise.png", "pictures/europe.png"].includes(path),
+			["pictures/home.png", "pictures/filter.png"].includes(path),
 		),
 	);
-	const plain = { ...ROADMAP, parts: [goal("Mind"), goal("Land")] };
+	const plain = { ...ROADMAP, parts: [goal("Pumps"), goal("Wells")] };
 	const quiet = read(
 		await f.call(
 			"save_app",

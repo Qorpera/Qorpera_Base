@@ -647,7 +647,7 @@ function roadmapProblem(data: RoadmapNode): string | null {
 		const date = ROADMAP_DATES.find((key) => node[key] !== undefined);
 		if (date) return `has a ${date} ${at}: a roadmap has no dates, the order of the parts is the order`;
 		if (node.picture !== undefined && !roadmapPicture(node.picture))
-			return `has a picture ${at} that is not the path of a .png, .jpg or .webp file in the app's folder, such as "pictures/tunnels.png"`;
+			return `has a picture ${at} that is not the path of a .png, .jpg or .webp file in the app's folder, such as "pictures/well.png"`;
 		if (node.stand !== undefined && !ROADMAP_STANDS.includes(node.stand))
 			return `has a stand ${at} that is not "in order" or "side by side"`;
 		if (node.parts !== undefined && !Array.isArray(node.parts)) return `has parts ${at} that are no list`;

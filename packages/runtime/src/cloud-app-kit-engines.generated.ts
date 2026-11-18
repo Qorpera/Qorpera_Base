@@ -691,7 +691,7 @@ and Open goes one layer down. You write only \`roadmap.json\`; the page finds ea
 - A part:
   - \`name\` (48), drawn large when it is picked. \`label\` (28): the words on its tile, the name by default.
   - \`caption\` (90): one line. Without one the page names its own parts, or says it is not shaped yet.
-  - \`picture\`: a \`.png\`, \`.jpg\` or \`.webp\` in the app's folder, such as \`"pictures/tunnels.png"\`.
+  - \`picture\`: a \`.png\`, \`.jpg\` or \`.webp\` in the app's folder, such as \`"pictures/well.png"\`.
   - \`state\`: \`"done"\` (a check), \`"now"\` (its agents' figures), \`"later"\`, or \`"open"\`: still a question, dashed.
   - \`agents\`: 0 to 4 agents' names, the ones on it now; save_app adds \`reading\` to the app's reads.
   - \`stand\`: how its own parts stand, \`"in order"\` (steps, one after another) or \`"side by side"\` (the default).
@@ -717,29 +717,30 @@ and Open goes one layer down. You write only \`roadmap.json\`; the page finds ea
 \`\`\`json
 {
   "lang": "en",
-  "title": "Paradise on earth",
-  "picture": "pictures/paradise.png",
+  "title": "Clean water in every home",
+  "picture": "pictures/home.png",
   "stand": "side by side",
-  "kind": "Pillar",
+  "kind": "Field",
   "parts": [
-    { "name": "Qorpera", "caption": "Europe builds again", "picture": "pictures/europe.png", "state": "now",
-      "agents": ["Co-Founder"], "stand": "in order", "kind": "Goal",
+    { "name": "Filters", "caption": "A filter any family can afford", "picture": "pictures/filter.png",
+      "state": "now", "agents": ["Co-Founder"], "stand": "in order", "kind": "Goal",
       "parts": [
-        { "name": "People try building with AI", "label": "People try", "picture": "pictures/try.png",
+        { "name": "A filter a family can afford", "label": "A family filter", "picture": "pictures/family.png",
           "state": "now", "agents": ["Co-Founder"],
           "parts": [
-            { "name": "A box of your own", "picture": "pictures/box.png", "state": "now",
-              "caption": "Done: the design · Now: the first three boxes" },
-            { "name": "Insured", "state": "open" }
+            { "name": "A cartridge that lasts a year", "label": "A year's cartridge",
+              "picture": "pictures/cartridge.png", "state": "now",
+              "caption": "Done: the first design · Now: a hundred homes try it" },
+            { "name": "Sold in village shops", "state": "open" }
           ] },
-        { "name": "Good ideas get compute and capital", "label": "Ideas get backed", "state": "later" },
-        { "name": "Europe competes with America", "label": "Europe competes", "state": "later" }
+        { "name": "Every village has one", "label": "Every village", "state": "later" },
+        { "name": "Cities switch to it", "label": "Cities switch", "state": "later" }
       ] },
-    { "name": "Land", "caption": "Earth that looks like paradise", "picture": "pictures/dome.png", "state": "later",
+    { "name": "Wells", "caption": "Water close to every door", "picture": "pictures/well.png", "state": "later",
       "stand": "in order", "kind": "Goal",
       "parts": [
-        { "name": "Snow to heat in 20 minutes", "label": "Snow to heat", "state": "open",
-          "caption": "Domes or settled oceans: one of the two" }
+        { "name": "A well dug in a day", "label": "A day's well", "state": "open",
+          "caption": "A drill rig or hand tools: one of the two" }
       ] }
   ]
 }

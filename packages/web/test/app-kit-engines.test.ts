@@ -2515,41 +2515,37 @@ describe("the roadmap kit's engine", () => {
 	const part = (name: string, more: Record<string, unknown> = {}) => ({ name, state: "later", ...more });
 	const roadmap = {
 		lang: "en",
-		title: "Paradise on earth",
-		picture: "pictures/paradise.png",
+		title: "Clean water in every home",
+		picture: "pictures/home.png",
 		stand: "side by side",
 		parts: [
-			part("Qorpera", {
-				caption: "Europe builds again",
-				picture: "pictures/q5.png",
+			part("Filters", {
+				caption: "A filter any family can afford",
+				picture: "pictures/filter.png",
 				state: "now",
 				agents: ["Co-Founder", "Nobody"],
 				stand: "in order",
 				kind: "Goal",
 				parts: [
-					part("People try building with AI", {
-						label: "People try",
-						picture: "pictures/q1.png",
+					part("A filter a family can afford", {
+						label: "A family filter",
+						picture: "pictures/family.png",
 						state: "now",
 						agents: ["Co-Founder"],
 						parts: [
-							part("A box of your own", { picture: "pictures/box.png", state: "now" }),
-							part("Insured", { state: "open" }),
+							part("A cartridge that lasts a year", {
+								label: "A year's cartridge",
+								picture: "pictures/cartridge.png",
+								state: "now",
+							}),
+							part("Sold in village shops", { state: "open" }),
 						],
 					}),
-					part("Good ideas get compute and capital", { label: "Ideas get backed", picture: "pictures/q2.png" }),
-					part("Europe competes with America", {
-						label: "Europe competes",
-						state: "done",
-						picture: "pictures/q4.png",
-					}),
+					part("Every village has one", { label: "Every village", picture: "pictures/village.png" }),
+					part("Cities switch to it", { label: "Cities switch", state: "done", picture: "pictures/city.png" }),
 				],
 			}),
-			part("The unlived life", {
-				caption: "If a perfect world is not enough",
-				state: "open",
-				picture: "pictures/u3.png",
-			}),
+			part("Wells", { caption: "Water close to every door", state: "open", picture: "pictures/well.png" }),
 		],
 	};
 	async function openRoadmap(data: unknown, file?: Mock) {
@@ -2557,8 +2553,8 @@ describe("the roadmap kit's engine", () => {
 		media.id = "kit-media";
 		media.hidden = true;
 		media.innerHTML = [
-			'<img data-kit-src="pictures/paradise.png" src="blob:paradise" alt="">',
-			'<img data-kit-src="pictures/q5.png" src="blob:q5" alt="">',
+			'<img data-kit-src="pictures/home.png" src="blob:home" alt="">',
+			'<img data-kit-src="pictures/filter.png" src="blob:filter" alt="">',
 			'<img data-kit-src="figure:crown" src="data:image/webp;base64,crown" alt="">',
 		].join("");
 		document.body.append(media);
@@ -2583,23 +2579,23 @@ describe("the roadmap kit's engine", () => {
 	it("draws the ambition's picture and title, its parts as tiles, the agents on a part now and a part in question dashed", async () => {
 		const file = vi.fn(async (path: string) => `blob:${path}`);
 		await openRoadmap(roadmap, file);
-		expect(text("h1")).toBe("Paradise on earth");
+		expect(text("h1")).toBe("Clean water in every home");
 		expect(getComputedStyle(document.querySelector(".rm-head") as Element).position).not.toBe("absolute");
-		expect(stage()).toContain("blob:paradise");
-		expect(caps()).toEqual(["Qorpera", "The unlived life"]);
+		expect(stage()).toContain("blob:home");
+		expect(caps()).toEqual(["Filters", "Wells"]);
 		expect(tiles().map((tile) => tile.querySelector(".rm-cap small")?.textContent)).toEqual([
-			"Europe builds again · Now",
-			"If a perfect world is not enough · Still open",
+			"A filter any family can afford · Now",
+			"Water close to every door · Still open",
 		]);
-		expect(tiles()[0]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:q5");
+		expect(tiles()[0]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:filter");
 		expect(tiles()[1]?.classList.contains("is-open")).toBe(true);
-		expect(tiles()[1]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:pictures/u3.png");
+		expect(tiles()[1]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:pictures/well.png");
 		const figures = [...(tiles()[0]?.querySelectorAll(".rm-fig img") ?? [])];
 		expect(figures.map((figure) => figure.getAttribute("alt"))).toEqual(["Co-Founder is on it now"]);
 		expect(tiles()[0]?.querySelectorAll(".rm-fig")).toHaveLength(1);
 		expect(shows(".rm-trail")).toBe(false);
 		expect(shows(".rm-open")).toBe(false);
-		expect(file).not.toHaveBeenCalledWith("pictures/q1.png");
+		expect(file).not.toHaveBeenCalledWith("pictures/family.png");
 	});
 
 	it("opens a part into its goals as rising, numbered steps, the one now on the stage", async () => {
@@ -2607,25 +2603,25 @@ describe("the roadmap kit's engine", () => {
 		await openRoadmap(roadmap, file);
 		tiles()[0]?.click();
 		await settle();
-		expect(text("h1")).toBe("People try building with AI");
-		expect(text(".rm-kicker")).toBe("Qorpera · Goal 1 of 3 · Now");
-		expect(text(".rm-line")).toBe("A box of your own · Insured");
-		expect(text(".rm-trail")).toBe("‹ Paradise on earth");
-		expect(caps()).toEqual(["1 · People try", "2 · Ideas get backed", "3 · Europe competes"]);
+		expect(text("h1")).toBe("A filter a family can afford");
+		expect(text(".rm-kicker")).toBe("Filters · Goal 1 of 3 · Now");
+		expect(text(".rm-line")).toBe("A year's cartridge · Sold in village shops");
+		expect(text(".rm-trail")).toBe("‹ Clean water in every home");
+		expect(caps()).toEqual(["1 · A family filter", "2 · Every village", "3 · Cities switch"]);
 		expect(tiles().map((tile) => tile.style.getPropertyValue("--f"))).toEqual(["0", "0.5", "1"]);
 		expect(tiles().map((tile) => tile.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
 		expect(tiles()[2]?.querySelector(".rm-check")).not.toBeNull();
-		expect(file).toHaveBeenCalledWith("pictures/q1.png");
-		expect(stage()).toContain("blob:pictures/q1.png");
+		expect(file).toHaveBeenCalledWith("pictures/family.png");
+		expect(stage()).toContain("blob:pictures/family.png");
 		expect(document.activeElement).toBe(tiles()[0]);
 		expect(shows(".rm-open")).toBe(true);
 		tiles()[1]?.click();
 		await settle();
-		expect(text("h1")).toBe("Good ideas get compute and capital");
-		expect(text(".rm-kicker")).toBe("Qorpera · Goal 2 of 3");
+		expect(text("h1")).toBe("Every village has one");
+		expect(text(".rm-kicker")).toBe("Filters · Goal 2 of 3");
 		expect(text(".rm-line")).toBe("Not shaped yet");
 		expect(shows(".rm-open")).toBe(false);
-		expect(stage()).toContain("blob:pictures/q2.png");
+		expect(stage()).toContain("blob:pictures/village.png");
 		expect(tiles().map((tile) => tile.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
 		expect(document.activeElement).toBe(tiles()[1]);
 	});
@@ -2637,32 +2633,32 @@ describe("the roadmap kit's engine", () => {
 		await settle();
 		document.querySelector<HTMLButtonElement>(".rm-open")?.click();
 		await settle();
-		expect(text("h1")).toBe("A box of your own");
-		expect(text(".rm-kicker")).toBe("People try building with AI · Now");
-		expect(caps()).toEqual(["A box of your own", "Insured"]);
+		expect(text("h1")).toBe("A cartridge that lasts a year");
+		expect(text(".rm-kicker")).toBe("A filter a family can afford · Now");
+		expect(caps()).toEqual(["A year's cartridge", "Sold in village shops"]);
 		expect(tiles().map((tile) => tile.style.getPropertyValue("--f"))).toEqual(["", ""]);
 		expect(tiles()[1]?.classList.contains("is-bare")).toBe(true);
 		expect(tiles()[1]?.textContent).toContain("No picture yet");
 		expect(tiles()[1]?.querySelector("img")).toBeNull();
 		tiles()[1]?.click();
 		await settle();
-		expect(text(".rm-kicker")).toBe("People try building with AI · Still open");
+		expect(text(".rm-kicker")).toBe("A filter a family can afford · Still open");
 		expect(document.querySelectorAll(".rm-pic.on")).toHaveLength(0);
 		const crumbs = [...document.querySelectorAll<HTMLButtonElement>(".rm-trail .rm-crumb")];
-		expect(crumbs.map((crumb) => crumb.textContent)).toEqual(["‹ Paradise on earth", "Qorpera"]);
+		expect(crumbs.map((crumb) => crumb.textContent)).toEqual(["‹ Clean water in every home", "Filters"]);
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		await settle();
-		expect(text("h1")).toBe("People try building with AI");
+		expect(text("h1")).toBe("A filter a family can afford");
 		expect(document.activeElement).toBe(tiles()[0]);
 		document.querySelector<HTMLButtonElement>(".rm-trail .rm-crumb")?.click();
 		await settle();
-		expect(text("h1")).toBe("Paradise on earth");
+		expect(text("h1")).toBe("Clean water in every home");
 		expect(document.activeElement).toBe(tiles()[0]);
 	});
 
 	it("draws a dashed tile for a picture the app's folder does not give, and the dark ground on the stage", async () => {
 		const file = vi.fn(async (path: string) => {
-			if (path === "pictures/q1.png") throw new Error("pictures/q1.png is not in the page's folder");
+			if (path === "pictures/family.png") throw new Error("pictures/family.png is not in the page's folder");
 			return `blob:${path}`;
 		});
 		await openRoadmap(roadmap, file);
@@ -2670,15 +2666,15 @@ describe("the roadmap kit's engine", () => {
 		await settle();
 		expect(tiles()[0]?.classList.contains("is-bare")).toBe(true);
 		expect(tiles()[0]?.textContent).toContain("No picture yet");
-		expect(stage()).not.toContain("blob:pictures/q1.png");
-		expect(file.mock.calls.filter(([path]) => path === "pictures/q1.png")).toHaveLength(1);
+		expect(stage()).not.toContain("blob:pictures/family.png");
+		expect(file.mock.calls.filter(([path]) => path === "pictures/family.png")).toHaveLength(1);
 	});
 
 	it("speaks Danish when the data's language is Danish", async () => {
 		await openRoadmap({ ...roadmap, lang: "da" });
 		tiles()[0]?.click();
 		await settle();
-		expect(text(".rm-kicker")).toBe("Qorpera · Goal 1 af 3 · Nu");
+		expect(text(".rm-kicker")).toBe("Filters · Goal 1 af 3 · Nu");
 		expect(text(".rm-open")).toBe("Åbn ›");
 		tiles()[1]?.click();
 		await settle();

@@ -453,7 +453,7 @@ call the web does not already answer.
   quiet placeholder for it, and the save's `look` says which. So an agent writes its pictures first, from a machine,
   or saves the data again after: a save with the data in the folder and none in the call reads the folder's.
 - **A roadmap names only its top layer's pictures** (18 November 2026). A roadmap's data names a picture for each
-  part, and a part reached gets one (pictures of 2 to 4 MB from `make_picture`, 19 in the founder's own roadmap). Every
+  part, and a part reached gets one (pictures of 2 to 4 MB from `make_picture`, a dozen or more in a real one). Every
   picture in `#kit-media` comes with the page before it opens (§2: a hidden picture has no budget), so the page
   names only the title's picture and those of the top layer's parts (`roadmapFirstPictures`); the engine asks
   `qorpera.file(path)` for every other one as its layer is opened, or a tile of the top layer or Open is pointed at,
