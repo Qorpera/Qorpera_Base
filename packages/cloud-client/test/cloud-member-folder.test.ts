@@ -841,6 +841,20 @@ describe("objects kept outside the client", () => {
 		await settled();
 	});
 
+	it("asks the folder for an object whose kept bytes have its hash but are larger than the read allows", async () => {
+		const chunk = new TextEncoder().encode("One byte more than the manifest says.");
+		const short = stored("", [], {
+			bytes: chunk.length - 1,
+			chunks: [{ sha256: sha(chunk), bytes: chunk.length - 1 }],
+		});
+		const file = { ...short.file, bytes: chunk.length - 1 };
+		const k = keeper(new Map([...short.store, [sha(chunk), chunk]]));
+		const bounded = reader(new Map([...short.store, [sha(chunk), chunk]]), k.kept);
+		await expect(bounded.folder.readFile(file, signal, undefined, live)).rejects.toThrow();
+		expect(k.taken).toContain(sha(chunk));
+		expect(bounded.asked).toEqual([sha(chunk)]);
+	});
+
 	it("still refuses a file whose kept pieces are not the entry's bytes", async () => {
 		const { file } = stored("The entry's hash decides.", [25]);
 		const other = stored("Another file, equal size.", [25], { fileSha256: file.fileSha256 });

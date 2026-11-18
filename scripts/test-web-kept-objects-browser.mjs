@@ -111,6 +111,48 @@ window.checks = {
 		database.close();
 		return (await kept.take(hash, signal)) === undefined;
 	},
+	async staysQuickWhenFull(member, count) {
+		const kept = new KeptObjects(member);
+		await kept.take("0".repeat(64), signal);
+		const database = await raw();
+		const transaction = database.transaction(["bytes", "index", "owner"], "readwrite");
+		const small = filled(300, 1).buffer;
+		for (let at = 0; at < count; at++) {
+			const name = at.toString(16).padStart(64, "a");
+			transaction.objectStore("bytes").put(small, name);
+			transaction.objectStore("index").put({ sha256: name, bytes: 300, used: at });
+		}
+		transaction.objectStore("owner").put(count * 300, "bytes");
+		await new Promise((done) => { transaction.oncomplete = done; });
+		database.close();
+		const fresh = [];
+		for (let at = 0; at < 200; at++) {
+			const bytes = filled(2000, at);
+			fresh.push([await sha(bytes), bytes]);
+		}
+		const started = performance.now();
+		for (const [hash, bytes] of fresh) kept.keep(hash, bytes);
+		const taken = await Promise.all(fresh.map(([hash]) => kept.take(hash, signal)));
+		await kept.settled();
+		const ms = Math.round(performance.now() - started);
+		const after = await Promise.all(fresh.map(([hash]) => kept.take(hash, signal)));
+		return { ms, early: taken.filter(Boolean).length, kept: after.filter(Boolean).length, old: (await kept.take("0".padStart(64, "a"), signal)) !== undefined };
+	},
+	async givesUpOnAStore(member) {
+		const never = { open: () => ({}), deleteDatabase: () => ({}) };
+		const kept = new KeptObjects(member, { factory: never });
+		const stop = new AbortController();
+		const started = performance.now();
+		const stopping = kept.take("1".repeat(64), stop.signal);
+		stop.abort();
+		const stopped = { value: await stopping, ms: Math.round(performance.now() - started) };
+		const waited = performance.now();
+		const first = await kept.take("1".repeat(64), signal);
+		const late = Math.round(performance.now() - waited);
+		const again = performance.now();
+		const second = await kept.take("1".repeat(64), signal);
+		return { stopped, first, late, second, skipped: Math.round(performance.now() - again) };
+	},
 	async forgets(member) {
 		const kept = new KeptObjects(member);
 		const bytes = filled(9000, 7);
@@ -214,6 +256,20 @@ try {
 
 	assert.equal(await run(page, "refusesMismatch", "member-c"), true);
 	passed.push("bytes that are not the size their record says are not handed out");
+
+	const full = await run(page, "staysQuickWhenFull", "member-g", 50000);
+	assert.deepEqual({ kept: full.kept, old: full.old }, { kept: 200, old: true });
+	assert.ok(full.ms < 4000, `200 keeps and takes beside 50,000 kept objects took ${full.ms} ms`);
+	passed.push(`keeping and taking stay quick beside 50,000 kept objects (200 of each in ${full.ms} ms)`);
+
+	const hung = await run(page, "givesUpOnAStore", "member-h");
+	assert.equal(hung.stopped.value, undefined);
+	assert.ok(hung.stopped.ms < 1000, `a stopped read waited ${hung.stopped.ms} ms`);
+	assert.equal(hung.first, undefined);
+	assert.ok(hung.late >= 3500 && hung.late < 6000, `the first read waited ${hung.late} ms`);
+	assert.equal(hung.second, undefined);
+	assert.ok(hung.skipped < 100, `a later read waited ${hung.skipped} ms`);
+	passed.push("a database that never opens costs one read its bound, a stopped read nothing, and later reads skip it");
 
 	const client = await run(page, "readsThroughTheClient", "member-d");
 	assert.equal(client.read, "Bytes the browser keeps between visits.");

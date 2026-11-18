@@ -6,6 +6,11 @@ const BYTES = "bytes";
 const INDEX = "index";
 const OWNER = "owner";
 const OWNER_KEY = "member";
+const TOTAL_KEY = "bytes";
+const BY_USED = "used";
+const STORES = [BYTES, INDEX, OWNER];
+const TAKE_MS = 4000;
+const LATE = Symbol("late");
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
@@ -47,6 +52,24 @@ function finished(transaction: IDBTransaction): Promise<void> {
 	});
 }
 
+function bounded<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T | typeof LATE | undefined> {
+	return new Promise((resolve, reject) => {
+		const settle = (value: T | typeof LATE | undefined) => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", stopped);
+			resolve(value);
+		};
+		const stopped = () => settle(undefined);
+		const timer = setTimeout(() => settle(LATE), ms);
+		signal.addEventListener("abort", stopped, { once: true });
+		work.then(settle, (error) => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", stopped);
+			reject(error);
+		});
+	});
+}
+
 function isEntry(value: unknown): value is KeptEntry {
 	if (!value || typeof value !== "object") return false;
 	const entry = value as Record<string, unknown>;
@@ -81,25 +104,28 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 	}
 
 	async take(sha256: string, signal: AbortSignal): Promise<Uint8Array | undefined> {
-		if (this.#closed || !SHA256.test(sha256)) return undefined;
+		if (this.#closed || signal.aborted || !SHA256.test(sha256)) return undefined;
+		const taken = await bounded(this.#taken(sha256), TAKE_MS, signal).catch(() => undefined);
+		if (taken !== LATE) return taken;
+		void this.close();
+		return undefined;
+	}
+
+	async #taken(sha256: string): Promise<Uint8Array | undefined> {
 		const database = await this.#open();
-		if (!database || this.#closed || signal.aborted) return undefined;
-		try {
-			const transaction = database.transaction([BYTES, INDEX], "readonly");
-			const [held, entry] = await Promise.all([
-				answered(transaction.objectStore(BYTES).get(sha256) as IDBRequest<unknown>),
-				answered(transaction.objectStore(INDEX).get(sha256) as IDBRequest<unknown>),
-			]);
-			if (!(held instanceof ArrayBuffer) || !isEntry(entry) || entry.bytes !== held.byteLength) return undefined;
-			const now = this.#now();
-			if (now - entry.used > TOUCH_MS)
-				this.#write((stores) => {
-					stores.objectStore(INDEX).put({ ...entry, used: now });
-				});
-			return new Uint8Array(held);
-		} catch {
-			return undefined;
-		}
+		if (!database || this.#closed) return undefined;
+		const transaction = database.transaction([BYTES, INDEX], "readonly");
+		const [held, entry] = await Promise.all([
+			answered(transaction.objectStore(BYTES).get(sha256) as IDBRequest<unknown>),
+			answered(transaction.objectStore(INDEX).get(sha256) as IDBRequest<unknown>),
+		]);
+		if (!(held instanceof ArrayBuffer) || !isEntry(entry) || entry.bytes !== held.byteLength) return undefined;
+		const now = this.#now();
+		if (now - entry.used > TOUCH_MS)
+			this.#write((stores) => {
+				stores.objectStore(INDEX).put({ ...entry, used: now });
+			});
+		return new Uint8Array(held);
 	}
 
 	keep(sha256: string, bytes: Uint8Array): void {
@@ -108,18 +134,37 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 		const copy = bytes.slice().buffer;
 		this.#write(async (stores) => {
 			const index = stores.objectStore(INDEX);
+			const owner = stores.objectStore(OWNER);
+			const [before, counted] = await Promise.all([
+				answered(index.get(sha256) as IDBRequest<unknown>),
+				answered(owner.get(TOTAL_KEY) as IDBRequest<unknown>),
+			]);
 			stores.objectStore(BYTES).put(copy, sha256);
 			index.put({ sha256, bytes: copy.byteLength, used: this.#now() } satisfies KeptEntry);
-			const entries = ((await answered(index.getAll() as IDBRequest<unknown[]>)) as unknown[]).filter(isEntry);
-			let total = entries.reduce((sum, entry) => sum + entry.bytes, 0);
-			if (total <= this.#maxBytes) return;
-			for (const entry of entries.sort((a, b) => a.used - b.used)) {
-				if (total <= this.#maxBytes * TRIM_TO) break;
-				if (entry.sha256 === sha256) continue;
-				stores.objectStore(BYTES).delete(entry.sha256);
-				index.delete(entry.sha256);
-				total -= entry.bytes;
+			let total =
+				(typeof counted === "number" ? counted : 0) - (isEntry(before) ? before.bytes : 0) + copy.byteLength;
+			if (total > this.#maxBytes) {
+				const enough = this.#maxBytes * TRIM_TO;
+				const oldest = index.index(BY_USED).openCursor();
+				await new Promise<void>((resolve, reject) => {
+					oldest.onerror = () => reject(oldest.error);
+					oldest.onsuccess = () => {
+						const cursor = oldest.result;
+						if (!cursor || total <= enough) {
+							resolve();
+							return;
+						}
+						const entry: unknown = cursor.value;
+						if (isEntry(entry) && entry.sha256 !== sha256) {
+							stores.objectStore(BYTES).delete(entry.sha256);
+							cursor.delete();
+							total -= entry.bytes;
+						}
+						cursor.continue();
+					};
+				});
 			}
+			owner.put(total, TOTAL_KEY);
 		});
 	}
 
@@ -137,7 +182,7 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 	}
 
 	async forget(): Promise<void> {
-		await this.close();
+		void this.close();
 		await forgetKeptObjects(this.#factory);
 	}
 
@@ -146,7 +191,7 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 			.then(async () => {
 				const database = await this.#open();
 				if (!database || this.#closed) return;
-				const transaction = database.transaction([BYTES, INDEX], "readwrite");
+				const transaction = database.transaction(STORES, "readwrite");
 				const done = finished(transaction);
 				try {
 					await work(transaction);
@@ -172,22 +217,27 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 		opening.onupgradeneeded = () => {
 			const database = opening.result;
 			database.createObjectStore(BYTES);
-			database.createObjectStore(INDEX, { keyPath: "sha256" });
+			database.createObjectStore(INDEX, { keyPath: "sha256" }).createIndex(BY_USED, "used");
 			database.createObjectStore(OWNER);
 		};
 		const database = await answered(opening);
+		if (this.#closed) {
+			database.close();
+			return undefined;
+		}
 		database.onversionchange = () => {
 			database.close();
 			this.#closed = true;
 			this.#database = Promise.resolve(undefined);
 		};
-		const transaction = database.transaction([BYTES, INDEX, OWNER], "readwrite");
+		const transaction = database.transaction(STORES, "readwrite");
 		const done = finished(transaction);
 		const owner = transaction.objectStore(OWNER);
 		if ((await answered(owner.get(OWNER_KEY) as IDBRequest<unknown>)) !== this.#memberId) {
 			transaction.objectStore(BYTES).clear();
 			transaction.objectStore(INDEX).clear();
 			owner.put(this.#memberId, OWNER_KEY);
+			owner.put(0, TOTAL_KEY);
 		}
 		await done;
 		if (this.#closed) {
