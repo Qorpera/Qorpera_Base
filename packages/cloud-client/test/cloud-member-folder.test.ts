@@ -743,6 +743,113 @@ describe("the member's file cache", () => {
 	});
 });
 
+describe("objects kept outside the client", () => {
+	const signal = new AbortController().signal;
+	const live = { cached: true } as const;
+
+	function keeper(held = new Map<string, Uint8Array>()) {
+		const taken: string[] = [];
+		return {
+			held,
+			taken,
+			kept: {
+				take: async (hash: string) => {
+					taken.push(hash);
+					const bytes = held.get(hash);
+					return bytes ? Uint8Array.from(bytes) : undefined;
+				},
+				keep: (hash: string, bytes: Uint8Array) => {
+					held.set(hash, Uint8Array.from(bytes));
+				},
+			},
+		};
+	}
+	function reader(store: Map<string, Uint8Array>, kept: ReturnType<typeof keeper>["kept"]) {
+		const asked: string[] = [];
+		const folder = new CloudMemberFolderClient({
+			environmentId: env,
+			supabaseUrl: "https://cloud.test/",
+			objectGatewayUrl: "https://objects.test/",
+			publishableKey: "sb_publishable_fixture",
+			accessToken: async () => "member-token",
+			pieceRetryMs: 1,
+			kept,
+			fetch: async (input) => {
+				asked.push(String(input).split("/").at(-1)!);
+				return objects(store)(new URL(String(input)));
+			},
+		});
+		return { folder, asked };
+	}
+	const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+	const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+	it("keeps what a live read fetched and reads it again with no request, whole and in pieces", async () => {
+		const { store, file } = stored("Kept between visits.", [4, 16]);
+		const k = keeper();
+		const first = reader(store, k.kept);
+		expect(text(await first.folder.readFile(file, signal, undefined, live))).toBe("Kept between visits.");
+		expect(first.asked).toHaveLength(3);
+		await settled();
+		expect([...k.held.keys()].sort()).toEqual([...store.keys()].sort());
+		const second = reader(store, k.kept);
+		expect(text(await second.folder.readFile(file, signal, undefined, live))).toBe("Kept between visits.");
+		const pieces: string[] = [];
+		await second.folder.readFilePieces(file, signal, (piece) => pieces.push(text(piece)), live);
+		expect(pieces.join("")).toBe("Kept between visits.");
+		expect(second.asked).toEqual([]);
+	});
+
+	it("neither takes nor keeps for a read that did not read the entry live", async () => {
+		const { store, file } = stored("Read from an earlier listing.", [29]);
+		const k = keeper(new Map(store));
+		const listed = reader(store, k.kept);
+		await listed.folder.readFile(file, signal);
+		await listed.folder.readFilePieces(file, signal, () => {});
+		expect(listed.asked).toHaveLength(4);
+		expect(k.taken).toEqual([]);
+		const empty = keeper();
+		const again = reader(store, empty.kept);
+		await again.folder.readFile(file, signal);
+		await settled();
+		expect(empty.held.size).toBe(0);
+	});
+
+	it("asks the folder for an object whose kept bytes fail their hash, are too large or cannot be taken", async () => {
+		const { store, file } = stored("Checked every time it is used.", [10, 20]);
+		const [first, second] = [...store.keys()].filter((hash) => hash !== file.manifestSha256) as [string, string];
+		const k = keeper(new Map(store));
+		k.held.set(first, new TextEncoder().encode("X".repeat(store.get(first)!.length)));
+		k.held.set(second, new Uint8Array(store.get(second)!.length + 1));
+		const tampered = reader(store, k.kept);
+		expect(text(await tampered.folder.readFile(file, signal, undefined, live))).toBe("Checked every time it is used.");
+		expect(tampered.asked.sort()).toEqual([first, second].sort());
+		await settled();
+		expect(k.held.get(first)).toEqual(Uint8Array.from(store.get(first)!));
+		const broken = reader(store, {
+			take: async () => {
+				throw new Error("the store is gone");
+			},
+			keep: () => {
+				throw new Error("the store is gone");
+			},
+		});
+		expect(text(await broken.folder.readFile(file, signal, undefined, live))).toBe("Checked every time it is used.");
+		expect(broken.asked).toHaveLength(3);
+		await settled();
+	});
+
+	it("still refuses a file whose kept pieces are not the entry's bytes", async () => {
+		const { file } = stored("The entry's hash decides.", [25]);
+		const other = stored("Another file, equal size.", [25], { fileSha256: file.fileSha256 });
+		const k = keeper(new Map(other.store));
+		const wrong = reader(other.store, k.kept);
+		await expect(
+			wrong.folder.readFile({ ...file, manifestSha256: other.file.manifestSha256 }, signal, undefined, live),
+		).rejects.toThrow("do not match their entry");
+	});
+});
+
 describe("a file read piece by piece", () => {
 	const MIB = 1024 * 1024;
 	const signal = new AbortController().signal;
