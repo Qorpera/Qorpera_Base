@@ -7,6 +7,29 @@
   The session needs `qorpera_cloud_boundary/0.170.0`; a governed run turns `unified_image_budget` off (on since 0.170.0,
   it re-prepares a capture at original detail, which the capture fence refuses) and, without a home, is not offered
   `apply_patch`. Provider-default is GPT-6.2 Sol. The machine image's Codex (`CLOUD_MACHINE_HOME.codexSha256`) moves with it.
+- The review reads the script a machine command starts with (2026-11-17 amendment "the review reads the script it
+  judges", brief A of the mywave review; its refusal and retry parts came first in #1942). Only a plain command is
+  looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing bash would
+  expand). It names at most one file, by grammar: after zero or more leading `cd <path> &&` (literal, no `..`, no
+  options, no redirection), the first command must be an allow-listed runner form (the prefixes `time`, `nohup`, `nice`,
+  `timeout`, `xvfb-run`, an interpreter with its allowed options and the script path, the path as the command word, or
+  `source f`), with no variable set before it, no redirection but `2>&1` or to `/dev/null`, and, in a pipeline, only
+  `head`, `tail`, `grep` (one pattern), `cat`, `wc`, `sort` or `uniq` beside it, with no operand and only options from
+  an exact list each; its file is named when its path has no `..` segment. A later script is listed as not shown, and a
+  command that starts with anything else names no file. The file is read on the machine before the review and shown
+  whole (64 KiB); a card's approval covers its digest; the machine runs the model's command byte for byte. The file is
+  evidence, not proof of what runs: the agent's own login shell and profile decide what a program name runs, and the
+  reviewer is told so. A file not shown is never on its own a reason to deny or ask. Known limits: a script after
+  another command, a second script, a script after `source`, one with a variable set before it and one whose output goes
+  to a file are not shown; the agent's home reads no files; a file changed between the read and the start is not
+  detected. Runtime bundle only: no migration, host call, executor or image moves.
+- Release v256 (master since v255's release merge: agents learn the `data` command on a company machine, #1881;
+  hire_team and hire_agent say what is wrong with refused arguments, #1938; the first concept really comes first, hire
+  overlay v20, #1939; the action review asks again when its reviewer is busy and its refusals name the next step, #1942;
+  module scripts of an app's page, #1937, is web and live already): runtime bundle 256
+  `f5554c77635269caa6cd788b0e956367d6a625293af1a385c2a32a9f143e860a` (activation `20260929025699`, previous 255
+  `edc4809a810b`). No migration: the activation requires nothing new. The guest moves: the native provider host
+  (`2271544c`, 5,452,429 bytes); the ephemeral runner, the two LXD bootstraps and the native Codex (`9c299f88`) stay.
 - A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
   a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
   other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a
