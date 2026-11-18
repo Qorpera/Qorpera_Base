@@ -7070,9 +7070,9 @@ worker's run is claimed only by a shared execution host), never before it.
 4. **What stays.** A page still has no network: the frame's policy adds only `blob:` and `data:` sources. A page opened
    by itself reads only files in its own folder and below it, never one in a folder the platform keeps, always as the
    member's own read, and has no live sources, no changes and no links.
-5. **The write tools.** This replaces the 2026-10-21 amendment's "`company_write` takes up to 512 KiB of text": `company_write` and
-   `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`), which stays below
-   the native session's 1 MiB message.
+5. **The write tools.** This replaces the 2026-10-21 amendment's "`company_write` takes up to 512 KiB of text":
+   `company_write` and `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`),
+   which stays below the native session's 1 MiB message.
 
 ## 20. Enforcement matrix
 
