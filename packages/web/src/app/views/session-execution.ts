@@ -965,10 +965,9 @@ export class SessionExecutionView {
 		);
 		const signIn = refused.find((connection) => connection.connectionId === own) ?? refused[0];
 		const signInAgain = signIn?.providerAccountEmail
-			? t(
-					"ChatGPT no longer accepts the sign-in for {email}. Sign in again in Settings → AI subscriptions.",
-					{ email: signIn.providerAccountEmail },
-				)
+			? t("ChatGPT no longer accepts the sign-in for {email}. Sign in again in Settings → AI subscriptions.", {
+					email: signIn.providerAccountEmail,
+				})
 			: t("ChatGPT no longer accepts this login's sign-in. Sign in again in Settings → AI subscriptions.");
 		if (signIn && signIn.connectionId === own) return signInAgain;
 		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).

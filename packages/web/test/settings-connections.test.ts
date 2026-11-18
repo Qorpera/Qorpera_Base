@@ -1587,7 +1587,10 @@ describe("a sign-in ChatGPT no longer accepts", () => {
 		sponsorBindingId: id(82),
 		sponsorVersion: 1,
 		loginStatus: "needs_sign_in",
-		providerAccountUsage: { observedAt: timestamp, windows: [{ id: "primary", label: "5-hour limit", usedPercent: 10 }] },
+		providerAccountUsage: {
+			observedAt: timestamp,
+			windows: [{ id: "primary", label: "5-hour limit", usedPercent: 10 }],
+		},
 	};
 
 	it("says so on the card with Sign in again and no usage, and one press starts the normal sign-in", async () => {
@@ -1601,12 +1604,15 @@ describe("a sign-in ChatGPT no longer accepts", () => {
 		]);
 		card(OPENAI).querySelector<HTMLButtonElement>('[data-action="sign-in-again"]')!.click();
 		await settle();
-		expect(client.beginProviderLogin).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ provider: "openai" }));
+		expect(client.beginProviderLogin).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ provider: "openai" }),
+		);
 		expect(view.el.querySelector(".connection-attempt")?.textContent).toContain("Open OpenAI sign-in");
 	});
 
 	it("keeps a login the cloud says nothing about as it was", async () => {
-		await setup(true, observed({ ...refused, loginStatus: "active" }));
+		const active: WebMemberConnection = { ...refused, loginStatus: "active" };
+		await setup(true, observed(active));
 		expect(card(OPENAI).querySelector('small[role="status"]')).toBeNull();
 		expect(card(OPENAI).querySelector(".connection-usage")).not.toBeNull();
 		expect(view.el.querySelector('[data-action="sign-in-again"]')).toBeNull();

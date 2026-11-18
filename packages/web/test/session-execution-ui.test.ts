@@ -2662,7 +2662,13 @@ describe("a login ChatGPT no longer accepts", () => {
 
 	it("says so for the conversation's own login, and offers another login that can pay", async () => {
 		const select = vi.fn(async (): Promise<string | undefined> => id(90));
-		const f = setup(true, refused([undefined, 60]), select, undefined, vi.fn(async () => id(91)));
+		const f = setup(
+			true,
+			refused([undefined, 60]),
+			select,
+			undefined,
+			vi.fn(async () => id(91)),
+		);
 		await settle();
 		type(f.view, "Hello");
 		await settle();

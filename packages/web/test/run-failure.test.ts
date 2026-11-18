@@ -361,7 +361,9 @@ describe("a run ChatGPT no longer accepts the login's sign-in for (2026093080800
 		expect(runFailureReason(refused, "failed", false, { own: true }, false, true, false)).toMatch(PROVIDER_REFUSED);
 		expect(runFailureReason(refused, "failed", false, { own: true })).toMatch(PROVIDER_REFUSED);
 		expect(runFailureReason(download, "failed", false, { own: true })).toMatch(LOGIN_UNAVAILABLE);
-		expect(runFailureReason(refused, "failed", true, { own: true }, false, true, true)).toMatch(/reached its usage limit/);
+		expect(runFailureReason(refused, "failed", true, { own: true }, false, true, true)).toMatch(
+			/reached its usage limit/,
+		);
 		expect(classifyRunFailure(refused, "failed", false, true, true)).toBe("rate_limited");
 	});
 

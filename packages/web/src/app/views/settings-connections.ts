@@ -1089,9 +1089,7 @@ export class ConnectionsView {
 		const cardAccounts = accounts.filter(
 			(connection) =>
 				!refused(connection) ||
-				!accounts.some(
-					(other) => lookalike(other) === lookalike(connection) && live(other) && !refused(other),
-				),
+				!accounts.some((other) => lookalike(other) === lookalike(connection) && live(other) && !refused(other)),
 		);
 		const lookalikes = new Map<string, number>();
 		for (const key of cardAccounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
