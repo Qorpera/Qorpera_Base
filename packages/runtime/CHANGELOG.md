@@ -1,6 +1,23 @@
 # Changelog
 
 ## [Unreleased]
+- Release v256 (master since v255's release merge: agents learn the `data` command on a company machine, #1881;
+  hire_team and hire_agent say what is wrong with refused arguments, #1938; the first concept really comes first, hire
+  overlay v20, #1939; the action review asks again when its reviewer is busy and its refusals name the next step, #1942;
+  module scripts of an app's page, #1937, is web and live already): runtime bundle 256
+  `f5554c77635269caa6cd788b0e956367d6a625293af1a385c2a32a9f143e860a` (activation `20260929025699`, previous 255
+  `edc4809a810b`). No migration: the activation requires nothing new. The guest moves: the native provider host
+  (`2271544c`, 5,452,429 bytes); the ephemeral runner, the two LXD bootstraps and the native Codex (`9c299f88`) stay.
+- A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
+  a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
+  other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a
+  worker reports its work blocked with the reason, any other agent asks a member on a card (`ask_member`), or in its
+  reply where it has no cards, for the one thing the work needs; the card's answer never lets it repeat the action. A
+  review whose model turn met the provider's rate limit, usage limit or an overload (`CloudActionReviewBusy`) is asked
+  again after 5, 10, 20, 30 and 30 seconds within two minutes before the call is refused; verdicts, invalid verdicts,
+  timeouts and other failures are never asked again. REVIEW_UNAVAILABLE tells the agent to say the step could not be
+  checked just now, never that a safety review was unavailable. Runtime bundle only: no migration, host call, executor
+  or image moves.
 - hire_team's first call no longer fails blind (the founder, 18 Nov 2026: "fix the hire_team first-call refusal"; in both
   companies started on v255 the Co-Founder's first hire_team was refused as bare `INVALID_ARGUMENTS` and its second call
   succeeded). Every refusal of hire_team's and hire_agent's arguments is now a `CloudToolArgumentRefusal` the model
