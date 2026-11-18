@@ -1379,7 +1379,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v19",
+			schema: "qorpera.hire-overlay/v20",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -4115,10 +4115,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"86910bada59a339f3b72cf2759c4189042fafe4963e498c919a31e9886b53895",
+		"c0e4b4cadf3d0a6a9f09f63df5cbc603ae5d4e40f6b155aa2daa1f4aa783c1c0",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"c5ff1c71aa04654a628d888efb76fed7066a6c16e8a85c933c0a228d07ef3500",
+		"457027590ec45af5d7f7f8d8d6cc5c5241753f53bf0564f6351ee1e3eeef3573",
 	);
 });
 
