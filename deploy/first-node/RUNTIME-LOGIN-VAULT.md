@@ -42,7 +42,8 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
     run with `qorpera_model_login_run_binding`, the native lease validator's own conditions read
     without company-wide locks (exact binding; job leased and unexpired; assignment accepted and unexpired; lease
     live; sponsor and compute available; connection, version, capsule and policy active; identity
-    and runner at the current epoch; company not paused). Past half the pass life and with
+    and runner at the current epoch; company not paused). Past half the pass life, or at once when a run
+    reported that the provider refused the current pass (below, "A pass the provider refuses"), and with
     `allowRenewal`, the first caller takes the lock (`update … where renewal_until is null or < now()`
     and the backoff after failures has passed: 1, 2, 4 ... minutes, at most an hour). Returns the
     envelope, or `unchanged` when the host already holds the current version and no renewal was
@@ -745,7 +746,37 @@ member's Codex login is kept once by the shared vault and used in every company 
 | Commit fails three times | Lock released as `renewal_unsaved`, permanent: the login asks for a new sign-in; this run keeps the new pass. |
 | One broker copy down | A company broker: the other node's copy serves runs (the vault must run on both nodes before any login moves). The shared vault: systemd restarts node 1's copy; node 2's keeps renewing but serves no requests (see its failover). |
 | Provider refuses a renewal | `needs_sign_in`; the vault refuses new runs on the login (they fail at the credential download) until the member signs in again (change 2B). Runs already going keep their pass until it ends. |
+| Provider refuses a pass before its renewal is due (seen after a ChatGPT plan upgrade) | The run's turn ends with Codex's `unauthorized`; the renewal falls due at once and new work on the login waits, at most 30 minutes, for its outcome (below). |
 | Member signs out or leaves | The pointer capsule and lease checks refuse at once; running work is stopped by the existing checks. |
+
+## A pass the provider refuses (founder, 18 November 2026; migration `20260930808000`)
+
+After a member upgraded their ChatGPT plan, OpenAI stopped accepting the pass the vault had handed out for their login,
+days before its renewal was due, and every run on it failed while the login stayed `active`.
+
+- **The report.** A Codex turn that ends with the pinned discriminant `unauthorized` (never provider text) carries the
+  usage signal `sign_in_refused` (`nativeRuntimeUsageSignal`), which the run's host records as it records `usage_limit`
+  (`qorpera_record_provider_usage_signal`). The signal marks the run's login (the company login of the run's capsule, or
+  the account login of its link): `refused_version` is its current version and `refused_at` the time, only while the
+  login is `active`, the version is not already marked, and that version existed when the run's lease began (a version
+  renewed during the run is not the one the provider refused).
+- **The renewal.** A login whose current version is its `refused_version` is due now
+  (`qorpera_model_login_renewal_due`), for a run's issue and for the vault's idle passes, which take such a login first.
+  It goes through the same lock, commit and release as any renewal: a good renewal is a newer version and work goes on;
+  a refused one sets `needs_sign_in` exactly as before (a newer version is never marked; a revoked login stays revoked).
+  Codex logins and ChatGPT plan logins only; a Claude login is never a vault model login.
+- **The hold.** Until the renewal's outcome, new work paid by the login waits as work at a usage limit waits
+  (`qorpera_sponsor_waits_for_usage_limit`: conversation messages, wakes, coding sessions' next turns), in every company
+  the login is linked into. It ends by itself at a newer version, at `needs_sign_in` or `revoked`, and 30 minutes after
+  the refusal whatever happened (the renewal stays due). It lives on the login row, so deleting the company that
+  reported it does not end it. Nothing moves to another login.
+- **A member's message.** A run a member started that had no effect yet waits and tries again on the same login as at a
+  rate limit (`pausedFor: "sign_in_refused"`, the same five waits), unless the login already needs a new sign-in. The
+  next attempt's issue renews the pass first when no other caller has.
+- **What the member reads.** The member's connection list says `login_status` for a vault login; Settings says ChatGPT
+  no longer accepts the sign-in and offers Sign in again, the chat says so before the usage-limit sentence, and a run's
+  recovery says `sign_in_refused` once its login needs a new sign-in.
+- **Not covered.** The vault's usage reads keep no status, so a refused usage read raises nothing; a run does.
 
 ## Moving and retiring
 
