@@ -274,7 +274,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 	const apps = (element: HTMLElement) => element.querySelector<HTMLButtonElement>(".rail-apps")!;
 	const drawer = (element: HTMLElement) => element.querySelector<HTMLElement>(".rail-apps-drawer")!;
 	const icons = (element: HTMLElement) =>
-		[...element.querySelectorAll<HTMLAnchorElement>(".rail-apps-drawer a.rail-app")].map((icon) => [
+		[...element.querySelectorAll<HTMLAnchorElement>(".rail-apps-drawer a.rail-app[data-app-key]")].map((icon) => [
 			icon.querySelector(".rail-app-name")?.textContent,
 			icon.getAttribute("data-href"),
 		]);

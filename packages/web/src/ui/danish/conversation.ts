@@ -316,6 +316,33 @@ export const CONVERSATION: Record<string, string> = {
 	"Back to the newest, {version}": "Tilbage til den nyeste, {version}",
 	"{name} on a computer": "{name} på en computer",
 	"{name} on a phone": "{name} på en telefon",
+	"New program": "Nyt program",
+	"Drop a program here": "Slip et program her",
+	"or choose a file": "eller vælg en fil",
+	"Choose a program": "Vælg et program",
+	"Made something yourself? Drop it here and everyone in {company} can get it.":
+		"Har du selv lavet noget? Slip det her, så alle i {company} kan hente det.",
+	"What is it for?": "Hvad er det til?",
+	"Not this one": "Ikke denne",
+	"Putting {name} in place… {percent}%": "Lægger {name} på plads … {percent} %",
+	"{size}: too large. The most is {most}.": "{size}: for stor. Højst {most}.",
+	"Drop at most five files, one for each kind.": "Slip højst fem filer, én til hver slags.",
+	"{name} is empty.": "{name} er tom.",
+	"{name} can't be used as it is named. Rename the file and drop it again.":
+		"{name} kan ikke bruges med det navn. Omdøb filen, og slip den igen.",
+	"Two files for {kind}: drop one for each kind.": "To filer til {kind}: slip én til hver slags.",
+	"This program holds as many versions as it can.": "Programmet rummer så mange versioner, som det kan.",
+	"You can't add programs in this company.": "Du kan ikke tilføje programmer i denne virksomhed.",
+	"The company is paused. Add the program when it runs again.":
+		"Virksomheden er sat på pause. Tilføj programmet, når den kører igen.",
+	"Another program of yours is still going up. Try again in a moment.":
+		"Et andet af dine programmer er stadig på vej op. Prøv igen om lidt.",
+	"Someone added to this program at the same moment. Try again.":
+		"En anden tilføjede til programmet i samme øjeblik. Prøv igen.",
+	"The connection dropped.": "Forbindelsen blev afbrudt.",
+	"Add a version": "Tilføj en version",
+	"Version {version} · added by you": "Version {version} · tilføjet af dig",
+	"Version {version} · added by {name}": "Version {version} · tilføjet af {name}",
 	"This app reloaded itself. Press Reload to start it again.":
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
 

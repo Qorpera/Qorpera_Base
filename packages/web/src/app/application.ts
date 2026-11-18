@@ -26,7 +26,7 @@ import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
-import { companyNameText } from "../ui/company-name.ts";
+import { companyInSentence, companyNameText } from "../ui/company-name.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
@@ -88,6 +88,7 @@ import {
 	type Viewer,
 } from "./views/new-company.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
+import { NewProgramPage, type ProgramAddHost } from "./views/program-add.ts";
 import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
@@ -494,6 +495,7 @@ export function mountApplication(
 	let whatsNewPage:
 		| { readonly company: CompanyController; readonly view: WhatsNewView; readonly el: HTMLElement }
 		| undefined;
+	let newProgramPage: { readonly company: CompanyController; readonly view: NewProgramPage } | undefined;
 	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
@@ -669,6 +671,8 @@ export function mountApplication(
 		sitesPage = undefined;
 		whatsNewPage?.view.dispose();
 		whatsNewPage = undefined;
+		newProgramPage?.view.dispose();
+		newProgramPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -696,6 +700,8 @@ export function mountApplication(
 		appPage?.dispose();
 		appPage = undefined;
 		appReturn = undefined;
+		newProgramPage?.view.dispose();
+		newProgramPage = undefined;
 		conceptsView?.dispose();
 		conceptsView = undefined;
 		mail?.dispose();
@@ -1315,7 +1321,40 @@ export function mountApplication(
 			}
 			return reading;
 		};
+		const cofounderFigure = (className: string) =>
+			agentFigure(
+				controller.staffById(controller.cofounderId()) ?? {
+					id: "",
+					displayName: "Co-Founder",
+					appearance: { color: "", shape: "" },
+					templateId: "co-founder",
+				},
+				"Co-Founder",
+				{ size: 96, className },
+			);
+		const memberFirstName = (userId: string) => {
+			const member = controller.store.get().team?.members.find((each) => each.userId === userId);
+			const name = member ? member.displayName || member.email : "";
+			return name ? (name.split(/\s+/)[0] ?? name) : null;
+		};
+		const programAdds = (): ProgramAddHost => ({
+			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
+			userId: controller.userId,
+			canWrite: () => controller.store.get().team?.capabilities.write === true,
+			companyName: () => companyInSentence(controller.profile.profileName),
+			appNames: () => (companyApps?.apps ?? []).map((app) => app.name),
+			opened: (folder) => {
+				try {
+					companyCurrent();
+				} catch {
+					return;
+				}
+				navigate({ name: "company", profileId: controller.profile.profileId, section: "app", id: folder }, true);
+			},
+			cofounder: () => cofounderFigure("program-say-figure"),
+		});
 		const panelHost = (beside: boolean): AppPanelHost => ({
+			programs: { userId: controller.userId, memberName: memberFirstName, adds: programAdds() },
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 			agents: () =>
 				controller.store
@@ -1889,6 +1928,10 @@ export function mountApplication(
 			whatsNewPage?.view.dispose();
 			whatsNewPage = undefined;
 		}
+		if (route.section !== "new-program" || newProgramPage?.company !== controller) {
+			newProgramPage?.view.dispose();
+			newProgramPage = undefined;
+		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
@@ -2426,6 +2469,23 @@ export function mountApplication(
 				}
 				sitesPage.view.update();
 				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
+			case "new-program": {
+				if (state.team?.capabilities.write !== true) {
+					if (!state.loading && state.team)
+						navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					else if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					return;
+				}
+				if (!newProgramPage) {
+					const view = new NewProgramPage(programAdds());
+					newProgramPage = { company: controller, view };
+				}
+				const shown = newProgramPage.view.el.parentElement;
+				if (shown?.parentElement !== main)
+					replace(main, h("section", { class: "page program-new-page" }, newProgramPage.view.el));
 				return;
 			}
 			case "whats-new": {
