@@ -846,6 +846,28 @@ a lower-case UUID; any other value makes the file unread). `parseProgram` keeps 
 `userId` is refused: it is not a field of a hand-in). A runtime bundle from before this keeps the versions but drops
 the field when an agent saves the program: the version then reads by its day, not "added by".
 
+**The web's part** (`packages/web/src/app/program-add.ts`, `views/program-add.ts`). The apps drawer's last entry, a
+dashed tile "New program", only for a member who may write (and only while the drawer itself shows), opens
+`#/c/<profileId>/new-program`: the big line "New program" in a muted tone, one dashed drop area ("Drop a program here",
+under it "or choose a file", a real file chooser; on a phone the area reads "Choose a program"), and the Co-Founder's
+figure (`agentFigure`, as the Sites page draws it) beside the chat's own bubble: "Made something yourself? Drop it here
+and everyone in <company> can get it." A file's kind comes from its name (`.apk` Android; `.ipa` iPhone; `.exe`, `.msi`
+Windows; `.dmg`, `.pkg` Mac; `.AppImage`, `.deb`, `.rpm`, `.flatpak`, `.tar.gz`, `.tar.xz`, `.tgz` Linux); any other
+asks "What is it for?" over the five kinds, and a click answers. Two files of one kind, more than five, an empty file,
+a name the format refuses and a file past 256 MiB are refused in one plain line. A new program's name is the file's
+without its ending, a trailing version and words such as setup or installer (`Lagerliste-1.0-setup.exe` gives
+Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3`. The drawer has no rename
+for an app, so renaming is not in this step. While the file goes up the tile stands (initial, name, size) and fills with
+the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop; no spinner. Leaving the page stops it,
+and a file already placed of a drop of several is deleted again, so nothing is listed. A refusal says too large (the
+size and the most), not allowed, the company paused, another of the member's programs still going up, someone adding
+at the same moment (Try again), or the connection dropped (Try again, which continues where it stopped). After it, the
+program's own page opens (its tile, chips and Download), its drawer tile selected, the dot line "Version 1 · added by
+you" ("added by <first name>" for another member the client knows, the day otherwise). A program a member made (no
+`owner`) has "Add a version" above "Earlier versions" in its "…" menu, which opens the same drop area in the field with
+a way back; a file dropped onto its page does the same. An agent's program and a viewer get neither. There is no
+Remove: the client has no retire of an app on this branch (§3e's web part is not on master).
+
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
