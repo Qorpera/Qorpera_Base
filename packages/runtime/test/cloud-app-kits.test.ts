@@ -99,7 +99,7 @@ const BOARD = {
 };
 
 it("names the data kits as the kits an app can be made from", () => {
-	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS]);
+	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS, "program"]);
 	expect([...DATA_KITS]).toEqual([
 		"model",
 		"board",
@@ -183,6 +183,7 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 		"map",
 		"ring",
 		"flow",
+		"program",
 		null,
 	]);
 	for (const said of [

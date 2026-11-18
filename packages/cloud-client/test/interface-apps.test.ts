@@ -108,7 +108,7 @@ describe("interface apps", () => {
 				{
 					line: 2,
 					message:
-						"kit must be one of explainer, model, board, path, object, curve, stack, shelf, map, ring, flow",
+						"kit must be one of explainer, model, board, path, object, curve, stack, shelf, map, ring, flow, program",
 				},
 			],
 		});

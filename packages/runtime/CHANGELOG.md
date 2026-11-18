@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
 - The review reads the script a machine command starts with (2026-11-17 amendment "the review reads the script it
   judges", brief A of the mywave review; its refusal and retry parts came first in #1942). Only a plain command is
   looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing bash would

@@ -865,7 +865,7 @@ export function mountApplication(
 				apps: () =>
 					controller.store
 						.get()
-						.apps?.filter((app) => app.manifest !== null)
+						.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
 						.map((app) => ({
 							name: app.manifest?.name ?? app.name,
 							path:

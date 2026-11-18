@@ -15,6 +15,7 @@ import {
 	PageFiles,
 } from "../interface-apps.ts";
 import { AppAskBar } from "./app-ask-bar.ts";
+import { ProgramPage, readProgram } from "./program-page.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
 /* An agent's interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an HTML page of the Company File, live
@@ -160,6 +161,7 @@ export class AppPanel {
 	#data: (AppDataPage & { readonly frame: AppFrame; readonly stop: AbortController }) | undefined;
 	/** Stops the serving bridge hearing that the app's held note is back (app/app-actions.ts `HeldNote`). */
 	#unlisten: (() => void) | undefined;
+	#program: ProgramPage | undefined;
 
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
@@ -248,6 +250,8 @@ export class AppPanel {
 		clearTimeout(this.#timer);
 		this.#frame?.dispose();
 		this.#frame = undefined;
+		this.#program?.dispose();
+		this.#program = undefined;
 		this.#dock?.dispose();
 		this.#dock = undefined;
 		this.#offered = undefined;
@@ -269,7 +273,7 @@ export class AppPanel {
 		}
 		this.#loading = this.#load(fresh)
 			.catch(() => {
-				if (!this.#frame) this.#status(t("This can't be opened right now."));
+				if (!this.#frame && !this.#program) this.#status(t("This can't be opened right now."));
 			})
 			.finally(() => {
 				this.#loading = undefined;
@@ -308,6 +312,7 @@ export class AppPanel {
 	#status(text: string, gone = false): void {
 		this.#frame?.dispose();
 		this.#frame = undefined;
+		this.#dropProgram();
 		this.#serve(null);
 		this.#page = undefined;
 		this.#files = undefined;
@@ -469,7 +474,7 @@ export class AppPanel {
 	async #load(fresh: boolean): Promise<void> {
 		const signal = this.#lifetime.signal;
 		const waiting = h("p", { class: "side-panel-status" }, t("Opening…"));
-		if (!this.#frame) replace(this.#body, waiting);
+		if (!this.#frame && !this.#program) replace(this.#body, waiting);
 		const progress = (read: number, of: number) => {
 			if (of > 4 * 1024 * 1024)
 				waiting.textContent = t("Opening… {percent}%", { percent: Math.floor((read / of) * 100) });
@@ -512,6 +517,7 @@ export class AppPanel {
 			name = manifest.name;
 			this.#emblemName = manifest.emblem;
 			this.#heading(manifest.name, manifest, this.#host.agentName(manifest.owner));
+			if (manifest.kit === "program") return this.#showProgram({ ...app, manifest }, fresh, signal);
 			served = { ...app, manifest };
 			// The page that stands follows the manifest from the moment it is read, before its files are read again:
 			// putting the page together may fail and leave the earlier page standing, and that page must not keep what
@@ -577,6 +583,7 @@ export class AppPanel {
 		}
 		this.#frame?.dispose();
 		this.#withdraw();
+		this.#dropProgram();
 		const answer = (call: AppCall) => this.#answer(call);
 		const frame = new AppFrame(page, t("App: {name}", { name }), "side-panel-frame", answer, () => {
 			if (this.#frame !== frame) return;
@@ -596,5 +603,41 @@ export class AppPanel {
 		replace(this.#body, frame.frame, opening);
 		// A note held for the app while its thread could not take it is on the bar again, with the member's words.
 		void this.#serving?.bridge.restore();
+	}
+
+	#dropProgram(): void {
+		this.#program?.dispose();
+		this.#program = undefined;
+		this.#body.classList.remove("is-program");
+	}
+
+	async #showProgram(
+		app: CompanyApp & { readonly manifest: AppManifest },
+		fresh: boolean,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (this.#program?.busy) return;
+		const read = await readProgram(this.#host.folder(), app.path, signal);
+		if (signal.aborted) return;
+		if (!read.ok) return this.#status(read.message);
+		const key = `${app.version ?? ""}:${read.key}`;
+		if (!fresh && this.#program?.key === key) return;
+		this.#frame?.dispose();
+		this.#frame = undefined;
+		this.#serve(null);
+		this.#page = undefined;
+		this.#files = undefined;
+		this.#withdraw();
+		this.#dropProgram();
+		const page = new ProgramPage(
+			{ folder: this.#host.folder, ...(this.#host.current ? { current: this.#host.current } : {}) },
+			{ name: app.name, path: app.path, manifest: app.manifest },
+			read.program,
+			key,
+		);
+		this.#program = page;
+		this.#body.classList.remove("is-dark");
+		this.#body.classList.add("is-program");
+		replace(this.#body, page.el);
 	}
 }

@@ -1607,7 +1607,7 @@ export async function warmApps(folder: Folder, apps: readonly CompanyApp[], sign
 	const reads: (() => Promise<unknown>)[] = [() => readAppBrand(folder, signal)];
 	for (const app of [...apps].sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0))) {
 		const entry = app.manifest?.entry;
-		if (entry === undefined || resolveAppPath("", entry) === null) continue;
+		if (entry === undefined || app.manifest?.kit === "program" || resolveAppPath("", entry) === null) continue;
 		reads.push(() =>
 			readPage(new AppFiles(folder, app.path, signal, { atOnce: WARM_FILES_AT_ONCE, warm: budget }), entry),
 		);
