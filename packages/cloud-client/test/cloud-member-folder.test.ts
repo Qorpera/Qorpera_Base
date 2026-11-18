@@ -822,7 +822,9 @@ describe("objects kept outside the client", () => {
 		k.held.set(first, new TextEncoder().encode("X".repeat(store.get(first)!.length)));
 		k.held.set(second, new Uint8Array(store.get(second)!.length + 1));
 		const tampered = reader(store, k.kept);
-		expect(text(await tampered.folder.readFile(file, signal, undefined, live))).toBe("Checked every time it is used.");
+		expect(text(await tampered.folder.readFile(file, signal, undefined, live))).toBe(
+			"Checked every time it is used.",
+		);
 		expect(tampered.asked.sort()).toEqual([first, second].sort());
 		await settled();
 		expect(k.held.get(first)).toEqual(Uint8Array.from(store.get(first)!));

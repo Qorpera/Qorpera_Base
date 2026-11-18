@@ -1204,7 +1204,10 @@ export class CloudMemberFolderClient {
 		const declared = response.headers.get("content-length");
 		if ((declared !== null && Number(declared) !== bytes.length) || (await cloudFileBytesSha256(bytes)) !== sha256)
 			throw new CloudMemberFolderError("Company folder object failed integrity verification");
-		if (kept) void Promise.resolve(bytes).then((read) => kept.keep(sha256, read)).catch(() => undefined);
+		if (kept)
+			void Promise.resolve(bytes)
+				.then((read) => kept.keep(sha256, read))
+				.catch(() => undefined);
 		return bytes;
 	}
 }
