@@ -99,7 +99,7 @@ create function pg_temp.a6_place(p_session uuid) returns text language sql as $$
 	select ctid::text from public.qorpera_member_session_accounts
 	where profile_id = pg_temp.a6('profile') and session_id = p_session and user_id = pg_temp.a6('owner')
 $$;
-create function pg_temp.a6_quiet(p_label text, p_session uuid, p_room boolean default false, p_lock_seen boolean default true)
+create function pg_temp.a6_quiet(p_label text, p_session uuid, p_lock_seen boolean default true)
 returns uuid language plpgsql as $$
 declare v_place text := pg_temp.a6_place(p_session); v_answer uuid;
 begin
@@ -164,7 +164,6 @@ select pg_temp.a6_conversation('first');
 select pg_temp.base_assert(pg_temp.a6_writes('first choice', pg_temp.a6('first')) = pg_temp.a6('b'), 'a first choice did not write B');
 select pg_temp.base_assert(pg_temp.a6_world('first choice', pg_temp.a6('first')) = pg_temp.a6('b'), 'a first choice did not take B');
 
--- 2. Nothing to change, the poll: the saved login, with no write, no lock and no room asked for. Also at its usage limit.
 select pg_temp.a6_saved('savedB', pg_temp.a6('b'), pg_temp.a6('bBinding'));
 select pg_temp.base_assert(pg_temp.a6_quiet('saved B', pg_temp.a6('savedB')) = pg_temp.a6('b'), 'the poll did not answer B');
 select pg_temp.base_assert(pg_temp.a6_world('saved B', pg_temp.a6('savedB')) = pg_temp.a6('b'), 'saved B moved');
@@ -219,7 +218,7 @@ select pg_temp.a6_save(pg_temp.a6('dana'), pg_temp.a6_other(pg_temp.a6('waits'))
 select pg_temp.base_assert(pg_temp.a6_writes('waiting over a saved login', pg_temp.a6('dana'), false) = pg_temp.a6('waits'), 'the write did not answer the waiting turn''s login');
 select pg_temp.base_assert(pg_temp.a6_world('waiting over a saved login', pg_temp.a6('dana')) = pg_temp.a6('waits'), 'the waiting turn''s login is not the conversation''s');
 select pg_temp.a6_save(pg_temp.a6('dana'), pg_temp.a6('waits'), pg_temp.a6_binding_of(pg_temp.a6('waits')));
-select pg_temp.base_assert(pg_temp.a6_quiet('waiting, saved', pg_temp.a6('dana'), true, false) = pg_temp.a6('waits'), 'the poll left the waiting turn''s login');
+select pg_temp.base_assert(pg_temp.a6_quiet('waiting, saved', pg_temp.a6('dana'), false) = pg_temp.a6('waits'), 'the poll left the waiting turn''s login');
 select pg_temp.base_assert(pg_temp.a6_world('waiting, saved', pg_temp.a6('dana')) = pg_temp.a6('waits'), 'waiting, saved moved');
 
 -- 6. The authority comes first, whatever is saved, and the same refusal stands on every branch.

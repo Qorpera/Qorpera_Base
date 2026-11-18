@@ -218,9 +218,6 @@ select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.d1_id
 select pg_temp.d1_reading(21, 1, repeat('c', 64), pg_temp.d1_usage(3)) \g /dev/null
 select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1) = 0, 'the login at its wall has room');
 
--- 4. The due list and the scan. Login A's fresh reading is full, so it has no room. Dana's kickoff (a turn request) and the
--- owner's two posts in Bob's thread (wakes) wait on it: the company's scan is idle, so the due list does not name the company,
--- and it checks A's sponsor version once.
 create function pg_temp.d1_due() returns jsonb language plpgsql as $$
 declare v_due jsonb;
 begin
