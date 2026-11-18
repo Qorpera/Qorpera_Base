@@ -79,6 +79,8 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 	});
 
 	it("draws the figure the office desktop draws, and follows the web client's rule", () => {
+		expect([1, 2, 3, 4, 8].map((n) => byId(id(n)))).toEqual(["heart", "star", "cloud", "bolt", "planet"]);
+		expect(byId("9f0c1b2e-7d4a-4c3b-8e5f-a1b2c3d4e5f6")).toBe("flame");
 		const templates = [
 			undefined,
 			"co-founder",

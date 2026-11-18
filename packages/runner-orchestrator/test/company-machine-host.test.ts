@@ -5660,6 +5660,113 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 		20_000,
 	);
 
+	it.skipIf(process.platform !== "linux" || spawnSync("python3", ["-c", "0"]).status !== 0)(
+		"moves only on the fence file's fence and its own desktop, under the lock and synced before it lets go, also after X is open",
+		async () => {
+			const dir = await realpath(await mkdtemp(join(tmpdir(), "pointer-moves-")));
+			const link = join(dir, "invocation"),
+				fenceFile = join(dir, "pointer", "fence"),
+				log = join(dir, "x.log");
+			const x = [
+				"import os as _os, fcntl as _fcntl",
+				`_DIR = ${JSON.stringify(dir)}`,
+				"def _held():",
+				"    fd = _os.open(_os.path.join(_DIR, 'pointer', 'lock'), _os.O_RDONLY)",
+				"    try:",
+				"        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)",
+				"        _fcntl.flock(fd, _fcntl.LOCK_UN)",
+				"        return False",
+				"    except BlockingIOError:",
+				"        return True",
+				"    finally:",
+				"        _os.close(fd)",
+				"def _log(text):",
+				"    with open(_os.path.join(_DIR, 'x.log'), 'a') as f:",
+				"        f.write(text + '\\n')",
+				"def _swap(name, to):",
+				"    if _os.path.lexists(_os.path.join(_DIR, name)):",
+				"        _os.replace(_os.path.join(_DIR, name), to)",
+				"def _open(name):",
+				"    _log('open ' + name.decode())",
+				"    _swap('open-link', _os.path.join(_DIR, 'invocation'))",
+				"    return 1",
+				"def _sync(display, discard):",
+				"    _log('sync %s' % _held())",
+				"    _swap('sync-fence', _os.path.join(_DIR, 'pointer', 'fence'))",
+				"    _swap('sync-link', _os.path.join(_DIR, 'invocation'))",
+				"def _move(display, screen, x, y, delay):",
+				"    _log('move %d %d %s' % (x, y, _held()))",
+				"class _Call:",
+				"    def __init__(self, act):",
+				"        self.act = act",
+				"    def __call__(self, *args):",
+				"        return self.act(*args)",
+				"class _X11:",
+				"    XOpenDisplay = _Call(_open)",
+				"    XSync = _Call(_sync)",
+				"class _Xtst:",
+				"    XTestFakeMotionEvent = _Call(_move)",
+			].join("\n");
+			const program = `${x}\n${COMPANY_MACHINE_MEMBER_POINTER_PROGRAM.replaceAll(
+				"/run/qorpera-pointer",
+				join(dir, "pointer"),
+			)
+				.replaceAll("/run/systemd/units/invocation:qorpera-machine-desktop.service", link)
+				.replaceAll("/run/qorpera-desktop/last-use", join(dir, "no-last-use"))
+				.replace("ctypes.CDLL('libX11.so.6')", "_X11()")
+				.replace("ctypes.CDLL('libXtst.so.6')", "_Xtst()")}`;
+			expect(program).not.toContain("ctypes.CDLL");
+			const run = async (input: string) => {
+				await rm(log, { force: true });
+				const status = spawnSync("python3", ["-c", program, FIRST], {
+					encoding: "utf8",
+					env: { PATH: process.env.PATH ?? "" },
+					input,
+				}).status;
+				return { status, x: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [] };
+			};
+			const F = "0123456789abcdef";
+			try {
+				await mkdir(join(dir, "pointer"));
+				await writeFile(join(dir, "pointer", "lock"), "");
+				await writeFile(fenceFile, `${F}:4 ${FIRST}`);
+				await symlink(FIRST, link);
+				expect(await run(`10 20 ${F}:4\n12345 1 ${F}:4\nx y\n30 40 ${F}:4\n`)).toEqual({
+					status: 0,
+					x: ["open :1", "move 10 20 True", "sync True", "move 30 40 True", "sync True"],
+				});
+				expect(await run(`10 20 ${F}:3\n30 40 ${F}:4\n`)).toEqual({ status: 94, x: ["open :1"] });
+				await writeFile(join(dir, "sync-fence"), `${F}:5 ${FIRST}`);
+				expect(await run(`10 20 ${F}:4\n30 40 ${F}:4\n`)).toEqual({
+					status: 94,
+					x: ["open :1", "move 10 20 True", "sync True"],
+				});
+				await writeFile(fenceFile, `${F}:4 ${FIRST}`);
+				await writeFile(join(dir, "sync-fence"), `${F}:5 ${FIRST}`);
+				expect(await run(`10 20 ${F}:4\n30 40 ${F}:5\n`)).toEqual({
+					status: 0,
+					x: ["open :1", "move 10 20 True", "sync True", "move 30 40 True", "sync True"],
+				});
+				await writeFile(fenceFile, `${F}:4 ${FIRST}`);
+				await symlink(SECOND, join(dir, "sync-link"));
+				expect(await run(`10 20 ${F}:4\n30 40 ${F}:4\n`)).toEqual({
+					status: 94,
+					x: ["open :1", "move 10 20 True", "sync True"],
+				});
+				await rm(link);
+				await symlink(FIRST, link);
+				await symlink(SECOND, join(dir, "open-link"));
+				expect(await run(`10 20 ${F}:4\n`)).toEqual({ status: 96, x: ["open :1"] });
+				expect(readdirSync(join(dir, "pointer")).sort()).toEqual(["fence", "lock"]);
+				expect(readFileSync(join(dir, "pointer", "lock"), "utf8")).toBe("");
+				expect(readFileSync(fenceFile, "utf8")).toBe(`${F}:4 ${FIRST}`);
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+			}
+		},
+		20_000,
+	);
+
 	it("takes only a move of whole pixels within the largest screen, on ids", async () => {
 		const { f } = await piped();
 		for (const wrong of [
