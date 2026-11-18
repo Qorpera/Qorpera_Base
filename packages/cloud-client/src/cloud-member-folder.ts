@@ -1188,8 +1188,9 @@ export class CloudMemberFolderClient {
 			throw new CloudMemberFolderError("Company folder file exceeds the upload limit", 413);
 		const base = `${this.#objectOrigin}/v1/member-program-uploads/${this.#environmentId}`;
 		let uploadId: string | undefined;
+		let finishing = false;
 		const stopped = () => {
-			if (uploadId === undefined) return;
+			if (uploadId === undefined || finishing) return;
 			const at = `${base}/${uploadId}/stop`;
 			void withCloudDeadline(
 				async (stopSignal) =>
@@ -1200,6 +1201,7 @@ export class CloudMemberFolderClient {
 		signal.addEventListener("abort", stopped, { once: true });
 		try {
 			for (let attempt = 1; ; attempt++) {
+				finishing = false;
 				try {
 					const opened = parseUploadOpen(
 						await this.#retried(
@@ -1223,6 +1225,7 @@ export class CloudMemberFolderClient {
 					uploadId = opened.uploadId;
 					await this.#putPieces(`${base}/${opened.uploadId}`, file, prepared, opened.have, options);
 					signal.throwIfAborted();
+					finishing = true;
 					const answer = await this.#retried(
 						(requestSignal) =>
 							this.#send(

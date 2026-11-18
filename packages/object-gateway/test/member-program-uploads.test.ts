@@ -30,6 +30,7 @@ async function gateway(
 		folder?: Map<string, Entry>;
 		write?: () => Record<string, unknown>;
 		renewRefused?: boolean;
+		commitHold?: Promise<unknown>;
 	} = {},
 ) {
 	const folder = options.folder ?? new Map<string, Entry>();
@@ -116,6 +117,7 @@ async function gateway(
 					};
 				}
 				case "qorpera_folder_commit":
+					await options.commitHold;
 					return {
 						schema: "qorpera.folder-commit/v1",
 						commitId: "35000000-0000-4000-8000-0000000000c1",
@@ -341,6 +343,28 @@ describe("a member's program file put into the company's place for programs", ()
 		const upload = await uploadOf(await g.open(file));
 		await g.piece(upload, 0, file.pieces[0]!);
 		expect(((await (await g.finish(upload)).json()) as { outcome: string }).outcome).toBe("saved");
+	});
+
+	it("keeps an upload whose finish is running through the member's stop, so a retried finish still answers", async () => {
+		const file = program(10);
+		let release = () => {};
+		const g = await gateway({
+			commitHold: new Promise<void>((resolve) => {
+				release = resolve;
+			}),
+		});
+		const upload = await uploadOf(await g.open(file));
+		expect((await g.piece(upload, 0, file.pieces[0]!)).status).toBe(200);
+		const finishing = g.finish(upload);
+		for (let n = 0; n < 200 && !g.methods().includes("qorpera_folder_commit"); n++)
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		expect((await g.stop(upload)).status).toBe(204);
+		release();
+		expect(((await (await finishing).json()) as { outcome: string }).outcome).toBe("saved");
+		expect(((await (await g.finish(upload)).json()) as { outcome: string }).outcome).toBe("saved");
+		const fresh = await uploadOf(await g.open(program(10)));
+		expect((await g.stop(fresh)).status).toBe(204);
+		expect((await g.piece(fresh, 0, randomBytes(10))).status).toBe(404);
 	});
 
 	it("takes bytes for no other folder path, refused before anyone is asked", async () => {

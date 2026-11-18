@@ -51,6 +51,7 @@ interface Upload {
 	touched: number;
 	renewed: number;
 	finished: boolean;
+	finishing: number;
 }
 
 type Publish = (
@@ -281,6 +282,7 @@ async function open(
 		touched: now,
 		renewed: now,
 		finished: false,
+		finishing: 0,
 	};
 	if (!upload.present.has(manifestSha256))
 		await put(upload, manifestSha256, new TextEncoder().encode(text), publish, options);
@@ -463,7 +465,7 @@ export async function serveMemberProgramUpload(
 			throw new ObjectDependencyError(404);
 		upload.touched = now();
 		if (kind === "stop") {
-			if (!upload.finished) drop(actor.userId);
+			if (!upload.finished && upload.finishing === 0) drop(actor.userId);
 			response.writeHead(204, { "cache-control": "private, no-store" });
 			response.end();
 			return;
@@ -477,6 +479,7 @@ export async function serveMemberProgramUpload(
 			await piece(request, response, upload, Number(step), publish, options).catch(gone);
 			return;
 		}
+		upload.finishing++;
 		await finish(
 			response,
 			upload,
@@ -503,7 +506,11 @@ export async function serveMemberProgramUpload(
 					: { fileSha256: "", bytes: -1, version: entry.version };
 			},
 			observation,
-		).catch(gone);
+		)
+			.catch(gone)
+			.finally(() => {
+				upload.finishing--;
+			});
 	} finally {
 		clearTimeout(timer);
 	}

@@ -370,7 +370,8 @@ folder call after it goes as that member with the service key.
    file's version), `exists`, `denied`, `refused` (the core's refusal or review) or `conflict`, with the core's reason.
    The same finish again answers the same. A seal that finds an object gone is 409 and forgets the upload: the
    browser opens it again.
-4. `POST …/<environment>/<upload>/stop` forgets an upload not finished (204).
+4. `POST …/<environment>/<upload>/stop` forgets an upload not finished (204), but never one whose finish is running:
+   a retried finish after a lost answer still finds it.
 
 An upload never finished leaves nothing in the folder: its intent is never sealed or committed, and the core lets it
 run out. A gateway restart forgets every upload (the next piece is 404, and the browser opens it again). The finish is
@@ -392,8 +393,10 @@ puts the rest of that upload down to one piece at a time and is sent again witho
 sent alone counts. A lost answer, an outage or a deadline is tried again as `readFilePieces` tries a piece (three
 tries, a pause between); a 409 for a piece ahead waits and sends again;
 a 404 (the upload forgotten) opens it again once; any other refusal ends it with its status. The member's stop (the
-signal) ends every piece and tells the gateway to forget the upload; a finish already sent is not cut short, so its
-answer comes back and the caller knows whether the file was put. Called again with the same file, it resumes and
+signal) ends every piece and tells the gateway to forget the upload; a finish already sent is not cut short and sends no
+stop, so its answer comes back and the caller knows whether the file was put. The same finish sent again with the same
+key and path (a new open, pieces and finish when the gateway forgot it) is answered `saved` for this very file: that is
+the replay of a finish whose answer was lost. Called again with the same file, it resumes and
 sends only what the gateway lacks.
 
 **The text part** goes through §5's route after the bytes are in place (RUNTIME-INTERFACE-APPS.md §3f).
