@@ -699,15 +699,6 @@ export function roadmapNamesAgents(data: unknown): boolean {
 	return (Array.isArray(node.agents) && node.agents.length > 0) || roadmapParts(node).some(roadmapNamesAgents);
 }
 
-export function roadmapFirstPictures(data: RoadmapNode): string[] {
-	const found: string[] = [];
-	for (const node of [data, ...roadmapParts(data)]) {
-		const picture = typeof node === "object" && node !== null ? (node as RoadmapNode).picture : undefined;
-		if (roadmapPicture(picture) && !found.includes(picture)) found.push(picture);
-	}
-	return found;
-}
-
 function roadmapUnpictured(data: RoadmapNode): string[] {
 	const found: string[] = [];
 	const walk = (node: RoadmapNode) => {
@@ -803,7 +794,7 @@ export function kitPage(
 		"</head>",
 		"<body>",
 		'<div hidden id="kit-media">',
-		...(kit === "roadmap" ? roadmapFirstPictures(data) : kitMedia(data))
+		...(kit === "roadmap" ? [data.picture].filter(roadmapPicture) : kitMedia(data))
 			.filter(holds)
 			.map((path) =>
 				VIDEO.test(path)

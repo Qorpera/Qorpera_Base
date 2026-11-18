@@ -710,7 +710,7 @@ and Open goes one layer down. You write only \`roadmap.json\`; the page finds ea
 - A caption is one short line, and the picture carries the meaning. Labels, not sentences.
 - No dates: the order of the list is the order. A part still in question is \`open\`, never a guess.
 - Change it rarely: when a goal is reached, added or dropped. It is never a task list.
-- The top layer's pictures come with the page; a deeper layer's load as a member opens it.
+- The title's picture comes with the page; every part's loads after it and fades in.
 
 ## Example
 

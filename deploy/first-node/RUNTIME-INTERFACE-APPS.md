@@ -452,12 +452,13 @@ call the web does not already answer.
   folder), and the engine takes each from there by its path. One the folder lacks is left out, the engine draws a
   quiet placeholder for it, and the save's `look` says which. So an agent writes its pictures first, from a machine,
   or saves the data again after: a save with the data in the folder and none in the call reads the folder's.
-- **A roadmap names only its top layer's pictures** (18 November 2026). A roadmap's data names a picture for each
-  part, and a part reached gets one (pictures of 2 to 4 MB from `make_picture`, a dozen or more in a real one). Every
-  picture in `#kit-media` comes with the page before it opens (§2: a hidden picture has no budget), so the page
-  names only the title's picture and those of the top layer's parts (`roadmapFirstPictures`); the engine asks
-  `qorpera.file(path)` for every other one as its layer is opened, or a tile of the top layer or Open is pointed at,
-  and draws a dashed tile for a picture that does not come. Opened outside Qorpera, it loads the path itself.
+- **A roadmap names only its title's picture** (18 November 2026). A roadmap's data names a picture for each part,
+  and a part reached gets one (pictures of 2 to 4 MB from `make_picture`, a dozen or more in a real one). Every
+  picture in `#kit-media` comes with the page before it opens (§2: a hidden picture has no budget), so the page names
+  only the title's picture: a page of five top tiles does not wait for some 15 MB to open. The engine asks
+  `qorpera.file(path)` for every part's picture, the top layer's as it is first drawn and a deeper layer's as it is
+  opened (or ahead, as a tile of the top layer or Open is pointed at); each fades in as it comes, and a picture that
+  does not come leaves a dashed tile. Opened outside Qorpera, it loads the path itself.
 - **The engine reads the data through the bridge**, as it stands when the page opens, and again after a change
   notice, no sooner than ten seconds after its last draw (§5). So the app's own folder is the one source: a change of
   `<kit>.json` shows without a new page. The page also holds the data as it was saved, for one case: opened where

@@ -1844,12 +1844,14 @@ it("reads a roadmap's data, or says in words why it does not read", () => {
 	expect(problem({ ...ROADMAP, parts: wide })).toBe("roadmap.json holds 84 parts: the roadmap kit draws 80 at most");
 });
 
-it("names in a roadmap's page only its top layer's pictures, and the agents' figures when it names an agent", () => {
-	const page = kitPage("roadmap", "roadmap", "Roadmap", ROADMAP, (path) => path !== "pictures/well.png");
-	for (const path of ["pictures/home.png", "pictures/filter.png"])
-		expect(page).toContain(`<img data-kit-src="${path}" src="${path}" alt="">`);
-	for (const path of ["pictures/well.png", "pictures/family.png", "pictures/cartridge.png", "pictures/city.png"])
+it("names in a roadmap's page only its title's picture, and the agents' figures when it names an agent", () => {
+	const page = kitPage("roadmap", "roadmap", "Roadmap", ROADMAP, () => true);
+	expect(page).toContain('<img data-kit-src="pictures/home.png" src="pictures/home.png" alt="">');
+	for (const path of kitMedia(ROADMAP).filter((path) => path !== "pictures/home.png"))
 		expect(page).not.toContain(`data-kit-src="${path}"`);
+	expect(kitPage("roadmap", "roadmap", "Roadmap", ROADMAP, (path) => path !== "pictures/home.png")).not.toContain(
+		'data-kit-src="pictures/',
+	);
 	for (const [id, url] of Object.entries(KIT_FIGURES))
 		expect(page).toContain(`<img data-kit-src="figure:${id}" src="${url}" alt="">`);
 	const nobody = { ...ROADMAP, parts: [goal("Pumps"), goal("Wells")] };
