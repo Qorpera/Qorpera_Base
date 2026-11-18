@@ -4148,9 +4148,13 @@ it("offers narrate_app to a Codex login's run with machines, on demand, and to n
 	expect(
 		(evidence.threadParameters.dynamicTools[0].tools as { name: string }[]).map((tool) => tool.name),
 	).not.toContain("narrate_app");
+	await rm(machines.identityRoot, { recursive: true, force: true });
+	await rm(machines.companyRoot, { recursive: true, force: true });
 	const none = await fixture("company-runtime");
 	await none.runtime.execute(none.request, none.identityRoot, new AbortController().signal);
 	expect(offeredNames(JSON.parse(await readFile(none.evidence, "utf8")))).not.toContain("narrate_app");
+	await rm(none.identityRoot, { recursive: true, force: true });
+	await rm(none.companyRoot, { recursive: true, force: true });
 	const plan = await fixture("company-runtime", false, undefined, true);
 	await rm(join(plan.identityRoot, "codex", "auth.json"));
 	await mkdir(join(plan.identityRoot, "chatgpt-plan"), { mode: 0o700 });

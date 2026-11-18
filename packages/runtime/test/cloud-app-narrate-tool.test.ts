@@ -275,7 +275,8 @@ const clip = (caption: string) => `${captionHash(caption)}.mp4`;
 
 it("says what it does within the bytes a tool's description may hold", async () => {
 	const f = await fixture();
-	expect(Buffer.byteLength(f.tool.description)).toBeLessThanOrEqual(4096);
+	expect(Buffer.byteLength(f.tool.description)).toBeLessThanOrEqual(3600);
+	expect(f.tool.description.split("\n")).toHaveLength(7);
 	expect(f.tool.description).toBe(CLOUD_NARRATE_APP_DESCRIPTION);
 	for (const said of [
 		"It needs a running company machine whose commands see the company folder at /company",
