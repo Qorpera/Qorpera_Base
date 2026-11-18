@@ -4115,7 +4115,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"d279c1d9b2a53bffe4bc7592e782861c908dcd363e10a214cd87dad3de16dffd",
+		"86910bada59a339f3b72cf2759c4189042fafe4963e498c919a31e9886b53895",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
 		"815183391e0511f0f5d315abeeff7df55603d5e5b85b0d2c13b8de60ead2625b",
