@@ -1,7 +1,4 @@
 -- @fixture 700_folder_state_vision_agents.test.sql until "-- 2. The vision: a new name"
--- Company state files: an agent's model reaches its runs on folder-v2 (20260930081000). The roster index of agent.md
--- sets the agent's model provider and id from the file's `model`, or gpt-6.2-sol when it names none (20260930803000); the provider-model
--- mapping follows; and an owner can name an API-key company account as the agent's standing account.
 
 create function pg_temp.model_text(p_id uuid, p_name text, p_model text) returns text language sql as $$
 	select format(E'---\nid: %s\nname: %s\nrole: Sales\nkind: agent\nstatus: active\n%s---\nSell.\n', p_id, p_name,

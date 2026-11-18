@@ -1,11 +1,4 @@
 -- @fixture 1268_claude_code_worker_dispatch.test.sql until "-- The checks start here"
--- 20260930803000: GPT-6.2 Sol replaces GPT-6.1 Sol in a conversation's Model menu and is the platform's GPT model.
--- 1. The menu offers GPT-6 Astra and GPT-6.2 Sol (and Claude when the member may pick it); a conversation with no pick
---    reads GPT-6.2 Sol, from its agent's model or, with none, the default.
--- 2. The setter takes GPT-6.2 Sol with its efforts (extra high under threadEfforts) and refuses GPT-6.1 Sol; the table too.
--- 3. A member's turn runs GPT-6.2 Sol on the default path; a pick of GPT-6 Astra or GPT-6.2 Sol is kept.
--- 4. The migration's move: conversations on GPT-6.1 Sol go to GPT-6.2 Sol, agents whose agent.md names no model go to
---    GPT-6.2 Sol, and an agent.md that names GPT-6 Astra keeps it.
 select pg_temp.base_claims('service_role');
 
 create function pg_temp.sx_activate(p_thread jsonb, p_claude boolean default true) returns text language plpgsql as $$
