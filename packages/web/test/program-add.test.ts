@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+
+import { File as NodeFile } from "node:buffer";
 import { parseProgram, writeProgram } from "@qorpera/cloud-client/app-program";
 import type { CloudMemberFolderUnit, CloudMemberFolderUploadFile } from "@qorpera/cloud-client/cloud-member-folder";
 import { CloudMemberFolderError } from "@qorpera/cloud-client/cloud-member-folder";
@@ -34,7 +36,7 @@ afterEach(() => {
 	setLanguagePreference("en");
 });
 
-const file = (name: string, text = `bytes of ${name}`) => new File([text], name);
+const file = (name: string, text = `bytes of ${name}`) => new NodeFile([text], name) as unknown as File;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function until(check: () => boolean) {
 	for (let n = 0; n < 200 && !check(); n++) await settle();

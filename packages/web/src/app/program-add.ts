@@ -90,7 +90,9 @@ export function programNameOf(fileName: string): string {
 		if (!VERSION_WORD.test(last) && !EXTRA_WORDS.has(last.toLowerCase())) break;
 		words.pop();
 	}
-	const name = (words.join(" ") || base || fileName).trim();
+	const name = (
+		words.length === 1 && VERSION_WORD.test(words[0] ?? "") ? base : words.join(" ") || base || fileName
+	).trim();
 	return [...name].slice(0, APP_NAME_MAX_CHARS).join("").trim() || fileName;
 }
 
