@@ -309,6 +309,7 @@ export const CONVERSATION: Record<string, string> = {
 	"For this phone": "Til denne telefon",
 	"It's in your Downloads.": "Den ligger i dine overførsler.",
 	"This file is no longer in the app's folder.": "Filen er ikke længere i appens mappe.",
+	"This file changed after version {version} was kept.": "Filen er ændret, efter at version {version} blev gemt.",
 	"The download stopped. Try again.": "Hentningen stoppede. Prøv igen.",
 	"Earlier versions": "Tidligere versioner",
 	"None yet": "Ingen endnu",

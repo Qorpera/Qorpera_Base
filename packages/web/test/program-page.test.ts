@@ -58,17 +58,29 @@ afterEach(() => {
 	setLanguagePreference("en");
 });
 
-function company(program: Program = PROGRAM) {
+async function company(program: Program = PROGRAM) {
 	const fake = folderFake({ seed: [] });
 	fake.put("apps/fokusur/app.toml", 'name = "Fokusur"\nkit = "program"\nemblem = "page"\nposted = true\n');
-	fake.put("apps/fokusur/program.json", writeProgram(program));
 	fake.put("apps/fokusur/versions/0.2/fokusur-0.2.apk", APK);
 	fake.put("apps/fokusur/versions/0.1/fokusur-0.1.tar.gz", TAR);
+	const signal = new AbortController().signal;
+	const versions = await Promise.all(
+		program.versions.map(async (each) => ({
+			...each,
+			forms: await Promise.all(
+				each.forms.map(async (form) => {
+					const found = await fake.folder.read(`apps/fokusur/versions/${each.version}/${form.file}`, signal);
+					return { ...form, sha256: found.entry?.file?.fileSha256 ?? form.sha256 };
+				}),
+			),
+		})),
+	);
+	fake.put("apps/fokusur/program.json", writeProgram({ ...program, versions }));
 	return fake;
 }
 
 async function page(system: Parameters<typeof downloadOffer>[1], program: Program = PROGRAM) {
-	const fake = company(program);
+	const fake = await company(program);
 	const read = await readProgram(fake.folder, "apps/fokusur", new AbortController().signal);
 	if (!read.ok) throw new Error(read.message);
 	const parsed = parseAppManifest(fake.text("apps/fokusur/app.toml") ?? "");
@@ -200,6 +212,12 @@ describe("a program's page", () => {
 		gone.fake.remove("apps/fokusur/versions/0.2/fokusur-0.2.apk");
 		gone.button().click();
 		await vi.waitFor(() => expect(gone.text(".program-note")).toBe("This file is no longer in the app's folder."));
+		const rebuilt = await page("android");
+		rebuilt.fake.put("apps/fokusur/versions/0.2/fokusur-0.2.apk", "another build");
+		rebuilt.button().click();
+		await vi.waitFor(() =>
+			expect(rebuilt.text(".program-note")).toBe("This file changed after version 0.2 was kept."),
+		);
 		expect(saved).toEqual([]);
 	});
 
@@ -213,14 +231,33 @@ describe("a program's page", () => {
 
 describe("a program app's page in the client", () => {
 	it("draws the program natively, never in a frame, and says when it has no version", async () => {
-		const fake = company();
+		const fake = await company();
+		let changed = () => {};
+		let release = () => {};
+		let holding = false;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const folder = {
+			...fake.folder,
+			readFile: async (...asked: Parameters<typeof fake.folder.readFile>) => {
+				if (asked[0].bytes === APK.length) {
+					holding = true;
+					await held;
+				}
+				return fake.folder.readFile(...asked);
+			},
+		};
 		const host = {
-			folder: () => fake.folder,
+			folder: () => folder,
 			agents: () => [],
 			readApps: (signal: AbortSignal) => readApps(fake.folder, signal),
 			apps: () => [],
 			agentName: () => null,
-			onFolderChange: () => () => {},
+			onFolderChange: (listener: () => void) => {
+				changed = listener;
+				return () => {};
+			},
 			openInStorage: vi.fn<(path: string) => void>(),
 			openApp: vi.fn<(name: string) => void>(),
 			budgetKey: crypto.randomUUID(),
@@ -237,6 +274,20 @@ describe("a program app's page in the client", () => {
 		);
 		expect(panel.el.querySelector("iframe")).toBeNull();
 		expect(panel.el.querySelector(".side-panel-body.is-program")).not.toBeNull();
+		const shown = panel.el.querySelector(".program-page");
+		changed();
+		await panel.reload(false);
+		expect(panel.el.querySelector(".program-page")).toBe(shown);
+		expect(panel.el.querySelector(".side-panel-status")).toBeNull();
+		panel.el.querySelector<HTMLButtonElement>('.program-kind[data-kind="android"]')!.click();
+		await vi.waitFor(() => expect(holding).toBe(true));
+		await panel.reload(true);
+		expect(panel.el.querySelector(".program-page")).toBe(shown);
+		release();
+		await vi.waitFor(() =>
+			expect(panel.el.querySelector(".program-note")?.textContent).toBe("It's in your Downloads."),
+		);
+		expect(panel.el.querySelector(".program-page")).toBe(shown);
 		fake.remove("apps/fokusur/program.json");
 		await panel.reload(true);
 		expect(panel.el.querySelector(".side-panel-status")?.textContent).toBe("This program has no version yet.");

@@ -474,7 +474,7 @@ export class AppPanel {
 	async #load(fresh: boolean): Promise<void> {
 		const signal = this.#lifetime.signal;
 		const waiting = h("p", { class: "side-panel-status" }, t("Opening…"));
-		if (!this.#frame) replace(this.#body, waiting);
+		if (!this.#frame && !this.#program) replace(this.#body, waiting);
 		const progress = (read: number, of: number) => {
 			if (of > 4 * 1024 * 1024)
 				waiting.textContent = t("Opening… {percent}%", { percent: Math.floor((read / of) * 100) });

@@ -441,6 +441,10 @@ export class ProgramPage {
 				return;
 			}
 			const file = entry.file;
+			if (file.fileSha256 !== form.sha256 || file.bytes !== form.bytes) {
+				say(t("This file changed after version {version} was kept.", { version }));
+				return;
+			}
 			this.#downloads ??= new WebFileDownloads({ signal, current: () => this.#host.current?.() });
 			const pieces: Blob[] = [];
 			if (folder.readFilePieces)
