@@ -25,6 +25,7 @@ export interface FramedPage {
 	readonly html: string;
 	readonly files?: readonly (readonly [string, Blob])[];
 	readonly missing?: readonly string[];
+	readonly said?: readonly string[];
 	readonly base?: string;
 }
 
@@ -150,7 +151,7 @@ export class AppFrame {
 		this.#asked = true;
 		if (this.#handed || !this.#page || this.#lifetime.signal.aborted) return;
 		this.#handed = true;
-		const { html, files = [], missing = [], base = "" } = this.#page;
+		const { html, files = [], missing = [], said = [], base = "" } = this.#page;
 		const channel = new MessageChannel();
 		this.#port = channel.port1;
 		channel.port1.addEventListener("message", (call) => void this.#call(call.data), {
@@ -158,7 +159,14 @@ export class AppFrame {
 		});
 		channel.port1.start();
 		this.frame.contentWindow?.postMessage(
-			{ type: PAGE_CONTENT, html, files: files.map(([token, blob]) => [token, blob]), missing: [...missing], base },
+			{
+				type: PAGE_CONTENT,
+				html,
+				files: files.map(([token, blob]) => [token, blob]),
+				missing: [...missing],
+				...(said.length > 0 ? { said: [...said] } : {}),
+				base,
+			},
 			"*",
 			[channel.port2],
 		);

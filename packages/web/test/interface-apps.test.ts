@@ -543,6 +543,145 @@ describe("putting an app's page together", () => {
 	});
 });
 
+describe("an app's module scripts", () => {
+	const signal = new AbortController().signal;
+	const open = async (files: Record<string, string>, entry = "index.html", path = "apps/mod") => {
+		const assembled = await assembleApp(fakeFolder(files) as never, { path, entry }, signal);
+		if (!assembled.ok) throw new Error(assembled.message);
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const handed = new Map(assembled.framed.files);
+		const map = JSON.parse(page.querySelector("script[type=importmap]")?.textContent ?? "{}") as {
+			imports: Record<string, string>;
+		};
+		const source = (path: string) => textOf(handed.get(map.imports[`qorpera-module:/${path}`] ?? ""));
+		return { assembled, page, handed, map, source, said: assembled.framed.said ?? [] };
+	};
+
+	it("binds a module page's whole graph: module src, inline, relative at any depth, export from, side effects and a cycle", async () => {
+		const { page, map, source, said, handed } = await open({
+			"apps/mod/index.html":
+				'<script type="module" src="main.js"></script><script type="module">import { a } from "./lib/a.js"; a();</script>',
+			"apps/mod/main.js":
+				'import "./lib/side.js";\nexport * from "./lib/a.js";\nimport { b } from "./lib/deep/b.js";\nb();',
+			"apps/mod/lib/a.js": 'import { b } from "./deep/b.js";\nexport const a = () => b();',
+			"apps/mod/lib/deep/b.js":
+				'import { a } from "../a.js";\nimport { c } from "../../c.js";\nexport const b = () => c(a);',
+			"apps/mod/c.js": "export const c = (f) => f;",
+			"apps/mod/lib/side.js": "globalThis.side = 1;",
+		});
+		expect(said).toEqual([]);
+		expect(Object.keys(map.imports).sort()).toEqual(
+			["c.js", "lib/a.js", "lib/deep/b.js", "lib/side.js", "main.js"]
+				.map((path) => `qorpera-module:/${path}`)
+				.sort(),
+		);
+		expect(page.head.firstElementChild?.getAttribute("type")).toBe("importmap");
+		const main = page.querySelector("script[src]");
+		expect(main?.getAttribute("src")).toBe(map.imports["qorpera-module:/main.js"]);
+		expect(page.querySelector("script[type=module]:not([src])")?.textContent).toBe(
+			'import { a } from "qorpera-module:/lib/a.js"; a();',
+		);
+		expect(await source("main.js")).toBe(
+			'import "qorpera-module:/lib/side.js";\nexport * from "qorpera-module:/lib/a.js";\nimport { b } from "qorpera-module:/lib/deep/b.js";\nb();\n//# sourceURL=qorpera-module:/main.js',
+		);
+		expect(await source("lib/deep/b.js")).toContain('import { a } from "qorpera-module:/lib/a.js";');
+		expect(await source("lib/deep/b.js")).toContain('import { c } from "qorpera-module:/c.js";');
+		expect(await source("lib/a.js")).toContain('import { b } from "qorpera-module:/lib/deep/b.js";');
+		expect([...handed.values()].every((blob) => blob.type === "text/javascript")).toBe(true);
+		expect(Object.values(map.imports).every((token) => /^qorpera-file-[0-9a-f]{32}-module$/.test(token))).toBe(true);
+	});
+
+	it("resolves bare names through the page's import map, exact and by prefix, and literal dynamic imports", async () => {
+		const { page, map, source, said } = await open({
+			"apps/mod/index.html":
+				'<script type="importmap">{"imports": {"three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/"}}</script><script type="module" src="viewer.js"></script>',
+			"apps/mod/viewer.js":
+				"import * as THREE from 'three';\nimport { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';\nconst later = await import('./later.js');\nconst any = await import(name);\nconst url = new URL('./model.glb', import.meta.url);",
+			"apps/mod/vendor/three.module.js": "export const REVISION = '186';",
+			"apps/mod/vendor/addons/loaders/GLTFLoader.js":
+				"import { REVISION } from 'three';\nexport class GLTFLoader {}",
+			"apps/mod/later.js": "export default 1;",
+		});
+		expect(said).toEqual([]);
+		expect(page.querySelectorAll("script[type=importmap]")).toHaveLength(1);
+		const viewer = await source("viewer.js");
+		expect(viewer).toContain("import * as THREE from 'qorpera-module:/vendor/three.module.js';");
+		expect(viewer).toContain("import { GLTFLoader } from 'qorpera-module:/vendor/addons/loaders/GLTFLoader.js';");
+		expect(viewer).toContain('const later = await import("qorpera-module:/later.js");');
+		expect(viewer).toContain("const any = await import(name);");
+		expect(viewer).toContain(
+			`const url = new URL('./model.glb', ${JSON.stringify(new URL("./page-preview/viewer.js", document.baseURI).href)});`,
+		);
+		expect(await source("vendor/addons/loaders/GLTFLoader.js")).toContain(
+			"import { REVISION } from 'qorpera-module:/vendor/three.module.js';",
+		);
+		expect(map.imports.three).toBe(map.imports["qorpera-module:/vendor/three.module.js"]);
+	});
+
+	it("refuses what is not a file of the page's folder, each with a plain line, and leaves it as written", async () => {
+		const { source, said } = await open({
+			"apps/mod/index.html": '<script type="module" src="viewer.js"></script>',
+			"apps/mod/viewer.js":
+				"import 'https://cdn.example/three.js';\nimport 'lodash';\nimport '../secret.js';\nimport '/apps/mod/x.js';\nimport './gone.js';\nimport 'data:text/javascript,1';",
+			"apps/secret.js": "1",
+		});
+		expect(said).toEqual([
+			"viewer.js imports https://cdn.example/three.js, which is not a file of the page's folder",
+			"viewer.js imports lodash, which the page's import map does not name",
+			"viewer.js imports ../secret.js, which is outside the page's folder",
+			"viewer.js imports /apps/mod/x.js, which is not a file of the page's folder",
+			"viewer.js imports ./gone.js, which is not in the page's folder",
+		]);
+		const viewer = await source("viewer.js");
+		expect(viewer).toContain("import 'https://cdn.example/three.js';");
+		expect(viewer).toContain("import '../secret.js';");
+		expect(viewer).toContain("import 'qorpera-module:/gone.js';");
+		expect(viewer).toContain("import 'data:text/javascript,1';");
+	});
+
+	it("reads a large module piece by piece and binds a module the page names twice once", async () => {
+		const bytes = new TextEncoder().encode(`export const big = "${"x".repeat(9 * 1024 * 1024)}";`);
+		const f = fakeFolder({
+			"apps/mod/index.html":
+				'<script type="module" src="big.js"></script><script type="module">import { big } from "./big.js";</script>',
+			"apps/mod/big.js": bytes,
+		});
+		const whole = vi.spyOn(f, "readFile");
+		const pieces = vi.fn(
+			async (
+				file: { bytes: number },
+				_signal: AbortSignal,
+				onPiece: (piece: Uint8Array, index: number, count: number) => void,
+			) => {
+				const count = Math.ceil(file.bytes / (4 * 1024 * 1024));
+				for (let index = 0; index < count; index++)
+					onPiece(bytes.subarray(index * 4 * 1024 * 1024, (index + 1) * 4 * 1024 * 1024), index, count);
+			},
+		);
+		const assembled = await assembleApp(
+			Object.assign(f, { readFilePieces: pieces }) as never,
+			{ path: "apps/mod", entry: "index.html" },
+			signal,
+		);
+		if (!assembled.ok) throw new Error(assembled.message);
+		expect(pieces).toHaveBeenCalledOnce();
+		expect(whole.mock.calls.map(([file]) => (file as { bytes: number }).bytes)).not.toContain(bytes.length);
+		const modules = assembled.framed.files.filter(([token]) => token.endsWith("-module"));
+		expect(modules).toHaveLength(1);
+		expect(modules[0]?.[1].size).toBe(bytes.length + "\n//# sourceURL=qorpera-module:/big.js".length);
+	});
+
+	it("leaves a page with no module script as it was", async () => {
+		const { assembled, page } = await open({
+			"apps/mod/index.html": '<script src="app.js"></script><p>Hi</p>',
+			"apps/mod/app.js": "1",
+		});
+		expect(page.querySelector("script[type=importmap]")).toBeNull();
+		expect(assembled.framed.said).toBeUndefined();
+		expect(page.querySelector("script")?.textContent).toBe("1");
+	});
+});
+
 describe("a page opened from the company folder by itself", () => {
 	const files = () =>
 		fakeFolder({

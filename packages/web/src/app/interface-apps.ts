@@ -45,7 +45,7 @@ import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall, FramedPage } from "../ui/app-frame.ts";
 import { folderLinkPath } from "../ui/folder-links.ts";
 import { webHref } from "../ui/markdown.ts";
-import { framePage } from "../ui/page-frame.ts";
+import { framePage, PAGE_FRAME_URL } from "../ui/page-frame.ts";
 import {
 	AppActionRefused,
 	type AppGate,
@@ -60,6 +60,7 @@ import {
 	prepareTell,
 	restoreTell,
 } from "./app-actions.ts";
+import { bindModules } from "./app-modules.ts";
 import type { AppReadingAnswer, CompanyReading } from "./company-reading.ts";
 import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
@@ -381,6 +382,14 @@ class AppFiles {
 		}
 	}
 
+	async moduleText(path: string): Promise<string | null> {
+		const file = await this.file(path);
+		if (file === null) return null;
+		if (this.#warm || !this.#inPieces(file)) return this.text(path);
+		const blob = await this.pageBlob(path, "text/javascript");
+		return blob === null ? null : blob.text();
+	}
+
 	async pageBlob(path: string, type: string): Promise<Blob | null> {
 		const file = await this.file(path);
 		if (!file || !this.#inPieces(file)) {
@@ -490,6 +499,7 @@ interface PageRead {
 	readonly page: Document;
 	readonly files: ReadonlyMap<string, Blob>;
 	readonly missing: readonly string[];
+	readonly said: readonly string[];
 	readonly later: readonly string[];
 }
 
@@ -524,7 +534,13 @@ export async function assembleApp(
 	return {
 		ok: true,
 		page: handed,
-		framed: { html: handed, files: [...read.files], missing: read.missing, base: dirOf(app.entry) },
+		framed: {
+			html: handed,
+			files: [...read.files],
+			missing: read.missing,
+			...(read.said.length > 0 ? { said: read.said } : {}),
+			base: dirOf(app.entry),
+		},
 		key: [handed, ...read.later].join("\n"),
 		files: files.count,
 		bytes: files.bytes,
@@ -604,7 +620,7 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 		if (value.includes("url("))
 			changes.push(css(value, base).then((text) => () => element.setAttribute("style", text)));
 	}
-	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]")]) {
+	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]:not([type='module' i])")]) {
 		const path = resolveAppPath(base, script.getAttribute("src") ?? "");
 		if (path === null) continue;
 		changes.push(
@@ -679,7 +695,14 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 		}
 	}
 	for (const change of await Promise.all(changes)) change?.();
-	return { page, files: handed, missing: [...missing], later };
+	const modules = await bindModules(
+		page,
+		{ warm: files.warm, text: (path) => files.moduleText(path), resolve: resolveAppPath },
+		base,
+		new URL(PAGE_FRAME_URL, document.baseURI).href,
+	);
+	if (modules && !files.warm) for (const [token, blob] of modules.files) handed.set(token, blob);
+	return { page, files: handed, missing: [...missing], said: [...(modules?.said ?? [])], later };
 }
 
 export class PageFiles {

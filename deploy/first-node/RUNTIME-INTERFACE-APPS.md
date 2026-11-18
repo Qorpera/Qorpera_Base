@@ -127,8 +127,27 @@ page named into it as `data:` URLs before anything showed.
   So a stock 3D, font or audio loader reads its files as anywhere. A relative `src` written by a script into markup
   (`innerHTML`) is read too, after the browser has refused it once.
 - Only relative paths inside the app's folder are read; anything else (`https:`, `/abs`, `..` out of the folder) is
-  left as written, and the frame's policy blocks it. A module script's own relative `import` is not resolved: it
-  imports by the address `qorpera.file` gives.
+  left as written, and the frame's policy blocks it. Until 18 November 2026 a module script's own relative `import`
+  was not resolved; it is now (next item).
+- Module scripts (18 November 2026; the founder, to "Fix script imports in app pages now?": "Yes, fix it", after
+  Klokkesten's 3D page stayed on "Åbner modellen …"). `<script type="module" src>` and an inline module import the
+  page's own files as anywhere: static `import … from`, `export … from` and `import "…"` with a relative path at any
+  depth, a bare name the page's `<script type="importmap">` maps to a file of the folder (an exact name such as
+  `"three"`, or a prefix such as `"three/addons/"`), a literal `import("./x.js")`, and cycles between modules. The host
+  reads the graph while it puts the page together (`app/app-modules.ts`, with es-module-lexer 2.3.1, MIT, vendored in
+  `src/vendor/es-module-lexer`): each module's specifiers become `qorpera-module:/<path>`, an import map the host
+  writes first in the head maps each such name (and each exact name of the page's map) to the module's `blob:`, and the
+  page's own maps go. So each module is evaluated once, in the order the browser gives, and a stack names
+  `qorpera-module:/<path>:<line>:<column>` of the file as written. `import.meta.url` is the module's place in the frame
+  (`<frame folder>/<path>`), so `new URL("./x.bin", import.meta.url)` and `fetch` of it read the neighbour file; an
+  inline module's is the frame document's. A module is read whole (piece by piece above 8 MiB) and copied once for its
+  blob. A specifier that is not a file of the folder (`https:`, `/abs`, `..` out of it, a bare name the map does not
+  name or maps elsewhere, a missing file) is left as written, fails alone, and the console says so in one line
+  (`Qorpera: viewer.js imports lodash, which the page's import map does not name`). Not resolved: an `import()` of a
+  computed name, an import map's `scopes`, and modules a module worker imports.
+- A module worker (`new Worker(url, { type: "module" })`) starts from an address `qorpera.file` gives (18 November
+  2026): the frame reads its source and starts it from a `data:` address after the worker guard, under the frame's
+  policy. It runs code of its own file only; its own `import`s are not resolved.
 - While the files of the first paint arrive, the app's "Opening…" says how far it is, when they pass 4 MiB.
 - A file larger than 8 MiB is read piece by piece (4 MiB pieces, one at a time for one file, at most 8 files at once
   for a page) and built into one blob as the pieces arrive, so no second whole copy is held beside it.
@@ -943,7 +962,8 @@ Rules:
   (`default-src 'none'`), and this app's `frame-src 'self'`. Since 17 November 2026 the policy names `blob:` and
   `data:` and nothing else for what the page's own files need: `script-src 'unsafe-inline' 'unsafe-eval' blob:;
   font-src data: blob:; connect-src data: blob:; worker-src blob:` (with `img-src` and `media-src data: blob:` as
-  before). A `blob:` address is one the frame made from bytes it holds, and a worker the page starts keeps the frame's
+  before), and since 18 November 2026 `worker-src blob: data:`: a module worker starts only from `data:` in a frame
+  with no origin, and a `data:` worker keeps the frame's policy (proven in Chromium like the rest). A `blob:` address is one the frame made from bytes it holds, and a worker the page starts keeps the frame's
   policy; `scripts/test-web-app-frame-browser.mjs` proves in Chromium that the page and its worker reach nothing on
   the network by fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon, an element or a frame, and have no WebRTC. Some side channels remain (a
   `dns-prefetch`/`preconnect` link the page's script adds is acted on before anything can take it out): blocking them is
@@ -1296,6 +1316,10 @@ thread's "Quoted from an email" title).
     module scripts and wasm; `company_write` and `company_edit` take as much text as one call carries (960 KiB,
     `MAX_TOOL_ARGUMENT_BYTES`, under the native session's 1 MiB message). No migration and no node change; the web goes
     live when it merges, the runtime with the next bundle.
+
+14. Module scripts import the page's own files (18 November 2026; the founder: "Yes, fix it"): relative, mapped and
+    literal dynamic imports and cycles are resolved by the web while it puts a page together, a module worker starts
+    from its own file, and the frame's `worker-src` adds `data:` (§2). Web only: live when it merges.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway
