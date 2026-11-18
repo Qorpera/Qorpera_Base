@@ -360,6 +360,33 @@ describe("a member's new program", () => {
 			expect(c.fake.has("apps/lagerliste/versions")).toBe(false);
 		});
 
+		it("passes every version folder that already has the file's name, each tried once, and lists the first free one", async () => {
+			const c = existing(
+				kept([
+					{ version: "2", files: ["Other-2.exe"], userId: ANNA },
+					{ version: "1", files: ["Other-1.exe"], userId: ANNA },
+				]),
+			);
+			for (const version of ["3", "4"])
+				c.fake.put(`apps/lagerliste/versions/${version}/Lagerliste.exe`, "a stray, listed nowhere");
+			await add(c).run({
+				target: { folder: "lagerliste", name: "Lagerliste", isNew: false },
+				files: [{ file: file("Lagerliste.exe"), kind: "windows" }],
+				userId: ME,
+				signal: new AbortController().signal,
+			});
+			expect(c.uploads.map((each) => each.path)).toEqual([
+				"apps/lagerliste/versions/3/Lagerliste.exe",
+				"apps/lagerliste/versions/4/Lagerliste.exe",
+				"apps/lagerliste/versions/5/Lagerliste.exe",
+			]);
+			expect(
+				parseProgram(c.fake.text("apps/lagerliste/program.json") ?? "")?.versions.map((each) => each.version),
+			).toEqual(["5", "2", "1"]);
+			for (const version of ["3", "4"])
+				expect(c.fake.text(`apps/lagerliste/versions/${version}/Lagerliste.exe`)).toBe("a stray, listed nowhere");
+		});
+
 		it("lists an older version's very files again as a new version, and leaves nothing unlisted", async () => {
 			const c = existing(
 				kept([
