@@ -2670,6 +2670,21 @@ describe("the roadmap kit's engine", () => {
 		expect(file.mock.calls.filter(([path]) => path === "pictures/family.png")).toHaveLength(1);
 	});
 
+	it("keeps its tiles in place when an agent only starts or stops working", async () => {
+		const file = vi.fn(async (path: string) => `blob:${path}`);
+		const { change, reading } = await openRoadmap(roadmap, file);
+		tiles()[0]?.click();
+		await settle();
+		const before = tiles();
+		const asked = reading.mock.calls.length;
+		reading.mockImplementation(async () => ({ team: [{ name: "Co-Founder", figure: "crown", working: false }] }));
+		change();
+		await settle(10_000);
+		expect(reading.mock.calls.length).toBeGreaterThan(asked);
+		expect(before).toHaveLength(3);
+		expect(tiles().every((tile, i) => tile === before[i])).toBe(true);
+	});
+
 	it("speaks Danish when the data's language is Danish", async () => {
 		await openRoadmap({ ...roadmap, lang: "da" });
 		tiles()[0]?.click();

@@ -13560,7 +13560,8 @@ html,body{margin:0;background:#161615}
 			const model = !changed && ui.model ? ui.model : normalize(raw);
 			if (changed && lastText !== null) forgetMissing();
 			await live(model);
-			const key = JSON.stringify([txt, ui.reading && ui.reading.team]);
+			const team = ui.reading && Array.isArray(ui.reading.team) ? ui.reading.team.map((a) => (a ? [a.name, a.figure] : null)) : null;
+			const key = JSON.stringify([txt, team]);
 			if (key === ui.drawn && ui.root) return;
 			ui.model = model;
 			lastText = txt;

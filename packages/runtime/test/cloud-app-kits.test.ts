@@ -1879,6 +1879,15 @@ it("tells a roadmap's maker which parts reached have no picture", () => {
 	]);
 });
 
+it("tells a roadmap's maker that a picture shows once it is in the folder, with no second save", () => {
+	expect(kitNotes("roadmap", ROADMAP, (path) => path !== "pictures/city.png")).toEqual([
+		"1 picture or video is named in roadmap.json but not in the app's folder (pictures/city.png): the page shows a placeholder there. Write it into the app's folder from a machine: the page shows it once it is there.",
+	]);
+	expect(kitNotes("roadmap", ROADMAP, (path) => !["pictures/city.png", "pictures/well.png"].includes(path))[0]).toBe(
+		"2 pictures or videos are named in roadmap.json but not in the app's folder (pictures/city.png, pictures/well.png): the page shows a placeholder there. Write them into the app's folder from a machine: the page shows them once they are there.",
+	);
+});
+
 it("makes a roadmap, and gives its app the company's reading where a part names an agent", async () => {
 	const LOOK =
 		"reading was added to the app's reads: a roadmap's page finds the figures of the agents it names in the company's reading.";

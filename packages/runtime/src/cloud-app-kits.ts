@@ -846,7 +846,7 @@ export function kitNotes(
 	const missing = kitMedia(data).filter((path) => !holds(path));
 	if (missing.length > 0)
 		notes.push(
-			`${missing.length === 1 ? "1 picture or video is" : `${missing.length} pictures or videos are`} named in ${kitDataFile(kit)} but not in the app's folder (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}): the page shows a placeholder there. Write ${missing.length === 1 ? "it" : "them"} into the app's folder from a machine, then save the app again so the page names ${missing.length === 1 ? "it" : "them"}.`,
+			`${missing.length === 1 ? "1 picture or video is" : `${missing.length} pictures or videos are`} named in ${kitDataFile(kit)} but not in the app's folder (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}): the page shows a placeholder there. Write ${missing.length === 1 ? "it" : "them"} into the app's folder from a machine${kit === "roadmap" ? `: the page shows ${missing.length === 1 ? "it" : "them"} once ${missing.length === 1 ? "it is" : "they are"} there` : `, then save the app again so the page names ${missing.length === 1 ? "it" : "them"}`}.`,
 		);
 	if (kit === "object") {
 		const models = kitModels(kit, data);
