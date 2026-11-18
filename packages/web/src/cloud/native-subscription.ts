@@ -6,7 +6,6 @@ import {
 	NativeSubscriptionControlPlane,
 	type RequestSponsoredSessionTurnInput,
 	type RevokeNativeProviderConnectionInput,
-	type SessionTurnProvenance,
 	type SessionTurnRequestResult,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
@@ -319,7 +318,6 @@ export interface WebNativeSubscription {
 	chooseSessionAccount?(sessionId: string, connectionId: string, signal?: AbortSignal): Promise<string>;
 	countSessionsOnAccount?(connectionId: string, signal?: AbortSignal): Promise<number>;
 	chooseSessionsAccount?(fromConnectionId: string, connectionId: string, signal?: AbortSignal): Promise<number>;
-	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
 	createMemberSponsor(
 		input: Omit<CreateMemberSponsorInput, "profileId"> & { planLogin?: boolean },
@@ -1034,7 +1032,6 @@ export function createWebNativeSubscription(
 				),
 			);
 		},
-		listSessionTurnProvenance: (sessionId, signal) => client(signal, sessionId).listSessionTurnProvenance(sessionId),
 		requestSessionTurn: (input, signal) => client(signal, input.sessionId).requestSessionTurn(input),
 		// Unattended use is the default (founder decision 2026-09-20), not a setting: binding an account
 		// records its owner's consent first and binds the consented version, so routines, coworker wakes

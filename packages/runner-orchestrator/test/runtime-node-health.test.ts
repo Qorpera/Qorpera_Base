@@ -139,9 +139,6 @@ describe("bounded node health evidence", () => {
 		expect(service).toMatch(
 			/runRuntimeNodeObserverLoops\(\n\t\tsignal,[\s\S]*?\n\t\t\{ report, reportHealth, reportExit \},\n\t\);/,
 		);
-		// A merge that takes the old sentence back fails here.
-		const doc = readFileSync(new URL("../../../deploy/first-node/RUNTIME-NODE-HEALTH.md", import.meta.url), "utf8");
-		expect(doc).not.toContain("Both loops wait five seconds");
 	});
 	it("publishes exact identity and refuses mismatched acknowledgements", async () => {
 		const call = registryCall();

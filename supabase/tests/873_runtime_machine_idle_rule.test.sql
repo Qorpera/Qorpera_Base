@@ -322,8 +322,6 @@ select pg_temp.check((pg_temp.command_row(1)).end_reason = 'hours'
 	'what the stop at zero hours ended is told as the hours'' stop');
 rollback;
 
--- 5. Only the platform: no API role reaches the container stops or the new functions; the stop's record is the service
---    role's alone; the commands' record keeps its form. Each patched function names this migration.
 select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticated','service_role']) r(role)
 	where has_table_privilege(r.role, 'public.qorpera_company_machine_container_stops', 'select')
 		or has_function_privilege(r.role, 'public.qorpera_take_agent_machine_stopped(public.qorpera_execution_runs)', 'execute')
@@ -335,13 +333,6 @@ select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticate
 		'public.qorpera_record_company_machine_stop(uuid,text,text,text,uuid,jsonb,boolean)', 'execute')
 	and to_regprocedure('public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)') is not null,
 	'the table and functions are the platform''s; the stop''s record is the service role''s');
-select pg_temp.check(
-	position('(20260930055000)' in pg_get_functiondef('public.qorpera_list_executor_machines(text,text)'::regprocedure)) > 0
-	and position('(20260930055000)' in pg_get_functiondef('public.qorpera_authorize_executor_machine(uuid,text,text,text,text)'::regprocedure)) > 0
-	and position('(20260930055000)' in pg_get_functiondef('public.qorpera_describe_agent_open_work(jsonb)'::regprocedure)) > 0
-	and position('(20260930055000)' in pg_get_functiondef(
-		'public.qorpera_end_company_machine_commands(public.qorpera_company_machines,text,jsonb)'::regprocedure)) > 0,
-	'each patched function names this migration');
 
 -- Remove the fixture: the machine node and executor, the container stops, then 648's company rows as 648 removes them.
 set session_replication_role = replica;

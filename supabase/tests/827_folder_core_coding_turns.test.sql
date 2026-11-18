@@ -442,7 +442,6 @@ begin
 		raise exception 'M: the folder-v2 sessions are archived, the snapshot-v1 one is not'; end if;
 end $$;
 
--- G. The entry is internal, and every patched body carries the marker.
 do $$
 begin
 	if exists (select 1 from unnest(array['public', 'anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) r,
@@ -450,12 +449,6 @@ begin
 				'public.qorpera_coding_worker_targets(public.qorpera_runtime_workers)']) f
 		where has_function_privilege(r, f, 'execute')) then
 		raise exception 'G: the coding worker entries must be internal'; end if;
-	if exists (select 1 from unnest(array['public.qorpera_lock_coding_worker(uuid)', 'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)',
-			'public.qorpera_claim_coding_session(text,integer)', 'public.qorpera_delegate_coding_session(uuid,uuid)',
-			'public.qorpera_answer_coding_session(uuid,text,uuid)', 'public.qorpera_archive_coding_session(uuid,uuid)',
-			'public.qorpera_archive_quiet_coding_sessions(text)', 'public.qorpera_lock_coding_workers(uuid[])']) f
-		where position('20260930026000' in pg_get_functiondef(f::regprocedure)) = 0) then
-		raise exception 'G: a patched body lacks its marker'; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

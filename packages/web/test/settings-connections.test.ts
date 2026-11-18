@@ -371,11 +371,6 @@ describe("member model account settings", () => {
 		await settle();
 		expect(client.beginProviderLogin).not.toHaveBeenCalled();
 		expect(view.el.querySelector('input[type="password"]')).toBeNull();
-		const labels = [...view.el.querySelectorAll("button")].map((item) => item.textContent);
-		for (const removed of ["Refresh model accounts", "Enable for my messages", "Revoke connection"])
-			expect(labels).not.toContain(removed);
-		// Services moved to their own view beside the model accounts (Step 7).
-		expect(view.el.textContent).not.toContain("Add service");
 	});
 	it("shows each connected account with its provider logo and email, hiding opaque references", async () => {
 		await setup(
@@ -470,12 +465,10 @@ describe("member model account settings", () => {
 		expect(labels.map((item) => item.textContent)).toEqual(["5-hour limit", "Weekly limit"]);
 		expect(labels.every((item) => item.getAttribute("aria-hidden") === "true")).toBe(true);
 		// The check time is on hover only; the card has no date line of its own.
-		expect(card.textContent).not.toContain("Last checked");
 		expect(card.querySelector(`[title="Last checked ${fmtTime(new Date().toISOString())}"]`)?.textContent).toBe(
 			"87.5% left",
 		);
 		expect(card.querySelector(".connection-identity")).toBeNull();
-		expect(card.textContent).not.toContain("Connected");
 		expect(card.textContent).not.toContain(id(81).slice(-8));
 		expect(card.querySelector("[title^='Connection ']")).toBeNull();
 	});
@@ -501,7 +494,6 @@ describe("member model account settings", () => {
 		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
 		expect(view.el.querySelector(".connection-usage-label")).toBeNull();
 		expect(view.el.textContent).not.toContain("5-hour limit");
-		expect(view.el.textContent).not.toContain("may be out of date");
 		expect(document.activeElement).toBe(action(OPENAI));
 		await vi.advanceTimersByTimeAsync(4 * 60_000);
 		expect(view.el.querySelector("[role=meter]")).toBeNull();

@@ -437,15 +437,22 @@ export const SETTINGS: Record<string, string> = {
 	"What it is for, e.g. new orders from the shop": "Hvad den er til, f.eks. nye ordrer fra webshoppen",
 	"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.":
 		"Små bogstaver, tal og bindestreger, og den starter med et bogstav. Virksomhedens agenter læser, hvad den er til, når der kommer noget.",
-	"The part before the @: lowercase letters, digits, dots, hyphens and underscores.":
-		"Delen før @: små bogstaver, tal, punktummer, bindestreger og understregninger.",
+	"The first part of the address: lowercase letters, digits, hyphens and underscores.":
+		"Adressens første del: små bogstaver, tal, bindestreger og understregninger.",
+	"The first part, then the company's part, which every address of the company ends with.":
+		"Den første del og så virksomhedens del, som alle virksomhedens adresser slutter med.",
+	"e.g. acme": "f.eks. acme",
+	"Your email address waits for a name": "Jeres e-mailadresse venter på et navn",
+	"The company's part of its addresses could not be read.": "Virksomhedens del af dens adresser kunne ikke hentes.",
 	Add: "Tilføj",
 	"Adding…": "Tilføjer…",
 	"A webhook name is lowercase letters, digits and hyphens, and starts with a letter.":
 		"Et webhooknavn består af små bogstaver, tal og bindestreger og starter med et bogstav.",
 	"Names beginning with mail- belong to mailboxes.": "Navne, der begynder med mail-, hører til postkasser.",
-	"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.":
-		"Et postkassenavn består af små bogstaver, tal, punktummer, bindestreger og understregninger og starter og slutter med et bogstav eller et tal.",
+	"A mailbox name is lowercase letters, digits, hyphens and underscores, and starts and ends with a letter or digit.":
+		"Et postkassenavn består af små bogstaver, tal, bindestreger og understregninger og starter og slutter med et bogstav eller et tal.",
+	"A new address is a name, a dot and the company's handle, like hello.acme.":
+		"En ny adresse er et navn, et punktum og virksomhedens del, som hello.acme.",
 	"Say what it is for, in one line.": "Skriv på én linje, hvad den er til.",
 	"A webhook with this name already exists.": "Der findes allerede en webhook med dette navn.",
 	"This address is taken.": "Denne adresse er taget.",
@@ -581,66 +588,6 @@ export const SETTINGS: Record<string, string> = {
 	"Only founders and admins can look at a version before it goes live.":
 		"Kun stiftere og administratorer kan se en version, før den går live.",
 	"Qorpera took this site down": "Qorpera har taget hjemmesiden ned",
-
-	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
-	"Environment variables for coding": "Miljøvariabler til kodning",
-	"Your coding sessions get these in every repository. They leave with you.":
-		"Dine kodesessioner får dem i alle repositories. De følger med dig, når du går.",
-	"A coding session gets one of these only in a repository it's given to. They stay when someone leaves.":
-		"En kodesession får kun en af dem i et repository, den er givet til. De bliver, når nogen går.",
-	"Only founders and admins can add, change or remove them.":
-		"Kun stiftere og administratorer kan tilføje, ændre eller fjerne dem.",
-	"Viewers can see them, but not add or change them.": "Læsere kan se dem, men ikke tilføje eller ændre dem.",
-	"Add a variable": "Tilføj en variabel",
-	"No variables yet.": "Ingen variabler endnu.",
-	"The environment variables could not be read.": "Miljøvariablerne kunne ikke hentes.",
-	"Coding sessions in {repositories} get it.": "Kodesessioner i {repositories} får den.",
-	"No coding session gets it yet.": "Ingen kodesession får den endnu.",
-	"Your coding sessions get it.": "Dine kodesessioner får den.",
-	"In {repositories}, the company's {name} is used instead.": "I {repositories} bruges virksomhedens {name} i stedet.",
-	"Replace value": "Erstat værdien",
-	"Give to a repository": "Giv den til et repository",
-	"Once saved, a value is never shown again.": "Når en værdi er gemt, bliver den aldrig vist igen.",
-	"Paste the new value": "Indsæt den nye værdi",
-	"New value for {name}": "Ny værdi for {name}",
-	"Save value": "Gem værdien",
-	"Coding sessions in that repository get {name} from their next start.":
-		"Kodesessioner i det repository får {name} fra deres næste start.",
-	"owner/name": "ejer/navn",
-	"Repository for {name}": "Repository til {name}",
-	"Remove {repository}": "Fjern {repository}",
-	"e.g. NPM_TOKEN": "f.eks. NPM_TOKEN",
-	"Variable name": "Variablens navn",
-	"Capital letters, digits and underscores, starting with a letter.":
-		"Store bogstaver, tal og understregninger, og navnet starter med et bogstav.",
-	"What it is for, e.g. installs private packages": "Hvad den er til, f.eks. installerer private pakker",
-	"Paste the value": "Indsæt værdien",
-	Value: "Værdi",
-	"A variable name is capital letters, digits and underscores, and starts with a letter.":
-		"Et variabelnavn består af store bogstaver, tal og understregninger og starter med et bogstav.",
-	"The value must be at least 8 characters.": "Værdien skal være mindst 8 tegn.",
-	"The value can be at most 32 KB.": "Værdien må højst fylde 32 KB.",
-	"The value can't contain a null character.": "Værdien må ikke indeholde et nul-tegn.",
-	"That name is taken by the coding machine or an AI provider's sign-in. Choose another.":
-		"Det navn bruges af kodemaskinen eller af et login hos en AI-udbyder. Vælg et andet.",
-	"An earlier try to save this value is still open. Try again in a few minutes.":
-		"Et tidligere forsøg på at gemme værdien er stadig åbent. Prøv igen om et par minutter.",
-	"Write the repository as owner/name, for example acme/web.": "Skriv repositoriet som ejer/navn, f.eks. acme/web.",
-	"{name} is saved. Your coding sessions get it from their next start.":
-		"{name} er gemt. Dine kodesessioner får den fra deres næste start.",
-	"{name} is saved. Give it to a repository so coding sessions there get it.":
-		"{name} er gemt. Giv den til et repository, så kodesessioner der får den.",
-	"The value of {name} is replaced. Your coding sessions get the new one from their next start.":
-		"Værdien af {name} er erstattet. Dine kodesessioner får den nye fra deres næste start.",
-	"The value of {name} is replaced. Coding sessions in {repositories} get the new one from their next start.":
-		"Værdien af {name} er erstattet. Kodesessioner i {repositories} får den nye fra deres næste start.",
-	"The value of {name} is replaced. No coding session gets it yet.":
-		"Værdien af {name} er erstattet. Ingen kodesession får den endnu.",
-	"Coding sessions in {repository} get {name} from their next start.":
-		"Kodesessioner i {repository} får {name} fra deres næste start.",
-	"Remove {name}? New coding sessions won't get it.": "Fjern {name}? Nye kodesessioner får den ikke.",
-	"Coding sessions in {repository} will stop getting {name}.":
-		"Kodesessioner i {repository} holder op med at få {name}.",
 
 	// Agent rules, auto-review (Settings → Company, settings-rules.ts)
 	"Agent rules": "Agentregler",

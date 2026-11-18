@@ -263,9 +263,6 @@ end $$;
 
 -- 6. The grants, the two signatures, one body, the markers --------------------------------------------------------------------
 do $$
-declare
-	v_old text := pg_get_functiondef('public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb)'::regprocedure);
-	v_new text := pg_get_functiondef('public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb,bigint)'::regprocedure);
 begin
 	perform pg_temp.base_assert(has_function_privilege('authenticated', 'public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb,bigint)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb,bigint)', 'execute')
@@ -281,26 +278,21 @@ begin
 			'92400000-0000-4000-8000-000000000010', pg_temp.sg_id('a1'), '{"type": "click", "x": 4, "y": 4}', pg_temp.sg_generation() + 5))
 			= pg_temp.sg_refused('DESKTOP_HELD_SINCE'),
 		'6: told apart by their argument names');
-	-- The new begin is the old one's body with its two changes and its fourth argument, nothing else (a later change to
-	-- one of them must reach both).
-	perform pg_temp.base_assert(v_new = replace(replace(replace(v_old,
-			'public.qorpera_member_machine_desktop_share_begin(p_profile_id uuid, p_machine_id uuid, p_action jsonb)',
-			'public.qorpera_member_machine_desktop_share_begin(p_profile_id uuid, p_machine_id uuid, p_action jsonb, p_generation bigint)'),
-			E'\t\tor not coalesce(public.qorpera_valid_member_desktop_action(p_action), false) then',
-			E'\t\tor not coalesce(public.qorpera_valid_member_desktop_action(p_action), false)\n'
-			|| E'\t\t-- 20260930738000: the lease generation the member''s input was made under, as their window''s list named it.\n'
-			|| E'\t\tor p_generation is null or p_generation < 0 then'),
-			E'\t-- The lease no longer bounds who acts: one member''s shared actions on one machine, at most 25 in 5 seconds.',
-			E'\t-- 20260930738000: someone held the desktop privately since the input was made (a seating and a hand-back each move\n'
-			|| E'\t-- the generation): it never runs after that hold, whatever the window saw. Nothing is recorded.\n'
-			|| E'\tif v_machine.desktop_member_generation is distinct from p_generation then\n'
-			|| E'\t\treturn jsonb_build_object(''schema'', ''qorpera.member-machine-desktop-act/v1'', ''state'', ''refused'',\n'
-			|| E'\t\t\t''reason'', ''DESKTOP_HELD_SINCE''); end if;\n'
-			|| E'\t-- The lease no longer bounds who acts: one member''s shared actions on one machine, at most 25 in 5 seconds.'),
-		'6: the new begin is the old one but for its two changes');
-	perform pg_temp.base_assert(strpos(v_new, '20260930738000') > 0 and strpos(v_new, '20260930734000') > 0
-			and strpos(v_old, '20260930738000') = 0 and strpos(v_old, '20260930734000') > 0
-			and strpos(pg_get_functiondef('public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure), '20260930738000') > 0
-			and strpos(pg_get_functiondef('public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure), '20260930734000') > 0,
-		'6: the markers');
+	perform pg_temp.base_assert(pg_temp.sg_differ(jsonb_build_array(
+		jsonb_build_array('three names: an open', pg_temp.sg_as(pg_temp.sg_user('owner'), format(
+			'select public.qorpera_member_machine_desktop_share_begin(%L, %L, %L)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.sg_id('a1'), '{"type": "open", "target": "https://example.com"}')), '22023:Machine desktop action is malformed'),
+		jsonb_build_array('four names: an open', pg_temp.sg_as(pg_temp.sg_user('owner'), format(
+			'select public.qorpera_member_machine_desktop_share_begin(%L, %L, %L, %s)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.sg_id('a1'), '{"type": "open", "target": "https://example.com"}', pg_temp.sg_generation())),
+			'22023:Machine desktop action is malformed'),
+		jsonb_build_array('three names: asleep', pg_temp.sg_as(pg_temp.sg_user('owner'), format(
+			'select public.qorpera_member_machine_desktop_share_begin(%L, %L, %L)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.sg_id('a2'), '{"type": "click", "x": 4, "y": 4}')), pg_temp.sg_refused('MACHINE_NOT_RUNNING')),
+		jsonb_build_array('four names: asleep', pg_temp.sg_share('owner', pg_temp.sg_generation(), 'a2'),
+			pg_temp.sg_refused('MACHINE_NOT_RUNNING')),
+		jsonb_build_array('three names: a viewer', pg_temp.sg_share_old('viewer'), '42501:Machine desktop is unavailable'),
+		jsonb_build_array('four names: a viewer', pg_temp.sg_share('viewer', pg_temp.sg_generation()),
+			'42501:Machine desktop is unavailable'))) = '',
+		'6: both signatures make the same checks');
 end $$;

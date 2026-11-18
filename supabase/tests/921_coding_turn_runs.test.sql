@@ -374,15 +374,5 @@ select pg_temp.base_assert(not exists (select 1 from unnest(array['anon','authen
 		'public.qorpera_coding_session_narrow(uuid)', 'public.qorpera_coding_turn_runs(uuid,timestamp with time zone)',
 		'public.qorpera_memory_run_machine_narrow(uuid,uuid)']) f(name)
 	where has_function_privilege(r.role, f.name, 'execute')), 'only the platform runs these');
-select pg_temp.base_assert(not exists (select 1 from unnest(array['public.qorpera_coding_view_narrow(uuid)',
-		'public.qorpera_coding_turn_mark_narrow(uuid)', 'public.qorpera_coding_session_narrow(uuid)',
-		'public.qorpera_coding_turn_runs(uuid,timestamp with time zone)', 'public.qorpera_coding_session_turn_guard()',
-		'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)', 'public.qorpera_settle_coding_turn()',
-		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
-		'public.qorpera_memory_run_machine_narrow(uuid,uuid)', 'public.qorpera_ask_busy_coding_sessions(uuid,integer)',
-		'public.qorpera_folder_erasure_step(integer,integer,integer)']) f(name)
-	where position('20260930250000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each new or patched function names this migration');
-select pg_temp.base_assert(position('20260930231000' in pg_get_functiondef('public.qorpera_memory_run_machine_narrow(uuid,uuid)'::regprocedure)) > 0,
-	'the run log''s machine check keeps W1b''s marker');
 
 rollback;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readdir, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -225,15 +225,8 @@ describe("login physical operation history", () => {
 		}
 		await expect(open()).rejects.toThrow("UNCONFIRMED");
 	});
-	it("stores only public binding and operation metadata", async () => {
-		const { journal, root, initial, authorize } = await setup();
-		await journal.run("create", caller(), authorize);
-		const directory = join(root, initial.loginId),
-			names = await readdir(directory);
-		for (const name of names) {
-			const content = await readFile(join(directory, name), "utf8");
-			expect(content).not.toMatch(/sb_secret|Bearer|login_capability/);
-		}
+	it("charges the login machine from its policy and keeps the capability out of its request", () => {
+		const initial = binding();
 		const plan = lxdLoginPlan(initial);
 		expect(plan.cpuMillis).toBe(4000);
 		expect(plan.memoryBytes).toBe(8 * 1024 ** 3);

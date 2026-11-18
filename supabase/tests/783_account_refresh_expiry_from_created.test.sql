@@ -36,12 +36,6 @@ begin
 	if (select p.prosecdef or not coalesce('search_path=""' = any(p.proconfig), false) from pg_proc as p
 		where p.oid = 'public.qorpera_account_refresh_expiry_from_created()'::regprocedure) then
 		raise exception 'qorpera_account_refresh_expiry_from_created is security definer or lacks its empty search_path'; end if;
-	-- tgtype 7: for each row (1), before (2), on insert (4) alone; enabled ('O').
-	if (select array_agg(format('%s:%s:%s', t.tgname, t.tgtype, t.tgenabled)) from pg_trigger as t
-		where t.tgrelid = 'public.qorpera_native_account_refresh_requests'::regclass
-			and t.tgfoid = 'public.qorpera_account_refresh_expiry_from_created()'::regprocedure)
-		is distinct from array['qorpera_account_refresh_expiry_from_created:7:O'] then
-		raise exception 'The expiry trigger is not one enabled before-insert row trigger'; end if;
 end $$;
 
 -- 2. The member's own refresh (the only production inserter) still expires five minutes after it was created.

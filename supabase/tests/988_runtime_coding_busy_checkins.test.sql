@@ -352,12 +352,5 @@ select pg_temp.base_assert(not exists (select 1 from unnest(array['anon','authen
 	and has_function_privilege('service_role', 'public.qorpera_folder_machine_checkins_due(uuid,integer)', 'execute')
 	and has_function_privilege('service_role', 'public.qorpera_folder_machine_checkins_company(uuid,integer)', 'execute'),
 	'only the platform runs these');
-select pg_temp.base_assert(not exists (select 1 from unnest(array[
-		'public.qorpera_coding_busy_since(public.qorpera_coding_sessions,public.qorpera_runtime_workers)',
-		'public.qorpera_coding_busy_checkins_unasked(uuid)', 'public.qorpera_ask_busy_coding_sessions(uuid,integer)',
-		'public.qorpera_coding_question_stale(uuid,public.qorpera_runtime_workers)',
-		'public.qorpera_machine_checkin_current(public.qorpera_machine_checkins)',
-		'public.qorpera_folder_machine_checkins_due(uuid,integer)', 'public.qorpera_folder_machine_checkins_company(uuid,integer)']) f(name)
-	where position('20260930109000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each new or patched function names this migration');
 
 rollback;

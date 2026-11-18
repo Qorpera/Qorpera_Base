@@ -1,7 +1,6 @@
 import type {
 	NativeExecutionConnections,
 	NativeMemberConnection,
-	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type {
 	WebClaudeLogin,
@@ -153,11 +152,9 @@ export class SessionExecutionView {
 	readonly #lifetime = new AbortController();
 	#request: AbortController | undefined;
 	#observed: WebExecutionConnections | undefined;
-	#provenance: readonly SessionTurnProvenance[] = [];
 	#started = false;
 	#busy = false;
 	#error: string | undefined;
-	#historyError: string | undefined;
 	#renderKey = "";
 	#room = false;
 	#serverSelection = false;
@@ -236,8 +233,6 @@ export class SessionExecutionView {
 		if (room !== this.#room) {
 			this.#request?.abort();
 			this.#request = undefined;
-			this.#provenance = [];
-			this.#historyError = undefined;
 			this.#busy = false;
 			this.#started = false;
 			this.#room = room;
@@ -252,7 +247,6 @@ export class SessionExecutionView {
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
-			this.#provenance = [];
 			this.#started = false;
 			this.#busy = false;
 			this.#usageHydratedAt = undefined;
@@ -286,7 +280,6 @@ export class SessionExecutionView {
 		this.#busy = true;
 		// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
 		if (!this.#failures) this.#error = undefined;
-		this.#historyError = undefined;
 		this.#render();
 		this.#changed();
 		const conversation = this.#company.conversation(this.#sessionId).get();
@@ -303,25 +296,17 @@ export class SessionExecutionView {
 			}
 			return this.#native.listConnections(signal);
 		};
-		const [connections, provenance] = await Promise.allSettled([
-			readConnections(),
-			this.#room ? Promise.resolve([]) : this.#native.listSessionTurnProvenance(this.#sessionId, signal),
-		]);
+		const connections = await readConnections().catch(() => undefined);
 		if (signal.aborted) return;
 		this.#serverConnectionId = serverConnectionId;
-		if (connections.status === "fulfilled") {
-			this.#observed = connections.value;
+		if (connections) {
+			this.#observed = connections;
 			if (this.#failures) this.#error = undefined;
 			this.#failures = 0;
 		} else {
 			this.#observed = undefined;
 			this.#failures++;
 			this.#error = t("Model accounts are unavailable. Trying again…");
-		}
-		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
-		else {
-			this.#provenance = [];
-			this.#historyError = t("Execution history is unavailable.");
 		}
 		this.#busy = false;
 		this.#request = undefined;
@@ -870,9 +855,7 @@ export class SessionExecutionView {
 		const key = JSON.stringify([
 			this.#room,
 			this.#observed,
-			this.#provenance,
 			this.#error,
-			this.#historyError,
 			selected,
 			this.#serverConnectionId,
 			locked,
@@ -1075,7 +1058,6 @@ export class SessionExecutionView {
 		this.#usageRequest?.abort();
 		this.#usageRequest = undefined;
 		this.#observed = undefined;
-		this.#provenance = [];
 		this.el.replaceChildren();
 	}
 }

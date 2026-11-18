@@ -21,6 +21,7 @@ import {
 	type WebNativeProviderLogin,
 	type WebNativeSubscription,
 } from "../../cloud/native-subscription.ts";
+import { companyInSentence } from "../../ui/company-name.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 
@@ -557,7 +558,7 @@ export class ConnectionsView {
 						!this.#accountLogins.has(finished.connectionId)
 					)
 						this.#outcome = t("This subscription was added to {company} only. Open that company to see it.", {
-							company: this.#accountWide.companyName,
+							company: companyInSentence(this.#accountWide.companyName),
 						});
 				}
 			}

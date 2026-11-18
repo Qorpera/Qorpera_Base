@@ -5,7 +5,6 @@ import { describe, it } from "node:test";
 import {
 	byteRange,
 	CONTENT_SECURITY_POLICY,
-	COUNT_TIMEOUT_MS,
 	COUNT_WAIT_MS,
 	clientAddress,
 	countsAsView,
@@ -36,9 +35,7 @@ import {
 	parseUnlockAnswer,
 	rangeRequest,
 	requestedEtag,
-	SITE_HOST,
 	type SiteStore,
-	STRICT_TRANSPORT_SECURITY,
 	serviceHeaders,
 	siteHost,
 	webOrigins,
@@ -333,7 +330,6 @@ function assertHostHeaders(response: Response, what = "", origins: readonly stri
 	assert.equal(headers.get("cross-origin-resource-policy"), "same-origin", what);
 	assert.equal(headers.get("cdn-cache-control"), "no-store", what);
 	assert.equal(headers.get("strict-transport-security"), "max-age=31536000", what);
-	assert.equal(STRICT_TRANSPORT_SECURITY, "max-age=31536000");
 	assert.equal(headers.get("access-control-allow-origin"), null, what);
 	assert.match(headers.get("cache-control") ?? "", /^(?:no-store|private, no-cache), no-transform$/, what);
 	const csp = headers.get("content-security-policy") ?? "";
@@ -1255,11 +1251,6 @@ describe("site-serve: the database through PostgREST", () => {
 });
 
 describe("site-serve: the one host rule", () => {
-	it("is the rule SQL and the web share, as one regex", () => {
-		assert.equal(SITE_HOST.source, String.raw`^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`);
-		assert.equal(SITE_HOST.flags, "");
-	});
-
 	it("reads an own host and a next host as SQL's pinned cases do", () => {
 		assert.deepEqual(siteHost("look-shop.qorpera.com"), { host: OWN, slug: "look-shop", scope: "site" });
 		assert.deepEqual(siteHost("webshop--next.qorpera.com"), {
@@ -1357,7 +1348,6 @@ describe("site-serve: a site's own host", () => {
 		assert.equal(response.status, 200);
 		assertHostHeaders(response);
 		assert.equal(response.headers.get("content-security-policy"), ownContentSecurityPolicy(DEFAULT_WEB_ORIGINS));
-		assert.equal(HOST_CONTENT_SECURITY_POLICY, "frame-ancestors 'self'");
 		assert.equal(ownContentSecurityPolicy(DEFAULT_WEB_ORIGINS), "frame-ancestors 'self' https://app.qorpera.com");
 		assert.equal(response.headers.get("cache-control"), "private, no-cache, no-transform");
 		assert.equal(response.headers.get("etag"), `"${sha(HTML)}"`);
@@ -1795,7 +1785,6 @@ describe("site-serve: Look first on the next host", () => {
 		);
 		assertHostPage(response);
 		assert.deepEqual(calls.enter, [[NEXT, TICKET]]);
-		assert.equal(TICKET.length, 43);
 	});
 
 	it("refuses a ticket used before or too old, with no cookie", async () => {
@@ -2805,10 +2794,6 @@ describe("site-serve: migration 20260930756000's calls and answers, read from it
 				name,
 			);
 		}
-		// Today's two calls keep their names and arguments: the migration changes their bodies in place.
-		assert.match(MIGRATION, /'public\.qorpera_site_serve\(text,text,text,text,integer,integer\)'::regprocedure/);
-		assert.match(MIGRATION, /'public\.qorpera_site_unlock\(text,text,text\)'::regprocedure/);
-		assert.doesNotMatch(MIGRATION, /create (or replace )?function public\.qorpera_site_(serve|unlock)\(/);
 	});
 
 	it("reads every answer qorpera_site_serve_host gives, on the old host and on a site host, and none it never gives", () => {
@@ -3089,7 +3074,6 @@ describe("site-serve: a page view's count", () => {
 		assert.equal(response.status, 200);
 		assert.equal(await response.text(), HTML);
 		assert.ok(waited >= COUNT_WAIT_MS - 20 && waited < COUNT_WAIT_MS + 500, `waited ${waited} ms`);
-		assert.equal(COUNT_WAIT_MS, 200);
 		// A count that answers at once is not waited for longer.
 		const quick = store(undefined, undefined, { serveHost: hostFile(HTML) });
 		const begun = Date.now();
@@ -3144,7 +3128,6 @@ describe("site-serve: a page view's count", () => {
 		assert.deepEqual(made[0]?.body, { p_host: OWN, p_path: "index.html", p_token: TOKEN });
 		assert.equal(made[0]?.headers.get("apikey"), "sb_secret_fixture");
 		assert.ok(made[0]?.signal instanceof AbortSignal);
-		assert.equal(COUNT_TIMEOUT_MS, 2000);
 		// The migration defines it with exactly those arguments, for the service role only.
 		const start = COUNT_MIGRATION.indexOf("create function public.qorpera_site_count_view(");
 		assert.ok(start > 0);

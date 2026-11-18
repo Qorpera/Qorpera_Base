@@ -142,6 +142,25 @@ export function forgetStoredSession(): void {
 	}
 }
 
+export const DATABASE_ANSWER_MS = 20_000;
+
+export const NO_ANSWER = "Qorpera did not answer in time.";
+
+function requestUrl(input: string | URL | Request): string {
+	return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+}
+
+async function answeredWithin(ms: number, input: string | URL | Request, init?: RequestInit): Promise<Response> {
+	const unanswered = new AbortController();
+	const timer = setTimeout(() => unanswered.abort(new DOMException(NO_ANSWER, "TimeoutError")), ms);
+	const signal = init?.signal ? AbortSignal.any([init.signal, unanswered.signal]) : unanswered.signal;
+	try {
+		return await globalThis.fetch(input, { ...init, signal });
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export function createCloud(config: CloudConfig): Cloud {
 	const rejectionListeners = new Set<(rejection: SessionRejection) => void>();
 	// Every SDK request (Auth, PostgREST, functions, storage) passes here, so a session the
@@ -156,8 +175,11 @@ export function createCloud(config: CloudConfig): Cloud {
 			() => {},
 		);
 	};
+	const database = `${config.projectUrl.replace(/\/+$/, "")}/rest/v1/`;
 	const observedFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-		const response = await globalThis.fetch(input, init);
+		const response = requestUrl(input).startsWith(database)
+			? await answeredWithin(DATABASE_ANSWER_MS, input, init)
+			: await globalThis.fetch(input, init);
 		notice(input, init, response);
 		return response;
 	};
@@ -200,7 +222,24 @@ export function createCloud(config: CloudConfig): Cloud {
 	};
 }
 
+const CONNECTION_LOST =
+	/^(?:TypeError: )?(?:Failed to fetch|NetworkError when attempting to fetch resource\.?|Load failed|The network connection was lost\.?|The Internet connection appears to be offline\.?|fetch failed|Network request failed)$/;
+
+let t: (source: string) => string = (source) => source;
+
+export function translateCloudErrors(translate: (source: string) => string): void {
+	t = translate;
+}
+
+export function connectionLost(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return (
+		error.name === "TimeoutError" || error.message.startsWith("TimeoutError: ") || CONNECTION_LOST.test(error.message)
+	);
+}
+
 export function describeError(error: unknown): string {
+	if (connectionLost(error)) return t("Qorpera can't be reached right now. Check your connection and try again.");
 	if (error instanceof CloudRpcError) {
 		if (error.missing) return `${error.rpc} is not deployed on this cloud yet.`;
 		// A refusal usually says exactly what rule was hit, and that sentence is

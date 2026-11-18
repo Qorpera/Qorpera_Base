@@ -171,15 +171,6 @@ function runnerResponse(runner: CloudRunnerInstance): Record<string, unknown> {
 	};
 }
 
-export async function executeCloudRunnerProviderRequest(
-	backend: CloudRunnerProviderServiceBackend,
-	value: unknown,
-	signal?: AbortSignal,
-): Promise<unknown> {
-	const parsed = parseRequest(value, backend.adapterId);
-	return executeParsedRequest(backend, parsed, signal);
-}
-
 async function executeParsedRequest(
 	backend: CloudRunnerProviderServiceBackend,
 	parsed: ProviderRequest,

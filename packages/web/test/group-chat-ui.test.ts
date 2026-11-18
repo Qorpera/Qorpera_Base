@@ -78,8 +78,6 @@ describe("group chat identity", () => {
 		expect(view.el.querySelector(".thread-header")?.classList.contains("is-agent")).toBe(false);
 		// A group chat's header goes on a wide screen too, as an agent's does: the rail's card stands in for it.
 		expect(view.el.querySelector(".thread-header")?.classList.contains("is-group")).toBe(true);
-		expect(view.el.querySelector(".thread-status")?.textContent).not.toContain("respond in this group chat");
-		expect(view.el.textContent).not.toContain("team rooms");
 		const previousRow = row();
 		const previousAvatar = identity.querySelector(".group-chat-avatar");
 		draw();

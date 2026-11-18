@@ -220,8 +220,6 @@ describe("actual product conversation attachments", () => {
 		const companyRead = (name: string) =>
 			name.startsWith("qorpera_member_mail_") ||
 			name === "qorpera_member_digital_post" ||
-			name === "qorpera_member_interface_offers" ||
-			name === "qorpera_member_interface_supervisions" ||
 			name === "qorpera_member_interface_pages" ||
 			// The apps drawer's Sites and What's new entries.
 			name === "qorpera_list_company_sites" ||

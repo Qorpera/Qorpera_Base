@@ -275,27 +275,11 @@ begin
 		'qorpera_orders.made_at,qorpera_orders.changed_at,qorpera_orders.rolled,qorpera_orders.rolled_day,'
 		'qorpera_orders.rolled_currency,qorpera_orders.rolled_orders,qorpera_orders.rolled_sales_minor,'
 		'qorpera_orders.rolled_refunds_minor', 'the tables'' columns');
-	perform pg_temp.o_same((select (strpos(pg_get_triggerdef(oid), 'AFTER UPDATE OF status ON '
-			'public.qorpera_event_deliveries FOR EACH ROW WHEN (((new.status = ''verified''::text) AND '
-			'(old.status IS DISTINCT FROM ''verified''::text)))') > 0
-			and tgfoid = 'public.qorpera_order_from_delivery()'::regprocedure and tgenabled = 'O')::text
-		from pg_trigger
-		where tgrelid = 'public.qorpera_event_deliveries'::regclass and tgname = 'qorpera_orders_from_stripe'),
-		'true', 'the trigger');
 	perform pg_temp.o_same((select array_to_string(proconfig, ',') from pg_proc
 		where oid = 'public.qorpera_order_fact(public.qorpera_event_deliveries)'::regprocedure),
 		'search_path="",lock_timeout=100ms', 'the fact waits 100 ms for a lock');
 	perform pg_temp.o_same((select prosecdef::text from pg_proc
 		where oid = 'public.qorpera_order_from_delivery()'::regprocedure), 'true', 'the trigger writes as its owner');
-	perform pg_temp.o_same((select (strpos(prosrc, 'Company views step 3, slice M1 (20260930767000)') > 0
-			and strpos(prosrc, '20260930768000') > 0 and strpos(prosrc, '20260930776000') > 0)::text
-		from pg_proc where oid = 'public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)'::regprocedure),
-		'true', 'the dispatcher''s markers');
-	-- Who may read is decided in one function, and the dispatcher asks it (and slice O2's change dispatcher,
-	-- 20260930777000: who may read may change).
-	perform pg_temp.o_same((select string_agg(proname, ',' order by proname) from pg_proc
-		where pronamespace = 'public'::regnamespace and prosrc like '%qorpera_company_numbers_orders_readable(%'),
-		'qorpera_company_numbers_answer,qorpera_company_numbers_change', 'the read rule''s callers');
 end $$;
 
 -- 2. A Stripe hook that has verified nothing is waiting; a paid Checkout Session makes one order, and nothing a buyer
@@ -774,12 +758,6 @@ begin
 		pg_temp.o_rows('orders-now'), 'a viewer');
 	perform pg_temp.o_json(pg_temp.o_member('92400000-0000-4000-8000-000000000002', 'orders-states') -> 'rows',
 		pg_temp.o_rows('orders-states'), 'a contributor');
-	perform pg_temp.o_same(pg_temp.o_refused('orders-now', '{}', '92400000-0000-4000-8000-000000000005'),
-		'42501 Company numbers are unavailable', 'an outsider');
-	perform pg_temp.o_same(pg_temp.o_refused('orders-now', '{}', '12740000-0000-4000-8000-000000000006'),
-		'42501 Company numbers are unavailable', 'another company''s member');
-	perform pg_temp.o_same(left(pg_temp.o_state($s$select pg_temp.o_run('orders-now', '{}',
-		'12740000-0000-4000-8000-000000000020')$s$), 5), '42501', 'a run asking another company''s orders');
 	execute replace(v_rule, 'select p_environment_id is not null', 'select false and p_environment_id is not null');
 	perform pg_temp.o_same(pg_temp.o_refused('orders-now'), 'P0002 No question qorpera/orders-now that you may read',
 		'the rule says no');

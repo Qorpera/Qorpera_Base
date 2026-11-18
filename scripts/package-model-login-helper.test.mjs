@@ -72,5 +72,4 @@ test("the vault's Claude sign-in installs the Claude Code the box runs", async (
 	assert.ok(step.includes(pin.source.integrity));
 	assert.ok(step.includes(`"claudeSha256": "${pin.artifact.sha256}"`));
 	assert.ok(step.includes(pin.artifact.bytes.toLocaleString("en-US")));
-	assert.ok(!step.includes("claude-code-linux-x64@2.1.231`"), "no step installs the old pin");
 });

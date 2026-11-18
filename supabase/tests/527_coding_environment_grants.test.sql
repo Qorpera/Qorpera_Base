@@ -361,8 +361,6 @@ declare
 	v_names integer := position('qorpera_coding_environment_name_allowed' in v_begin);
 	v_lock integer;
 begin
-	perform pg_temp.base_assert(position('20260930438000' in v_begin) > 0 and position('20260930438000' in v_revoke) > 0
-		and position('20260930438000' in v_enter) > 0, 'each patched body names the migration');
 	-- The capture refuses a name before any lock.
 	select min(nullif(position(l in v_begin), 0)) into v_lock
 	from unnest(array[' for share', ' for key share', ' for update', ' for no key update']) as l;
