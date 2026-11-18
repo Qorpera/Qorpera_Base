@@ -7074,6 +7074,26 @@ worker's run is claimed only by a shared execution host), never before it.
    `company_write` and `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`),
    which stays below the native session's 1 MiB message.
 
+### 2026-11-18 amendment: programs members download (the program kit)
+
+> The founder, 18 November 2026: "for desktop apps surely we can create a private space were companies can upload and
+> share code/programs with its members - like a github repo, just built for downloading and testing apps, not for
+> reading code", and "Yes, build step 1" to "kept versions and the program's page with Download". The detail is
+> RUNTIME-INTERFACE-APPS.md §3f and §7 step 14.
+
+1. **A program is an interface app.** Of the kit `program`, in `apps/<name>/` with its `app.toml`; no new tool, no new
+   top-level folder, no migration. Its builds are files in `apps/<name>/versions/<version>/`, which an agent copies
+   there from a machine; `save_app` takes `program.json` (`version`, `forms`, `screens`), refuses a file that is not in
+   the folder, a kept version with other files and an earlier version, and keeps every version, newest first, with its
+   date, sizes and hashes. Nothing in `versions/` is deleted.
+2. **The web draws its page.** Not in the app's frame: the program, its pictures, one Download for the member's own
+   computer or phone, the five kinds, and the earlier versions. A download is the member's own read through Storage's
+   path. Everyone who may read the company folder sees it and may download.
+3. **The agents' words.** `app_guide program` says how to hand in a program; the company context's code projects say
+   to build the real thing early, keep each version as a program app and link the app, never a machine or a folder.
+4. **Order.** An older web reads the kit as a manifest with problems and hides the app: the web goes live first, then
+   the runtime bundle that carries the kit.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

@@ -173,7 +173,7 @@ const MAX_PREVIEW_TEXT_BYTES = 1024 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
 /** The browser hands out at most this much in one download (member-web's WebFileDownloads): a folder file's most,
  * read piece by piece. */
-const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+export const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
 /** How many newest Recents pages a refresh reads to reach the changes already shown. */

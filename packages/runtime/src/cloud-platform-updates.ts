@@ -139,6 +139,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "The object kit draws a real 3D model",
 		text: "The object kit's page can show a product as a real 3D model, drawn live in the member's own browser in real light: they turn and tilt it by hand, zoom in, and tap its parts. Build the model in Blender on a machine, export it into the app's folder as one glb file and name it as the data's model; each part names its object in the model as node, so no tracks are written. Keep the turntable or picture beside it: the page shows it while the model arrives and where a browser cannot draw 3D. app_guide about object says how.",
 	},
+	{
+		id: "program-kit",
+		kind: "capability",
+		date: "2026-11-18",
+		title: "Programs members download",
+		text: "A program for a computer or a phone now has a home: an interface app of the kit program. Build the real thing on a machine, copy one file for each kind (Android, Linux, Windows, Mac, iPhone) into the app's versions/<version>/ folder, with real screenshots beside them, and save it with save_app. Its page shows the program and a Download for the member's own computer or phone, and every version stays. Link the app when you tell a member, never a machine or a folder. If your company makes such a product, keep its builds there; app_guide about program says how.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
