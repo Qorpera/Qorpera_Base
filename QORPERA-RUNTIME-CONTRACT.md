@@ -7022,6 +7022,23 @@ worker's run is claimed only by a shared execution host), never before it.
    login; a usage reading does not end the wait. The recovery read of a failed run says `rate_limited`, so the thread
    says the provider got too many requests at once and the login is fine, never to check the login.
 
+### 2026-11-17 amendment: a refusal names the next step; a busy review waits
+
+Founder decision of 17 November 2026 on the mywave review ("A refusal must never be a dead end."): "1-4 straight yes."
+It amends the action review's refusals (`REVIEW_DENIED`, `REVIEW_UNAVAILABLE`) and goes live with a runtime bundle; no
+migration, host call or image moves. The review reading a command's script, decided the same day, follows on its own.
+
+1. **A refusal names the next step.** A denial still says not to retry, reword or reach the action another way, and
+   that only a member's new message (a card answer does not count) lets the agent make it once more. It now adds: when
+   the work cannot go on without it, a worker reports its work blocked with the reason, and any other agent raises a card
+   (`ask_member`), or says it in its reply where it has no cards, in one line: what stopped, why, and the one thing the
+   work needs (another source, a file, a decision); the card's answer never lets it repeat the refused action.
+2. **A review that cannot run waits first.** A review whose model turn ended at the provider's rate limit, usage limit
+   or an overload is asked again after 5, 10, 20, 30 and 30 seconds, within two minutes of the first ask, before the
+   call is refused as unavailable. A verdict, an invalid verdict, a timeout or another failure is never asked again. The
+   refusal tells the agent to say to a member that the step could not be checked just now, never that a safety review
+   was unavailable.
+
 ### 2026-11-17 amendment: agents show the product first
 
 > The founder, 17 November 2026, on the lead's review of his test company mywave (the storyboard reached the founders
@@ -7073,6 +7090,28 @@ worker's run is claimed only by a shared execution host), never before it.
 5. **The write tools.** This replaces the 2026-10-21 amendment's "`company_write` takes up to 512 KiB of text":
    `company_write` and `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`),
    which stays below the native session's 1 MiB message.
+
+### 2026-11-18 amendment: the first concept really comes first
+
+> The founder, 17 November 2026, to "Show the product first. Within about ten minutes you should see a real render of
+> the headband on a person and real app screens.": "1-4 straight yes"; 18 November: "run a clean product-first test
+> company". That test (Spirekassen) showed the founder a wall of other companies' products after 31 minutes and nothing
+> of his own product. The hire overlay is v20. It goes live with the runtime bundle that carries it, and amends the
+> 2026-11-17 amendment "agents show the product first".
+
+1. **One first concept, with a maker, the same hour.** The product's owner makes one first concept in its first run,
+   from the founders' words and the brief; an owner of the physical form or of the app makes its part in its own first
+   run, and nobody waits for reference pictures, the brand or a finding. It reaches the founders the same hour the
+   product's builders are hired, on a card raised in the run that first makes it viewable, even when more parts are
+   coming. The Co-Founder tells the founders what they will see and when, in hours.
+2. **Then the rest, from their answer.** The look (references, never shown as a concept app), the directions and the
+   build follow the founders' answer. The several-ideas rule is never for the first concept. The Brand owner's
+   directions show the product as the first concept shows it. Until the concept's card goes out, the Brand owner only
+   prepares; the product's owner tells it, with the link, in a message that wakes it, and the directions start in that
+   run (in the Brand owner's first run when the vision names no product to show), on their own card after the
+   concept's. "Due within a day or two" stays for the research assignments only.
+3. **A look on a machine** is one round that ends in the link, and is reported as a look at the files on a machine,
+   never as a test in the app.
 
 ## 20. Enforcement matrix
 
