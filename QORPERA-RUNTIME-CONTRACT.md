@@ -7079,7 +7079,7 @@ worker's run is claimed only by a shared execution host), never before it.
 > The founder, 18 November 2026: "for desktop apps surely we can create a private space were companies can upload and
 > share code/programs with its members - like a github repo, just built for downloading and testing apps, not for
 > reading code", and "Yes, build step 1" to "kept versions and the program's page with Download". The detail is
-> RUNTIME-INTERFACE-APPS.md §3f and §7 step 14.
+> RUNTIME-INTERFACE-APPS.md §3f and §7 step 15.
 
 1. **A program is an interface app.** Of the kit `program`, in `apps/<name>/` with its `app.toml`; no new tool, no new
    top-level folder, no migration. Its builds are files in `apps/<name>/versions/<version>/`, which an agent copies
