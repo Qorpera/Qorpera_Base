@@ -989,6 +989,11 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	// The company's map is the Co-Founder's own app, in its planning run when it can save one (overlay v18).
 	expect(planning(all)).toContain("Keep the company's map as your own posted app, named company");
 	expect(planning(without("save_app"))).not.toContain("Keep the company's map");
+	expect(planning(all)).toContain("Only when the agreed vision is wide enough to span several products or fields");
+	expect(planning(all)).toContain("made with make_picture before you save");
+	expect(planning(without("make_picture"))).toContain("named roadmap, made with save_app's roadmap kit");
+	expect(planning(without("make_picture"))).not.toContain("made with make_picture before you save");
+	expect(planning(without("save_app"))).not.toContain("roadmap");
 	expect(planning(without("save_app"))).toContain(
 		"An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason.",
 	);
