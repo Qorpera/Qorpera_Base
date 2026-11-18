@@ -140,7 +140,7 @@ export class SettingsView {
 	#folderPath: string | undefined;
 	#folderStop = new AbortController();
 	#folderAuthority: string | undefined;
-	#account: AccountViewState = { loading: true };
+	#account: AccountViewState = {};
 	#company: CompanyController | undefined;
 	#ownsCompany = false;
 	#unsubscribe: (() => void) | undefined;
@@ -355,10 +355,6 @@ export class SettingsView {
 		this.#storageSection = tab === "recents" ? "recents" : "documents";
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
-		void api
-			.getAccountEntitlement()
-			.then((entitlement) => this.#loadedAccount({ loaded: true, entitlement }))
-			.catch((error) => this.#loadedAccount({ loaded: true, error: describeError(error) }));
 		// The friends list feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
 			if (this.#tab === "company") this.#drawCompany();
@@ -799,14 +795,6 @@ export class SettingsView {
 			"ai-subscriptions",
 			connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#accountSubscriptions.el),
 		);
-	}
-
-	/** General shows only the account's error and message, so it is redrawn only
-	 * when those change: a control in use keeps focus when the entitlement arrives. */
-	#loadedAccount(next: AccountViewState): void {
-		const redraw = next.error !== this.#account.error || next.message !== this.#account.message;
-		this.#account = next;
-		if (redraw) this.#general();
 	}
 
 	#general(): void {

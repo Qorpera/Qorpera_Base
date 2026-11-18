@@ -4,7 +4,6 @@ import {
 	buildComputerHourEmail,
 	ComputerHourEmailSendError,
 	type ComputerHourNoticeJob,
-	computerHourNoticeIdempotencyKey,
 	deliverComputerHourNoticeBatch,
 	hoursText,
 	parseComputerHourNoticeClaim,
@@ -108,7 +107,6 @@ describe("computer hour notices", () => {
 		assert.match(email.text, /as a founder of <Nordlys> & Co\./);
 		assert.match(monthly.text, /because your plan paid for these companies' computer hours/);
 		assert.equal(hoursText(-600), "0 hours");
-		assert.equal(computerHourNoticeIdempotencyKey(NOTICE), `qorpera-computer-hour-notice/${NOTICE}`);
 	});
 
 	it("sends each notice once, records failures for retry or for good, and leaves a lost completion leased", async () => {
@@ -154,6 +152,7 @@ describe("computer hour notices", () => {
 			["b2", "Resend 503", true],
 			["b3", "Invalid recipient", false],
 		]);
+		assert.equal(new Set(keys).size, jobs.length);
 		assert.equal(keys[0], "qorpera-computer-hour-notice/71300000-0000-4000-8000-0000000000b1");
 	});
 });

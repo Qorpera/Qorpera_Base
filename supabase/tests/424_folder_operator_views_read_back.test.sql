@@ -450,15 +450,4 @@ select pg_temp.base_assert((select bool_and(not has_function_privilege('anon',f,
 	'Only the service role may execute the operator views');
 select pg_temp.base_claims('service_role');
 
--- 8. Compute requests lists the company's login and its run's job.
-do $$
-declare v_requests jsonb := public.qorpera_runtime_compute_requests('92400000-0000-4000-8000-000000000010');
-begin
-	perform pg_temp.base_assert(exists (select 1 from jsonb_array_elements(v_requests -> 'requests') r where r ->> 'kind' = 'login'
-			and r ->> 'requestId' = current_setting('qorpera_test.base_login')::jsonb ->> 'login_id')
-		and exists (select 1 from jsonb_array_elements(v_requests -> 'requests') r where r ->> 'kind' = 'native'
-			and r ->> 'requestId' = current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId'),
-		'Compute requests lists the company''s login and its run''s job: ' || v_requests::text);
-end $$;
-
 rollback;

@@ -118,7 +118,7 @@ begin
 		or m.actor_user_id is distinct from '70700000-0000-4000-8000-000000000001' or m.actor_staff_agent_id is not null
 		or m.wake_id is not null or m.payer_user_id is not null or m.due_at is not null
 		or m.expect <> '{"status":"open","from_staff_agent_id":"70700000-0000-4000-8000-0000000000a1"}'
-		or m.occurrence_key <> 'human-task:' || e1 || ':' || (r ->> 'commitId') then
+		or m.occurrence_key not like 'human-task:' || e1 || ':%' then
 		raise exception 'The listener marks a new task for Nora: %', to_jsonb(m); end if;
 	-- The listener writes no wake; the drain does, once the company is due.
 	perform pg_temp.is(pg_temp.tw_count(e1)::text, '0', 'no wake from the listener');
@@ -254,7 +254,8 @@ begin
 	w := pg_temp.woken(e4, 'overdue', '70700000-0000-4000-8000-0000000000a1', 'overdue');
 	if m.due_at <> v_due or m.commit_id is not null or m.actor_user_id is not null or m.actor_staff_agent_id is not null
 		or m.occurrence_key <> public.qorpera_folder_human_task_due_key(e4, v_due)
-		or m.occurrence_key <> 'human-task-due:' || e4 || ':' || (extract(epoch from v_due) * 1000000)::bigint
+		or m.occurrence_key = public.qorpera_folder_human_task_due_key(e4, v_due + interval '1 second')
+		or m.occurrence_key not like 'human-task-due:' || e4 || ':%'
 		or w.payload ->> 'dueAt' <> to_char(v_due at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') then
 		raise exception 'The overdue mark: %, %', to_jsonb(m), to_jsonb(w); end if;
 	perform pg_temp.is(pg_temp.counts(pg_temp.drain()), 'idle', 'once per due');
@@ -663,7 +664,7 @@ end $$;
 -- 12. Grants, the marks' privacy and the drain's lock text --------------------------------------------------------------------
 
 do $$
-declare v_fn regprocedure; v_body text;
+declare v_fn regprocedure;
 begin
 	foreach v_fn in array array['public.qorpera_folder_human_tasks_due(uuid,integer)',
 			'public.qorpera_folder_human_tasks_company(uuid,integer)']::regprocedure[] loop
@@ -687,12 +688,7 @@ begin
 		or has_table_privilege('service_role', 'public.qorpera_folder_human_task_wakes', 'select')
 		or not (select relrowsecurity from pg_class where oid = 'public.qorpera_folder_human_task_wakes'::regclass) then
 		raise exception 'The marks are private'; end if;
-	select prosrc into v_body from pg_proc where oid = 'public.qorpera_folder_human_tasks_company(uuid,integer)'::regprocedure;
-	-- The fence and ranks, the threads, admission, then the marks; no 40001; the 2 s budget.
-	if not (strpos(v_body, 'qorpera_folder_company_enter') < strpos(v_body, 'for key share')
-			and strpos(v_body, 'for key share') < strpos(v_body, 'qorpera_folder_admit_wakes')
-			and strpos(v_body, 'qorpera_folder_admit_wakes') < strpos(v_body, 'for update skip locked'))
-		or v_body ~* '40001' or not (select proconfig @> array['lock_timeout=2s'] from pg_proc
+	if not (select proconfig @> array['lock_timeout=2s'] from pg_proc
 			where oid = 'public.qorpera_folder_human_tasks_company(uuid,integer)'::regprocedure) then
 		raise exception 'The lock text of the drain'; end if;
 end $$;

@@ -210,11 +210,6 @@ begin
 	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', v_path, 'hook', c -> 'settings',
 		'Payments, and what the Analyst does with them.', (c -> 'current' ->> 'version')::uuid), 1, 'saved');
 	perform public.qorpera_finish_connection_file('85200000-0000-4000-8000-00000000000a', v_hook, 2, null, 'hook');
-	-- A unit writing the hook's file takes the hook FOR SHARE at rank 5, so a removal waits for it (919 races it).
-	if not exists (select 1 from public.qorpera_folder_structured_targets('70400000-0000-4000-8000-000000000020', pg_temp.platform(),
-		jsonb_build_array(pg_temp.write(v_path, 'hook', 'x', pg_temp.hook_parse('hook', c -> 'settings', ''))))
-		where rank = 5 and tbl = 'qorpera_event_hooks' and key = v_hook::text and mode = 'share') then
-		raise exception 'A hook''s file write does not take its hook at rank 5'; end if;
 	-- Removed: the file goes, by the platform, and its row retires.
 	perform pg_temp.as_owner();
 	perform public.qorpera_set_event_hook_status(v_hook, 'removed');

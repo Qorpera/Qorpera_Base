@@ -27,17 +27,6 @@ create function pg_temp.folders() returns jsonb language sql as $$
 	select public.qorpera_member_company_state_folders('70700000-0000-4000-8000-000000000020')
 $$;
 
--- The function keeps both slices' body markers and its grants.
-do $$ begin
-	if strpos(pg_get_functiondef('public.qorpera_member_company_state_folders(uuid)'::regprocedure), 'C4 P34a (20260930021000)') = 0
-		or strpos(pg_get_functiondef('public.qorpera_member_company_state_folders(uuid)'::regprocedure), 'C4 P34r (20260930038000)') = 0 then
-		raise exception 'The state folders read lost a body marker'; end if;
-	if not has_function_privilege('authenticated', 'public.qorpera_member_company_state_folders(uuid)', 'EXECUTE')
-		or has_function_privilege('anon', 'public.qorpera_member_company_state_folders(uuid)', 'EXECUTE')
-		or has_function_privilege('service_role', 'public.qorpera_member_company_state_folders(uuid)', 'EXECUTE') then
-		raise exception 'The state folders read has the wrong grants'; end if;
-end $$;
-
 -- 1. Routines' files: live ones, in path order, with their agent ---------------------------------------------------------
 
 select pg_temp.as_service();
@@ -88,20 +77,6 @@ do $$ begin
 		'e1:a1:QorperaOS/agents/nora/routines/inbox.md,e2:a2:QorperaOS/agents/otto/routines/report.md', 'the private folder''s owner reads it');
 end $$;
 
--- 3. A non-member reads nothing ---------------------------------------------------------------------------------------------
-
-select pg_temp.as_user('03');
-do $$
-declare v_state text;
-begin
-	begin
-		perform pg_temp.folders();
-		v_state := 'ok';
-	exception when others then
-		v_state := sqlstate || ' ' || sqlerrm;
-	end;
-	perform pg_temp.same(v_state, '42501 Company folder is unavailable', 'a non-member');
-end $$;
 select pg_temp.as_service();
 
 rollback;

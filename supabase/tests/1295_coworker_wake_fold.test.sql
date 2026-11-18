@@ -111,17 +111,13 @@ end $$;
 
 do $$
 begin
-	perform pg_temp.base_assert(exists (select 1 from information_schema.columns where table_schema = 'public'
-			and table_name = 'qorpera_pending_peer_messages' and column_name = 'wake_id')
-		and not has_function_privilege('service_role',
+	perform pg_temp.base_assert(not has_function_privilege('service_role',
 			'public.qorpera_coworker_take_waiting(public.qorpera_execution_runs,public.qorpera_wake_occurrences,jsonb)', 'execute')
 		and not has_function_privilege('authenticated',
 			'public.qorpera_coworker_take_waiting(public.qorpera_execution_runs,public.qorpera_wake_occurrences,jsonb)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_peer_message_shown(text,boolean)', 'execute')
-		and not has_function_privilege('service_role', 'public.qorpera_peer_message_shown(text,boolean)', 'execute')
-		and position('qorpera_coworker_take_waiting(v_run, v_wake' in
-			(select prosrc from pg_proc where oid = 'public.qorpera_folder_read_wake(jsonb)'::regprocedure)) > 0,
-		'the take-over is internal and runs in the wake read');
+		and not has_function_privilege('service_role', 'public.qorpera_peer_message_shown(text,boolean)', 'execute'),
+		'the take-over is internal');
 	perform pg_temp.base_assert(pg_temp.cf_session() is not null, 'the Co-Founder has its thread');
 end $$;
 

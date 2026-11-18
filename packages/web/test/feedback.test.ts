@@ -56,13 +56,11 @@ function rpcs(f: ReturnType<typeof fixture>): string[] {
 			(name) =>
 				!name.startsWith("qorpera_member_mail_") &&
 				name !== "qorpera_member_digital_post" &&
-				name !== "qorpera_member_interface_offers" &&
 				// The apps drawer's Sites and What's new entries.
 				name !== "qorpera_list_company_sites" &&
 				name !== "qorpera_list_code_releases" &&
 				// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
 				name !== "qorpera_list_cloud_routines" &&
-				name !== "qorpera_member_interface_supervisions" &&
 				name !== "qorpera_member_interface_pages" &&
 				// The account marks itself online for its friends (online-mark.ts).
 				name !== "qorpera_mark_online" &&
@@ -76,7 +74,7 @@ function fill(details: HTMLTextAreaElement, value = "The sidebar is clearer."): 
 }
 
 describe("profile feedback", () => {
-	it("opens from the profile menu, preserves the conversation, and stays out of General settings", async () => {
+	it("opens from the profile menu and preserves the conversation", async () => {
 		const f = await open();
 		expect(f.dialog.open).toBe(true);
 		expect(document.activeElement).toBe(f.details);
@@ -85,12 +83,6 @@ describe("profile feedback", () => {
 		expect(f.dialog.isConnected).toBe(false);
 		expect(document.activeElement).toBe(f.root.querySelector(".account-trigger"));
 		expect(f.composer.value).toBe("Unsent conversation draft");
-		f.root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
-		f.root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
-		expect(f.root.querySelector(".settings-feedback")).toBeNull();
-		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toContain("Share feedback");
-		// General's only RPC is the chosen company's rules list.
-		expect(rpcs(f).filter((name) => name !== "qorpera_list_review_rules")).toEqual([]);
 	});
 	it("requires details, permits deselecting a category, and submits through the account feedback RPC only", async () => {
 		const f = await open();

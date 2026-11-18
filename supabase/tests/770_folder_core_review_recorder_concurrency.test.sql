@@ -111,8 +111,8 @@ begin
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
 	if v_state <> 'ok' or not exists (select 1 from public.qorpera_folder_reviews
-			where id = md5('qorpera.folder-review:' || current_setting('qorpera_test.a2'))::uuid
-				and run_id = '64800000-0000-4000-8000-0000000000f1') then
+			where run_id = '64800000-0000-4000-8000-0000000000f1' and change_set_sha256 = public.qorpera_folder_change_set_sha256(
+				jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'race-card')))) then
 		raise exception 'A: the recorder after the begin: %', v_state; end if;
 end $$;
 

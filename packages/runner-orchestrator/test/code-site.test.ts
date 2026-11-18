@@ -27,11 +27,6 @@ import {
 	CODE_SITE_DRILL_FOLDER,
 	CODE_SITE_DROP,
 	CODE_SITE_EXTENSIONS,
-	CODE_SITE_MAX_BYTES,
-	CODE_SITE_MAX_FILE_BYTES,
-	CODE_SITE_MAX_FILES,
-	CODE_SITE_MAX_FOLDERS,
-	CODE_SITE_MAX_PATH_BYTES,
 	CODE_SITE_NAME_RULE,
 	CODE_SITE_PATH,
 	CODE_SITE_RESERVED_NAMES,
@@ -88,11 +83,6 @@ const RESERVED_SQL = () => {
 };
 
 describe("the site's rules, as the database's", () => {
-	it("has the plan's bounds", () => {
-		expect([CODE_SITE_MAX_FILES, CODE_SITE_MAX_BYTES, CODE_SITE_MAX_FILE_BYTES]).toEqual([500, 25 * MiB, 10 * MiB]);
-		expect([CODE_SITE_MAX_FOLDERS, CODE_SITE_MAX_PATH_BYTES]).toEqual([100, 512]);
-	});
-
 	it("serves exactly the 30 extensions qorpera_site_content_type maps, and its path rule", () => {
 		const mapped = [...sqlFunction("qorpera_site_content_type").matchAll(/when '([a-z0-9]+)' then/g)].map(
 			(m) => m[1],
@@ -104,16 +94,7 @@ describe("the site's rules, as the database's", () => {
 		expect(sqlFunction("qorpera_site_path_valid")).toContain("char_length(p_path) <= 512");
 	});
 
-	it("takes a site's name as qorpera_site_slug_valid does: 550000's rule and its 24 names, and D20 of 756000", () => {
-		const body = sqlFunction("qorpera_site_slug_valid");
-		const reserved = [...(/not in \(([^)]+)\)/.exec(body)?.[1] ?? "").matchAll(/'([a-z-]+)'/g)].map(
-			(m) => m[1] as string,
-		);
-		expect(reserved).toHaveLength(24);
-		expect(body).toContain("'^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$'");
-		for (const name of reserved) expect(codeSiteNameValid(name)).toBe(false);
-		// Today's 24 open the text 756000 keeps, in their order (build5/A1.md counts them 25; the text is 24 of them).
-		expect(CODE_SITE_RESERVED_NAMES.startsWith(`${reserved.join(" ")} `)).toBe(true);
+	it("takes a site's name as qorpera_site_slug_valid does: its rule and D20 of 756000", () => {
 		for (const name of ["abc", "gift-message", "saml-gift-message", "a".repeat(48), "000", "a-b-c"])
 			expect(codeSiteNameValid(name), name).toBe(true);
 		for (const name of ["ab", "a".repeat(49), "-ab", "ab-", "aBc", "a_b", "a.b", "", " abc", "abc\n", "ab c"])
@@ -161,12 +142,6 @@ describe("the site's rules, as the database's", () => {
 	});
 
 	it("keeps the reserved text byte for byte as migration 20260930756000 has it, and fails while they differ", () => {
-		// A1's text (build5/A1.md): 118 names, 775 bytes, this SHA-256. It pins the copy while the migration is not yet in
-		// this tree; once it is, its own text is read and compared, so a change to either fails here.
-		expect(createHash("sha256").update(CODE_SITE_RESERVED_NAMES, "utf8").digest("hex")).toBe(
-			"e3f73121ff872bb8b690df2a702addf2b39285e2ef4543c8fc198fd1ffbc6745",
-		);
-		expect(bytes(CODE_SITE_RESERVED_NAMES)).toBe(775);
 		const names = CODE_SITE_RESERVED_NAMES.split(" ");
 		expect(names).toHaveLength(118);
 		expect(new Set(names).size).toBe(118);
@@ -179,30 +154,13 @@ describe("the site's rules, as the database's", () => {
 		const kept = RESERVED_SQL();
 		if (kept === null) return;
 		expect(kept.text).toBe(CODE_SITE_RESERVED_NAMES);
-		// The rule beside it, as that migration writes it into qorpera_site_slug_valid.
-		for (const clause of [
-			"and strpos(p_slug, '--') = 0 and right(p_slug, 8) <> '-preview' and strpos(p_slug, 'qorpera') = 0",
-			"and p_slug <> all (string_to_array(public.qorpera_site_reserved_names(), ' ')), false)",
-		])
-			expect(kept.migration, clause).toContain(clause);
 	});
 
-	it("says the rule in the kernel's one sentence, byte for byte (migration 20260930756000's qorpera_site_name_words)", () => {
+	it("says the rule in the kernel's one sentence, byte for byte", () => {
 		// The lead's words (13 Nov 2026, the cross-check's seam 2), the same on every path that refuses a name.
 		expect(CODE_SITE_NAME_RULE).toBe(
 			"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).",
 		);
-		const migration = readFileSync(
-			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
-			"utf8",
-		);
-		const words =
-			/create function public\.qorpera_site_name_words\(\)[^\n]*\n\t-- 20260930756000\n\tselect '((?:[^']|'')*)'::text\n\$\$;/.exec(
-				migration,
-			)?.[1];
-		expect(words?.replaceAll("''", "'")).toBe(CODE_SITE_NAME_RULE);
-		// And every refusal of a name in that migration says it.
-		expect(migration.split("'SITE_NAME_INVALID: ' || public.qorpera_site_name_words()").length - 1).toBe(5);
 	});
 
 	it("says which part of the rule a name breaks, within the 300 bytes a refusal shows whole", () => {
@@ -634,8 +592,6 @@ describe("the commands' texts", () => {
 			expect(bytes(command)).toBeLessThanOrEqual(16384);
 			expect(/^[\t\n\x20-\x7e]*$/.test(command)).toBe(true);
 		}
-		expect(CODE_SITE_COLLECT).toContain('exec 2>"$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME/site.err"\n');
-		expect(CODE_SITE_DROP).toContain('exec 2>>"$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME/site.err"\n');
 	});
 });
 

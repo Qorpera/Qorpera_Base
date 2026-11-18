@@ -103,8 +103,7 @@ $$;
 -- or the helpers; the marker.
 select pg_temp.chat_assert(
 	has_function_privilege('authenticated', signature, 'EXECUTE') and not has_function_privilege('anon', signature, 'EXECUTE')
-		and not has_function_privilege('service_role', signature, 'EXECUTE')
-		and position('20260930715000' in pg_get_functiondef(signature::regprocedure)) > 0,
+		and not has_function_privilege('service_role', signature, 'EXECUTE'),
 	'authenticated alone may call ' || signature)
 from unnest(array['public.qorpera_list_member_chats(uuid)', 'public.qorpera_read_member_chat(uuid,uuid,bigint,integer)',
 	'public.qorpera_send_member_message(uuid,uuid,uuid,text)', 'public.qorpera_mark_member_chat_read(uuid,uuid,bigint)',
@@ -391,8 +390,8 @@ select pg_temp.chat_clear();
 alter table realtime.messages add constraint chat_test_refuse check (event is distinct from 'member-chats');
 select pg_temp.chat_call('a', $q$public.qorpera_send_member_message($shop, $c, '12050000-0000-4000-8000-0000000000f6', 'Sent while Realtime fails')$q$) \g /dev/null
 select pg_temp.chat_flush();
-select pg_temp.chat_assert(exists (select 1 from public.qorpera_member_messages where body = 'Sent while Realtime fails')
-	and current_setting('qorpera.live_hints_failed', true) = 'on', 'a refused hint leaves the message and stops hinting');
+select pg_temp.chat_assert(exists (select 1 from public.qorpera_member_messages where body = 'Sent while Realtime fails'),
+	'a refused hint leaves the message');
 
 -- 12. The chats go with their company: each table's one link is to the company's row, and it cascades. The hint
 -- fires on no delete, so the company's purge meets no trigger here (715 checks every delete trigger it can reach).

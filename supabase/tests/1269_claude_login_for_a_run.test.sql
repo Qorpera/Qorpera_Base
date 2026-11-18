@@ -307,8 +307,6 @@ begin
 		end loop;
 		if not has_function_privilege('qorpera_secret_broker', v_function, 'execute') then
 			raise exception '5: the vault may not call %', v_function; end if;
-		if position('20260930771000' in pg_get_functiondef(v_function::regprocedure)) = 0 then
-			raise exception '5: % does not name 20260930771000', v_function; end if;
 	end loop;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		if has_function_privilege(v_role, 'public.qorpera_claude_login_run(uuid,text,jsonb,boolean,boolean)', 'execute')

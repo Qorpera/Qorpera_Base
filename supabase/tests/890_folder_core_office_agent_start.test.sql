@@ -488,14 +488,6 @@ begin
 end $$;
 update public.qorpera_runtime_office_scale_out set enabled = current_setting('qorpera_test.scale_out')::boolean where singleton;
 
--- G. Exactly the patched functions and the prelude name this migration.
-do $$
-begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930030000') <> 5 then
-		raise exception 'G: 4 patched functions and the prelude name 20260930030000 (found %)',
-			(select count(*) from pg_proc where prosrc ~ '20260930030000'); end if;
-end $$;
-
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture (as 850 does), the starts' waiters first (they name only the run).

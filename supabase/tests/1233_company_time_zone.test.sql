@@ -262,11 +262,5 @@ select pg_temp.base_assert(not has_function_privilege('anon', 'public.qorpera_li
 	'6: the executor''s list is the service role''s alone');
 select pg_temp.base_assert(has_function_privilege('authenticated', 'public.qorpera_profile_team_info(uuid)', 'execute'),
 	'6: the team read is the members'' still');
-select pg_temp.base_assert((select bool_and(position(marker in pg_get_functiondef('public.qorpera_list_executor_machines(text,text)'::regprocedure)) > 0)
-	from unnest(array['20260930739000', '20260930737000', '20260929730000', '(20260930055000)']) marker)
-	and (select bool_and(position(marker in pg_get_functiondef('public.qorpera_profile_team_info(uuid)'::regprocedure)) > 0)
-	from unnest(array['20260930739000', '20260930010000', '20260930330000']) marker)
-	and position('20260930739000' in pg_get_functiondef('public.qorpera_ensure_company_time_zone(uuid,text)'::regprocedure)) > 0,
-	'6: each body names this migration and keeps the earlier ones');
 
 rollback;

@@ -133,13 +133,5 @@ select pg_temp.base_assert((select bool_and(not has_function_privilege(who, fn, 
 	from unnest(array['anon', 'authenticated']) who,
 		unnest(array['public.qorpera_assert_wake_work_allowed(uuid)', 'public.qorpera_folder_begin_run_receipt(jsonb,uuid,text,text,text,boolean)']) fn),
 	'5: no member and no anonymous caller calls the gate or the folder begin');
-select pg_temp.base_assert((select bool_and(position(marker in pg_get_functiondef(
-		'public.qorpera_folder_begin_run_receipt(jsonb,uuid,text,text,text,boolean)'::regprocedure)) > 0)
-	from unnest(array['20260930748000', '20260930539000']) marker)
-	and position('20260930748000' in pg_get_functiondef('public.qorpera_assert_wake_work_allowed(uuid)'::regprocedure)) > 0
-	and position('Admitted wake authority is unavailable' in pg_get_functiondef('public.qorpera_assert_wake_work_allowed(uuid)'::regprocedure)) > 0
-	and position('Worker was cancelled' in pg_get_functiondef('public.qorpera_assert_wake_work_allowed(uuid)'::regprocedure)) > 0
-	and position('Wake requires an acknowledgement before work' in pg_get_functiondef('public.qorpera_assert_wake_work_allowed(uuid)'::regprocedure)) > 0,
-	'5: each body names this migration and keeps the earlier checks');
 
 rollback;

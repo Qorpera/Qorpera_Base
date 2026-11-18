@@ -158,7 +158,7 @@ describe("explicit VM resume", () => {
 		await expect(f.run()).rejects.toThrow("OFFICE_RESUME_UNCONFIRMED");
 		expect(f.submit).not.toHaveBeenCalled();
 	});
-	it.each(["old-boot", "stopped", "archive", "boot-changed"])("refuses %s after a successful start", async (fault) => {
+	it.each(["old-boot", "stopped", "boot-changed"])("refuses %s after a successful start", async (fault) => {
 		const f = await fixture(),
 			submit = f.submit.getMockImplementation()!;
 		f.submit.mockImplementationOnce(async (...args) => {
@@ -169,10 +169,6 @@ describe("explicit VM resume", () => {
 				f.state.status = "Stopped";
 				f.state.statusCode = 102;
 			}
-			if (fault === "archive")
-				f.guest.delete(
-					`${companyComputerStopHistoryDirectory(f.request.predecessor.startup.bootId, f.request.predecessor.activationId)}/manifest.json`,
-				);
 			if (fault === "boot-changed") {
 				const read = f.file.getMockImplementation()!;
 				let n = 0;

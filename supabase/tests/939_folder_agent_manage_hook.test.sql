@@ -386,8 +386,7 @@ begin
 		and budget = 'standard') then
 		raise exception 'The native host calls manage_hook with the binding''s scope'; end if;
 	if strpos((select prosrc from pg_proc where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-		'''manage_hook'' /* 20260930106000 (E3a) */') = 0
-		or strpos((select prosrc from pg_proc where oid = c_fn::regprocedure), '20260930106000') = 0 then
+		'''manage_hook''') = 0 then
 		raise exception 'The observation names the tool; the bodies carry the marker'; end if;
 	if exists (select 1 from public.qorpera_run_operation_receipts as receipt join public.qorpera_event_hooks as hook
 		on strpos(receipt.result::text, hook.address) > 0 where receipt.logical_operation_key like 'hook:%') then

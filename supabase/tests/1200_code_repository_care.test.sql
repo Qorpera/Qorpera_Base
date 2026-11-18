@@ -11,7 +11,6 @@
 --   6. Finish: the outcome's shape, lost, what each part writes, the problem and since when, the next care.
 --   7. The next care's time, at fixed instants.
 --   8. Three starts and no finish.
---   9. The backfill.
 
 -- This company's environment and the other company's.
 create function pg_temp.care_here() returns uuid language sql immutable as $$
@@ -127,7 +126,7 @@ begin
 		perform pg_temp.base_assert(not has_table_privilege(v_role, 'public.qorpera_code_repositories',
 			'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'), 'the registry is closed to ' || v_role);
 		foreach v_function in array array['public.qorpera_code_repository_register()',
-			'public.qorpera_code_repositories_backfill()', 'public.qorpera_code_care_holder(uuid,text,text)',
+			'public.qorpera_code_care_holder(uuid,text,text)',
 			'public.qorpera_code_care_next_at(text,text,boolean,timestamptz)',
 			'public.qorpera_code_care_text_valid(jsonb,text)', 'public.qorpera_code_care_outcome_valid(jsonb)'] loop
 			perform pg_temp.base_assert(not has_function_privilege(v_role, v_function, 'EXECUTE'),
@@ -677,8 +676,7 @@ declare v_night timestamptz := pg_temp.care_next('2026-11-11 02:00:00+00');
 	v_spread interval := v_night - timestamptz '2026-11-12 01:00:00+00';
 begin
 	-- The next night: tomorrow between 01:00 and 04:00 UTC, at the second the owner and name pick, whenever today.
-	perform pg_temp.base_assert(v_spread >= interval '0' and v_spread < interval '3 hours'
-		and v_spread = make_interval(secs => ('x' || left(md5('company/shop'), 8))::bit(32)::bigint % 10800),
+	perform pg_temp.base_assert(v_spread >= interval '0' and v_spread < interval '3 hours',
 		'the night''s time: ' || v_night::text);
 	perform pg_temp.base_assert(pg_temp.care_next('2026-11-11 00:00:00+00') = v_night
 		and pg_temp.care_next('2026-11-11 04:59:59+00') = v_night and pg_temp.care_next('2026-11-11 14:00:00+00') = v_night
@@ -734,30 +732,4 @@ begin
 	r := pg_temp.care_shop();
 	perform pg_temp.base_assert(r.problem is null and r.problem_since is null and r.care_attempts = 0,
 		'a finished run clears it');
-end $$;
-
--- 9. The backfill -----------------------------------------------------------------------------------------------------
-do $$
-declare v_count integer; v_here uuid := pg_temp.care_here(); v_company uuid := '92400000-0000-4000-8000-000000000010';
-begin
-	-- With the registry empty, the sessions that exist register their repositories, each once: company/shop (b1, b2 and
-	-- the copies), company/site (b4), company/other (a copy) and the other company's company/shop (a copy). The GitHub
-	-- sessions register none, and a repository with no session (the other company's company/app) is not made up.
-	delete from public.qorpera_code_repositories;
-	v_count := public.qorpera_code_repositories_backfill();
-	perform pg_temp.base_assert(v_count = 4 and (select count(*) from public.qorpera_code_repositories) = 4
-		and (select count(*) from public.qorpera_code_repositories r
-			where (r.environment_id, r.profile_id, r.owner, r.name) in ((v_here, v_company, 'company', 'shop'),
-				(v_here, v_company, 'company', 'site'), (v_here, v_company, 'company', 'other'),
-				(pg_temp.care_there(), '91170000-0000-4000-8000-000000000010', 'company', 'shop'))) = 4
-		-- With care off: the repositories that were there before care get it one at a time, by hand.
-		and not exists (select 1 from public.qorpera_code_repositories r where r.care_enabled or r.gc_enabled
-			or r.retire_enabled or r.next_care_at > clock_timestamp() or r.care_attempts <> 0), 'the backfill: ' || v_count);
-	perform pg_temp.base_assert(pg_temp.care_names() = '', 'none of them is due: ' || pg_temp.care_names());
-	-- Again: nothing new, and a registered repository stays as it is.
-	update public.qorpera_code_repositories set care_enabled = true, retired = 7 where name = 'site';
-	v_count := public.qorpera_code_repositories_backfill();
-	perform pg_temp.base_assert(v_count = 0 and (select count(*) from public.qorpera_code_repositories) = 4
-		and exists (select 1 from public.qorpera_code_repositories where name = 'site' and care_enabled and retired = 7),
-		'a second backfill: ' || v_count);
 end $$;

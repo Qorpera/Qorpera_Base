@@ -41,7 +41,6 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 		// The reader alone: no broker, vault or service-role key rides along.
 		assert.ok(!bundle.includes("CloudSecretBroker"));
 		assert.ok(!bundle.includes("SUPABASE_SERVICE_ROLE"));
-		assert.ok(bundle.includes("public.qorpera_agent_exit_network_rules($1::uuid[])"));
 		const syntax = spawnSync(process.execPath, ["--check", executable], { encoding: "utf8" });
 		assert.equal(syntax.status, 0, syntax.stderr);
 		const help = spawnSync(process.execPath, [executable, "--help"], { encoding: "utf8" });

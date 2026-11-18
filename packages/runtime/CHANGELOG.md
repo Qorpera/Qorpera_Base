@@ -1,6 +1,48 @@
 # Changelog
 
 ## [Unreleased]
+- `save_app` keeps a program version's `userId` (the member who added it from the web, RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026) on the versions it does not touch, through the shared `parseProgram`; an agent's own version never has it, and a hand-in naming it is refused. No migration.
+- Release v257 (master since v256's release merge: the automatic review reads the script a machine command runs,
+  #1924; program pages step 1, the kit `program` with kept versions and a Download page, #1941, whose web part is live
+  on its merge; tests that guard no behaviour pruned, with the runner-orchestrator code only they kept alive, #1949,
+  #1950, #1951, #1953): runtime bundle 257 `eab37cd3f22752dc574f7e9b08d33d86e16c17ba19e001298d69a60daed47128`
+  (activation `20260929025799`, previous 256 `f5554c776352`). No migration: the activation requires nothing new. The
+  guest moves: the native provider host (`4d236ee9`, 5,494,226 bytes); the ephemeral runner, the two LXD bootstraps and
+  the native Codex (`9c299f88`) stay.
+- The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
+- The review reads the script a machine command starts with (2026-11-17 amendment "the review reads the script it
+  judges", brief A of the mywave review; its refusal and retry parts came first in #1942). Only a plain command is
+  looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing bash would
+  expand). It names at most one file, by grammar: after zero or more leading `cd <path> &&` (literal, no `..`, no
+  options, no redirection), the first command must be an allow-listed runner form (the prefixes `time`, `nohup`, `nice`,
+  `timeout`, `xvfb-run`, an interpreter with its allowed options and the script path, the path as the command word, or
+  `source f`), with no variable set before it, no redirection but `2>&1` or to `/dev/null`, and, in a pipeline, only
+  `head`, `tail`, `grep` (one pattern), `cat`, `wc`, `sort` or `uniq` beside it, with no operand and only options from
+  an exact list each; its file is named when its path has no `..` segment. A later script is listed as not shown, and a
+  command that starts with anything else names no file. The file is read on the machine before the review and shown
+  whole (64 KiB); a card's approval covers its digest; the machine runs the model's command byte for byte. The file is
+  evidence, not proof of what runs: the agent's own login shell and profile decide what a program name runs, and the
+  reviewer is told so. A file not shown is never on its own a reason to deny or ask. Known limits: a script after
+  another command, a second script, a script after `source`, one with a variable set before it and one whose output goes
+  to a file are not shown; the agent's home reads no files; a file changed between the read and the start is not
+  detected. Runtime bundle only: no migration, host call, executor or image moves.
+- Release v256 (master since v255's release merge: agents learn the `data` command on a company machine, #1881;
+  hire_team and hire_agent say what is wrong with refused arguments, #1938; the first concept really comes first, hire
+  overlay v20, #1939; the action review asks again when its reviewer is busy and its refusals name the next step, #1942;
+  module scripts of an app's page, #1937, is web and live already): runtime bundle 256
+  `f5554c77635269caa6cd788b0e956367d6a625293af1a385c2a32a9f143e860a` (activation `20260929025699`, previous 255
+  `edc4809a810b`). No migration: the activation requires nothing new. The guest moves: the native provider host
+  (`2271544c`, 5,452,429 bytes); the ephemeral runner, the two LXD bootstraps and the native Codex (`9c299f88`) stay.
+- A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
+  a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
+  other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a
+  worker reports its work blocked with the reason, any other agent asks a member on a card (`ask_member`), or in its
+  reply where it has no cards, for the one thing the work needs; the card's answer never lets it repeat the action. A
+  review whose model turn met the provider's rate limit, usage limit or an overload (`CloudActionReviewBusy`) is asked
+  again after 5, 10, 20, 30 and 30 seconds within two minutes before the call is refused; verdicts, invalid verdicts,
+  timeouts and other failures are never asked again. REVIEW_UNAVAILABLE tells the agent to say the step could not be
+  checked just now, never that a safety review was unavailable. Runtime bundle only: no migration, host call, executor
+  or image moves.
 - hire_team's first call no longer fails blind (the founder, 18 Nov 2026: "fix the hire_team first-call refusal"; in both
   companies started on v255 the Co-Founder's first hire_team was refused as bare `INVALID_ARGUMENTS` and its second call
   succeeded). Every refusal of hire_team's and hire_agent's arguments is now a `CloudToolArgumentRefusal` the model
@@ -38,8 +80,6 @@
   `migrate` runs before the switch; #1928's web part is live before it. The guest moves: the native provider host
   (`03ae4570`, 5,443,322 bytes with three.js); the ephemeral runner, the two LXD bootstraps and the native Codex
   (`9c299f88`) stay.
-- The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
-- `save_app` keeps a program version's `userId` (the member who added it from the web, RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026) on the versions it does not touch, through the shared `parseProgram`; an agent's own version never has it, and a hand-in naming it is refused. No migration.
 - The object kit draws a real 3D model, live in the member's browser (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b,
   17 Nov 2026; Jonas: "Yes, all three" on the app-files design page): `object.json`'s `model` (and a variant's) names a
   `.glb` in the app's folder, drawn with three.js 0.186.1 (MIT) and its GLTF loader, which `save_app` writes into the app
