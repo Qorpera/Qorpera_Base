@@ -1,6 +1,6 @@
 -- @fixture 700_folder_state_vision_agents.test.sql until "-- 2. The vision: a new name"
 -- Company state files: an agent's model reaches its runs on folder-v2 (20260930081000). The roster index of agent.md
--- sets the agent's model provider and id from the file's `model`, or gpt-6-astra when it names none; the provider-model
+-- sets the agent's model provider and id from the file's `model`, or gpt-6.2-sol when it names none (20260930803000); the provider-model
 -- mapping follows; and an owner can name an API-key company account as the agent's standing account.
 
 create function pg_temp.model_text(p_id uuid, p_name text, p_model text) returns text language sql as $$
@@ -30,7 +30,7 @@ declare
 	r jsonb; v_mapping_version bigint;
 begin
 	perform pg_temp.same(pg_temp.model_of(cofounder),
-		'{"provider":"openai","model":"gpt-6-astra","mapping":[{"provider":"openai","model":"gpt-6-astra"}]}', 'The seeded Co-Founder');
+		'{"provider":"openai","model":"gpt-6.2-sol","mapping":[{"provider":"openai","model":"gpt-6.2-sol"}]}', 'The seeded Co-Founder');
 	r := pg_temp.commit(pg_temp.owner(), 'model-hire-1', jsonb_build_array(jsonb_build_object('op','new_folder','path','QorperaOS/agents/ada',
 		'contents', jsonb_build_array(jsonb_build_object('path','agent.md','kind','file',
 			'file', pg_temp.stage(pg_temp.model_text(ada, 'Ada', 'gpt-6-sol'))),
@@ -60,7 +60,7 @@ begin
 		pg_temp.version('QorperaOS/agents/ada/agent.md'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.same(pg_temp.model_of(ada),
-		'{"provider":"openai","model":"gpt-6-astra","mapping":[{"provider":"openai","model":"gpt-6-astra"}]}', 'A file without a model');
+		'{"provider":"openai","model":"gpt-6.2-sol","mapping":[{"provider":"openai","model":"gpt-6.2-sol"}]}', 'A file without a model');
 end $$;
 
 -- 2. An owner names an API-key company account as the agent's standing account (it answered 22023 before: the agent had

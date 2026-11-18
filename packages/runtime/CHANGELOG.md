@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+- GPT-6.2 Sol (the founder, 18 November 2026: "update gpt sol 6.1 to sol 6.2, and make that the default gpt model used
+  over astra 6"; contract, the 2026-11-18 amendment; migration `20260930803000`, SQL test 1299). A conversation's Model
+  menu offers GPT-6.2 Sol and GPT-6 Astra (`models`); GPT-6.1 Sol leaves the table and the setter, and conversations on it
+  move to GPT-6.2 Sol. An agent whose agent.md names no model is on GPT-6.2 Sol (the roster index's default and a move of
+  the agents indexed before), so its runs take it on the provider-mapping path; an agent.md that names a model and a
+  member's GPT-6 Astra pick keep theirs. A platform update (`gpt-6-2-sol-default`, kind model) tells the agents. The web
+  lists the models the cloud names, GPT-6.2 Sol first, and still knows GPT-6.1 Sol for a cloud before the migration.
+  Deploy order: the migration may run before or after the bundle; the runtime only adds the update's text. Before the
+  release, a real turn of the pinned Codex (0.155.1, `9c299f88`) on `gpt-6.2-sol` must pass on a Codex login: its built-in
+  catalog does not list the model, and the provider refuses a model newer than the client allows. Way back: a migration
+  that sets the roster rows and the index default back to `gpt-6-astra` (the conversations stay on GPT-6.2 Sol).
 - No cap on an interface app's files (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, 17 Nov 2026; Jonas: "also uncap the file-sizes"): `save_app` writes text files of any kind that is not binary, each as large as one call carries, lists the app's whole folder and releases only what the save drew on, and refuses no app for its count or size; `make_picture` no longer checks an app's room; an explainer's clips have no count bound. `company_write` and `company_edit` take as much text as one call carries (`MAX_TOOL_ARGUMENT_BYTES`, 960 KiB). save_app's words say so, and that fonts, sound and 3D models are files of the app; `PLATFORM_UPDATES` tells the Co-Founder. `MAX_CLOUD_PICTURE_BYTES` stays 12 MiB as the picture lane's own bound.
 - The first team in one step (the founder, 17 November 2026: "on 5, I agree with batch hiring, but we should allow for
   continuous hiring as the company evolves"; contract 14.1, the 2026-11-17 amendment; migration `20260930799000`, SQL

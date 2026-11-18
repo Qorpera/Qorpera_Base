@@ -36,8 +36,14 @@ export function effortName(effort: string): string {
 }
 
 /** How much faster Fast runs each model, from the provider's model catalog. */
-const FAST_SPEEDS: Record<string, number> = { "gpt-6-astra": 2, "gpt-6.1-sol": 2, "gpt-6-sol": 1.5, "gpt-6-luna": 1.5 };
-const FAST_USES_MORE_OF_PLAN: ReadonlySet<string> = new Set(["gpt-6-astra", "gpt-6.1-sol"]);
+const FAST_SPEEDS: Record<string, number> = {
+	"gpt-6.2-sol": 2,
+	"gpt-6-astra": 2,
+	"gpt-6.1-sol": 2,
+	"gpt-6-sol": 1.5,
+	"gpt-6-luna": 1.5,
+};
+const FAST_USES_MORE_OF_PLAN: ReadonlySet<string> = new Set(["gpt-6.2-sol", "gpt-6-astra", "gpt-6.1-sol"]);
 
 /** The caption under the Fast switch for the conversation's model: "1.5x
  * speed", or "1,5x hastighed" in Danish. */

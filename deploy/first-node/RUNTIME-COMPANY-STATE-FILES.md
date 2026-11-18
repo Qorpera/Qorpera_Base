@@ -318,7 +318,7 @@ with a `problem` saying so, and no list.
 | `status` | yes | `active` or `archived` |
 | `colour` | no | charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink, gray (the app's `qorpera-<colour>` tokens). A name is a place in the app's palette, not a promise of a hue: since November 2026 the app paints coral as a red, teal as a sky blue and gray as a slate blue-gray |
 | `figure` | no | `STAFF_CHARACTER_IDS`: planet, acorn, flame, rocket, crown, heart, star, cloud, bolt, mushroom, moon, puzzle. A saved file may still name the retired `ghost`; nothing offers it, and every client draws the moon in its place (20260930709000) |
-| `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: the agent's model for its runs; on a native subscription, a conversation's own choice wins in that conversation; gpt-6-astra when the file names none (20260930081000) |
+| `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: the agent's model for its runs; on a native subscription, a conversation's own choice wins in that conversation; gpt-6.2-sol when the file names none (20260930803000; gpt-6-astra before, 20260930081000) |
 | `effort` | no | low, medium, high: the effort of the agent's runs no member waits on (its own workers, its first run, a coworker's message); none: the model policy's, high (20260930532000). A member's turn and a routine keep their own |
 | body | yes | the instructions (today's charter), up to 32768 bytes trimmed; no control character other than tab and line breaks |
 
@@ -1164,7 +1164,8 @@ agents from the end (`agentsTruncated`), never the Co-Founder's row, which comes
   policy's, high. Work that carries on a chain keeps its first run's effort, a member's turn its conversation's and a
   routine run its routine's.
 - The file's `model` reaches runs (20260930081000, the coordinator's gap of 5 October from A1's ports): the index sets
-  the roster row's model provider (`openai`) and model id, the file's or `gpt-6-astra` when it names none, so the
+  the roster row's model provider (`openai`) and model id, the file's or `gpt-6.2-sol` when it names none (`gpt-6-astra`
+  until 20260930803000), so the
   provider-model mapping follows and the agent's runs take it. A conversation's own model choice wins only on a native
   subscription (`qorpera_execution_run_model_authority`); on an API-key account the agent's model applies. Before, a
   folder-v2 agent had no model of its own: an API-key account could not run it, and an owner could not name an API-key
