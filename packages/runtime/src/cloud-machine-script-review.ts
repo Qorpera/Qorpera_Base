@@ -43,13 +43,19 @@ const FOLDER_WORDS = new Set([
 	"local",
 ]);
 const SOURCED_WORDS = new Set([
-	...[...FOLDER_WORDS].filter((word) => word !== "."),
+	"cd",
+	"pushd",
+	"popd",
+	"eval",
+	"source",
+	"exec",
+	"command",
+	"builtin",
+	"alias",
+	"shopt",
+	"trap",
 	"CDPATH",
-	"HOME",
-	"PWD",
-	"OLDPWD",
-	"BASH_ENV",
-	"ENV",
+	"enable",
 ]);
 const RESERVED = new Set([
 	"if",
@@ -318,14 +324,21 @@ function looksLikeScript(command: string): boolean {
 		.some((part) => part === "source" || part === "." || part.startsWith("./") || runner(part));
 }
 
-export function cloudScriptKeepsFolder(text: string): boolean {
+export function cloudScriptKeepsFolder(file: string): boolean {
+	const text = file
+		.split("\n")
+		.filter((row) => !/^\s*#/.test(row))
+		.join("\n");
 	if (text.split(/[^A-Za-z0-9_]+/).some((token) => SOURCED_WORDS.has(token))) return false;
 	if (/(^|[\n;&|])[ \t]*\.[ \t]/.test(text)) return false;
 	const names = [
 		...[...text.matchAll(/([^\s;&|(){}<>]+)[ \t]*\([ \t]*\)/g)].map((match) => match[1] as string),
 		...[...text.matchAll(/(?:^|[\s;&|])function[ \t]+([^\s;&|(){}<>]+)/g)].map((match) => match[1] as string),
 	];
-	return names.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !runner(name));
+	return names.every(
+		(name) =>
+			/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !runner(name) && !["cd", "pushd", "popd", "source"].includes(name),
+	);
 }
 
 export function cloudCommandScripts(

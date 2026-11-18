@@ -389,24 +389,43 @@ describe("the files a machine command runs", () => {
 			notShown: ["main.py: the folder it is in could not be told"],
 		});
 		expect(cloudScriptKeepsFolder("VIRTUAL_ENV=/srv/app/.venv\ndeactivate () {\n  VIRTUAL_ENV=\n}\n")).toBe(true);
-		expect(cloudScriptKeepsFolder(VENV_ACTIVATE)).toBe(false);
+		expect(cloudScriptKeepsFolder(VENV_ACTIVATE)).toBe(true);
+		expect(
+			cloudCommandScripts(command, undefined, new Set(cloudScriptKeepsFolder(VENV_ACTIVATE) ? [activate] : [])),
+		).toEqual({
+			files: [
+				{ path: activate, mentioned: false },
+				{ path: "/srv/app/main.py", mentioned: false },
+			],
+			notShown: [],
+		});
+		for (const text of [
+			"# cd /elsewhere\nREADY=1\n",
+			"  # pushd /a\n",
+			"export X=1\nunset Y\nhash -r\nset -u\ndeclare -x Z\ntypeset W\nreadonly V\nlocal U\n",
+			"HOME=/safe\nPWD=/safe\n",
+		])
+			expect(cloudScriptKeepsFolder(text), text).toBe(true);
 		for (const text of [
 			"cd /srv\n",
 			"{cd,/safe}\n",
 			"x=1; pushd /a\n",
 			"source ./more.sh\n",
 			". ./more.sh\n",
-			"export X=1\n",
-			"HOME=/safe\n",
-			"PWD=/safe\nOLDPWD=/safe\n",
 			"CDPATH=/elsewhere\n",
+			"export CDPATH=/x\n",
+			"true # cd\n",
+			"cd /x\n",
+			". ./other.sh\n",
+			"x=1; . ./other.sh\n",
+			"cd() { :; }\n",
+			"source() { :; }\n",
 			"shopt -s expand_aliases\n",
 			"python3() { :; }\n",
 			"deno() { :; }\n",
 			"/usr/bin/python3() { :; }\n",
 			"function node { :; }\n",
 			"a-b() { :; }\n",
-			"# cd\n",
 		])
 			expect(cloudScriptKeepsFolder(text), text).toBe(false);
 	});
