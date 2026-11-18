@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	appNoteAbout,
 	appNoteHeader,
-	appNoteText,
+	appNoteLine,
 	pageNoteLine,
 	splitAppNote,
 	splitReply,
@@ -30,13 +30,13 @@ describe("a message that opens with a quoted line", () => {
 
 describe("a note from an app's page", () => {
 	it("opens with the app, the thing and what it is about, then the member's words, and reads back the same", () => {
-		const text = appNoteText("orders-board", "1043", "Lund, A", "Get a quote.\n\nBy Friday.");
+		const text = withReply(appNoteLine("orders-board", "1043", "Lund, A"), "Get a quote.\n\nBy Friday.", 0);
 		expect(text).toBe("> app:orders-board#1043 · Lund, A\n\nGet a quote.\n\nBy Friday.");
 		const reply = splitReply(text);
 		expect(reply?.text).toBe("Get a quote.\n\nBy Friday.");
 		expect(appNoteHeader(reply?.question ?? "")).toEqual({ app: "orders-board", at: "1043", about: "Lund, A" });
 		// With no thing named; and what it is about may hold the separator itself.
-		expect(appNoteText("roadmap", null, "Ship · Q1", "Why?")).toBe("> app:roadmap · Ship · Q1\n\nWhy?");
+		expect(appNoteLine("roadmap", null, "Ship · Q1")).toBe("app:roadmap · Ship · Q1");
 		expect(appNoteHeader("app:roadmap · Ship · Q1")).toEqual({ app: "roadmap", at: null, about: "Ship · Q1" });
 		expect(appNoteHeader("app:path#lane:step.2_b-1 · Step 2 · Lane B")).toEqual({
 			app: "path",

@@ -148,7 +148,6 @@ describe("interaction cards", () => {
 		const readOnly = renderInteractionCard(secret, context());
 		expect(readOnly.querySelector("input")).toBeNull();
 		expect(readOnly.textContent).toContain("Saving a secret to the company vault is unavailable here.");
-		expect(readOnly.textContent).not.toContain("newer version");
 		const pills = [...readOnly.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
 		expect(pills.map((pill) => pill.textContent)).toEqual(["Decline"]);
 	});
@@ -192,8 +191,6 @@ describe("interaction cards", () => {
 		const card = renderInteractionCard(item(request), ctx);
 		expect(card.textContent).toContain("Website: shop.example");
 		expect(card.textContent).toContain("Filling a webpage through this card is unavailable.");
-		expect(card.textContent).not.toContain("Filled on the computer");
-		expect(card.textContent).not.toContain("newer version");
 		expect(card.querySelector("input, select, textarea")).toBeNull();
 		const actions = [...card.querySelectorAll<HTMLButtonElement>("button")];
 		expect(actions.map((action) => action.textContent)).toEqual(["Skip"]);
@@ -223,7 +220,6 @@ describe("interaction cards", () => {
 					? "Signing in to accounts.example through this card is unavailable."
 					: "Signing in through this card is unavailable.",
 			);
-			expect(card.textContent).not.toContain("Nothing to do here");
 			expect(card.querySelector("button, input")).toBeNull();
 			expect(ctx.answer).not.toHaveBeenCalled();
 		},

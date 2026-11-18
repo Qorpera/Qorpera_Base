@@ -150,7 +150,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} is writing": "{name} skriver",
 	"{name} is using its computer": "{name} bruger sin computer",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
-	"No progress": "Ingen fremgang",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
 	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
@@ -381,26 +380,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Sent without waking the coworker": "Sendt uden at vække kollegaen",
 	"Left for {name}'s next turn": "Til {name} ved næste tur",
 
-	// The run status line (app/views/session-run.ts)
-	"Cloud run": "Kørsel i skyen",
-	"Cloud run status is unavailable.": "Status for kørslen i skyen er ikke tilgængelig.",
-	"Cloud run status is unavailable. Refresh to try again.":
-		"Status for kørslen i skyen er ikke tilgængelig. Opdater for at prøve igen.",
-	"Checking cloud run…": "Tjekker kørsel i skyen…",
-	"Cloud run queued.": "Kørsel i skyen er i kø.",
-	"Cloud run in progress.": "Kørsel i skyen er i gang.",
-	"No active cloud run.": "Ingen aktiv kørsel i skyen.",
-	"Stop could not be confirmed. Refresh run status before trying again.":
-		"Stop kunne ikke bekræftes. Opdater kørselsstatus, før du prøver igen.",
-	"Stopping selected cloud run…": "Stopper den valgte kørsel i skyen…",
-	"Refresh run status": "Opdater kørselsstatus",
 	Refresh: "Opdater",
-	"Stop cloud run": "Stop kørsel i skyen",
-	"Stop run": "Stop kørsel",
 
 	// The model account (app/views/session-execution.ts)
 	"Model accounts are unavailable. Trying again…": "Modelkonti er ikke tilgængelige. Prøver igen…",
-	"Execution history is unavailable.": "Kørselshistorikken er ikke tilgængelig.",
 	"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.":
 		"Prøv igen bruger den samme modelkonto og beskedanmodning. Den tidligere besked kan allerede være modtaget. En ny anmodning kan sende den igen.",
 	"Start a new message request": "Start en ny beskedanmodning",

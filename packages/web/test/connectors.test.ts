@@ -214,17 +214,6 @@ describe("connector client", () => {
 		).rejects.toThrow("cannot be finished here");
 	});
 
-	it("captures a typed GitHub token at the company's broker with the company in the query", async () => {
-		const cloud = cloudWith(() => ticket);
-		const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({}));
-		await createWebConnectors(cloud, profile, fetch).captureToken("github", "github_pat_value", undefined);
-		expect(cloud.rpc).toHaveBeenCalledWith(
-			"qorpera_begin_cloud_secret_capture",
-			expect.objectContaining({ p_owner_kind: "company", p_owner_user_id: null, p_connector_id: "github" }),
-		);
-		expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/captures/${id(20)}?company=${id(10)}`);
-	});
-
 	it("refuses a ticket whose id is not a UUID before any request leaves", async () => {
 		const cloud = cloudWith(() => ({ ...ticket, ticketId: "../../v1/operations" }));
 		const fetch = vi.fn<typeof globalThis.fetch>();

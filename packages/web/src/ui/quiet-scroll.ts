@@ -1,8 +1,5 @@
 import { smoothWheel } from "./smooth-wheel.ts";
 
-/** How far a quiet scroller's top fade reaches, in design pixels; app.css draws it the same size. */
-export const QUIET_SCROLL_FADE = 8;
-
 /**
  * Marks a scroller that hides its bar, like Messages. The bar's job as the cue that content
  * continues above passes to a fade at the top edge, which `.scroll-quiet[data-scrolled]` in
