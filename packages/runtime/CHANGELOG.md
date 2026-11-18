@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
 - The review reads the script a machine command starts with (2026-11-17 amendment "the review reads the script it
   judges", brief A of the mywave review; its refusal and retry parts came first in #1942). Only a plain command is
   looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing bash would
@@ -71,7 +72,6 @@
   `migrate` runs before the switch; #1928's web part is live before it. The guest moves: the native provider host
   (`03ae4570`, 5,443,322 bytes with three.js); the ephemeral runner, the two LXD bootstraps and the native Codex
   (`9c299f88`) stay.
-- The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
 - The object kit draws a real 3D model, live in the member's browser (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b,
   17 Nov 2026; Jonas: "Yes, all three" on the app-files design page): `object.json`'s `model` (and a variant's) names a
   `.glb` in the app's folder, drawn with three.js 0.186.1 (MIT) and its GLTF loader, which `save_app` writes into the app
