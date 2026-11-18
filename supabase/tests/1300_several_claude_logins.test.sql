@@ -199,6 +199,25 @@ select pg_temp.base_assert((pg_temp.sc_listed('13000000-0000-4000-8000-000000000
 	between statement_timestamp() + interval '59 minutes' and statement_timestamp() + interval '1 hour',
 	'4: a full 5-hour window is used up until it resets');
 reset role;
+update public.qorpera_claude_logins set usage = jsonb_build_object('observedAt', '2026-11-18T11:00:00Z',
+	'limitResetAt', to_char((statement_timestamp() + interval '2 hours') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+	'limitType', 'seven_day_opus', 'windows', jsonb_build_array(jsonb_build_object('id', 'five_hour', 'label', '5 hours',
+		'usedPercent', 40)))
+where id = '13000000-0000-4000-8000-0000000000a3';
+select pg_temp.base_claims('authenticated', pg_temp.sc_owner());
+set local role authenticated;
+select pg_temp.base_assert(pg_temp.sc_listed('13000000-0000-4000-8000-0000000000a3') -> 'usedUpUntil' = 'null'::jsonb,
+	'4: a run refused by one model''s weekly limit leaves the login room');
+reset role;
+update public.qorpera_claude_logins set usage = jsonb_set(usage, '{limitType}', '"five_hour"')
+where id = '13000000-0000-4000-8000-0000000000a3';
+select pg_temp.base_claims('authenticated', pg_temp.sc_owner());
+set local role authenticated;
+select pg_temp.base_assert((pg_temp.sc_listed('13000000-0000-4000-8000-0000000000a3') ->> 'usedUpUntil')::timestamptz
+	> statement_timestamp() + interval '119 minutes', '4: a run refused by the 5-hour limit uses the login up');
+reset role;
+select pg_temp.base_assert(pg_temp.sc_try($q$update public.qorpera_claude_logins set usage = usage - 'limitResetAt'
+	where id = '13000000-0000-4000-8000-0000000000a3'$q$) like '23514:%', '4: a limit type names a limit''s end');
 
 select pg_temp.base_claims('service_role');
 select pg_temp.c4_login('13000000-0000-4000-8000-0000000000b9', '92400000-0000-4000-8000-000000000002', 'canary-other')
@@ -360,5 +379,44 @@ select pg_temp.base_assert(pg_temp.sc_try($q$select public.qorpera_sign_out_clau
 	'13000000-0000-4000-8000-0000000000a5')::text$q$) = 'ok', '8: the last login signs out plainly');
 select pg_temp.base_assert(jsonb_array_length(pg_temp.sc_list()) = 0, '8: nothing is listed');
 reset role;
-set constraints public.qorpera_claude_logins_in_use_held immediate;
 select pg_temp.base_assert(pg_temp.sc_in_use(pg_temp.sc_owner()) is null, '8: nothing is In use with no login');
+select pg_temp.base_claims('authenticated', pg_temp.sc_owner());
+set local role authenticated;
+select pg_temp.base_assert(pg_temp.sc_begin(repeat('9', 64)) = 'ok', '9: sign-in 6 begins');
+select set_config('qorpera_test.sc_in', pg_temp.sc_last() ->> 'login_id', true) \g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+set local session authorization qorpera_secret_broker;
+select pg_temp.base_assert(pg_temp.sc_complete(current_setting('qorpera_test.sc_in'), repeat('9', 64),
+	'13000000-0000-4000-8000-0000000000a6', 'known@example.test') = 'ok', '9: a known account signs in');
+reset session authorization;
+select pg_temp.base_claims('authenticated', pg_temp.sc_owner());
+set local role authenticated;
+select pg_temp.base_assert(pg_temp.sc_begin(repeat('a', 64)) = 'ok', '9: sign-in 7 begins');
+select set_config('qorpera_test.sc_in', pg_temp.sc_last() ->> 'login_id', true) \g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+set local session authorization qorpera_secret_broker;
+select pg_temp.base_assert(pg_temp.sc_complete(current_setting('qorpera_test.sc_in'), repeat('a', 64),
+	'13000000-0000-4000-8000-0000000000a7', null) = 'ok', '9: an account without an email joins');
+reset session authorization;
+select pg_temp.base_claims('authenticated', pg_temp.sc_owner());
+set local role authenticated;
+select pg_temp.base_assert(pg_temp.sc_begin(repeat('b', 64)) = 'ok', '9: sign-in 8 begins');
+select set_config('qorpera_test.sc_in', pg_temp.sc_last() ->> 'login_id', true) \g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+set local session authorization qorpera_secret_broker;
+select pg_temp.base_assert(pg_temp.sc_complete(current_setting('qorpera_test.sc_in'), repeat('b', 64),
+	'13000000-0000-4000-8000-0000000000a8', null) = 'ok', '9: an account without an email signs in again');
+reset session authorization;
+do $$
+begin
+	perform pg_temp.base_assert((pg_temp.sc_login('13000000-0000-4000-8000-0000000000a7')).status = 'revoked'
+		and (pg_temp.sc_login('13000000-0000-4000-8000-0000000000a8')).status = 'active'
+		and not (pg_temp.sc_login('13000000-0000-4000-8000-0000000000a8')).in_use
+		and (pg_temp.sc_login('13000000-0000-4000-8000-0000000000a6')).status = 'active'
+		and (pg_temp.sc_login('13000000-0000-4000-8000-0000000000a6')).in_use,
+		'9: an unknown email replaces an unknown email and keeps its state; the known login is untouched');
+end $$;
+set constraints public.qorpera_claude_logins_in_use_held immediate;

@@ -69,10 +69,38 @@ select pg_temp.scl_replace('public.qorpera_complete_claude_login_sign_in(uuid,te
 		where owner_user_id = v_identity.owner_user_id and status = 'active'
 			and lower(provider_account_email) is not distinct from lower(nullif(btrim(p_provider_account_email), ''));$new$);
 
+create or replace function public.qorpera_claude_usage_valid(p_usage jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+	select jsonb_typeof(p_usage) = 'object'
+		and octet_length(p_usage::text) <= 4096
+		and (select coalesce(bool_and(key in ('observedAt', 'windows', 'limitResetAt', 'limitType')), false)
+			from jsonb_object_keys(p_usage) as key)
+		and jsonb_typeof(p_usage -> 'observedAt') = 'string'
+		and p_usage ->> 'observedAt' ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$'
+		and (not p_usage ? 'limitResetAt' or (jsonb_typeof(p_usage -> 'limitResetAt') = 'string'
+			and p_usage ->> 'limitResetAt' ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$'))
+		and (not p_usage ? 'limitType' or (p_usage ? 'limitResetAt' and jsonb_typeof(p_usage -> 'limitType') = 'string'
+			and p_usage ->> 'limitType' ~ '^[a-z0-9_]{1,40}$'))
+		and jsonb_typeof(p_usage -> 'windows') = 'array'
+		and jsonb_array_length(p_usage -> 'windows') between 1 and 4
+		and not exists (select 1 from jsonb_array_elements(p_usage -> 'windows') as item(window_row)
+			where jsonb_typeof(item.window_row) <> 'object'
+				or exists (select 1 from jsonb_object_keys(item.window_row) as key
+					where key not in ('id', 'label', 'usedPercent', 'resetAt'))
+				or coalesce(item.window_row ->> 'id', '') not in ('five_hour', 'seven_day', 'seven_day_model')
+				or jsonb_typeof(item.window_row -> 'label') <> 'string'
+				or char_length(item.window_row ->> 'label') not between 1 and 64
+				or jsonb_typeof(item.window_row -> 'usedPercent') <> 'number'
+				or (item.window_row ->> 'usedPercent')::numeric not between 0 and 100
+				or (item.window_row ? 'resetAt' and (jsonb_typeof(item.window_row -> 'resetAt') <> 'string'
+					or item.window_row ->> 'resetAt' !~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$')))
+$$;
+
 create function public.qorpera_claude_login_used_up_until(p_login public.qorpera_claude_logins)
 returns timestamptz language sql stable security definer set search_path = '' as $$
 	select greatest(
 		case when (p_login.usage ->> 'limitResetAt')::timestamptz > statement_timestamp()
+			and coalesce(p_login.usage ->> 'limitType', 'five_hour') in ('five_hour', 'seven_day')
 			then (p_login.usage ->> 'limitResetAt')::timestamptz end,
 		(select max((item.window_row ->> 'resetAt')::timestamptz)
 			from jsonb_array_elements(coalesce(p_login.usage -> 'windows', '[]'::jsonb)) as item(window_row)
