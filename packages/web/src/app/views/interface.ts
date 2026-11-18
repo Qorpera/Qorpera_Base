@@ -16,51 +16,31 @@ import {
 	INTERFACE_OUTSIDE_VALUES_MAX,
 	INTERFACE_QUOTE_SOURCES,
 	type InterfaceBlock,
-	type InterfaceBoardPart,
 	type InterfaceFile,
 	type InterfaceQuery,
 	interfaceOutsideColumns,
-	type TableFile,
 	type TableRow,
 	type TableValue,
-	tableRowKey,
 } from "@qorpera/cloud-client/interfaces";
 import { describeError } from "../../cloud/client.ts";
-import { WebCompanyFolderRejectedError } from "../../cloud/company-folder-writes.ts";
-import type { MemberInterfaceOffer } from "../../cloud/interface-offers.ts";
-import type { MemberInterfaceSupervision } from "../../cloud/interface-supervisions.ts";
 import { type MessageQuote, QUOTE_MAX_CHARACTERS, quoteRefFits } from "../../cloud/quotes.ts";
-import type { HostedProfileRole, HostedStaffAgent } from "../../cloud/types.ts";
+import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { boardDrag } from "../../ui/board-drag.ts";
-import { button, fmtTime, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
+import { button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../../ui/layout.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
-import { CompanyMail, type MailList, type MailListRequest } from "../company-mail.ts";
 import { DATA_PAGE } from "../data-page.ts";
-import { AgentInAreaError, addArea, agentList, setAreaAgents } from "../interface-areas.ts";
-import { type BoardLane, boardLanes } from "../interface-board.ts";
-import { type ClaimVerb, claimFailure, claimTableCell, type InterfaceWrites } from "../interface-claims.ts";
+import type { InterfaceWrites } from "../interface-claims.ts";
 import type { FolderProblem } from "../interface-folder.ts";
-import {
-	isAccountMail,
-	isMailSource,
-	mailList,
-	mailRequest,
-	mailRows,
-	mailSummary,
-	openedMailRow,
-	rowThread,
-} from "../interface-mail.ts";
+import { isAccountMail } from "../interface-mail.ts";
 import {
 	blockButtons,
 	companyInterface,
 	companyInterfaces,
 	type DrawnButton,
-	drawnParts,
 	type InterfaceRow,
 	idColumn,
 	interfaceRows,
@@ -68,11 +48,7 @@ import {
 	interfaceViews,
 	isLiveSource,
 	leaverName,
-	memberIds,
-	memberMayWriteRows,
-	memberOffers,
 	namesLeaver,
-	offeredRow,
 	QUOTE_RECORD_COLUMNS,
 	rowHasCard,
 	tableDefinition,
@@ -82,21 +58,22 @@ import {
 import type { QuotedText } from "../quotes.ts";
 import { renderBank } from "./bank.ts";
 import { renderData } from "./data.ts";
-import {
-	type BlockExtra,
-	type CalendarSource,
-	calendarColumn,
-	calendarDays,
-	calendarQuery,
-	drawExtraBlock,
-	folderCellLabel,
-	folderColumnLabel,
-	numberTiles,
-} from "./interface-blocks.ts";
-import { type ListText, mailListFooter, mailListText, mailThreadParts, outside, unreadMark } from "./interface-mail.ts";
+import { textBlock } from "./interface-blocks.ts";
 import { renderMailbox } from "./mailbox.ts";
 import { renderMembers } from "./members.ts";
-import { roleLabel } from "./team.ts";
+
+/** Marks an element as holding words from outside the company (§4): a quiet tint, and a title that says so. */
+function outside<T extends HTMLElement>(element: T): T {
+	element.classList.add("interface-outside");
+	element.title = t("From outside the company");
+	return element;
+}
+
+/** A list line's words, and whether they came from outside. */
+interface ListText {
+	readonly text: string;
+	readonly outside: boolean;
+}
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
  * page, so a redraw is skipped only while that element is still the one on screen. */
@@ -179,22 +156,6 @@ interface PageState {
 	errors: number;
 	/** The message buttons whose thread is still opening: they stay disabled through redraws. */
 	pending: string[];
-	/** The board cards whose take or release is on its way, by card, with their holder cell as it was (as JSON). A card
-	 * stays where it was, saving, until its save lands and the board shows the change (or a little after the save). An
-	 * accept keeps the offer it answers: its line stays on the card till then, though the save settled it (step I9c). */
-	claiming: Record<
-		string,
-		{ readonly was: string; readonly landed: boolean; readonly offer?: MemberInterfaceOffer | undefined }
-	>;
-	/** The board card whose Offer lists the members it may go to (step I9c), by block and card. */
-	offering: string | null;
-	/** The area cards the member took or accepted here, which ask whether they supervise its agents too (step I9b), by
-	 * card. */
-	askSupervise: string[];
-	/** The area the member is adding, as typed so far, while its form is open (Interfaces C6d). */
-	areaDraft: { area: string; about: string } | null;
-	/** The area whose Add an agent lists the agents it may add, by its row's key (Interfaces C6d). */
-	addingAgents: string | null;
 	/** A refused save's problems, listed under the error. */
 	errorProblems: string[];
 	/** A control the next draw focuses: the tab an arrow key chose, the Back button or the row a detail closed to. */
@@ -213,11 +174,6 @@ function pageState(key: string): PageState {
 			errorShown: false,
 			errors: 0,
 			pending: [],
-			claiming: {},
-			offering: null,
-			askSupervise: [],
-			areaDraft: null,
-			addingAgents: null,
 			errorProblems: [],
 			focus: null,
 		};
@@ -235,8 +191,6 @@ function domId(...parts: string[]): string {
 
 /** The platform's column names, in the member's language. A table's own columns are the company's words. */
 function columnLabel(source: string, column: string): string {
-	const folder = folderColumnLabel(source, column);
-	if (folder !== undefined) return folder;
 	if (isLiveSource(source)) {
 		const label: Record<string, () => string> = {
 			agent: () => t("Agent"),
@@ -246,31 +200,6 @@ function columnLabel(source: string, column: string): string {
 			title: () => t("Title"),
 			from: () => t("From"),
 			due: () => t("Due"),
-			...(source === "mail" || source === "mail_addresses"
-				? {
-						thread: () => t("Thread"),
-						address: () => t("Address"),
-						from_name: () => t("From"),
-						from_address: () => t("From address"),
-						subject: () => t("Subject"),
-						last_at: () => t("Last message"),
-						state: () => t("State"),
-						handled_by: () => t("Handled by"),
-						direction: () => t("Direction"),
-						unread: () => t("Unread"),
-						routine: () => t("Routine"),
-						last_7_days: () => t("Last 7 days"),
-					}
-				: {}),
-			...(source === "members"
-				? {
-						id: () => t("Member"),
-						name: () => t("Name"),
-						picture: () => t("Picture"),
-						role: () => t("Role"),
-						here: () => t("Here now"),
-					}
-				: {}),
 		};
 		const known = label[column];
 		if (known) return known();
@@ -288,12 +217,10 @@ function kindLabel(kind: string): string {
 		question: () => t("Question"),
 		mail: () => t("Email"),
 		task: () => t("Task"),
-		offer: () => t("Offer"),
 	};
 	return label[kind]?.() ?? kind;
 }
 
-/** `writes` lets a board take and release cards (step I9a); without it the page draws no take or release. */
 export function renderInterface(
 	container: HTMLElement,
 	company: CompanyController,
@@ -363,14 +290,7 @@ export function renderInterface(
 	}
 	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the page was switched
 	// off) finds the page again, so a page switched off is never drawn.
-	renderInterfaceFile(
-		container,
-		company,
-		name,
-		entry.file,
-		() => renderInterface(container, company, name, writes),
-		writes,
-	);
+	renderInterfaceFile(container, company, name, entry.file, () => renderInterface(container, company, name, writes));
 }
 
 /** Each definition as JSON, made once: a page is drawn again whenever anything it is drawn from changes. */
@@ -410,41 +330,7 @@ interface DrawnBlock {
 	readonly readable: boolean;
 	/** The source's own problems: a table's rows that don't fit its definition, or why it can't be read. */
 	readonly problems: readonly FolderProblem[];
-	/** A board's parts drawn and its lanes. */
-	readonly board?: { readonly parts: readonly DrawnPart[]; readonly lanes: readonly BoardLane[] };
-	/** A block from `mail`: the list its view reads (undefined while it is being read). */
-	readonly mail?: { readonly request: MailListRequest; readonly list: MailList | undefined };
-	/** A numbers block's tiles or a calendar's days (views/interface-blocks.ts). */
-	readonly extra?: BlockExtra;
-	/** A calendar's sources as drawn, each with its rows. */
-	readonly calendar?: readonly CalendarSource[];
 }
-
-/** One board part as drawn: its table's rows, as the block's query keeps them, and what the member may do with them. */
-interface DrawnPart {
-	/** Its place among the block's parts. */
-	readonly index: number;
-	readonly part: InterfaceBoardPart;
-	readonly source: string;
-	/** Its table's folder name, for a part from a table. */
-	readonly table: string | null;
-	readonly definition: TableFile | null;
-	readonly rows: readonly InterfaceRow[];
-	/** The detail its cards open, when that detail is drawn in this view. */
-	readonly opens: string | null;
-	readonly nameOf: (column: string, value: unknown) => string;
-	readonly readable: boolean;
-	readonly problems: readonly FolderProblem[];
-	/** Whether the member may change its table's rows (`[write] members`). */
-	readonly mayWrite: boolean;
-}
-
-/** A card's name on the page: its part and its row. */
-const cardKey = (part: DrawnPart, item: InterfaceRow) => `${part.index}:${item.key}`;
-
-/** A card's holder cell as JSON, as a claim remembers it. */
-const holderCell = (part: DrawnPart, item: InterfaceRow) =>
-	JSON.stringify(part.definition?.holder ? (item.row[part.definition.holder] ?? null) : null);
 
 /** Draws an interface definition. `renderInterface` finds the definition, and finds it again for every redraw the
  * page asks for (`redraw`); tests pass one directly, and redraw that one. */
@@ -454,9 +340,8 @@ export function renderInterfaceFile(
 	name: string,
 	file: InterfaceFile,
 	again?: () => void,
-	writes?: InterfaceWrites,
 ): void {
-	const redraw = again ?? (() => renderInterfaceFile(container, company, name, file, undefined, writes));
+	const redraw = again ?? (() => renderInterfaceFile(container, company, name, file));
 	const state = company.store.get();
 	const profileId = company.profile.profileId;
 	const locale = presentationLocale();
@@ -537,10 +422,7 @@ export function renderInterfaceFile(
 	) => {
 		const time = interfaceSource(company, source)?.time ?? null;
 		// A view built from another narrows the rows first; the block's own query then filters, orders and limits them.
-		// A `mail` block reads the threads its view asks the threads call for, and narrows them here like any rows.
-		let rows =
-			(source === "mail" ? mailRows(company, mailRequest(narrow, query.where)) : interfaceRows(company, source)) ??
-			[];
+		let rows = interfaceRows(company, source) ?? [];
 		for (const where of narrow) {
 			const kept = new Set(
 				queryInterfaceRows(
@@ -561,91 +443,15 @@ export function renderInterfaceFile(
 		).flatMap((row) => byRow.get(row) ?? []);
 	};
 	const details = new Set(
-		view.blocks.flatMap(({ block }) =>
-			(block.kind === "detail" || block.kind === "mail") && block.id !== null ? [block.id] : [],
-		),
+		view.blocks.flatMap(({ block }) => (block.kind === "detail" && block.id !== null ? [block.id] : [])),
 	);
 	const nameOf = namesFor("");
-	// A board's lanes are the company's members now; a holder who left is named where presence still knows them.
-	const people = {
-		viewer: company.userId,
-		members: (state.team?.members ?? []).map((member) => ({
-			id: member.userId,
-			name: member.displayName || member.email,
-		})),
-		formerName: (id: string) => state.here?.find((present) => present.userId === id)?.name || undefined,
-	};
-	const boardOf = ({ block, narrow }: ViewBlock): DrawnBlock["board"] => {
-		const parts = drawnParts(block, company, narrow).map(({ part, index }): DrawnPart => {
-			const read = interfaceSource(company, part.from);
-			const definition = tableDefinition(company, part.from);
-			return {
-				index,
-				part,
-				source: part.from,
-				table: part.from.startsWith("table:") ? part.from.slice("table:".length) : null,
-				definition,
-				rows: sourceRows(part.from, narrow, block.query),
-				opens: part.opens !== null && details.has(part.opens) ? part.opens : null,
-				nameOf: namesFor(part.from),
-				readable: read?.readable ?? true,
-				problems: read?.problems ?? [],
-				mayWrite: definition !== null && memberMayWriteRows(company, definition),
-			};
-		});
-		const lanes = boardLanes(
-			block,
-			parts.map(({ definition, rows }) => ({ table: definition, rows })),
-			people,
-		);
-		return { parts, lanes };
-	};
-	const mailOf = (request: MailListRequest) => ({ request, list: mailList(company, request) });
-	/** A calendar's sources: those it can read that have every column its view narrows by (§3.2, proposed). */
-	const calendarOf = ({ block, narrow }: ViewBlock): CalendarSource[] =>
-		block.from.flatMap((from) => {
-			const read = interfaceSource(company, from);
-			if (!read || !narrow.every((where) => Object.keys(where).every((column) => read.columns.includes(column))))
-				return [];
-			const definition = tableDefinition(company, from);
-			const kind = from === "routines" ? t("Routine") : from === "human_tasks" ? t("Task") : definition?.name;
-			return [
-				{
-					source: from,
-					rows: sourceRows(from, narrow, calendarQuery(block, read.columns)),
-					column: calendarColumn(read.time, definition),
-					kind: kind ?? from,
-					agent: read.columns.find((column) => idColumn(company, from, column) === "agent") ?? null,
-					definition,
-				},
-			];
-		});
 	const blocks: DrawnBlock[] = view.blocks.map((shown, index) => {
 		const { block } = shown;
 		const key = block.id ?? `${view.name}#${index}`;
 		const source = block.from[0] ?? "";
-		const board = block.kind === "board" ? boardOf(shown) : undefined;
-		const calendar = block.kind === "calendar" ? calendarOf(shown) : undefined;
-		const rows = board || calendar ? [] : sourceRows(source, shown.narrow, block.query, block);
+		const rows = sourceRows(source, shown.narrow, block.query, block);
 		const read = interfaceSource(company, source);
-		// A calendar can be read while one of its sources can; it lists every source's problems.
-		const reads = calendar ? calendar.map((part) => interfaceSource(company, part.source)) : [read];
-		// A numbers block's tiles are its query's rows; their change and trend come from every row its query keeps.
-		const all = { ...block.query, order: null, limit: null, latestBy: null };
-		const extra: BlockExtra | undefined =
-			block.kind === "numbers"
-				? {
-						kind: "numbers",
-						tiles: numberTiles(block, rows, sourceRows(source, shown.narrow, all), {
-							time: read?.time ?? null,
-							definition: tableDefinition(company, source),
-							nameOf: namesFor(source),
-							now: clock.now,
-						}),
-					}
-				: calendar
-					? { kind: "calendar", days: calendarDays(block, calendar, clock.now) }
-					: undefined;
 		const drawn = {
 			block,
 			source,
@@ -654,23 +460,12 @@ export function renderInterfaceFile(
 			// A row opens only into a detail drawn here; otherwise it keeps its own link.
 			opens: block.opens !== null && details.has(block.opens) ? block.opens : null,
 			nameOf: namesFor(source),
-			readable: reads.length === 0 || reads.some((candidate) => candidate?.readable ?? true),
-			problems: reads.flatMap((candidate) => candidate?.problems ?? []),
-			...(board ? { board } : {}),
-			...(source === "mail" && block.kind !== "mail"
-				? { mail: mailOf(mailRequest(shown.narrow, block.query.where)) }
-				: {}),
-			...(extra ? { extra } : {}),
-			...(calendar ? { calendar } : {}),
+			readable: read?.readable ?? true,
+			problems: read?.problems ?? [],
 		};
-		if ((block.kind !== "detail" && block.kind !== "mail") || block.id === null) return drawn;
+		if (block.kind !== "detail" || block.id === null) return drawn;
 		const opened = page.open[block.id];
-		// An open thread stays open when its view's list no longer holds it (a send answered under "Waiting for you").
-		const open =
-			opened === undefined
-				? undefined
-				: (rows.find((row) => row.key === opened) ??
-					(block.kind === "mail" ? openedMailRow(company, opened) : undefined));
+		const open = opened === undefined ? undefined : rows.find((row) => row.key === opened);
 		return { ...drawn, ...(open ? { open } : {}) };
 	});
 	// A part-width block whose neighbours have no source today stands alone, so it takes the whole row.
@@ -686,12 +481,8 @@ export function renderInterfaceFile(
 			(id): id is string => id !== null && !id.startsWith("{") && id !== "co-founder",
 		),
 	);
-	const drawnSources = blocks.flatMap(
-		({ source, rows, board, calendar }): { source: string; rows: readonly InterfaceRow[] }[] =>
-			board ? [...board.parts] : calendar ? [...calendar] : [{ source, rows }],
-	);
 	const named = (want: "agent" | "member") =>
-		drawnSources.flatMap(({ source, rows }) =>
+		blocks.flatMap(({ source, rows }) =>
 			rows.flatMap(({ row }) =>
 				Object.entries(row).flatMap(([column, value]): string[] => {
 					const ids = idColumn(company, source, column);
@@ -708,52 +499,11 @@ export function renderInterfaceFile(
 	const memberNames = [...new Set(named("member"))].map((id) => [id, memberName(id)]);
 	const live = state.realtime === "connected";
 	const canWrite = state.team?.capabilities.write === true;
-	// Offers are drawn only where the page can make and answer them, once they are read (step I9c); one from someone
-	// who left is not (Interfaces C6d).
-	const offers = (writes?.offers && memberOffers(company)) || null;
-	// An area's supervision is drawn the same way, once its consents are read (step I9b).
-	const supervisions = writes?.offers && state.interfaceOffers ? state.interfaceOffers.supervisions : null;
-	const areas = supervisions === null ? null : tableDefinition(company, AREAS_SOURCE);
 	const listed = companyInterfaces(company).map((entry) => entry.name);
 	const cofounder = company.cofounderId();
 	const moveFocus = page.focus ?? undefined;
 	page.focus = null;
-	// A card whose save landed is drawn where it was until the board shows the change; then it is drawn as it is.
-	const cards = new Map(
-		blocks.flatMap(({ board }) =>
-			(board?.parts ?? []).flatMap((part) => part.rows.map((item) => [cardKey(part, item), holderCell(part, item)])),
-		),
-	);
-	page.claiming = Object.fromEntries(
-		Object.entries(page.claiming).filter(([card, claim]) => !claim.landed || cards.get(card) === claim.was),
-	);
-	// An area the member took here asks whether they supervise its agents too while it can (step I9b): while its take
-	// lands, and its Supervise is on its way, it waits.
-	const reads = { company, supervisions, ...(writes ? { writes } : {}) };
-	const asking = new Set(
-		blocks.flatMap(({ board }) =>
-			(board?.parts ?? []).flatMap((part) =>
-				part.rows.flatMap((item) => {
-					const card = cardKey(part, item);
-					if (!page.askSupervise.includes(card)) return [];
-					if (Object.hasOwn(page.claiming, card)) return [card];
-					const area = areaSupervision(reads, part.source, item.row);
-					if (area === null) return [];
-					const asks =
-						page.pending.includes(superviseBusy(area)) || asksToSupervise(part, item, area, company.userId);
-					return asks ? [card] : [];
-				}),
-			),
-		),
-	);
-	page.askSupervise = page.askSupervise.filter((card) => asking.has(card));
 	const hasOpen = blocks.some((drawn) => drawn.open !== undefined);
-	const readsMail = blocks.some(({ source }) => isMailSource(source));
-	const mailLists = blocks.flatMap(({ mail }) => (mail ? [mail.request] : []));
-	const mailThreads = blocks.flatMap(({ block, open }) => {
-		const thread = block.kind === "mail" && open ? rowThread(open.row) : undefined;
-		return thread === undefined ? [] : [thread];
-	});
 	// The whole definition, so a change to anything drawn from it (a table's columns, a list's line, a button's
 	// text) draws the page again with the handlers of the new one, even when the rows and titles stay the same.
 	const key = JSON.stringify([
@@ -774,73 +524,21 @@ export function renderInterfaceFile(
 		page.errorProblems,
 		page.errors,
 		page.pending,
-		page.claiming,
-		page.offering,
 		canWrite,
-		// The offers, the members they name and may go to, and whether each may be accepted where it is listed.
-		offers,
-		offers === null
-			? null
-			: (state.team?.members ?? []).map((member) => [member.userId, member.displayName, member.email, member.role]),
-		offers?.map((offer) => {
-			const offered = offeredRow(company, offer);
-			return offered ? [offered.table, memberMayWriteRows(company, offered.definition)] : null;
-		}) ?? null,
-		// The live consents, the areas that ask to be supervised, and what decides an area's buttons: its supervisor
-		// column and whether the member may change its rows (step I9b).
-		supervisions,
-		page.askSupervise,
-		// Whether an area is being added, and the area whose agents are being chosen with the agents that may be chosen
-		// (Interfaces C6d).
-		page.areaDraft !== null,
-		page.addingAgents,
-		page.addingAgents === null ? null : areaAgentChoices(company).map((agent) => [agent.id, agent.displayName]),
-		areas && [
-			areas.id,
-			areas.columns.find((column) => column.name === "supervisor") ?? null,
-			memberMayWriteRows(company, areas),
-		],
 		listed,
 		cofounder,
 		widths,
 		agentLooks,
 		memberNames,
-		// The company's mail where a block draws it: the lists drawn, each open thread as read with its summary, the
-		// answers, the addresses and the waiting sends; not the other lists and threads read before.
-		readsMail && state.mail
-			? [
-					state.mail.addresses,
-					state.mail.waiting,
-					state.mail.answers,
-					mailLists.map((request) => mailList(company, request) ?? null),
-					mailThreads.map((thread) => [state.mail?.threads[thread] ?? null, mailSummary(company, thread) ?? null]),
-				]
-			: null,
 		// Each block's source as drawn beside its rows: whether it can be read (a table that recovers with no rows
 		// still draws again) and what its columns hold, which a table's definition says outside the page's.
-		blocks.map(({ block, source, rows, open, readable, problems, board, extra }) => [
+		blocks.map(({ block, source, rows, open, readable, problems }) => [
 			block.title,
 			rows,
-			extra ?? null,
 			open?.key ?? null,
 			readable,
 			problems,
 			(interfaceSource(company, source)?.columns ?? []).map((column) => idColumn(company, source, column)),
-			// A board's parts as drawn, the same way, with what the member may do; its lanes by their cards.
-			board?.parts.map((part) => [
-				part.index,
-				part.rows,
-				part.readable,
-				part.problems,
-				part.opens,
-				part.mayWrite,
-				part.definition?.holder ?? null,
-				(interfaceSource(company, part.source)?.columns ?? []).map((column) =>
-					idColumn(company, part.source, column),
-				),
-			]) ?? null,
-			board?.lanes.map((lane) => [lane.id, lane.title, lane.cards.map((card) => [card.part, card.item.key])]) ??
-				null,
 		]),
 	]);
 	const context: BlockContext = {
@@ -851,9 +549,6 @@ export function renderInterfaceFile(
 		page,
 		redraw,
 		canWrite,
-		...(writes ? { writes } : {}),
-		offers,
-		supervisions,
 		stillShown: () => {
 			const shown = container.firstElementChild;
 			return shown instanceof HTMLElement && shown.dataset.interface === name && shown.dataset.profile === profileId;
@@ -922,8 +617,6 @@ export function renderInterfaceFile(
 		moveFocus,
 	);
 	if (errorFirst) page.errorShown = true;
-	// The mail this page draws is read, and read again while it stays on screen (app/company-mail.ts).
-	if (readsMail) CompanyMail.of(company)?.watch(mailLists, mailThreads, context.stillShown);
 }
 
 /** The page's views as tabs. A view changes the blocks shown and closes what was open; the route stays. */
@@ -988,14 +681,6 @@ interface BlockContext {
 	readonly redraw: () => void;
 	/** Whether the member may write: answering a card and posting a message need it. */
 	readonly canWrite: boolean;
-	/** Where a board's take and release write; without it, a board draws neither. */
-	readonly writes?: InterfaceWrites;
-	/** The company's open offers (step I9c), or null when the page can't make or answer them or they aren't read yet:
-	 * then no offer is drawn. */
-	readonly offers: readonly MemberInterfaceOffer[] | null;
-	/** The company's live supervision consents (step I9b), or null when the page can't change them or they aren't read:
-	 * then no area's supervision is drawn. */
-	readonly supervisions: readonly MemberInterfaceSupervision[] | null;
 	/** Whether this page is still the one on screen, for work that finishes after a click. */
 	readonly stillShown: () => boolean;
 }
@@ -1003,21 +688,12 @@ interface BlockContext {
 function drawBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	if (drawn.block.kind === "table") return tableBlock(drawn, context);
 	if (drawn.block.kind === "detail") return detailBlock(drawn, context);
-	if (drawn.block.kind === "mail") return mailBlock(drawn, context);
-	if (drawn.block.kind === "board") return boardBlock(drawn, context);
-	const kind = drawn.block.kind;
-	if (kind === "text" || kind === "numbers" || kind === "calendar") {
-		const { block, key, opens } = drawn;
-		return drawExtraBlock(drawn, {
+	if (drawn.block.kind === "text") {
+		const { block, key } = drawn;
+		return textBlock(drawn, {
 			frame: (extra, ...children) => blockFrame(block, key, extra, block.title, ...children),
 			note: sourceNote(drawn),
 			readable: drawn.readable,
-			figureOf: context.figureOf,
-			opens,
-			opened: opens === null ? undefined : context.page.open[opens],
-			open: (item) => {
-				if (opens !== null) openRow(context, opens, item);
-			},
 		});
 	}
 	return listBlock(drawn, context);
@@ -1056,35 +732,12 @@ function openRow(context: BlockContext, target: string, item: InterfaceRow | nul
 	context.redraw();
 }
 
-/** A cell as text: an agent's name, a time in the member's zone, yes or no, what waits, a member's role. A member's
- * picture is drawn, never written (`memberPicture`). */
 function cellText(drawn: DrawnBlock, column: string, value: TableValue | undefined): string {
 	if (value === null || value === undefined) return "";
 	if (typeof value === "boolean") return value ? t("Yes") : t("No");
 	if (typeof value === "string" && INSTANT.test(value)) return fmtTime(value) || value;
 	if (drawn.source === "waiting" && column === "kind" && typeof value === "string") return kindLabel(value);
-	const label = folderCellLabel(drawn.source, column, value);
-	if (label !== undefined) return label;
-	if (drawn.source === "members" && column === "picture") return "";
-	if (drawn.source === "mail" && (column === "state" || column === "direction") && typeof value === "string")
-		return mailWord(value);
-	if (drawn.source === "members" && column === "role" && typeof value === "string") {
-		const role = roleLabel(value as HostedProfileRole);
-		return role.charAt(0).toLocaleUpperCase(presentationLocale()) + role.slice(1);
-	}
 	return drawn.nameOf(column, value);
-}
-
-/** A thread's state and direction, in the member's language. */
-function mailWord(value: string): string {
-	const word: Record<string, () => string> = {
-		new: () => t("New"),
-		handled: () => t("Handled"),
-		waiting: () => t("Waiting"),
-		received: () => t("Received"),
-		sent: () => t("Sent"),
-	};
-	return word[value]?.() ?? value;
 }
 
 /** Whether a template fills in a column that carries outside content in its source (§4): what it shows is marked. */
@@ -1108,13 +761,6 @@ function listWords(tag: "strong" | "small", words: ListText, id?: string): HTMLE
 function filledWords(template: string, row: TableRow, drawn: DrawnBlock): string | HTMLElement {
 	const text = fillInterfaceText(template, row, drawn.nameOf);
 	return text && fillsOutside(template, drawn.source) ? outside(h("span", null, text)) : text;
-}
-
-/** A member's picture, for the `members` source's `picture` column (their account id). */
-function memberPicture(drawn: DrawnBlock, column: string, row: TableRow): HTMLElement | null {
-	const id = row[column];
-	if (drawn.source !== "members" || column !== "picture" || typeof id !== "string") return null;
-	return personAvatar(typeof row.name === "string" ? row.name : "", id);
 }
 
 /** A source's own problems at the top of its block: the rows of a table that don't fit its definition are left out
@@ -1144,23 +790,16 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		const { row, href, live } = item;
 		const agentId = block.figure ? row[block.figure] : undefined;
 		const template = block.line ?? "{title}";
-		// What a line fills in from outside content is marked as such; a mail row says who wrote when it names nobody.
-		const filled = {
-			line: { text: fillInterfaceText(template, row, nameOf), outside: fillsOutside(template, drawn.source) },
-			sub: {
-				text: block.sub ? fillInterfaceText(block.sub, row, nameOf) : "",
-				outside: fillsOutside(block.sub, drawn.source),
-			},
+		const line = { text: fillInterfaceText(template, row, nameOf), outside: fillsOutside(template, drawn.source) };
+		const sub = {
+			text: block.sub ? fillInterfaceText(block.sub, row, nameOf) : "",
+			outside: fillsOutside(block.sub, drawn.source),
 		};
-		const { line, sub } =
-			drawn.source === "mail" ? mailListText(context.company, row, filled.line, filled.sub) : filled;
 		const statusText = block.status ? cellText(drawn, block.status, row[block.status]) : "";
 		const status = statusText ? h("span", { class: "interface-item-status" }, statusText) : null;
 		const byAgent = typeof agentId === "string" && block.figure === "agent";
 		const lineId = domId("line", key, item.key);
-		const unread = drawn.source === "mail" && row.unread === true;
 		const body = [
-			unread ? unreadMark() : null,
 			typeof agentId === "string" ? h("span", { class: "interface-item-figure" }, context.figureOf(agentId)) : null,
 			h(
 				"span",
@@ -1189,26 +828,19 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 					? h("a", { class: "interface-item", href, "data-focus-key": `item:${key}:${item.key}` }, ...body)
 					: h("div", { class: "interface-item" }, ...body);
 		const actions = rowButtons(buttons, item, drawn, context, lineId);
-		return h(
-			"li",
-			unread ? { class: "is-unread" } : null,
-			actions ? h("div", { class: "interface-item-row" }, main, actions) : main,
-		);
+		return h("li", null, actions ? h("div", { class: "interface-item-row" }, main, actions) : main);
 	});
-	// A mail list says it is being read, or why it can't be, instead of being empty; then whether older mail is there.
-	const reading = drawn.mail !== undefined && drawn.mail.list?.status !== "ready";
 	return blockFrame(
 		block,
 		key,
-		`${cards ? " interface-cards" : ""}${drawn.source === "mail" ? " interface-mail-list" : ""}`,
+		cards ? " interface-cards" : "",
 		block.title,
 		sourceNote(drawn),
 		items.length
 			? h("ul", { class: "interface-list" }, ...items)
-			: drawn.readable && !reading
+			: drawn.readable
 				? h("p", { class: "interface-empty" }, t("Nothing here right now."))
 				: null,
-		drawn.mail ? mailListFooter(context.company, drawn.mail.request, drawn.mail.list, key) : null,
 	);
 }
 
@@ -1231,7 +863,6 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		const byText =
 			idColumn(context.company, source, sort.column) !== null ||
 			(source === "waiting" && sort.column === "kind") ||
-			(source === "members" && sort.column === "role") ||
 			drawn.rows.some(({ row }) => typeof row[sort.column] === "boolean" || Array.isArray(row[sort.column]));
 		const locale = presentationLocale();
 		const byWords = (a: string, b: string) => (a === b ? 0 : !a ? 1 : !b ? -1 : a.localeCompare(b, locale));
@@ -1295,7 +926,7 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 								value || t("Open"),
 							),
 						)
-					: h("td", index === 0 ? { id: lineId } : null, memberPicture(drawn, column, item.row) ?? value);
+					: h("td", index === 0 ? { id: lineId } : null, value);
 			// A cell that shows outside content is marked as such, the one whose button opens the row too.
 			return value && outsideColumns.includes(column) ? outside(cell) : cell;
 		});
@@ -1319,8 +950,6 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		if (!(event as InputEvent).isComposing) applyFilter();
 	});
 	filterField.addEventListener("compositionend", applyFilter);
-	// A mail table says it is being read, or why it can't be, instead of being empty; then whether older mail is there.
-	const reading = drawn.mail !== undefined && drawn.mail.list?.status !== "ready";
 	const listing = shown.length
 		? h(
 				"div",
@@ -1337,9 +966,7 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 			)
 		: drawn.rows.length
 			? h("p", { class: "interface-empty" }, t("No rows match."))
-			: reading
-				? null
-				: h("p", { class: "interface-empty" }, t("Nothing here right now."));
+			: h("p", { class: "interface-empty" }, t("Nothing here right now."));
 	return blockFrame(
 		block,
 		key,
@@ -1349,7 +976,6 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		drawn.rows.length ? filterField : null,
 		// A table that can't be read shows only its problems.
 		drawn.readable ? listing : null,
-		drawn.mail ? mailListFooter(context.company, drawn.mail.request, drawn.mail.list, key) : null,
 	);
 }
 
@@ -1401,664 +1027,8 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		typeof text === "string" && text
 			? h("div", { class: "interface-detail-text" }, markdown(text, { links: false }))
 			: null,
-		detailSupervision(context, drawn, open, lineId),
-		detailAgents(context, drawn, open, lineId),
 		actions,
 	);
-}
-
-/** A `mail` block (step I5c): the thread the list opened, drawn by views/interface-mail.ts, with a way back on a
- * phone and the block's message buttons. Its `answer` is drawn on each waiting send, not as a button that leads
- * away. */
-function mailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
-	const { block, open, key, nameOf } = drawn;
-	const target = block.id ?? "";
-	if (!open)
-		return blockFrame(
-			block,
-			key,
-			" interface-detail interface-mail is-empty",
-			block.title === null ? null : fillInterfaceText(block.title, {}, nameOf),
-			h("p", { class: "interface-empty" }, t("Choose one to see it here.")),
-		);
-	const lineId = domId("line", key, open.key);
-	const buttons = blockButtons(context.file, block);
-	const actions = rowButtons(
-		buttons.filter((drawnButton) => drawnButton.verb !== "answer"),
-		open,
-		drawn,
-		context,
-		lineId,
-	);
-	return blockFrame(
-		block,
-		key,
-		" interface-detail interface-mail is-open",
-		null,
-		h(
-			"button",
-			{
-				type: "button",
-				class: "interface-back",
-				"data-focus-key": `back:${target}`,
-				onclick: () => openRow(context, target, null),
-			},
-			t("Back"),
-		),
-		...mailThreadParts({
-			company: context.company,
-			row: open.row,
-			lineId,
-			blockKey: key,
-			actions,
-			answerable: buttons.some((drawnButton) => drawnButton.verb === "answer"),
-			canWrite: context.canWrite,
-			agentName: (agentId, given) => context.company.staffById(agentId)?.displayName ?? given ?? agentId,
-		}),
-	);
-}
-
-/** A board part as a block of its own, for what is drawn per part: its source's note and its cards' buttons. */
-function partBlock(drawn: DrawnBlock, part: DrawnPart): DrawnBlock {
-	return {
-		block: drawn.block,
-		source: part.source,
-		key: `${drawn.key}:${part.index}`,
-		rows: part.rows,
-		opens: part.opens,
-		nameOf: part.nameOf,
-		readable: part.readable,
-		problems: part.problems,
-	};
-}
-
-/** Where a board's cards may move to: the member's own lane and the open pile, when the board has them, and the other
- * members' lanes, where a card is offered. */
-interface BoardPlaces {
-	readonly own: BoardLane | undefined;
-	readonly pile: BoardLane | undefined;
-	readonly others: readonly BoardLane[];
-}
-
-/** A board (§3.2): its lanes side by side (stacked on a phone), each with its cards, part by part. A card in the open
- * pile can be taken and one in the member's own lane released, with its button or by dragging it to the other; the card
- * stays where it is, saving, until the save has landed. Either can be offered to another member, with Offer or by
- * dragging it to their lane, and a card offered to the member accepted (step I9c). */
-function boardBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
-	const { block, key } = drawn;
-	const { parts, lanes } = drawn.board ?? { parts: [], lanes: [] };
-	const places = {
-		own: lanes.find((lane) => lane.own),
-		pile: lanes.find((lane) => lane.kind === "open"),
-		others: lanes.filter((lane) => lane.kind === "member" && !lane.own && lane.member !== null),
-	};
-	const several = parts.length > 1;
-	const notes = parts.flatMap((part) => {
-		const note = sourceNote(partBlock(drawn, part));
-		if (!note) return [];
-		if (several && part.part.title) note.prepend(h("strong", null, part.part.title));
-		return [note];
-	});
-	return blockFrame(
-		block,
-		key,
-		" interface-board-block",
-		block.title,
-		...notes,
-		...parts.flatMap((part) => areaAdder(drawn, part, context) ?? []),
-		lanes.length
-			? h(
-					"div",
-					{ class: "interface-board" },
-					...lanes.map((lane) => boardLane(drawn, lane, parts, places, context)),
-				)
-			: h("p", { class: "interface-empty" }, t("Nothing here right now.")),
-	);
-}
-
-/** One lane: its title and its cards, under each part's title when the board has several. An empty lane keeps its
- * title and says so quietly. */
-function boardLane(
-	drawn: DrawnBlock,
-	lane: BoardLane,
-	parts: readonly DrawnPart[],
-	places: BoardPlaces,
-	context: BlockContext,
-): HTMLElement {
-	const titleId = domId("lane", drawn.key, lane.id);
-	const groups = parts.flatMap((part, place) => {
-		const items = lane.cards.filter((card) => card.part === place).map((card) => card.item);
-		if (!items.length) return [];
-		return [
-			parts.length > 1 && part.part.title ? h("h4", { class: "interface-lane-part" }, part.part.title) : null,
-			h(
-				"ul",
-				{ class: "interface-lane-cards" },
-				...items.map((item) => boardCard(drawn, part, item, lane, places, context)),
-			),
-		];
-	});
-	return h(
-		"section",
-		{
-			class: `interface-lane interface-lane-${lane.kind}${lane.own ? " is-own" : ""}`,
-			"data-drop-lane": lane.id,
-			"aria-labelledby": titleId,
-		},
-		h(
-			"h3",
-			{ class: "interface-lane-title" },
-			h("span", { id: titleId }, lane.title),
-			h("span", { class: "interface-lane-count", "aria-hidden": "true" }, String(lane.cards.length)),
-		),
-		...groups,
-		lane.cards.length ? null : h("p", { class: "interface-empty" }, t("Nothing here.")),
-	);
-}
-
-const emptyCell = (value: TableValue | undefined) =>
-	value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
-
-/** A card's line or note, or null when every column it names is empty ("Supervised by {supervisor}" with no
- * supervisor says nothing). */
-function cardText(template: string | null, part: DrawnPart, row: TableRow): string | null {
-	if (template === null) return null;
-	const named = [...template.matchAll(TEMPLATE_COLUMN)].map((match) => match[1] ?? "");
-	if (named.length && named.every((column) => emptyCell(interfaceCell(row, column)))) return null;
-	return fillInterfaceText(template, row, part.nameOf).trim() || null;
-}
-
-/** One card: its title, line, figures and note from its part's `card`, opening its part's detail when it has one, with
- * its Take or Release and the block's own buttons. */
-function boardCard(
-	drawn: DrawnBlock,
-	part: DrawnPart,
-	item: InterfaceRow,
-	lane: BoardLane,
-	places: BoardPlaces,
-	context: BlockContext,
-): HTMLElement {
-	const { row } = item;
-	const template = part.part.card;
-	const card = cardKey(part, item);
-	const saving = Object.hasOwn(context.page.claiming, card);
-	const titleId = domId("card", drawn.key, card);
-	const line = cardText(template.line, part, row);
-	const note = cardText(template.note, part, row);
-	const figuresValue = template.figures === null ? undefined : interfaceCell(row, template.figures);
-	const figures = (Array.isArray(figuresValue) ? figuresValue : [figuresValue]).filter(
-		(id): id is string => typeof id === "string" && id !== "",
-	);
-	const body = [
-		h(
-			"strong",
-			{ class: "interface-card-title", id: titleId },
-			fillInterfaceText(template.title, row, part.nameOf) || t("Open"),
-		),
-		line ? h("span", { class: "interface-card-line" }, line) : null,
-		figures.length && template.figures !== null
-			? h(
-					"span",
-					{ class: "interface-card-figures" },
-					...figures.map((id) => context.figureOf(id, 22)),
-					h("span", { class: "visually-hidden" }, part.nameOf(template.figures, figuresValue)),
-				)
-			: null,
-		note ? h("small", { class: "interface-card-note" }, note) : null,
-	];
-	const opens = part.opens;
-	const isOpen = opens !== null && context.page.open[opens] === item.key;
-	const main =
-		opens !== null
-			? h(
-					"button",
-					{
-						type: "button",
-						class: "interface-card-open",
-						"aria-current": isOpen ? "true" : null,
-						"data-focus-key": `open:${opens}:${item.key}`,
-						onclick: () => openRow(context, opens, item),
-					},
-					...body,
-				)
-			: h("div", { class: "interface-card-body" }, ...body);
-	// Take on a card no one holds, or one whose holder left (Interfaces C6d), Release on the member's own, in any lane of
-	// a members board (a Shared card too), where the block lists them and the table lets members write; the platform's
-	// own answer is not drawn on a board.
-	const verbs = new Set(drawn.block.buttons);
-	const holder = part.definition?.holder ?? null;
-	const claimable =
-		context.writes !== undefined &&
-		part.mayWrite &&
-		part.table !== null &&
-		places.own !== undefined &&
-		part.definition?.columns.some((column) => column.name === holder) === true;
-	const held = holder === null ? undefined : row[holder];
-	const free = emptyCell(held) || namesLeaver(context.company, held);
-	const verb: ClaimVerb | null = !claimable
-		? null
-		: free && verbs.has("take")
-			? "take"
-			: held === context.company.userId && verbs.has("release")
-				? "release"
-				: null;
-	const claim =
-		verb === null
-			? null
-			: h(
-					"button",
-					{
-						type: "button",
-						class: "interface-button",
-						"data-focus-key": `claim:${drawn.key}:${card}`,
-						"aria-describedby": titleId,
-						// Not `disabled`: the button keeps focus while the card saves.
-						"aria-disabled": saving ? "true" : null,
-						onclick: () => void claimCard(context, part, item, verb),
-					},
-					verb === "take" ? t("Take") : t("Release"),
-				);
-	// Offer on a card no one holds (or whose holder left) or the member's own, to each other member who may change its
-	// table's rows and hasn't been offered it yet, where the block lists offer (step I9c).
-	const offers = cardOffers(context, part, item);
-	const offerKey = `${drawn.key}|${card}`;
-	const candidates =
-		claimable && context.offers !== null && verbs.has("offer") && (free || held === context.company.userId)
-			? offerCandidates(context, part, offers)
-			: [];
-	const offerBusy = context.page.pending.includes(`offer:${offerKey}`);
-	const offering = candidates.length > 0 && context.page.offering === offerKey;
-	const offer =
-		candidates.length === 0
-			? null
-			: h(
-					"button",
-					{
-						type: "button",
-						class: "interface-button",
-						"data-focus-key": `offer:${offerKey}`,
-						"aria-describedby": titleId,
-						"aria-expanded": String(offering),
-						"aria-disabled": saving || offerBusy ? "true" : null,
-						onclick: () => {
-							if (saving || offerBusy) return;
-							context.page.offering = offering ? null : offerKey;
-							context.page.focus = offering ? `offer:${offerKey}` : `offer-to:${offerKey}:0`;
-							context.redraw();
-						},
-					},
-					t("Offer…"),
-				);
-	const buttons = blockButtons(context.file, drawn.block).filter((button) => button.verb !== "answer");
-	const actions = rowButtons(buttons, item, partBlock(drawn, part), context, titleId);
-	const own = [claim, offer].filter((button) => button !== null);
-	if (own.length) actions?.prepend(...own);
-	// An area's card says whose yes its supervisor waits for, or asks the member who just took it (step I9b).
-	const area = areaSupervision(context, part.source, row);
-	const supervision =
-		area &&
-		cardSupervision(context, part, item, area, {
-			titleId,
-			where: `supervise:${drawn.key}:${card}`,
-			focusNext: [`claim:${drawn.key}:${card}`, ...(opens === null ? [] : [`open:${opens}:${item.key}`])],
-		});
-	const element = h(
-		"li",
-		{
-			class: `interface-card${isOpen ? " is-open" : ""}${saving ? " is-saving" : ""}`,
-			"aria-busy": saving ? "true" : null,
-		},
-		main,
-		offerLines(
-			context,
-			part,
-			item,
-			offers,
-			titleId,
-			{
-				claim: `claim:${drawn.key}:${card}`,
-				offer: `offer:${offerKey}`,
-				open: opens === null ? null : `open:${opens}:${item.key}`,
-			},
-			claimable ? holder : null,
-		),
-		supervision,
-		actions ?? (own.length ? h("span", { class: "interface-actions" }, ...own) : null),
-		offering ? offerPicker(context, part, item, candidates, offerKey, titleId) : null,
-		saving ? h("small", { class: "interface-card-saving" }, t("Saving…")) : null,
-	);
-	// Dragging is the same take or release: from the open pile to the member's own lane, or back; and the same offer, to
-	// another member's lane. A Shared card stays in the Shared lane either way, so it has no drag.
-	const target =
-		lane.kind === "shared" ? undefined : verb === "take" ? places.own : verb === "release" ? places.pile : undefined;
-	const offerLanes =
-		lane.kind === "shared"
-			? []
-			: places.others.filter((other) => candidates.some((member) => member.id === other.member));
-	const targets = [...(verb !== null && target ? [target.id] : []), ...offerLanes.map((other) => other.id)];
-	if (!saving && !offerBusy)
-		boardDrag(element, {
-			targets,
-			drop: (dropped) => {
-				const to = offerLanes.find((other) => other.id === dropped)?.member;
-				if (to) void offerCard(context, part, item, to, offerKey);
-				else if (verb !== null && dropped === target?.id) void claimCard(context, part, item, verb);
-			},
-		});
-	return element;
-}
-
-/** A member's name on the page, or how it names someone who left (Interfaces C6d); "A member" while the members are not
- * read. */
-function memberLabel(context: BlockContext, id: string): string {
-	if (namesLeaver(context.company, id)) return leaverName(context.company, id);
-	const member = context.company.store.get().team?.members.find((each) => each.userId === id);
-	return member?.displayName || member?.email || t("A member");
-}
-
-/** A card's open offers (step I9c): those of its holder cell while the cell is as they read it, and the one an accept
- * on its way answers, which its save settled, till the card moves. */
-function cardOffers(context: BlockContext, part: DrawnPart, item: InterfaceRow): MemberInterfaceOffer[] {
-	const { definition } = part;
-	const holder = definition?.holder ?? null;
-	if (context.offers === null || definition === null || holder === null) return [];
-	const table = definition.id.toLowerCase();
-	const key = tableRowKey(definition, item.row);
-	const held = item.row[holder];
-	const was = typeof held === "string" && held !== "" ? held : null;
-	const listed = context.offers.filter(
-		(offer) =>
-			offer.state === "open" &&
-			offer.table === table &&
-			offer.column === holder &&
-			offer.key !== null &&
-			JSON.stringify(offer.key) === key &&
-			offer.was === was,
-	);
-	const accepting = context.page.claiming[cardKey(part, item)]?.offer;
-	return accepting && !listed.some((offer) => offer.id === accepting.id) ? [...listed, accepting] : listed;
-}
-
-/** The members a card may be offered to: each other member who may change its table's rows (§5; a viewer may change
- * none), but those it is offered to already. */
-function offerCandidates(
-	context: BlockContext,
-	part: DrawnPart,
-	offers: readonly MemberInterfaceOffer[],
-): { readonly id: string; readonly name: string }[] {
-	const write = part.definition?.write.members;
-	return (context.company.store.get().team?.members ?? [])
-		.filter(
-			(member) =>
-				member.userId !== context.company.userId &&
-				member.role !== "viewer" &&
-				(write === "all" || (write === "owners" && (member.role === "owner" || member.role === "admin"))) &&
-				!offers.some((offer) => offer.to === member.userId),
-		)
-		.map((member) => ({ id: member.userId, name: member.displayName || member.email }));
-}
-
-/** A card's open offers as lines, each with what the member may do: withdraw their own, accept (where they may take
- * the card) or decline one to them; or null when it has none. An answer whose line goes hands the focus to the card's
- * own controls: Offer… first after a withdraw, Take or Release first after an accept or decline (`show`). */
-function offerLines(
-	context: BlockContext,
-	part: DrawnPart,
-	item: InterfaceRow,
-	offers: readonly MemberInterfaceOffer[],
-	titleId: string,
-	/** The card's own controls, by their focus keys. */
-	controls: { readonly claim: string; readonly offer: string; readonly open: string | null },
-	/** The cell an accept writes, the holder's, when the member may take the card; else null. */
-	accepts: string | null,
-): HTMLElement | null {
-	if (!offers.length) return null;
-	const me = context.company.userId;
-	// Nothing is answered while the card saves: a take or accept on its way settles its offers.
-	const saving = Object.hasOwn(context.page.claiming, cardKey(part, item));
-	const lines = offers.map((offer) => {
-		const busy = saving || context.page.pending.includes(`offer:${offer.id}`);
-		const answer = (name: string, label: string, then: readonly (string | null)[], act: () => void) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "interface-button",
-					"data-focus-key": `${name}:${offer.id}`,
-					"data-focus-then": JSON.stringify(then.filter((key) => key !== null)),
-					"aria-describedby": titleId,
-					"aria-disabled": busy ? "true" : null,
-					onclick: () => {
-						if (!busy) act();
-					},
-				},
-				label,
-			);
-		const from = memberLabel(context, offer.from);
-		const to = memberLabel(context, offer.to);
-		let words = t("{from} offered it to {to}", { from, to });
-		const answers: HTMLElement[] = [];
-		const afterAnswer = [controls.claim, controls.offer, controls.open];
-		if (offer.from === me) {
-			words = t("Offered to {name}", { name: to });
-			answers.push(
-				answer("withdraw", t("Withdraw"), [controls.offer, controls.claim, controls.open], () => {
-					void closeOffer(context, offer, "withdraw");
-				}),
-			);
-		} else if (offer.to === me) {
-			words = t("{name} offers it to you", { name: from });
-			if (accepts !== null) {
-				const column = accepts;
-				answers.push(
-					answer(
-						"accept",
-						t("Accept"),
-						afterAnswer,
-						() => void claimCard(context, part, item, "accept", { column, offer }),
-					),
-				);
-			}
-			answers.push(answer("decline", t("Not now"), afterAnswer, () => void closeOffer(context, offer, "decline")));
-		}
-		return h(
-			"li",
-			{ class: "interface-card-offer" },
-			h("span", null, words),
-			answers.length ? h("span", { class: "interface-actions" }, ...answers) : null,
-		);
-	});
-	return h("ul", { class: "interface-card-offers" }, ...lines);
-}
-
-/** The members a card may go to, each a button that offers it, and Cancel; Escape closes it too. */
-function offerPicker(
-	context: BlockContext,
-	part: DrawnPart,
-	item: InterfaceRow,
-	candidates: readonly { readonly id: string; readonly name: string }[],
-	offerKey: string,
-	titleId: string,
-): HTMLElement {
-	const close = () => {
-		context.page.offering = null;
-		context.page.focus = `offer:${offerKey}`;
-		context.redraw();
-	};
-	const picker = h(
-		"span",
-		{ class: "interface-actions interface-offer-picker", role: "group", "aria-label": t("Offer to") },
-		h("span", { class: "interface-offer-picker-label", "aria-hidden": "true" }, t("Offer to")),
-		...candidates.map((member, index) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "interface-button",
-					"data-focus-key": `offer-to:${offerKey}:${index}`,
-					// The picker closes as the offer goes; the card's Offer… stays drawn and takes the focus.
-					"data-focus-then": JSON.stringify([`offer:${offerKey}`]),
-					"aria-describedby": titleId,
-					onclick: () => void offerCard(context, part, item, member.id, offerKey),
-				},
-				member.name,
-			),
-		),
-		h(
-			"button",
-			{ type: "button", class: "interface-button", "data-focus-key": `offer-to:${offerKey}:cancel`, onclick: close },
-			t("Cancel"),
-		),
-	);
-	picker.addEventListener("keydown", (event) => {
-		if (event.key !== "Escape") return;
-		event.preventDefault();
-		close();
-	});
-	return picker;
-}
-
-/** The page's error, said once and counted, so the same words failing again are said again. */
-function pageError(page: PageState, message: string, problems: readonly string[] = []): void {
-	page.error = message;
-	page.errorProblems = [...problems];
-	page.errorShown = false;
-	page.errors += 1;
-}
-
-/** Offers a card's holder cell, as the card shows it, to another member (step I9c). A refusal says why. */
-async function offerCard(
-	context: BlockContext,
-	part: DrawnPart,
-	item: InterfaceRow,
-	to: string,
-	offerKey: string,
-): Promise<void> {
-	const { page, writes } = context;
-	const busy = `offer:${offerKey}`;
-	const { definition } = part;
-	const holder = definition?.holder ?? null;
-	if (page.pending.includes(busy) || !writes?.offers || definition === null || holder === null) return;
-	page.pending = [...page.pending, busy];
-	page.offering = null;
-	page.error = null;
-	page.errorProblems = [];
-	context.redraw();
-	const held = item.row[holder];
-	try {
-		const answer = await writes.offers.offer({
-			table: definition.id.toLowerCase(),
-			key: JSON.parse(tableRowKey(definition, item.row)) as TableValue[],
-			column: holder,
-			was: typeof held === "string" && held !== "" ? held : null,
-			to,
-		});
-		// The offer is read again before the answer comes, so its Withdraw is drawn to take the focus.
-		if (answer.ok) page.focus = `withdraw:${answer.offer.id}`;
-		else pageError(page, answer.message);
-	} catch (error) {
-		pageError(page, describeError(error));
-	}
-	page.pending = page.pending.filter((key) => key !== busy);
-	if (context.stillShown()) context.redraw();
-}
-
-/** Declines an offer made to the member, or withdraws one they made (step I9c). The line goes once the offers are read
- * again, and its button hands the focus on (`show`): on the board to its card's `data-focus-then`, on Pulse to the next
- * control or the block's title. */
-async function closeOffer(
-	context: BlockContext,
-	offer: MemberInterfaceOffer,
-	how: "decline" | "withdraw",
-): Promise<void> {
-	const { page, writes } = context;
-	const busy = `offer:${offer.id}`;
-	if (page.pending.includes(busy) || !writes?.offers) return;
-	page.pending = [...page.pending, busy];
-	page.error = null;
-	page.errorProblems = [];
-	context.redraw();
-	try {
-		await (how === "decline" ? writes.offers.decline(offer.id) : writes.offers.withdraw(offer.id));
-	} catch (error) {
-		pageError(page, describeError(error));
-	}
-	page.pending = page.pending.filter((key) => key !== busy);
-	if (context.stillShown()) context.redraw();
-}
-
-/** How long a card whose save landed may stay where it was, saving, waiting for the board to show it moved. */
-const CLAIM_LANDED_WAIT = 10_000;
-
-/** A failed take, release or accept, or a change of an area (Interfaces C6d), as the page's error: a cell someone else
- * changed says so, and a refused save lists why under `failure`. */
-function claimError(page: PageState, error: unknown, failure: string): void {
-	const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
-	// Every read found the cell still free (or still the member's, or as the offer read it), so the file kept changing
-	// elsewhere; a cell that was lost says so itself (ClaimLostError).
-	if (rejected?.reason === "version_changed") pageError(page, t("That changed while you were looking."));
-	else if (rejected?.problems.length) pageError(page, failure, rejected.problems);
-	else pageError(page, describeError(error));
-}
-
-/** Takes or releases a card (§3.3), or accepts the offer of it (step I9c): writes its holder cell with the version it
- * read. The card stays where it was, saving, until the save has landed and the board shows the change; a card someone
- * else changed meanwhile says so, and a refused save lists why. A save settles the cell's offers, so they are read
- * again; the offer an accept answers stays on the card meanwhile. */
-async function claimCard(
-	context: BlockContext,
-	part: DrawnPart,
-	item: InterfaceRow,
-	verb: ClaimVerb,
-	accepted?: { readonly column: string; readonly offer: MemberInterfaceOffer },
-): Promise<void> {
-	const { page, company, writes } = context;
-	const card = cardKey(part, item);
-	if (Object.hasOwn(page.claiming, card)) return;
-	const was = holderCell(part, item);
-	const answers = accepted ? { offer: accepted.offer } : {};
-	page.claiming = { ...page.claiming, [card]: { was, landed: false, ...answers } };
-	page.error = null;
-	page.errorProblems = [];
-	context.redraw();
-	let wrote = false;
-	try {
-		if (!writes || part.table === null || part.definition === null) throw new Error(claimFailure(verb));
-		wrote = await claimTableCell({
-			folder: writes.folder(),
-			table: part.table,
-			key: tableRowKey(part.definition, item.row),
-			verb,
-			...(accepted
-				? { offer: { column: accepted.column, from: accepted.offer.from, was: accepted.offer.was } }
-				: {}),
-			memberId: company.userId,
-			members: memberIds(company),
-			signal: company.signal,
-			check: () => {
-				company.signal.throwIfAborted();
-				writes.current();
-			},
-		});
-	} catch (error) {
-		claimError(page, error, claimFailure(verb));
-	}
-	const without = () => Object.fromEntries(Object.entries(page.claiming).filter(([other]) => other !== card));
-	if (wrote) {
-		void writes?.offers?.refresh();
-		// An area the member takes asks whether they supervise its agents too, once it is theirs (step I9b).
-		if (verb !== "release" && areaSupervision(context, part.source, item.row) !== null)
-			page.askSupervise = [...page.askSupervise.filter((other) => other !== card), card];
-		const landed = { was, landed: true, ...answers };
-		page.claiming = { ...without(), [card]: landed };
-		// A feed that is slow to show the change doesn't keep the card saving.
-		setTimeout(() => {
-			if (page.claiming[card] !== landed) return;
-			page.claiming = without();
-			if (context.stillShown()) context.redraw();
-		}, CLAIM_LANDED_WAIT);
-	} else page.claiming = without();
-	if (context.stillShown()) context.redraw();
 }
 
 /** The agent a value names, if it still works here. */
@@ -2089,8 +1059,6 @@ function rowButtons(
 	const describe = { "aria-describedby": lineId };
 	const drawnButtons = buttons.flatMap((drawnButton, index): HTMLElement[] => {
 		if (drawnButton.verb === "answer") {
-			// An offer of a cell is answered on its row (step I9c).
-			if (drawn.source === "waiting" && item.row.kind === "offer") return offerAnswers(context, item, lineId);
 			// The platform's own card waits in its thread; the button takes the member there.
 			if (!item.href || !context.canWrite || !rowHasCard(drawn.source, item.row)) return [];
 			return [
@@ -2173,655 +1141,6 @@ function rowButtons(
 		return [action];
 	});
 	return drawnButtons.length ? h("span", { class: "interface-actions" }, ...drawnButtons) : null;
-}
-
-/** A waiting offer's answers (step I9c): Accept, where the member may change its table's rows, and Not now. */
-function offerAnswers(context: BlockContext, item: InterfaceRow, lineId: string): HTMLElement[] {
-	const offer = context.offers?.find((candidate) => candidate.id === item.row.id);
-	const offered = offer && offeredRow(context.company, offer);
-	if (!offer || !offered) return [];
-	const busy = context.page.pending.includes(`offer:${offer.id}`);
-	const answer = (name: string, label: string, act: () => void) =>
-		h(
-			"button",
-			{
-				type: "button",
-				class: "interface-button",
-				"data-focus-key": `${name}:${offer.id}`,
-				"aria-describedby": lineId,
-				"aria-disabled": busy ? "true" : null,
-				onclick: () => {
-					if (!busy) act();
-				},
-			},
-			label,
-		);
-	return [
-		memberMayWriteRows(context.company, offered.definition)
-			? answer("accept", t("Accept"), () => void acceptOffer(context, offer, offered.table))
-			: null,
-		answer("decline", t("Not now"), () => void closeOffer(context, offer, "decline")),
-	].filter((each) => each !== null);
-}
-
-/** Accepts an offer where it waits (step I9c): saves the member into the cell it names while that is as the offer read
- * it, then reads the offers again, which the save settled. */
-async function acceptOffer(context: BlockContext, offer: MemberInterfaceOffer, table: string): Promise<void> {
-	const { page, company, writes } = context;
-	const busy = `offer:${offer.id}`;
-	const { key, column } = offer;
-	if (page.pending.includes(busy) || !writes || key === null || column === null) return;
-	page.pending = [...page.pending, busy];
-	page.error = null;
-	page.errorProblems = [];
-	context.redraw();
-	try {
-		await claimTableCell({
-			folder: writes.folder(),
-			table,
-			key: JSON.stringify(key),
-			verb: "accept",
-			offer: { column, from: offer.from, was: offer.was },
-			memberId: company.userId,
-			members: memberIds(company),
-			signal: company.signal,
-			check: () => {
-				company.signal.throwIfAborted();
-				writes.current();
-			},
-		});
-		await writes.offers?.refresh();
-	} catch (error) {
-		claimError(page, error, claimFailure("accept"));
-	}
-	page.pending = page.pending.filter((other) => other !== busy);
-	if (context.stillShown()) context.redraw();
-}
-
-/** The table the platform reads supervision from (§5.1). */
-const AREAS_SOURCE = "table:areas";
-
-/** An area's supervision as drawn (step I9b; RUNTIME-INTERFACES.md §5.1). */
-interface AreaSupervision {
-	/** The row's key, as `tableRowKey` writes it. */
-	readonly key: string;
-	/** The member who supervises its agents, or whose yes the `supervisor` cell waits for; or null. */
-	readonly supervisor: string | null;
-	/** Their live consent; undefined while the cell waits for it, or names no one. */
-	readonly live: MemberInterfaceSupervision | undefined;
-	/** Whether the member may change the areas' rows, so take or let go of the cell. */
-	readonly mayWrite: boolean;
-}
-
-/** A row of `QorperaOS/tables/areas`' supervision, where the page can change it: the consents are read and the page
- * writes, and the table keeps `supervisor` as a member cell that needs a yes; else null, and nothing of it is drawn. A
- * live consent counts before the cell, so a consent read since the folder was shows at once: the save that changes the
- * cell makes or ends it. */
-function areaSupervision(
-	context: Pick<BlockContext, "company" | "supervisions" | "writes">,
-	source: string,
-	row: TableRow,
-): AreaSupervision | null {
-	const { company, supervisions } = context;
-	if (source !== AREAS_SOURCE || supervisions === null || !context.writes?.offers) return null;
-	const definition = tableDefinition(company, source);
-	if (!definition?.columns.some((column) => column.name === "supervisor" && column.needsYes)) return null;
-	const key = tableRowKey(definition, row);
-	const table = definition.id.toLowerCase();
-	const live = supervisions.find(
-		(each) => each.state === "live" && each.table === table && each.key !== null && JSON.stringify(each.key) === key,
-	);
-	// A cell that names someone who left counts as empty (Interfaces C6d): their consent ended when they left.
-	const cell = row.supervisor;
-	return {
-		key,
-		supervisor: live?.user ?? (typeof cell === "string" && cell !== "" && !namesLeaver(company, cell) ? cell : null),
-		live,
-		mayWrite: memberMayWriteRows(company, definition),
-	};
-}
-
-/** Whether an area's card may ask the member to supervise its agents too: it is theirs, no one supervises them, and the
- * member may take the cell. */
-function asksToSupervise(part: DrawnPart, item: InterfaceRow, area: AreaSupervision, me: string): boolean {
-	const holder = part.definition?.holder ?? null;
-	return area.supervisor === null && area.mayWrite && holder !== null && item.row[holder] === me;
-}
-
-/** What a member does with an area's supervision: take the empty `supervisor` cell, say yes again where it names them,
- * pause that yes, or let the cell go. */
-type SuperviseVerb = "take" | "consent" | "withdraw" | "release";
-
-/** An area's change on its way, by its row: its buttons wait, on its card and in its detail. */
-const superviseBusy = (area: AreaSupervision) => `supervise:${area.key}`;
-
-/** One of an area's supervision buttons. `focusNext` names the controls the focus goes to when it goes (`show`). */
-function superviseButton(
-	context: BlockContext,
-	area: AreaSupervision,
-	verb: SuperviseVerb,
-	label: string,
-	place: { readonly where: string; readonly describedBy: string; readonly focusNext: readonly string[] },
-	card?: string,
-): HTMLElement {
-	const busy = context.page.pending.includes(superviseBusy(area));
-	return h(
-		"button",
-		{
-			type: "button",
-			class: "interface-button",
-			"data-focus-key": `${place.where}:${verb}`,
-			"data-focus-then": JSON.stringify(place.focusNext),
-			"aria-describedby": place.describedBy,
-			"aria-disabled": busy ? "true" : null,
-			onclick: () => {
-				if (!busy) void superviseArea(context, area, verb, card);
-			},
-		},
-		label,
-	);
-}
-
-/** An area's supervision in words, with its buttons. */
-function supervisionLine(words: string, buttons: readonly HTMLElement[]): HTMLElement {
-	return h(
-		"p",
-		{ class: "interface-supervision" },
-		h("span", null, words),
-		buttons.length ? h("span", { class: "interface-actions" }, ...buttons) : null,
-	);
-}
-
-/** An area card's supervision line: whose yes its supervisor cell waits for, with Supervise where it is the member's;
- * or, on an area they just took, whether they supervise its agents too, with Supervise and Not now. Null when there is
- * nothing to say. An answer whose line goes hands the focus to the card's own controls. */
-function cardSupervision(
-	context: BlockContext,
-	part: DrawnPart,
-	item: InterfaceRow,
-	area: AreaSupervision,
-	controls: { readonly titleId: string; readonly where: string; readonly focusNext: readonly string[] },
-): HTMLElement | null {
-	const me = context.company.userId;
-	const card = cardKey(part, item);
-	const place = { where: controls.where, describedBy: controls.titleId, focusNext: controls.focusNext };
-	if (area.supervisor === null) {
-		if (!context.page.askSupervise.includes(card) || !asksToSupervise(part, item, area, me)) return null;
-		const busy = context.page.pending.includes(superviseBusy(area));
-		const notNow = h(
-			"button",
-			{
-				type: "button",
-				class: "interface-button",
-				"data-focus-key": `${controls.where}:not-now`,
-				"data-focus-then": JSON.stringify(controls.focusNext),
-				"aria-describedby": controls.titleId,
-				"aria-disabled": busy ? "true" : null,
-				onclick: () => {
-					if (busy) return;
-					context.page.askSupervise = context.page.askSupervise.filter((other) => other !== card);
-					context.redraw();
-				},
-			},
-			t("Not now"),
-		);
-		return supervisionLine(t("Supervise its agents too?"), [
-			superviseButton(context, area, "take", t("Supervise"), place, card),
-			notNow,
-		]);
-	}
-	if (area.live !== undefined) return null;
-	if (area.supervisor !== me)
-		return supervisionLine(
-			t("Waiting for {name}'s yes to supervise its agents.", { name: memberLabel(context, area.supervisor) }),
-			[],
-		);
-	return supervisionLine(
-		t("Waiting for your yes to supervise its agents."),
-		context.canWrite ? [superviseButton(context, area, "consent", t("Supervise"), place, card)] : [],
-	);
-}
-
-/** An area's supervision in its detail: Supervise where no one supervises its agents; Pause and Step down for the
- * member who does; Supervise and Step down where the cell waits for the member's yes; and whose yes it waits for
- * otherwise. Each button hands the focus to the one that takes its place. */
-function detailSupervision(
-	context: BlockContext,
-	drawn: DrawnBlock,
-	open: InterfaceRow,
-	lineId: string,
-): HTMLElement | null {
-	const area = areaSupervision(context, drawn.source, open.row);
-	if (area === null) return null;
-	const where = `supervise:${drawn.key}:${open.key}`;
-	const control = (verb: SuperviseVerb, label: string, then: readonly SuperviseVerb[]) =>
-		superviseButton(context, area, verb, label, {
-			where,
-			describedBy: lineId,
-			focusNext: then.map((each) => `${where}:${each}`),
-		});
-	const { supervisor, live } = area;
-	if (supervisor === null)
-		return supervisionLine(
-			t("Nobody supervises its agents."),
-			area.mayWrite ? [control("take", t("Supervise"), ["withdraw", "release"])] : [],
-		);
-	if (supervisor !== context.company.userId)
-		return live
-			? null
-			: supervisionLine(
-					t("Waiting for {name}'s yes to supervise its agents.", { name: memberLabel(context, supervisor) }),
-					[],
-				);
-	const stepDown = area.mayWrite ? [control("release", t("Step down"), ["take"])] : [];
-	if (live)
-		return supervisionLine(t("You supervise its agents."), [
-			control("withdraw", t("Pause"), ["consent"]),
-			...stepDown,
-		]);
-	return supervisionLine(t("Waiting for your yes to supervise its agents."), [
-		...(context.canWrite ? [control("consent", t("Supervise"), ["withdraw"])] : []),
-		...stepDown,
-	]);
-}
-
-/** Changes an area's supervision (step I9b; §5.1). Take and release write the area's `supervisor` cell the way Take and
- * Release write a card's holder, and that save makes or ends the member's consent; Supervise where the cell names them
- * consents again, and Pause ends the consent, the cell staying as it is. The consents are read again before the buttons
- * come back. A card's question goes once it is answered. */
-async function superviseArea(
-	context: BlockContext,
-	area: AreaSupervision,
-	verb: SuperviseVerb,
-	card?: string,
-): Promise<void> {
-	const { page, company, writes } = context;
-	const busy = superviseBusy(area);
-	const offers = writes?.offers;
-	if (page.pending.includes(busy) || !writes || !offers) return;
-	page.pending = [...page.pending, busy];
-	page.error = null;
-	page.errorProblems = [];
-	context.redraw();
-	let done = false;
-	try {
-		if (verb === "consent") {
-			const answer = await offers.consent(JSON.parse(area.key) as TableValue[]);
-			if (answer.ok) done = true;
-			else pageError(page, answer.message);
-		} else if (verb === "withdraw") {
-			if (area.live) await offers.withdrawSupervision(area.live.id);
-			done = true;
-		} else {
-			await claimTableCell({
-				folder: writes.folder(),
-				table: AREAS_SOURCE.slice("table:".length),
-				key: area.key,
-				verb,
-				column: "supervisor",
-				memberId: company.userId,
-				members: memberIds(company),
-				signal: company.signal,
-				check: () => {
-					company.signal.throwIfAborted();
-					writes.current();
-				},
-			});
-			await offers.refresh();
-			done = true;
-		}
-	} catch (error) {
-		if (verb === "take" || verb === "release") claimError(page, error, t("The supervisor could not be changed."));
-		else pageError(page, describeError(error));
-	}
-	page.pending = page.pending.filter((other) => other !== busy);
-	if (done && card !== undefined) page.askSupervise = page.askSupervise.filter((other) => other !== card);
-	if (context.stillShown()) context.redraw();
-}
-
-/** The agents a member may add to an area, by name: those that work here and are in no area yet (an agent is in one
- * area only, §5.1). */
-function areaAgentChoices(company: CompanyController): HostedStaffAgent[] {
-	const placed = new Set((interfaceRows(company, AREAS_SOURCE) ?? []).flatMap(({ row }) => agentList(row.agents)));
-	const collator = new Intl.Collator(presentationLocale(), { sensitivity: "base" });
-	return company.store
-		.get()
-		.staff.filter((agent) => agent.employmentStatus === "active" && !placed.has(agent.id))
-		.sort((a, b) => collator.compare(a.displayName, b.displayName) || (a.id < b.id ? -1 : 1));
-}
-
-/** The areas' part's Add an area (Interfaces C6d): where the member may change the areas' rows, a button that opens a
- * form for the new area's name and what it is about, which adds it as theirs. With no areas yet it says so first. */
-function areaAdder(drawn: DrawnBlock, part: DrawnPart, context: BlockContext): HTMLElement | null {
-	const { page } = context;
-	if (part.source !== AREAS_SOURCE || !part.readable) return null;
-	const none = interfaceRows(context.company, AREAS_SOURCE)?.length
-		? null
-		: h("p", { class: "interface-empty" }, t("No areas yet."));
-	if (!context.writes || !part.mayWrite) return none;
-	const where = `add-area:${drawn.key}:${part.index}`;
-	const draft = page.areaDraft;
-	if (draft === null)
-		return h(
-			"div",
-			{ class: "interface-area-add" },
-			none,
-			h(
-				"button",
-				{
-					type: "button",
-					class: "interface-button",
-					"data-focus-key": where,
-					onclick: () => {
-						page.areaDraft = { area: "", about: "" };
-						page.focus = `${where}:area`;
-						context.redraw();
-					},
-				},
-				t("Add an area"),
-			),
-		);
-	const busy = page.pending.includes(where);
-	const close = () => {
-		page.areaDraft = null;
-		page.focus = where;
-		context.redraw();
-	};
-	// What is typed stays in the page's state, so a redraw while the form is open keeps it.
-	const field = (name: "area" | "about", label: string) => {
-		const column = part.definition?.columns.find((each) => each.name === name);
-		if (column === undefined) return null;
-		return h(
-			"label",
-			{ class: "interface-area-field" },
-			h("span", null, label),
-			h("input", {
-				type: "text",
-				value: draft[name],
-				maxlength: column.max === null ? null : String(column.max),
-				"data-focus-key": `${where}:${name}`,
-				oninput: (event: Event) => {
-					draft[name] = (event.target as HTMLInputElement).value;
-				},
-			}),
-		);
-	};
-	return h(
-		"form",
-		{
-			class: "interface-area-form",
-			"aria-label": t("Add an area"),
-			onsubmit: (event: Event) => {
-				event.preventDefault();
-				void addAreaRow(context, where);
-			},
-			onkeydown: (event: KeyboardEvent) => {
-				if (event.key !== "Escape") return;
-				event.preventDefault();
-				close();
-			},
-		},
-		field("area", t("Name")),
-		field("about", t("About")),
-		h(
-			"span",
-			{ class: "interface-actions" },
-			h(
-				"button",
-				{
-					type: "submit",
-					class: "interface-button",
-					"data-focus-key": `${where}:save`,
-					"aria-disabled": busy ? "true" : null,
-				},
-				busy ? t("Saving…") : t("Save"),
-			),
-			h(
-				"button",
-				{ type: "button", class: "interface-button", "data-focus-key": `${where}:cancel`, onclick: close },
-				t("Cancel"),
-			),
-		),
-	);
-}
-
-/** Adds the area the form holds, as the member's (Interfaces C6d; app/interface-areas.ts writes the areas table first
- * where the folder has none yet). The form closes once it is saved, and the board shows the area once the folder is
- * read again; a refusal says why under the form's words, and the folder is read again. */
-async function addAreaRow(context: BlockContext, where: string): Promise<void> {
-	const { page, company, writes } = context;
-	const draft = page.areaDraft;
-	if (draft === null || !writes || page.pending.includes(where)) return;
-	const area = draft.area.trim();
-	if (!area) {
-		pageError(page, t("An area needs a name."));
-		page.focus = `${where}:area`;
-		context.redraw();
-		return;
-	}
-	page.pending = [...page.pending, where];
-	page.error = null;
-	page.errorProblems = [];
-	context.redraw();
-	try {
-		await addArea({
-			folder: writes.folder(),
-			memberId: company.userId,
-			members: memberIds(company),
-			signal: company.signal,
-			check: () => {
-				company.signal.throwIfAborted();
-				writes.current();
-			},
-			area,
-			about: draft.about,
-		});
-		page.areaDraft = null;
-		page.focus = where;
-	} catch (error) {
-		claimError(page, error, t("The area could not be added."));
-		writes.reread?.();
-	}
-	page.pending = page.pending.filter((other) => other !== where);
-	if (context.stillShown()) context.redraw();
-}
-
-/** An area's change of its agents on its way, by its row: its Remove and Add an agent wait. */
-const agentsBusy = (area: AreaSupervision) => `agents:${area.key}`;
-
-/** The rules' words (§5.1, rule 9) for the two refusals of an area's new agent, which the page says in its own:
- * the agent is in another area, or someone's yes to supervise the area's agents is live and only they add them. */
-const ONE_AREA_ONLY = "an agent is in one area only";
-const SUPERVISOR_ADDS = "only the area's supervisor adds its agents";
-
-/** An area's agents in its detail (Interfaces C6d; §5.1), with what the rules let the member do, whatever their role:
- * Remove for each where they may change the areas' rows; Add an agent where they may and no one's yes to supervise the
- * area's agents is live, or it is theirs. While someone else's is, it says that only they add agents. Each Remove
- * hands the focus to the next one, then to Add an agent. Null where the page can't change the area's agents. */
-function detailAgents(
-	context: BlockContext,
-	drawn: DrawnBlock,
-	open: InterfaceRow,
-	lineId: string,
-): HTMLElement | null {
-	const { company, page } = context;
-	const area = areaSupervision(context, drawn.source, open.row);
-	const definition = tableDefinition(company, drawn.source);
-	if (area === null || !definition?.columns.some((column) => column.name === "agents" && column.type === "agents"))
-		return null;
-	const agents = agentList(open.row.agents);
-	const where = `agents:${drawn.key}:${open.key}`;
-	const add = `${where}:add`;
-	const remove = (agent: string) => `${where}:remove:${agent}`;
-	const busy = page.pending.includes(agentsBusy(area));
-	const control = (label: string, focus: string, then: readonly string[], act: () => void) =>
-		h(
-			"button",
-			{
-				type: "button",
-				class: "interface-button",
-				"data-focus-key": focus,
-				"data-focus-then": JSON.stringify(then),
-				"aria-describedby": lineId,
-				"aria-disabled": busy ? "true" : null,
-				onclick: () => {
-					if (!busy) act();
-				},
-			},
-			label,
-		);
-	const removes = area.mayWrite
-		? agents.map((agent, index) =>
-				control(
-					t("Remove {name}", { name: drawn.nameOf("agents", [agent]) }),
-					remove(agent),
-					[...agents.slice(index + 1), ...agents.slice(0, index).reverse()].map(remove).concat(add),
-					() =>
-						void changeAreaAgents(
-							context,
-							area,
-							agents,
-							agents.filter((other) => other !== agent),
-						),
-				),
-			)
-		: [];
-	const { live } = area;
-	const adds =
-		area.mayWrite && (live === undefined || live.user === company.userId)
-			? page.addingAgents === area.key
-				? [agentPicker(context, area, agents, where, lineId)]
-				: [
-						control(t("Add an agent"), add, [], () => {
-							const first = areaAgentChoices(company)[0];
-							page.addingAgents = area.key;
-							page.focus = first ? `${where}:choose:${first.id}` : `${where}:choose-cancel`;
-							context.redraw();
-						}),
-					]
-			: [];
-	const others =
-		live !== undefined && live.user !== company.userId
-			? h(
-					"p",
-					null,
-					t("Only {name}, who supervises its agents, adds agents.", { name: memberLabel(context, live.user) }),
-				)
-			: null;
-	if (!removes.length && !adds.length && others === null) return null;
-	return h(
-		"div",
-		{ class: "interface-area-agents" },
-		others,
-		removes.length || adds.length ? h("span", { class: "interface-actions" }, ...removes, ...adds) : null,
-	);
-}
-
-/** The agents an area may get, each a button that adds it, and Cancel; Escape closes it too. With none left it says
- * so. An added agent's Remove takes the focus once the area shows it. */
-function agentPicker(
-	context: BlockContext,
-	area: AreaSupervision,
-	agents: readonly string[],
-	where: string,
-	lineId: string,
-): HTMLElement {
-	const { page } = context;
-	const close = () => {
-		page.addingAgents = null;
-		page.focus = `${where}:add`;
-		context.redraw();
-	};
-	const choices = areaAgentChoices(context.company);
-	const picker = h(
-		"span",
-		{ class: "interface-actions interface-offer-picker", role: "group", "aria-label": t("Add an agent") },
-		choices.length
-			? null
-			: h("span", { class: "interface-offer-picker-label" }, t("Every agent is in an area already.")),
-		...choices.map((agent) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "interface-button",
-					"data-focus-key": `${where}:choose:${agent.id}`,
-					"data-focus-then": JSON.stringify([`${where}:remove:${agent.id}`, `${where}:add`]),
-					"aria-describedby": lineId,
-					onclick: () => void changeAreaAgents(context, area, agents, [...agents, agent.id], agent.id),
-				},
-				agent.displayName,
-			),
-		),
-		h(
-			"button",
-			{ type: "button", class: "interface-button", "data-focus-key": `${where}:choose-cancel`, onclick: close },
-			t("Cancel"),
-		),
-	);
-	picker.addEventListener("keydown", (event) => {
-		if (event.key !== "Escape") return;
-		event.preventDefault();
-		close();
-	});
-	return picker;
-}
-
-/** Sets an area's agents, from those its detail showed (Interfaces C6d). An agent another area has by now, or an area
- * whose agents only its supervisor adds by now, is said in plain words; an area that changed meanwhile says that. After
- * any of them the folder and the consents are read again, so the detail shows the area as it is now. */
-async function changeAreaAgents(
-	context: BlockContext,
-	area: AreaSupervision,
-	shown: readonly string[],
-	agents: readonly string[],
-	added?: string,
-): Promise<void> {
-	const { page, company, writes } = context;
-	const busy = agentsBusy(area);
-	if (page.pending.includes(busy) || !writes) return;
-	page.pending = [...page.pending, busy];
-	page.addingAgents = null;
-	page.error = null;
-	page.errorProblems = [];
-	context.redraw();
-	try {
-		await setAreaAgents({
-			folder: writes.folder(),
-			memberId: company.userId,
-			members: memberIds(company),
-			signal: company.signal,
-			check: () => {
-				company.signal.throwIfAborted();
-				writes.current();
-			},
-			key: area.key,
-			shown,
-			agents,
-		});
-	} catch (error) {
-		const refused = error instanceof WebCompanyFolderRejectedError ? error.problems : [];
-		const elsewhere =
-			error instanceof AgentInAreaError
-				? error.agent
-				: refused.some((problem) => problem.includes(ONE_AREA_ONLY))
-					? added
-					: undefined;
-		if (elsewhere !== undefined)
-			pageError(
-				page,
-				t("{name} is already in another area.", {
-					name: company.staffById(elsewhere)?.displayName ?? t("That agent"),
-				}),
-			);
-		else if (refused.some((problem) => problem.includes(SUPERVISOR_ADDS)))
-			pageError(page, t("Only the area's supervisor adds its agents now."));
-		else claimError(page, error, t("The area's agents could not be changed."));
-		writes.reread?.();
-		void writes.offers?.refresh();
-	}
-	page.pending = page.pending.filter((other) => other !== busy);
-	if (context.stillShown()) context.redraw();
 }
 
 /** Where an `open` button leads: an agent's thread (`agent:{column}` or `agent:<id>`), or another interface this

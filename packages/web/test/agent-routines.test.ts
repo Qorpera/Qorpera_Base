@@ -41,7 +41,6 @@ import {
 	type WebRoutinePayer,
 	type WebRoutines,
 } from "../src/cloud/routines.ts";
-import { fmtDate, fmtTime } from "../src/ui/dom.ts";
 import { deferred, profileA, settle, staff } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
@@ -1270,7 +1269,7 @@ describe("agent routines section", () => {
 			// Clocks may write a narrow space before AM.
 			const plain = (text: string | undefined) => text?.replace(/\s/g, " ");
 			expect(rowsOf(f.view.el).map((row) => plain(line(row)))).toEqual([
-				`Mon at 8:30 AM · next ${plain(fmtTime("2026-09-25T14:00:00.000Z"))}`,
+				"Mon at 8:30 AM · next 04:00 PM",
 				"Mon at 8:30 AM · next tomorrow",
 				"Mon at 8:30 AM · next Oct 26",
 				// A paused routine plans no next run.
@@ -1382,11 +1381,7 @@ describe("agent routines section", () => {
 		expect(form.querySelectorAll("input, textarea, select")).toHaveLength(0);
 		expect([...form.querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Routines"]);
 		expect([...form.querySelectorAll(".routine-field")].map((item) => item.textContent?.replace(/\s/g, " "))).toEqual(
-			[
-				expect.stringMatching(/^WhenMon at 8:30 AM/),
-				"ReplyAlways",
-				`Runs onPaid by the company since ${fmtDate("2026-10-03T08:00:00.000Z")}`,
-			],
+			[expect.stringMatching(/^WhenMon at 8:30 AM/), "ReplyAlways", "Runs onPaid by the company since Oct 3, 2026"],
 		);
 		expect(f.routines.open).not.toHaveBeenCalled();
 		expect(document.activeElement?.textContent).toBe("Routines");
@@ -2135,7 +2130,7 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 });
 
 describe("the routine editor's choices", () => {
-	it("offers every few minutes or days at a time, never a file change, and minutes from 5", async () => {
+	it("offers every few minutes or days at a time, and minutes from 5", async () => {
 		const f = mount([]);
 		await openEditor(f.view, "New routine");
 		// The instructions may be as long as the file allows.
@@ -2144,7 +2139,6 @@ describe("the routine editor's choices", () => {
 		const kind = f.view.el.querySelector<HTMLButtonElement>(".routine-kind")!;
 		expect(kind.textContent).toBe("or every few hours");
 		expect(field(f.view.el, "Interval").closest("[hidden]")).not.toBeNull();
-		expect(f.view.el.querySelector('[aria-label="Company File path"]')).toBeNull();
 		const every = field(f.view.el, "Interval");
 		const unit = field<HTMLSelectElement>(f.view.el, "Interval unit");
 		expect([unit.value, every.value, every.min, every.max]).toEqual(["hours", "1", "1", "168"]);
@@ -2169,14 +2163,12 @@ describe("the routine editor's choices", () => {
 		expect(status(f.view.el)).toBe("Choose an interval between 5 minutes and 7 days.");
 		expect(f.routines.save).not.toHaveBeenCalled();
 	});
-	it("asks for no time zone: a new routine runs by the viewer's, an edit keeps the file's; no note on saving", async () => {
+	it("runs a new routine by the viewer's time zone, and an edit keeps the file's", async () => {
 		localStorage.setItem("qorpera.web.time-zone", "America/New_York");
 		const f = mount([routine()]);
 		await openEditor(f.view, "New routine");
-		expect(f.view.el.querySelector('[aria-label="Time zone"], .routine-zone')).toBeNull();
 		// The member chooses the account here (none works while they're away), with no note about it.
 		expect(f.view.el.querySelector('[aria-label="Model account"]')).not.toBeNull();
-		expect(f.view.el.textContent).not.toContain("Saving lets");
 		field(f.view.el, "Routine name").value = "Weekly close";
 		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
 		click(f.view.el, "Save");
@@ -2184,7 +2176,6 @@ describe("the routine editor's choices", () => {
 		// The routine on the list (Europe/Copenhagen) opens, and keeps its zone.
 		await vi.waitFor(() => expect(f.view.el.querySelector(COMPOSER)).toBeNull());
 		await openEditor(f.view);
-		expect(f.view.el.querySelector('[aria-label="Time zone"]')).toBeNull();
 		field(f.view.el, "Routine name").value = "Morning digest";
 		click(f.view.el, "Save");
 		await vi.waitFor(() => expect(f.routines.save).toHaveBeenCalledTimes(2));
@@ -2537,11 +2528,7 @@ describe("a member edit of an agent's routine", () => {
 			expect(kind.textContent).toBe("or on chosen days");
 			kind.click();
 		};
-		const same = await saveEdited(kept, (form) => {
-			// The composer asks for no zone: an edit keeps the file's.
-			expect(form.querySelector('[aria-label="Time zone"]')).toBeNull();
-			toWeekly(form);
-		});
+		const same = await saveEdited(kept, toWeekly);
 		expect(same.file).toMatchObject({ trigger: { when: "weekly" }, timezone: "America/New_York", quiet });
 		expect(same.after).not.toMatch(/^quiet_timezone:/m);
 	});

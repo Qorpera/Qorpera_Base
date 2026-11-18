@@ -1,13 +1,9 @@
 /* The `mail` and `mail_addresses` sources (RUNTIME-INTERFACES.md §4; Interfaces step I5c), read from the company's
  * mail as app/company-mail.ts keeps it. They are sources only once that read is open: a page that names them is not
- * drawn before.
- *
- * A `mail` block reads the list its view asks for: a view's or a block's `where` that names one `state`, one `address`
- * or one `direction` asks the threads call for just those (the call filters by them itself, so Sent pages through every
- * sent thread); any other column (`unread`, ...) is filtered here, on the threads read, as a table's columns are. */
+ * drawn before. */
 
-import type { InterfaceQuery, TableRow } from "@qorpera/cloud-client/interfaces";
-import { MAIL_DIRECTIONS, type MailDirection, type MailThreadState, type MailThreadSummary } from "../cloud/mail.ts";
+import type { TableRow } from "@qorpera/cloud-client/interfaces";
+import type { MailThreadSummary } from "../cloud/mail.ts";
 import type { CompanyController } from "./company.ts";
 import type { MailList, MailListRequest } from "./company-mail.ts";
 import { mailListKey } from "./company-mail.ts";
@@ -36,8 +32,6 @@ export const MAIL_SOURCES: Readonly<
 	mail_addresses: { columns: ["address", "handled_by", "routine", "last_7_days"], time: null },
 };
 
-const STATES: readonly MailThreadState[] = ["new", "handled", "waiting"];
-
 export function isMailSource(source: string): boolean {
 	return Object.hasOwn(MAIL_SOURCES, source);
 }
@@ -49,34 +43,6 @@ export function mailSource(
 ): { readonly columns: readonly string[]; readonly time: string | null } | undefined {
 	if (!isMailSource(source) || company.store.get().mail === undefined) return undefined;
 	return MAIL_SOURCES[source];
-}
-
-/** The one value every `where` gives a column, when they all give the same single text; else none. */
-function single(wheres: readonly NonNullable<InterfaceQuery["where"]>[], column: string): string | undefined {
-	const values = new Set<unknown>();
-	for (const where of wheres) if (Object.hasOwn(where, column)) values.add(where[column]);
-	const [value] = values;
-	return values.size === 1 && typeof value === "string" ? value : undefined;
-}
-
-/** The list a `mail` block reads: the threads call's own filters from its view's and its own `where`. */
-export function mailRequest(
-	narrow: readonly NonNullable<InterfaceQuery["where"]>[],
-	where: InterfaceQuery["where"],
-): MailListRequest {
-	const wheres = where ? [...narrow, where] : narrow;
-	const state = single(wheres, "state");
-	const address = single(wheres, "address");
-	const direction = single(wheres, "direction");
-	return {
-		...(address?.trim() ? { address } : {}),
-		...(state !== undefined && (STATES as readonly string[]).includes(state)
-			? { state: state as MailThreadState }
-			: {}),
-		...(direction !== undefined && (MAIL_DIRECTIONS as readonly string[]).includes(direction)
-			? { direction: direction as MailDirection }
-			: {}),
-	};
 }
 
 /** A thread as a `mail` row. Account mail has no subject (the call keeps it back); nothing else is left out. Its time
@@ -105,7 +71,7 @@ export function mailList(company: CompanyController, request: MailListRequest): 
 }
 
 /** The `mail` rows of the list a request names, newest first, as far as its pages are read. */
-export function mailRows(company: CompanyController, request: MailListRequest = {}): InterfaceRow[] | undefined {
+function mailRows(company: CompanyController, request: MailListRequest = {}): InterfaceRow[] | undefined {
 	if (company.store.get().mail === undefined) return undefined;
 	return (mailList(company, request)?.threads ?? []).map((item) => ({ row: mailRow(item), key: rowKey(item.thread) }));
 }
@@ -145,18 +111,4 @@ export function isAccountMail(company: CompanyController, thread: string): boole
 		read?.status === "ready" &&
 		read.thread.messages.some((message) => message.kind === "received" && message.account !== undefined)
 	);
-}
-
-/** The row an opened `mail` block shows when its view's list no longer holds it (a waiting send answered in the
- * "Waiting for you" view): the thread from another list, or just its id. The block reads the thread itself. */
-export function openedMailRow(company: CompanyController, key: string): InterfaceRow | undefined {
-	if (!key.startsWith("mail:")) return undefined;
-	const thread = key.slice("mail:".length);
-	const found = mailSummary(company, thread);
-	return { row: found ? mailRow(found) : { thread }, key };
-}
-
-/** The thread a `mail` row names. */
-export function rowThread(row: TableRow): string | undefined {
-	return typeof row.thread === "string" ? row.thread : undefined;
 }
