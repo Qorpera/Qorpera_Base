@@ -59,7 +59,6 @@ import {
 	cloudCommandScripts,
 	cloudScriptContents,
 	cloudScriptIdentity,
-	cloudScriptKeepsFolder,
 	cloudScriptNotRead,
 	cloudScriptReadProgram,
 	parseCloudPreparedScripts,
@@ -960,7 +959,6 @@ export function cloudMachineTools(options: {
 		machine: MachineView,
 		files: readonly CloudCommandScriptRun[],
 		context: CloudToolContext,
-		used: number,
 	): Promise<CloudScriptEntry[]> => {
 		const program = cloudScriptReadProgram(files.map((file) => file.path));
 		const deadline = AbortSignal.any([context.signal, AbortSignal.timeout(SCRIPT_READ_MS)]);
@@ -1036,7 +1034,7 @@ export function cloudMachineTools(options: {
 				if (page.output === "" || page.log.nextOffset >= page.log.totalBytes) break;
 				offset = page.log.nextOffset;
 			}
-			const read = parseCloudScriptRead(output, files, used);
+			const read = parseCloudScriptRead(output, files);
 			for (const [sha256, text] of read.texts) {
 				scriptTexts.delete(sha256);
 				scriptTexts.set(sha256, text);
@@ -1096,39 +1094,14 @@ export function cloudMachineTools(options: {
 			if (!machine) throw new CloudToolRefusal(`MACHINE_NOT_FOUND: no machine is named ${String(input.machine)}`);
 			if (machine.state !== "running")
 				throw new CloudToolRefusal(`MACHINE_NOT_RUNNING: ${machine.name} is ${machine.state}`);
-			const entries = new Map<string, CloudScriptEntry>();
-			const settled = new Set<string>();
-			let used = 0;
-			let parsed = found;
-			for (let pass = 0; pass < CLOUD_SCRIPT_FILES; pass += 1) {
-				const fresh = parsed.files.filter((file) => !entries.has(file.path));
-				if (fresh.length === 0) break;
-				const room = Math.max(0, CLOUD_SCRIPT_FILES - entries.size);
-				for (const entry of cloudScriptNotRead(
-					fresh.slice(room),
+			const files = [
+				...(await readScripts(machine, found.files.slice(0, CLOUD_SCRIPT_FILES), context)),
+				...cloudScriptNotRead(
+					found.files.slice(CLOUD_SCRIPT_FILES),
 					`the command runs more than the ${CLOUD_SCRIPT_FILES} files the review reads`,
-				))
-					entries.set(entry.path, entry);
-				const batch = fresh.slice(0, room);
-				if (batch.length === 0) break;
-				for (const entry of await readScripts(machine, batch, context, used)) {
-					entries.set(entry.path, entry);
-					if (!("sha256" in entry)) continue;
-					used += entry.bytes;
-					const text = scriptTexts.get(entry.sha256);
-					if (text !== undefined && cloudScriptKeepsFolder(text)) settled.add(entry.path);
-				}
-				parsed = cloudCommandScripts(String(input.command), undefined, settled);
-			}
-			const files = parsed.files.map(
-				(file) =>
-					entries.get(file.path) ??
-					({
-						path: file.path,
-						notShown: `the command runs more than the ${CLOUD_SCRIPT_FILES} files the review reads`,
-					} satisfies CloudScriptEntry),
-			);
-			return { ...input, scripts: { files, notShown: parsed.notShown } as unknown as JsonValue };
+				),
+			];
+			return { ...input, scripts: { files, notShown: found.notShown } as unknown as JsonValue };
 		},
 		reviewContents(parsed) {
 			const scripts = scriptsOf(parsed);

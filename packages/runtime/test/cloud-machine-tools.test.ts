@@ -2880,7 +2880,7 @@ describe("the files a machine command runs, read for its review (17 November 202
 		}
 	});
 
-	it("reads where a sourced file leads in a second pass, within the same bounds (review r3 of #1924)", async () => {
+	it("shows a sourced activate in one read and does not show the file run after it (review r7 of #1924)", async () => {
 		const command = "cd /srv/app && source .venv/bin/activate && python3 main.py";
 		const activate = "/srv/app/.venv/bin/activate";
 		const main = "/srv/app/main.py";
@@ -2927,22 +2927,16 @@ describe("the files a machine command runs, read for its review (17 November 202
 				f.boundary.close();
 			}
 		};
-		const plain = await look({ [activate]: "VIRTUAL_ENV=/srv/app/.venv\n", [main]: "print('EEG')\n" });
-		expect(plain.reads).toBe(2);
-		expect(plain.contents).toMatchObject({
-			files: [
-				{ path: activate, text: "VIRTUAL_ENV=/srv/app/.venv\n" },
-				{ path: main, text: "print('EEG')\n" },
-			],
+		const shown = await look({ [activate]: "VIRTUAL_ENV=/srv/app/.venv\n", [main]: "print('EEG')\n" });
+		expect(shown.reads).toBe(1);
+		expect(shown.contents).toMatchObject({
+			files: [{ path: activate, text: "VIRTUAL_ENV=/srv/app/.venv\n" }],
+			notShown: ["main.py: a file sourced before it can change what runs"],
 		});
-		expect(plain.contents).not.toHaveProperty("notShown");
-		const moving = await look({ [activate]: "cd /tmp\n", [main]: "print('EEG')\n" });
-		expect(moving.reads).toBe(1);
-		expect(moving.contents.notShown).toEqual(["main.py: the folder it is in could not be told"]);
 		const unread = await look({});
 		expect(unread.reads).toBe(1);
 		expect(unread.contents.notShown).toEqual([
-			"main.py: the folder it is in could not be told",
+			"main.py: a file sourced before it can change what runs",
 			`${activate}: it is not on the machine now`,
 		]);
 	});

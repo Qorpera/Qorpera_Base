@@ -42,23 +42,6 @@ const FOLDER_WORDS = new Set([
 	"readonly",
 	"local",
 ]);
-const SOURCED_WORDS = new Set([
-	"cd",
-	"pushd",
-	"popd",
-	"eval",
-	"source",
-	"exec",
-	"command",
-	"builtin",
-	"alias",
-	"shopt",
-	"trap",
-	"CDPATH",
-	"enable",
-	"BASH_ENV",
-	"ENV",
-]);
 const RESERVED = new Set([
 	"if",
 	"then",
@@ -246,7 +229,13 @@ function runner(name: string): boolean {
 
 type Located = { readonly path: string } | { readonly why: string };
 
+function climbs(text: string): boolean {
+	return text.split("/").includes("..");
+}
+
 function locate(word: Word, folder: string | null): Located {
+	if (climbs(word.text))
+		return { why: `${line(word.text)}: its path goes up through "..", which a link can lead elsewhere` };
 	if (!word.text.startsWith("/") && folder === null)
 		return { why: `${line(word.text)}: the folder it is in could not be told` };
 	const path = posix.resolve(folder ?? "/", word.text);
@@ -257,6 +246,7 @@ function locate(word: Word, folder: string | null): Located {
 function programName(word: Word | undefined): string | undefined {
 	if (!word) return undefined;
 	if (!word.text.includes("/")) return word.text;
+	if (climbs(word.text)) return undefined;
 	return PROGRAMS.test(posix.resolve(word.text)) ? basename(word.text) : undefined;
 }
 
@@ -326,28 +316,7 @@ function looksLikeScript(command: string): boolean {
 		.some((part) => part === "source" || part === "." || part.startsWith("./") || runner(part));
 }
 
-export function cloudScriptKeepsFolder(file: string): boolean {
-	const text = file
-		.split("\n")
-		.filter((row) => !/^\s*#/.test(row))
-		.join("\n");
-	if (text.split(/[^A-Za-z0-9_]+/).some((token) => SOURCED_WORDS.has(token))) return false;
-	if (/(^|[\n;&|])[ \t]*\.[ \t]/.test(text)) return false;
-	const names = [
-		...[...text.matchAll(/([^\s;&|(){}<>]+)[ \t]*\([ \t]*\)/g)].map((match) => match[1] as string),
-		...[...text.matchAll(/(?:^|[\s;&|])function[ \t]+([^\s;&|(){}<>]+)/g)].map((match) => match[1] as string),
-	];
-	return names.every(
-		(name) =>
-			/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !runner(name) && !["cd", "pushd", "popd", "source"].includes(name),
-	);
-}
-
-export function cloudCommandScripts(
-	command: string,
-	start: string | null = HOME,
-	settled: ReadonlySet<string> = new Set(),
-): CloudCommandScripts {
+export function cloudCommandScripts(command: string, start: string | null = HOME): CloudCommandScripts {
 	const tokens = cloudCommandTokens(command);
 	if (!tokens) return { files: [], notShown: looksLikeScript(command) ? [CLOUD_COMMAND_NOT_PLAIN] : [] };
 	const simples = simplesOf(tokens);
@@ -358,7 +327,12 @@ export function cloudCommandScripts(
 	const compound = simples.some((simple) => RESERVED.has(simple.words[0]?.text ?? ""));
 	let folder = start;
 	let chained = !compound;
+	let sourced = false;
 	const run = (word: Word, base: string | null) => {
+		if (sourced) {
+			notShown.add(`${line(word.text)}: a file sourced before it can change what runs`);
+			return;
+		}
 		const located = locate(word, base);
 		if ("why" in located) {
 			notShown.add(located.why);
@@ -392,14 +366,12 @@ export function cloudCommandScripts(
 		const name = programName(program);
 		if (name === "source" || name === ".") {
 			const file = words[begun.at + 1];
-			const located = file ? locate(file, base) : undefined;
 			if (begun.prefixed) notShown.add(`${line(name)}: the review does not follow what runs it`);
 			else if (file && !file.text.includes("/"))
 				notShown.add(`${line(file.text)}: the shell looks it up on its program path first`);
 			else if (file) run(file, base);
-			const keeps =
-				!begun.prefixed && !simple.alone && words.length === begun.at + 2 && file?.text.includes("/") && located;
-			if (chained && !(keeps && "path" in located && settled.has(located.path))) folder = null;
+			sourced = true;
+			if (chained) folder = null;
 			continue;
 		}
 		if (chained && words.some((word) => FOLDER_WORDS.has(word.text))) folder = null;
@@ -474,17 +446,13 @@ export function cloudScriptNotRead(files: readonly CloudCommandScriptRun[], why:
 	return files.map((file) => ({ path: file.path, notShown: why }));
 }
 
-export function parseCloudScriptRead(
-	output: string,
-	files: readonly CloudCommandScriptRun[],
-	used = 0,
-): CloudScriptRead {
+export function parseCloudScriptRead(output: string, files: readonly CloudCommandScriptRun[]): CloudScriptRead {
 	const mark = output.lastIndexOf(`${READ_MARK}\n`);
 	if (mark < 0 || (mark > 0 && output[mark - 1] !== "\n")) throw new Error("Script read differs");
 	const lines = output.slice(mark + READ_MARK.length + 1).split("\n");
 	const entries: CloudScriptEntry[] = [];
 	const texts = new Map<string, string>();
-	let total = used;
+	let total = 0;
 	let at = 0;
 	for (const file of files) {
 		const head = lines[at++] ?? "";

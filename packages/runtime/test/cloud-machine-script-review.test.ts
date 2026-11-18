@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,7 +14,6 @@ import {
 	cloudScriptContents,
 	cloudScriptContentsIncomplete,
 	cloudScriptIdentity,
-	cloudScriptKeepsFolder,
 	cloudScriptReadProgram,
 	parseCloudPreparedScripts,
 	parseCloudScriptRead,
@@ -22,84 +21,6 @@ import {
 
 const digest = (text: string) => sha256(Buffer.from(text));
 const paths = (command: string) => cloudCommandScripts(command).files.map((file) => file.path);
-
-const VENV_ACTIVATE = `# This file must be used with "source bin/activate" *from bash*
-# You cannot run it directly
-
-deactivate () {
-    # reset old environment variables
-    if [ -n "\${_OLD_VIRTUAL_PATH:-}" ] ; then
-        PATH="\${_OLD_VIRTUAL_PATH:-}"
-        export PATH
-        unset _OLD_VIRTUAL_PATH
-    fi
-    if [ -n "\${_OLD_VIRTUAL_PYTHONHOME:-}" ] ; then
-        PYTHONHOME="\${_OLD_VIRTUAL_PYTHONHOME:-}"
-        export PYTHONHOME
-        unset _OLD_VIRTUAL_PYTHONHOME
-    fi
-
-    # Call hash to forget past locations. Without forgetting
-    # past locations the $PATH changes we made may not be respected.
-    # See "man bash" for more details. hash is usually a builtin of your shell
-    hash -r 2> /dev/null
-
-    if [ -n "\${_OLD_VIRTUAL_PS1:-}" ] ; then
-        PS1="\${_OLD_VIRTUAL_PS1:-}"
-        export PS1
-        unset _OLD_VIRTUAL_PS1
-    fi
-
-    unset VIRTUAL_ENV
-    unset VIRTUAL_ENV_PROMPT
-    if [ ! "\${1:-}" = "nondestructive" ] ; then
-    # Self destruct!
-        unset -f deactivate
-    fi
-}
-
-# unset irrelevant variables
-deactivate nondestructive
-
-# on Windows, a path can contain colons and backslashes and has to be converted:
-case "$(uname)" in
-    CYGWIN*|MSYS*|MINGW*)
-        # transform D:\\path\\to\\venv to /d/path/to/venv on MSYS and MINGW
-        # and to /cygdrive/d/path/to/venv on Cygwin
-        VIRTUAL_ENV=$(cygpath /srv/app/.venv)
-        export VIRTUAL_ENV
-        ;;
-    *)
-        # use the path as-is
-        export VIRTUAL_ENV=/srv/app/.venv
-        ;;
-esac
-
-_OLD_VIRTUAL_PATH="$PATH"
-PATH="$VIRTUAL_ENV/"bin":$PATH"
-export PATH
-
-VIRTUAL_ENV_PROMPT=v
-export VIRTUAL_ENV_PROMPT
-
-# unset PYTHONHOME if set
-# this will fail if PYTHONHOME is set to the empty string (which is bad anyway)
-# could use \`if (set -u; : $PYTHONHOME) ;\` in bash
-if [ -n "\${PYTHONHOME:-}" ] ; then
-    _OLD_VIRTUAL_PYTHONHOME="\${PYTHONHOME:-}"
-    unset PYTHONHOME
-fi
-
-if [ -z "\${VIRTUAL_ENV_DISABLE_PROMPT:-}" ] ; then
-    _OLD_VIRTUAL_PS1="\${PS1:-}"
-    PS1="("v") \${PS1:-}"
-    export PS1
-fi
-
-# Call hash to forget past commands. Without forgetting
-# past commands the $PATH changes we made may not be respected
-hash -r 2> /dev/null
-`;
 
 describe("the characters a command may use before any file of it is named (review r6 of #1924)", () => {
 	it("passes plain words, plain quoted strings, ; newline && | and output redirections, and nothing else", () => {
@@ -257,12 +178,7 @@ describe("a relative file is named only in a folder bash is in under every outco
 				named.set(
 					shape,
 					trees.map((tree) => {
-						const settled = new Set(
-							[join(tree, "env.sh"), join(tree, "go.sh")].filter((file) =>
-								cloudScriptKeepsFolder(readFileSync(file, "utf8")),
-							),
-						);
-						const found = cloudCommandScripts(shape.replace("@", "python3 x.py"), tree, settled);
+						const found = cloudCommandScripts(shape.replace("@", "python3 x.py"), tree);
 						const file = found.files.find((item) => item.path.endsWith("/x.py"));
 						if (!file) expect(found.notShown.length, shape).toBeGreaterThan(0);
 						return file ? dirname(file.path) : null;
@@ -302,8 +218,6 @@ describe("a relative file is named only in a folder bash is in under every outco
 			expect(at("test -e s1 ; @")).toBe(full);
 			expect(at("test -e s1 | @")).toBe(full);
 			expect(at("cd d1 && @")).toBe(join(full, "d1"));
-			expect(at("source ./env.sh && @")).toBe(full);
-			expect(at("cd d1 && source ./env.sh && @")).toBeNull();
 			expect(at("cd d1 && @ | tee log")).toBe(join(full, "d1"));
 			expect(at("cd d1 && test -e s2 | @ | cat")).toBe(join(full, "d1"));
 			expect(at("cd d1 && test -e s2 && cd d2 && @")).toBe(join(full, "d1", "d2"));
@@ -316,6 +230,8 @@ describe("a relative file is named only in a folder bash is in under every outco
 				"cd d1 | @",
 				"cd d1 ; @ | tee log",
 				"cd d1 && test -e s2 | cat ; @",
+				"source ./env.sh && @",
+				"cd d1 && source ./env.sh && @",
 				"source ./go.sh && @",
 				"if cd d1; then @; fi",
 				"if true; then cd d1; fi; @",
@@ -374,68 +290,60 @@ describe("the files a machine command runs", () => {
 		expect(paths("python3 'my script.py'")).toEqual(["/root/my script.py"]);
 	});
 
-	it("follows a sourced file only when the read showed it whole and none of its own words can move a folder", () => {
-		const activate = "/srv/app/.venv/bin/activate";
-		const command = "cd /srv/app && source .venv/bin/activate && python3 main.py";
-		expect(cloudCommandScripts(command, undefined, new Set([activate]))).toEqual({
+	it("shows a sourced file and names no file after it, absolute or relative (review r7 of #1924)", () => {
+		const sourcedBefore = (path: string) => `${path}: a file sourced before it can change what runs`;
+		expect(cloudCommandScripts("cd /srv/app && source .venv/bin/activate && python3 main.py")).toEqual({
+			files: [{ path: "/srv/app/.venv/bin/activate", mentioned: false }],
+			notShown: [sourcedBefore("main.py")],
+		});
+		expect(cloudCommandScripts("cd /a && source ./env.sh && python3 x.py")).toEqual({
+			files: [{ path: "/a/env.sh", mentioned: false }],
+			notShown: [sourcedBefore("x.py")],
+		});
+		expect(cloudCommandScripts("source ./env.sh; python3 /tmp/x.py; /tmp/run.sh")).toEqual({
+			files: [{ path: "/root/env.sh", mentioned: false }],
+			notShown: [sourcedBefore("/tmp/x.py"), sourcedBefore("/tmp/run.sh")],
+		});
+		expect(cloudCommandScripts("python3 /tmp/a.py && . ./env.sh && . ./more.sh && ./run.sh")).toEqual({
 			files: [
-				{ path: activate, mentioned: false },
-				{ path: "/srv/app/main.py", mentioned: false },
+				{ path: "/tmp/a.py", mentioned: false },
+				{ path: "/root/env.sh", mentioned: false },
 			],
-			notShown: [],
+			notShown: [sourcedBefore("./more.sh"), sourcedBefore("./run.sh")],
 		});
-		expect(cloudCommandScripts(command)).toEqual({
-			files: [{ path: activate, mentioned: false }],
-			notShown: ["main.py: the folder it is in could not be told"],
+		expect(cloudCommandScripts("source activate && python3 /tmp/x.py").notShown).toEqual([
+			"activate: the shell looks it up on its program path first",
+			sourcedBefore("/tmp/x.py"),
+		]);
+		expect(cloudCommandScripts("time source ./env.sh; python3 /tmp/x.py")).toEqual({
+			files: [],
+			notShown: ["source: the review does not follow what runs it", sourcedBefore("/tmp/x.py")],
 		});
-		for (const text of ["export BASH_ENV=/x\n", "ENV=/x\n"]) {
-			const settled = new Set(cloudScriptKeepsFolder(text) ? [activate] : []);
-			expect(cloudCommandScripts(command, undefined, settled).notShown, text).toEqual([
-				"main.py: the folder it is in could not be told",
-			]);
-		}
-		expect(cloudScriptKeepsFolder("VIRTUAL_ENV=/srv/app/.venv\ndeactivate () {\n  VIRTUAL_ENV=\n}\n")).toBe(true);
-		expect(cloudScriptKeepsFolder(VENV_ACTIVATE)).toBe(true);
-		expect(
-			cloudCommandScripts(command, undefined, new Set(cloudScriptKeepsFolder(VENV_ACTIVATE) ? [activate] : [])),
-		).toEqual({
-			files: [
-				{ path: activate, mentioned: false },
-				{ path: "/srv/app/main.py", mentioned: false },
-			],
-			notShown: [],
-		});
-		for (const text of [
-			"# cd /elsewhere\nREADY=1\n",
-			"  # pushd /a\n",
-			"export X=1\nunset Y\nhash -r\nset -u\ndeclare -x Z\ntypeset W\nreadonly V\nlocal U\n",
-			"HOME=/safe\nPWD=/safe\n",
+	});
+
+	it('names no file whose path, or the folder a leading cd takes it to, goes up through ".." (review r7 of #1924)', () => {
+		const climbs = (word: string) => `${word}: its path goes up through "..", which a link can lead elsewhere`;
+		for (const [command, word] of [
+			["python3 sub/../x.py", "sub/../x.py"],
+			["python3 /root/sub/../x.py", "/root/sub/../x.py"],
+			["cd /root/sub && python3 ../x.py", "../x.py"],
+			["source sub/../env.sh", "sub/../env.sh"],
+			["./sub/../run.sh", "./sub/../run.sh"],
+			["/usr/bin/../../root/evil/python3 x.py", "/usr/bin/../../root/evil/python3"],
+			["python3 ..", ".."],
 		])
-			expect(cloudScriptKeepsFolder(text), text).toBe(true);
-		for (const text of [
-			"cd /srv\n",
-			"{cd,/safe}\n",
-			"x=1; pushd /a\n",
-			"source ./more.sh\n",
-			". ./more.sh\n",
-			"CDPATH=/elsewhere\n",
-			"export CDPATH=/x\n",
-			"export BASH_ENV=/x\n",
-			"ENV=/x\n",
-			"true # cd\n",
-			"cd /x\n",
-			". ./other.sh\n",
-			"x=1; . ./other.sh\n",
-			"cd() { :; }\n",
-			"source() { :; }\n",
-			"shopt -s expand_aliases\n",
-			"python3() { :; }\n",
-			"deno() { :; }\n",
-			"/usr/bin/python3() { :; }\n",
-			"function node { :; }\n",
-			"a-b() { :; }\n",
+			expect(cloudCommandScripts(command), command).toEqual({ files: [], notShown: [climbs(word as string)] });
+		for (const command of [
+			"cd /root/sub/.. && python3 x.py",
+			"cd .. && python3 x.py",
+			"cd /a && cd ../b && python3 x.py",
 		])
-			expect(cloudScriptKeepsFolder(text), text).toBe(false);
+			expect(cloudCommandScripts(command), command).toEqual({
+				files: [],
+				notShown: ["x.py: the folder it is in could not be told"],
+			});
+		expect(paths("python3 a..b.py ./c.py .../d.py")).toEqual(["/root/a..b.py"]);
+		expect(paths("cd /root/sub && python3 x.py && python3 /tmp/..x.py")).toEqual(["/root/sub/x.py", "/tmp/..x.py"]);
 	});
 
 	it("names a script only when every word before its path is on the allow-list (review r5 of #1924)", () => {
@@ -634,6 +542,41 @@ describe("on a real shell (bash and coreutils)", () => {
 			expect(entries[0]).toEqual({ path: script, sha256: digest("echo fetched\n"), bytes: 13 });
 			expect(texts.get(digest("echo fetched\n"))).toBe("echo fetched\n");
 			expect(entries.slice(1).every((entry) => "notShown" in entry)).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('refuses the ".." decoys of a real symlinked folder, and reads what runs through a link without ".."', () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-script-link-"));
+		try {
+			mkdirSync(join(dir, "safe", "dir"), { recursive: true });
+			writeFileSync(join(dir, "x.py"), "harmless\n");
+			writeFileSync(join(dir, "safe", "x.py"), "decoy\n");
+			writeFileSync(join(dir, "safe", "dir", "y.py"), "through the link\n");
+			symlinkSync(join(dir, "safe", "dir"), join(dir, "sub"));
+			const runs = (command: string) => shell(`cd ${dir} && ${command}`).stdout;
+			for (const command of [
+				"python3 sub/../x.py",
+				`python3 ${dir}/sub/../x.py`,
+				`cd ${dir}/sub && python3 ../x.py`,
+			]) {
+				expect(runs(command.replace("python3", "cat")), command).toBe("decoy\n");
+				expect(readFileSync(join(dir, "x.py"), "utf8")).toBe("harmless\n");
+				const found = cloudCommandScripts(command, dir);
+				expect(found.files, command).toEqual([]);
+				expect(found.notShown.join(), command).toContain('".."');
+			}
+			for (const command of ["python3 sub/y.py", `cd ${dir}/sub && python3 y.py`]) {
+				const found = cloudCommandScripts(command, dir);
+				expect(
+					found.files.map((file) => file.path),
+					command,
+				).toEqual([join(dir, "sub", "y.py")]);
+				const read = shell(cloudScriptReadProgram(found.files.map((file) => file.path)));
+				const { texts } = parseCloudScriptRead(read.stdout, found.files);
+				expect([...texts.values()], command).toEqual([runs(command.replace("python3", "cat"))]);
+			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
