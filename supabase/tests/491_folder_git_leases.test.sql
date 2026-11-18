@@ -5,10 +5,8 @@
 -- refused ('denied'), and a lease lives as long as its view. A code host's gc block answers new takes busy
 -- ('maintenance'). Publish and release are 492's. The office, code/acme/app and the helpers are 490's.
 
--- The commit keeps every marker. The calls are the service role's alone; the helpers and the leases are no role's.
 do $$
-declare v_def text := pg_get_functiondef('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure);
-	v_api text[] := array['public.qorpera_folder_git_lease_take(uuid,jsonb,text)', 'public.qorpera_folder_git_leases_drop(uuid,jsonb)',
+declare v_api text[] := array['public.qorpera_folder_git_lease_take(uuid,jsonb,text)', 'public.qorpera_folder_git_leases_drop(uuid,jsonb)',
 		'public.qorpera_folder_git_gc_begin(uuid,jsonb,text)', 'public.qorpera_folder_git_gc_end(uuid,jsonb,text)',
 		'public.qorpera_folder_git_publish(uuid,jsonb,uuid,text,jsonb)', 'public.qorpera_folder_git_lease_release(uuid,jsonb,uuid,jsonb)'];
 	v_helpers text[] := array['public.qorpera_folder_git_view(uuid,jsonb)', 'public.qorpera_folder_git_shared_repository(text)',
@@ -16,8 +14,6 @@ declare v_def text := pg_get_functiondef('public.qorpera_folder_commit(uuid,json
 		'public.qorpera_folder_git_repository_lock(uuid,text,boolean)', 'public.qorpera_folder_git_repository(text)',
 		'public.qorpera_folder_git_land(uuid,jsonb,uuid,text,jsonb,boolean)'];
 begin
-	if strpos(v_def, '20260930446300') = 0 or strpos(v_def, '20260930446200') = 0 or strpos(v_def, '20260930446000') = 0
-		or strpos(v_def, '20260930445000') = 0 then raise exception 'The commit lost a marker'; end if;
 	if exists (select 1 from unnest(array['anon','authenticated']) r(role) cross join unnest(v_api) f(sig)
 			where has_function_privilege(r.role, f.sig, 'EXECUTE'))
 		or exists (select 1 from unnest(v_api) f(sig) where not has_function_privilege('service_role', f.sig, 'EXECUTE')) then

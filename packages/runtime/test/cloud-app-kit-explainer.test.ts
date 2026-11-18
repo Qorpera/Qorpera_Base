@@ -3,7 +3,7 @@ import { appGuide } from "@qorpera/runtime/cloud-app-guides";
 import {
 	captionHash,
 	EXPLAINER_ENGINE_JS,
-	EXPLAINER_MAX_CLIPS,
+	EXPLAINER_MANY_CAPTIONS,
 	EXPLAINER_VOICE_CAPTIONS_CJS,
 	EXPLAINER_VOICE_ENCODE_CJS,
 	EXPLAINER_VOICE_PEER_CJS,
@@ -202,11 +202,11 @@ it("reads the list of voice clips, and leaves out whatever is not one", () => {
 	]);
 	for (const none of ["", "not json", "[]", "null", '{"clips":{}}', '{"voice":"cove"}'])
 		expect(parseExplainerClips(none)).toEqual([]);
-	const many = Array.from({ length: EXPLAINER_MAX_CLIPS + 9 }, (_, n) => {
+	const many = Array.from({ length: EXPLAINER_MANY_CAPTIONS + 9 }, (_, n) => {
 		const caption = n.toString(16).padStart(8, "0");
 		return { caption, file: `${caption}.mp4`, seconds: 1 };
 	});
-	expect(parseExplainerClips(JSON.stringify({ clips: many }))).toHaveLength(EXPLAINER_MAX_CLIPS);
+	expect(parseExplainerClips(JSON.stringify({ clips: many }))).toHaveLength(EXPLAINER_MANY_CAPTIONS + 9);
 });
 
 const SCENES = `V.part("The idea");
@@ -241,9 +241,9 @@ it("tells the maker what a read of the scenes found, and nothing of a video that
 	const wordy =
 		'V.scene((s) => { s.say("one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen"); });';
 	expect(explainerNotes(wordy)[0]).toContain('1 caption is longer than 18 words (the first: "one two three');
-	const many = `V.scene((s) => { ${Array.from({ length: EXPLAINER_MAX_CLIPS + 1 }, (_, n) => `s.say("Caption number ${n} says a little more than nothing at all here.");`).join(" ")} });`;
+	const many = `V.scene((s) => { ${Array.from({ length: EXPLAINER_MANY_CAPTIONS + 1 }, (_, n) => `s.say("Caption number ${n} says a little more than nothing at all here.");`).join(" ")} });`;
 	const notes = explainerNotes(many);
-	expect(notes[0]).toContain(`${EXPLAINER_MAX_CLIPS + 1} captions: a video speaks at most ${EXPLAINER_MAX_CLIPS}`);
+	expect(notes[0]).toContain(`${EXPLAINER_MANY_CAPTIONS + 1} captions: a video is best at 25 to 35`);
 	expect(notes[1]).toMatch(/^About 4:\d\d of captions: aim at 90 to 120 seconds/);
 });
 
@@ -271,6 +271,7 @@ it("tells an agent in the explainer's guide only what the engine can draw", asyn
 		"map",
 		"ring",
 		"flow",
+		"program",
 		null,
 	]);
 	expect(kit.description).toContain("explainer: a mechanism or a decision that a short narrated video explains.");

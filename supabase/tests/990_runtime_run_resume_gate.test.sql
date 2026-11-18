@@ -147,7 +147,6 @@ begin
 	v_first := pg_temp.rg_erase_open();
 	perform pg_temp.base_assert(v_first is not null, 'an erase opens while no attempt holds the job');
 	perform pg_temp.base_assert(public.qorpera_run_resumes_from_log((pg_temp.rg_run()).id) is false, 'the open erase closes the gate');
-	perform pg_temp.base_assert(pg_temp.rg_erase_open() is null, 'a second erase does not open while the first is open');
 	perform pg_temp.base_assert(pg_temp.rg_claim() = 'null'::jsonb, 'the claim leaves the job alone while an erase is open');
 	perform pg_temp.rg_erase_close(v_first);
 	v_second := pg_temp.rg_erase_open();

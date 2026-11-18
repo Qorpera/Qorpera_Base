@@ -7,20 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025299_runtime_bundle_activation_v252.sql";
-const activationVersion = 252;
-const previousActivationVersion = 251;
-const previousActivationSha256 = "27a9118662d860eecae26f6b94168adaea1c75e5279a62c0e5c06e23a83bae72";
+const activation = "supabase/migrations/20260929025899_runtime_bundle_activation_v258.sql";
+const activationVersion = 258;
+const previousActivationVersion = 257;
+const previousActivationSha256 = "eab37cd3f22752dc574f7e9b08d33d86e16c17ba19e001298d69a60daed47128";
 const activationRequires = Object.freeze([
 	[
-		"20260930784000_conversation_claude_models",
-		"conversation models (#1877): bundle 252 declares modelPolicy.claudeChoice, which an older kernel's manifest check refuses; 784000 makes the check take it and pins a member's Claude pick on the run",
-		"to_regprocedure('public.qorpera_pin_execution_claude_choice()') is not null",
-	],
-	[
-		"20260930785000_move_all_chats_to_another_login",
-		"#1876 (the founder's go for v252): one click moves all of a member's chats waiting on a used-up login to another of their own logins; its web, merged in this release, calls the two new functions",
-		"to_regprocedure('public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)') is not null",
+		"20260930793000_claude_login_usage",
+		"#1909 (Claude login usage): bundle 258's run host records a Claude Code worker's last rate_limit_event through the host call qorpera_record_claude_run_usage, whose SQL row and function 793000 adds; without it the call is refused at the path gateway",
+		"to_regprocedure('public.qorpera_record_claude_run_usage(jsonb,jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_record_claude_run_usage' and scope = 'binding')",
 	],
 ]);
 const activationRequiresSql = activationRequires

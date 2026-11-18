@@ -150,7 +150,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} is writing": "{name} skriver",
 	"{name} is using its computer": "{name} bruger sin computer",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
-	"No progress": "Ingen fremgang",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
 	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
@@ -212,6 +211,12 @@ export const CONVERSATION: Record<string, string> = {
 		"Din seneste kørsel stoppede, fordi et login nåede sin forbrugsgrænse. Fortsæt venligst det arbejde.",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
+	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.":
+		"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT turned this run away because too many requests came at once. The login is fine.":
+		"ChatGPT afviste kørslen, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.":
+		"ChatGPT har travlt med for mange forespørgsler på én gang. Arbejdet venter et par minutter og prøver så igen af sig selv. Loginnet er i orden.",
 	"The run lost its connection while it was working. This is usually brief.":
 		"Kørslen mistede forbindelsen, mens den arbejdede. Det går som regel hurtigt over.",
 	"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.":
@@ -289,8 +294,27 @@ export const CONVERSATION: Record<string, string> = {
 	"This app's app.toml has problems: {problems}": "Appens app.toml har fejl: {problems}",
 	"This can't be opened right now.": "Det kan ikke åbnes lige nu.",
 	"This page can't be shown here.": "Siden kan ikke vises her.",
+	"Opening… {percent}%": "Åbner… {percent}%",
 	"This page can't be shown live.": "Siden kan ikke vises direkte.",
 	"App: {name}": "App: {name}",
+	"This program has no version yet.": "Programmet har ingen version endnu.",
+	"This program's program.json can't be read.": "Programmets program.json kan ikke læses.",
+	"Version {version} · {day}": "Version {version} · {day}",
+	Install: "Installér",
+	"Download for {kind}": "Hent til {kind}",
+	"Download {kind}": "Hent {kind}",
+	"Not made for {kind} yet": "Ikke lavet til {kind} endnu",
+	"For this computer": "Til denne computer",
+	"For this phone": "Til denne telefon",
+	"It's in your Downloads.": "Den ligger i dine overførsler.",
+	"This file is no longer in the app's folder.": "Filen er ikke længere i appens mappe.",
+	"This file changed after version {version} was kept.": "Filen er ændret, efter at version {version} blev gemt.",
+	"The download stopped. Try again.": "Hentningen stoppede. Prøv igen.",
+	"Earlier versions": "Tidligere versioner",
+	"None yet": "Ingen endnu",
+	"Back to the newest, {version}": "Tilbage til den nyeste, {version}",
+	"{name} on a computer": "{name} på en computer",
+	"{name} on a phone": "{name} på en telefon",
 	"This app reloaded itself. Press Reload to start it again.":
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
 
@@ -356,26 +380,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Sent without waking the coworker": "Sendt uden at vække kollegaen",
 	"Left for {name}'s next turn": "Til {name} ved næste tur",
 
-	// The run status line (app/views/session-run.ts)
-	"Cloud run": "Kørsel i skyen",
-	"Cloud run status is unavailable.": "Status for kørslen i skyen er ikke tilgængelig.",
-	"Cloud run status is unavailable. Refresh to try again.":
-		"Status for kørslen i skyen er ikke tilgængelig. Opdater for at prøve igen.",
-	"Checking cloud run…": "Tjekker kørsel i skyen…",
-	"Cloud run queued.": "Kørsel i skyen er i kø.",
-	"Cloud run in progress.": "Kørsel i skyen er i gang.",
-	"No active cloud run.": "Ingen aktiv kørsel i skyen.",
-	"Stop could not be confirmed. Refresh run status before trying again.":
-		"Stop kunne ikke bekræftes. Opdater kørselsstatus, før du prøver igen.",
-	"Stopping selected cloud run…": "Stopper den valgte kørsel i skyen…",
-	"Refresh run status": "Opdater kørselsstatus",
 	Refresh: "Opdater",
-	"Stop cloud run": "Stop kørsel i skyen",
-	"Stop run": "Stop kørsel",
 
 	// The model account (app/views/session-execution.ts)
 	"Model accounts are unavailable. Trying again…": "Modelkonti er ikke tilgængelige. Prøver igen…",
-	"Execution history is unavailable.": "Kørselshistorikken er ikke tilgængelig.",
 	"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.":
 		"Prøv igen bruger den samme modelkonto og beskedanmodning. Den tidligere besked kan allerede være modtaget. En ny anmodning kan sende den igen.",
 	"Start a new message request": "Start en ny beskedanmodning",
@@ -690,4 +698,13 @@ export const CONVERSATION: Record<string, string> = {
 	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
 	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
 	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
+	"The company's part of the address": "Virksomhedens del af adressen",
+	"Use this address": "Brug denne adresse",
+	"The address can be chosen in the chat.": "Adressen kan vælges i chatten.",
+	"The address could not be made. Try again.": "Adressen kunne ikke oprettes. Prøv igen.",
+	"Only founders and admins can choose the address": "Kun stiftere og administratorer kan vælge adressen",
+	Free: "Ledig",
+	"Already yours": "Allerede jeres",
+	"That one belongs to another company": "Den tilhører en anden virksomhed",
+	"Use a–z, 0–9 and hyphens": "Brug a–z, 0–9 og bindestreger",
 };

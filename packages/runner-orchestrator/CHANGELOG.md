@@ -9,6 +9,15 @@
 - A member opens something of the company folder on an agent's desktop (migration `20260930758000`): `memberStart` with `open` runs today's start script, then `COMPANY_MACHINE_MEMBER_OPEN` in a transient unit of its own (`companyMachineMemberOpenCommand`: `--pipe`, 8 s, a fixed description), the path on stdin (nothing of ours carries it; the image's helper names the opened folder in the machine's own journal, as for an agent's open); before it touches the desktop, the host's one-actor rule, the pointer's fence and SQL's single-use `qorpera_member_machine_desktop_open_check` (no other member typing privately, none since the open was begun); `/company` must be a mount of its own (89, `DESKTOP_OPEN_NO_FOLDER`), the path's real place inside it and there (91, `DESKTOP_OPEN_NOT_FOUND`), then the image's own `desktop open` with that place as one word (0 `opened`, else `DESKTOP_DID_NOT_OPEN`). A path the plain rule refuses (`memberOpenPathValid`) runs nothing. No image change.
 - A company machine's words follow its disk being kept across an image switch (migration `20260930760000`, #1788): a boot whose earlier helper takes no `/company` says a new machine has it (`FOLDER_VIEWLESS["old-helper"]`), not that it gets it after a sleep and wake; two comments say the same. No behaviour changes.
 
+
+### Removed
+
+Code no production path called, deleted with the tests that alone kept it alive (18 Nov 2026, the prune of tests that guard no behavior):
+- `WebCloudRunnerProviderService` (`provider-web.ts`) and the `./provider-web` subpath export, and `executeCloudRunnerProviderRequest`, which only it called.
+- `withCodeCommit` and `CodeCommitSource` (code-host-jobs.ts); `readCodeAreaBase` moves to the package's test helpers, since only tests read it.
+- `CodingSnapshotRecords`, `CodingSnapshotRecordsOptions`, `codingSnapshotLog`, `CODING_SNAPSHOT_LOG_BYTES` and the `CodingSnapshot*` types (coding-snapshots.ts keeps `CODING_SNAPSHOT_RPCS`).
+- The `CODE_CHECKS_FILE` re-export from code-checks.ts, and the `export` of constants no other file reads: `MAX_CODE_CHECKS_FILE_BYTES`, `MAX_CODE_CHECKS`, `CODE_CHECK_DEFAULT_SECONDS`, `CODE_CHECK_MAX_SECONDS`, `CODE_CHECKS_TOTAL_SECONDS`, `CODE_SITE_MAX_FILE_BYTES`, `CODE_SITE_MAX_PATH_BYTES`, `CODING_LAND_NAMES_REFUSED`, `CODING_LAND_FILE_TOO_LARGE`, `CODING_LANDING_STEP`.
+
 ### Breaking Changes
 
 - The office image keeps the folder program's caches on its disk (MC3c; `deploy/first-node/RUNTIME-FOLDER-MACHINE-CACHES.md` "Where the cache lives"). When the package carries the folder mount unit, the installer makes `/var/lib/qorpera-folder` and `/var/lib/qorpera-folder/cache` (root, 0700), and it refuses an image whose `/var/lib/qorpera-folder` holds anything but `cache`, or whose `cache` is not empty (`OFFICE_IMAGE_EXISTING_STATE`): each machine's caches start empty. The coding guest's folder program must be MC3a's build or later, which takes `--cache-dir`.

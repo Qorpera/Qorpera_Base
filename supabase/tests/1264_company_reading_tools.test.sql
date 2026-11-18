@@ -80,12 +80,6 @@ begin
 	if strpos(v_recorder, $q$'end_role' /* 20260930766000 */$q$)
 		<= strpos(v_recorder, $q$'company_move' /* 20260930525000 */$q$) then
 		raise exception 'The recorder does not name end_role after company_move'; end if;
-	if (select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930766000') > 0)
-		is distinct from array['qorpera_folder_record_review', 'qorpera_folder_run_receipt_exists',
-			'qorpera_record_runtime_observation'] then
-		raise exception 'The marker is in other bodies'; end if;
 end $$;
 
 rollback;

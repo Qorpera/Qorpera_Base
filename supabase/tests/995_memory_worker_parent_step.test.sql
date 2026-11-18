@@ -207,11 +207,4 @@ begin
 			where worker_id in (select md5(n)::uuid from unnest(array['one','zero','narrow','scout','again','home','shape']) n))
 			<> 8 then
 		raise exception 'The kept parents: %', (select jsonb_agg(to_jsonb(w)) from public.qorpera_runtime_worker_parents w); end if;
-	if strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_folder_worker_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)'::regprocedure),
-			'20260930271000') = 0
-		or strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_folder_worker_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)'::regprocedure),
-			'20260930171000') = 0 then
-		raise exception 'The worker commit lost a marker'; end if;
 end $$;

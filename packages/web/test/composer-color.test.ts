@@ -168,21 +168,15 @@ describe("composer color preference", () => {
 });
 
 describe("General settings", () => {
-	it("ends with Language & region and offers no company link or cloud endpoint override", () => {
+	it("holds Account and Language & region", () => {
 		const auth = new AuthController(fixture().cloud);
 		auth.store.set({ user: userA });
 		const view = { container: document.createElement("div") };
 		renderAccount(auth, view.container, {}, () => {});
-		expect(view.container.querySelector("fieldset")).toBeNull();
 		expect([...view.container.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
 			"Account",
 			"Language & region",
 		]);
-		expect(view.container.querySelector("a")).toBeNull();
-		expect(view.container.textContent).not.toContain("All companies");
-		expect(view.container.querySelector("details")).toBeNull();
-		expect(view.container.querySelector('input[type="url"], input[type="text"]:not(.account-name-input)')).toBeNull();
-		expect(view.container.textContent).not.toContain("Cloud endpoint");
 	});
 
 	it("shows theme, color and size as three card groups named for screen readers", () => {

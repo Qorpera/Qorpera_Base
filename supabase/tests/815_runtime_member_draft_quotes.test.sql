@@ -96,10 +96,10 @@ select public.qorpera_folder_enable('81500000-0000-4000-8000-000000000020') \g /
 -- Each company's mailbox, made by its owner.
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'support', 'Customer support') \g /dev/null
+	'support.base', 'Customer support') \g /dev/null
 select pg_temp.base_claims('authenticated', '81500000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('81500000-0000-4000-8000-000000000010', '81500000-0000-4000-8000-000000000020',
-	'theirs', 'Their mailbox') \g /dev/null
+	'theirs.other', 'Their mailbox') \g /dev/null
 select pg_temp.base_claims('service_role');
 
 -- An account Alice used, on a tagged address of the support mailbox (written as 809 writes them: the secret is not
@@ -108,12 +108,12 @@ select set_config('session_replication_role', 'replica', true) \g /dev/null
 insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, login, status,
 	opened_by_user_id, created_at, closed_at, last_used_at, last_used_by_staff_agent_id, connected_at)
 values ('81500000-0000-4000-8000-0000000000a1', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'acme.example', 'support+acme@mail.example.test', 'connected', '92400000-0000-4000-8000-000000000001',
+	'acme.example', 'support.base+acme@mail.example.test', 'connected', '92400000-0000-4000-8000-000000000001',
 	'2026-10-01T00:00:00Z', null, '2026-10-02T09:00:00Z', '92400000-0000-4000-8000-000000000030', '2026-10-01T00:00:00Z');
 select set_config('session_replication_role', 'origin', true) \g /dev/null
 
 -- This company's first email, a thread of its own.
-select set_config('qorpera_test.mq_ours', pg_temp.mq_received(1, 'support@mail.example.test',
+select set_config('qorpera_test.mq_ours', pg_temp.mq_received(1, 'support.base@mail.example.test',
 	'{"messageId":"<q1@acme.test>","subject":"Where is my order?"}')::text, true) \g /dev/null
 select set_config('qorpera_test.mq_thread', pg_temp.mq_thread_of(current_setting('qorpera_test.mq_ours')::uuid), true)
 \g /dev/null
@@ -173,13 +173,13 @@ $$;
 
 -- Another company's reply to this company's email is its own company's thread.
 select pg_temp.base_claims('service_role');
-select set_config('qorpera_test.mq_theirs', pg_temp.mq_received(2, 'theirs@mail.example.test',
+select set_config('qorpera_test.mq_theirs', pg_temp.mq_received(2, 'theirs.other@mail.example.test',
 	'{"messageId":"<t1@other.example>","references":"<q1@acme.test>","inReplyTo":"<q1@acme.test>","subject":"Re: Where is my order?"}')::text,
 	true) \g /dev/null
 select set_config('qorpera_test.mq_their_thread', pg_temp.mq_thread_of(current_setting('qorpera_test.mq_theirs')::uuid), true)
 \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.mq_their_thread') = public.qorpera_mail_thread_id(
-		(select id from public.qorpera_company_mailboxes where local_part = 'theirs' and removed_at is null), '<q1@acme.test>')
+		(select id from public.qorpera_company_mailboxes where local_part = 'theirs.other' and removed_at is null), '<q1@acme.test>')
 	and (select profile_id = '81500000-0000-4000-8000-000000000010' from public.qorpera_mail_threads
 		where id = current_setting('qorpera_test.mq_their_thread'))
 	and (select message_count = 1 and subject = 'Where is my order?' from public.qorpera_mail_threads
@@ -202,9 +202,9 @@ select pg_temp.base_error(format($q$select public.qorpera_mark_mail_thread_read(
 -- whatever email it names.
 select pg_temp.base_claims('service_role');
 select set_config('qorpera_test.mq_card', pg_temp.mq_card('mq-card-1', '92400000-0000-4000-8000-000000000010',
-	jsonb_build_object('from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'), 'subject', 'Wrong',
+	jsonb_build_object('from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'), 'subject', 'Wrong',
 		'text', 'No.', 'inReplyTo', current_setting('qorpera_test.mq_theirs')))::text, true) \g /dev/null
-select pg_temp.mq_card('mq-card-2', '81500000-0000-4000-8000-000000000010', jsonb_build_object('from', 'theirs@mail.example.test',
+select pg_temp.mq_card('mq-card-2', '81500000-0000-4000-8000-000000000010', jsonb_build_object('from', 'theirs.other@mail.example.test',
 	'to', jsonb_build_array('customer@example.org'), 'subject', 'Theirs', 'text', 'Not yours.',
 	'inReplyTo', current_setting('qorpera_test.mq_ours'))) \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
@@ -217,8 +217,8 @@ from (select public.qorpera_member_mail_waiting('92400000-0000-4000-8000-0000000
 -- 4. Account mail: who used the account, never its subject, text, recipients or attachments ---------------------------
 
 select pg_temp.base_claims('service_role');
-select set_config('qorpera_test.mq_code', pg_temp.mq_received(3, 'support+acme@mail.example.test',
-	'{"messageId":"<code@acme.example>","subject":"Your code is 424242","text":"Code 424242","to":["support+acme@mail.example.test"],"cc":["boss@acme.example"],"attachments":[{"id":"att_code","filename":"code.pdf","size":3}]}')::text,
+select set_config('qorpera_test.mq_code', pg_temp.mq_received(3, 'support.base+acme@mail.example.test',
+	'{"messageId":"<code@acme.example>","subject":"Your code is 424242","text":"Code 424242","to":["support.base+acme@mail.example.test"],"cc":["boss@acme.example"],"attachments":[{"id":"att_code","filename":"code.pdf","size":3}]}')::text,
 	true) \g /dev/null
 select set_config('qorpera_test.mq_code_thread', pg_temp.mq_thread_of(current_setting('qorpera_test.mq_code')::uuid), true)
 \g /dev/null
@@ -252,12 +252,12 @@ select pg_temp.base_assert(not pg_temp.mq_listed(current_setting('qorpera_test.m
 	'The account''s new login still leaves its mail hidden');
 select pg_temp.base_claims('service_role');
 select set_config('session_replication_role', 'replica', true) \g /dev/null
-update public.qorpera_company_accounts set login = 'support+acme@mail.example.test' where secret_id = '81500000-0000-4000-8000-0000000000a1';
+update public.qorpera_company_accounts set login = 'support.base+acme@mail.example.test' where secret_id = '81500000-0000-4000-8000-0000000000a1';
 select set_config('session_replication_role', 'origin', true) \g /dev/null
 -- Account mail that joins a thread marks it.
-select set_config('qorpera_test.mq_plain', pg_temp.mq_received(4, 'support@mail.example.test',
+select set_config('qorpera_test.mq_plain', pg_temp.mq_received(4, 'support.base@mail.example.test',
 	'{"messageId":"<x1@acme.example>","subject":"Welcome"}')::text, true) \g /dev/null
-select pg_temp.mq_received(5, 'support+acme@mail.example.test',
+select pg_temp.mq_received(5, 'support.base+acme@mail.example.test',
 	'{"messageId":"<x2@acme.example>","references":"<x1@acme.example>","subject":"Your code is 777777"}') \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select pg_temp.base_assert(item ? 'account' and not item ? 'subject' and (item ->> 'messages')::integer = 2,
@@ -269,7 +269,7 @@ select pg_temp.base_claims('service_role');
 alter function public.qorpera_company_account_mail(uuid, uuid, text[]) rename to qorpera_company_account_mail_mq;
 create function public.qorpera_company_account_mail(p_profile_id uuid, p_environment_id uuid, p_addresses text[])
 returns jsonb language plpgsql stable set search_path = '' as $$ begin raise exception 'lookup down'; end $$;
-select set_config('qorpera_test.mq_down', pg_temp.mq_received(6, 'support@mail.example.test',
+select set_config('qorpera_test.mq_down', pg_temp.mq_received(6, 'support.base@mail.example.test',
 	'{"messageId":"<down@x.example>","subject":"Maybe a code"}')::text, true) \g /dev/null
 select pg_temp.base_assert((select received.subject is null and received.account = '{"unknown":true}'::jsonb
 		from public.qorpera_mail_received as received where received.delivery_id = current_setting('qorpera_test.mq_down')::uuid),

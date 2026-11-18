@@ -1,36 +1,12 @@
 import { osPath } from "@qorpera/cloud-client/company-state-files";
-import {
-	parseTableFile,
-	parseTableRows,
-	splitCsv,
-	type TableFile,
-	tableClaimProblems,
-	tableRowKey,
-} from "@qorpera/cloud-client/interfaces";
-import { invalid, readStateFile, rewriteStateFile, type WebMemberFolder } from "../cloud/company-folder-writes.ts";
+import { parseTableFile, splitCsv, type TableFile } from "@qorpera/cloud-client/interfaces";
+import { invalid, readStateFile, type WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { WebConnectors } from "../cloud/connectors.ts";
-import { t } from "../ui/preferences.ts";
 import type { CompanyDatabases } from "./company-data.ts";
 import type { DataAskSend } from "./data-ask.ts";
-import type { InterfaceOfferActions } from "./interface-offers.ts";
 import type { MailboxManage } from "./views/mailbox.ts";
 
-/* A board's take and release (Interfaces step I9a; deploy/first-node/RUNTIME-INTERFACES.md §3.3 and §5): a member puts
- * their own id in a card's empty holder cell, or one that names someone who left (Interfaces C6d), or clears the cell
- * that names them. Accepting an offer (step I9c) puts their id in the cell the offer names, while it is as the offer
- * read it. The rows file is read and parsed against the table's current definition, only that field's text changes
- * (every other byte stays as written), the claim rule is checked here before anything is sent, and the write names the
- * version it read. When the file changed in between it is read and checked again: a cell someone else took meanwhile,
- * or that stopped being the member's or what the offer read, ends the claim with that said. */
-
-/** What a page needs to write: the member's own client for the company's folder, and a check that the company is still
- * the one the page was drawn for. With `offers`, a board makes and answers offers (step I9c). */
 export interface InterfaceWrites {
-	readonly folder: () => WebMemberFolder;
-	readonly current: () => void;
-	readonly offers?: InterfaceOfferActions;
-	/** Reads the company's folder again soon, so a change that could not be made shows the rows as they are now. */
-	readonly reread?: () => void;
 	/** The calls behind the Mailbox's Addresses: the company's mail addresses and its Digital Post key. */
 	readonly mailManage?: () => MailboxManage;
 	/** The company's connections, for the Bank page's Connect the bank: its sign-in and whether it is connected. */
@@ -39,82 +15,6 @@ export interface InterfaceWrites {
 	readonly openSettings?: (tab: "ai-subscriptions") => void;
 	readonly data?: () => CompanyDatabases | undefined;
 	readonly dataAsk?: DataAskSend;
-}
-
-/** The offer an accept answers: the cell it names and what it read there. */
-export interface ClaimOffer {
-	readonly column: string;
-	readonly from: string;
-	readonly was: string | null;
-}
-
-/** The cell is not what the card showed any more: someone else took it, or it stopped being the member's. Nothing was
- * written. */
-export class ClaimLostError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "ClaimLostError";
-	}
-}
-
-export type ClaimVerb = "take" | "release" | "accept";
-
-/** What failed, as a refusal says it before its problems. */
-export function claimFailure(verb: ClaimVerb): string {
-	if (verb === "take") return t("The card could not be taken.");
-	return verb === "release" ? t("The card could not be released.") : t("The offer could not be accepted.");
-}
-
-/** Takes or releases one row's holder cell (or the cell `column` names) in `QorperaOS/tables/<table>/rows.csv`, or
- * accepts the offer of a cell. Answers whether it wrote: false when the cell already says it. Throws `ClaimLostError`
- * when the cell changed under the card, and a refusal (`WebCompanyFolderRejectedError`) with the problems when the rows
- * or the claim don't pass. */
-export async function claimTableCell(options: {
-	readonly folder: WebMemberFolder;
-	readonly table: string;
-	/** The row's key, as `tableRowKey` writes it. */
-	readonly key: string;
-	readonly verb: ClaimVerb;
-	/** The offer an accept answers. */
-	readonly offer?: ClaimOffer;
-	/** The member cell a take or release changes, when it isn't the holder: an area's `supervisor` (step I9b). */
-	readonly column?: string;
-	readonly memberId: string;
-	/** The company's members now: a cell that names someone else counts as empty (Interfaces C6d). Without them,
-	 * every cell that names someone is theirs. */
-	readonly members?: ReadonlySet<string>;
-	readonly signal: AbortSignal;
-	readonly check: () => void;
-}): Promise<boolean> {
-	const { folder, table, verb, memberId, signal } = options;
-	const failure = claimFailure(verb);
-	let definition: TableFile | null = null;
-	return await rewriteStateFile(
-		folder,
-		{
-			locate: rowsLocator(folder, table, failure, signal, (read) => {
-				definition = read;
-			}),
-			rewrite: (text) =>
-				rewriteRows(
-					definition,
-					table,
-					text,
-					options.key,
-					verb,
-					options.offer,
-					options.column,
-					memberId,
-					failure,
-					options.members,
-				),
-			key: () => `web:board-${verb}:${crypto.randomUUID()}`,
-			gone: t("This card is no longer here."),
-			failure,
-		},
-		signal,
-		options.check,
-	);
 }
 
 /** A rewrite's `locate` for `QorperaOS/tables/<table>/rows.csv`. The definition is read again on every try and handed
@@ -139,71 +39,6 @@ export function rowsLocator(
 		found(parsed.file);
 		return osPath(`tables/${table}/rows.csv`);
 	};
-}
-
-/** The rows file with one cell changed, or null when it already says it. */
-function rewriteRows(
-	definition: TableFile | null,
-	table: string,
-	text: string,
-	key: string,
-	verb: ClaimVerb,
-	offer: ClaimOffer | undefined,
-	cell: string | undefined,
-	memberId: string,
-	failure: string,
-	members: ReadonlySet<string> | undefined,
-): string | null {
-	// Take and release change the holder cell, or the cell they name; an accept the cell its offer names. Each is a
-	// member column that needs a yes.
-	const column = verb === "accept" ? (offer?.column ?? null) : (cell ?? definition?.holder ?? null);
-	if (
-		definition === null ||
-		column === null ||
-		!definition.columns.some((each) => each.name === column && each.needsYes)
-	)
-		throw new ClaimLostError(t("That changed while you were looking."));
-	// Rows that don't fit the definition would be lost by writing the ones that do, so the claim waits for them to be
-	// fixed.
-	const parsed = parseTableRows(definition, text);
-	if (!parsed.readable || parsed.problems.length > 0)
-		throw invalid(
-			failure,
-			parsed.problems.map((problem) => problem.message),
-		);
-	const index = parsed.rows.findIndex((row) => tableRowKey(definition, row) === key);
-	const row = parsed.rows[index];
-	if (row === undefined) throw new ClaimLostError(t("This card is no longer here."));
-	const was = row[column] ?? null;
-	if (verb === "take") {
-		if (was === memberId) return null;
-		// A cell that names someone who left counts as empty.
-		if (was !== null && (members === undefined || typeof was !== "string" || members.has(was)))
-			throw new ClaimLostError(t("Someone else took it first."));
-	} else if (verb === "accept") {
-		if (was === memberId) return null;
-		if (offer === undefined || was !== offer.was) throw new ClaimLostError(t("That changed while you were looking."));
-	} else if (was !== memberId) throw new ClaimLostError(t("That changed while you were looking."));
-	const value = verb === "release" ? null : memberId;
-	const after = parsed.rows.map((each, place) => (place === index ? { ...each, [column]: value } : each));
-	// The claim rule lets an accept through only for the offer it answers.
-	const offers =
-		verb === "accept" && offer !== undefined
-			? [{ row: key, column, to: memberId, from: offer.from, was: offer.was }]
-			: [];
-	const problems = tableClaimProblems(
-		definition,
-		parsed.rows,
-		after,
-		{ kind: "member", memberId },
-		{ folder: table, offers, members },
-	);
-	if (problems.length > 0)
-		throw invalid(
-			failure,
-			problems.map((problem) => problem.message),
-		);
-	return withCell(text, index, column, value ?? "");
 }
 
 /** `text` with the `column` field of its `index`th row set to `value`, and every other byte as it was: the typed
@@ -256,4 +91,4 @@ function fieldSpans(record: string): [number, number][] {
 }
 
 /** A field's text as CSV writes it, quoted when it must be. */
-export const csvText = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text);
+const csvText = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text);

@@ -9,10 +9,10 @@
 select pg_temp.base_claims('service_role');
 -- A received email as the mail door stores it: the delivery of its first recipient.
 create function pg_temp.km_received(p_n integer, p_message jsonb default '{}') returns uuid language sql as $$
-	select (public.qorpera_receive_mail('61600000-0000-4000-8000-' || lpad(p_n::text, 12, '0'), array['support@mail.example.test'],
+	select (public.qorpera_receive_mail('61600000-0000-4000-8000-' || lpad(p_n::text, 12, '0'), array['support.base@mail.example.test'],
 		(jsonb_build_object('schema', 'qorpera.mail/v1', 'emailId', '61600000-0000-4000-8000-' || lpad(p_n::text, 12, '0'),
 			'messageId', '<k' || p_n || '@example.org>', 'subject', 'Order 7', 'from', 'Customer <customer@example.org>',
-			'to', jsonb_build_array('support@mail.example.test'), 'text', 'Message ' || p_n) || p_message)::text)
+			'to', jsonb_build_array('support.base@mail.example.test'), 'text', 'Message ' || p_n) || p_message)::text)
 		#>> '{results,0,deliveryId}')::uuid
 $$;
 -- Calls as a signed-in member, then as the service again.
@@ -72,14 +72,14 @@ update public.qorpera_mail_settings set domain = 'mail.example.test', enabled = 
 update public.qorpera_event_intake_settings set enabled = true, public_url = 'https://intake.example.test';
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'support', 'Customer support') \g /dev/null
+	'support.base', 'Customer support') \g /dev/null
 select pg_temp.base_claims('service_role');
 select set_config('qorpera_test.km_first', pg_temp.km_received(1)::text, true) \g /dev/null
 select set_config('qorpera_test.km_thread', (select received.thread_id from public.qorpera_mail_received as received
 	where received.delivery_id = current_setting('qorpera_test.km_first')::uuid), true) \g /dev/null
 select set_config('qorpera_test.km_second', pg_temp.km_received(2, '{"references":"<k1@example.org>"}')::text, true) \g /dev/null
 select public.qorpera_send_agent_mail(current_setting('qorpera_test.base_binding')::jsonb, 'km-reply',
-	jsonb_build_object('from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+	jsonb_build_object('from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 		'subject', 'Re: Order 7', 'text', 'Paid today.', 'inReplyTo', current_setting('qorpera_test.km_second'))) \g /dev/null
 do $$
 declare

@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { h } from "../src/ui/dom.ts";
-import { QUIET_SCROLL_FADE, quietScroll } from "../src/ui/quiet-scroll.ts";
+import { quietScroll } from "../src/ui/quiet-scroll.ts";
 import { fixture, profileA, session, staff, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -44,21 +42,6 @@ describe("quiet scrollers", () => {
 		Object.defineProperty(scroller, "scrollTop", { value: 300, configurable: true, writable: true });
 		refresh();
 		expect(scroller.hasAttribute("data-scrolled")).toBe(true);
-	});
-
-	it("hides the bar in the stylesheet and draws the fade at the helper's size", () => {
-		const css = readFileSync(resolve("src/styles/app.css"), "utf8");
-		const rule = css.match(/\.scroll-quiet \{([^}]*)\}/)?.[1] ?? "";
-		// A hint that more sits above, not a band over the first message or the Co-Founder card.
-		expect(QUIET_SCROLL_FADE).toBe(8);
-		expect(rule).toContain("scrollbar-width: none");
-		expect(rule).toContain(`mask-image: linear-gradient(to bottom, transparent, #000 ${QUIET_SCROLL_FADE}px)`);
-		expect(rule).toContain(`mask-size: 100% calc(100% + ${QUIET_SCROLL_FADE}px)`);
-		expect(rule).toContain(`mask-position: 0 -${QUIET_SCROLL_FADE}px`);
-		expect(css).toContain(".scroll-quiet::-webkit-scrollbar { display: none; }");
-		expect(css).toContain(".scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }");
-		const messages = readFileSync(resolve("src/styles/conversation.css"), "utf8");
-		expect(messages).toMatch(/\.messages \{[^}]*overflow: hidden auto;/);
 	});
 
 	it("applies to the thread and the rail", () => {

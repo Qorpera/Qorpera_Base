@@ -70,7 +70,7 @@ begin
 end $$;
 -- An email from the support mailbox to a customer, with the fields given replacing or adding to it (a null drops one).
 create function pg_temp.a3_mail_request(p_change jsonb default '{}') returns jsonb language sql as $$
-	select jsonb_strip_nulls(jsonb_build_object('from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+	select jsonb_strip_nulls(jsonb_build_object('from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 		'subject', 'Your order', 'text', 'Thanks for writing.') || p_change)
 $$;
 -- One email by its call id: the receipt's status.
@@ -124,7 +124,7 @@ update public.qorpera_mail_settings set domain = 'mail.example.test', enabled = 
 update public.qorpera_event_intake_settings set enabled = true, public_url = 'https://intake.example.test';
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
-	'92400000-0000-4000-8000-000000000020', 'support', 'Customer support') \g /dev/null
+	'92400000-0000-4000-8000-000000000020', 'support.base', 'Customer support') \g /dev/null
 select pg_temp.base_claims('service_role');
 
 -- 1. The first attempt is no resume: its email is queued, and its replay writes nothing. Kept, for the next attempt to
@@ -176,7 +176,7 @@ begin
 	v := v || array['08 an email from no mailbox', pg_temp.a3_mail(v_next, 'a3-m2', '{"from":"nobody@mail.example.test"}'),
 		'42501 No mailbox of this company has that address; list_hooks shows them|none|none'];
 	v := v || array['09 an email to the company''s own mailbox', pg_temp.a3_mail(v_next, 'a3-m2',
-		'{"to":["support@mail.example.test"]}'),
+		'{"to":["support.base@mail.example.test"]}'),
 		'42501 Email to your own company''s mailboxes is refused; reach coworkers with send_coworker_message|none|none'];
 	v := v || array['10 a reply to no received email', pg_temp.a3_mail(v_next, 'a3-m2',
 		jsonb_build_object('inReplyTo', extensions.gen_random_uuid())), '42501 The email this answers is not one the company received|none|none'];
@@ -191,7 +191,7 @@ begin
 	begin
 		perform set_config('session_replication_role', 'replica', true);
 		update public.qorpera_event_hooks set status = 'paused'
-		where id = (select hook_id from public.qorpera_company_mailboxes where local_part = 'support' and removed_at is null);
+		where id = (select hook_id from public.qorpera_company_mailboxes where local_part = 'support.base' and removed_at is null);
 		perform set_config('session_replication_role', 'origin', true);
 		v := v || array['12 the mailbox paused', pg_temp.a3_mail(v_next, 'a3-m2'), '0A000 The mailbox is paused; a member resumes it|none|none'];
 		raise exception using errcode = 'A3001';

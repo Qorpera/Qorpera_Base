@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
+	NATIVE_CLAUDE_CODE_CONNECTIONS,
 	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
-	NATIVE_CLAUDE_READ_CONNECTIONS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_REALTIME_EGRESS_HOSTS,
 	NATIVE_EGRESS_LONG_IDLE_MS,
@@ -245,41 +245,31 @@ describe("private native egress relay", () => {
 			startNativeCodexEgress({ root, signal: new AbortController().signal, hosts: ["evil.test"] }),
 		).rejects.toThrow("Unsupported native egress hosts");
 	});
-	it("holds 32 connections at once for a Claude read, and no more connections for any other relay", async () => {
+	it("holds 32 connections at once on a relay that carries Claude Code, and eight on any other", async () => {
 		const root = await mkdtemp(join(tmpdir(), "q-egress-claude-"));
 		cleanup.push(() => rm(root, { recursive: true, force: true }));
-		for (const hosts of [NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS, undefined])
-			await expect(
-				startNativeCodexEgress({
-					root,
-					signal: new AbortController().signal,
-					connections: NATIVE_CLAUDE_READ_CONNECTIONS,
-					...(hosts ? { hosts } : {}),
+		for (const [hosts, limit] of [
+			[NATIVE_CLAUDE_CODE_EGRESS_HOSTS, NATIVE_CLAUDE_CODE_CONNECTIONS],
+			[NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS, NATIVE_CLAUDE_CODE_CONNECTIONS],
+			[NATIVE_CHATGPT_PLAN_EGRESS_HOSTS, 8],
+		] as const) {
+			const server = await startNativeCodexEgress({ root, signal: new AbortController().signal, hosts });
+			const held = await Promise.all(
+				Array.from({ length: limit }, async () => {
+					const socket = createConnection(server.path);
+					socket.on("error", () => undefined);
+					await once(socket, "connect");
+					return socket;
 				}),
-			).rejects.toThrow("Only a Claude read's relay holds more connections");
-		const server = await startNativeCodexEgress({
-			root,
-			signal: new AbortController().signal,
-			hosts: NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
-			connections: NATIVE_CLAUDE_READ_CONNECTIONS,
-		});
-		cleanup.push(() => server.close());
-		const held = await Promise.all(
-			Array.from({ length: NATIVE_CLAUDE_READ_CONNECTIONS }, async () => {
-				const socket = createConnection(server.path);
-				socket.on("error", () => undefined);
-				await once(socket, "connect");
-				return socket;
-			}),
-		);
-		cleanup.push(async () => {
+			);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(held.every((socket) => !socket.destroyed)).toBe(true);
+			const over = createConnection(server.path);
+			over.on("error", () => undefined);
+			await once(over, "close");
 			for (const socket of held) socket.destroy();
-		});
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		expect(held.every((socket) => !socket.destroyed)).toBe(true);
-		const over = createConnection(server.path);
-		over.on("error", () => undefined);
-		await once(over, "close");
+			await server.close();
+		}
 	});
 	it("carries any number of connections and bytes over a run's life, eight at a time (no caps on runs)", async () => {
 		// Each connection answers 520 KiB: 130 in a row move 66 MiB, past the old 64 MiB and 128-connection totals.

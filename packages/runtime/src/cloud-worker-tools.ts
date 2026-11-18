@@ -594,9 +594,8 @@ export function cloudWorkerTools(
 						},
 					});
 				} else if (a.repository !== undefined) throw new Error("repository belongs to a coding session");
-				// A plain worker names a harness only for Claude Code (20260930770000); codex is its unsaid default.
-				else if (a.harness === "claude-code") request.harness = "claude-code";
-				else if (a.harness !== undefined && a.harness !== "codex") throw new Error("Invalid worker harness");
+				else if (a.harness === "claude-code" || a.harness === "codex") request.harness = a.harness;
+				else if (a.harness !== undefined) throw new Error("Invalid worker harness");
 			} else if (action === "followup") request.text = text(a.text, 4000);
 			else if (action === "decide") {
 				if (a.decision !== "accept" && a.decision !== "reject") throw new Error("Invalid worker decision");

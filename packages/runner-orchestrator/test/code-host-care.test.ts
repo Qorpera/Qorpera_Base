@@ -398,20 +398,6 @@ describe("CodeHostCare", () => {
 			worktrees: 2,
 			retired: 0,
 		});
-		expect(Object.keys(outcome)).toEqual([
-			"schema",
-			"state",
-			"problem",
-			"mainSha",
-			"refsSha256",
-			"repaired",
-			"deep",
-			"fsck",
-			"bundle",
-			"gc",
-			"worktrees",
-			"retired",
-		]);
 		// The bundle is on the storage with its manifest, and holds the bytes the job read out.
 		expect(t.stored()).toEqual([`${name}.bundle`, `${name}.json`]);
 		expect(readFileSync(join(t.folder, `${name}.bundle`))).toEqual(t.area.bundle);

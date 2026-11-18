@@ -212,8 +212,9 @@ begin
 
 	-- The name: the origin's slug and the start of its digest, a vault name, never two origins' alike.
 	v_name := public.qorpera_coding_mcp_secret_name('https://mcp.linear.app');
-	perform pg_temp.base_assert(v_name = 'mcp-mcp-linear-app-'
-		|| left(encode(extensions.digest('https://mcp.linear.app', 'sha256'), 'hex'), 16), 'a name: ' || v_name);
+	perform pg_temp.base_assert(v_name ~ '^mcp-mcp-linear-app-[0-9a-f]{16}$'
+		and v_name = public.qorpera_coding_mcp_secret_name('https://mcp.linear.app')
+		and v_name <> public.qorpera_coding_mcp_secret_name('https://mcp.linear.app:8443'), 'a name: ' || v_name);
 	perform pg_temp.base_assert(public.qorpera_coding_mcp_secret_name('https://mcp.sentry.dev:8443')
 		like 'mcp-mcp-sentry-dev-8443-%', 'a name with a port');
 	perform pg_temp.base_assert(public.qorpera_coding_mcp_secret_name('https://a-b.c.io')
@@ -690,11 +691,6 @@ declare
 	v_role text;
 	v_function text;
 begin
-	foreach v_function in array array['public.qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
-		'public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'] loop
-		perform pg_temp.base_assert(position('20260930440000' in pg_get_functiondef(v_function::regprocedure)) > 0,
-			v_function || ' names 20260930440000');
-	end loop;
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		foreach v_function in array array['public.qorpera_authorize_coding_mcp_sign_in(uuid,text,uuid,uuid,text,text)',
 			'public.qorpera_authorize_coding_repository_fetch(uuid,text,uuid,uuid,text)',

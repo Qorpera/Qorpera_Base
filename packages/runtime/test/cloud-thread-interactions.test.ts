@@ -158,11 +158,12 @@ const PAYLOADS = {
 		minimal: { options: [{ label: "Apples" }] },
 		maximal: {
 			options: [
-				{ label: "Apples", value: "apples", description: "Crisp.", style: "primary", preview: "fruit/apples.svg" },
+				{ label: "apples", value: "apples", description: "Crisp.", style: "primary", preview: "fruit/apples.svg" },
 			],
 			multiSelect: false,
 			allowCustom: true,
 			dismissOnMoveOn: false,
+			input: { kind: "mail_address" },
 		},
 	},
 	secret: {
@@ -552,7 +553,7 @@ describe("ask_member card shapes", () => {
 		}
 		expect(refusal).toBeInstanceOf(CloudToolArgumentRefusal);
 		expect((refusal as Error).message).toBe(
-			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger, preview?}], multiSelect?, allowCustom?, dismissOnMoveOn?}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
+			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger, preview?}], multiSelect?, allowCustom?, dismissOnMoveOn?, input?: {kind: mail_address}}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
 		);
 	});
 
@@ -652,5 +653,89 @@ describe("ask_member card shapes", () => {
 				payload: { options: ["Apples"] },
 			}),
 		).toThrow(/^Invalid interaction request: the question payload must be/);
+	});
+});
+
+describe("the address card", () => {
+	const address = (payload: Record<string, unknown>) => ({
+		idempotencyKey: "mail-address",
+		text: "Choose the company's email address.",
+		surface: "question",
+		title: "Your company's email address",
+		payload: {
+			options: [{ label: "nordlys-studio", value: "nordlys-studio" }, { label: "nordlys" }],
+			allowCustom: true,
+			input: { kind: "mail_address" },
+			...payload,
+		},
+	});
+	const refusal = (value: unknown): string => {
+		try {
+			parseCloudAskMemberInput(value);
+		} catch (error) {
+			expect(error).toBeInstanceOf(CloudToolArgumentRefusal);
+			return (error as Error).message;
+		}
+		throw new Error("accepted");
+	};
+
+	it("takes handle suggestions with a field for the member's own, and keeps the input as the kernel stores it", () => {
+		const card = address({});
+		expect(parseCloudAskMemberInput(card).data.payload).toEqual(card.payload);
+		expect(
+			parseCloudInteractionRequestData({
+				schema: "qorpera.interaction/v1",
+				surface: card.surface,
+				title: card.title,
+				payload: card.payload,
+			}).payload,
+		).toEqual(card.payload);
+	});
+
+	it("refuses an address card without allowCustom, saying why, as a new card and as a stored one", () => {
+		const words =
+			"an address card (input kind mail_address) needs allowCustom: true, since the member's answer is the address they make";
+		expect(refusal(address({ allowCustom: false }))).toBe(words);
+		const { allowCustom: _, ...without } = address({}).payload;
+		expect(refusal({ ...address({}), payload: without })).toBe(words);
+		expect(() =>
+			parseCloudInteractionRequestData({
+				schema: "qorpera.interaction/v1",
+				surface: "question",
+				title: "T",
+				payload: without,
+			}),
+		).toThrow(`Invalid interaction request: ${words}`);
+	});
+
+	it("refuses any other input", () => {
+		for (const input of [{ kind: "phone" }, { kind: "mail_address", domain: "x" }, "mail_address", null])
+			expect(refusal(address({ input }))).toBe(
+				"a question's input is {kind: mail_address}, the address card, and nothing else",
+			);
+	});
+
+	it("refuses options that are not handles, or whose value differs from the label", () => {
+		const words = "an address card's options are handles made from the company's name";
+		for (const options of [
+			[{ label: "Nordlys" }],
+			[{ label: "n" }],
+			[{ label: "nordlys-" }],
+			[{ label: "nordlys.studio" }],
+			[{ label: "a".repeat(25) }],
+			[{ label: "nordlys", value: "hello.nordlys" }],
+		])
+			expect(refusal(address({ options }))).toContain(words);
+		expect(parseCloudAskMemberInput(address({ options: [{ label: "a".repeat(24) }] })).data.payload).toMatchObject({
+			options: [{ label: "a".repeat(24) }],
+		});
+	});
+
+	it("tells the model what an address card is and what its answer holds", () => {
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
+			"- An address card is a question with allowCustom: true and input {kind: mail_address}: each option a handle made from the company's name (label and value the same, such as acme); the member makes the company's email address in the card, and the answer is that address.",
+		);
+		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain('"input":{"type":"object"');
 	});
 });

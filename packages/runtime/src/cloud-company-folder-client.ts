@@ -157,6 +157,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["22023", "This mailbox name is reserved"],
 			["22023", "A mailbox name that reads as Qorpera is reserved"],
 			["22023", "A mailbox purpose is one line of at most 512 characters"],
+			["22023", "A new address is a name, a dot and the company's handle, like hello.acme"],
 			["0A000", "Company mail is not set up yet"],
 			["P0002", "No hook has this name"],
 			["55000", "This hook was removed"],
@@ -166,6 +167,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["23505", "This address is taken"],
 			["23505", "A hook with this name already exists"],
 			["42501", "Only owners and admins can open hooks; ask one of them"],
+			["42501", "Only a member can choose the company's email handle"],
 		] as const
 	).map(([code, message]) => [`${code} ${message}`, message] as const),
 	// The run receipt's: the key names an earlier, different request of this run.

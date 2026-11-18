@@ -4,7 +4,6 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
 	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
-	NATIVE_CLAUDE_READ_CONNECTIONS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_EGRESS_HOSTS,
 	startNativeCodexEgress,
@@ -313,7 +312,6 @@ export async function launchIsolatedNativeProcess(options: {
 		root: options.scratchRoot,
 		signal: options.signal,
 		hosts: nativeIsolationEgressHosts(plan, options.harness, options.claudeRead),
-		...(options.claudeRead ? { connections: NATIVE_CLAUDE_READ_CONNECTIONS } : {}),
 	});
 	let child: ChildProcessWithoutNullStreams | undefined;
 	try {

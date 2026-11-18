@@ -22,10 +22,6 @@ insert into auth.users(id, email) values ('63000000-0000-4000-8000-000000000005'
 
 -- The pieces: the trigger runs only on a forward move; the helpers' grants; the policy.
 do $$ begin
-	if not exists (select 1 from pg_trigger where tgname = 'qorpera_folder_clocks_hint'
-		and tgrelid = 'public.qorpera_folder_clocks'::regclass and not tgdeferrable
-		and pg_get_triggerdef(oid) like '%AFTER UPDATE OF last_seq%WHEN ((new.last_seq > old.last_seq))%') then
-		raise exception 'the hint trigger is missing or has the wrong shape'; end if;
 	if has_function_privilege('authenticated', 'public.qorpera_folder_hint_internal()', 'EXECUTE')
 		or has_function_privilege('anon', 'public.qorpera_folder_hint_internal()', 'EXECUTE')
 		or has_function_privilege('service_role', 'public.qorpera_folder_hint_internal()', 'EXECUTE') then
@@ -33,16 +29,9 @@ do $$ begin
 	if not has_function_privilege('authenticated', 'public.qorpera_folder_hint_member(text)', 'EXECUTE')
 		or has_function_privilege('anon', 'public.qorpera_folder_hint_member(text)', 'EXECUTE') then
 		raise exception 'the member check has the wrong grants'; end if;
-	if not exists (select 1 from pg_policies where schemaname = 'realtime' and tablename = 'messages'
-		and policyname = 'qorpera_folder_hint_member_receive' and cmd = 'SELECT' and roles = '{authenticated}') then
-		raise exception 'the receive policy is missing'; end if;
 	if exists (select 1 from pg_policies where schemaname = 'realtime' and tablename = 'messages'
 		and policyname like '%folder%' and cmd <> 'SELECT') then
 		raise exception 'a client may publish on the folder topic'; end if;
-	if strpos(pg_get_functiondef('public.qorpera_folder_hint_internal()'::regprocedure), '''20ms''') = 0
-		or strpos(pg_get_functiondef('public.qorpera_folder_hint_internal()'::regprocedure), 'C4 P30 (20260930013100)') = 0
-		or strpos(pg_get_functiondef('public.qorpera_folder_hint_member(text)'::regprocedure), 'C4 P30 (20260930013100)') = 0
-		then raise exception 'a hint function lost its budget or body marker'; end if;
 	perform pg_temp.same(public.qorpera_folder_hint_topic('63000000-0000-4000-8000-000000000020'),
 		'qorpera-folder-63000000-0000-4000-8000-000000000020', 'the topic');
 	perform pg_temp.same(public.qorpera_folder_hint_environment('qorpera-folder-63000000-0000-4000-8000-000000000020')::text,

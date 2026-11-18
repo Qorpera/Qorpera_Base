@@ -13,7 +13,7 @@ select pg_temp.base_claims('service_role');
 -- A member's request: send n, from the support mailbox to the customer.
 create function pg_temp.mr_request(p_n integer, p_extra jsonb default '{}') returns jsonb language sql as $$
 	select jsonb_build_object('sendId', '12340000-0000-4000-8000-' || lpad(p_n::text, 12, '0'),
-		'from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+		'from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 		'subject', 'Re: Your order', 'text', 'Answer ' || p_n) || p_extra
 $$;
 -- The same, as a reply to a message.
@@ -75,9 +75,9 @@ where id in ('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-00
 	'92400000-0000-4000-8000-000000000003', '92400000-0000-4000-8000-000000000004');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'support', 'Customer support') \g /dev/null
+	'support.base', 'Customer support') \g /dev/null
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'orders', 'Orders') \g /dev/null
+	'orders.base', 'Orders') \g /dev/null
 -- Another company, with a mailbox, a received email and a sent one of its own.
 select pg_temp.base_claims('service_role');
 insert into auth.users(id, email) values ('12340000-0000-4000-8000-0000000000c1', 'other-owner@example.test');
@@ -92,16 +92,16 @@ values ('12340000-0000-4000-8000-0000000000c3', '12340000-0000-4000-8000-0000000
 select public.qorpera_folder_enable('12340000-0000-4000-8000-0000000000c3') \g /dev/null
 select pg_temp.base_claims('authenticated', '12340000-0000-4000-8000-0000000000c1');
 select public.qorpera_create_company_mailbox('12340000-0000-4000-8000-0000000000c2', '12340000-0000-4000-8000-0000000000c3',
-	'theirs', 'Their mailbox') \g /dev/null
+	'theirs.other', 'Their mailbox') \g /dev/null
 select public.qorpera_send_member_mail('12340000-0000-4000-8000-0000000000c3', pg_temp.mr_request(90,
-	'{"from":"theirs@mail.example.test"}')) \g /dev/null
+	'{"from":"theirs.other@mail.example.test"}')) \g /dev/null
 select pg_temp.base_claims('service_role');
-select pg_temp.mr_receive(90, 'theirs@mail.example.test', '{"messageId":"<theirs-1@example.org>"}');
+select pg_temp.mr_receive(90, 'theirs.other@mail.example.test', '{"messageId":"<theirs-1@example.org>"}');
 
 -- 1. A reply to a received email --------------------------------------------------------------------------------------
 
 -- A customer writes in a thread that began elsewhere: the email names the thread's root and the email before it.
-select pg_temp.mr_receive(1, 'support@mail.example.test', jsonb_build_object('messageId', '<q-1@example.org>',
+select pg_temp.mr_receive(1, 'support.base@mail.example.test', jsonb_build_object('messageId', '<q-1@example.org>',
 	'references', '<root@example.org> <mid@example.org>', 'inReplyTo', '<mid@example.org>'));
 select pg_temp.base_assert((pg_temp.mr_received('<q-1@example.org>')).delivery_id is not null,
 	'The customer''s email is received');
@@ -139,7 +139,7 @@ from (select pg_temp.mr_line((pg_temp.mr_mail(1)).thread) as line,
 select pg_temp.base_claims('service_role');
 select set_config('qorpera_test.mr_claim',
 	public.qorpera_claim_company_mail(10, '12340000-0000-4000-8000-0000000000a1')::text, true) \g /dev/null
-select pg_temp.base_assert(mail #>> '{from}' = '"Olivia Owner at Folder runtime base" <support@mail.example.test>'
+select pg_temp.base_assert(mail #>> '{from}' = '"Olivia Owner at Folder runtime base" <support.base@mail.example.test>'
 		and mail #> '{headers}' = jsonb_build_object('In-Reply-To', '<q-1@example.org>',
 			'References', '<root@example.org> <mid@example.org> <q-1@example.org>')
 		and mail #>> '{text}' = 'Answer 1',
@@ -174,7 +174,7 @@ select pg_temp.base_assert((select mail.thread = (pg_temp.mr_mail(1)).thread and
 	'A follow-up to an email with no Message-ID yet is in its thread, without thread headers');
 -- The customer answers the member's reply: the answer names the thread's root first, and joins the same thread.
 select pg_temp.base_claims('service_role');
-select pg_temp.mr_receive(2, 'support@mail.example.test', jsonb_build_object('messageId', '<q-2@example.org>',
+select pg_temp.mr_receive(2, 'support.base@mail.example.test', jsonb_build_object('messageId', '<q-2@example.org>',
 	'references', '<root@example.org> <mid@example.org> <q-1@example.org> <mr-1@mail.example.test>',
 	'inReplyTo', '<mr-1@mail.example.test>'));
 select pg_temp.base_assert((pg_temp.mr_received('<q-2@example.org>')).thread_id = (pg_temp.mr_mail(1)).thread
@@ -185,9 +185,9 @@ select pg_temp.base_assert((pg_temp.mr_received('<q-2@example.org>')).thread_id 
 -- 3. What a person may answer that an agent may not, and what has no id ------------------------------------------------
 
 -- An automatic email (an auto-reply, a mailing list): an agent's reply to it is refused, a member's goes.
-select pg_temp.mr_receive(3, 'support@mail.example.test', '{"messageId":"<auto-1@example.org>","automated":true}');
+select pg_temp.mr_receive(3, 'support.base@mail.example.test', '{"messageId":"<auto-1@example.org>","automated":true}');
 select pg_temp.base_error(format('select public.qorpera_send_agent_mail(%L::jsonb, %L, %L::jsonb)',
-	current_setting('qorpera_test.base_binding'), 'mr-agent-1', jsonb_build_object('from', 'support@mail.example.test',
+	current_setting('qorpera_test.base_binding'), 'mr-agent-1', jsonb_build_object('from', 'support.base@mail.example.test',
 		'to', jsonb_build_array('customer@example.org'), 'subject', 'Re: Your order', 'text', 'Hello',
 		'inReplyTo', (pg_temp.mr_received('<auto-1@example.org>')).delivery_id)), '42501',
 	'That email was sent automatically (an auto-reply, a mailing list or bulk mail); it is not answered');
@@ -200,7 +200,7 @@ select pg_temp.base_assert((select mail.thread = (pg_temp.mr_received('<auto-1@e
 	'A member answers an automatic email: a person replying starts no loop');
 -- A received email without a Message-ID is answered in its thread, without thread headers.
 select pg_temp.base_claims('service_role');
-select pg_temp.mr_receive(4, 'support@mail.example.test', '{"subject":"No id"}');
+select pg_temp.mr_receive(4, 'support.base@mail.example.test', '{"subject":"No id"}');
 select set_config('qorpera_test.mr_no_id', (select received.delivery_id::text from public.qorpera_mail_received as received
 	where received.subject = 'No id'), true) \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
@@ -222,30 +222,30 @@ select pg_temp.base_assert((select mail.thread = (pg_temp.mr_mail(1)).thread and
 	'A reply to an email whose text is cleared stays in its thread and names that email');
 -- A reply may go from another of the company's mailboxes; it is still in the thread of the email it answers.
 select pg_temp.mr_send(pg_temp.mr_reply(7, 'received', (pg_temp.mr_received('<q-1@example.org>')).delivery_id,
-	'{"from":"orders@mail.example.test"}')) \g /dev/null
+	'{"from":"orders.base@mail.example.test"}')) \g /dev/null
 select pg_temp.base_assert((select mail.thread = (pg_temp.mr_mail(1)).thread
 			and mail.mailbox_id = (select box.id from public.qorpera_company_mailboxes as box
-				where box.local_part = 'orders' and box.removed_at is null)
+				where box.local_part = 'orders.base' and box.removed_at is null)
 		from pg_temp.mr_mail(7) as mail),
 	'A reply from another mailbox of the company is in the answered email''s thread');
 
 -- The customer answers that reply. The answer names the cleared email first, an id no sent email has: it joins the
 -- thread through the received email the company knows by that id.
 select pg_temp.base_claims('service_role');
-select pg_temp.mr_receive(5, 'support@mail.example.test', jsonb_build_object('messageId', '<q-3@example.org>',
+select pg_temp.mr_receive(5, 'support.base@mail.example.test', jsonb_build_object('messageId', '<q-3@example.org>',
 	'references', '<q-2@example.org> <mr-6@mail.example.test>', 'inReplyTo', '<mr-6@mail.example.test>'));
 select pg_temp.base_assert((pg_temp.mr_received('<q-3@example.org>')).thread_id = (pg_temp.mr_mail(1)).thread,
 	'The answer to a reply that names only a received email joins that email''s thread');
 -- An answer whose first reference the company does not know joins the thread of the email it answers.
-select pg_temp.mr_receive(6, 'support@mail.example.test', jsonb_build_object('messageId', '<q-4@example.org>',
+select pg_temp.mr_receive(6, 'support.base@mail.example.test', jsonb_build_object('messageId', '<q-4@example.org>',
 	'references', '<elsewhere@example.net> <mr-1@mail.example.test>', 'inReplyTo', '<mr-1@mail.example.test>'));
 select pg_temp.base_assert((pg_temp.mr_received('<q-4@example.org>')).thread_id = (pg_temp.mr_mail(1)).thread,
 	'An answer to a sent email joins its thread, whatever it references first');
 -- An email that answers nothing the company knows is in the thread of the first id it references, as before; and
 -- another company's mailbox knows none of this company's messages.
-select pg_temp.mr_receive(7, 'support@mail.example.test', jsonb_build_object('messageId', '<new-1@example.org>',
+select pg_temp.mr_receive(7, 'support.base@mail.example.test', jsonb_build_object('messageId', '<new-1@example.org>',
 	'references', '<unknown@example.net>', 'inReplyTo', '<unknown@example.net>'));
-select pg_temp.mr_receive(91, 'theirs@mail.example.test', jsonb_build_object('messageId', '<theirs-2@example.org>',
+select pg_temp.mr_receive(91, 'theirs.other@mail.example.test', jsonb_build_object('messageId', '<theirs-2@example.org>',
 	'references', '<q-2@example.org>', 'inReplyTo', '<mr-1@mail.example.test>'));
 select pg_temp.base_assert((pg_temp.mr_received('<new-1@example.org>')).thread_id = public.qorpera_mail_thread_id(
 			(pg_temp.mr_received('<new-1@example.org>')).mailbox_id, '<unknown@example.net>')
@@ -257,10 +257,10 @@ select pg_temp.base_assert((pg_temp.mr_received('<new-1@example.org>')).thread_i
 -- 3b. Where an email asks its answers to go ----------------------------------------------------------------------------
 
 -- A received message carries the addresses of its Reply-To while its stored message is kept; never for account mail.
-select pg_temp.mr_receive(8, 'support@mail.example.test', jsonb_build_object('messageId', '<vendor-1@example.org>',
+select pg_temp.mr_receive(8, 'support.base@mail.example.test', jsonb_build_object('messageId', '<vendor-1@example.org>',
 	'from', 'Vendor <no-reply@vendor.example>',
 	'replyTo', jsonb_build_array('support@vendor.example', 7, repeat('x', 400), 'billing@vendor.example')));
-select pg_temp.mr_receive(9, 'support@mail.example.test', '{"messageId":"<vendor-2@example.org>","replyTo":[]}');
+select pg_temp.mr_receive(9, 'support.base@mail.example.test', '{"messageId":"<vendor-2@example.org>","replyTo":[]}');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000003');
 select pg_temp.base_assert(
 	pg_temp.mr_messages((pg_temp.mr_received('<vendor-1@example.org>')).thread_id) #> '{0,replyTo}'
@@ -344,16 +344,16 @@ select pg_temp.mr_refused(pg_temp.mr_reply(13, 'received', (pg_temp.mr_received(
 	'42501', 'Only a member who can write in the company sends its email');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select pg_temp.mr_refused(pg_temp.mr_reply(13, 'received', (pg_temp.mr_received('<q-1@example.org>')).delivery_id,
-	'{"to":["orders@mail.example.test"]}'), '42501', 'Email to your own company''s mailboxes is refused');
+	'{"to":["orders.base@mail.example.test"]}'), '42501', 'Email to your own company''s mailboxes is refused');
 -- Another company's owner answers their own mail, and none of this company's.
 select pg_temp.base_claims('authenticated', '12340000-0000-4000-8000-0000000000c1');
 select pg_temp.base_assert(public.qorpera_send_member_mail('12340000-0000-4000-8000-0000000000c3',
 		pg_temp.mr_reply(91, 'received', (pg_temp.mr_received('<theirs-1@example.org>')).delivery_id,
-			'{"from":"theirs@mail.example.test"}')) ->> 'thread' = (pg_temp.mr_received('<theirs-1@example.org>')).thread_id,
+			'{"from":"theirs.other@mail.example.test"}')) ->> 'thread' = (pg_temp.mr_received('<theirs-1@example.org>')).thread_id,
 	'Another company''s owner answers their own company''s email');
 select pg_temp.base_error(format('select public.qorpera_send_member_mail(%L, %L::jsonb)',
 	'12340000-0000-4000-8000-0000000000c3', pg_temp.mr_reply(92, 'received',
-		(pg_temp.mr_received('<q-1@example.org>')).delivery_id, '{"from":"theirs@mail.example.test"}')), '42501',
+		(pg_temp.mr_received('<q-1@example.org>')).delivery_id, '{"from":"theirs.other@mail.example.test"}')), '42501',
 	'The email this answers is not one the company can answer');
 select pg_temp.base_claims('service_role');
 select pg_temp.base_assert((select count(*) = 7 from public.qorpera_company_mail_outbox

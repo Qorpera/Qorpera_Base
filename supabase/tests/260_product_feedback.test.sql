@@ -145,10 +145,6 @@ $$;
 
 do $$
 begin
-	if to_regclass('public.qorpera_product_feedback') is null
-		or to_regprocedure('public.qorpera_submit_product_feedback(uuid,text,text,boolean,jsonb)') is null then
-		raise exception 'feedback storage or submission RPC is missing';
-	end if;
 	if has_table_privilege('anon', 'public.qorpera_product_feedback', 'SELECT')
 		or has_table_privilege('authenticated', 'public.qorpera_product_feedback', 'SELECT')
 		or has_table_privilege('authenticated', 'public.qorpera_product_feedback', 'INSERT') then

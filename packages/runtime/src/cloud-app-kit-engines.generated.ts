@@ -10,8 +10,8 @@ provisional pictures) until the founder drags them or presses "Try an example".
 
 Write \`model.json\`. Every number comes from the company's files. What is not known is \`"unknown"\`, never a guess.
 
-- \`lang\` (such as "da"), \`title\` (≤40), \`line\` (≤60), \`unit\`: currency word (≤8, "kr"), \`source\`: optional \`folder:\` or
-  \`https:\` link (↗).
+- \`lang\` (such as "da"), \`unit\`: currency word (≤8, "kr"). \`title\` (≤40) and \`line\` (≤60) are read only by screen
+  readers. A top-level \`source\` is not drawn.
 - \`words\`: optional, the page's words in the company's language: \`example\`, \`hint\` ("{n}" = count), \`hintLast\`,
   \`assumed\`, \`unknown\`, \`known\`, \`yours\`, \`provisional\`, \`reset\`, \`resetOne\`, \`breakEven\`, \`never\`, \`below\`, \`save\`,
   \`saving\`, \`saved\`, \`error\`, \`empty\`, \`tell\`, \`told\`.
@@ -20,8 +20,8 @@ Write \`model.json\`. Every number comes from the company's files. What is not k
   - \`state\`: \`"known"\` (a fact), \`"assumed"\` (someone's assumption), \`"unknown"\` (not known yet).
   - \`value\` for known and assumed. \`start\` for unknown: where the slider waits and what "Try an example" sets.
     A range and a start are not claims: pick a plain middle.
-  - optional \`note\` (≤90, shown when the label is tapped), \`source\` link, \`marks\`: up to 6 reference points
-    \`{label (≤24), value (number or formula), note (≤40)}\`, such as a competitor's public price.
+  - optional \`note\` (≤90, shown on a tap of the label), \`source\` (\`folder:\`/\`https:\`), \`marks\`: up to 6
+    reference points \`{label (≤24), value (number or formula), note (≤40)}\`, such as a competitor's public price.
   - A \`%\` input holds the number shown (8 means 8 %): write \`retur / 100\` in formulas.
   - \`value\` may be live from a company database: \`{"query": "<database>/<question>", "params": {}, "column": "n",
     "example": 49}\`. Known once it answers, else unknown. \`example\` shows only outside Qorpera.
@@ -71,7 +71,7 @@ app folder and are named by their path, such as \`pictures/a.webp\`. Text over i
 ## Top level
 
 - \`lang\`: language code, such as \`"da"\`. \`mode\`: \`"scale"\`, \`"choose"\` or \`"wall"\`.
-- \`title\` (40) and \`line\` (60): the page's name and one quiet line. No other text on the page.
+- \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block. No other text on the page.
 - \`words\`: the page's own words in your language. Keys: \`assumed\`, \`unknown\`, \`notKnown\`, \`all\`, \`close\`, \`source\`,
   \`choose\`, \`recommended\`, \`chosen\`, \`saving\`, \`back\`, \`colours\`, \`type\`, \`film\`, \`previous\`, \`next\`, \`keep\`, \`drop\`, \`empty\`,
   \`tell\`, \`told\`.
@@ -92,7 +92,14 @@ app folder and are named by their path, such as \`pictures/a.webp\`. Text over i
 
 ## choose: two to four directions to pick from
 
-- One tall panel per item, in its own colours. Item: \`line\` (60), \`logo\`, \`background\` (hex), \`palette\` (up to 5
+- One panel per item, in its own colours. The page draws no title block: \`title\` and \`line\` are read only by screen
+  readers, so put nothing there a member must see.
+- When every item has a \`poster\` or a \`video\`, the pictures are the page: each as large as the screen allows, side by
+  side or stacked, with the logo, name and line small under it. Give every item one, in the same shape: the company's
+  product in its world in that look, rendered or generated, with the feeling the founders' own words name. The poster
+  carries the direction; the fields below fill the page in and are not the list of what to design. Without them, the
+  panel shows the logo and name large.
+- Item: \`line\` (60), \`logo\`, \`background\` (hex), \`palette\` (up to 5
   \`{"name" (16), "hex"}\`), \`poster\` (a 16:10 still), \`video\` (mp4, plays muted on hover), \`gallery\` (up to 8
   \`{"src", "caption" (18)}\`), \`type\` (\`{"name", "family": a CSS font stack of fonts the device has, "sample" (44)}\`),
   \`recommended: true\` (one item only), \`by\` (24, who recommends it), \`source\`.
@@ -139,7 +146,7 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
 ## Fields
 
 - \`lang\`: language code, such as \`"da"\`.
-- \`title\`: up to 40 characters. \`line\`: one quiet line, up to 60.
+- \`title\`: up to 40 characters. \`line\`: up to 60. Both are read only by screen readers; the page draws no title block.
 - \`words\`: the page's own words in your language: \`known\`, \`assumed\`, \`unknown\`, \`total\` ("in all"), \`noMarks\`,
   \`close\`, \`next\`, \`empty\`, \`tell\`, \`told\`.
 - \`markWord\`: what a mark is called, \`{"one": "source", "many": "sources"}\`.
@@ -208,41 +215,50 @@ supports, with its count beside it. A step nobody has shown dissolves into fog w
 export const OBJECT_KIT_GUIDE = `# Object kit: what is the thing?
 
 Use it for a physical thing the company makes, sells or weighs up: a product, a candidate device, a part, a box.
-The page shows the thing large; the member turns it with a hand, and its parts are pointed out on it, each tied to
-its name beside it. Big facts sit under it. You write only \`object.json\` and render the pictures on a machine.
+The page shows the thing large, turned by the member's hand, its parts pointed out on it and named beside it, big
+facts under it. You write only \`object.json\` and make the model or pictures on a machine.
+
+## Model
+
+\`model\`: a \`.glb\` in the app's folder, which the member's browser draws live in real light, turned and tilted by
+hand. Make it in Blender (metres, real materials, each part a named object) and export it:
+\`blender -b thing.blend --python-exit-code 1 --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath='/company/apps/<app>/thing.glb', export_format='GLB', export_apply=True)"\`.
+No Draco or meshopt compression. Keep it light enough to open quickly on a phone (a test machine, not a phone, drew
+5 and 32 MB models in 2 and 3 s). \`view\` \`{"yaw", "pitch"}\` in degrees: where it opens, else three-quarter;
+\`environment\`: your own \`.hdr\` light in the folder.
 
 ## Pictures
 
-- \`turntable\`: one picture holding N frames (24 to 72; 48 is good) of the thing turned once around its upright
-  axis in equal steps, on a transparent background, in a grid: \`columns\` frames per row, left to right, top to
-  bottom. Frame 0 opens the page: a three-quarter view that shows the thing best. Each next frame turns the thing
-  360/N degrees so its front moves to the viewer's right. Turn the thing, not the camera; keep camera, light and
-  scale the same in every frame; the axis runs through the frame's middle; the thing fills about 90 % of the frame
-  height and stands on the frame's lower edge. Frames about 500 to 640 px; WebP with alpha; the sheet under 4 MB.
+- Keep \`turntable\` or \`picture\` beside \`model\`: it is shown while the model arrives and where 3D cannot run.
+- \`turntable\`: one picture of N frames (24 to 72; 48 is good) of the thing turned once around its upright axis in
+  equal steps, on a transparent background, \`columns\` frames per row, left to right, top to bottom. Frame 0 is the
+  three-quarter view that shows it best; each next frame turns the thing 360/N degrees, its front to the viewer's
+  right. Turn the thing, not the camera; same camera, light and scale in every frame; the axis in the frame's middle;
+  the thing fills about 90 % of the frame height, on the frame's lower edge. Frames 500 to 640 px; WebP with alpha;
+  the sheet under 4 MB.
 - A thing too abstract to read alone (a band, a ring) reads better worn or held by a plain matte stand-in.
 - Draw only what you know. A model you made yourself says so in \`line\` ("Illustrative model of ...").
 
 ## Fields
 
-- \`lang\`: such as \`"da"\`. \`title\` up to 60. \`line\` up to 60. \`source\`: a \`folder:\` or \`https:\` link (one quiet ↗).
+- \`lang\`: such as \`"da"\`. \`title\` up to 60, read only by screen readers. \`line\` up to 60: the one quiet line the page draws, over the thing. \`source\`: a \`folder:\` or \`https:\` link, not drawn.
 - \`name\` up to 22: the thing's name on its chip when there are variants.
-- \`turntable\`: \`{"picture", "frames", "columns", "frameWidth", "frameHeight"}\`. Or \`picture\` alone: a still that
-  does not turn.
+- \`turntable\`: \`{"picture", "frames", "columns", "frameWidth", "frameHeight"}\`. Or \`picture\` alone: a still.
 - \`parts\`: up to 12 (8 reads best), each:
   - \`id\`, \`name\` up to 22, \`value\` up to 16 (optional, such as \`"4 kanaler"\`), \`note\` up to 90 (shown when tapped),
     \`source\` (optional).
   - \`state\`: \`known\` (solid dot), \`assumed\` (hollow dashed dot and a tag), \`unknown\` (dashed "?" dot, no value).
-  - \`track\`: one \`[x, y, v]\` per frame. x and y place the part in that frame as fractions (0 to 1, from the top
-    left); v is 1 when the part faces the viewer and nothing hides it, else 0. Give x and y also when v is 0. A
-    still has one entry. Write tracks with your render script: project each part's 3D point in every frame, v from
-    a facing test and a ray test. Never type them.
+  - \`node\`: with \`model\`, the part's object name in Blender; the page finds it.
+  - \`track\`, for pictures: one \`[x, y, v]\` per frame: x and y as fractions (0 to 1, from the top left), v 1 when the
+    part faces the viewer unhidden, else 0 (x and y also then). A still has one. Compute them in your render script
+    (project each part's point, a facing test and a ray test); never type them.
 - \`facts\`: up to 5 figures that describe it, each \`{"label"\` up to 18, \`"value"\` up to 14, \`"state"\`, \`"source"\`?\`}\`.
   An unknown fact has no value: it draws a hatched "?".
-- \`variants\`: up to 6 other candidates or colours, each \`{"id", "name", "line"?, "turntable" or "picture",
-  "parts"?, "facts"?}\`. Render them with the same camera and frame size. Leave out \`parts\`/\`facts\` to keep the main
-  ones (their tracks must then fit the variant's frames).
+- \`variants\`: up to 6 other candidates or colours, each \`{"id", "name", "line"?, "model"?, "turntable" or "picture",
+  "parts"?, "facts"?}\`, made with the same camera and size. Without \`parts\`/\`facts\` they keep the main ones
+  (whose tracks must fit their frames).
 - \`words\`: the page's own words in your language: \`assumed\`, \`unknown\`, \`drag\` ("Drag to turn"), \`close\`,
-  \`source\`, \`turn\` (the turntable's name for screen readers), \`empty\`, \`tell\`, \`told\`.
+  \`source\`, \`turn\` (its name for screen readers), \`empty\`, \`nomodel\`, \`tell\`, \`told\`.
 
 The page turns slowly by itself until touched. Tapping a part or its name turns the thing the short way to where that
 part faces the viewer best, and shows its note. Never invent a value: a figure the documents do not give is
@@ -257,9 +273,10 @@ part faces the viewer best, and shows its note. Never invent a value: a figure t
   "line": "Illustrative model of the proposed box",
   "source": "folder:product/packaging.md",
   "name": "Box A",
+  "model": "box.glb",
   "turntable": { "picture": "pictures/box.webp", "frames": 4, "columns": 4, "frameWidth": 560, "frameHeight": 560 },
   "parts": [
-    { "id": "lid", "name": "Lid", "value": "Magnet", "state": "assumed", "note": "Closes with a magnet; its hold is not measured.",
+    { "id": "lid", "name": "Lid", "value": "Magnet", "state": "assumed", "node": "Lid", "note": "Closes with a magnet; its hold is not measured.",
       "track": [[0.5, 0.21, 1], [0.52, 0.2, 1], [0.5, 0.21, 1], [0.48, 0.2, 1]] }
   ],
   "facts": [
@@ -280,7 +297,7 @@ member runs a finger or the pointer along the curve and the big number follows. 
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`unit\` (8): the unit after the big number, such as \`"kr"\` or \`"orders"\`.
 - \`tone\`: the curve's colour, \`"accent"\` (default), \`"good"\`, \`"warn"\` or \`"bad"\`.
 - \`points\`: 2 to 120 in time order, each \`{"label" (12), "value", "band"}\`:
@@ -296,7 +313,7 @@ member runs a finger or the pointer along the curve and the big number follows. 
 - \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points. Default: the value at now.
 - \`words\`: the page's own words in your language: \`now\`, \`safe\`, \`expected\`, \`assumed\`, \`unknown\`, \`between\`
   ("{low} to {high}"), \`empty\`.
-- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
+- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from. The page does not draw it.
 
 A point's \`value\` and the \`headline\`'s may be live from a company database: \`{"query": "<database>/<question>",
 "params": {}, "column": "balance", "example": 62400}\`. Known once it answers, else not known; \`example\` shows only
@@ -350,7 +367,7 @@ with the answer, as in the chat: act on it, then write \`answer\` into the card,
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`cards\`: up to 24 in order, the most urgent first. A card:
   - \`id\`: letters, digits, \`-\`. \`title\` (48): the question, such as "Pay the parts bill?".
   - \`value\`: the number that matters, such as 4200; or a short text (18), such as "Shop v2". \`unit\` (10): "kr".
@@ -407,7 +424,7 @@ gallery: finished things, framed, with the maker's figure. A member taps a thing
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`unit\` (12): the unit after every thing's number, such as \`"in stock"\`. A thing's own \`unit\` wins.
 - \`things\`: 1 to 8 (6 read best), each:
   - \`id\`: letters, digits, \`-\`. \`name\` (24). \`picture\`: a picture file of the app, such as
@@ -466,7 +483,7 @@ in. You write only \`map.json\`; the page finds each agent's figure, and who wor
 - \`lang\`: language code, such as \`"da"\`.
 - \`top\`: the first layer. \`"reading"\` draws the company's own reading of itself (\`QorperaOS/vision/reading.md\`),
   live: the company's map, which the Co-Founder keeps; save_app adds \`reading\` to the app's reads. Or, for a map of
-  your own area: \`title\` (40), \`line\` (60), \`attention\` (the id of the thing drawn biggest, in the middle) and
+  your own area: \`title\` (40) and \`line\` (60), read only by screen readers (a layer's \`line\` is drawn once it is opened), \`attention\` (the id of the thing drawn biggest, in the middle) and
   \`things\`, 3 to 7.
 - \`layers\`: what is inside a thing, by the thing's \`id\` (a reading's thing by its \`key\`): \`line\` (60) and \`things\`,
   1 to 12. A thing of a layer may have a layer of its own: four layers deep and 80 things in all at most. A thing
@@ -537,7 +554,7 @@ the pointer round the ring, or the arrow keys, and the middle follows. You write
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`span\`: \`"year"\` (default), \`"month"\` or \`"week"\`. \`start\`: its first day, \`"YYYY-MM-DD"\`, such as a business year
   from \`"2026-07-01"\`. Without it the ring is the calendar year, month or week (from Monday) of today.
 - \`marks\`: up to 12, each \`{"name" (24), "at": "YYYY-MM-DD"}\`, such as a VAT date or a launch.
@@ -552,7 +569,7 @@ the pointer round the ring, or the arrow keys, and the middle follows. You write
 - \`now\`: optional \`"YYYY-MM-DD"\` that holds the hand still on that day. Leave it out: the hand follows the clock.
 - \`words\`: the page's own words in your language: \`days\`, \`day\`, \`today\`, \`to\` ("to {name}"), \`left\`
   ("left of {name}"), \`ago\` ("{n} days ago"), \`assumed\`, \`unknown\`, \`empty\`.
-- \`source\`: an \`https:\` or \`folder:\` link to where the dates come from (a small ↗).
+- \`source\`: an \`https:\` or \`folder:\` link to where the dates come from. The page does not draw it.
 
 A \`value\` of a mark, a wedge or the \`centre\` may be live from a company database: \`{"query":
 "<database>/<question>", "params": {}, "column": "sales", "example": 3900}\`. Known once it answers, else not known;
@@ -602,7 +619,7 @@ band's, with its share. You write only \`flow.json\`.
 
 ## Fields
 
-- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): the page's name and one quiet line.
+- \`lang\`: language code, such as \`"da"\`. \`title\` (40) and \`line\` (60): read only by screen readers; the page draws no title block.
 - \`unit\` (8): the unit after every amount, such as \`"kr"\` or \`"people"\`.
 - \`from\`: where it comes from, 1 or more (24 at most), each \`{"id", "name" (20), "value"}\`: \`id\` letters, digits,
   \`-\`; \`value\` the amount, 0 or more. Leave \`value\` out when nobody knows it: the band is drawn open with "?".
@@ -618,7 +635,7 @@ band's, with its share. You write only \`flow.json\`.
 - \`headline\`: optional \`{"value", "label" (24)}\`: the big number when nobody points, such as what was kept.
 - \`words\`: the page's own words in your language: \`total\` (the big number's label, "in all"), \`other\`, \`rest\`
   ("Not accounted for"), \`assumed\`, \`unknown\`, \`empty\`.
-- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from (a small ↗).
+- \`source\`: an \`https:\` or \`folder:\` link to where the numbers come from. The page does not draw it.
 
 A \`value\` of an end, a link or the \`headline\` may be live from a company database: \`{"query": "<database>/<question>",
 "params": {"month": "2026-11"}, "column": "amount", "example": 182000}\`. Known once it answers, else not known;
@@ -1377,6 +1394,9 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk--bare{padding:clamp(12px,1vw,16px)}
 .mk--bare .mk-title,.mk--bare .mk-line{display:none}
 .mk--bare .mk-head{padding-bottom:0}
+.mk .mk-title,.mk .mk-line{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.mk .mk-head{padding-bottom:0}
+.mk .mk-line .mk-src{display:none}
 .mk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .mk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .mk-err{margin:4px 0 0;font-size:13px;color:var(--q-muted)}
@@ -2932,6 +2952,7 @@ body{margin:0}
 .bk--bare{--pad:clamp(12px,1vw,16px)}
 .bk--bare .bk-titles{display:none}
 .bk--bare .bk-head:not(:has(.bk-chips)){display:none}
+.bk .bk-titles,.bk .bk-head:not(:has(.bk-chips)){position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .bk--bare.bk-choose{padding-top:0}
 .bk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .bk-line{margin:3px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
@@ -3052,7 +3073,7 @@ body{margin:0}
 }
 
 /* choose */
-.bk-choose{padding-bottom:0;gap:clamp(14px,2.2vh,22px)}
+.bk-choose{padding-top:0;padding-bottom:0;gap:clamp(14px,2.2vh,22px)}
 .bk-panels{flex:1 1 auto;display:flex;min-height:480px;margin:0 calc(-1 * var(--pad))}
 .bk-panel,.bk-world{--bg:var(--q-surface);--ink:var(--q-text);--soft:color-mix(in srgb,var(--ink) 66%,var(--bg));--faint:color-mix(in srgb,var(--ink) 12%,transparent)}
 .bk-panel{flex:1 1 0;min-width:0;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:16px;padding:clamp(18px,2.3vw,30px) clamp(18px,2.3vw,30px) 0;background:var(--bg);color:var(--ink);text-align:center;overflow:hidden;transition:flex-grow .65s var(--ease),opacity .45s,filter .45s}
@@ -3065,7 +3086,7 @@ body{margin:0}
 .bk-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .bk-chosen{display:none;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--ink);color:var(--bg);font-size:13px;font-weight:650;white-space:nowrap;margin-left:auto}
 .bk-chosen svg{width:14px;height:14px}
-.is-chosen>.bk-ptop .bk-chosen,.bk-wtop .bk-chosen.is-on{display:inline-flex}
+.is-chosen .bk-ptop .bk-chosen,.bk-wtop .bk-chosen.is-on{display:inline-flex}
 .bk-pmid{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-width:0;max-width:100%;padding-bottom:clamp(0px,2vh,24px)}
 .bk-plogo{display:block;width:clamp(72px,9.5vw,132px);height:clamp(72px,9.5vw,132px);margin-bottom:clamp(6px,1.6vh,18px);transition:transform .6s var(--ease)}
 .bk-plogo>img,.bk-plogo>.bk-ph{width:100%;height:100%;object-fit:contain}
@@ -3155,6 +3176,22 @@ body{margin:0}
 .bk-act{position:sticky;bottom:0;margin:0 calc(-1 * var(--pad)) calc(-1 * var(--pad));padding:14px var(--pad) calc(18px + env(safe-area-inset-bottom,0px));background:linear-gradient(color-mix(in srgb,var(--bg) 0%,transparent),var(--bg) 36%)}
 .bk-pick{width:100%}
 }
+
+.bk-choose .bk-panels.is-pics{display:grid;grid-template-columns:var(--tc,repeat(2,minmax(0,1fr)));grid-template-rows:var(--tr,minmax(0,1fr));transition:grid-template-columns .65s var(--ease),grid-template-rows .65s var(--ease);flex:none;height:max(420px,100vh);height:max(420px,100dvh);min-height:0}
+.bk-panels.is-odd>.bk-panel:last-child{grid-column:1/-1}
+.bk-panels.is-pics .bk-panel{flex:none;flex-direction:column;flex-wrap:nowrap;align-items:stretch;justify-content:center;gap:clamp(12px,1.8vh,18px);min-height:0;padding:clamp(14px,2.2vw,30px);text-align:left;box-shadow:inset 0 0 0 .5px var(--faint)}
+.bk-stage{position:relative;flex:1 1 0;min-height:0;align-self:stretch;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(12px,1.8vh,18px);container-type:size}
+.bk-panels.is-pics .bk-win{flex:none;order:0;width:min(100cqw,calc((100cqh - var(--lab,64px)) * var(--ar,1.6)));max-width:none;aspect-ratio:var(--ar,1.6);margin:0;border-radius:12px;box-shadow:0 0 0 1px var(--faint),0 34px 60px -38px color-mix(in srgb,var(--ink) 70%,transparent);transition:transform .5s var(--ease)}
+.bk-panels.is-pics .bk-win>img,.bk-panels.is-pics .bk-win>video{object-position:50% 50%}
+.bk-panels.is-pics .bk-win>.bk-ph{position:absolute;inset:0;border-radius:0}
+.bk-panels.is-pics .bk-ptop{position:absolute;top:12px;left:12px;right:12px;z-index:2;min-height:0;pointer-events:none}
+.bk-panels.is-pics .bk-badge{background:var(--bg)}
+.bk-panels.is-pics .bk-pmid{flex:none;order:0;max-width:100%;display:grid;grid-template-columns:minmax(0,auto);justify-content:center;justify-items:start;align-items:center;column-gap:12px;row-gap:2px;padding:0}
+.bk-panels.is-pics .bk-pmid:has(>.bk-plogo){grid-template-columns:auto minmax(0,auto)}
+.bk-panels.is-pics .bk-plogo{grid-row:1/span 2;width:clamp(30px,2.6vw,40px);height:clamp(30px,2.6vw,40px);margin:0}
+.bk-panels.is-pics .bk-pname{font-size:clamp(20px,1.9vw,28px);letter-spacing:-.015em}
+.bk-panels.is-pics .bk-pline{font-size:14px;max-width:48ch;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bk-panels.is-pics .bk-strip{height:6px}
 
 /* wall */
 .bk-wall{columns:4 220px;column-gap:14px}
@@ -4296,6 +4333,8 @@ body{margin:0}
 		const row = h("div", "bk-panels");
 		root.append(row);
 		const rec = (o) => (o.by ? \`\${WORDS.recommended} · \${o.by}\` : WORDS.recommended);
+		const pics = opts.length > 0 && opts.every((o) => o.poster || o.video);
+		row.classList.toggle("is-pics", pics);
 		const panels = opts.map((o, i) => {
 			const p = h("button", "bk-panel", { type: "button", "data-id": o.id, "aria-haspopup": "dialog", "aria-label": \`\${o.name}\${o.recommended ? \`, \${rec(o)}\` : ""}\${o.line ? \`. \${o.line}\` : ""}\` });
 			p.style.setProperty("--i", i);
@@ -4309,7 +4348,7 @@ body{margin:0}
 			if (o.type && o.type.family) name.style.fontFamily = o.type.family;
 			mid.append(name);
 			if (o.line) mid.append(h("span", "bk-pline", null, o.line));
-			p.append(top, mid);
+			if (!pics) p.append(top, mid);
 			let v = null;
 			let win = null;
 			if (o.poster || o.video) {
@@ -4321,7 +4360,10 @@ body{margin:0}
 					v.addEventListener("playing", () => win.classList.add("is-playing"), on);
 					win.append(v);
 				}
-				p.append(win);
+				if (pics) {
+					win.append(top);
+					p.append(h("span", "bk-stage", null, win, mid));
+				} else p.append(win);
 			}
 			if (o.palette.length) p.append(h("span", "bk-strip", { "aria-hidden": "true" }, ...o.palette.map((c) => Object.assign(h("i"), { style: \`background:\${c.hex}\` }))));
 			const start = () => play(v);
@@ -4336,8 +4378,74 @@ body{margin:0}
 			p.addEventListener("blur", stop, on);
 			p.addEventListener("click", () => openWorld(o.id), on);
 			row.append(p);
-			return { o, p };
+			return { o, p, mid, ar: 1.6 };
 		});
+		function shapeOf(o) {
+			const src = mediaFor(o.poster || o.video);
+			const [w, hh] = !src ? [0, 0] : src.tagName === "VIDEO" ? [src.videoWidth, src.videoHeight] : [src.naturalWidth, src.naturalHeight];
+			return w > 0 && hh > 0 ? Math.min(4, Math.max(0.25, w / hh)) : null;
+		}
+		function fit() {
+			if (!pics) return;
+			for (const P of panels) {
+				P.ar = shapeOf(P.o) || P.ar;
+				P.p.style.setProperty("--ar", P.ar.toFixed(4));
+			}
+			const W = row.clientWidth;
+			const H = row.clientHeight;
+			if (!W || !H) return;
+			const cs = getComputedStyle(panels[0].p);
+			const px = (k) => parseFloat(cs[k]) || 0;
+			const padX = px("paddingLeft") + px("paddingRight");
+			const padY = px("paddingTop") + px("paddingBottom");
+			const label = Math.max(0, ...panels.map((P) => P.mid.offsetHeight)) + (parseFloat(getComputedStyle(panels[0].mid.parentElement).rowGap) || 0);
+			row.style.setProperty("--lab", \`\${Math.ceil(label)}px\`);
+			const n = panels.length;
+			let best = n;
+			let most = -1;
+			for (let c = 1; c <= n; c++) {
+				const r = Math.ceil(n / c);
+				const high = H / r - padY - label;
+				let least = Infinity;
+				panels.forEach((P, i) => {
+					const wide = (i === n - 1 && n % c ? W : W / c) - padX;
+					const w = Math.max(0, Math.min(wide, high * P.ar));
+					least = Math.min(least, (w * w) / P.ar);
+				});
+				if (least > most * 1.04) [best, most] = [c, least];
+			}
+			cols = best;
+			row.classList.toggle("is-odd", n % best !== 0);
+			grow(near);
+		}
+		let cols = 1;
+		let near = -1;
+		function grow(i) {
+			near = i;
+			const rows = Math.ceil(panels.length / cols);
+			const track = (k, at) => Array.from({ length: k }, (_, j) => \`minmax(0,\${j === at ? 1.4 : 1}fr)\`).join(" ");
+			const wide = i >= 0 && !(i === panels.length - 1 && panels.length % cols);
+			row.style.setProperty("--tc", track(cols, wide ? i % cols : -1));
+			row.style.setProperty("--tr", track(rows, i >= 0 ? Math.floor(i / cols) : -1));
+		}
+		let watch = null;
+		if (pics) {
+			panels.forEach(({ p }, i) => {
+				p.addEventListener("pointerenter", (e) => e.pointerType === "mouse" && grow(i), on);
+				p.addEventListener("pointerleave", () => near === i && grow(-1), on);
+				p.addEventListener("focus", () => p.matches(":focus-visible") && grow(i), on);
+				p.addEventListener("blur", () => near === i && grow(-1), on);
+			});
+			for (const { o } of panels) {
+				const src = mediaFor(o.poster || o.video);
+				if (src) src.addEventListener(src.tagName === "VIDEO" ? "loadedmetadata" : "load", fit, on);
+			}
+			if (window.ResizeObserver) {
+				watch = new ResizeObserver(fit);
+				watch.observe(row);
+			} else window.addEventListener("resize", fit, on);
+			fit();
+		}
 		let world = null;
 		function canAnswer(o) {
 			return !!(S.q && S.q.options.some((x) => String(x.value) === o.id));
@@ -4561,6 +4669,7 @@ body{margin:0}
 			destroy() {
 				ac.abort();
 				clearTimeout(retry);
+				if (watch) watch.disconnect();
 				if (world) world.remove(true);
 			},
 		};
@@ -4828,6 +4937,8 @@ body{margin:0}
 .pk--bare .pk-head{display:none}
 .pk--bare .pk-top:not(:has(.pk-figs)){display:none}
 .pk--bare .pk-top:not(:has(.pk-figs))+.pk-map{margin-top:0}
+.pk .pk-head,.pk .pk-top:not(:has(.pk-figs)){position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.pk .pk-top:not(:has(.pk-figs))+.pk-map{margin-top:0}
 .pk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .pk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .pk-figs{display:flex;gap:clamp(24px,4vw,56px);align-items:flex-start}
@@ -6351,11 +6462,27 @@ export const OBJECT_ENGINE_JS = `/* Qorpera interface kit: object. "What is the 
 		// a note to the app's owner: the button's label, naming the agent ("Ask Luna"), and what it says once sent
 		tell: "",
 		told: "",
+		nomodel: "",
 	};
 	const STATES = { known: 1, assumed: 1, unknown: 1 };
 	const SVGNS = "http://www.w3.org/2000/svg";
 	const IDLE_MS = 20000;
 	const TURN_SECONDS = 42; // one slow turn by itself
+	const THREE_FILE = "three.js";
+	const DEG = Math.PI / 180;
+	const OPEN_VIEW = { yaw: 30, pitch: 14 };
+	const TILT = [-6 * DEG, 52 * DEG];
+	const ZOOM = [0.8, 2.2];
+	const NOMODEL = {
+		en: "The model could not be shown.",
+		da: "Modellen kunne ikke vises.",
+		sv: "Modellen kunde inte visas.",
+		nb: "Modellen kunne ikke vises.",
+		de: "Das Modell konnte nicht angezeigt werden.",
+		nl: "Het model kon niet worden getoond.",
+		fr: "Le modèle n’a pas pu être affiché.",
+		es: "No se pudo mostrar el modelo.",
+	};
 
 	// ------------------------------------------------------------------ small helpers
 	const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -6390,6 +6517,8 @@ body{margin:0}
 .ok-head{position:relative;z-index:2}
 .ok--bare{padding:clamp(12px,1vw,16px)}
 .ok--bare .ok-head{display:none}
+.ok .ok-head h1{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ok .ok-head .ok-src{display:none}
 .ok-head h1{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .ok-head p{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ok-src{display:inline-flex;align-items:center;justify-content:center;min-width:28px;min-height:28px;margin:-6px 0 -6px 2px;color:var(--q-muted);text-decoration:none;font-size:14px;border-radius:8px;vertical-align:middle}
@@ -6487,6 +6616,18 @@ body{margin:0}
 .ok.phone .ok-facts{display:grid;grid-template-columns:1fr 1fr;gap:16px 18px;justify-content:stretch}
 .ok.phone .ok-fact{align-items:flex-start;min-width:0}
 .ok.phone .ok-fv{font-size:26px}
+.ok-gl{position:absolute;left:0;top:0;display:block;pointer-events:none;opacity:0;transition:opacity .8s cubic-bezier(.2,.7,.2,1)}
+.ok-gl.deep{-webkit-mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent)}
+.ok.near .ok-label,.ok.near .ok-label.off{opacity:0;pointer-events:none}
+.ok.near .ok-lines .lead,.ok.near .ok-lines .halo{visibility:hidden}
+.ok-gl.on{opacity:1}
+.ok.live .ok-object canvas{opacity:0}
+.ok.live .ok-shadow{opacity:0}
+.ok-wait{position:absolute;left:50%;top:50%;width:72px;height:2px;margin:-1px 0 0 -36px;border-radius:2px;overflow:hidden;pointer-events:none;background:color-mix(in srgb,var(--q-text) 9%,transparent);opacity:0;transition:opacity .4s ease}
+.ok-wait.on{opacity:1;transition-delay:.45s}
+.ok-wait::after{content:"";position:absolute;top:0;bottom:0;left:0;width:40%;border-radius:2px;background:color-mix(in srgb,var(--q-text) 34%,transparent);animation:ok-wait 1.4s ease-in-out infinite}
+@keyframes ok-wait{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
+.ok-none{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);margin:0;padding:0 24px;text-align:center;font-size:15px;line-height:1.45;color:var(--q-muted);pointer-events:none}
 @media (prefers-reduced-motion:reduce){.ok *,.ok *::before,.ok *::after{transition:none!important;animation:none!important}}
 \`;
 
@@ -6614,6 +6755,7 @@ body{margin:0}
 					state,
 					value: state === "unknown" ? "" : cut(p.value, 16),
 					source: link(p.source),
+					node: typeof p.node === "string" && p.node.trim() ? p.node.trim().slice(0, 120) : null,
 					track: Array.isArray(p.track)
 						? p.track.map((t) =>
 								Array.isArray(t) && Number.isFinite(+t[0]) && Number.isFinite(+t[1]) ? [clamp(+t[0], -0.2, 1.2), clamp(+t[1], -0.2, 1.2), +t[2] ? 1 : 0] : [0.5, 0.5, 0],
@@ -6632,16 +6774,35 @@ body{margin:0}
 				return { label: cut(f.label, 18) || "—", value: state === "unknown" ? "" : cut(f.value, 14), state, source: link(f.source) };
 			});
 	}
+	function fileIn(v, kind) {
+		return typeof v === "string" &&
+			v.length <= 200 &&
+			kind.test(v) &&
+			!/^[a-z][a-z0-9+.-]*:/i.test(v) &&
+			!v.startsWith("/") &&
+			!v.split("/").includes("..") &&
+			!/[\\0-\\x1f"<>\\\\]/.test(v)
+			? v
+			: null;
+	}
+	const GLB = /\\.glb$/i;
+	function viewOf(v) {
+		const o = v && typeof v === "object" ? v : {};
+		const deg = (x, d) => (x !== null && x !== "" && Number.isFinite(+x) ? +x : d);
+		return { yaw: deg(o.yaw, OPEN_VIEW.yaw) * DEG, pitch: clamp(deg(o.pitch, OPEN_VIEW.pitch) * DEG, TILT[0], TILT[1]) };
+	}
 	function normalize(raw) {
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 		const words = { ...EN };
 		if (raw.words && typeof raw.words === "object") for (const k in EN) if (typeof raw.words[k] === "string" && raw.words[k].trim()) words[k] = cut(raw.words[k], 40);
 		const lang = typeof raw.lang === "string" && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(raw.lang) ? raw.lang : D.documentElement.lang || "en";
+		if (!words.nomodel) words.nomodel = NOMODEL[lang.split("-")[0]] || NOMODEL.en;
 		const main = {
 			id: "main",
 			name: cut(raw.name, 22) || cut(raw.title, 22) || "—",
 			line: cut(raw.line, 60),
 			pic: picOf(raw.turntable, raw.picture),
+			model: fileIn(raw.model, GLB),
 			parts: partsOf(raw.parts),
 			facts: factsOf(raw.facts),
 		};
@@ -6656,12 +6817,21 @@ body{margin:0}
 						name: cut(v.name, 22) || "—",
 						line: cut(v.line, 60) || main.line,
 						pic: picOf(v.turntable, v.picture),
+						model: fileIn(v.model, GLB),
 						parts: Array.isArray(v.parts) ? partsOf(v.parts) : main.parts,
 						facts: Array.isArray(v.facts) ? factsOf(v.facts) : main.facts,
 					});
 				});
-		if (!variants.some((v) => v.pic || v.parts.length || v.facts.length)) return null;
-		return { lang, title: cut(raw.title, 60) || cut(D.title, 60), source: link(raw.source), words, variants };
+		if (!variants.some((v) => v.pic || v.model || v.parts.length || v.facts.length)) return null;
+		return {
+			lang,
+			title: cut(raw.title, 60) || cut(D.title, 60),
+			source: link(raw.source),
+			words,
+			variants,
+			environment: fileIn(raw.environment, /\\.hdr$/i),
+			view: viewOf(raw.view),
+		};
 	}
 
 	// ------------------------------------------------------------------ pictures (only those the page named)
@@ -6840,17 +7010,6 @@ body{margin:0}
 		R.line.replaceChildren(v.line || "");
 		if (d.source) R.line.append("\\u00a0", h("a", "ok-src", { href: d.source, title: d.words.source, "aria-label": d.words.source }, "↗"));
 		const pic = v.pic;
-		R.object.classList.toggle("still", !pic?.sheet);
-		if (pic?.sheet) {
-			R.object.setAttribute("role", "slider");
-			R.object.setAttribute("aria-label", d.words.turn);
-			R.object.setAttribute("aria-valuemin", "0");
-			R.object.setAttribute("aria-valuemax", "359");
-		} else {
-			R.object.setAttribute("role", "img");
-			R.object.setAttribute("aria-label", v.name);
-			for (const a of ["aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) R.object.removeAttribute(a);
-		}
 		// labels
 		for (const l of R.labels) l.el.remove();
 		R.lines.replaceChildren();
@@ -6911,7 +7070,7 @@ body{margin:0}
 				return li;
 			}),
 		);
-		R.hint.classList.toggle("show", !!pic?.sheet && !S.touched);
+		mode();
 		noteFor();
 		R.chips.querySelectorAll(".ok-chip").forEach((b, i) => b.setAttribute("aria-pressed", i === S.vi ? "true" : "false"));
 		if (pic) {
@@ -6983,18 +7142,19 @@ body{margin:0}
 	function layout() {
 		if (!R || !S.data) return;
 		const v = V();
+		const live = shownRec();
 		const pic = v.pic;
 		const rec = pic ? picture(pic.path) : null;
-		const fw = pic?.fw || 4;
-		const fh = pic?.fh || 3;
+		const fw = live ? live.fit.tx : pic?.fw || 4;
+		const fh = live ? live.fit.ty : pic?.fh || 3;
 		const vw = R.view.clientWidth || R.root.clientWidth;
 		const phone = innerWidth < 700;
 		R.root.classList.toggle("phone", phone);
 		// on a phone the note sits in the flow under the strip of names; on a wide screen it floats over the stage
 		if (phone && R.note.parentNode !== R.root) R.root.insertBefore(R.note, R.below);
 		else if (!phone && R.note.parentNode !== R.view) R.view.append(R.note);
-		const b = rec?.ok && pic.fw ? boundsOf(rec, pic) : null;
-		const ext = b ? Math.max(0.5 - b.left, b.right - 0.5) : 0.5; // half-width of the object, in frame widths
+		const b = !live && rec?.ok && pic.fw ? boundsOf(rec, pic) : null;
+		const ext = live ? live.fit.ext : b ? Math.max(0.5 - b.left, b.right - 0.5) : 0.5;
 		let w;
 		let hgt;
 		if (phone) {
@@ -7047,6 +7207,10 @@ body{margin:0}
 		R.lines.setAttribute("width", vw);
 		R.lines.setAttribute("height", viewH);
 		R.lines.setAttribute("viewBox", \`0 0 \${vw} \${viewH}\`);
+		if (live) {
+			size3d(vw, viewH);
+			tint();
+		}
 		placeLabels();
 		S.dirty = true;
 		draw();
@@ -7058,7 +7222,7 @@ body{margin:0}
 		if (!B || B.phone) return;
 		const items = R.labels;
 		if (!items.length) return;
-		const at0 = (p) => (p.track && p.track.length ? p.track[0] : null);
+		const at0 = (p) => (shownRec() ? liveAt(p) : p.track && p.track.length ? p.track[0] : null);
 		items.forEach((it) => {
 			const t = at0(it.part);
 			it.side = t ? (t[0] < 0.5 ? "l" : "r") : "r";
@@ -7175,6 +7339,18 @@ body{margin:0}
 	}
 	function draw() {
 		if (!R || !S.box) return;
+		const live = shownRec();
+		if (live) {
+			renderLive(live, performance.now());
+			R.root.classList.toggle("near", G.zoom > 1.2);
+			G.canvas.classList.toggle("deep", G.zoom > 1.01);
+			overlay();
+			const deg = Math.round(mod(G.yaw - S.data.view.yaw, TAU) / DEG) % 360;
+			R.object.setAttribute("aria-valuenow", String(deg));
+			R.object.setAttribute("aria-valuetext", \`\${deg}°\`);
+			S.dirty = false;
+			return;
+		}
 		const ctx = R.ctx;
 		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.globalCompositeOperation = "source-over";
@@ -7200,6 +7376,14 @@ body{margin:0}
 
 	/** Where a part is at the current angle: [x, y, visibility 0..1] in view pixels. */
 	function where(p) {
+		if (shownRec()) {
+			const n = G.shown && G.shown.nodes.get(p.id);
+			if (!n) return null;
+			const [x, y] = project(n);
+			const edge = G.zoom > 1.01 ? 28 : 0;
+			const inside = x >= 0 && x <= G.w && y >= edge && y <= G.h - edge;
+			return [x, y, inside ? n.vis * (S.fade ? S.fade.k : 1) : 0];
+		}
 		const tr = p.track;
 		const pic = V().pic;
 		if (!tr || !tr.length || !pic) return null;
@@ -7283,6 +7467,10 @@ body{margin:0}
 			last = now;
 			step(now, dt);
 			if (S.dirty) draw();
+			if (asleep()) {
+				S.running = false;
+				return;
+			}
 			requestAnimationFrame(tick);
 		};
 		requestAnimationFrame(tick);
@@ -7290,12 +7478,13 @@ body{margin:0}
 	function step(now, dt) {
 		if (!S.data || D.hidden) return;
 		const pic = V().pic;
-		const turning = pic?.sheet;
+		const turning = turnable();
 		if (S.fade) {
 			S.fade.k = clamp((now - S.fade.t0) / 380, 0, 1);
 			if (S.fade.k >= 1) S.fade = null;
 			S.dirty = true;
 		}
+		if (shownRec()) return stepLive(now, dt);
 		if (!turning) return;
 		const n = pic.frames;
 		const idle = now - S.lastTouch > IDLE_MS;
@@ -7387,13 +7576,15 @@ body{margin:0}
 		if (!part) S.sel = null;
 		for (const it of R.labels) it.el.setAttribute("aria-pressed", it.part.id === S.sel ? "true" : "false");
 		R.strip.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.getAttribute("data-id") === S.sel ? "true" : "false"));
-		if (part && turn) {
+		if (part && turn && shownRec()) turnToNode(part);
+		else if (part && turn) {
 			const f = bestFrame(part);
 			if (f != null) turnTo(f);
 		}
 		noteFor();
 		syncLabels();
 		S.dirty = true;
+		loop();
 	}
 	function noteFor() {
 		const d = S.data;
@@ -7447,6 +7638,7 @@ body{margin:0}
 
 	// ------------------------------------------------------------------ hands and keys
 	function down(e) {
+		if (shownRec()) return liveDown(e);
 		if (e.button !== 0 && e.pointerType === "mouse") return;
 		touch();
 		S.drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, a0: S.ang, moved: false, lx: e.clientX, lt: e.timeStamp, v: 0 };
@@ -7454,10 +7646,11 @@ body{margin:0}
 		S.vel = 0;
 	}
 	function move(e) {
+		if (shownRec()) return liveMove(e);
 		const g = S.drag;
 		if (!g || g.id !== e.pointerId) return;
 		const dx = e.clientX - g.x0;
-		const pic = V().pic;
+		const pic = turnable() ? V().pic : null;
 		if (!g.moved) {
 			if (Math.abs(dx) < 6) return;
 			if (Math.abs(e.clientY - g.y0) > Math.abs(dx) && e.pointerType !== "mouse") {
@@ -7485,6 +7678,7 @@ body{margin:0}
 		e.preventDefault();
 	}
 	function up(e) {
+		if (shownRec()) return liveUp(e);
 		const g = S.drag;
 		if (!g || g.id !== e.pointerId) return;
 		S.drag = null;
@@ -7494,6 +7688,7 @@ body{margin:0}
 		if (!calm() && e.timeStamp - g.lt < 90) S.vel = clamp(g.v, -0.05, 0.05);
 	}
 	function cancel(e) {
+		if (shownRec()) return liveCancel(e);
 		if (S.drag && (!e || e.pointerId === S.drag.id)) {
 			S.drag = null;
 			R.object.classList.remove("grab");
@@ -7518,8 +7713,9 @@ body{margin:0}
 		else if (S.sel) select(null);
 	}
 	function key(e) {
+		if (shownRec()) return liveKey(e);
 		const pic = V().pic;
-		if (!pic?.sheet) return;
+		if (!turnable()) return;
 		const step = Math.max(1, Math.round(pic.frames / 24));
 		let target = null;
 		if (e.key === "ArrowRight" || e.key === "ArrowUp") target = Math.round(S.anim ? S.anim.to : S.ang) + step;
@@ -7542,6 +7738,762 @@ body{margin:0}
 			S.ang = base + d;
 			S.dirty = true;
 		} else S.anim = { from: S.ang, to: base + d, t0: performance.now(), dur: 380 };
+	}
+
+	const G = {
+		T: null,
+		lib: null,
+		env: null,
+		failed: "",
+		renderer: null,
+		canvas: null,
+		scene: null,
+		camera: null,
+		spin: null,
+		pmrem: null,
+		v: null,
+		models: new Map(),
+		shown: null,
+		opened: false,
+		w: 0,
+		h: 0,
+		ratio: 0,
+		yaw: 0,
+		pitch: 0,
+		zoom: 1,
+		drawn: [],
+		moving: false,
+		fading: false,
+		vel: 0,
+		autoV: 0,
+		anim: null,
+		ptrs: new Map(),
+		pinch: null,
+		tap: null,
+		idT: null,
+		idBuf: null,
+		idAt: 0,
+		stale: true,
+		idMats: new Map(),
+		told: new Set(),
+		resume: 0,
+		wheel: false,
+	};
+	const TAU = Math.PI * 2;
+	const wrap = (a) => mod(a + Math.PI, TAU) - Math.PI;
+	const glOk = () => typeof WebGL2RenderingContext === "function";
+	function say(text) {
+		if (G.told.has(text)) return;
+		G.told.add(text);
+		console.warn(\`Object kit: \${text}\`);
+	}
+	function fileAddress(path) {
+		const q = window.qorpera;
+		return Promise.resolve(q && typeof q.file === "function" ? q.file(path) : path);
+	}
+	function library() {
+		G.lib =
+			G.lib ||
+			(async () => {
+				if (!window.QORPERA_THREE) {
+					const src = await fileAddress(THREE_FILE);
+					await new Promise((ok, no) => {
+						const el = h("script", null, { src });
+						el.addEventListener("load", ok, { once: true });
+						el.addEventListener("error", () => no(new Error(\`\${THREE_FILE} did not load\`)), { once: true });
+						D.head.append(el);
+					});
+				}
+				const T = window.QORPERA_THREE;
+				if (!T || typeof T.WebGLRenderer !== "function") throw new Error(\`\${THREE_FILE} is not the kit's 3D library\`);
+				G.T = T;
+				return T;
+			})();
+		return G.lib;
+	}
+	function stage(T) {
+		if (G.renderer) return;
+		const canvas = h("canvas", "ok-gl", { "aria-hidden": "true" });
+		let r;
+		try {
+			r = new T.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: "high-performance" });
+		} catch (e) {
+			G.failed = "this browser could not start WebGL";
+			throw e;
+		}
+		r.setClearColor(0x000000, 0);
+		r.outputColorSpace = T.SRGBColorSpace;
+		r.toneMapping = T.AgXToneMapping;
+		r.toneMappingExposure = 1;
+		canvas.addEventListener("webglcontextlost", (e) => {
+			e.preventDefault();
+			lose("the browser took its drawing context away");
+		});
+		G.renderer = r;
+		G.canvas = canvas;
+		G.scene = new T.Scene();
+		G.camera = new T.PerspectiveCamera();
+		G.spin = new T.Group();
+		G.scene.add(G.spin);
+		G.pmrem = new T.PMREMGenerator(r);
+		G.v = new T.Vector3();
+		R.view.insertBefore(canvas, R.object);
+		mq("(prefers-color-scheme: dark)").addEventListener("change", () => {
+			tint();
+			S.dirty = true;
+			loop();
+		});
+	}
+	function lightUp(T) {
+		G.env =
+			G.env ||
+			(async () => {
+				const path = S.data.environment;
+				if (path)
+					try {
+						const url = await fileAddress(path);
+						const hdr = await new Promise((ok, no) => new T.HDRLoader().load(url, ok, undefined, no));
+						hdr.mapping = T.EquirectangularReflectionMapping;
+						G.scene.environment = G.pmrem.fromEquirectangular(hdr).texture;
+						hdr.dispose();
+						return;
+					} catch (e) {
+						say(\`\${path} could not be read as an .hdr light, so the thing is lit by the page's own studio light.\`);
+					}
+				G.scene.environment = G.pmrem.fromScene(new T.RoomEnvironment(), 0.04).texture;
+			})();
+		return G.env;
+	}
+	function modelOf(path) {
+		let rec = G.models.get(path);
+		if (rec) return rec;
+		rec = { path, ok: false, failed: false };
+		G.models.set(path, rec);
+		(async () => {
+			const T = await library();
+			stage(T);
+			await lightUp(T);
+			const url = await fileAddress(path);
+			const gltf = await new Promise((ok, no) => new T.GLTFLoader().load(url, ok, undefined, no));
+			prepare(T, rec, gltf);
+			rec.ok = true;
+		})().then(
+			() => arrived(rec),
+			(e) => {
+				rec.failed = true;
+				const why = cut((e && e.message) || String(e || ""), 160);
+				say(
+					/draco|meshopt|basisu|ktx/i.test(why)
+						? \`\${path} is compressed in a way this page cannot open (\${why}). Export it again without mesh or texture compression.\`
+						: \`\${path} could not be shown (\${why || "it did not load"}). The page shows the thing's picture instead.\`,
+				);
+				arrived(rec);
+			},
+		);
+		return rec;
+	}
+	function arrived(rec) {
+		if (R && S.data && V().model === rec.path) {
+			mode();
+			layout();
+		}
+	}
+	function prepare(T, rec, gltf) {
+		const model = gltf.scene || (gltf.scenes || [])[0];
+		if (!model) throw new Error("it holds no scene");
+		model.updateMatrixWorld(true);
+		const box = new T.Box3().setFromObject(model);
+		if (box.isEmpty()) throw new Error("it holds no visible mesh");
+		const c = box.getCenter(new T.Vector3());
+		const inner = new T.Group();
+		inner.add(model);
+		inner.position.set(-c.x, -box.min.y, -c.z);
+		const holder = new T.Group();
+		holder.add(inner);
+		holder.updateMatrixWorld(true);
+		const corner = Math.max(1e-6, Math.hypot(box.max.x - box.min.x, box.max.z - box.min.z) / 2);
+		const p = new T.Vector3();
+		let reach = 0;
+		holder.traverse((o) => {
+			const pos = o.isMesh && o.geometry && o.geometry.attributes.position;
+			if (!pos) return;
+			const every = Math.max(1, Math.floor(pos.count / 60000));
+			for (let i = 0; i < pos.count; i += every) {
+				p.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+				reach = Math.max(reach, Math.hypot(p.x, p.z));
+			}
+		});
+		const names = new Map();
+		const json = (gltf.parser && gltf.parser.json) || {};
+		const links = gltf.parser && gltf.parser.associations;
+		model.traverse((o) => {
+			const link = links && links.get(o);
+			const mesh = link && link.meshes != null && json.meshes && json.meshes[link.meshes];
+			for (const name of [o.userData && o.userData.name, o.name, mesh && mesh.name])
+				if (typeof name === "string" && name && !names.has(name)) names.set(name, o);
+		});
+		rec.names = names;
+		rec.nodeNames = (json.nodes || []).map((n) => n && n.name).filter((n) => typeof n === "string" && n);
+		rec.holder = holder;
+		rec.r = reach ? Math.min(corner, reach * 1.01) : corner;
+		rec.height = Math.max(1e-6, box.max.y - box.min.y);
+		const size = Math.hypot(rec.r, rec.height / 2);
+		rec.cy = rec.height / 2;
+		rec.d = size * 3.4;
+		rec.near = Math.max(size * 0.02, (rec.d - size * 1.6) * 0.8);
+		rec.far = rec.d + size * 3;
+		rec.nodes = new Map();
+		shadowUnder(T, rec);
+	}
+	function shadowUnder(T, rec) {
+		const r = G.renderer;
+		const size = rec.r * 2.8;
+		const res = 512;
+		const [a, b, c] = [0, 0, 0].map(() => new T.WebGLRenderTarget(res, res, { depthBuffer: false }));
+		const cam = new T.OrthographicCamera(-size / 2, size / 2, size / 2, -size / 2, 0, Math.max(rec.height * 0.5, rec.r * 0.4));
+		cam.rotation.x = Math.PI / 2;
+		const scene = new T.Scene();
+		scene.add(rec.holder);
+		scene.overrideMaterial = new T.ShaderMaterial({
+			uniforms: { far: { value: cam.far } },
+			vertexShader: "varying float up;void main(){vec4 p=modelViewMatrix*vec4(position,1.0);up=-p.z;gl_Position=projectionMatrix*p;}",
+			fragmentShader: "uniform float far;varying float up;void main(){gl_FragColor=vec4(0.0,0.0,0.0,clamp(1.0-up/far,0.0,1.0));}",
+			side: T.DoubleSide,
+			depthTest: false,
+			depthWrite: false,
+			blending: T.CustomBlending,
+			blendEquation: T.MaxEquation,
+			blendEquationAlpha: T.MaxEquation,
+		});
+		r.setRenderTarget(a);
+		r.clear();
+		r.render(scene, cam);
+		scene.overrideMaterial.dispose();
+		scene.overrideMaterial = null;
+		const quad = new T.Mesh(new T.PlaneGeometry(size, size).rotateX(Math.PI / 2));
+		quad.position.y = cam.far / 2;
+		const across = new T.ShaderMaterial(T.HorizontalBlurShader);
+		const down = new T.ShaderMaterial(T.VerticalBlurShader);
+		across.depthTest = false;
+		down.depthTest = false;
+		const blur = (amount, to) => {
+			quad.material = across;
+			across.uniforms.tDiffuse.value = a.texture;
+			across.uniforms.h.value = amount / res;
+			r.setRenderTarget(b);
+			r.render(quad, cam);
+			quad.material = down;
+			down.uniforms.tDiffuse.value = b.texture;
+			down.uniforms.v.value = amount / res;
+			r.setRenderTarget(to);
+			r.render(quad, cam);
+		};
+		for (const amount of [5, 2.5, 1.2]) blur(amount, a);
+		blur(0.8, c);
+		for (const amount of [12, 6, 3]) blur(amount, a);
+		r.setRenderTarget(null);
+		scene.remove(rec.holder);
+		for (const x of [across, down, quad.geometry, b]) x.dispose();
+		const plane = new T.Mesh(
+			new T.PlaneGeometry(size, size).rotateX(Math.PI / 2),
+			new T.ShaderMaterial({
+				uniforms: { near: { value: c.texture }, wide: { value: a.texture }, tint: { value: new T.Vector3() }, strength: { value: 0.6 } },
+				vertexShader: "varying vec2 at;void main(){at=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}",
+				fragmentShader: "uniform sampler2D near;uniform sampler2D wide;uniform vec3 tint;uniform float strength;varying vec2 at;void main(){float edge=1.0-smoothstep(0.3,0.5,length(at-0.5));gl_FragColor=vec4(tint,max(texture2D(near,at).a,texture2D(wide,at).a*0.5)*edge*strength);}",
+				transparent: true,
+				depthWrite: false,
+				toneMapped: false,
+			}),
+		);
+		plane.scale.y = -1;
+		plane.renderOrder = 1;
+		plane.position.y = size * 0.0005;
+		rec.holder.add(plane);
+		rec.plane = plane;
+	}
+	function tint() {
+		const plane = G.shown && G.shown.plane;
+		if (!plane || !R) return;
+		const css = getComputedStyle(R.root).backgroundColor || "";
+		const m = /([\\d.]+)[^\\d.]+([\\d.]+)[^\\d.]+([\\d.]+)/.exec(css);
+		const one = /^color\\(/.test(css) ? 1 : 255;
+		const [r, g, b] = m ? [+m[1] / one, +m[2] / one, +m[3] / one] : [1, 1, 1];
+		const dark = 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45;
+		plane.material.uniforms.tint.value.set(r * 0.42, g * 0.42, b * 0.46);
+		plane.material.uniforms.strength.value = dark ? 0.9 : 0.7;
+	}
+	function bind(rec) {
+		const T = G.T;
+		const keep = G.spin.rotation.y;
+		G.spin.rotation.y = 0;
+		G.spin.updateMatrixWorld(true);
+		const nodes = new Map();
+		const owner = new Map();
+		V().parts.forEach((p, i) => {
+			if (!p.node) return;
+			const obj = rec.names.get(p.node) || rec.names.get(T.PropertyBinding.sanitizeNodeName(p.node));
+			if (!obj) {
+				const some = rec.nodeNames.slice(0, 16).join(", ");
+				say(\`the part "\${p.name}" names the node "\${p.node}", which \${rec.path} does not have, so it is listed without a dot.\${some ? \` Its nodes: \${some}\${rec.nodeNames.length > 16 ? ", …" : ""}.\` : ""}\`);
+				return;
+			}
+			const n = { k: i + 1, obj, c: new T.Box3().setFromObject(obj).getCenter(new T.Vector3()), best: null, set: new Set(), vis: 0, want: 0 };
+			nodes.set(p.id, n);
+			if (!owner.has(obj)) owner.set(obj, n.k);
+		});
+		for (const n of nodes.values())
+			for (const m of nodes.values()) {
+				let o = m.obj;
+				while (o && o !== n.obj) o = o.parent;
+				if (o) n.set.add(m.k);
+			}
+		rec.holder.traverse((o) => {
+			if (!o.isMesh) return;
+			let a = o;
+			while (a && !owner.has(a)) a = a.parent;
+			o.userData.qk = a ? owner.get(a) : 0;
+		});
+		G.spin.rotation.y = keep;
+		G.spin.updateMatrixWorld(true);
+		rec.nodes = nodes;
+		rec.faced = false;
+	}
+	function shownRec() {
+		const path = S.data && V().model;
+		const rec = path ? G.models.get(path) : null;
+		return rec && rec.ok && !G.failed ? rec : null;
+	}
+	function modelFailed(v) {
+		return !!(G.failed || !glOk() || (G.models.get(v.model) || {}).failed);
+	}
+	const waiting = () => !!(V().model && !shownRec() && !modelFailed(V()));
+	const turnable = () => !!V().pic?.sheet && !waiting();
+	function show(rec) {
+		if (G.shown !== rec) {
+			if (G.shown) G.spin.remove(G.shown.holder);
+			G.spin.add(rec.holder);
+			G.shown = rec;
+			G.drawn = [];
+		}
+		if (!G.opened) {
+			G.opened = true;
+			G.yaw = S.data.view.yaw;
+			G.pitch = S.data.view.pitch;
+			G.zoom = 1;
+		}
+		place(rec, S.data.view.pitch);
+		const t = G.v;
+		let x = 0;
+		let y0 = Infinity;
+		let y1 = -Infinity;
+		for (let i = 0; i < 64; i++)
+			for (const y of [0, rec.height]) {
+				t.set(Math.sin((i / 64) * TAU) * rec.r, y, Math.cos((i / 64) * TAU) * rec.r).applyMatrix4(G.camera.matrixWorldInverse);
+				x = Math.max(x, Math.abs(t.x / -t.z));
+				y0 = Math.min(y0, t.y / -t.z);
+				y1 = Math.max(y1, t.y / -t.z);
+			}
+		const share = 0.9;
+		rec.fit = { tx: x / share, ty: (y1 - y0) / 2 / share, yc: (y0 + y1) / 2, ext: share / 2 };
+		bind(rec);
+		tint();
+		G.stale = true;
+	}
+	function place(rec, pitch) {
+		const cam = G.camera;
+		cam.near = rec.near;
+		cam.far = rec.far;
+		cam.position.set(0, rec.cy + rec.d * Math.sin(pitch), rec.d * Math.cos(pitch));
+		cam.up.set(0, 1, 0);
+		cam.lookAt(0, rec.cy, 0);
+		cam.updateMatrixWorld(true);
+	}
+	function aim() {
+		const rec = G.shown;
+		const B = S.box;
+		if (!rec || !B || !rec.fit) return;
+		const f = rec.fit;
+		const cam = G.camera;
+		place(rec, G.pitch);
+		const sx = f.tx / G.zoom / (B.w / 2);
+		const sy = f.ty / G.zoom / (B.h / 2);
+		const cx = B.left + B.w / 2;
+		const cy = B.top + B.h / 2;
+		const n = rec.near;
+		cam.projectionMatrix.makePerspective(-cx * sx * n, (G.w - cx) * sx * n, (f.yc + cy * sy) * n, (f.yc - (G.h - cy) * sy) * n, n, rec.far);
+		cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+		G.spin.rotation.y = G.yaw;
+		G.spin.updateMatrixWorld(true);
+	}
+	function project(n) {
+		const q = G.v.copy(n.c).applyMatrix4(G.spin.matrixWorld).project(G.camera);
+		return [((q.x + 1) / 2) * G.w, ((1 - q.y) / 2) * G.h, q];
+	}
+	function liveAt(p) {
+		const n = G.shown && G.shown.nodes.get(p.id);
+		if (!n || !S.box) return null;
+		const keep = [G.yaw, G.pitch, G.zoom];
+		[G.yaw, G.pitch, G.zoom] = [S.data.view.yaw, S.data.view.pitch, 1];
+		aim();
+		const [x, y] = project(n);
+		[G.yaw, G.pitch, G.zoom] = keep;
+		aim();
+		return [(x - S.box.left) / S.box.w, (y - S.box.top) / S.box.h];
+	}
+	function size3d(w, hgt) {
+		const ratio = Math.min(devicePixelRatio || 1, mq("(pointer: coarse)").matches || innerWidth < 700 ? 1.5 : 2);
+		const W = Math.max(1, Math.round(w));
+		const H = Math.max(1, Math.round(hgt));
+		if (G.w === W && G.h === H && G.ratio === ratio) return;
+		G.w = W;
+		G.h = H;
+		G.ratio = ratio;
+		G.renderer.setPixelRatio(ratio);
+		G.renderer.setSize(W, H);
+		G.stale = true;
+		G.drawn = [];
+	}
+	function idMat(k, side) {
+		const key = \`\${k}:\${side}\`;
+		let m = G.idMats.get(key);
+		if (!m) {
+			m = new G.T.MeshBasicMaterial({ side, toneMapped: false });
+			m.color.setRGB((k * 20) / 255, 0, 0);
+			G.idMats.set(key, m);
+		}
+		return m;
+	}
+	function seeThrough(m) {
+		return !!m && (m.transmission > 0 || (m.transparent && m.opacity < 0.6));
+	}
+	function idRender() {
+		const T = G.T;
+		const r = G.renderer;
+		const rec = G.shown;
+		const w = Math.max(8, Math.min(320, G.w));
+		const hgt = Math.max(8, Math.round((w * G.h) / Math.max(1, G.w)));
+		if (!G.idT || G.idT.width !== w || G.idT.height !== hgt) {
+			if (G.idT) G.idT.dispose();
+			G.idT = new T.WebGLRenderTarget(w, hgt);
+			G.idBuf = new Uint8Array(w * hgt * 4);
+		}
+		const kept = [];
+		rec.holder.traverse((o) => {
+			if (!o.isMesh || o === rec.plane) return;
+			const m = Array.isArray(o.material) ? o.material[0] : o.material;
+			kept.push([o, o.material, o.visible]);
+			if (seeThrough(m) && !o.userData.qk) o.visible = false;
+			else o.material = idMat(o.userData.qk || 0, m ? m.side : T.FrontSide);
+		});
+		rec.plane.visible = false;
+		r.setRenderTarget(G.idT);
+		r.clear();
+		r.render(G.scene, G.camera);
+		r.setRenderTarget(null);
+		for (const [o, m, seen] of kept) {
+			o.material = m;
+			o.visible = seen;
+		}
+		rec.plane.visible = true;
+		r.readRenderTargetPixels(G.idT, 0, 0, w, hgt, G.idBuf);
+		return [w, hgt, G.idBuf];
+	}
+	function idPass() {
+		const [w, hgt, buf] = idRender();
+		const around = Math.max(2, Math.round(w * 0.012));
+		for (const n of G.shown.nodes.values()) {
+			const q = project(n)[2];
+			let seen = false;
+			if (q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1 - (G.zoom > 1.01 ? 64 : 0) / Math.max(64, G.h)) {
+				const px = Math.round(((q.x + 1) / 2) * (w - 1));
+				const py = Math.round(((q.y + 1) / 2) * (hgt - 1));
+				for (let y = Math.max(0, py - around); y <= Math.min(hgt - 1, py + around) && !seen; y++)
+					for (let x = Math.max(0, px - around); x <= Math.min(w - 1, px + around); x++)
+						if (n.set.has(Math.round(buf[(y * w + x) * 4] / 20))) {
+							seen = true;
+							break;
+						}
+			}
+			n.want = seen ? 1 : 0;
+		}
+	}
+	function faces(rec) {
+		if (rec.faced || !rec.nodes.size) return;
+		rec.faced = true;
+		const steps = 24;
+		const keep = [G.yaw, G.pitch, G.zoom];
+		const seen = new Map([...rec.nodes.values()].map((n) => [n, []]));
+		for (let i = 0; i < steps; i++) {
+			[G.yaw, G.pitch, G.zoom] = [(i / steps) * TAU, S.data.view.pitch, 1];
+			aim();
+			const [w, hgt, buf] = idRender();
+			const count = new Array(13).fill(0);
+			for (let j = 0; j < w * hgt * 4; j += 4) count[Math.min(12, Math.round(buf[j] / 20))]++;
+			for (const [n, list] of seen) list.push([...n.set].reduce((sum, k) => sum + count[k], 0));
+		}
+		[G.yaw, G.pitch, G.zoom] = keep;
+		aim();
+		for (const [n, list] of seen) {
+			const top = Math.max(...list);
+			if (!top) continue;
+			let best = 0;
+			let run = 0;
+			for (let i = 0; i < steps; i++) {
+				if (list[i] < top * 0.9 || list[(i + steps - 1) % steps] >= top * 0.9) continue;
+				let k = 0;
+				while (k < steps && list[(i + k) % steps] >= top * 0.9) k++;
+				if (k > run) {
+					run = k;
+					best = i + (k - 1) / 2;
+				}
+			}
+			n.best = ((run ? best : list.indexOf(top)) / steps) * TAU;
+		}
+		G.stale = true;
+	}
+	function renderLive(rec, now) {
+		if (G.shown !== rec) show(rec);
+		aim();
+		if (G.stale && (!rec.nodes.size || now - G.idAt > 140 || !G.moving)) {
+			if (rec.nodes.size) idPass();
+			G.idAt = now;
+			G.stale = false;
+		}
+		G.renderer.setRenderTarget(null);
+		G.renderer.render(G.scene, G.camera);
+		G.drawn = [G.yaw, G.pitch, G.zoom];
+	}
+	function stepLive(now, dt) {
+		const rec = shownRec();
+		const idle = now - S.lastTouch > IDLE_MS;
+		const wantAuto = !calm() && (!S.touched || idle) && !S.sel && !S.drag && !G.anim && !G.ptrs.size;
+		const target = wantAuto ? TAU / (TURN_SECONDS * 1000) : 0;
+		G.autoV += (target - G.autoV) * Math.min(1, dt / (target ? 900 : 220));
+		if (Math.abs(G.autoV) < 1e-8) G.autoV = 0;
+		if (G.anim) {
+			const t = clamp((now - G.anim.t0) / G.anim.dur, 0, 1);
+			const k = ease(t);
+			[G.yaw, G.pitch, G.zoom] = G.anim.from.map((a, i) => a + (G.anim.to[i] - a) * k);
+			if (t >= 1) G.anim = null;
+		} else if (!S.drag) {
+			if (G.vel) {
+				G.yaw += G.vel * dt;
+				G.vel *= Math.exp(-dt / 330);
+				if (Math.abs(G.vel) < 2e-5) G.vel = 0;
+			}
+			G.yaw += G.autoV * dt;
+		}
+		if (Math.abs(G.yaw) > 1000) G.yaw = mod(G.yaw, TAU);
+		G.moving = G.yaw !== G.drawn[0] || G.pitch !== G.drawn[1] || G.zoom !== G.drawn[2];
+		if (G.moving) {
+			S.dirty = true;
+			S.lastMove = now;
+			G.stale = true;
+		} else if (G.stale) S.dirty = true;
+		G.fading = false;
+		for (const n of rec.nodes.values()) {
+			const d = n.want - n.vis;
+			if (Math.abs(d) > 0.01) {
+				n.vis += calm() ? d : d * Math.min(1, dt / 160);
+				G.fading = true;
+				S.dirty = true;
+			} else n.vis = n.want;
+		}
+	}
+	function asleep() {
+		if (!shownRec() || S.dirty || G.fading || G.stale || G.anim || G.vel || G.autoV || S.drag || S.fade || G.ptrs.size) return false;
+		clearTimeout(G.resume);
+		if (!calm() && !S.sel) G.resume = setTimeout(loop, Math.max(0, IDLE_MS - (performance.now() - S.lastTouch)) + 30);
+		return true;
+	}
+	function mode() {
+		const v = V();
+		if (v.model && !G.failed && glOk()) modelOf(v.model);
+		if (v.model && !glOk()) say("this browser cannot draw live 3D (it has no WebGL 2), so the page shows the thing's picture instead.");
+		const rec = shownRec();
+		if (rec) show(rec);
+		const failed = !!(v.model && !rec && modelFailed(v));
+		const wait = !!(v.model && !rec && !failed);
+		R.root.classList.toggle("live", !!rec);
+		if (G.canvas) G.canvas.classList.toggle("on", !!rec);
+		if (v.model || R.wait) {
+			R.wait = R.wait || R.view.appendChild(h("div", "ok-wait", { "aria-hidden": "true" }));
+			R.wait.classList.toggle("on", wait && !v.pic);
+		}
+		if ((failed && !v.pic) || R.none) {
+			R.none = R.none || R.view.appendChild(h("p", "ok-none"));
+			R.none.textContent = S.data.words.nomodel;
+			R.none.hidden = !(failed && !v.pic);
+		}
+		const turns = !!rec || (!!v.pic?.sheet && !wait);
+		R.object.classList.toggle("still", !turns);
+		if (turns) {
+			R.object.setAttribute("role", "slider");
+			R.object.setAttribute("aria-label", S.data.words.turn);
+			R.object.setAttribute("aria-valuemin", "0");
+			R.object.setAttribute("aria-valuemax", "359");
+		} else {
+			R.object.setAttribute("role", "img");
+			R.object.setAttribute("aria-label", v.name);
+			for (const a of ["aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) R.object.removeAttribute(a);
+		}
+		R.hint.classList.toggle("show", turns && !S.touched);
+		if (rec && !G.wheel) {
+			G.wheel = true;
+			R.object.addEventListener("wheel", wheel, { passive: false });
+		}
+		loop();
+	}
+	function lose(why) {
+		if (G.failed) return;
+		G.failed = why;
+		say(\`live 3D stopped (\${why}), so the page shows the thing's picture instead.\`);
+		G.ptrs.clear();
+		G.pinch = null;
+		G.anim = null;
+		S.drag = null;
+		if (R && S.data) {
+			mode();
+			layout();
+		}
+	}
+	function animateTo(to, dur) {
+		G.vel = 0;
+		G.autoV = 0;
+		if (calm()) {
+			[G.yaw, G.pitch, G.zoom] = to;
+			G.anim = null;
+		} else G.anim = { from: [G.yaw, G.pitch, G.zoom], to, t0: performance.now(), dur };
+		S.dirty = true;
+		loop();
+	}
+	function turnToNode(part) {
+		const n = G.shown && G.shown.nodes.get(part.id);
+		if (!n) return;
+		faces(G.shown);
+		if (n.best == null) return;
+		const d = wrap(n.best - G.yaw);
+		animateTo([G.yaw + d, G.pitch, G.zoom], clamp(420 + (Math.abs(d) / DEG) * 4.2, 450, 1150));
+	}
+	function openedView(half) {
+		const o = S.data.view;
+		const base = G.anim ? G.anim.to[0] : G.yaw;
+		return [base + wrap(o.yaw + (half ? Math.PI : 0) - base), o.pitch, 1];
+	}
+	function wheel(e) {
+		if (!shownRec()) return;
+		e.preventDefault();
+		touch();
+		G.anim = null;
+		G.zoom = clamp(G.zoom * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), ZOOM[0], ZOOM[1]);
+		S.dirty = true;
+		loop();
+	}
+	function liveDown(e) {
+		if (e.pointerType === "mouse") G.ptrs.clear();
+		G.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+		loop();
+		if (G.ptrs.size === 2) {
+			const [a, b] = [...G.ptrs.values()];
+			G.pinch = { d0: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), z0: G.zoom };
+			S.drag = null;
+			G.vel = 0;
+			G.anim = null;
+			touch();
+			return;
+		}
+		if (e.button !== 0 && e.pointerType === "mouse") return;
+		touch();
+		S.drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, yaw0: G.yaw, pitch0: G.pitch, moved: false, lx: e.clientX, lt: e.timeStamp, v: 0 };
+		G.anim = null;
+		G.vel = 0;
+	}
+	function liveMove(e) {
+		const pt = G.ptrs.get(e.pointerId);
+		if (pt) {
+			pt.x = e.clientX;
+			pt.y = e.clientY;
+		}
+		if (G.pinch && G.ptrs.size >= 2) {
+			const [a, b] = [...G.ptrs.values()];
+			G.zoom = clamp((G.pinch.z0 * Math.hypot(a.x - b.x, a.y - b.y)) / G.pinch.d0, ZOOM[0], ZOOM[1]);
+			S.dirty = true;
+			e.preventDefault();
+			return;
+		}
+		const g = S.drag;
+		if (!g || g.id !== e.pointerId) return;
+		const dx = e.clientX - g.x0;
+		const dy = e.clientY - g.y0;
+		if (!g.moved) {
+			if (Math.hypot(dx, dy) < 6) return;
+			if (Math.abs(dy) > Math.abs(dx) && e.pointerType !== "mouse") {
+				S.drag = null;
+				return;
+			}
+			g.moved = true;
+			R.object.classList.add("grab");
+			try {
+				R.object.setPointerCapture(e.pointerId);
+			} catch (err) {}
+		}
+		const k = (Math.PI * 1.1) / Math.max(200, S.box.w);
+		G.yaw = g.yaw0 + dx * k;
+		G.pitch = clamp(g.pitch0 + dy * k * 0.7, TILT[0], TILT[1]);
+		const dt = Math.max(1, e.timeStamp - g.lt);
+		g.v = g.v * 0.6 + (((e.clientX - g.lx) * k) / dt) * 0.4;
+		g.lx = e.clientX;
+		g.lt = e.timeStamp;
+		S.dirty = true;
+		e.preventDefault();
+	}
+	function liveUp(e) {
+		G.ptrs.delete(e.pointerId);
+		if (G.pinch) {
+			if (G.ptrs.size < 2) G.pinch = null;
+			S.drag = null;
+			return;
+		}
+		const g = S.drag;
+		if (!g || g.id !== e.pointerId) return;
+		S.drag = null;
+		R.object.classList.remove("grab");
+		touch();
+		loop();
+		if (g.moved) {
+			if (!calm() && e.timeStamp - g.lt < 90) G.vel = clamp(g.v, -0.012, 0.012);
+			return;
+		}
+		const last = G.tap;
+		G.tap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+		if (last && e.timeStamp - last.t < 320 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 24) {
+			G.tap = null;
+			animateTo(openedView(false), 650);
+			return;
+		}
+		tap(e);
+	}
+	function liveCancel(e) {
+		if (e) G.ptrs.delete(e.pointerId);
+		if (G.ptrs.size < 2) G.pinch = null;
+		if (S.drag && (!e || e.pointerId === S.drag.id)) {
+			S.drag = null;
+			R.object.classList.remove("grab");
+		}
+	}
+	function liveKey(e) {
+		const k = e.key;
+		const base = G.anim ? G.anim.to : [G.yaw, G.pitch, G.zoom];
+		let to = null;
+		if (k === "ArrowRight" || k === "ArrowUp") to = [base[0] + 15 * DEG, base[1], base[2]];
+		else if (k === "ArrowLeft" || k === "ArrowDown") to = [base[0] - 15 * DEG, base[1], base[2]];
+		else if (k === "+" || k === "=") to = [base[0], base[1], clamp(base[2] * 1.25, ZOOM[0], ZOOM[1])];
+		else if (k === "-" || k === "_") to = [base[0], base[1], clamp(base[2] / 1.25, ZOOM[0], ZOOM[1])];
+		else if (k === "Home" || k === "End") to = openedView(k === "End");
+		if (!to) return;
+		e.preventDefault();
+		touch();
+		animateTo(to, 380);
 	}
 
 	// ------------------------------------------------------------------ data in and out
@@ -7661,7 +8613,9 @@ body{margin:0}
 .ck-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ck--bare{padding:clamp(12px,1vw,16px)}
 .ck--bare .ck-head{display:none}
-.ck-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.ck .ck-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ck .ck-src{display:none}
+.ck-hero{margin-top:0;min-height:calc(clamp(44px,6vw,80px) + 32px)}
 .ck--bare .ck-hero{margin-top:0}
 .ck-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
 .ck-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
@@ -8360,6 +9314,7 @@ body{margin:0}
 .st-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .st--bare{padding:clamp(12px,1vw,16px)}
 .st--bare .st-head{display:none}
+.st .st-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .st-total{text-align:right}
 .st-total-n{font-size:clamp(30px,3.4vw,44px);font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
 .st-total-n small{margin-left:.25em;font-size:.48em;font-weight:600;letter-spacing:-.01em;color:var(--q-muted)}
@@ -9028,6 +9983,7 @@ body{margin:0}
 .sh-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .sh--bare{padding:clamp(12px,1vw,16px)}
 .sh--bare .sh-head{display:none}
+.sh .sh-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .sh-shelf{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;gap:clamp(28px,5vh,56px);padding:clamp(12px,3vh,36px) 0 clamp(8px,2vh,20px)}
 .sh-row{position:relative;display:grid;grid-template-columns:repeat(var(--sh-cols),minmax(0,var(--sh-w)));justify-content:center;column-gap:clamp(12px,2.4vw,40px)}
 .sh-row.planked::before{content:"";position:absolute;left:max(-16px,calc(var(--sh-pad) * -1));right:max(-16px,calc(var(--sh-pad) * -1));top:var(--sh-scene);height:12px;border-radius:6px;background:color-mix(in srgb,var(--q-text) 11%,var(--q-bg));box-shadow:0 7px 0 -2px color-mix(in srgb,var(--q-text) 6%,var(--q-bg))}
@@ -9681,6 +10637,7 @@ body{margin:0}
 .mp-src{font-size:13px;color:var(--q-muted);text-decoration:none}
 .mp-src:hover{color:var(--q-accent)}
 .mp--bare .mp-head{display:none}
+.mp.is-rest .mp-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .mp-trail{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;padding:18px 43px 0;font-size:13px;line-height:18px;color:var(--q-muted)}
 .mp-trail[hidden]{display:none}
 .mp .mp-crumb{max-width:24em;padding:2px 6px;margin:0 -2px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -10165,7 +11122,8 @@ body{margin:0}
 		const lang = ui.model.lang;
 		let title = view.layer ? view.layer.title : ui.model.top === "reading" ? w.finding : "";
 		let line = view.layer ? view.layer.line : "";
-		if (standing && standing.stopped && ui.model.top === "reading" && view.depth === 0) {
+		const stopped = !!(standing && standing.stopped && ui.model.top === "reading" && view.depth === 0);
+		if (stopped) {
 			title = standing.since ? fill(w.stood, { time: when(standing.since, lang) }) : w.stoodNow;
 			const member = typeof standing.member === "string" && standing.member ? standing.member.split(/\\s+/)[0] : "";
 			// "Your" only when the reading says the login is the member looking's; another member by name; else no one
@@ -10199,6 +11157,7 @@ body{margin:0}
 			p.src.textContent = \`\${w.source} ↗\`;
 			p.src.hidden = false;
 		} else p.src.hidden = true;
+		ui.root.classList.toggle("is-rest", !stopped && !thing && !source && !!view.layer);
 	}
 
 	function trailEl(view) {
@@ -10703,6 +11662,8 @@ body{margin:0}
 .rk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .rk--bare{padding:clamp(12px,1vw,16px)}
 .rk--bare .rk-head{display:none}
+.rk .rk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.rk .rk-src{display:none}
 .rk-stage{position:relative;flex:none;margin:auto;outline:none;touch-action:pan-y;border-radius:50%;cursor:pointer}
 .rk-stage:focus-visible{box-shadow:0 0 0 2px var(--q-accent)}
 .rk-stage svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;max-width:none}
@@ -11429,7 +12390,9 @@ body{margin:0}
 .fk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .fk--bare{padding:clamp(12px,1vw,16px)}
 .fk--bare .fk-head{display:none}
-.fk-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.fk .fk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.fk .fk-src{display:none}
+.fk-hero{margin-top:0;min-height:calc(clamp(44px,6vw,80px) + 32px)}
 .fk--bare .fk-hero{margin-top:0}
 .fk-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
 .fk-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}

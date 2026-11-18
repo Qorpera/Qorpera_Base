@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { type CodeHostCommand, type CodeHostJob, readCodeAreaBase, seedCodeArea } from "../src/code-host-jobs.ts";
+import { type CodeHostCommand, type CodeHostJob, seedCodeArea } from "../src/code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker, withCodeAreaSeed } from "../src/code-host-seed.ts";
 import { type CodingBrokerGitCommand, createCodingBrokerGitRunner } from "../src/coding-git.ts";
+import { readCodeAreaBase } from "./helpers/code-area-base.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
 const exec = promisify(execFile),

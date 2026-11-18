@@ -1593,6 +1593,20 @@ Member consent MUST be distinguished durably from policy approval in that
 member's name; an agent retry MUST NOT manufacture or renew member consent.
 Completed operations retain their receipt replay semantics.
 
+2026-11-17 amendment: a team in one step (founder, 17 November: "on 5, I agree
+with batch hiring, but we should allow for continuous hiring as the company
+evolves"). An agent that hires two to twelve coworkers at one time does it in
+one call, `hire_team`: one automatic review of the call, recorded for all of
+its new agent folders, and one Company File commit, which indexes every new
+agent in its own transaction. So no new agent's first run starts before the
+whole team exists, and each first run lists the others as coworkers. A unit
+that conflicts (its folder was made meanwhile by another save) is that hire's
+outcome alone: the others are saved, and the answer names each hire's outcome.
+The restricted hire above applies to the call as a whole: one owners-and-admins
+card names every hire. `hire_agent` stays the way to hire one coworker at any
+time; a later hire is every agent's coworker from its next run, with no message
+needed (migration 20260930799000).
+
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
 agent applies one authorized Company File deletion operation and matching
@@ -1853,9 +1867,9 @@ company-visible and answerable:
 - The receiver wakes **in its own shared thread** under the pair policy:
   initial send forbidden, final send optional, silence allowed (no count on
   public sends since bundle v92). It answers the coworker through the same peer channel, which
-  puts the answer in the pair transcript and wakes the sender in the sender's
-  thread under the same policy. A member post in either thread is a human wake
-  and starts a new causal root.
+  puts the answer in the pair transcript and, sent with `priority: true`, wakes
+  the sender in the sender's thread under the same policy. A member post in
+  either thread is a human wake and starts a new causal root.
 - An exchange is not bounded by "agent already visited". Until bundle v92 the
   kernel bounded it by **hops** (at most 6 peer messages per causal root and 20
   per pair per rolling hour). Since v92 (founder, 2026-09-24) there is no hop
@@ -1868,6 +1882,34 @@ company-visible and answerable:
   same way, it wakes nobody; the recipient reads it, as data, at the start of
   its next wake of any kind. Held messages extend no chain. Thanks, status
   and FYIs are sent held.
+- Amendment 2026-11-17 (the sender chooses, the founder: "Build, no cap").
+  `send_coworker_message` requires `priority` on every call; the runtime
+  refuses a call without it before dispatch, with the reason. `priority: true`
+  is for what the receiver must act on or answer for the work to go on: a
+  request, a question, the answer or handover it waits for, a member's decision
+  that changes its work. Everything else worth telling is sent held, and what
+  the files and todos already show is not sent. An answer wakes the agent that
+  asked only when it is sent with `priority: true`; the coworker wake's protocol
+  tells the answering agent to send it so. No reply says only received, agreed
+  or done. The database's default for an absent `p_priority` stays true.
+- Amendment 2026-11-17 (waiting messages arrive together; migration
+  `20260930798000`). An agent's coworker wakes run one at a time in its own
+  thread. When the run of a coworker wake reads its wake, it takes over the
+  other coworker wakes still queued in that thread with the same payer, made
+  no later than the run, oldest first: each passes its own run's checks, its
+  message is delivered to the run in `heldMessages` in full (12 lines and
+  19200 bytes of shown text at most; the rest wait for the next run). A taken
+  message's wake stays queued, held by that run: when the run's job completes
+  it is cancelled as delivered; when the job fails or is cancelled (a Stop of
+  the run's chain included) it becomes a run of its own, unless its own chain
+  is stopped. A taken message is answered under the taking run's chain: what
+  the agent sends from that run carries that run's causal root and hop count.
+  A member's Stop of the taken message's own chain after the take cancels its
+  held wake, so it never runs on its own, but does not reach the taking run
+  or what that run sends; a Stop of the taking run's chain ends both. A lone
+  message, the send and its receipt are unchanged, and there is no cap on
+  chain depth or message count. A held note is shown up to 1600 bytes and is
+  marked when cut.
 - **One Stop ends the chain** (2026-10-22 amendment, item 4). A member's Stop
   of a run in a conversation (7.3) ends that run's whole chain: every live run
   with the same causal root (the other agent's, the agents' workers'), every
@@ -2338,7 +2380,7 @@ A conversation's model is `gpt-6-astra`, `gpt-6.1-sol`, `claude-fable-5-2` or
 `claude-opus-5-5`; a conversation that holds `gpt-6-sol` or `gpt-6-luna` still
 reads and runs with it. Its effort is low, medium or high, and also xhigh or max
 with a Claude model only (the table and the setter refuse xhigh or max on GPT
-or on no model). Every writer may pick the GPT models. A Claude model may be
+or on no model; xhigh on GPT: the next amendment). Every writer may pick the GPT models. A Claude model may be
 picked only while the active bundle's model policy declares
 `claudeChoice: "thread"` and the member may run Claude Code in the company
 (`qorpera_member_may_pick_claude`: on the Claude sign-in list with sign-in
@@ -2366,6 +2408,30 @@ the recorded pick otherwise. A worker with no pick runs on Claude Code's own
 default. Migration 20260930784000. Built, not live: Claude goes live with the
 release cut whose bundle declares `claudeChoice`; GPT-6.1 Sol with the
 migration.
+
+2026-11-16 amendment: Extra high on GPT (founder, 16 November, asked "Extra
+high only for GPT, or Extra high and Max?": "Extra high only"). A conversation
+on a GPT model may pick effort `xhigh`; `max` stays Claude only, and `xhigh`
+needs a model (never no model). The setter takes `xhigh` on GPT only while the
+active bundle's model policy declares `threadEfforts: ["xhigh"]` (otherwise
+22023, as before). `threadEfforts` lists efforts that only a member's turn may
+take from its conversation, and only under `overrides: routine-and-thread`;
+the kernel's manifest check accepts it as an array whose only value is
+`xhigh`.
+`allowed` is unchanged (low, medium, high), so routines, the agent.md effort,
+chains and every run no member waits on keep exactly their efforts: their
+check (`qorpera_manifest_allows_reasoning_effort`) is unchanged. A member's
+turn (a session turn with a member's message, or a room delivery) under such a
+bundle pins `xhigh` on its run, and Codex runs with
+`model_reasoning_effort="xhigh"`; the native admission and the tool authority
+accept it for those two source kinds only (`qorpera_run_allows_reasoning_effort`),
+and the run table refuses `xhigh` on any other kind. Under a bundle without
+`threadEfforts` (an older bundle, or after a rollback) a conversation saved at
+`xhigh` runs at high (the bundle's default if it allows no high) and keeps its
+choice. The model menu's answers name `efforts`: for each model in `models`,
+the efforts this conversation may pick with it. Migration 20260930788000.
+Built, not live: GPT Extra high goes live with the release cut whose bundle
+declares `threadEfforts`.
 
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
@@ -2469,6 +2535,12 @@ member's other login); the 2026-10-04 amendment below settles it.
 > made while they are there: their own login pays for it, a ChatGPT plan too,
 > whether or not it works while they are away. See the
 > [light asks amendment](#2026-11-14-amendment-light-asks), item 3.
+
+> **Amended 2026-11-17.** A member's own message that the provider turns
+> away for too many requests, before it took any effect, waits and runs again
+> on the same login instead of failing. See the
+> [member-message amendment](#2026-11-17-amendment-a-members-message-waits-at-a-rate-limit)
+> in section 19.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
@@ -6910,6 +6982,218 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    advice: keep only the newest line for each update, which keeps every decision. It writes the record as the run, under the call's receipt
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
+
+### 2026-11-16 amendment: the agent's home for every company
+
+Founder decision of 16 November 2026, to "Switch it on for every company in the next release, with the node 1 fix?":
+"Yes, next release". It goes live with migration `20260930789000`, in the release that carries #1880 (a Claude Code
+worker's run is claimed only by a shared execution host), never before it.
+
+1. **One more setting.** The platform's home switch (`qorpera_home_settings`) has `every_company`. A company has the
+   home when the platform switch is on and either `every_company` is on or the company is listed
+   (`qorpera_home_companies`), and slice 3's sharing rule exists, as before. A company made later has it as well.
+2. **Turned on where the switch is.** The migration sets `every_company` only where the platform switch's row is on; a
+   database whose switch is off or absent stays off. The listed companies keep their rows.
+3. **An earlier machine.** A machine whose disk was made from an image without the pinned Codex or `sftp-server`
+   answers its home `HOME_OUTDATED`. A run's home calls get those words and the run goes on with the company's own
+   tools; a Claude Code worker on such a machine ends blocked in those words. Waking the machine keeps its disk; a new
+   machine has the home.
+4. **The way back** is one statement, and leaves the listed companies on:
+   `update public.qorpera_home_settings set every_company = false where singleton;`
+
+### 2026-11-17 amendment: a member's message waits at a rate limit
+
+> The founder, 17 November 2026, to an item that read "A member's message must never disappear. Fewer notes will make
+> the limit rarer, but your own message still needs a retry or a visible 'didn't go through'": "1-4 straight yes". It
+> builds section 17's "transient rate limiting (retry)" for work a member started, and nothing else: no account
+> cool-down, no cap on turns, no change to claims, routines or file wakes. It goes live with migration `20260930801000`
+> alone.
+
+1. **What waits.** A run a member started (`session_turn`, a member's message in a conversation, or `room_delivery`, a
+   member's post in a room or an agent's thread) that has started, that the native adapter recorded `rate_limited` for
+   on this attempt, and that has had no effect yet (no operation receipt but a cancelled one, no public message, no open
+   proposal), pauses as a run at its usage limit does: `run_paused` marked `pausedFor: "rate_limited"`, the same login
+   and sponsor version, no attempt spent. It comes back after 1, 2, 4, 8 and then 15 minutes for its first to fifth
+   wait, each 0.8 to 1.2 times that at random, never before a reset the provider named (at most 6 hours).
+2. **When it stops waiting.** After its last wait (`rate_limit_waits`, 5, in `qorpera_member_rate_limit_settings`; 0
+   restores the old failure), or once it had an effect, it fails as before and waits for review. Runs no member started
+   fail as before.
+3. **What members read.** A waiting run's activity says `paused_for: "rate_limited"` and is never movable to another
+   login; a usage reading does not end the wait. The recovery read of a failed run says `rate_limited`, so the thread
+   says the provider got too many requests at once and the login is fine, never to check the login.
+
+### 2026-11-17 amendment: a refusal names the next step; a busy review waits
+
+Founder decision of 17 November 2026 on the mywave review ("A refusal must never be a dead end."): "1-4 straight yes."
+It amends the action review's refusals (`REVIEW_DENIED`, `REVIEW_UNAVAILABLE`) and goes live with a runtime bundle; no
+migration, host call or image moves. The review reading a command's script, decided the same day, follows on its own.
+
+1. **A refusal names the next step.** A denial still says not to retry, reword or reach the action another way, and
+   that only a member's new message (a card answer does not count) lets the agent make it once more. It now adds: when
+   the work cannot go on without it, a worker reports its work blocked with the reason, and any other agent raises a card
+   (`ask_member`), or says it in its reply where it has no cards, in one line: what stopped, why, and the one thing the
+   work needs (another source, a file, a decision); the card's answer never lets it repeat the refused action.
+2. **A review that cannot run waits first.** A review whose model turn ended at the provider's rate limit, usage limit
+   or an overload is asked again after 5, 10, 20, 30 and 30 seconds, within two minutes of the first ask, before the
+   call is refused as unavailable. A verdict, an invalid verdict, a timeout or another failure is never asked again. The
+   refusal tells the agent to say to a member that the step could not be checked just now, never that a safety review
+   was unavailable.
+
+### 2026-11-17 amendment: the review reads the script it judges
+
+Founder decision of 17 November 2026 on the mywave review ("A refusal must never be a dead end. The reviewer should
+read the script it judges…"): "1-4 straight yes." Its refusal and retry parts are the amendment "a refusal names the
+next step; a busy review waits" (#1942). It amends the review of a command on a company machine
+(`machine_run`, reviewed as an outside effect since step 6d, and the fixed machine rule of 4 November 2026) and goes live with a runtime
+bundle; no migration, host call or image moves.
+
+1. **What the reviewer reads.** A `machine_run` command is looked at only when its whole text is plain: words of
+   `A-Za-z0-9_./-+=:,@%`, single- or double-quoted strings of those characters and spaces, the separators `;`,
+   newline, `&&` and `|`, and the output redirections `>`, `>>`, `2>`, `2>>`, `2>&1` and `&>`; on such text bash
+   expands nothing. Any other character or construct names no file ("the command uses shell features the review does
+   not follow"). A plain command names at most one file, by grammar: zero or more leading `cd <path>` commands (a
+   literal path without a `..` segment, without options and without a redirection), each joined to the next by `&&`;
+   then one simple command of an allow-listed runner form: the prefixes `time`, `nohup`, `nice` [`-n N`],
+   `timeout <duration>` and `xvfb-run` [`-a`], then an interpreter with its allowed options and the script path
+   (`python3 -u -B -O -q`; `bash`/`sh` `-e -u -x -eu -ex -eux -o pipefail|errexit|nounset`; none for the others;
+   `deno run <path>`), the path itself as the command word, or `source f` / `. f`. No `NAME=value` word may come
+   before the script and `env` is no prefix: a command that sets a variable names no file. The runner may carry no
+   redirection but `2>&1`, `> /dev/null`, `2> /dev/null` and `&> /dev/null`; if it starts a pipeline, every other
+   element of that pipeline must be, by its exact program word and with no redirection of its own, one of these with
+   no operand at all, every argument an option from its exact list: `head` or `tail` with `-n N`, `-c N`, `-N`, `-nN`
+   or `-cN`; `grep` with options from `-ivncEFowxsqha` and exactly one pattern word; `cat` with no argument; `wc` with
+   options from `-lwcm`; `sort` with options from `-rnufbhV`, `-k <key>` and `-t <char>` (their values are taken by
+   the option, never a file); `uniq` with options from `-cdui` and `-fN`, `-sN`, `-wN`; otherwise no file is named.
+   The file is named when its path word has no `..` segment: an absolute path as it stands, a relative one in the
+   start folder or the folder of the leading `cd`s. So only literal `cd`s run before the named file is opened, nothing
+   beside it can write to it while it runs, and a path through a link without `..` is read at the same name the
+   interpreter opens. Nothing else in the command is named: a later script is listed in `contents.notShown` ("only the
+   first command's file is shown"), and a command whose first command after the leading `cd`s is anything else
+   (`mkdir`, `pip`, `git`, `eval`, `builtin`, `printf`, `export`, `env`, an assignment, …) names no file. The runtime
+   reads the named file on the machine before the review with one fixed read-only command of its own through the same
+   receipts and command gateway (its receipt always completes, also when the machine refuses or does not answer its
+   start), and gives the reviewer its text in the action's `contents`, whole, at most 64 KiB. Known limit: the file is
+   read when the action is reviewed; a file changed between that read and the command's start in the same call is not
+   detected.
+2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
+   bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
+   variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the
+   request, the mandate, the files shown); a guard nothing visible points to is false, and a file not shown is never on
+   its own a reason to deny or to answer a guard true. It asks only when what it can see gives a real reason to suspect a
+   guard that the unseen file would settle. The fixed machine rule is as before, except that the reviewer's own ask
+   (built-in check none, every guard false) about a command with `notShown` stands instead of becoming an allow.
+3. **An approval covers the files reviewed.** The approval's identity (`argumentSha256` at begin and record) is the
+   SHA-256 of the call's own digest and each reviewed file's path and digest (or that it was not shown); the card's
+   `call` stays the model's own arguments. A woken agent that repeats the identical call has its files read again and
+   matches its approval only while they are unchanged; a file edited while the card waited gets a fresh review of its
+   new text. The machine runs exactly the text the model wrote, so the command's head, busy check-ins, stopped work and
+   events stay the agent's own command.
+4. **Known limit.** The agent's home (`home_command`) reads no files for its review; its commands are reviewed as
+   before.
+5. **Known limit: evidence, not a wall.** The files are the ones the command names, as they are on the machine now.
+   They are evidence about the work, not proof of what will run: commands run in the agent's own login shell, so its
+   profile files, PATH and functions decide what a program name runs, and no reading of the command text can see that.
+   The reviewer is told so and judges the command, the request, the mandate and the contents together; the feature
+   lets an honest script be judged on its contents instead of guessed at, without making the review easier to fool
+   than it was. A script run after another command (`pip install … && python3 x.py`, `mkdir -p out && python3 x.py`),
+   a second script in one command, a script run after `source` (a virtual environment's `activate`), a script with a
+   variable set before it (`PYTHONUNBUFFERED=1 python3 x.py`), and one whose output goes to a file
+   (`python3 x.py > /tmp/log`) or into anything but those readers are not shown; showing them needs the machine to
+   report what ran, not a reading of the command.
+
+### 2026-11-17 amendment: agents show the product first
+
+> The founder, 17 November 2026, on the lead's review of his test company mywave (the storyboard reached the founders
+> 53 minutes after the start, as form fields beside a line drawing, after more than 30 documents): "1-4 straight yes",
+> and "make sure they are not feeling forced to only use SVG". It adds to the 2026-10-22 amendment's item 3. The hire
+> overlay is v19. It goes live with the runtime bundle that carries it.
+
+1. **The first concept first.** The product's owner makes the first concept in its first run, before any document but
+   the brief: the product in its key moments as a customer will meet it, a physical product as a render that looks
+   real, software as real screens to click through. The solution (strategy/solution.md) is worked out beside it and
+   corrects it. Until the founders say it is their product, plans for later stages wait for their answer unless a
+   founder asks for one, and a card left unanswered for two working days no longer holds them; that orders the work
+   and caps none of it. The owner's role repeats it only before the vision is agreed; the Concepts section carries it
+   for every staff run that can save an app, and the Co-Founder's product paragraph always. What is simulated or
+   undecided is said in the solution, never as notes on a concept's screens.
+2. **The founding team.** The first assignments of the researcher, market watcher and strategist stay due within a day
+   or two. The product's builders get first assignments that move the first concept. The Brand owner's first assignment
+   is two to four directions, each the company's product in its world in a real picture or film, picked by the founders
+   on a card; only the chosen one becomes the identity in `QorperaOS/brand/` with its logo. A founding run offered
+   `hire_team` is told to hire the first team in one call, and later ones several at once with `hire_team` or one with
+   `hire_agent`.
+3. **Blocked work.** An owner whose step is refused or blocked still owns the outcome: the refused step stays refused,
+   and it reaches the outcome another honest way, or asks a member on a card, or tells the Co-Founder. The Co-Founder
+   acts in the run an owner tells it, besides the planning run's rule for a blocker reported twice.
+4. **SVG only where the app draws the file.** An app's icons and `QorperaOS/brand/logo.svg` are SVG; the logo may hold
+   a drawn mark or one embedded picture and nothing outside it. Anything else an agent designs takes whatever shows it
+   best.
+
+### 2026-11-17 amendment: an interface app holds any file; a page opened by itself loads the files beside it
+
+> The founder, 17 November 2026: "also uncap the file-sizes... they are meant to be able to do anything, the cap is a
+> major constraint", and "Yes, all three" on the design page. The detail is RUNTIME-INTERFACE-APPS.md (§2 "Files", "How
+> a page is put together" and "A page opened by itself", §7 step 13). The web part goes live when it merges; the agents'
+> words with the runtime bundle that carries them.
+
+1. **No cap on an app's files.** An interface app holds any number of files, of any kind and of any size the company
+   folder stores (256 MiB a file, the folder's own bound). `save_app` writes text files of any kind that is not binary,
+   each as large as one call carries; a machine writes the rest. `make_picture` no longer checks an app's room.
+2. **Pages read their files when they use them.** An app's page opens first and reads each file of its folder when it
+   uses it, by relative paths in its markup and styles and by `fetch`, `qorpera.file` or `qorpera.bytes` in a script.
+3. **A page opened by itself.** This replaces the rule of the 2026-10-21 amendment's list that "HTML pages and
+   prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from the network)". Such
+   a page is still an ordinary file that members open live in the app, but it loads the files beside it (styles,
+   scripts, pictures, fonts, sound, video, models) by relative paths, as an app's page does, and the agents'
+   instructions say so.
+4. **What stays.** A page still has no network: the frame's policy adds only `blob:` and `data:` sources. A page opened
+   by itself reads only files in its own folder and below it, never one in a folder the platform keeps, always as the
+   member's own read, and has no live sources, no changes and no links.
+5. **The write tools.** This replaces the 2026-10-21 amendment's "`company_write` takes up to 512 KiB of text":
+   `company_write` and `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`),
+   which stays below the native session's 1 MiB message.
+
+### 2026-11-18 amendment: the first concept really comes first
+
+> The founder, 17 November 2026, to "Show the product first. Within about ten minutes you should see a real render of
+> the headband on a person and real app screens.": "1-4 straight yes"; 18 November: "run a clean product-first test
+> company". That test (Spirekassen) showed the founder a wall of other companies' products after 31 minutes and nothing
+> of his own product. The hire overlay is v20. It goes live with the runtime bundle that carries it, and amends the
+> 2026-11-17 amendment "agents show the product first".
+
+1. **One first concept, with a maker, the same hour.** The product's owner makes one first concept in its first run,
+   from the founders' words and the brief; an owner of the physical form or of the app makes its part in its own first
+   run, and nobody waits for reference pictures, the brand or a finding. It reaches the founders the same hour the
+   product's builders are hired, on a card raised in the run that first makes it viewable, even when more parts are
+   coming. The Co-Founder tells the founders what they will see and when, in hours.
+2. **Then the rest, from their answer.** The look (references, never shown as a concept app), the directions and the
+   build follow the founders' answer. The several-ideas rule is never for the first concept. The Brand owner's
+   directions show the product as the first concept shows it. Until the concept's card goes out, the Brand owner only
+   prepares; the product's owner tells it, with the link, in a message that wakes it, and the directions start in that
+   run (in the Brand owner's first run when the vision names no product to show), on their own card after the
+   concept's. "Due within a day or two" stays for the research assignments only.
+3. **A look on a machine** is one round that ends in the link, and is reported as a look at the files on a machine,
+   never as a test in the app.
+
+### 2026-11-18 amendment: programs members download (the program kit)
+
+> The founder, 18 November 2026: "for desktop apps surely we can create a private space were companies can upload and
+> share code/programs with its members - like a github repo, just built for downloading and testing apps, not for
+> reading code", and "Yes, build step 1" to "kept versions and the program's page with Download". The detail is
+> RUNTIME-INTERFACE-APPS.md §3f and §7 step 15.
+
+1. **A program is an interface app.** Of the kit `program`, in `apps/<name>/` with its `app.toml`; no new tool, no new
+   top-level folder, no migration. Its builds are files in `apps/<name>/versions/<version>/`, which an agent copies
+   there from a machine; `save_app` takes `program.json` (`version`, `forms`, `screens`), refuses a file that is not in
+   the folder, a kept version with other files and an earlier version, and keeps every version, newest first, with its
+   date, sizes and hashes. Nothing in `versions/` is deleted.
+2. **The web draws its page.** Not in the app's frame: the program, its pictures, one Download for the member's own
+   computer or phone, the five kinds, and the earlier versions. A download is the member's own read through Storage's
+   path. Everyone who may read the company folder sees it and may download.
+3. **The agents' words.** `app_guide program` says how to hand in a program; the company context's code projects say
+   to build the real thing early, keep each version as a program app and link the app, never a machine or a folder.
+4. **Order.** An older web reads the kit as a manifest with problems and hides the app: the web goes live first, then
+   the runtime bundle that carries the kit.
 
 ## 20. Enforcement matrix
 

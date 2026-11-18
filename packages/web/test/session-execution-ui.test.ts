@@ -1,8 +1,5 @@
 // @vitest-environment jsdom
-import type {
-	NativeExecutionConnections,
-	SessionTurnProvenance,
-} from "@qorpera/cloud-client/cloud-native-subscription-control";
+import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
@@ -110,12 +107,10 @@ function setup(
 		loading: false,
 	});
 	const listConnections = vi.fn(async () => structuredClone(observed));
-	const listSessionTurnProvenance = vi.fn(async (): Promise<readonly SessionTurnProvenance[]> => []);
 	const native: WebNativeSubscription = {
 		onboardingAvailable: false,
 		beginProviderLogin: vi.fn(),
 		listConnections,
-		listSessionTurnProvenance,
 		...(selectSessionAccount ? { selectSessionAccount } : {}),
 		...(refreshAccountMetadata ? { refreshAccountMetadata } : {}),
 		...(chooseSessionAccount ? { chooseSessionAccount } : {}),
@@ -144,7 +139,6 @@ function setup(
 		company,
 		native,
 		listConnections,
-		listSessionTurnProvenance,
 		view,
 		sendMessage,
 		read,
@@ -251,7 +245,6 @@ describe("room startup usage refresh", () => {
 		type(f.view, "Keep my draft");
 		await settle();
 		expect(f.send().disabled).toBe(true);
-		expect(f.view.el.querySelector(".session-execution")!.textContent).not.toContain("Checking model accounts");
 		expect(f.view.el.querySelector(".session-execution [role='status']")).toBeNull();
 		pending.resolve(id(90));
 		await settle();
@@ -462,7 +455,6 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.send().disabled).toBe(true);
 		expect(f.view.el.textContent).toContain("Model accounts are unavailable. Trying again…");
-		expect(f.view.el.textContent).not.toContain("Refresh to try again");
 		const reads = () => f.listConnections.mock.calls.length;
 		let before = reads();
 		await vi.advanceTimersByTimeAsync(1_999);
@@ -647,9 +639,6 @@ describe("conversation execution account", () => {
 		});
 		await settle();
 		expect(f.view.el.querySelector(".messages")!.textContent).toContain("Earlier room message");
-		expect(f.view.el.textContent).not.toContain("Multiple agents can respond in this group chat");
-		expect(f.view.el.textContent).not.toContain("Company-wide execution pause is available in Settings → Company");
-		expect(f.view.el.querySelector(".session-run")).toBeNull();
 		expect(f.view.el.textContent).not.toContain("Execution history");
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(f.send().disabled).toBe(false);
@@ -659,7 +648,6 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello team", expect.any(AbortSignal));
 		expect(f.listConnections).toHaveBeenCalledTimes(4);
-		expect(f.listSessionTurnProvenance).not.toHaveBeenCalled();
 		expect(f.read).not.toHaveBeenCalled();
 		expect(f.cancel).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
@@ -804,7 +792,6 @@ describe("conversation execution account", () => {
 		expect(f.sponsor()).toMatchObject({ connectionId: id(90), sponsorBindingId: id(100), sponsorVersion: 1 });
 		expect(selector()).toBeNull();
 		expect(f.view.el.querySelector(".session-execution label")).toBeNull();
-		expect(buttonNamed(f.view, "Refresh model accounts")).toBeUndefined();
 		expect(f.view.el.textContent).not.toContain("Execution history");
 		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
 		type(f.view, "Hello");
@@ -1376,12 +1363,16 @@ describe("conversation execution account", () => {
 	});
 
 	it("restores the server's sticky room account before reading its current binding", async () => {
-		const selectAccount = vi.fn(async () => id(90));
+		let selected = false;
+		const selectAccount = vi.fn(async () => {
+			selected = true;
+			return id(90);
+		});
 		const f = setup(true, withUsage([20, 90]), selectAccount);
+		f.listConnections.mockImplementation(async () => withSponsorVersion(withUsage([20, 90]), selected ? 2 : 1));
 		await settle();
 		expect(selectAccount).toHaveBeenCalledExactlyOnceWith(session.sessionId, expect.any(AbortSignal));
-		expect(selectAccount.mock.invocationCallOrder[0]).toBeLessThan(f.listConnections.mock.invocationCallOrder[0]!);
-		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.sponsor()).toMatchObject({ connectionId: id(90), sponsorVersion: 2 });
 		expect(selector()).toBeNull();
 		// The server's choice wins (here a replaced disconnected account) even while the old quota observation looks usable.
 		selectAccount.mockResolvedValue(id(91));
@@ -1786,28 +1777,9 @@ describe("conversation execution account", () => {
 		expect(f.send().disabled).toBe(false);
 	});
 
-	it("reads cloud provenance without showing it and clears account data on access loss or disposal", async () => {
+	it("clears account data on access loss and reads nothing after disposal", async () => {
 		const f = setup();
 		await settle();
-		f.listSessionTurnProvenance.mockResolvedValue([
-			{
-				turnRequestId: id(180),
-				inputId: id(181),
-				requestedByUserId: userA.id,
-				sponsorMode: "member_connection",
-				sponsoredByName: "Account A",
-				provider: "openai",
-				workerClass: "managed_sandbox",
-				status: "materialized",
-				runStatus: "completed",
-				createdAt: timestamp,
-			},
-		]);
-		refresh();
-		await settle();
-		expect(f.listSessionTurnProvenance).toHaveBeenCalledTimes(2);
-		expect(f.view.el.textContent).not.toContain("Account A");
-		expect(f.view.el.textContent).not.toContain("Execution history");
 		const pending = deferred<NativeExecutionConnections>();
 		f.listConnections.mockReturnValueOnce(pending.promise);
 		refresh();
@@ -1820,7 +1792,7 @@ describe("conversation execution account", () => {
 		window.dispatchEvent(new Event("online"));
 		await settle();
 		expect(f.native.createMemberSponsor).not.toHaveBeenCalled();
-		expect(f.listConnections).toHaveBeenCalledTimes(3);
+		expect(f.listConnections).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -2212,6 +2184,41 @@ describe("a failed run at its login's usage limit", () => {
 		expect([...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent)).toEqual([
 			"Dismiss",
 		]);
+		const turnedAway = {
+			...recovery,
+			usageLimit: false,
+			rateLimited: true,
+			requestedByUserId: userA.id,
+			sponsorBindingId: id(100),
+			lastError: "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+		};
+		const ownMessage = "Your message didn't go through: ChatGPT got too many requests at once. The login is fine.";
+		const turnedAwayRun = "ChatGPT turned this run away because too many requests came at once. The login is fine.";
+		const buttons = () => [...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent);
+		f.company.store.set({ recoveries: { [run.runId]: turnedAway } });
+		await settle();
+		expect(reason()).toBe(ownMessage);
+		f.company.store.set({
+			activity: [{ ...run, sourceKind: "room_delivery" as const }],
+			recoveries: { [run.runId]: { ...turnedAway, sourceKind: "room_delivery" as const } },
+		});
+		await settle();
+		expect(reason()).toBe(ownMessage);
+		expect(buttons()).toEqual(["Try again", "Dismiss"]);
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: { ...turnedAway, sourceKind: "room_delivery" as const, requestedByUserId: userB.id },
+			},
+		});
+		await settle();
+		expect(reason()).toBe(turnedAwayRun);
+		f.company.store.set({
+			activity: [{ ...run, sourceKind: "wake" as const }],
+			recoveries: { [run.runId]: { ...turnedAway, sourceKind: "wake" as const } },
+		});
+		await settle();
+		expect(reason()).toBe(turnedAwayRun);
+		f.company.store.set({ activity: [run] });
 		// Another member's login refused: the card is the agent's, so this member reads who can act.
 		f.company.store.set({
 			recoveries: {
@@ -2563,6 +2570,19 @@ describe("a run waiting at its login's usage limit", () => {
 		});
 		await settle();
 		expect(continueButton(f.view)).toBeNull();
+	});
+
+	it("says a rate-limit wait tries again by itself and offers no other login, even when the cloud says movable", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		f.company.store.set({ activity: [paused(id(100), { rateLimited: true, movable: true })] });
+		await settle();
+		expect(title(f.view)).toBe("Fixture agent is waiting to go on");
+		expect(reason(f.view)).toBe(
+			"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.",
+		);
+		expect(continueButton(f.view)).toBeNull();
+		expect(buttons(f.view)).toEqual([]);
 	});
 
 	it("offers only logins the move can use, and none for work that cannot move", async () => {

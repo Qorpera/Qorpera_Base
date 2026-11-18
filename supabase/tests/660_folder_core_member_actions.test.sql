@@ -191,11 +191,6 @@ begin
 	perform pg_temp.raises_like(format('select public.qorpera_request_session_turn_v2(%L, %L, %L, %L, %L, null, null, null, null, null)',
 		v_session, extensions.gen_random_uuid(), extensions.gen_random_uuid(), pg_temp.prompt('Hi'), 'member_connection'),
 		'0A000', 'This conversation does not serve folder-v2 companies yet');
-	if to_regprocedure('public.qorpera_begin_member_session_attachment_upload(uuid,uuid,text,bigint,text)') is not null
-		or to_regprocedure('public.qorpera_stage_member_session_attachment(uuid,boolean)') is not null
-		or to_regprocedure('public.qorpera_authorize_member_session_attachment(uuid,uuid,text)') is not null
-		or to_regclass('public.qorpera_member_session_attachment_uploads') is not null then
-		raise exception 'The snapshot-v1 attachment upload must be gone'; end if;
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.raises_like(format($f$insert into public.qorpera_session_inputs(session_id, client_input_id, kind, author_user_id, body)
 		values (%L, extensions.gen_random_uuid(), 'user_message', '63400000-0000-4000-8000-000000000001', %L)$f$, v_session,

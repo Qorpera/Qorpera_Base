@@ -71,8 +71,6 @@ begin
 			|| ' re_render_component_tree re_email_validation_pattern re_' || repeat('k', 20))
 		= 'npm_' || repeat('T7fake', 5) || ' pk_live_' || repeat('T7fakeNotASecret', 2) || ' store_re_T7fakeNotASecretT7fake'
 			|| ' re_render_component_tree re_email_validation_pattern re_' || repeat('k', 20), 'what is not a key stays');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_redact_webhook_secrets(text)'::regprocedure),
-		'20260930698100') > 0, 'the rule names its migration');
 
 	-- A secret the first excerpt's end (4 KiB) would cut in two: cut out of the whole text first, so neither the excerpt
 	-- nor the next page holds a part of it. Where the output starts in the continuation's text is measured first.
@@ -101,10 +99,5 @@ begin
 	perform set_config('qorpera_test.t7_text', 'Nothing secret here: whsec_ alone.', true);
 	v_text := public.qorpera_company_context_source(v_run, 'continuation', v_run.id) ->> 'text';
 	perform pg_temp.base_assert(v_text = public.qorpera_run_continuation(v_run)::text, 'no secret, no change');
-
-	-- The body names its migration.
-	perform pg_temp.base_assert(strpos(pg_get_functiondef(
-		'public.qorpera_company_context_source(public.qorpera_execution_runs,text,uuid)'::regprocedure), '20260930657200') > 0,
-		'the body names its migration');
 end
 $$;
