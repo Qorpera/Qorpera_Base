@@ -65,33 +65,36 @@ function firstRuns(db, agents) {
 const coworkersOf = (context) => context.coworkers.map((coworker) => coworker.id).sort();
 const first = { team: null, runs: null, teamAt: null };
 
-finish(
+const tools = (code, { folder, operations, identity }) =>
+	code.cloudHiringTools(identity, {
+		folderHiring: new code.CloudFolderHiring({ folder, operations, identity }),
+		folderGroupChats: new code.CloudFolderGroupChats({ folder, operations, identity }),
+	});
+const review = (code, { binding, paths }) =>
+	new code.CloudActionReviewGate({
+		binding,
+		control: { call: (method, args, signal) => paths.call(method, args, signal) },
+		reviewer: {
+			review: async () => ({
+				decision: "allow",
+				ruleIds: [],
+				builtIn: "none",
+				reason: "The member asked for this team.",
+				proposedRule: null,
+			}),
+		},
+		request: REQUEST,
+		holdMs: 0,
+	});
+
+const team = () =>
 	proveCompanyRun({
 		name: "qorpera_prove_hire_team",
 		prompt: REQUEST,
 		setup: "",
 		objects: new Map(),
-		tools: (code, { folder, operations, identity }) =>
-			code.cloudHiringTools(identity, {
-				folderHiring: new code.CloudFolderHiring({ folder, operations, identity }),
-				folderGroupChats: new code.CloudFolderGroupChats({ folder, operations, identity }),
-			}),
-		review: (code, { binding, paths }) =>
-			new code.CloudActionReviewGate({
-				binding,
-				control: { call: (method, args, signal) => paths.call(method, args, signal) },
-				reviewer: {
-					review: async () => ({
-						decision: "allow",
-						ruleIds: [],
-						builtIn: "none",
-						reason: "The member asked for this team.",
-						proposedRule: null,
-					}),
-				},
-				request: REQUEST,
-				holdMs: 0,
-			}),
+		tools,
+		review,
 		calls: [
 			() => ({ name: "hire_team", arguments: TEAM }),
 			(outputs, db) => {
@@ -164,5 +167,53 @@ finish(
 			);
 			pass("an agent hired before both (Bob): its next run lists the whole team and the later hire as coworkers, with no message sent to it");
 		},
-	}),
-);
+	});
+
+const HOLDS = "name, role, jobDescription, firstAssignment and figure (figure is optional)";
+const TOLD = [
+	`INVALID_ARGUMENTS: hire 1: operationKey is given once for the whole call, never inside a hire. A hire holds ${HOLDS}`,
+	"INVALID_ARGUMENTS: hire_team takes operationKey, once for the whole call, and hires, a list of 2 to 12 hires; it was given a key that is neither",
+	"INVALID_ARGUMENTS: hire 2: role must be one line, with no line breaks",
+	"INVALID_ARGUMENTS: hires must be a list of hire objects, not text holding one: send the list itself",
+];
+const SHAPES = [
+	["a hire_agent-shaped key in every hire", { operationKey: "shape-1", hires: TEAM.hires.slice(0, 3).map((item, n) => ({ operationKey: `hire-${n}`, ...item })) }],
+	["the hires under another key", { operationKey: "shape-2", team: TEAM.hires.slice(0, 3) }],
+	["a role on two lines", { operationKey: "shape-3", hires: [TEAM.hires[0], { ...TEAM.hires[1], role: "Strategy\nand planning" }, TEAM.hires[2]] }],
+	["the hires as one JSON text", { operationKey: "shape-4", hires: JSON.stringify(TEAM.hires.slice(0, 3)) }],
+];
+const corrected = (refused) => {
+	const inside = /: (operationKey) is given once for the whole call, never inside a hire/.exec(refused)?.[1] ?? "";
+	return {
+		operationKey: "shape-1-again",
+		hires: SHAPES[0][1].hires.map(({ [inside]: _, ...rest }) => rest),
+	};
+};
+
+const refusals = () =>
+	proveCompanyRun({
+		name: "qorpera_prove_hire_team_refusals",
+		prompt: REQUEST,
+		setup: "",
+		objects: new Map(),
+		tools,
+		review,
+		calls: [
+			...SHAPES.map(([, args]) => () => ({ name: "hire_team", arguments: args })),
+			(outputs) => ({ name: "hire_team", arguments: corrected(answerOf(outputs[0].output).text) }),
+		],
+		check: async ({ outputs }) => {
+			for (const [index, [shape]] of SHAPES.entries()) {
+				const answer = outputs[index];
+				process.stdout.write(`FACT ${shape}: ${answer.envelope.status} ${JSON.stringify(answer.text)}\n`);
+				assert.equal(answer.envelope.status, "denied");
+				assert.equal(answer.text, TOLD[index]);
+			}
+			const last = outputs[SHAPES.length];
+			assert.equal(last.envelope.status, "ok", last.text);
+			assert.equal(JSON.parse(last.text).outcome, "saved");
+			pass("each wrong shape is refused with what is wrong, and the model corrects the call from the refusal's words alone");
+		},
+	});
+
+finish(team().then(refusals));

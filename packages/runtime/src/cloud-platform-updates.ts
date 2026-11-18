@@ -140,6 +140,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "The object kit's page can show a product as a real 3D model, drawn live in the member's own browser in real light: they turn and tilt it by hand, zoom in, and tap its parts. Build the model in Blender on a machine, export it into the app's folder as one glb file and name it as the data's model; each part names its object in the model as node, so no tracks are written. Keep the turntable or picture beside it: the page shows it while the model arrives and where a browser cannot draw 3D. app_guide about object says how.",
 	},
 	{
+		id: "first-concept-first",
+		kind: "behaviour",
+		date: "2026-11-18",
+		title: "The first concept before references and directions",
+		text: "The founders now see their own product first: the product's owner makes one first concept from their words in its first run, its builders make their parts beside it without waiting for each other, references or the brand, and it reaches the founders the same hour the builders are hired. A wall of other companies' products is references, never a concept, and the brand's directions follow the first concept. If your founders have not yet seen their own product, have its owner make that one concept now, without waiting for references or directions.",
+	},
+	{
 		id: "explainer-voice-and-languages",
 		kind: "capability",
 		date: "2026-11-18",

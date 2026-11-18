@@ -3,6 +3,34 @@
 ## [Unreleased]
 - An explainer gets its voice: `narrate_app {name, operationKey, machine?, voice?}` (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3a "The tool"; Jonas, 10 Nov 2026: "Yes, build it"; migration `20260930806000`, SQL test 1302). On a running company machine it reads the captions of the agent's own explainer from the running video, records on the run's voice lane only the captions that have no clip yet (a clip is named by its caption's hash, so a changed part costs only its changed captions), keeps a turn only when the transcript says the caption was said as written, and commits `voice/clips.json` and the page under its receipt. It reads the login's usage before it starts (`CloudVoiceChannel.usage`, the lane's `voiceUsage`: `account/rateLimits/read`) and places no call at the limit; a call the limit cuts (`thread/realtime/error` "You have reached your usage limit.", seen 18 Nov 2026) ends as `CloudVoiceLimitReached`, what was recorded is saved, and the answer says `limit_reached` with how many captions are spoken and left and when the limit resets. Offered to a Codex login's run with machines, on demand (`more_tools`); review class `internal`. The explainer's guide and a platform update tell agents.
 - An explainer in English and Danish (Jonas, 18 Nov 2026: "the videos needs language selection too, letting you switch between the english and danish"): the engine takes `{en: "…", da: "…"}` wherever it takes a text, shows a button a language, builds the scenes again in the language chosen and stays on the caption it was at; `voice-captions.cjs` prints every language's captions, `narrate_app` records each, and `look` names captions that lack a language (`explainerSaid`).
+- hire_team's first call no longer fails blind (the founder, 18 Nov 2026: "fix the hire_team first-call refusal"; in both
+  companies started on v255 the Co-Founder's first hire_team was refused as bare `INVALID_ARGUMENTS` and its second call
+  succeeded). Every refusal of hire_team's and hire_agent's arguments is now a `CloudToolArgumentRefusal` the model
+  reads: which hire (by its position), which field and what is wrong (a key that is not a field, with the fields a hire
+  holds; an operationKey inside a hire, which goes once for the whole call; a missing, empty, non-text or multi-line
+  field; a text over its bound in bytes; hires as text or a top-level key that is neither field; a figure that is not
+  one). A refusal never repeats what the model wrote: no key and no name. What is accepted is unchanged, hire_agent's
+  schema and description byte for byte; create_group_chat's name and purpose share the checks, so its refusals of
+  those say what is wrong too. hire_team's description now names the five fields a hire holds and their bounds in
+  words, and says operationKey goes once for the call, never inside a hire (1,215 to 1,449 bytes); the catalog pins
+  moved. Runtime bundle only.
+- The first concept really comes first (hire overlay v20; the founder, 17 Nov 2026: "1-4 straight yes", and 18 Nov: "run a
+  clean product-first test company"; the test Spirekassen showed v19 did not: 31 minutes, nine agents, one posted app,
+  a wall of other companies' products in the Concepts viewer, the product's owner aiming at three directions in two
+  days; contract, the 2026-11-18 amendment; lanes/mywave-fixes-20261117/MAP-D.md). Concepts go in order, each shaped
+  by the founders' answer to the one before: one first concept, shown the same hour the product's builders are hired,
+  made by the product's owner in its first run (an owner of the form or the app makes its part in its own first run),
+  waiting for no reference pictures, brand or finding, and asked about on a card in the run that first makes it
+  viewable; then the look (a reference wall is never a concept app), the directions and the build. Several ideas,
+  never for the first concept. The look step is one round that ends in the link, and a look on a machine is never
+  called a test in the app. The Co-Founder: the product's owner's first assignment is the first concept, the builders
+  make their parts without waiting for each other, the founders hear what they will see and when, in hours; "due
+  within a day or two" stays for the research assignments only; the Brand owner's directions show the product as the
+  first concept shows it; until its card goes out the Brand owner only prepares, and starts them when the product's
+  owner tells it the card went out (a message that wakes it), or at once when there is no product to show; its own card
+  comes after the concept's. Platform update
+  `first-concept-first`. The prompt names overlay v20; the instruction pins move, the catalog pins do not. The
+  runtime bundle only; no SQL, no web, no node program.
 - Agents' words about company databases name the command `data` on a company machine (slice 8a; words only, the runtime bundle only; runs that are offered `machine_run`): that it acts as the machine's own company folder (its `/company`, `:viewer` the member the machine was started for unless a call gives `viewer=`), that it prints JSON, the four verbs for a run that may apply and change (a held step still goes through `data_apply`) and only describe and query for a worker, and that a machine made before the command existed lacks it and is taken again by a start with the same cpus and memory and no larger disk (change cpus or memory, ask a larger disk, or delete each old one). The platform update `data-on-machines` tells the Co-Founder once. Pins: the staff instructions (a conversation and a private conversation) `d7de80e9dfb3` → `c87c9a47ae639767f2c72d4812253bb2cc0802ab295faf6ea4909c65af4744e5`, the worker's `2be17d453add` → `29c202822805a9f20a11d9be245c10367f458af643aaec8c94d35ebff87ab847`, measured on a test VM; the prompts do not move.
 - Release v255 (master since v254's release merge: the first team in one step, #1922; agents show the product first,
   #1919; an interface app holds any file, #1928's runtime part; the object kit draws a real 3D model, #1934; the machine
