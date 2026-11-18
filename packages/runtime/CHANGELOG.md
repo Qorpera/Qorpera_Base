@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+- Release v255 (master since v254's release merge: the first team in one step, #1922; agents show the product first,
+  #1919; an interface app holds any file, #1928's runtime part; the object kit draws a real 3D model, #1934; the machine
+  fill check finds the sandboxed desktop Chromium, #1893): runtime bundle 255
+  `edc4809a810baeef27a0d28bbc98bdceaf244c194c97d7e381f27939984e3484` (activation `20260929025599`, previous 254
+  `73401553e004`). Its activation requires `20260930799000` (`hire_team` in the three recorders), which the roll's
+  `migrate` runs before the switch; #1928's web part is live before it. The guest moves: the native provider host
+  (`03ae4570`, 5,443,322 bytes with three.js); the ephemeral runner, the two LXD bootstraps and the native Codex
+  (`9c299f88`) stay.
 - The object kit draws a real 3D model, live in the member's browser (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b,
   17 Nov 2026; Jonas: "Yes, all three" on the app-files design page): `object.json`'s `model` (and a variant's) names a
   `.glb` in the app's folder, drawn with three.js 0.186.1 (MIT) and its GLTF loader, which `save_app` writes into the app
