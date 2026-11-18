@@ -8,9 +8,11 @@
   the agents indexed before), so its runs take it on the provider-mapping path; an agent.md that names a model and a
   member's GPT-6 Astra pick keep theirs. A platform update (`gpt-6-2-sol-default`, kind model) tells the agents. The web
   lists the models the cloud names, GPT-6.2 Sol first, and still knows GPT-6.1 Sol for a cloud before the migration.
-  Deploy order: the migration may run before or after the bundle; the runtime only adds the update's text. Before the
-  release, a real turn of the pinned Codex (0.155.1, `9c299f88`) on `gpt-6.2-sol` must pass on a Codex login: its built-in
-  catalog does not list the model, and the provider refuses a model newer than the client allows. Way back: a migration
+  Deploy order: the migration and the bundle that carries the update's text go in the same cut, the migration first, so
+  the agents are never told of a model they do not run. Before that cut, a real turn of the pinned Codex (0.155.1,
+  `9c299f88`) on `gpt-6.2-sol` must pass on a Codex login, and on an OpenAI API key too if production has an API-key
+  OpenAI connection (an API key does not fetch the remote model list): its built-in catalog does not list the model, and
+  the provider refuses a model newer than the client allows. Way back: a migration
   that sets the roster rows and the index default back to `gpt-6-astra` (the conversations stay on GPT-6.2 Sol).
 - The object kit draws a real 3D model, live in the member's browser (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b,
   17 Nov 2026; Jonas: "Yes, all three" on the app-files design page): `object.json`'s `model` (and a variant's) names a
