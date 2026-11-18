@@ -7059,19 +7059,22 @@ bundle; no migration, host call or image moves.
    `deno run <path>`), the path itself as the command word, or `source f` / `. f`. No `NAME=value` word may come
    before the script and `env` is no prefix: a command that sets a variable names no file. The runner may carry no
    redirection but `2>&1`, `> /dev/null`, `2> /dev/null` and `&> /dev/null`; if it starts a pipeline, every other
-   element of that pipeline must be, by its exact program word and with no redirection of its own, `head`, `tail`,
-   `grep`, `cat` or `wc`, `tee` with options only, `sort` without an output, long or `o` option, or `uniq` with
-   options and numbers only; otherwise no file is named. The file is named when its path word has no `..` segment: an
-   absolute path as it stands, a relative one in the start folder or the folder of the leading `cd`s. So only literal
-   `cd`s run before the named file is opened, nothing beside it can write to it while it runs, and a path through a
-   link without `..` is read at the same name the interpreter opens. Nothing else in the command is named: a later
-   script is listed in `contents.notShown` ("only the first command's file is shown"), and a command whose first
-   command after the leading `cd`s is anything else (`mkdir`, `pip`, `git`, `eval`, `builtin`, `printf`, `export`,
-   `env`, an assignment, …) names no file. The runtime reads the named file on the machine before the review with one
-   fixed read-only command of its own through the same receipts and command gateway (its receipt always completes,
-   also when the machine refuses or does not answer its start), and gives the reviewer its text in the action's
-   `contents`, whole, at most 64 KiB. Known limit: the file is read when the action is reviewed; a file changed
-   between that read and the command's start in the same call is not detected.
+   element of that pipeline must be, by its exact program word and with no redirection of its own, one of these with
+   no operand at all, every argument an option from its exact list: `head` or `tail` with `-n N`, `-c N`, `-N`, `-nN`
+   or `-cN`; `grep` with options from `-ivncEFowxsqha` and exactly one pattern word; `cat` with no argument; `wc` with
+   options from `-lwcm`; `sort` with options from `-rnufbhV`, `-k <key>` and `-t <char>` (their values are taken by
+   the option, never a file); `uniq` with options from `-cdui` and `-fN`, `-sN`, `-wN`; otherwise no file is named.
+   The file is named when its path word has no `..` segment: an absolute path as it stands, a relative one in the
+   start folder or the folder of the leading `cd`s. So only literal `cd`s run before the named file is opened, nothing
+   beside it can write to it while it runs, and a path through a link without `..` is read at the same name the
+   interpreter opens. Nothing else in the command is named: a later script is listed in `contents.notShown` ("only the
+   first command's file is shown"), and a command whose first command after the leading `cd`s is anything else
+   (`mkdir`, `pip`, `git`, `eval`, `builtin`, `printf`, `export`, `env`, an assignment, …) names no file. The runtime
+   reads the named file on the machine before the review with one fixed read-only command of its own through the same
+   receipts and command gateway (its receipt always completes, also when the machine refuses or does not answer its
+   start), and gives the reviewer its text in the action's `contents`, whole, at most 64 KiB. Known limit: the file is
+   read when the action is reviewed; a file changed between that read and the command's start in the same call is not
+   detected.
 2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
    bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
    variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the

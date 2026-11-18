@@ -18,8 +18,8 @@ const QUOTED = /^[A-Za-z0-9_./\-+=:,@% ]*$/;
 const REDIRECTS = ["2>&1", "2>>", "2>", "&>", ">>", ">"];
 const PREFIXES = new Set(["time", "nohup", "nice", "timeout", "xvfb-run"]);
 const QUIET = new Set(["2>&1", "> /dev/null", "2> /dev/null", "&> /dev/null"]);
-const READERS = new Set(["head", "tail", "grep", "cat", "wc"]);
-const OPTIONS = /^--?[A-Za-z0-9][A-Za-z0-9-]*$/;
+const COUNT = /^[0-9]{1,9}$/;
+const KEY = /^[0-9]{1,4}(?:\.[0-9]{1,4})?[bdfgiMhnRrV]*(?:,[0-9]{1,4}(?:\.[0-9]{1,4})?[bdfgiMhnRrV]*)?$/;
 const DURATION = /^[0-9]{1,6}(\.[0-9]{1,3})?[smhd]?$/;
 const NICENESS = /^-?[0-9]{1,2}$/;
 
@@ -305,14 +305,44 @@ function runnerOf(simple: Simple): Runner {
 	return other;
 }
 
+function options(words: readonly string[], whole: RegExp, valued: Readonly<Record<string, RegExp>> = {}): boolean {
+	for (let at = 0; at < words.length; at += 1) {
+		const word = words[at] as string;
+		if (whole.test(word)) continue;
+		const value = valued[word];
+		if (!value || !value.test(words[at + 1] ?? "")) return false;
+		at += 1;
+	}
+	return true;
+}
+
 function reads(simple: Simple): boolean {
 	const [program, ...rest] = simple.words.map((word) => word.text);
-	if (simple.redirects.length > 0 || program === undefined) return false;
-	if (READERS.has(program)) return true;
-	if (program === "tee") return rest.every((word) => OPTIONS.test(word));
-	if (program === "sort") return rest.every((word) => !word.startsWith("--") && !/^-[A-Za-z]*o/.test(word));
-	if (program === "uniq") return rest.every((word) => word.startsWith("-") || /^[0-9]+$/.test(word));
-	return false;
+	if (simple.redirects.length > 0) return false;
+	switch (program) {
+		case "head":
+		case "tail":
+			return options(rest, /^-(?:[nc])?[0-9]{1,9}$/, { "-n": COUNT, "-c": COUNT });
+		case "grep":
+			return (
+				rest.length > 0 &&
+				!(rest.at(-1) as string).startsWith("-") &&
+				rest.slice(0, -1).every((word) => /^-[ivncEFowxsqha]+$/.test(word))
+			);
+		case "cat":
+			return rest.length === 0;
+		case "wc":
+			return rest.every((word) => /^-[lwcm]+$/.test(word));
+		case "sort":
+			return options(rest, new RegExp(`^-(?:[rnufbhV]+|k${KEY.source.slice(1, -1)}|t[^-])$`), {
+				"-k": KEY,
+				"-t": /^[^-]$/,
+			});
+		case "uniq":
+			return rest.every((word) => /^-(?:[cdui]+|[fsw][0-9]{1,9})$/.test(word));
+		default:
+			return false;
+	}
 }
 
 function besideOf(simples: readonly Simple[], at: number): string | undefined {

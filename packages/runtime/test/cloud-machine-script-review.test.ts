@@ -147,6 +147,7 @@ describe("a file is named only for the first command after leading cds, in the f
 			}
 			shapes.push(
 				"cd d1 && @ | tee log",
+				"cd d1 && @ | tee",
 				"cd d1 && @ 2>&1 | tail -40",
 				"cd d1 && test -e s2 | @",
 				"cd d1 && test -e s2 | @ | cat",
@@ -165,6 +166,7 @@ describe("a file is named only for the first command after leading cds, in the f
 				"env A=1 nice timeout 5 @",
 				"nice timeout 5 @",
 				"cd d1 && @ | tee",
+				"cd d1 && @ 2>&1 | grep -i d1",
 				"cd d1 && @ > /dev/null | cat",
 				"cd d1 && @ > out",
 				"cd d1 2> err && @",
@@ -233,7 +235,7 @@ describe("a file is named only for the first command after leading cds, in the f
 			expect(at("cd d1 && @")).toBe(join(full, "d1"));
 			expect(at("cd d1 && cd d2 && @")).toBe(join(full, "d1", "d2"));
 			expect(at("cd d1 && cd d2 && cd d3 && @")).toBe(join(full, "d1", "d2", "d3"));
-			expect(at("cd d1 && @ | tee")).toBe(join(full, "d1"));
+			expect(at("cd d1 && @ 2>&1 | grep -i d1")).toBe(join(full, "d1"));
 			expect(at("cd d1 && @ 2>&1 | tail -40")).toBe(join(full, "d1"));
 			expect(at("cd d1 && @ ; cd d2")).toBe(join(full, "d1"));
 			expect(at("cd d1 && cd d2 && @ && cd d3")).toBe(join(full, "d1", "d2"));
@@ -414,6 +416,27 @@ describe("the files a machine command runs", () => {
 			});
 		const beside = (peer: string) => `${peer}: it runs beside the script, and the review does not follow it`;
 		for (const [command, peer] of [
+			["cd /a && bash 5 | uniq - 5", "uniq - 5"],
+			["cd /a && bash 5 | uniq -c - 5", "uniq -c - 5"],
+			["cd /a && bash 5 | uniq 4 5", "uniq 4 5"],
+			["python3 /a/x.py | uniq -f 2", "uniq -f 2"],
+			["python3 /a/x.py | head /a/x.py", "head /a/x.py"],
+			["python3 /a/x.py | tail -n 5 /a/x.py", "tail -n 5 /a/x.py"],
+			["python3 /a/x.py | tail -f", "tail -f"],
+			["python3 /a/x.py | grep x /a/x.py", "grep x /a/x.py"],
+			["python3 /a/x.py | grep -f /a/p x", "grep -f /a/p x"],
+			["python3 /a/x.py | grep -r x", "grep -r x"],
+			["python3 /a/x.py | grep --color x", "grep --color x"],
+			["python3 /a/x.py | grep -", "grep -"],
+			["python3 /a/x.py | cat /a/x.py", "cat /a/x.py"],
+			["python3 /a/x.py | cat -", "cat -"],
+			["python3 /a/x.py | wc /a/x.py", "wc /a/x.py"],
+			["python3 /a/x.py | wc -l --", "wc -l --"],
+			["python3 /a/x.py | sort /a/x.py", "sort /a/x.py"],
+			["python3 /a/x.py | sort -T /tmp", "sort -T /tmp"],
+			["python3 /a/x.py | sort -m a b", "sort -m a b"],
+			["python3 /a/x.py | tee", "tee"],
+			["python3 /a/x.py | tee -a", "tee -a"],
 			["bash /a/x.sh | tee -a /a/x.sh", "tee -a /a/x.sh"],
 			["bash /a/x.sh | tee /a/x.sh", "tee /a/x.sh"],
 			["python3 /a/x.py | cp /tmp/e.py /a/x.py", "cp /tmp/e.py /a/x.py"],
@@ -440,7 +463,12 @@ describe("the files a machine command runs", () => {
 			"python3 /a/x.py > /dev/null 2>&1",
 			"python3 /a/x.py 2> /dev/null",
 			"python3 /a/x.py &> /dev/null",
-			"python3 /a/x.py 2>&1 | grep -v DEBUG | sort -n | uniq -c | wc -l | head -5 | cat | tee -a",
+			"python3 /a/x.py 2>&1 | grep -v DEBUG | sort -n | uniq -c | wc -l | head -5 | cat",
+			"python3 /a/x.py | grep -i error",
+			"python3 /a/x.py | grep -vnE 'a b'",
+			"python3 /a/x.py | head -n 5 | tail -c100 | tail -n5",
+			"python3 /a/x.py | sort -k2,2n -t , | uniq -f2 -w10 -cd",
+			"python3 /a/x.py | sort -k 1.2 -t, -rn | wc -lw",
 		])
 			expect(cloudCommandScripts(command), command).toEqual({ files: [{ path: "/a/x.py" }], notShown: [] });
 		expect(cloudCommandScripts("python3 /a/x.py; cp /tmp/e.py /a/x.py")).toEqual({
