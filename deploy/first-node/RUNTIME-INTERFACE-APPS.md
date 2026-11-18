@@ -873,7 +873,10 @@ what it sends (the kept version's date is fixed once, so the same change set is 
 again and before any delete, the change set whose answer was lost is sent again with the same key: the commit route
 replays what it did (C4 §5), and only what is known not saved is deleted, moved or written again. A file's upload keeps
 its key and path the same way, and the gateway answers `saved` for that very file. As a second check, a `program.json`
-whose versions hold one by this member with all of this add's files (by SHA-256) counts as listed. A refusal says too large (the
+counts as listed when it holds a version that was not there when the add began, by this member, with every file of
+the drop (by SHA-256, and only once every file is hashed). All files are hashed before any byte goes up. Dropping the
+very files of the newest version (by anyone) is refused there and then: "This is the version that is already here."
+The same files as an older version are listed again as a new version, like any other file. A refusal says too large (the
 size and the most), not allowed, the company paused, another of the member's programs still going up, someone adding
 at the same moment (Try again), that version already having this file, the company folder's own refusal in its words
 (no retry), a name the folder does not take, or the connection dropped (Try again, which continues where it stopped). After it, the

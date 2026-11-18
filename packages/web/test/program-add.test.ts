@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { File as NodeFile } from "node:buffer";
+import { createHash } from "node:crypto";
 import { parseProgram, writeProgram } from "@qorpera/cloud-client/app-program";
 import type { CloudMemberFolderUnit, CloudMemberFolderUploadFile } from "@qorpera/cloud-client/cloud-member-folder";
 import { CloudMemberFolderError } from "@qorpera/cloud-client/cloud-member-folder";
@@ -52,6 +53,7 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 	let names: (() => string[]) | undefined;
 	let lose: ((units: readonly CloudMemberFolderUnit[]) => boolean) | undefined;
 	let loseFinish = false;
+	let holdOnly: ((path: string) => boolean) | undefined;
 	const uploadFile = vi.fn(
 		async (
 			path: string,
@@ -63,7 +65,7 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 			if (refuse) throw refuse;
 			uploads.push({ path, key: options.operationKey });
 			options.onProgress?.(Math.floor(prepared.bytes * 0.4), prepared.bytes);
-			if (hold) await hold;
+			if (hold && (!holdOnly || holdOnly(path))) await hold;
 			if (outcome) return outcome;
 			const text = await blob.text();
 			if (fake.text(path) === text)
@@ -113,7 +115,8 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 		host,
 		uploads,
 		opened,
-		holdUploads: () => {
+		holdUploads: (only?: (path: string) => boolean) => {
+			holdOnly = only;
 			let release = () => {};
 			hold = new Promise((resolve) => {
 				release = resolve;
@@ -312,6 +315,103 @@ describe("a member's new program", () => {
 		for (const version of ["1", "2", "3"])
 			expect(c.fake.text(`apps/lagerliste/versions/${version}/b.exe`)).toBe("someone else's");
 		expect(c.fake.has("apps/lagerliste/program.json")).toBe(false);
+	});
+
+	describe("the same files again", () => {
+		const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+		const kept = (versions: { version: string; files: string[]; userId: string }[]) =>
+			writeProgram({
+				version: versions[0]!.version,
+				forms: versions[0]!.files.map((name) => ({ for: programKindOf(name)!, file: name })),
+				screens: {},
+				versions: versions.map((each) => ({
+					version: each.version,
+					date: "2026-11-18T10:00:00.000Z",
+					forms: each.files.map((name) => ({
+						for: programKindOf(name)!,
+						file: name,
+						bytes: `bytes of ${name}`.length,
+						sha256: sha(`bytes of ${name}`),
+					})),
+					userId: each.userId,
+				})),
+			});
+		const existing = (text: string) => {
+			const c = company();
+			c.fake.put("apps/lagerliste/app.toml", 'name = "Lagerliste"\nkit = "program"\nposted = true\n');
+			c.fake.put("apps/lagerliste/program.json", text);
+			return c;
+		};
+		const add = (c: ReturnType<typeof company>) =>
+			new ProgramAdd(c.host.writer, { folder: "lagerliste", name: "Lagerliste", isNew: false });
+
+		it("refuses the newest version's very files, by anyone, before any byte goes up", async () => {
+			const c = existing(kept([{ version: "1", files: ["Lagerliste.exe"], userId: ANNA }]));
+			const error = await add(c)
+				.run({
+					target: { folder: "lagerliste", name: "Lagerliste", isNew: false },
+					files: [{ file: file("Lagerliste.exe"), kind: "windows" }],
+					userId: ME,
+					signal: new AbortController().signal,
+				})
+				.catch((caught: unknown) => caught);
+			expect(error).toMatchObject({ reason: "same" });
+			expect(c.uploads).toEqual([]);
+			expect(c.fake.has("apps/lagerliste/versions")).toBe(false);
+		});
+
+		it("lists an older version's very files again as a new version, and leaves nothing unlisted", async () => {
+			const c = existing(
+				kept([
+					{ version: "2", files: ["Lagerliste-2.exe"], userId: ANNA },
+					{ version: "1", files: ["Lagerliste.exe"], userId: ME },
+				]),
+			);
+			await add(c).run({
+				target: { folder: "lagerliste", name: "Lagerliste", isNew: false },
+				files: [{ file: file("Lagerliste.exe"), kind: "windows" }],
+				userId: ME,
+				signal: new AbortController().signal,
+			});
+			const program = parseProgram(c.fake.text("apps/lagerliste/program.json") ?? "");
+			expect(program?.versions.map((each) => [each.version, each.userId])).toEqual([
+				["3", ME],
+				["2", ANNA],
+				["1", ME],
+			]);
+			expect(c.uploads.map((each) => each.path)).toEqual(["apps/lagerliste/versions/3/Lagerliste.exe"]);
+		});
+
+		it("deletes what a stopped drop placed, though an older version of this member holds one of its files", async () => {
+			const c = existing(kept([{ version: "2", files: ["A.exe", "B.apk"], userId: ME }]));
+			const release = c.holdUploads((path) => path.endsWith("/C.dmg"));
+			const stop = new AbortController();
+			const adding = add(c);
+			const running = adding
+				.run({
+					target: { folder: "lagerliste", name: "Lagerliste", isNew: false },
+					files: [
+						{ file: file("A.exe"), kind: "windows" },
+						{ file: file("C.dmg"), kind: "mac" },
+					],
+					userId: ME,
+					signal: stop.signal,
+				})
+				.catch((caught: unknown) => caught);
+			await until(() => c.uploads.some((each) => each.path.endsWith("/C.dmg")));
+			stop.abort(new Error("left the page"));
+			release();
+			await running;
+			await adding.discard();
+			expect(c.uploads.map((each) => each.path)).toEqual([
+				"apps/lagerliste/versions/1/A.exe",
+				"apps/lagerliste/versions/1/C.dmg",
+			]);
+			expect(c.fake.has("apps/lagerliste/versions/1/A.exe")).toBe(false);
+			expect(c.fake.has("apps/lagerliste/versions/1/C.dmg")).toBe(false);
+			expect(c.fake.has("apps/lagerliste/program.json")).toBe(true);
+			expect(parseProgram(c.fake.text("apps/lagerliste/program.json") ?? "")?.versions).toHaveLength(1);
+		});
 	});
 
 	it("says a program.json past the commit route's 64 KiB takes no member's version, before any byte goes up", async () => {

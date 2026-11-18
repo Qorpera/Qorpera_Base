@@ -173,6 +173,7 @@ export class ProgramAddRefusal extends Error {
 		| "busy"
 		| "taken"
 		| "exists"
+		| "same"
 		| "refused"
 		| "unusable"
 		| "gone"
@@ -270,6 +271,8 @@ export class ProgramAdd {
 	#running: Promise<unknown> | undefined;
 	#userId: string | undefined;
 	#date: Date | undefined;
+	#before: ReadonlySet<string> | undefined;
+	#files: readonly File[] = [];
 	#pending: Pending | undefined;
 	#inflight: { readonly file: File; readonly kind: ProgramKind; readonly version: string } | undefined;
 	readonly #keys = new Map<string, string>();
@@ -328,12 +331,20 @@ export class ProgramAdd {
 		pending.apply(commit);
 	}
 
+	#ours(): CloudMemberFolderUploadFile[] | null {
+		const ours = this.#files.map((file) => this.#prepared.get(file));
+		return ours.length > 0 && ours.every((each) => each !== undefined) ? ours : null;
+	}
+
 	#lists(program: Program | null): boolean {
-		const ours = [...this.#prepared.values()];
+		const ours = this.#ours();
+		const before = this.#before;
 		return (
-			ours.length > 0 &&
+			ours !== null &&
+			before !== undefined &&
 			program?.versions.some(
 				(version) =>
+					!before.has(version.version) &&
 					version.userId === this.#userId &&
 					ours.every((prepared) => version.forms.some((form) => form.sha256 === prepared.fileSha256)),
 			) === true
@@ -352,7 +363,7 @@ export class ProgramAdd {
 		const folder = this.#folder();
 		try {
 			await this.#replay(signal);
-			if (this.#listed || (this.#prepared.size > 0 && this.#lists((await this.#kept(signal)).program))) return;
+			if (this.#listed || (this.#ours() !== null && this.#lists((await this.#kept(signal)).program))) return;
 			const inflight = this.#inflight;
 			const prepared = inflight ? this.#prepared.get(inflight.file) : undefined;
 			if (inflight && prepared && !this.#placed.has(inflight.file)) {
@@ -434,6 +445,8 @@ export class ProgramAdd {
 		let done = [...this.#placed.values()].reduce((sum, each) => sum + each.file.size, 0);
 		plan.onProgress?.(done, total);
 		let kept = await readKept(this.#folder(), programPath, signal);
+		this.#files = plan.files.map(({ file }) => file);
+		this.#before ??= new Set(kept.program?.versions.map((each) => each.version) ?? []);
 		if (this.#lists(kept.program)) {
 			this.#listed = true;
 			return;
@@ -446,15 +459,22 @@ export class ProgramAdd {
 			now(),
 		);
 		if (!fits(draft)) throw new ProgramAddRefusal("full");
+		for (const { file } of plan.files)
+			if (!this.#prepared.has(file)) this.#prepared.set(file, await prepareCloudMemberFolderUpload(file, signal));
+		const newest = kept.program?.versions[0];
+		const hashes = plan.files.map(({ file }) => this.#prepared.get(file)!.fileSha256);
+		if (
+			this.#placed.size === 0 &&
+			newest &&
+			newest.forms.length === hashes.length &&
+			newest.forms.every((form) => hashes.includes(form.sha256))
+		)
+			throw new ProgramAddRefusal("same");
 		let version =
 			[...this.#placed.values()][0]?.version ?? this.#inflight?.version ?? nextMemberVersion(kept.program);
 		for (const { file, kind } of plan.files) {
 			if (this.#placed.has(file)) continue;
-			let prepared = this.#prepared.get(file);
-			if (!prepared) {
-				prepared = await prepareCloudMemberFolderUpload(file, signal);
-				this.#prepared.set(file, prepared);
-			}
+			const prepared = this.#prepared.get(file)!;
 			if (this.#inflight?.file === file) version = this.#inflight.version;
 			for (let attempt = 1; ; attempt++) {
 				const path = this.#path(version, file);

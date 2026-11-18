@@ -323,6 +323,7 @@ export class ProgramDrop {
 			busy: t("Another program of yours is still going up. Try again in a moment."),
 			taken: t("Someone added to this program at the same moment. Try again."),
 			exists: t("That version already has this file."),
+			same: t("This is the version that is already here."),
 			refused: refusal.why
 				? t("The company folder refused this file: {reason}.", { reason: refusal.why })
 				: t("The company folder refused this file."),
