@@ -219,11 +219,11 @@ facts under it. You write only \`object.json\` and make the model or pictures on
 ## Model
 
 \`model\`: a \`.glb\` in the app's folder, which the member's browser draws live in real light, turned and tilted by
-hand. Make it in Blender on a machine (metres, real materials, each part a named object) and export it:
-\`blender -b thing.blend --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath='/company/apps/<app>/thing.glb', export_format='GLB', export_apply=True)"\`.
+hand. Make it in Blender (metres, real materials, each part a named object) and export it:
+\`blender -b thing.blend --python-exit-code 1 --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath='/company/apps/<app>/thing.glb', export_format='GLB', export_apply=True)"\`.
 No Draco or meshopt compression. Keep it light enough to open quickly on a phone (a test machine, not a phone, drew
-5 MB and 32 MB models in 2 and 3.5 s). \`view\` \`{"yaw", "pitch"}\` in degrees: where it opens, else three-quarter;
-\`environment\`: an \`.hdr\` in the folder, for your own light.
+5 and 32 MB models in 2 and 3 s). \`view\` \`{"yaw", "pitch"}\` in degrees: where it opens, else three-quarter;
+\`environment\`: your own \`.hdr\` light in the folder.
 
 ## Pictures
 
@@ -6614,7 +6614,8 @@ body{margin:0}
 .ok.phone .ok-facts{display:grid;grid-template-columns:1fr 1fr;gap:16px 18px;justify-content:stretch}
 .ok.phone .ok-fact{align-items:flex-start;min-width:0}
 .ok.phone .ok-fv{font-size:26px}
-.ok-gl{position:absolute;left:0;top:0;display:block;pointer-events:none;opacity:0;transition:opacity .8s cubic-bezier(.2,.7,.2,1);-webkit-mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent)}
+.ok-gl{position:absolute;left:0;top:0;display:block;pointer-events:none;opacity:0;transition:opacity .8s cubic-bezier(.2,.7,.2,1)}
+.ok-gl.deep{-webkit-mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(transparent,#000 28px,#000 calc(100% - 28px),transparent)}
 .ok.near .ok-label,.ok.near .ok-label.off{opacity:0;pointer-events:none}
 .ok.near .ok-lines .lead,.ok.near .ok-lines .halo{visibility:hidden}
 .ok-gl.on{opacity:1}
@@ -7340,6 +7341,7 @@ body{margin:0}
 		if (live) {
 			renderLive(live, performance.now());
 			R.root.classList.toggle("near", G.zoom > 1.2);
+			G.canvas.classList.toggle("deep", G.zoom > 1.01);
 			overlay();
 			const deg = Math.round(mod(G.yaw - S.data.view.yaw, TAU) / DEG) % 360;
 			R.object.setAttribute("aria-valuenow", String(deg));
@@ -7376,7 +7378,8 @@ body{margin:0}
 			const n = G.shown && G.shown.nodes.get(p.id);
 			if (!n) return null;
 			const [x, y] = project(n);
-			const inside = x >= 0 && x <= G.w && y >= 28 && y <= G.h - 28;
+			const edge = G.zoom > 1.01 ? 28 : 0;
+			const inside = x >= 0 && x <= G.w && y >= edge && y <= G.h - edge;
 			return [x, y, inside ? n.vis * (S.fade ? S.fade.k : 1) : 0];
 		}
 		const tr = p.track;
@@ -8199,7 +8202,7 @@ body{margin:0}
 		for (const n of G.shown.nodes.values()) {
 			const q = project(n)[2];
 			let seen = false;
-			if (q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1 - 64 / Math.max(64, G.h)) {
+			if (q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1 - (G.zoom > 1.01 ? 64 : 0) / Math.max(64, G.h)) {
 				const px = Math.round(((q.x + 1) / 2) * (w - 1));
 				const py = Math.round(((q.y + 1) / 2) * (hgt - 1));
 				for (let y = Math.max(0, py - around); y <= Math.min(hgt - 1, py + around) && !seen; y++)

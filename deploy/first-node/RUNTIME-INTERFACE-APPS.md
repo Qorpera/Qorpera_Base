@@ -517,7 +517,7 @@ writes no 3D code. Our servers have no graphics cards; a member's computer has o
   canvas over the page's own background. A soft contact shadow rendered once from below (the parts nearest the ground
   darkest, blurred twice: a tight one and a wider one at half strength), tinted from the page's background, so it
   reads in light and dark. The stage, the labels, the strip, the facts and the bare form are the turntable's; the
-  canvas covers the stage's whole width and height and fades out over its top and bottom 28 px.
+  canvas covers the stage's whole width and height and, while zoomed in, fades out over its top and bottom 28 px.
 - **Handling.** Drag turns it round the upright axis and tilts it between -6 and 52 degrees (a vertical swipe on a
   touch screen still scrolls the page); pinch or wheel zooms between 0.8 and 2.2 times, about the stage's middle, and
   past 1.2 the names beside it fade so only the dots stay; no panning; a double tap, Home or End go back to the opening

@@ -7,11 +7,11 @@ facts under it. You write only `object.json` and make the model or pictures on a
 ## Model
 
 `model`: a `.glb` in the app's folder, which the member's browser draws live in real light, turned and tilted by
-hand. Make it in Blender on a machine (metres, real materials, each part a named object) and export it:
-`blender -b thing.blend --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath='/company/apps/<app>/thing.glb', export_format='GLB', export_apply=True)"`.
+hand. Make it in Blender (metres, real materials, each part a named object) and export it:
+`blender -b thing.blend --python-exit-code 1 --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath='/company/apps/<app>/thing.glb', export_format='GLB', export_apply=True)"`.
 No Draco or meshopt compression. Keep it light enough to open quickly on a phone (a test machine, not a phone, drew
-5 MB and 32 MB models in 2 and 3.5 s). `view` `{"yaw", "pitch"}` in degrees: where it opens, else three-quarter;
-`environment`: an `.hdr` in the folder, for your own light.
+5 and 32 MB models in 2 and 3 s). `view` `{"yaw", "pitch"}` in degrees: where it opens, else three-quarter;
+`environment`: your own `.hdr` light in the folder.
 
 ## Pictures
 
