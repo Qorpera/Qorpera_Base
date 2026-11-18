@@ -12,10 +12,11 @@ import {
 	writeAgentFile,
 	writeTodoFile,
 } from "@qorpera/cloud-client/company-state-files";
-import type {
-	CloudCompanyFolderClient,
-	CloudCompanyFolderFileEntry,
-	CloudCompanyFolderUnit,
+import {
+	type CloudCompanyFolderClient,
+	type CloudCompanyFolderFileEntry,
+	type CloudCompanyFolderUnit,
+	sha256,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -74,6 +75,34 @@ export interface CloudFolderHire {
 	readonly figure: AgentFigure;
 }
 
+export type CloudFolderTeamMember = Omit<CloudFolderHire, "operationKey">;
+
+export interface CloudFolderTeamHire {
+	readonly operationKey: string;
+	readonly hires: readonly CloudFolderTeamMember[];
+}
+
+export const TEAM_HIRES_MIN = 2;
+export const TEAM_HIRES_MAX = 12;
+
+const teamKey = (operationKey: string, index: number) => `${operationKey}:${index}`;
+
+function agentUnit(root: string, files: { agent: string; todo: string }): CloudCompanyFolderUnit {
+	return {
+		op: "new_folder",
+		path: root,
+		contents: [
+			{ path: "agent.md", kind: "file", content: { text: files.agent, mediaType: "text/markdown" } },
+			...AGENT_FOLDERS.map((path) => ({ path, kind: "folder" as const })),
+			{ path: FIRST_TODO, kind: "file", content: { text: files.todo, mediaType: "text/markdown" } },
+		],
+	};
+}
+
+function sameName(name: string): string {
+	return name.trim().normalize("NFC").toLocaleLowerCase("en");
+}
+
 /** One id per (namespace, run, operation key), formatted as the legacy hire's agent id (cloud-hiring-tools.ts), in a
  * namespace of its own so it never meets the legacy hire's or a group chat's. */
 export function hashedId(namespace: string, runId: string, operationKey: string): string {
@@ -111,7 +140,7 @@ export function invalidMessage(
 }
 
 /** The new agent's two files, for a handle and ids. */
-function hireFiles(request: CloudFolderHire, agentId: string, todoId: string, requesterUserId: string) {
+function hireFiles(request: CloudFolderTeamMember, agentId: string, todoId: string, requesterUserId: string) {
 	return {
 		agent: writeAgentFile({
 			id: agentId,
@@ -339,17 +368,7 @@ export class CloudFolderHiring {
 		const root = osPath(`agents/${handle}`);
 		const problems = problemsOf(root, files);
 		if (problems.length) throw new CloudToolRefusal(invalidMessage(problems));
-		const units: CloudCompanyFolderUnit[] = [
-			{
-				op: "new_folder",
-				path: root,
-				contents: [
-					{ path: "agent.md", kind: "file", content: { text: files.agent, mediaType: "text/markdown" } },
-					...AGENT_FOLDERS.map((path) => ({ path, kind: "folder" as const })),
-					{ path: FIRST_TODO, kind: "file", content: { text: files.todo, mediaType: "text/markdown" } },
-				],
-			},
-		];
+		const units: CloudCompanyFolderUnit[] = [agentUnit(root, files)];
 		return this.#operations.execute({
 			operation: {
 				tool: "hire_agent",
@@ -392,7 +411,7 @@ export class CloudFolderHiring {
 					agent: { id: agentId, name: request.name, role: request.role, folder: root },
 					next:
 						saved.outcome === "saved"
-							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos, and the platform starts ${request.name} on it by itself, usually within a minute: no start message is needed. Tell the member who you hired and why. To give ${request.name} more than the assignment says, or if ${request.name} has not begun after a few minutes, use send_coworker_message (recipientStaffId ${agentId}); a message sent while ${request.name} is still starting waits for it.`
+							? `${request.name} is hired. The first assignment is an open todo in ${root}/todos, and the platform starts ${request.name} on it by itself, usually within a minute: no start message is needed. Tell the member who you hired and why. To give ${request.name} more than the assignment says, or if ${request.name} has not begun after a few minutes, use send_coworker_message with priority true (recipientStaffId ${agentId}); a message sent while ${request.name} is still starting waits for it.`
 							: saved.outcome === "conflict"
 								? `${root} is taken: call again with a new operationKey, and if this repeats, choose a slightly different name.`
 								: saved.outcome === "waiting_for_review"
@@ -405,4 +424,148 @@ export class CloudFolderHiring {
 			...(context.observation ? { observation: context.observation } : {}),
 		});
 	}
+
+	checkTeam(request: CloudFolderTeamHire): void {
+		const seen = new Map<string, string>();
+		for (const hire of request.hires) {
+			const earlier = seen.get(sameName(hire.name));
+			if (earlier !== undefined)
+				throw new CloudToolArgumentRefusal(
+					`Two hires are named ${earlier}: name each by its own work, and never a name a coworker already has`,
+				);
+			seen.set(sameName(hire.name), hire.name.trim());
+		}
+		const problems = request.hires.flatMap((hire) =>
+			problemsOf(
+				osPath("agents/agent"),
+				hireFiles(hire, PLACEHOLDER_ID, PLACEHOLDER_ID, this.#identity.requesterUserId),
+			).map((problem) => ({ message: `${hire.name.trim()}: ${problem.message}` })),
+		);
+		if (problems.length)
+			throw new CloudToolArgumentRefusal(
+				invalidMessage(problems, "This team cannot be saved as the company's files"),
+			);
+	}
+
+	async hireTeam(request: CloudFolderTeamHire, context: CloudToolContext): Promise<CloudToolContent> {
+		const signal = context.signal;
+		if (!this.#operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
+		const actionReviewId = context.actionReviewId;
+		if (!actionReviewId)
+			throw new CloudToolRefusal(
+				"A hire needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
+			);
+		if (request.hires.length < TEAM_HIRES_MIN || request.hires.length > TEAM_HIRES_MAX)
+			throw new Error("Invalid team hire");
+		const runId = this.#identity.runId;
+		const listing = await this.#folder.listAll(osPath("agents"), { maxEntries: MAX_AGENTS }, signal);
+		const taken = new Set<string>(COMPANY_STATE_RESERVED_AGENT_NAMES);
+		for (const entry of listing.entries) taken.add((entry.path.split("/").at(-1) ?? "").toLowerCase());
+		const team = request.hires.map((hire, index) => {
+			const agentId = hashedId("qorpera.folder-hire-team/v1", runId, teamKey(request.operationKey, index));
+			const handle = freeCompanyStateName(hire.name, "agent", taken);
+			taken.add(handle.toLowerCase());
+			const root = osPath(`agents/${handle}`);
+			const files = hireFiles(
+				hire,
+				agentId,
+				hashedId("qorpera.folder-hire-team-todo/v1", runId, teamKey(request.operationKey, index)),
+				this.#identity.requesterUserId,
+			);
+			return { hire, agentId, root, files };
+		});
+		const problems = team.flatMap(({ hire, root, files }) =>
+			problemsOf(root, files).map((problem) => ({ message: `${hire.name}: ${problem.message}` })),
+		);
+		if (problems.length)
+			throw new CloudToolRefusal(invalidMessage(problems, "This team cannot be saved as the company's files"));
+		const units = team.map(({ root, files }) => agentUnit(root, files));
+		return this.#operations.execute({
+			operation: {
+				tool: "hire_team",
+				toolVersion: TOOL_VERSION,
+				logicalOperationKey: `hire-team:${request.operationKey}`,
+				arguments: {
+					hires: request.hires.map((hire) => ({
+						name: hire.name,
+						role: hire.role,
+						figure: hire.figure,
+						jobDescriptionSha256: sha256(Buffer.from(hire.jobDescription)),
+						firstAssignmentSha256: sha256(Buffer.from(hire.firstAssignment)),
+					})),
+				},
+				target: { agentIds: team.map(({ agentId }) => agentId) },
+				requiresCompanyRevision: true,
+			},
+			authorize: async () => {},
+			perform: async (_operation, { receiptId, signal: performSignal }) => {
+				const staged = await this.#folder.stage(units, performSignal);
+				const reviewId = await this.#folder.recordReview(
+					{ actionReviewId, tool: "hire_team", argumentSha256: context.argumentSha256 },
+					staged,
+					performSignal,
+				);
+				const committed = await this.#folder.commitStaged(
+					`hire-team-folder:${request.operationKey}`,
+					staged,
+					{ reviewId, receiptId },
+					performSignal,
+				);
+				if (committed.units.length !== team.length) throw new Error("Company folder commit answered other units");
+				const hires = team.map(({ hire, agentId, root }, index) => {
+					const saved = committed.units[index]!;
+					return {
+						id: agentId,
+						name: hire.name,
+						role: hire.role,
+						folder: root,
+						outcome: saved.outcome,
+						...(saved.reason ? { reason: saved.reason } : {}),
+						...(saved.problems.length ? { problems: saved.problems.slice(0, 5) } : {}),
+					};
+				});
+				const hired = hires.filter((hire) => hire.outcome === "saved");
+				const missed = hires.filter((hire) => hire.outcome !== "saved");
+				const outcome = !missed.length ? "saved" : hired.length ? "partly_saved" : hires[0]!.outcome;
+				const output = cloudToolJsonText({
+					schema: "qorpera.agent-team-hire-receipt/v1",
+					runId,
+					receiptId,
+					outcome,
+					hires,
+					next: teamNext(outcome, hired, missed),
+				});
+				return { content: { kind: "text", value: output }, folderCommitId: committed.commitId };
+			},
+			signal,
+			...(context.observation ? { observation: context.observation } : {}),
+		});
+	}
+}
+
+function names(items: readonly { name: string }[]): string {
+	const all = items.map((item) => item.name);
+	return all.length > 1 ? `${all.slice(0, -1).join(", ")} and ${all.at(-1)}` : (all[0] ?? "");
+}
+
+function teamNext(
+	outcome: string,
+	hired: readonly { name: string }[],
+	missed: readonly { name: string; folder: string; reason?: string }[],
+): string {
+	const starts =
+		"the platform starts each on its first assignment (an open todo in its own todos folder) by itself, usually within a minute";
+	const after =
+		"No start message or introduction is needed. Tell the member who you hired and why. Use send_coworker_message, with priority true, only for one that has not begun after a few minutes or needs more than its assignment says.";
+	if (outcome === "saved")
+		return `${names(hired)} are hired, together: ${starts}, and each one's first run already lists the whole team as coworkers. ${after}`;
+	if (outcome === "partly_saved")
+		return `${names(hired)} are hired: ${starts}. ${names(missed)} ${missed.length === 1 ? "was" : "were"} not (${missed.map((hire) => `${hire.name}: ${hire.reason === "exists" ? `${hire.folder} is taken` : (hire.reason ?? "not saved")}`).join("; ")}): hire ${missed.length === 1 ? "it" : "them"} again with a new operationKey (hire_agent for one, hire_team for several), and choose a slightly different name where a folder was taken. ${after}`;
+	if (outcome === "conflict") {
+		const taken = missed.filter((hire) => hire.reason === "exists").map((hire) => hire.folder);
+		return `Nothing was hired: ${taken.length ? `${taken.join(", ")} ${taken.length === 1 ? "was" : "were"} taken meanwhile` : "the team's folders changed meanwhile"}. Call again with a new operationKey, and if this repeats, choose slightly different names.`;
+	}
+	if (outcome === "waiting_for_review")
+		return "The team waits for a member's approval: do not hire again; tell the member it is waiting for them.";
+	return "Nothing was hired: say why to the member, or correct the arguments and call again with a new operationKey.";
 }

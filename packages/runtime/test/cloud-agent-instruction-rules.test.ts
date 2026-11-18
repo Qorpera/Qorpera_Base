@@ -38,6 +38,7 @@ const COFOUNDER_TOOLS = [
 	"good_will_list",
 	"good_will_mark",
 	"hire_agent",
+	"hire_team",
 	"list_hooks",
 	"machine_cancel",
 	"machine_delete",
@@ -128,6 +129,7 @@ const PRIVATE_TOOLS = EMPLOYEE_TOOLS.filter(
 			"create_group_chat",
 			"end_role",
 			"hire_agent",
+			"hire_team",
 			"manage_code",
 			"manage_todo",
 			"manage_worker",
@@ -1186,7 +1188,13 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the product's builders move the first concept",
-		"add the product's builders once it is clear, with first assignments that move the first concept. Set up your daily plan routine.",
+		"add the product's builders once it is clear, with first assignments that move the first concept.",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the first team in one hire_team call",
+		"Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent. Set up your daily plan routine.",
 		FOUNDING,
 	],
 	[
@@ -1937,7 +1945,11 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		["the hand-off once the founding is done", "close Start with the founders", ["cofounder-member-agreed"]],
 		["calling a skill by name", "/its-name", [...WORKERS, "read-only-worker"]],
 		["the Co-Founder's role", "# Your role: Co-Founder", [...EMPLOYEE, ...WORKERS]],
-		["the first team in one call without hire_team", "hire_team", [...COFOUNDER, ...EMPLOYEE, ...WORKERS]],
+		[
+			"the first team in one call once the founding is done",
+			"hire_team",
+			["cofounder-member-agreed", "cofounder-routine-agreed", ...EMPLOYEE, ...WORKERS],
+		],
 		["a sketch for the first concept", "plainly a first sketch", [...STAFF, ...WORKERS]],
 		["the solution ahead of the first concept", "The solution comes first.", [...STAFF, ...WORKERS]],
 		// The reading is the Co-Founder's to keep, its senses too; the owner's wake question is the owner's.

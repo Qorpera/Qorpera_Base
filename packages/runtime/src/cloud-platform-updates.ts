@@ -105,6 +105,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "A message that wakes a coworker starts a full run for it, and most of the team's messages were news: a file is ready, input was worked in, a step is done. send_coworker_message now asks each time whether to wake (priority). Wake a coworker only for what it must act on or answer: a request, a question, the answer or handover it waits for (sent with priority true), a member's decision that changes its work. Other news worth telling is a note it reads at its next turn, and what the files and todos already show needs no message. Nobody replies to say received, agreed or done. In job descriptions, ask for results in files, not for reports by message.",
 	},
 	{
+		id: "hire-team",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "Hire a team in one step",
+		text: "hire_team hires two or more coworkers in one call: one review, and the whole team is saved together, so each one's first run already lists all the others as coworkers and nobody waits for a colleague who is still being hired. Use it whenever you hire several at once, above all the first team. hire_agent stays the way to hire one coworker at any time as the company grows: a later hire shows up among everyone's coworkers at their next run, with no message needed.",
+	},
+	{
 		id: "product-shown-first",
 		kind: "behaviour",
 		date: "2026-11-17",

@@ -1,4 +1,5 @@
 import { FOUNDING_NAME_MAX_CHARACTERS } from "../../cloud/company-founding.ts";
+import { companyInSentence, UNNAMED_COMPANY } from "../../ui/company-name.ts";
 import { button, growToText, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { IDEA_MAX_CHARACTERS } from "../router.ts";
@@ -54,33 +55,6 @@ function takeWebsiteIdea(): WebsiteHandoff | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-/** The longest name a table opens with. */
-const IDEA_NAME_MAX_CHARACTERS = 48;
-
-/** A name to open the table with: the idea's first sentence in its own words, cut on a word boundary, with no
- * closing full stop ("A Danish webshop that sells silicone wristbands. We ship…" → "A Danish webshop that sells
- * silicone wristbands"). The founders can change it at the table. */
-export function companyNameFromIdea(idea: string): string {
-	const line = (idea.trim().split(/\r?\n/, 1)[0] ?? "")
-		.replace(/\p{Cc}/gu, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-	// A stop, a space and a capital letter end the sentence; "e.g. ceramics" does not, and a sentence is at least two
-	// words, so "Dr. Hansen's clinic" keeps its "Dr.".
-	const sentences = line.split(/(?<=[.!?…])\s+(?=\p{Lu})/u);
-	let name = sentences[0] ?? "";
-	for (let next = 1; next < sentences.length && !name.includes(" "); next++) name = `${name} ${sentences[next]}`;
-	if (name.length > IDEA_NAME_MAX_CHARACTERS) {
-		// One character more, so a word that ends exactly at the limit stays whole.
-		const space = name.slice(0, IDEA_NAME_MAX_CHARACTERS + 1).lastIndexOf(" ");
-		name = name.slice(0, space > 20 ? space : IDEA_NAME_MAX_CHARACTERS);
-	}
-	// Last, so a cut that ends on a comma or a stop loses it too.
-	name = name.replace(/[\s.!?…:;,\-–—]+$/u, "");
-	if (!name) return t("New company");
-	return name.charAt(0).toLocaleUpperCase() + name.slice(1);
 }
 
 class NewCompanyView {
@@ -236,14 +210,19 @@ class NewCompanyView {
 		if (statusKey !== this.#statusKey) {
 			this.#statusKey = statusKey;
 			const parts: HTMLElement[] = [];
-			if (busy && !leaving) parts.push(spinner(t("Opening a table for {name}", { name: state.creating!.name })));
+			if (busy && !leaving)
+				parts.push(
+					spinner(
+						t("Opening a table for {name}", { name: companyInSentence(state.creating!.name || UNNAMED_COMPANY) }),
+					),
+				);
 			else if (paused && !busy) parts.push(notice("warn", t("Creating a company is paused. Try again later.")));
 			if (state.error) parts.push(notice("danger", state.error));
 			if (state.creationRetry && !busy) {
 				const retry = state.creationRetry;
 				parts.push(
 					button(
-						t("Resume creating {name}", { name: retry.name }),
+						t("Resume creating {name}", { name: companyInSentence(retry.name || UNNAMED_COMPANY) }),
 						() => void this.#hub.createCompany(retry.name, retry),
 					),
 				);

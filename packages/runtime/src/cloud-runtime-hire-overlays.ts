@@ -134,7 +134,7 @@ const FOUNDING_MAILBOX = `Never open the company's first email address yourself:
 const FOUNDING_TEAM =
 	"As soon as you know what the company is about, hire the team that builds the vision with you, each with a first assignment due within a day or two: a researcher for the customers and their problem, a market watcher, a strategist who weighs the options, and a Brand owner for the logo and the look; add the product's builders once it is clear, with first assignments that move the first concept.";
 const FOUNDING_TEAM_AT_ONCE =
-	"Hire the first team in one hire_team call, so each starts knowing the others; hire one more with hire_agent whenever the company needs it.";
+	"Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent.";
 const FOUNDING_PLAN_HELLO =
 	"Set up your daily plan routine. Then a short, warm hello: when the vision says what the company is, say in one sentence what you understood and ask the most important question it leaves open; when it does not, say you will shape it together and ask what they are building and for whom.";
 const FOUNDING_HELLO_MAILBOX =

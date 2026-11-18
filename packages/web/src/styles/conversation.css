@@ -1557,6 +1557,19 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .is-asking .interaction-secret-row .interaction-field, .is-asking .interaction-secret-row .btn { min-height: 38px; }
 .is-asking .interaction-secret-row .btn { padding: 0 16px; border-radius: 999px; font-size: 14px; }
 .is-asking .interaction-field { min-height: 38px; font-size: 14px; }
+.interaction-address {
+	display: flex; flex-direction: row; align-items: center; gap: 0; min-width: 0; margin: 10px 0 8px; padding: 0 12px;
+	border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg); font: 400 14px/1.3 var(--font-mono); cursor: text;
+}
+.interaction-address:focus-within { outline: 2px solid var(--ring); outline-offset: 1px; }
+.interaction-address-box, .interaction-address-domain { flex: none; color: var(--text-muted); white-space: nowrap; }
+.interaction-address-domain { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.interaction-address-handle { flex: 1 1 8ch; min-width: 4ch; padding: 10px 2px; border: 0; background: transparent; color: var(--text); font: inherit; }
+.interaction-address-handle:focus-visible { outline: none; }
+.interaction-address-handle:disabled { color: var(--text-muted); }
+.interaction-card .interaction-options.interaction-address-suggestions { margin: 0 0 8px; }
+.interaction-card .interaction-address-check { min-height: 1.4em; margin: 0 0 8px; font-size: 12.5px; }
+.interaction-card .interaction-address-check:not(.is-ok, .is-error) { color: var(--text-muted); }
 /* An answer of the member's own: the field with its Send at its end, as the composer has it. */
 .interaction-own { position: relative; display: flex; flex: 1 1 160px; min-width: 0; }
 .interaction-own > .interaction-field { flex: 1; padding-right: 42px; }

@@ -945,7 +945,7 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(compile(without("hire_agent"))).not.toContain("hire one when no agent fits");
 	expect(full).not.toContain("hire_team");
 	expect(compile(new Set([...all, "hire_team"]))).toContain(
-		"add the product's builders once it is clear, with first assignments that move the first concept. Hire the first team in one hire_team call, so each starts knowing the others; hire one more with hire_agent whenever the company needs it. Set up your daily plan routine.",
+		"add the product's builders once it is clear, with first assignments that move the first concept. Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent. Set up your daily plan routine.",
 	);
 	expect(compile(new Set([...all, "hire_team"]), true)).not.toContain("hire_team");
 	expect(compile(without("manage_hook"))).not.toContain("Never open the company's first email address");

@@ -381,6 +381,7 @@ export function cloudActionEffect(
 		case "computer_desktop":
 			return ["move", "scroll"].includes(action.action as string) ? "read" : "external";
 		case "hire_agent":
+		case "hire_team":
 		case "create_group_chat":
 		// Ending an agent's role sets its agent.md to archived, a change of who works here (20260930766000).
 		case "end_role":
@@ -1123,6 +1124,22 @@ export function describeCloudAction(
 		// The job description is the new agent's charter; its first assignment is where it starts.
 		quote("intent", args.jobDescription, CONTENT_BYTES);
 		add("first task", args.firstAssignment);
+	} else if (tool.name === "hire_team") {
+		const hires = Array.isArray(args.hires) ? args.hires.map((hire) => record(hire)) : [];
+		title = `Hire a team of ${hires.length} agents`;
+		target = list(hires.map((hire) => text(hire.name)).filter(Boolean)) || null;
+		for (const [index, hire] of hires.entries()) {
+			const role = text(hire.role, 200);
+			const whole = (value: JsonValue | undefined) =>
+				typeof value === "string" ? line(value, Number.MAX_SAFE_INTEGER) : "";
+			const room = DETAIL_BYTES - Buffer.byteLength(`${role} · first task:  · job: `);
+			const task = bounded(whole(hire.firstAssignment), Math.floor(room / 2));
+			const job = bounded(whole(hire.jobDescription), room - Buffer.byteLength(task));
+			add(
+				`Hire ${index + 1}: ${text(hire.name, 160) || "unnamed"}`,
+				[role, task && `first task: ${task}`, job && `job: ${job}`].filter(Boolean).join(" · "),
+			);
+		}
 	} else if (tool.name === "end_role") {
 		// Its prepared arguments (cloud-hiring-tools.ts): the agent's name as its agent.md has it, read before the review.
 		title = "End an agent's role";
