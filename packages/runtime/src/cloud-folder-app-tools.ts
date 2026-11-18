@@ -88,6 +88,7 @@ import {
 	kitNotes,
 	kitPage,
 	parseKitData,
+	roadmapNamesAgents,
 } from "./cloud-app-kits.ts";
 import {
 	type CloudCompanyFolderClient,
@@ -149,7 +150,7 @@ const SAVE_APP_EMBLEM =
 const APP_GUIDE_DESCRIPTION = [
 	"Read the guide to one part of an interface app before you make it with save_app. It reads nothing of the company and changes nothing.",
 	"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
-	"- about a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, explainer, program): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
+	"- about a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, roadmap, explainer, program): what the kit's one file holds, field by field with its bounds, an example, and how to check the page. save_app saves a kit's file only in a run that has read that kit's guide.",
 	"- style, reads, writes: for a page written by hand: the base style and the company's colours as CSS variables, in light and dark; how its script reads the company's live data through the qorpera object, and how often; how it lets a member answer a question or change a table's row.",
 	"- icons: how an app's own icons are drawn.",
 	"The answer is the guide's text: read it again when you no longer have it.",
@@ -380,6 +381,7 @@ const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly strin
 	map: [KIT_ENGINE, KIT_PAGE],
 	ring: [KIT_ENGINE, KIT_PAGE],
 	flow: [KIT_ENGINE, KIT_PAGE],
+	roadmap: [KIT_ENGINE, KIT_PAGE],
 	program: [],
 };
 
@@ -409,6 +411,8 @@ const STACK_ANSWERS_ADDED =
 /** What the answer's look says when save_app gave a map's page the company's reading. */
 const MAP_READING_ADDED =
 	"reading was added to the app's reads: a map's page reads the company's reading of itself and its agents' figures live.";
+const ROADMAP_READING_ADDED =
+	"reading was added to the app's reads: a roadmap's page finds the figures of the agents it names in the company's reading.";
 /** What the answer's look says when a stack's writes are full and hold no `answers`, which save_app cannot add. */
 const STACK_WRITES_FULL = `answers could not be added to the app's writes, which already hold ${APP_WRITES_MAX} entries: a stack's buttons cannot answer the open questions that point at the app until answers replaces one of them.`;
 
@@ -449,6 +453,10 @@ function kitNeeds(
 	if (kit === "map" && !out.reads.includes("reading") && mapReadsReading(data)) {
 		out = { ...out, reads: [...out.reads, "reading"] };
 		notes.push(MAP_READING_ADDED);
+	}
+	if (kit === "roadmap" && !out.reads.includes("reading") && roadmapNamesAgents(data)) {
+		out = { ...out, reads: [...out.reads, "reading"] };
+		notes.push(ROADMAP_READING_ADDED);
 	}
 	return { manifest: out, notes };
 }
@@ -571,11 +579,11 @@ export function appLookNotes(html: string): string[] {
 		);
 	if (words > LOOK_WORDS)
 		notes.push(
-			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws), and keep the text in its file.`,
+			`${words} words: a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, roadmap or explainer: kit's schema says what each draws), and keep the text in its file.`,
 		);
 	if (!shown && words > LOOK_WORDS_UNSHOWN)
 		notes.push(
-			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws).",
+			"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow, roadmap or explainer: kit's schema says what each draws).",
 		);
 	return notes;
 }

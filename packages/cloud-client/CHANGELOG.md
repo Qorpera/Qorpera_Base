@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `roadmap` joins `APP_KITS` (RUNTIME-INTERFACE-APPS.md §3b, 18 Nov 2026): a wide mission as pictures of each part reached, drawn by the runtime's roadmap kit.
 - No cap on an interface app's files (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, 17 Nov 2026; Jonas: "also uncap the file-sizes"): `APP_FILE_MAX_BYTES`, `APP_MAX_FILES`, `APP_MAX_BYTES`, `APP_VIDEO_FILE_MAX_BYTES`, `APP_VIDEOS_MAX_BYTES`, `APP_MEDIA_KINDS`, `APP_PICTURE_KINDS`, `APP_VIDEO_KINDS` and `APP_TEXT_KINDS` are gone. `APP_FILE_TYPES` names fonts, sound, 3D models, wasm, PDF and more; `appMediaType(path)` answers `application/octet-stream` for any other kind; `APP_BINARY_KINDS` are the kinds no text tool writes.
 - Programs members download (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `program` joins `APP_KITS`, and `app-program.ts` holds its data: `parseProgramHandIn` reads an agent's `program.json` (`version`, 1 to 5 `forms` of `android`, `linux`, `windows`, `mac` or `iphone`, optional `screens`), `parseProgram` and `writeProgram` the kept file with `versions` newest first (date, and each file's size and SHA-256), `programFormsInOrder` the fixed order of kinds.
 - A plain worker's brief may name `harness: codex` too (20260930787000, Claude first): a member asked for Codex. A plain brief that names no harness is resolved by the dispatch (Claude Code when its member can use it now and it has access write, else Codex); `claude-code` and `codex` are the only harnesses a plain brief names.
