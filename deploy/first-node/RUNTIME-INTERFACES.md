@@ -927,7 +927,7 @@ and the folder reader reads the tables that board parts and lookups name. The Me
 table; its `file:rules/shared-areas.md` block came with the folder pages (below). Offers came with I9c, and the
 supervision's consent records with I9b (below); the board doesn't show them yet.
 
-**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block.
+**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block. `app/interface-board.ts` and `app/interface-areas.ts` are gone, and `app/interface-claims.ts` keeps only `rowsLocator` and `withCell` for app actions.
 
 **Built: I5c** (web; `packages/web/src/cloud/mail.ts`, `app/company-mail.ts`, `app/interface-mail.ts`,
 `app/interface-badge.ts`, `app/views/interface-mail.ts`). The `mail` and `mail_addresses` sources read the member mail
@@ -947,7 +947,7 @@ takes no quote of. The rail row shows the page's badge. C6e (20260930512000) add
 older messages", the thread call's `nextBefore`) and the threads call's `direction` filter, so Sent pages through every
 sent thread. Not built: `chips`.
 
-**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block.
+**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block. `app/views/interface-mail.ts` is gone; the Mailbox's reads, answers and badge are `app/company-mail.ts`, `views/mailbox.ts` and `app/interface-badge.ts`.
 
 **Built: folder pages** (web; `packages/web/src/app/interface-sources.ts`, `app/routine-next-run.ts`,
 `app/interface-folder.ts`, `app/views/interface-blocks.ts`, `ui/markdown.ts`). The folder's own sources of §4 are live:
@@ -962,7 +962,7 @@ every row does. Column and value labels are in the member's language. The `text`
 `file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
 agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).
 
-**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block.
+**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block. `app/views/interface-blocks.ts` is gone, and `app/interface-sources.ts` keeps only `rowInstant` and `fileSourceText`.
 
 **Built: I9c, the offers' machinery** (`supabase/migrations/20260928509110_interface_offers.sql`, test 938). Offers are
 kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
@@ -1017,7 +1017,7 @@ take's write with the offer passed to the claim rule. Pulse's `waiting` lists ea
 the folder read still shows as the offer read it, with Accept and Not now. A cloud without the calls, or a member they
 don't answer, draws no offer.
 
-**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block.
+**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block. `cloud/interface-offers.ts`, `cloud/interface-supervisions.ts` and `app/interface-offers.ts` are gone: the web no longer reads the offers or the consents.
 
 **Built: I8a, the read tools** (`packages/runtime/src/cloud-folder-interface-tools.ts`,
 `supabase/migrations/20260928529100_interface_agent_tools.sql`). A folder-v2 run has `interface_read` and `table_read`
