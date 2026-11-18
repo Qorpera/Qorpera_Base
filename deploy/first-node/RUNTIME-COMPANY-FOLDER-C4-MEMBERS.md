@@ -392,7 +392,8 @@ puts the rest of that upload down to one piece at a time and is sent again witho
 sent alone counts. A lost answer, an outage or a deadline is tried again as `readFilePieces` tries a piece (three
 tries, a pause between); a 409 for a piece ahead waits and sends again;
 a 404 (the upload forgotten) opens it again once; any other refusal ends it with its status. The member's stop (the
-signal) ends every piece and tells the gateway to forget the upload. Called again with the same file, it resumes and
+signal) ends every piece and tells the gateway to forget the upload; a finish already sent is not cut short, so its
+answer comes back and the caller knows whether the file was put. Called again with the same file, it resumes and
 sends only what the gateway lacks.
 
 **The text part** goes through §5's route after the bytes are in place (RUNTIME-INTERFACE-APPS.md §3f).
