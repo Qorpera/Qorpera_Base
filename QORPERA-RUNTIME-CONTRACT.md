@@ -2616,6 +2616,26 @@ itself. What changed:
 - The usage-limit notice names the login to its own member. The member's own
   pick of another login stays as it was.
 
+2026-11-18 amendment: a full reading holds an account by itself (founder, 18
+November 2026: "Yes, build it"; migration 20260930807000). On 18 Nov a member
+deleted a company, and with it the only usage-limit signals of their account
+login. The login's other companies were free at once, with no reading with room.
+Now:
+
+- The account's newest full reading holds the login by itself, in every company
+  of that member and account, until the full window's reset. A full reading is
+  one with a window at 100 % whose reset is ahead and within 90 days. The hold
+  holds while no reading of the account with room is as new, and a reading with
+  room at the same time wins. It holds as a usage limit's wall does: work waits
+  on the login, and a paused run waits for the reset or a reading with room.
+- This fact is the account's own (member, provider, account identity). It
+  survives deleting the company or connection where it was read, and it goes
+  with the member's account. Only a usage reading the native host records
+  writes it. No company, agent or member can write or read it.
+- Nothing else holds more. A login never read full, or whose newest reading has
+  room, is held only as before. A rate limit is no usage limit. A signal without
+  a reading holds as before. A read that fails writes nothing.
+
 2026-11-09 amendment: a run in Agent notebooks mode waits at its usage limit
 too (founder: make "Work will go on by itself when it resets" true; migration
 20260930703000). Since 20260930539000 such a run, which keeps no run log,
