@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+- Release v257 (master since v256's release merge: the automatic review reads the script a machine command runs,
+  #1924; program pages step 1, the kit `program` with kept versions and a Download page, #1941, whose web part is live
+  on its merge; tests that guard no behaviour pruned, with the runner-orchestrator code only they kept alive, #1949,
+  #1950, #1951, #1953): runtime bundle 257 `eab37cd3f22752dc574f7e9b08d33d86e16c17ba19e001298d69a60daed47128`
+  (activation `20260929025799`, previous 256 `f5554c776352`). No migration: the activation requires nothing new. The
+  guest moves: the native provider host (`4d236ee9`, 5,494,226 bytes); the ephemeral runner, the two LXD bootstraps and
+  the native Codex (`9c299f88`) stay.
 - The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
 - The review reads the script a machine command starts with (2026-11-17 amendment "the review reads the script it
   judges", brief A of the mywave review; its refusal and retry parts came first in #1942). Only a plain command is
