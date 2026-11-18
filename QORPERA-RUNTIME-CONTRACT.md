@@ -7040,8 +7040,9 @@ worker's run is claimed only by a shared execution host), never before it.
 2. **The founding team.** The first assignments of the researcher, market watcher and strategist stay due within a day
    or two. The product's builders get first assignments that move the first concept. The Brand owner's first assignment
    is two to four directions, each the company's product in its world in a real picture or film, picked by the founders
-   on a card; only the chosen one becomes the identity in `QorperaOS/brand/` with its logo. A run offered `hire_team`
-   is told to hire the first team in one call and later hires one at a time.
+   on a card; only the chosen one becomes the identity in `QorperaOS/brand/` with its logo. A founding run offered
+   `hire_team` is told to hire the first team in one call, and later ones several at once with `hire_team` or one with
+   `hire_agent`.
 3. **Blocked work.** An owner whose step is refused or blocked still owns the outcome: the refused step stays refused,
    and it reaches the outcome another honest way, or asks a member on a card, or tells the Co-Founder. The Co-Founder
    acts in the run an owner tells it, besides the planning run's rule for a blocker reported twice.
