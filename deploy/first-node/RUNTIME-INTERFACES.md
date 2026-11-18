@@ -927,7 +927,7 @@ and the folder reader reads the tables that board parts and lookups name. The Me
 table; its `file:rules/shared-areas.md` block came with the folder pages (below). Offers came with I9c, and the
 supervision's consent records with I9b (below); the board doesn't show them yet.
 
-**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block. `app/interface-board.ts` and `app/interface-areas.ts` are gone, and `app/interface-claims.ts` keeps only `rowsLocator` and `withCell` for app actions.
+**Removed from the web, 18 Nov 2026 (#1949):** the board, the folder sources (`vision`, `agents`, `todos`…), the `working` source, the `mail`, `numbers` and `calendar` blocks, and the offers and supervisions reads. Members has drawn `views/members.ts` since 9 Nov 2026, and the Mailbox `views/mailbox.ts`; the generic renderer now draws only the Data page's static text block. `app/interface-board.ts` and `app/interface-areas.ts` are gone, and `app/interface-claims.ts` keeps only `rowsLocator`, `withCell` and the `InterfaceWrites` type for app actions.
 
 **Built: I5c** (web; `packages/web/src/cloud/mail.ts`, `app/company-mail.ts`, `app/interface-mail.ts`,
 `app/interface-badge.ts`, `app/views/interface-mail.ts`). The `mail` and `mail_addresses` sources read the member mail
