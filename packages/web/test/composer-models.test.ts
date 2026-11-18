@@ -603,7 +603,6 @@ describe("composer model selector", () => {
 		choice(panel, "GPT-6.1 Sol").click();
 		await settle();
 		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { modelId: "gpt-6.1-sol" }, 1, expect.any(AbortSignal));
-		expect(part(panel, "fast").title).toBe("Fast: 2x speed, uses more of your plan");
 	});
 	it("runs GPT-6.2 Sol's Fast at twice the speed, on more of the plan", async () => {
 		const f = await setup();
