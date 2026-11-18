@@ -351,22 +351,41 @@ folder call after it goes as that member with the service key.
    10 minutes (`qorpera_folder_renew_upload`; an open intent lasts 15).
 3. `POST …/<environment>/<upload>` finishes: `{schema: "qorpera.member-program-finish/v1", operationKey}`. All pieces
    in (409 otherwise), the whole's SHA-256 is the one named at the open (400 otherwise, and the upload is forgotten),
-   then the seal, then one `qorpera_folder_commit` as the member, with the key `member:<userId>:<operationKey>` as in
-   §5: a `mkdir` for each of `apps`, `apps/<name>`, `apps/<name>/versions` and `apps/<name>/versions/<version>` (the
-   core refuses a write whose parent is missing unless an earlier unit makes it; one that exists is that unit's
-   `conflict`, and the others go on), then `write {path, file}`. Answer: the core's commit answer as it is, the write
-   its fifth unit. The same finish again replays the commit. A seal that finds an object gone is 409 and forgets the upload: the browser opens it again.
+   then the seal. **Only where no file is:** the gateway reads the path as the member (`qorpera_member_folder_read`,
+   with their token). A file there already is answered `exists` and nothing is committed, unless it is this very file
+   (the same SHA-256 and size), which is answered `saved` with its version, so a finish retried after a lost answer
+   still ends well. With the path free, one `qorpera_folder_commit` as the member, with the key
+   `member:<userId>:<operationKey>` as in §5: a `mkdir` for each of `apps`, `apps/<name>`, `apps/<name>/versions` and
+   `apps/<name>/versions/<version>` (the core refuses a write whose parent is missing unless an earlier unit makes it;
+   one that exists is that unit's `conflict`, and the others go on), then `write {path, file}` with no
+   `expectedVersion`, which the core itself takes only for an absent path (core §3, Units). So the window between the
+   read and the commit is the commit's own: a file that lands there meanwhile makes the write a `conflict`, and the
+   gateway reads again (this very file: `saved`; another: `exists`). Answer:
+   `{schema: "qorpera.member-program-finish/v1", outcome, version, reason?}`, `outcome` one of `saved` (with the
+   file's version), `exists`, `denied`, `refused` (the core's refusal or review) or `conflict`, with the core's reason.
+   The same finish again answers the same. A seal that finds an object gone is 409 and forgets the upload: the
+   browser opens it again.
 4. `POST …/<environment>/<upload>/stop` forgets an upload not finished (204).
 
 An upload never finished leaves nothing in the folder: its intent is never sealed or committed, and the core lets it
 run out. A gateway restart forgets every upload (the next piece is 404, and the browser opens it again). The finish is
 observed as `command_submit`, as §5's commits are; the gateway logs no name and no byte.
 
+**A slow line.** The member company gateway function reads a piece whole into one buffer before it forwards it, so a
+member's line meets the function's 35 s first (its sign-in check included); the gateway's own bound on reading a body
+(30 s, as its request) is only the hop from the function to node 1, which starts once the function holds the bytes. One
+4 MiB piece in 35 s needs about 1 Mbit/s up (33.6 Mbit in 35 s, 0.96 Mbit/s): the slowest line that can still finish a
+file. At that speed 48 MB takes about 7 minutes and 256 MiB about 36. Three pieces side by side need about 3 Mbit/s.
+
 **cloud-client.** `prepareCloudMemberFolderUpload(file, signal)` reads a `Blob` once, in 4 MiB slices, for each piece's
 SHA-256 (Web Crypto) and the whole's (`CloudSha256`, piece by piece, so a 256 MiB file is never held whole).
 `CloudMemberFolderClient.uploadFile(path, file, prepared, {operationKey, signal, onProgress})` opens, sends the pieces
-three at a time (`onProgress(sent, total)` after each), and finishes. A lost answer, an outage or a deadline is tried
-again as `readFilePieces` tries a piece (three tries, a pause between); a 409 for a piece ahead waits and sends again;
+three at a time (`onProgress(sent, total)` after each), and finishes; it answers the finish's outcome and version
+(`CloudMemberFolderUploadResult`). A piece has 40 s of the client's own, past the function's 35 s, so the function's
+408 decides. A piece that was late (the function's 408, a 504, or the client's deadline) while others went beside it
+puts the rest of that upload down to one piece at a time and is sent again without counting as a try; a late piece
+sent alone counts. A lost answer, an outage or a deadline is tried again as `readFilePieces` tries a piece (three
+tries, a pause between); a 409 for a piece ahead waits and sends again;
 a 404 (the upload forgotten) opens it again once; any other refusal ends it with its status. The member's stop (the
 signal) ends every piece and tells the gateway to forget the upload. Called again with the same file, it resumes and
 sends only what the gateway lacks.

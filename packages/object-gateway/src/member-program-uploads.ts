@@ -1,6 +1,7 @@
 import { createHash, type Hash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { programUploadPath } from "@qorpera/cloud-client/app-program";
+import { parseCloudMemberFolderRead } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { appMediaType } from "@qorpera/cloud-client/interface-apps";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
@@ -150,7 +151,7 @@ function body(request: IncomingMessage, size: number): Promise<Uint8Array> {
 		}
 		if (count !== size) throw new ObjectDependencyError(400);
 		return Buffer.concat(chunks);
-	}, 20_000);
+	}, REQUEST_MS);
 }
 
 async function json(request: IncomingMessage, observation?: MemberRequestObservationSpan): Promise<unknown> {
@@ -322,12 +323,17 @@ async function piece(
 	send(response, 200, { schema: "qorpera.member-program-piece/v1", piece: index, bytes: size });
 }
 
+type Placed = { readonly fileSha256: string; readonly bytes: number; readonly version: string } | null;
+
+export type MemberProgramFinishOutcome = "saved" | "exists" | "denied" | "refused" | "conflict";
+
 async function finish(
 	response: ServerResponse,
 	upload: Upload,
 	operationKey: string,
 	publish: Publish,
 	commit: (units: unknown[], key: string) => Promise<unknown>,
+	read: () => Promise<Placed>,
 	observation: MemberRequestObservationSpan | undefined,
 ): Promise<void> {
 	if (upload.digest === null) {
@@ -356,6 +362,22 @@ async function finish(
 		file.executable !== false
 	)
 		throw new ObjectDependencyError(503);
+	const answer = (outcome: MemberProgramFinishOutcome, version: string | null, reason?: unknown) => {
+		upload.finished = true;
+		const encoded = send(response, 200, {
+			schema: "qorpera.member-program-finish/v1",
+			outcome,
+			version,
+			...(typeof reason === "string" ? { reason } : {}),
+		});
+		observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
+	};
+	const settle = (entry: NonNullable<Placed>) =>
+		entry.fileSha256 === upload.fileSha256 && entry.bytes === upload.bytes
+			? answer("saved", entry.version)
+			: answer("exists", null);
+	const before = await read();
+	if (before) return settle(before);
 	const saved = schema(
 		await commit(
 			[...memberProgramFolders(upload.path), { op: "write", path: upload.path, file }],
@@ -364,9 +386,18 @@ async function finish(
 		"qorpera.folder-commit/v1",
 	);
 	if (!Array.isArray(saved.units) || saved.units.length !== 5) throw new ObjectDependencyError(503);
-	upload.finished = true;
-	const encoded = send(response, 200, saved);
-	observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
+	const unit = saved.units[4] as { outcome?: unknown; version?: unknown; reason?: unknown } | null;
+	if (unit?.outcome === "saved" && typeof unit.version === "string" && UUID.test(unit.version))
+		return answer("saved", unit.version);
+	if (unit?.outcome === "conflict") {
+		const after = await read();
+		if (after) return settle(after);
+		return answer("conflict", null, unit.reason);
+	}
+	if (unit?.outcome === "denied") return answer("denied", null, unit.reason);
+	if (unit?.outcome === "refused" || unit?.outcome === "waiting_for_review")
+		return answer("refused", null, unit.reason);
+	throw new ObjectDependencyError(503);
 }
 
 export async function serveMemberProgramUpload(
@@ -433,6 +464,20 @@ export async function serveMemberProgramUpload(
 					{ p_environment_id: environmentId, p_actor: actor, p_operation_key: key, p_units: units },
 					signal,
 				),
+			async () => {
+				const entry = parseCloudMemberFolderRead(
+					await options.authority.member(
+						"qorpera_member_folder_read",
+						token,
+						{ p_environment_id: environmentId, p_path: upload.path },
+						signal,
+					),
+				).entry;
+				if (!entry) return null;
+				return entry.kind === "file" && entry.file
+					? { fileSha256: entry.file.fileSha256, bytes: entry.file.bytes, version: entry.version }
+					: { fileSha256: "", bytes: -1, version: entry.version };
+			},
 			observation,
 		);
 	} finally {

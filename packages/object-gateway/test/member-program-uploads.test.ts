@@ -21,7 +21,17 @@ afterEach(async () => {
 	for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
 });
 
-async function gateway(options: { member?: (token: string) => unknown; present?: string[] } = {}) {
+type Entry = { fileSha256: string; bytes: number; kind?: "file" | "folder" };
+
+async function gateway(
+	options: {
+		member?: (token: string) => unknown;
+		present?: string[];
+		folder?: Map<string, Entry>;
+		write?: () => Record<string, unknown>;
+	} = {},
+) {
+	const folder = options.folder ?? new Map<string, Entry>();
 	const calls: { side: "member" | "publisher"; method: string; args: Record<string, unknown>; token?: string }[] = [];
 	const stored = new Map<string, Uint8Array>();
 	const manifests = new Map<string, string>();
@@ -30,6 +40,31 @@ async function gateway(options: { member?: (token: string) => unknown; present?:
 	const authority = {
 		async member(method: string, token: string, args: Record<string, unknown>) {
 			calls.push({ side: "member", method, args, token });
+			if (method === "qorpera_member_folder_read") {
+				const entry = folder.get(args.p_path as string);
+				const fileKeys = (found: Entry) => ({
+					manifestSha256: "c".repeat(64),
+					fileSha256: found.fileSha256,
+					bytes: found.bytes,
+					mediaType: "application/octet-stream",
+					executable: false,
+				});
+				return {
+					schema: "qorpera.folder-read/v1",
+					asOfSeq: 9,
+					found: entry !== undefined,
+					entry: entry
+						? {
+								path: args.p_path,
+								kind: entry.kind ?? "file",
+								version: "35000000-0000-4000-8000-0000000000e1",
+								seq: 9,
+								updatedAt: "2026-11-18T12:00:00Z",
+								...(entry.kind === "folder" ? {} : fileKeys(entry)),
+							}
+						: null,
+				};
+			}
 			if (options.member) return options.member(token);
 			if (token !== memberToken && token !== otherToken) throw new ObjectDependencyError(403);
 			return {
@@ -90,7 +125,9 @@ async function gateway(options: { member?: (token: string) => unknown; present?:
 							path: unit.path,
 							...(unit.op === "mkdir" && index < 2
 								? { outcome: "conflict", reason: "exists" }
-								: { outcome: "saved" }),
+								: unit.op === "write" && options.write
+									? options.write()
+									: { outcome: "saved", version: "35000000-0000-4000-8000-0000000000e2" }),
 						})),
 					};
 			}
@@ -191,9 +228,18 @@ describe("a member's program file put into the company's place for programs", ()
 		for (const index of [1, 0, 2]) expect((await g.piece(upload, index, file.pieces[index]!)).status).toBe(200);
 		const answer = await g.finish(upload);
 		expect(answer.status).toBe(200);
-		expect(((await answer.json()) as { units: { outcome: string }[] }).units.at(-1)?.outcome).toBe("saved");
+		expect(await answer.json()).toEqual({
+			schema: "qorpera.member-program-finish/v1",
+			outcome: "saved",
+			version: "35000000-0000-4000-8000-0000000000e2",
+		});
+		expect(g.calls.filter((call) => call.side === "member").at(-1)).toMatchObject({
+			method: "qorpera_member_folder_read",
+			args: { p_environment_id: environmentId, p_path: path },
+			token: memberToken,
+		});
 		expect(g.calls.filter((call) => call.side === "member").map((call) => call.token)).toEqual(
-			Array(5).fill(memberToken),
+			Array(6).fill(memberToken),
 		);
 		for (const call of g.calls.filter((each) => each.side === "publisher"))
 			expect(call.args.p_actor).toEqual({ kind: "member", userId });
@@ -234,6 +280,65 @@ describe("a member's program file put into the company's place for programs", ()
 		expect(
 			g.calls.filter((call) => call.method === "qorpera_folder_commit").map((call) => call.args.p_operation_key),
 		).toEqual([`member:${userId}:web:add-1`, `member:${userId}:web:add-1`]);
+	});
+
+	it("puts a file only where none is: another file there is refused unsaved, the same file is answered as saved", async () => {
+		const file = program(10);
+		const finished = async (entry: Entry | undefined, write?: () => Record<string, unknown>) => {
+			const g = await gateway({
+				folder: new Map<string, Entry>(entry ? [[path, entry]] : []),
+				...(write ? { write } : {}),
+			});
+			const upload = await uploadOf(await g.open(file));
+			expect((await g.piece(upload, 0, file.pieces[0]!)).status).toBe(200);
+			const response = await g.finish(upload);
+			expect(response.status).toBe(200);
+			const answer = (await response.json()) as { outcome: string; version: string | null };
+			return { g, answer, upload };
+		};
+		const other = await finished({ fileSha256: "d".repeat(64), bytes: 10 });
+		expect(other.answer).toEqual({ schema: "qorpera.member-program-finish/v1", outcome: "exists", version: null });
+		expect(other.g.methods()).not.toContain("qorpera_folder_commit");
+		expect((await other.g.piece(other.upload, 0, file.pieces[0]!)).status).toBe(404);
+		const folderThere = await finished({ fileSha256: "", bytes: 0, kind: "folder" });
+		expect(folderThere.answer.outcome).toBe("exists");
+		const same = await finished({ fileSha256: file.fileSha256, bytes: 10 });
+		expect(same.answer).toEqual({
+			schema: "qorpera.member-program-finish/v1",
+			outcome: "saved",
+			version: "35000000-0000-4000-8000-0000000000e1",
+		});
+		expect(same.g.methods()).not.toContain("qorpera_folder_commit");
+		const absent = await finished(undefined);
+		expect(absent.answer.outcome).toBe("saved");
+		expect(absent.g.methods()).toContain("qorpera_folder_commit");
+	});
+
+	it("answers the core's own refusal of the write, and reads again when another file landed meanwhile", async () => {
+		const file = program(10);
+		for (const [write, outcome] of [
+			[() => ({ outcome: "denied", reason: "denied" }), "denied"],
+			[() => ({ outcome: "refused", reason: "invalid" }), "refused"],
+			[() => ({ outcome: "conflict", reason: "exists" }), "conflict"],
+		] as const) {
+			const g = await gateway({ write });
+			const upload = await uploadOf(await g.open(file));
+			await g.piece(upload, 0, file.pieces[0]!);
+			const answer = (await (await g.finish(upload)).json()) as { outcome: string; reason?: string };
+			expect(answer.outcome).toBe(outcome);
+			expect(answer.reason).toBe(write().reason);
+		}
+		const folder = new Map<string, Entry>();
+		const g = await gateway({
+			folder,
+			write: () => {
+				folder.set(path, { fileSha256: file.fileSha256, bytes: 10 });
+				return { outcome: "conflict", reason: "exists" };
+			},
+		});
+		const upload = await uploadOf(await g.open(file));
+		await g.piece(upload, 0, file.pieces[0]!);
+		expect(((await (await g.finish(upload)).json()) as { outcome: string }).outcome).toBe("saved");
 	});
 
 	it("takes bytes for no other folder path, refused before anyone is asked", async () => {

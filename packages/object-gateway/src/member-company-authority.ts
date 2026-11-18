@@ -13,7 +13,8 @@ export type MemberCompanyRpc =
 	| "qorpera_room_image_begin"
 	| "qorpera_room_image_download"
 	// The member commit route's writer check (folder core C4, P34a): the member's own actor, from their token.
-	| "qorpera_member_folder_writer";
+	| "qorpera_member_folder_writer"
+	| "qorpera_member_folder_read";
 
 export type MemberCompanyPublisherRpc =
 	| "qorpera_native_presence_subject"

@@ -7124,7 +7124,7 @@ worker's run is claimed only by a shared execution host), never before it.
 1. **One way in for a browser's bytes.** The object gateway's member program route takes a file of at most 256 MiB in
    4 MiB pieces, each its own request through the member company gateway, staged under the member's own upload intent,
    the whole checked against the SHA-256 the member named, and committed as the member at
-   `apps/<name>/versions/<version>/<file>`. No other folder path takes bytes from a browser. One upload in flight per
+   `apps/<name>/versions/<version>/<file>`, only where no file is (the same file again is answered as saved). No other folder path takes bytes from a browser. One upload in flight per
    member; an upload not finished leaves nothing in the folder. No migration.
 2. **The text** (`app.toml`, `program.json`) goes through the member commit route after the bytes, `program.json` with
    its version, so two members adding at once never lose a version.
