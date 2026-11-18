@@ -48,23 +48,23 @@
 .storage-view-button .icon { width: 16px; height: 16px; }
 /* "Download the code", on a repository's folder (code-download.ts): a control drawn as the selects beside it, whose
  * menu is the app's own (.context-menu), and one line under the title row for the wait and how it ended. */
-.storage-code-button {
+.storage-code-button, .storage-download-button {
 	display: inline-flex; flex: none; align-items: center; gap: 7px; height: 30px; padding: 0 9px 0 10px;
 	border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text);
 	font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer;
 	transition: background-color var(--motion-fast, 120ms) ease, border-color var(--motion-fast, 120ms) ease;
 }
-.storage-code-button:is(:hover, .menu-open):not([aria-disabled="true"]) { background-color: var(--hover); border-color: var(--border-strong); }
-.storage-code-button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.storage-code-button[aria-disabled="true"] { opacity: 0.5; cursor: default; }
-.storage-code-button .icon { width: 15px; height: 15px; color: var(--text-muted); }
+.storage-download-button:hover:not([aria-disabled="true"]), .storage-code-button:is(:hover, .menu-open):not([aria-disabled="true"]) { background-color: var(--hover); border-color: var(--border-strong); }
+.storage-code-button:focus-visible, .storage-download-button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.storage-code-button[aria-disabled="true"], .storage-download-button[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.storage-code-button .icon, .storage-download-button .icon { width: 15px; height: 15px; color: var(--text-muted); }
 .storage-code-button .icon:last-child { width: 12px; height: 12px; stroke-width: 2.2; color: var(--text-soft); }
-.storage-code-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: -6px 0 14px; color: var(--text-muted); font-size: 13px; }
-.storage-code-line:empty { display: none; }
-.storage-code-line .spinner-dot { flex: none; width: 8px; height: 8px; }
-@media (prefers-reduced-motion: reduce) { .storage-code-line .spinner-dot { animation: none; } }
-.storage-code-percent { font-variant-numeric: tabular-nums; }
-.storage-code-percent:empty { display: none; }
+.storage-code-line, .storage-download-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: -6px 0 14px; color: var(--text-muted); font-size: 13px; }
+.storage-code-line:empty, .storage-download-line:empty { display: none; }
+.storage-code-line .spinner-dot, .storage-download-line .spinner-dot { flex: none; width: 8px; height: 8px; }
+@media (prefers-reduced-motion: reduce) { .storage-code-line .spinner-dot, .storage-download-line .spinner-dot { animation: none; } }
+.storage-code-percent, .storage-download-percent { font-variant-numeric: tabular-nums; }
+.storage-code-percent:empty, .storage-download-percent:empty { display: none; }
 
 /* ---- rows, both views ---- */
 .storage-browser .files-row { border-radius: 8px; }
@@ -176,6 +176,7 @@
 	.storage-browser .files-list.is-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px; }
 	.storage-browser .is-grid .files-kind { width: 52px; height: 52px; }
 	.storage-title { flex-basis: 100%; }
+	.storage-toolbar:not(:has(> .storage-code-button:not([hidden]))) > .storage-title { flex-basis: 0; }
 	.storage-controls { width: 100%; }
 	.storage-select { flex: 1; max-width: none; min-width: 0; }
 }

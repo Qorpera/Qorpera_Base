@@ -31,6 +31,9 @@ export interface CodeDownloadHost {
 	folder(): Folder;
 	/** Hands the browser a file, as the pieces it was read in. */
 	offer(name: string, pieces: readonly Blob[], bytes: number): void;
+	wholeFolder?(): void;
+	folderBusy?(): boolean;
+	drawn?(): void;
 }
 
 interface Repository {
@@ -126,7 +129,7 @@ export class CodeDownload {
 			const shut = shuts && event.detail > 0;
 			shuts = false;
 			const here = this.#here;
-			if (shut || !here || this.#job) return;
+			if (shut || !here || this.#busy()) return;
 			const box = this.button.getBoundingClientRect();
 			openContextMenu({
 				label: t("Download the code"),
@@ -150,6 +153,19 @@ export class CodeDownload {
 						icon: "clock",
 						select: () => void this.#download(here, "history"),
 					},
+					...(this.#host.wholeFolder
+						? [
+								{
+									label: t("The whole folder"),
+									hint:
+										this.#dir === `code/${here.owner}/${here.name}`
+											? t("The files and the change records, in one file")
+											: t("This folder, in one file"),
+									icon: "folder",
+									select: () => this.#wholeFolder(),
+								},
+							]
+						: []),
 				],
 			});
 			this.button.setAttribute("aria-expanded", "true");
@@ -243,6 +259,25 @@ export class CodeDownload {
 		if (this.#here && keyOf(this.#here) !== key) void this.#ask(this.#here);
 	}
 
+	redraw(): void {
+		this.#draw();
+	}
+
+	get running(): boolean {
+		return this.#job !== null;
+	}
+
+	#busy(): boolean {
+		return this.#job !== null || this.#host.folderBusy?.() === true;
+	}
+
+	#wholeFolder(): void {
+		if (this.#busy()) return;
+		this.#ended = null;
+		this.#draw();
+		this.#host.wholeFolder?.();
+	}
+
 	#draw(): void {
 		const here = this.#here;
 		const key = here ? keyOf(here) : null;
@@ -253,9 +288,10 @@ export class CodeDownload {
 			this.#list.repositories.some((repository) => keyOf(repository) === key)
 		);
 		// Not `disabled`: the button keeps the focus the menu handed back to it while the download runs.
-		if (this.#job) this.button.setAttribute("aria-disabled", "true");
+		if (this.#busy()) this.button.setAttribute("aria-disabled", "true");
 		else this.button.removeAttribute("aria-disabled");
 		if (!this.#job) replace(this.line, this.#ended ? h("span", null, this.#ended.text) : null);
+		this.#host.drawn?.();
 	}
 
 	/** The line while a download runs: what is being done, and Cancel. Answers how to say how far a large file is,

@@ -563,6 +563,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		).toEqual([
 			["The files", "Everything as it is now, in one file"],
 			["With full history", "For a developer"],
+			["The whole folder", "The files and the change records, in one file"],
 		]);
 		// The files are the choice a key press takes.
 		expect(document.activeElement).toBe(rows[0]);
@@ -573,6 +574,37 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 		expect(document.querySelector(".context-menu")).toBeNull();
 		expect(button()?.getAttribute("aria-expanded")).toBe("false");
+	});
+
+	it("says what the whole folder holds: the files and the change records on the project's folder, that folder alone below it", async () => {
+		const { go, button } = await storage();
+		const hints = () => {
+			button()!.click();
+			const menu = document.querySelector<HTMLElement>(".context-menu")!;
+			const hint = [...menu.querySelectorAll<HTMLElement>("[role=menuitem]")]
+				.find((row) => row.querySelector(".context-menu-label")?.textContent === "The whole folder")
+				?.querySelector(".context-menu-hint")?.textContent;
+			expect(menu.textContent).not.toMatch(/git|branch|commit|bundle|repositor|pull request|zip|main/i);
+			menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+			return hint;
+		};
+		await go("code/qorpera/shop");
+		expect(hints()).toBe("The files and the change records, in one file");
+		await go("code/qorpera/shop/main");
+		expect(button()?.hidden).toBe(false);
+		expect(hints()).toBe("This folder, in one file");
+		await go("code/qorpera/shop/main/src");
+		expect(hints()).toBe("This folder, in one file");
+		await go("code/qorpera/shop/changes");
+		expect(hints()).toBe("This folder, in one file");
+		await go("code/qorpera/shop");
+		expect(hints()).toBe("The files and the change records, in one file");
+		setLanguagePreference("da");
+		await go("code/qorpera/shop/main");
+		button()!.click();
+		expect([...document.querySelectorAll<HTMLElement>(".context-menu [role=menuitem]")].at(-1)?.textContent).toBe(
+			"Hele mappenDenne mappe, i én fil",
+		);
 	});
 
 	it("gets a file that is ready at once: read from the repository's downloads folder in pieces, handed over as one file", async () => {
@@ -878,6 +910,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 			expect(rows.map((row) => row.textContent)).toEqual([
 				"FilerneAlt, som det er nu, i én fil",
 				"Med hele historikkenTil en udvikler",
+				"Hele mappenFilerne og ændringerne, i én fil",
 			]);
 			rows.find((row) => row.textContent?.startsWith(label))!.click();
 			await settle();
@@ -1014,7 +1047,9 @@ describe("a GitHub project's working copy, named on its folder in Storage", () =
 			expect(line().getAttribute("role")).toBe("status");
 			expect(line().querySelectorAll("*")).toHaveLength(1);
 			expect(visibleText(downloads())).toBe("");
-			expect(host.querySelectorAll(".storage-toolbar > button:not([hidden])")).toHaveLength(0);
+			expect(
+				[...host.querySelectorAll(".storage-toolbar > button:not([hidden])")].map((each) => each.className),
+			).toEqual(["storage-download-button"]);
 			expect(button()?.hidden).toBe(true);
 			// A founder reads it: no path, branch, commit or repository.
 			expect(line().textContent).not.toMatch(/\/|branch|commit|repositor|git(?!hub)/i);

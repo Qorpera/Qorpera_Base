@@ -22,6 +22,7 @@ import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } f
 import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
 import { CodeDownload } from "./code-download.ts";
 import { CodeImport } from "./code-import.ts";
+import { FolderDownload } from "./folder-download.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
@@ -265,6 +266,7 @@ export class CompanyFolderBrowser {
 	#code?: CodeDownload;
 	/** "Bring code in", in the code's folders, and what a folder under code/ is (code-import.ts); beside #code. */
 	#import?: CodeImport;
+	#folderDownload?: FolderDownload;
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#syncTimer?: ReturnType<typeof setTimeout>;
@@ -467,6 +469,17 @@ export class CompanyFolderBrowser {
 		const client = this.#client;
 		// Choose mode offers no code download or import: it picks, nothing more.
 		const calls = this.#options.choose ? undefined : this.#source.codeDownloads?.bind(this.#source);
+		if (!this.#options.choose)
+			this.#folderDownload ??= new FolderDownload({
+				signal: this.#signal(),
+				live: () => this.#live(),
+				folder: () => client,
+				shown: (path) => !this.#import?.hidden(path),
+				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
+				menu: () => (this.#code && !this.#code.button.hidden ? this.#code.button : null),
+				busy: () => this.#code?.running === true,
+				changed: () => this.#code?.redraw(),
+			});
 		if (calls)
 			this.#code ??= new CodeDownload({
 				signal: this.#signal(),
@@ -474,6 +487,9 @@ export class CompanyFolderBrowser {
 				calls,
 				folder: () => client,
 				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
+				wholeFolder: () => this.#folderDownload?.start(),
+				folderBusy: () => this.#folderDownload?.running === true,
+				drawn: () => this.#folderDownload?.redraw(),
 			});
 		if (calls && this.#code)
 			this.#import ??= new CodeImport({
@@ -496,11 +512,13 @@ export class CompanyFolderBrowser {
 				this.#title,
 				this.#code?.button ?? null,
 				this.#import?.button ?? null,
+				this.#folderDownload?.button ?? null,
 				h("div", { class: "storage-controls" }, this.#filter, this.#sort, this.#views),
 			),
 			// What the folder is or how an import stands, then what a download did.
 			this.#import?.line ?? null,
 			this.#code?.line ?? null,
+			this.#folderDownload?.line ?? null,
 			h(
 				"div",
 				{ class: "files-body" },
@@ -726,6 +744,7 @@ export class CompanyFolderBrowser {
 		if (moved || !this.#items.some((item) => item.path === this.#picked)) this.#picked = null;
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
+		this.#folderDownload?.enter(dir, dir ? baseName(dir) : t("Documents"));
 		this.#code?.enter(dir);
 		this.#import?.enter(dir);
 		this.#drawList(!append);
