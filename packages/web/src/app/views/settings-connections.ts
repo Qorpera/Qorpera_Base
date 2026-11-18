@@ -7,11 +7,15 @@ import {
 import {
 	ChatGptPlanSignInError,
 	ClaudeCodeError,
+	ClaudeReadNotStarted,
 	PlanSwitchBusyError,
 	planLogin,
 	type WebAccountLogin,
 	type WebClaudeLogin,
 	type WebClaudeLogins,
+	type WebClaudeResetEntry,
+	type WebClaudeResetKind,
+	type WebClaudeUsage,
 	type WebExecutionConnections,
 	type WebMemberConnection,
 	type WebNativeProviderLogin,
@@ -19,7 +23,7 @@ import {
 } from "../../cloud/native-subscription.ts";
 import { companyInSentence } from "../../ui/company-name.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
-import { t } from "../../ui/preferences.ts";
+import { presentationLocale, t } from "../../ui/preferences.ts";
 
 export type ConnectionsClient = Pick<
 	WebNativeSubscription,
@@ -39,6 +43,7 @@ export type ConnectionsClient = Pick<
 			| "signOutEverywhere"
 			| "listClaudeLogins"
 			| "signOutClaude"
+			| "readClaude"
 		>
 	>;
 
@@ -58,6 +63,54 @@ function resetCountdown(milliseconds: number): string {
 	return hours < 24
 		? t("{hours}h {minutes}m", { hours, minutes: minutes % 60 })
 		: t("{days}d {hours}h", { days: Math.floor(hours / 24), hours: hours % 24 });
+}
+
+type UsageWindow = { id: string; label: string; usedPercent: number; resetAt?: string };
+type UsageReading = { observedAt: string; windows: readonly UsageWindow[] };
+
+const REFILLS: Readonly<Record<WebClaudeResetKind, readonly string[]>> = {
+	session: ["five_hour"],
+	weekly: ["seven_day"],
+	fable: ["seven_day_model"],
+	full: ["five_hour", "seven_day"],
+};
+
+interface ClaudeResetUse {
+	readonly loginId: string;
+	readonly kind: WebClaudeResetKind;
+	readonly left: number;
+	phase: "using" | "reset" | "failed" | "unconfirmed";
+	resetsLeft?: number | null;
+}
+
+function claudeLimitResetAt(usage: WebClaudeUsage | undefined, now: number): string | undefined {
+	if (!usage) return undefined;
+	if (usage.limitResetAt && Date.parse(usage.limitResetAt) > now) return usage.limitResetAt;
+	return usage.windows.find(
+		(window) => window.usedPercent >= 100 && window.resetAt !== undefined && Date.parse(window.resetAt) > now,
+	)?.resetAt;
+}
+
+function resetCount(left: number): string {
+	return left === 1 ? t("1 reset") : t("{count} resets", { count: left });
+}
+
+function kindResets(kind: WebClaudeResetKind, left: number): string {
+	const words: Readonly<Record<WebClaudeResetKind, [string, string]>> = {
+		session: [t("1 five-hour reset"), t("{count} five-hour resets", { count: left })],
+		weekly: [t("1 weekly reset"), t("{count} weekly resets", { count: left })],
+		fable: [t("1 Fable reset"), t("{count} Fable resets", { count: left })],
+		full: [t("1 full reset"), t("{count} full resets", { count: left })],
+	};
+	return left === 1 ? words[kind][0] : words[kind][1];
+}
+
+function shortDay(iso: string): string {
+	return new Date(iso).toLocaleDateString(presentationLocale(), { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function weekday(iso: string): string {
+	return new Date(iso).toLocaleDateString(presentationLocale(), { weekday: "long", timeZone: "UTC" });
 }
 
 interface Attempt {
@@ -195,6 +248,7 @@ export class ConnectionsView {
 	#logins: readonly WebAccountLogin[] = [];
 	/** The member's Claude login (coding sessions only) and whether they may sign in with Claude here. */
 	#claude: WebClaudeLogins | undefined;
+	#claudeReset: ClaudeResetUse | undefined;
 	/** Settings with no company open: only the member's account logins, signed in through `companyName`. */
 	readonly #accountWide: { companyName: string } | undefined;
 	/** With no company open: how the last ChatGPT sign-in ended when it was not an account login. */
@@ -350,7 +404,7 @@ export class ConnectionsView {
 	 * the button is greyed out from the read's first redraw. */
 	#refreshUsage(force = false): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
-		if (!this.#client.refreshAccountMetadata) return this.#refresh();
+		if (!this.#client.refreshAccountMetadata && !this.#client.readClaude) return this.#refresh();
 		this.#metadataForced = (this.#metadataRefresh !== undefined && this.#metadataForced) || force;
 		this.#metadataRefresh ??= this.#readUsage();
 		return this.#metadataRefresh;
@@ -384,9 +438,18 @@ export class ConnectionsView {
 			// Show existing account identities while their isolated host refreshes
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
-			if (this.#lifetime.signal.aborted || !this.#shown().some(live)) return;
-			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, this.#metadataForced);
+			if (this.#lifetime.signal.aborted) return;
+			const codex =
+				this.#shown().some(live) && this.#claudeReset?.phase !== "using" && this.#client.refreshAccountMetadata;
+			const claude = this.#claudeReadable() && this.#client.readClaude;
+			if (!codex && !claude) return;
+			const forced = this.#metadataForced;
+			const reads = await Promise.allSettled([
+				codex ? this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced) : undefined,
+				claude ? this.#client.readClaude!({ force: forced }, this.#lifetime.signal) : undefined,
+			]);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
+			if (reads.some((read) => read.status === "rejected")) throw new Error("Usage could not be refreshed");
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = t("Usage could not be refreshed. Try again.");
 		} finally {
@@ -617,11 +680,153 @@ export class ConnectionsView {
 			this.#draw();
 		}
 	}
+	#claudeReadable(): boolean {
+		return Boolean(
+			this.#client.readClaude && this.#claude?.readable && this.#claude.logins.length && !this.#accountWide,
+		);
+	}
+	async #useClaudeReset(login: WebClaudeLogin, entry: WebClaudeResetEntry): Promise<void> {
+		const read = this.#client.readClaude;
+		if (!read || !entry.kind || this.#claudeReset?.phase === "using" || this.#lifetime.signal.aborted) return;
+		const use: ClaudeResetUse = { loginId: login.loginId, kind: entry.kind, left: entry.left, phase: "using" };
+		this.#claudeReset = use;
+		this.#draw();
+		try {
+			const requestId = await read({ reset: entry.kind }, this.#lifetime.signal);
+			await this.#refresh();
+			const last = this.#claude?.logins.find((each) => each.loginId === login.loginId)?.lastReset;
+			use.phase = last?.requestId === requestId ? last.outcome : "unconfirmed";
+			use.resetsLeft = last?.requestId === requestId ? last.left : null;
+		} catch (error) {
+			use.phase = error instanceof ClaudeReadNotStarted ? "failed" : "unconfirmed";
+		}
+		if (this.#lifetime.signal.aborted) return;
+		this.#draw();
+		await this.#metadataRefresh;
+		if (!this.#lifetime.signal.aborted) void this.#refreshUsage(true);
+	}
+	#claudeResets(login: WebClaudeLogin, limited: boolean): HTMLElement[] {
+		const use = this.#claudeReset?.loginId === login.loginId ? this.#claudeReset : undefined;
+		if (use?.phase === "using") return [];
+		if (use?.phase === "reset")
+			return [
+				h(
+					"div",
+					{ class: "connection-resets" },
+					h(
+						"span",
+						{ class: "reset-done", role: "status" },
+						h("span", { class: "reset-tick", "aria-hidden": "true" }, "✓"),
+						use.resetsLeft === 0
+							? t("Reset used · no resets left")
+							: use.resetsLeft === null || use.resetsLeft === undefined
+								? t("Reset used")
+								: t("Reset used · {resets} left", { resets: resetCount(use.resetsLeft) }),
+					),
+				),
+			];
+		if (use?.phase === "failed") {
+			const again = button(
+				t("Try again"),
+				() =>
+					void this.#useClaudeReset(login, {
+						kind: use.kind,
+						left: use.left,
+						refills: null,
+						weekStays: null,
+						useBy: null,
+						usable: "now",
+					}),
+			);
+			again.classList.add("btn-primary");
+			again.dataset.focusKey = `claude-reset:${login.loginId}`;
+			return [
+				h(
+					"div",
+					{ class: "connection-resets is-ready", role: "status" },
+					h(
+						"div",
+						{ class: "settings-copy" },
+						h("strong", null, t("Couldn't reset your limits")),
+						h(
+							"small",
+							null,
+							t("Nothing was used · {resets} · try again in a moment", { resets: resetCount(use.left) }),
+						),
+					),
+					again,
+				),
+			];
+		}
+		if (use?.phase === "unconfirmed")
+			return [
+				h(
+					"div",
+					{ class: "connection-resets is-ready", role: "status" },
+					h(
+						"div",
+						{ class: "settings-copy" },
+						h("strong", null, t("Couldn't confirm the reset went through")),
+						h("small", null, t("Check the bars above in a moment before you use another reset.")),
+					),
+				),
+			];
+		const entries = login.resets?.entries.filter((entry) => entry.left > 0) ?? [];
+		const several = entries.length > 1;
+		return entries.map((entry) => {
+			const useBy = entry.useBy ? t("use by {date}", { date: shortDay(entry.useBy) }) : null;
+			if (entry.usable === "at_limit" || !entry.kind)
+				return h(
+					"div",
+					{ class: "connection-resets" },
+					h(
+						"div",
+						{ class: "settings-copy" },
+						h("strong", null, resetCount(entry.left)),
+						h("small", null, [t("Usable once you reach a limit"), useBy].filter(Boolean).join(" · ")),
+					),
+				);
+			const refills = entry.refills ? t("refills your {limits}", { limits: entry.refills }) : null;
+			const title = several ? kindResets(entry.kind, entry.left) : resetCount(entry.left);
+			const action = button(t("Use a reset"), () => void this.#useClaudeReset(login, entry), {
+				disabled: Boolean(this.#working) || this.#claudeReset?.phase === "using",
+			});
+			action.dataset.focusKey = `claude-reset:${login.loginId}:${entry.kind}`;
+			if (limited) action.classList.add("btn-primary");
+			return h(
+				"div",
+				{ class: `connection-resets${limited ? " is-ready" : ""}` },
+				h(
+					"div",
+					{ class: "settings-copy" },
+					h("strong", null, limited ? t("Keep going now with a reset") : title),
+					h(
+						"small",
+						null,
+						(limited
+							? [title, refills, useBy]
+							: [
+									entry.refills ? t("Refills your {limits}", { limits: entry.refills }) : null,
+									entry.weekStays
+										? t("your weekly reset day stays {day}", { day: weekday(entry.weekStays) })
+										: null,
+									useBy,
+								]
+						)
+							.filter(Boolean)
+							.join(" · "),
+					),
+				),
+				action,
+			);
+		});
+	}
 	/** The member's Claude login: theirs alone, in all their companies, for coding sessions only. */
 	#claudeCard(login: WebClaudeLogin): HTMLElement {
 		const working = this.#working === `claude:${login.loginId}`;
+		const using = this.#claudeReset?.loginId === login.loginId && this.#claudeReset.phase === "using";
 		const signOut = button(working ? t("Signing out…") : t("Sign out"), () => void this.#signOutClaude(login), {
-			disabled: Boolean(this.#working) || !this.#client.signOutClaude,
+			disabled: Boolean(this.#working) || !this.#client.signOutClaude || using,
 		});
 		signOut.dataset.focusKey = `claude:${login.loginId}`;
 		return h(
@@ -642,7 +847,16 @@ export class ConnectionsView {
 				),
 			),
 			h("div", { class: "connection-actions" }, signOut),
+			...(this.#claudeReadable() || login.usage ? this.#claudeUsage(login, using) : []),
 		);
+	}
+	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
+		const limitResetAt = claudeLimitResetAt(login.usage, Date.now());
+		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
+		return [
+			this.#bars(login.usage, true, using ? undefined : limitResetAt, refilling, false),
+			...this.#claudeResets(login, limitResetAt !== undefined),
+		];
 	}
 	async #disconnect(connection: NativeMemberConnection): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted) return;
@@ -849,10 +1063,18 @@ export class ConnectionsView {
 			: connections;
 	}
 	#usage(connection: NativeMemberConnection): HTMLElement {
-		const usage = connection.providerAccountUsage;
+		return this.#bars(connection.providerAccountUsage, live(connection), connection.usageLimitResetAt);
+	}
+	#bars(
+		usage: UsageReading | undefined,
+		usable: boolean,
+		limitResetAt: string | undefined,
+		refilling: ReadonlySet<string> = new Set(),
+		limitDatesReading = true,
+	): HTMLElement {
 		const now = Date.now();
-		const limitResetIn = connection.usageLimitResetAt ? Date.parse(connection.usageLimitResetAt) - now : 0;
-		const limitReached = live(connection) && limitResetIn > 0;
+		const limitResetIn = limitResetAt ? Date.parse(limitResetAt) - now : 0;
+		const limitReached = usable && limitResetIn > 0;
 		const limitNotice = limitReached
 			? h(
 					"span",
@@ -860,10 +1082,12 @@ export class ConnectionsView {
 					t("Usage limit reached · resets in {time}", { time: resetCountdown(limitResetIn) }),
 				)
 			: null;
-		if (!usage || !live(connection))
+		if (!usage || !usable)
 			return h("div", { class: "connection-usage muted" }, limitNotice ?? t("Usage unavailable"));
 		const stale =
-			limitReached || now - Date.parse(usage.observedAt) > USAGE_FRESH_MS || Date.parse(usage.observedAt) > now;
+			(limitDatesReading && limitReached) ||
+			now - Date.parse(usage.observedAt) > USAGE_FRESH_MS ||
+			Date.parse(usage.observedAt) > now;
 		const checked = fmtTime(usage.observedAt);
 		// An old reading never says "left" (the limit may be reached since) but says
 		// when it was taken, unless the host's clock ran ahead of this one.
@@ -875,6 +1099,30 @@ export class ConnectionsView {
 			{ class: "connection-usage" },
 			limitNotice,
 			...usage.windows.map((window) => {
+				if (refilling.has(window.id))
+					return h(
+						"div",
+						{ class: "connection-usage-window" },
+						named ? h("span", { class: "connection-usage-label", "aria-hidden": "true" }, window.label) : null,
+						h(
+							"div",
+							{ class: "connection-usage-heading" },
+							h("span", { role: "status" }, t("Using a reset…")),
+							h("span"),
+						),
+						h(
+							"div",
+							{
+								class: "connection-usage-meter refilling",
+								role: "meter",
+								"aria-label": t("{label} remaining usage", { label: window.label }),
+								"aria-valuemin": 0,
+								"aria-valuemax": 100,
+								"aria-valuetext": t("Using a reset…"),
+							},
+							h("span"),
+						),
+					);
 				const resetIn = window.resetAt ? Date.parse(window.resetAt) - now : undefined;
 				const expired = resetIn !== undefined && resetIn <= 0;
 				const remaining = Math.round((100 - window.usedPercent) * 10) / 10;
@@ -902,7 +1150,9 @@ export class ConnectionsView {
 							expired
 								? t("Reset passed · awaiting updated usage")
 								: resetIn === undefined
-									? t("Reset time unavailable")
+									? window.id === "five_hour" && window.usedPercent === 0
+										? t("Starts when you next use Claude")
+										: t("Reset time unavailable")
 									: t("Resets in {time}", { time: resetCountdown(resetIn) }),
 						),
 						h("span", { title: t("Last checked {time}", { time: checked }) }, value),
@@ -1033,7 +1283,7 @@ export class ConnectionsView {
 	}
 	#draw(): void {
 		clearTimeout(this.#usageClock);
-		if (this.#shown().some(live))
+		if (this.#shown().some(live) || this.#claudeReadable())
 			this.#usageClock = setTimeout(() => {
 				if (document.hidden) this.#draw();
 				else void this.#refreshUsage();
