@@ -165,10 +165,22 @@ export interface ProgramTarget {
 export type ProgramAddFolder = Pick<CloudMemberFolderClient, "read" | "readFile" | "commit" | "uploadFile">;
 
 export class ProgramAddRefusal extends Error {
-	readonly reason: "full" | "denied" | "paused" | "busy" | "taken" | "exists" | "gone" | "offline";
-	constructor(reason: ProgramAddRefusal["reason"]) {
+	readonly reason:
+		| "full"
+		| "denied"
+		| "paused"
+		| "busy"
+		| "taken"
+		| "exists"
+		| "refused"
+		| "unusable"
+		| "gone"
+		| "offline";
+	readonly why: string | null;
+	constructor(reason: ProgramAddRefusal["reason"], why: string | null = null) {
 		super(`Program add refused: ${reason}`);
 		this.reason = reason;
+		this.why = why;
 	}
 }
 
@@ -178,6 +190,7 @@ export function refusalOf(error: unknown): ProgramAddRefusal {
 	if (status === 401 || status === 403) return new ProgramAddRefusal("denied");
 	if (status === 423) return new ProgramAddRefusal("paused");
 	if (status === 429) return new ProgramAddRefusal("busy");
+	if (status === 400 || status === 413) return new ProgramAddRefusal("unusable");
 	return new ProgramAddRefusal("offline");
 }
 
@@ -223,6 +236,8 @@ export interface ProgramAddPlan {
 	readonly userId: string;
 	readonly signal: AbortSignal;
 	readonly onProgress?: (sent: number, total: number) => void;
+	readonly onSettling?: () => void;
+	readonly taken?: readonly string[];
 	readonly now?: () => Date;
 	readonly key?: () => string;
 }
@@ -235,25 +250,113 @@ interface Placed {
 	entry: string | null;
 }
 
+const SETTLE_MS = 30_000;
+const CLAIM_TRIES = 20;
+
 export class ProgramAdd {
 	readonly #folder: () => ProgramAddFolder;
-	readonly #app: string;
+	readonly #isNew: boolean;
+	readonly #name: string;
+	#slug: string;
+	#claimed = false;
+	#listed = false;
+	#settling = false;
+	#running: Promise<unknown> | undefined;
 	readonly #placed = new Map<File, Placed>();
 	readonly #prepared = new Map<File, CloudMemberFolderUploadFile>();
 
 	constructor(folder: () => ProgramAddFolder, target: ProgramTarget) {
 		this.#folder = folder;
-		this.#app = `${APPS_FOLDER}/${target.folder}`;
+		this.#isNew = target.isNew;
+		this.#name = target.name;
+		this.#slug = target.folder;
+	}
+
+	get folder(): string {
+		return this.#slug;
+	}
+
+	get settling(): boolean {
+		return this.#settling;
+	}
+
+	get #app(): string {
+		return `${APPS_FOLDER}/${this.#slug}`;
 	}
 
 	#path(version: string, file: File): string {
 		return `${this.#app}/${programFilePath(version, file.name)}`;
 	}
 
-	async run(plan: ProgramAddPlan): Promise<void> {
+	run(plan: ProgramAddPlan): Promise<void> {
+		const running = this.#run(plan);
+		this.#running = running.catch(() => undefined);
+		return running;
+	}
+
+	async discard(): Promise<void> {
+		await this.#running;
+		if (this.#listed) return;
+		const placed = [...this.#placed.values()];
+		this.#placed.clear();
+		const signal = AbortSignal.timeout(SETTLE_MS);
+		const folder = this.#folder();
+		try {
+			if (this.#claimed) {
+				const read = await folder.read(this.#app, signal);
+				if (read.entry?.kind === "folder")
+					await folder.commit(
+						`web:${crypto.randomUUID()}`,
+						[{ op: "delete", path: this.#app, asOfSeq: read.asOfSeq }],
+						signal,
+					);
+				return;
+			}
+			if (placed.length === 0) return;
+			await folder.commit(
+				`web:${crypto.randomUUID()}`,
+				placed.map(
+					(each): CloudMemberFolderUnit => ({
+						op: "delete",
+						path: this.#path(each.version, each.file),
+						...(each.entry ? { expectedVersion: each.entry } : {}),
+					}),
+				),
+				signal,
+			);
+		} catch {
+			return;
+		}
+	}
+
+	async #claim(taken: Set<string>, key: () => string, signal: AbortSignal): Promise<void> {
+		for (let attempt = 1; attempt <= CLAIM_TRIES; attempt++) {
+			const commit = await this.#folder().commit(
+				key(),
+				[
+					{ op: "mkdir", path: APPS_FOLDER },
+					{ op: "mkdir", path: this.#app },
+				],
+				signal,
+			);
+			const claim = commit.units[1];
+			if (claim?.outcome === "saved") {
+				this.#claimed = true;
+				return;
+			}
+			if (claim?.outcome === "denied") throw new ProgramAddRefusal("denied");
+			if (claim?.outcome !== "conflict") throw new ProgramAddRefusal("refused", claim?.reason ?? null);
+			taken.add(this.#slug);
+			this.#slug = programFolderName(this.#name, taken);
+		}
+		throw new ProgramAddRefusal("taken");
+	}
+
+	async #run(plan: ProgramAddPlan): Promise<void> {
 		const { signal } = plan;
 		const key = plan.key ?? (() => `web:${crypto.randomUUID()}`);
 		const now = plan.now ?? (() => new Date());
+		if (this.#isNew && !this.#claimed) await this.#claim(new Set(plan.taken ?? []), key, signal);
 		const programPath = `${this.#app}/${PROGRAM_FILE}`;
 		const total = plan.files.reduce((sum, each) => sum + each.file.size, 0);
 		let done = [...this.#placed.values()].reduce((sum, each) => sum + each.file.size, 0);
@@ -286,35 +389,25 @@ export class ProgramAdd {
 					break;
 				}
 				if (put.outcome === "denied") throw new ProgramAddRefusal("denied");
+				if (put.outcome === "refused") throw new ProgramAddRefusal("refused", put.reason);
 				if (attempt === TRIES) throw new ProgramAddRefusal(put.outcome === "exists" ? "exists" : "taken");
 				kept = await readKept(this.#folder(), programPath, signal);
 				version = nextMemberVersion({
 					versions: [...(kept.program?.versions ?? []), { version, date: "", forms: [] }],
 				});
 			}
+			signal.throwIfAborted();
 			done += file.size;
 			plan.onProgress?.(done, total);
 		}
-		await this.#keep(plan, programPath, kept, key, now);
-	}
-
-	async discard(): Promise<void> {
-		const placed = [...this.#placed.values()];
-		this.#placed.clear();
-		if (placed.length === 0) return;
-		await this.#folder()
-			.commit(
-				`web:${crypto.randomUUID()}`,
-				placed.map(
-					(each): CloudMemberFolderUnit => ({
-						op: "delete",
-						path: this.#path(each.version, each.file),
-						...(each.entry ? { expectedVersion: each.entry } : {}),
-					}),
-				),
-				AbortSignal.timeout(10_000),
-			)
-			.catch(() => undefined);
+		signal.throwIfAborted();
+		this.#settling = true;
+		plan.onSettling?.();
+		try {
+			await this.#keep(plan, programPath, kept, key, now);
+		} finally {
+			this.#settling = false;
+		}
 	}
 
 	async #move(placed: readonly Placed[], version: string, key: () => string, signal: AbortSignal): Promise<void> {
@@ -337,10 +430,13 @@ export class ProgramAdd {
 		);
 		for (const [index, each] of moving.entries()) {
 			const unit = commit.units[index + 1];
-			if (unit?.outcome !== "saved") throw new ProgramAddRefusal(unit?.outcome === "denied" ? "denied" : "taken");
-			each.version = version;
-			each.entry = unit.version;
+			if (unit?.outcome === "saved") {
+				each.version = version;
+				each.entry = unit.version;
+			}
 		}
+		const failed = commit.units.slice(1).find((unit) => unit.outcome !== "saved");
+		if (failed) throw new ProgramAddRefusal(failed.outcome === "denied" ? "denied" : "taken");
 	}
 
 	async #keep(
@@ -350,7 +446,9 @@ export class ProgramAdd {
 		key: () => string,
 		now: () => Date,
 	): Promise<void> {
+		const signal = AbortSignal.timeout(SETTLE_MS);
 		let kept = first;
+		let manifest = this.#isNew && kept.program === null;
 		for (let attempt = 1; ; attempt++) {
 			const placed = plan.files.map(({ file }) => this.#placed.get(file)!);
 			const at = placed[0]!.version;
@@ -364,7 +462,7 @@ export class ProgramAdd {
 							...placed.map((each) => ({ version: each.version, date: "", forms: [] })),
 						],
 					});
-			await this.#move(placed, version, key, plan.signal);
+			await this.#move(placed, version, key, signal);
 			const text = programWithVersion(
 				kept.program,
 				version,
@@ -378,7 +476,6 @@ export class ProgramAdd {
 				now(),
 			);
 			if (!fits(text)) throw new ProgramAddRefusal("full");
-			const manifest = plan.target.isNew && kept.program === null && attempt === 1;
 			const units: CloudMemberFolderUnit[] = [
 				...(manifest
 					? [
@@ -386,7 +483,7 @@ export class ProgramAdd {
 								op: "write" as const,
 								path: `${this.#app}/${APP_MANIFEST}`,
 								text: writeAppManifest({
-									name: plan.target.name,
+									name: this.#name,
 									about: null,
 									emblem: APP_DEFAULT_EMBLEM,
 									colour: null,
@@ -404,18 +501,19 @@ export class ProgramAdd {
 					: []),
 				{ op: "write", path: programPath, text, ...(kept.version ? { expectedVersion: kept.version } : {}) },
 			];
-			const commit = await this.#folder().commit(key(), units, plan.signal);
+			const commit = await this.#folder().commit(key(), units, signal);
 			const written = commit.units.at(-1);
-			if (manifest && commit.units[0]?.outcome !== "saved")
-				throw new ProgramAddRefusal(commit.units[0]?.outcome === "denied" ? "denied" : "taken");
+			if (manifest && commit.units[0]?.outcome === "saved") manifest = false;
 			if (written?.outcome === "saved") {
+				this.#listed = true;
 				this.#placed.clear();
 				this.#prepared.clear();
 				return;
 			}
 			if (written?.outcome === "denied") throw new ProgramAddRefusal("denied");
+			if (written?.outcome === "refused") throw new ProgramAddRefusal("refused", written.reason);
 			if (written?.outcome !== "conflict" || attempt === TRIES) throw new ProgramAddRefusal("taken");
-			kept = await readKept(this.#folder(), programPath, plan.signal);
+			kept = await readKept(this.#folder(), programPath, signal);
 		}
 	}
 }

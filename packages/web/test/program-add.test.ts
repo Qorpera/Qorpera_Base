@@ -46,7 +46,10 @@ async function until(check: () => boolean) {
 function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 	const uploads: { path: string; key: string }[] = [];
 	let hold: Promise<void> | undefined;
+	let textHold: Promise<void> | undefined;
 	let refuse: unknown;
+	let outcome: { outcome: "refused"; version: null; reason: string } | undefined;
+	let names: (() => string[]) | undefined;
 	const uploadFile = vi.fn(
 		async (
 			path: string,
@@ -59,7 +62,7 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 			uploads.push({ path, key: options.operationKey });
 			options.onProgress?.(Math.floor(prepared.bytes * 0.4), prepared.bytes);
 			if (hold) await hold;
-			options.signal.throwIfAborted();
+			if (outcome) return outcome;
 			const parts = path.split("/");
 			const units: CloudMemberFolderUnit[] = [
 				...[1, 2, 3, 4].map((depth) => ({ op: "mkdir" as const, path: parts.slice(0, depth).join("/") })),
@@ -75,14 +78,18 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 					};
 		},
 	);
-	const folder = { ...fake.folder, uploadFile };
+	const commit = vi.fn(async (key: string, units: readonly CloudMemberFolderUnit[], signal: AbortSignal) => {
+		if (textHold && units.some((unit) => "path" in unit && unit.path.endsWith("/program.json"))) await textHold;
+		return fake.folder.commit(key, units, signal);
+	});
+	const folder = { ...fake.folder, commit, uploadFile };
 	const opened: string[] = [];
 	const host: ProgramAddHost = {
 		writer: () => folder,
 		userId: ME,
 		canWrite: () => true,
 		companyName: () => "Fokusur",
-		appNames: () => fake.children("apps").map((path) => path.slice("apps/".length)),
+		appNames: () => names?.() ?? fake.children("apps").map((path) => path.slice("apps/".length)),
 		opened: (folder) => opened.push(folder),
 		system: "mac",
 	};
@@ -105,6 +112,23 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 		refuseUploads: (error: unknown) => {
 			refuse = error;
 		},
+		refuseWith: (reason: string) => {
+			outcome = { outcome: "refused", version: null, reason };
+		},
+		knowNoApps: () => {
+			names = () => [];
+		},
+		holdText: () => {
+			let release = () => {};
+			textHold = new Promise((resolve) => {
+				release = resolve;
+			});
+			return () => {
+				textHold = undefined;
+				release();
+			};
+		},
+		commits: () => fake.commits.map((each) => each.units.map((unit) => unit.op)),
 	};
 }
 
@@ -415,10 +439,32 @@ describe("the New program page", () => {
 				await until(() => c.opened.length === 1);
 			} else buttons[0]!.click();
 		}
-		expect(c.uploads.map((each) => each.path)).toEqual(["apps/lagerliste/versions/1/Lagerliste.exe"]);
+		expect(c.uploads).toHaveLength(1);
+		expect(c.uploads[0]?.path).toMatch(/^apps\/lagerliste(-[0-9]+)?\/versions\/1\/Lagerliste\.exe$/);
 	});
 
-	it("leaves nothing in the company when the member leaves while the file goes up", async () => {
+	it("lets the last change set settle when the member leaves at the end, and deletes nothing it lists", async () => {
+		const c = company();
+		const release = c.holdText();
+		const shown = page(c.host);
+		drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+		await until(() => c.fake.has("apps/lagerliste/versions/1/Lagerliste.exe"));
+		await settle();
+		expect(shown.el.querySelector(".program-drop-status button")).toBeNull();
+		shown.dispose();
+		disposers.splice(disposers.indexOf(shown), 1);
+		release();
+		await until(() => c.fake.has("apps/lagerliste/program.json"));
+		await settle();
+		await settle();
+		expect(c.fake.has("apps/lagerliste/versions/1/Lagerliste.exe")).toBe(true);
+		expect(parseProgram(c.fake.text("apps/lagerliste/program.json") ?? "")?.versions[0]?.forms[0]?.file).toBe(
+			"Lagerliste.exe",
+		);
+		expect(c.commits().flat()).not.toContain("delete");
+	});
+
+	it("deletes a file whose finish came back after the member left, so nothing is left in the company", async () => {
 		const c = company();
 		const release = c.holdUploads();
 		const shown = page(c.host);
@@ -427,10 +473,49 @@ describe("the New program page", () => {
 		shown.dispose();
 		disposers.splice(disposers.indexOf(shown), 1);
 		release();
-		await settle();
+		await until(() => c.commits().flat().includes("delete"));
 		await settle();
 		expect(c.fake.has("apps/lagerliste")).toBe(false);
 		expect(c.opened).toEqual([]);
+	});
+
+	it("claims the program's own folder first, past one an agent's app holds that the page did not know of", async () => {
+		const c = company();
+		const agent = 'name = "Lager"\nkit = "board"\nowner = "35000000-0000-4000-8000-0000000000a1"\nposted = true\n';
+		c.fake.put("apps/lagerliste/app.toml", agent);
+		c.knowNoApps();
+		const shown = page(c.host);
+		drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+		await until(() => c.opened.length === 1);
+		expect(c.opened).toEqual(["lagerliste-2"]);
+		expect(c.uploads.map((each) => each.path)).toEqual(["apps/lagerliste-2/versions/1/Lagerliste.exe"]);
+		expect(c.fake.text("apps/lagerliste/app.toml")).toBe(agent);
+		expect(c.fake.children("apps/lagerliste")).toEqual(["apps/lagerliste/app.toml"]);
+		expect(c.commits()[0]).toEqual(["mkdir", "mkdir"]);
+	});
+
+	it("stops at once on the company folder's own refusal, and says a name the folder does not take in its own words", async () => {
+		const c = company();
+		const shown = page(c.host);
+		drop(shown.el.querySelector(".program-drop")!, [file("Setup 100%.exe")]);
+		expect(shown.el.querySelector(".program-drop-problem")?.textContent).toBe(
+			"Setup 100%.exe can't be used as it is named. Rename the file and drop it again.",
+		);
+		expect(c.uploads).toEqual([]);
+		c.refuseWith("invalid");
+		drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+		await until(() => shown.el.querySelector(".program-drop-status.is-said") !== null);
+		expect(shown.el.querySelector(".program-drop-status.is-said span")?.textContent).toBe(
+			"The company folder refused this file: invalid.",
+		);
+		expect(c.uploads).toHaveLength(1);
+		shown.el.querySelector<HTMLButtonElement>(".program-drop-status.is-said button")!.click();
+		c.refuseUploads(new CloudMemberFolderError("Company folder upload is unavailable (400)", 400));
+		drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+		await until(() => shown.el.querySelector(".program-drop-status.is-said") !== null);
+		expect(shown.el.querySelector(".program-drop-status.is-said span")?.textContent).toBe(
+			"This file can't be put in place as it is named. Rename it and drop it again.",
+		);
 	});
 
 	it("speaks Danish", () => {

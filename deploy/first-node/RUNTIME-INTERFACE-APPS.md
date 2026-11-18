@@ -838,8 +838,8 @@ the only folder path that takes bytes from a browser: `apps/<name>/versions/<ver
 file. Then the text, through the member commit route (C4 §5) in one change set: a new program's `app.toml` (kit
 `program`, its name, no `owner`, `posted = true`, the default emblem) and `program.json` (`writeProgram`; each form with
 the size and SHA-256 of what was staged, so the page's download check holds), with `expectedVersion` when the program
-has one, so two members adding at once conflict and the second reads the newer list, takes the next version and moves
-its files there in the same change set. A member's versions are named `1`, `2` and so on (the next whole number not
+has one, so two members adding at once conflict and the second reads the newer list, takes the next version, moves
+its files there in a change set of its own, and then writes `program.json` again. A member's versions are named `1`, `2` and so on (the next whole number not
 kept). A `program.json` past the commit route's 64 KiB text cannot take a member's version: the page says "This
 program holds as many versions as it can."
 
@@ -859,12 +859,18 @@ Windows; `.dmg`, `.pkg` Mac; `.AppImage`, `.deb`, `.rpm`, `.flatpak`, `.tar.gz`,
 asks "What is it for?" over the five kinds, and a click answers. Two files of one kind, more than five, an empty file,
 a name the format refuses and a file past 256 MiB are refused in one plain line. A new program's name is the file's
 without its ending, a trailing version and words such as setup or installer (`Lagerliste-1.0-setup.exe` gives
-Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3`. The drawer has no rename
+Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3`, and claimed before any
+byte goes up: a change set of its own makes `apps/<slug>`, and a folder already there (an agent's app the page did not
+know of, another member's at the same moment) takes the next slug, so a member's program never lands in another app. The drawer has no rename
 for an app, so renaming is not in this step. While the file goes up the tile stands (initial, name, size) and fills with
-the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop; no spinner. Leaving the page stops it,
-and a file already placed of a drop of several is deleted again, so nothing is listed. A refusal says too large (the
+the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop; no spinner, and the Co-Founder's
+bubble reads "Putting it in place for everyone in <company>." Leaving the page or Stop ends it: what was placed is
+deleted again (a new program's claimed folder whole), once any finish already sent has answered, so nothing is
+listed. Once the last change set (`app.toml`, `program.json`, and a move before it) is sent, Stop goes and it is not
+cut short: it settles, and nothing it lists is deleted. A refusal says too large (the
 size and the most), not allowed, the company paused, another of the member's programs still going up, someone adding
-at the same moment (Try again), or the connection dropped (Try again, which continues where it stopped). After it, the
+at the same moment (Try again), that version already having this file, the company folder's own refusal in its words
+(no retry), a name the folder does not take, or the connection dropped (Try again, which continues where it stopped). After it, the
 program's own page opens (its tile, chips and Download), its drawer tile selected, the dot line "Version 1 · added by
 you" ("added by <first name>" for another member the client knows, the day otherwise). A program a member made (no
 `owner`) has "Add a version" above "Earlier versions" in its "…" menu, which opens the same drop area in the field with

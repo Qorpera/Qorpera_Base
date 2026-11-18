@@ -270,6 +270,11 @@ export class ProgramDrop {
 		const total = files.reduce((sum, each) => sum + each.file.size, 0);
 		const tile = this.#tile(target.name, label, total, 0);
 		const line = h("span", { class: "program-drop-progress" });
+		const stop = h(
+			"button",
+			{ type: "button", class: "program-back-button", onclick: () => this.#stop(true) },
+			t("Stop"),
+		);
 		const say = (share: number) => {
 			tile.style.setProperty("--share", `${share}%`);
 			line.textContent = t("Putting {name} in place… {percent}%", { name: first.name, percent: share });
@@ -281,16 +286,7 @@ export class ProgramDrop {
 				"div",
 				{ class: "program-drop-going" },
 				tile,
-				h(
-					"p",
-					{ class: "program-drop-status", role: "status" },
-					line,
-					h(
-						"button",
-						{ type: "button", class: "program-back-button", onclick: () => this.#stop(true) },
-						t("Stop"),
-					),
-				),
+				h("p", { class: "program-drop-status", role: "status" }, line, stop),
 			),
 		);
 		try {
@@ -299,6 +295,8 @@ export class ProgramDrop {
 				files,
 				userId: this.#host.userId,
 				signal: run.signal,
+				taken: this.#host.appNames(),
+				onSettling: () => stop.remove(),
 				onProgress: (sent, of) => {
 					if (!run.signal.aborted) say(of > 0 ? Math.min(99, Math.floor((sent / of) * 100)) : 0);
 				},
@@ -308,7 +306,7 @@ export class ProgramDrop {
 			this.#going = false;
 			this.#add = undefined;
 			this.#files = [];
-			this.#done(target.folder);
+			this.#done(add.folder);
 		} catch (error) {
 			if (run.signal.aborted || this.#disposed) return;
 			this.#failed(refusalOf(error));
@@ -325,6 +323,10 @@ export class ProgramDrop {
 			busy: t("Another program of yours is still going up. Try again in a moment."),
 			taken: t("Someone added to this program at the same moment. Try again."),
 			exists: t("That version already has this file."),
+			refused: refusal.why
+				? t("The company folder refused this file: {reason}.", { reason: refusal.why })
+				: t("The company folder refused this file."),
+			unusable: t("This file can't be put in place as it is named. Rename it and drop it again."),
 			gone: t("This program's program.json can't be read."),
 			offline: t("The connection dropped."),
 		};

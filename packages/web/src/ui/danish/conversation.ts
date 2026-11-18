@@ -343,6 +343,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Add a version": "Tilføj en version",
 	"Putting it in place for everyone in {company}.": "Lægger det på plads til alle i {company}.",
 	"That version already has this file.": "Den version har allerede denne fil.",
+	"The company folder refused this file: {reason}.": "Virksomhedens mappe afviste filen: {reason}.",
+	"The company folder refused this file.": "Virksomhedens mappe afviste filen.",
+	"This file can't be put in place as it is named. Rename it and drop it again.":
+		"Filen kan ikke lægges på plads med det navn. Omdøb den, og slip den igen.",
 	"Version {version} · added by you": "Version {version} · tilføjet af dig",
 	"Version {version} · added by {name}": "Version {version} · tilføjet af {name}",
 	"This app reloaded itself. Press Reload to start it again.":
