@@ -1,4 +1,5 @@
 import { CLOUD_AGENT_SEND_INSTRUCTIONS } from "@qorpera/runtime/cloud-agent-mouth";
+import { cloudNarrateAppTool } from "@qorpera/runtime/cloud-app-narrate-tool";
 import { cloudCodeTools } from "@qorpera/runtime/cloud-code-tools";
 import { cloudDataTools } from "@qorpera/runtime/cloud-data-tools";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
@@ -25,6 +26,7 @@ import { cloudSidebarTools } from "@qorpera/runtime/cloud-sidebar-tools";
 import { cloudSiteTools } from "@qorpera/runtime/cloud-site-tools";
 import { cloudSkillTools } from "@qorpera/runtime/cloud-skill-tools";
 import { CLOUD_ASK_MEMBER_INPUT_SCHEMA, cloudAskMemberInstructions } from "@qorpera/runtime/cloud-thread-interactions";
+import { CloudVoiceChannel } from "@qorpera/runtime/cloud-voice-channel";
 import { cloudCoworkerMessageTool } from "@qorpera/runtime/cloud-wake-bus";
 import { cloudWorkerTools } from "@qorpera/runtime/cloud-worker-tools";
 import { nativeCompanyContextFixture } from "./native-company-context-fixture.ts";
@@ -72,6 +74,15 @@ export async function catalogs() {
 		...cloudInterfaceWriteTools({ folder, operations, identity }),
 		...cloudAppTools({ folder, operations, identity }),
 		cloudPictureTool({ folder, operations, identity, pictures: new CloudPictureChannel() }),
+		cloudNarrateAppTool({
+			binding,
+			identity,
+			control: standIn(),
+			folder,
+			operations,
+			machines: { gateway: standIn(), operations },
+			voice: new CloudVoiceChannel(),
+		}),
 		...cloudDataTools({ folder, door: standIn(), apply: !worker }),
 		cloudCompanyContextTool(context, f.binding, standIn()),
 		...cloudMachineTools({

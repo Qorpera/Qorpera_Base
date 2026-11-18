@@ -20,6 +20,22 @@ const untilLastMoment = new Promise((resolve) => {
 function captionsPage() {
 	globalThis.V = { segments: [{ text: "Each traveller pays one fee." }, { text: "So four friends see it." }] };
 	globalThis.captionHash = (text) => (text.startsWith("Each") ? "0000aaaa" : "0000bbbb");
+	if (scenario === "captions-languages") {
+		const texts = { en: ["Each traveller pays one fee.", "So four friends see it."], da: ["Hver rejsende betaler et gebyr.", "Fire venner ser det."] };
+		const video = {
+			languages: ["en", "da"],
+			lang: "da",
+			segments: texts.da.map((text) => ({ text })),
+			language(code) {
+				if (code === video.lang) return false;
+				video.lang = code;
+				video.segments = texts[code].map((text) => ({ text }));
+				return true;
+			},
+		};
+		globalThis.V = video;
+		globalThis.captionHash = (text) => `hash${text.length}`;
+	}
 	const failed = scenario === "captions-failed" ? { textContent: "This video's script has a mistake (line 9): fee is not defined" } : null;
 	globalThis.document = { querySelector: (selector) => (selector === ".vp-fail" ? failed : null) };
 }
@@ -114,4 +130,22 @@ const page = {
 	},
 };
 
-exports.chromium = { launch: async () => ({ newPage: async () => page, close: async () => {} }) };
+const asked = { launch: [], initScripts: 0 };
+const told = () => {
+	if (process.env.QORPERA_VOICE_ASKED) require("node:fs").writeFileSync(process.env.QORPERA_VOICE_ASKED, JSON.stringify(asked));
+};
+const context = {
+	async addInitScript(script) {
+		asked.initScripts += 1;
+		asked.initScript = String(script);
+		told();
+	},
+	newPage: async () => page,
+};
+exports.chromium = {
+	launch: async (options) => {
+		asked.launch.push(options ?? null);
+		told();
+		return { newPage: async () => page, newContext: async () => context, close: async () => {} };
+	},
+};

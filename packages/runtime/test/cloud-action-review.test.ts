@@ -245,6 +245,7 @@ describe("which calls are reviewed", () => {
 			{ operationKey: "k", path: "apps/sales/mug.png", prompt: "A mug", expectedVersion: null, foreignOwner: true },
 			"delegation",
 		],
+		["narrate_app", { name: "pricing", operationKey: "k", machine: "studio", voice: "cove" }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them

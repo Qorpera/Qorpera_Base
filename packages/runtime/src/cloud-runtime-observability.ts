@@ -118,6 +118,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"update_reading",
 	"end_role",
 	"hire_team",
+	"narrate_app",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

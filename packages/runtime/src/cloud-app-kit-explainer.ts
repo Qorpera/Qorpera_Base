@@ -152,22 +152,45 @@ export function explainerPage(title: string, clips: readonly ExplainerClip[]): s
 	].join("\n");
 }
 
-/** The captions a scenes.js speaks, as far as a read of its text tells: the first argument of each `.say(` when it is
- * one plain string. A caption built from parts or a variable is not found, so this counts and advises; it never
- * decides what the video says (the engine does, when it runs). */
-export function explainerCaptions(scenes: string): string[] {
-	const captions: string[] = [];
-	// One plain string and nothing after it but the next argument or the end of the call.
-	for (const match of scenes.matchAll(
-		/\.say\(\s*(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\$]|\\.)*)`)\s*[,)]/g,
-	)) {
-		const raw = match[1] ?? match[2] ?? match[3] ?? "";
-		const caption = raw.replace(/\\(u[0-9a-fA-F]{4}|[\s\S])/g, (_escape, code: string) =>
+const QUOTED = /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\$]|\\.)*`/.source;
+const LANGUAGE_KEY = `[a-z]{2,3}|"[a-z]{2,3}"|'[a-z]{2,3}'`;
+const SAID = new RegExp(
+	String.raw`\.say\(\s*(?:(${QUOTED})|\{((?:\s*(?:${LANGUAGE_KEY})\s*:\s*(?:${QUOTED})\s*,?)+)\s*\})\s*[,)]`,
+	"g",
+);
+const SAID_IN = new RegExp(String.raw`["']?([a-z]{2,3})["']?\s*:\s*(${QUOTED})`, "g");
+
+const unquoted = (literal: string): string =>
+	literal
+		.slice(1, -1)
+		.replace(/\\(u[0-9a-fA-F]{4}|[\s\S])/g, (_escape, code: string) =>
 			code.length === 5 ? String.fromCharCode(Number.parseInt(code.slice(1), 16)) : code === "n" ? "\n" : code,
 		);
-		if (caption.trim()) captions.push(caption);
+
+export interface ExplainerSaid {
+	readonly text: string;
+	readonly languages: Readonly<Record<string, string>> | null;
+}
+
+export function explainerSaid(scenes: string): ExplainerSaid[] {
+	const said: ExplainerSaid[] = [];
+	for (const match of scenes.matchAll(SAID)) {
+		if (match[1] !== undefined) {
+			const text = unquoted(match[1]);
+			if (text.trim()) said.push({ text, languages: null });
+			continue;
+		}
+		const languages: Record<string, string> = {};
+		for (const entry of (match[2] ?? "").matchAll(SAID_IN))
+			languages[entry[1] as string] ??= unquoted(entry[2] as string);
+		const text = Object.values(languages)[0] ?? "";
+		if (text.trim()) said.push({ text, languages });
 	}
-	return captions;
+	return said;
+}
+
+export function explainerCaptions(scenes: string): string[] {
+	return explainerSaid(scenes).map((caption) => caption.text);
 }
 
 const words = (text: string): number => text.trim().split(/\s+/).filter(Boolean).length;
@@ -178,7 +201,8 @@ const words = (text: string): number => text.trim().split(/\s+/).filter(Boolean)
  */
 export function explainerNotes(scenes: string): string[] {
 	const notes: string[] = [];
-	const captions = explainerCaptions(scenes);
+	const said = explainerSaid(scenes);
+	const captions = said.map((caption) => caption.text);
 	if (!/\bV\s*\.\s*scene\s*\(/.test(scenes) || captions.length === 0)
 		notes.push(
 			'No scene with a caption was found: a video is V.scene((s) => { … s.say("One short sentence.", s.create(thing)); }) once per picture, under V.part("Chapter") marks.',
@@ -199,6 +223,14 @@ export function explainerNotes(scenes: string): string[] {
 	if (seconds > VIDEO_SECONDS)
 		notes.push(
 			`About ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} of captions: aim at 90 to 120 seconds, and make a second video for a second idea.`,
+		);
+	const codes = [...new Set(said.flatMap((caption) => Object.keys(caption.languages ?? {})))];
+	const partial = said.filter(
+		(caption) => caption.languages === null || codes.some((code) => !caption.languages?.[code]?.trim()),
+	);
+	if (codes.length > 0 && partial.length > 0)
+		notes.push(
+			`${partial.length} ${partial.length === 1 ? "caption has" : "captions have"} not every language of the video (${codes.join(", ")}; the first: "${(partial[0] as ExplainerSaid).text.slice(0, 80)}"): write each caption as {${codes.map((code) => `${code}: "…"`).join(", ")}}, so the video reads and speaks whole in each language.`,
 		);
 	return notes;
 }

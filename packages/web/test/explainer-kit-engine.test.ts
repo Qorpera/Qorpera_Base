@@ -18,8 +18,9 @@ interface Segment {
 	readonly end: number;
 	readonly clip: { readonly src: string; readonly seconds: number } | null;
 }
+type Words = string | Record<string, string>;
 interface Scene {
-	say(caption: string, ...animations: unknown[]): Scene;
+	say(caption: Words, ...animations: unknown[]): Scene;
 	box(options: Record<string, unknown>): unknown;
 	icon(options: Record<string, unknown>): unknown;
 	arrow(from: unknown, to: unknown, options?: Record<string, unknown>): unknown;
@@ -29,7 +30,10 @@ interface Scene {
 interface Video {
 	readonly segments: Segment[];
 	readonly total: number;
-	part(title: string): void;
+	readonly languages: string[];
+	readonly lang: string | null;
+	language(code: string): boolean;
+	part(title: Words): void;
 	scene(build: (scene: Scene) => void): void;
 	start(): void;
 }
@@ -304,5 +308,72 @@ describe("the explainer kit's engine", () => {
 		const calls = play.mock.calls.length;
 		run(1);
 		expect(play.mock.calls.length).toBe(calls);
+	});
+
+	it("draws and speaks the language the viewer picks, and stays on the caption it was at", () => {
+		vi.stubGlobal("navigator", { language: "da-DK" });
+		const en = ["The shop pays Ada.", "Ada keeps the rest."];
+		const da = ["Butikken betaler Ada.", "Ada beholder resten."];
+		const named = page().captionHash;
+		const { V, root } = page({ [named(da[0] as string)]: 4, [named(en[1] as string)]: 6 });
+		V.part({ en: "The idea", da: "Idéen" });
+		V.scene((s) => {
+			const shop = s.box({ x: 400, y: 450, label: { en: "Shop", da: "Butik" } });
+			s.say({ en: en[0] as string, da: da[0] as string }, s.create(shop));
+			s.say({ en: en[1] as string, da: da[1] as string });
+		});
+		V.start();
+		const pressed = () =>
+			[...root.querySelectorAll<HTMLButtonElement>(".vp-lang")].map((button) => [
+				button.textContent,
+				button.getAttribute("aria-pressed"),
+			]);
+		const stage = () => root.querySelector(".vp-stage")?.textContent ?? "";
+		expect(V.languages).toEqual(["en", "da"]);
+		expect([V.lang, document.documentElement.lang]).toEqual(["da", "da"]);
+		expect(V.segments.map((segment) => segment.text)).toEqual(da);
+		expect([seconds(V.segments[0]), seconds(V.segments[1])]).toEqual([4.5, 1.5]);
+		expect(root.querySelector<HTMLElement>(".vp-langs")?.hidden).toBe(false);
+		expect(pressed()).toEqual([
+			["English", "false"],
+			["Dansk", "true"],
+		]);
+		expect(root.querySelector(".vp-chip")?.textContent).toBe("1Idéen");
+		expect(stage()).toContain("Butik");
+		document.dispatchEvent(new KeyboardEvent("keydown", { code: "ArrowRight" }));
+		expect(root.querySelector(".vp-cc")?.textContent).toBe(da[1]);
+		root.querySelector<HTMLButtonElement>(".vp-lang")?.click();
+		expect([V.lang, document.documentElement.lang]).toEqual(["en", "en"]);
+		expect(V.segments.map((segment) => segment.text)).toEqual(en);
+		expect([seconds(V.segments[0]), seconds(V.segments[1])]).toEqual([1.83, 6.5]);
+		expect(root.querySelector(".vp-cc")?.textContent).toBe(en[1]);
+		expect(pressed()).toEqual([
+			["English", "true"],
+			["Dansk", "false"],
+		]);
+		expect(root.querySelectorAll(".vp-chip")).toHaveLength(1);
+		expect(root.querySelectorAll(".vp-tick")).toHaveLength(1);
+		expect(root.querySelector(".vp-chip")?.textContent).toBe("1The idea");
+		expect(stage()).toContain("Shop");
+		expect(stage()).not.toContain("Butik");
+		expect(root.querySelector<HTMLButtonElement>(".vp-voice")?.hidden).toBe(false);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "l" }));
+		expect(V.lang).toBe("da");
+		expect(V.language("fr")).toBe(false);
+		expect(root.querySelector(".vp-cc")?.textContent).toBe(da[1]);
+	});
+
+	it("shows no language switch in a video of one language, and falls back to a video's first language", () => {
+		vi.stubGlobal("navigator", { language: "fr-FR" });
+		const plain = page();
+		plain.V.scene((s) => s.say("A caption."));
+		plain.V.start();
+		expect([plain.V.languages, plain.V.lang]).toEqual([[], null]);
+		expect(plain.root.querySelector<HTMLElement>(".vp-langs")?.hidden).toBe(true);
+		const both = page();
+		both.V.scene((s) => s.say({ en: "One.", da: "En." }));
+		both.V.start();
+		expect(both.V.lang).toBe("en");
+		expect(both.V.segments[0]?.text).toBe("One.");
 	});
 });

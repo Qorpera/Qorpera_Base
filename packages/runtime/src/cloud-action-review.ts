@@ -427,6 +427,8 @@ export function cloudActionEffect(
 		// a description changes only the record's words. Neither is reviewed.
 		case "manage_code":
 			return "internal";
+		case "narrate_app":
+			return "internal";
 		default:
 			return "external";
 	}
@@ -1017,6 +1019,11 @@ export function describeCloudAction(
 		quote("picture", args.prompt);
 		if (args.foreignOwner === true)
 			add("effect", "Members see the picture in that app, which shows it under its maker's name");
+	} else if (tool.name === "narrate_app") {
+		title = "Give an explainer its voice";
+		target = text(args.name) || null;
+		add("machine", args.machine);
+		add("voice", args.voice);
 	} else if (tool.name === "post_app") {
 		title = args.posted === false ? "Take an app away from the members' apps" : "Post an app for every member";
 		target = text(args.name) || null;

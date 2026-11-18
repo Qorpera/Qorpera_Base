@@ -18,6 +18,7 @@ import {
 	readCloudAgentHeadVision,
 } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
+import { cloudNarrateAppTool } from "./cloud-app-narrate-tool.ts";
 import {
 	CLAUDE_CODE_PIN,
 	type ClaudeBoxConfiguration,
@@ -183,6 +184,7 @@ import {
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
+import { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import {
 	type CloudWakeControl,
 	type CloudWakeEnvelope,
@@ -1014,6 +1016,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// ChatGPT plan has not: it gets no picture lane and is not offered make_picture. Its identity root says so, as
 				// the session reads it.
 				const pictures = (await chatGptPlanRun(identityRoot)) ? undefined : new CloudPictureChannel();
+				const voice = pictures ? new CloudVoiceChannel() : undefined;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -1054,6 +1057,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
 					compactor,
 					...(pictures ? { pictures } : {}),
+					...(voice ? { voice } : {}),
 					...(lines && viewed ? { closing: (closingSignal) => lines.close(closingSignal) } : {}),
 					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
 					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
@@ -1221,6 +1225,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								// A picture the agent makes, saved in the folder as a write is (20260930746000).
 								...(pictures
 									? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
+									: []),
+								...(voice && machineGateway
+									? [
+											cloudNarrateAppTool({
+												binding,
+												identity,
+												control: this.#paths,
+												folder: folder.client,
+												operations,
+												machines: { gateway: machineGateway, operations },
+												voice,
+											}),
+										]
 									: []),
 								// No wall (the founder, 14 November 2026: "rather drop the wall - it's the wrong medium for
 								// activity"): update_wall is offered to no run; a member learns work has started from the

@@ -139,6 +139,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "The object kit draws a real 3D model",
 		text: "The object kit's page can show a product as a real 3D model, drawn live in the member's own browser in real light: they turn and tilt it by hand, zoom in, and tap its parts. Build the model in Blender on a machine, export it into the app's folder as one glb file and name it as the data's model; each part names its object in the model as node, so no tracks are written. Keep the turntable or picture beside it: the page shows it while the model arrives and where a browser cannot draw 3D. app_guide about object says how.",
 	},
+	{
+		id: "explainer-voice-and-languages",
+		kind: "capability",
+		date: "2026-11-18",
+		title: "Explainer videos speak, in English and Danish",
+		text: "An explainer video now gets a voice: after save_app, narrate_app has a voice read each caption into a clip the video plays. It runs on the ChatGPT login the run works on and counts against that login's usage limit, so it records only captions with no clip yet, stops at the limit, keeps what it recorded and says how many captions are left; call it again after the reset. A video can carry English and Danish in one scenes.js ({en, da} wherever a text goes), with a language switch in the player: make new videos in both, and give the videos you own a voice. Read app_guide explainer first.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

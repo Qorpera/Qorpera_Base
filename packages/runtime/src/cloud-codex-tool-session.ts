@@ -86,10 +86,13 @@ import {
 	CLOUD_VOICE_READER_RULE,
 	type CloudVoiceCall,
 	type CloudVoiceChannel,
+	CloudVoiceLimitReached,
 	type CloudVoiceOpenInput,
 	type CloudVoiceSpoken,
 	CloudVoiceUnavailable,
+	type CloudVoiceUsage,
 	cloudVoiceOpenInput,
+	cloudVoiceUsage,
 	MAX_CLOUD_VOICE_SDP_BYTES,
 	MAX_CLOUD_VOICE_TEXT_BYTES,
 } from "./cloud-voice-channel.ts";
@@ -1699,6 +1702,21 @@ class CodexBoundaryRpc {
 		}
 	}
 
+	async voiceUsage(signal: AbortSignal): Promise<CloudVoiceUsage | undefined> {
+		if (this.#failure || this.#closed || !this.#boundary || signal.aborted) return undefined;
+		try {
+			return cloudVoiceUsage(
+				await untilAborted(
+					this.#send("account/rateLimits/read", {}, undefined, VOICE_REJECTED),
+					signal,
+					"Native voice cancelled",
+				),
+			);
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** One line: appended to the call's realtime session, answered with what the voice said of it. */
 	async #voiceSpeak(voice: VoiceThread, text: string, signal: AbortSignal): Promise<CloudVoiceSpoken> {
 		signal.throwIfAborted();
@@ -1706,7 +1724,9 @@ class CodexBoundaryRpc {
 		if (voice.ended)
 			throw voice.ended instanceof CloudVoiceUnavailable
 				? new CloudVoiceUnavailable()
-				: new Error(voice.ended.message);
+				: voice.ended instanceof CloudVoiceLimitReached
+					? new CloudVoiceLimitReached()
+					: new Error(voice.ended.message);
 		if (voice.speak) throw new Error("Native voice call is already speaking");
 		if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > MAX_CLOUD_VOICE_TEXT_BYTES)
 			throw new Error("Invalid voice line");
@@ -1874,7 +1894,12 @@ class CodexBoundaryRpc {
 			}
 		} else if (method === "thread/realtime/error") {
 			// The provider's words are never kept.
-			void this.#closeVoice(voice, new Error("Native voice call failed"));
+			void this.#closeVoice(
+				voice,
+				typeof params?.message === "string" && /usage limit/i.test(params.message)
+					? new CloudVoiceLimitReached()
+					: new Error("Native voice call failed"),
+			);
 		} else if (method === "thread/realtime/closed") {
 			voice.stopped = true;
 			this.#endVoice(voice, new Error("Native voice call ended"));
@@ -3610,7 +3635,10 @@ export async function runCloudCodexToolSession(options: {
 		// Only a Codex login places voice calls: a plan run's Codex reaches OpenAI's API with the plan's token instead.
 		if (!rpc.chatGptPlan && options.voice) {
 			if (options.voice.stopMs !== undefined) rpc.voiceStopMs = options.voice.stopMs;
-			options.voice.attach((input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal));
+			options.voice.attach(
+				(input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal),
+				(usageSignal) => rpc.voiceUsage(usageSignal),
+			);
 		}
 		// Pictures the same way: Codex's image tool reaches the Codex login's ChatGPT backend, never a plan's token.
 		if (!rpc.chatGptPlan && options.pictures) {

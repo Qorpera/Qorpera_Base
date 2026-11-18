@@ -45,6 +45,7 @@ import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorper
 import {
 	CLOUD_VOICE_READER_RULE,
 	CloudVoiceChannel,
+	CloudVoiceLimitReached,
 	CloudVoiceUnavailable,
 } from "@qorpera/runtime/cloud-voice-channel";
 import {
@@ -2205,6 +2206,43 @@ it("ends the call on a realtime error without the provider's words, and the run 
 	await f.endTurn();
 	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 	expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]);
+});
+
+it("reads the login's usage, and ends a call the usage limit cuts with the limit's own error", async () => {
+	const f = await voiceRun("voice-limit");
+	const signal = new AbortController().signal;
+	await expect(f.voice.usage(signal)).resolves.toEqual({
+		allowed: false,
+		windows: [
+			{ usedPercent: 41, resetAt: "2026-11-18T19:00:00.000Z", windowMinutes: 300 },
+			{ usedPercent: 100, resetAt: "2026-11-24T13:22:00.000Z", windowMinutes: 10080 },
+		],
+	});
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	const failure = await call.speak('"One."', signal).catch((error: unknown) => error);
+	expect(failure).toBeInstanceOf(CloudVoiceLimitReached);
+	await expect(call.speak('"Two."', signal)).rejects.toBeInstanceOf(CloudVoiceLimitReached);
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]);
+});
+
+it("answers no usage when Codex refuses the reading, and the run stands", async () => {
+	const f = await voiceRun("voice-error");
+	await expect(f.voice.usage(new AbortController().signal)).resolves.toBeUndefined();
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+});
+
+it("reads each window of a login with room, and nothing where no lane is attached", async () => {
+	const f = await voiceRun("voice");
+	await expect(f.voice.usage(new AbortController().signal)).resolves.toMatchObject({
+		allowed: true,
+		windows: [{ usedPercent: 41 }, { usedPercent: 84, resetAt: "2026-11-24T13:22:00.000Z" }],
+	});
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	await expect(new CloudVoiceChannel().usage(new AbortController().signal)).resolves.toBeUndefined();
 });
 
 it("rejects the call when Codex refuses its realtime start, and leaves the run's failure category as it was", async () => {
