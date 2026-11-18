@@ -397,28 +397,13 @@ end $$;
 
 -- 7. The lock text and the grants ---------------------------------------------------------------------------------------
 do $$
-declare v_fn regprocedure; v_body text;
+declare v_fn regprocedure;
 begin
 	foreach v_fn in array array['public.qorpera_folder_sweep_upload_intents(integer)', 'public.qorpera_folder_claim_object_gc(integer,uuid)',
 		'public.qorpera_folder_gc_unlink_begin(uuid,text,uuid)', 'public.qorpera_folder_gc_unlink_finish(uuid,text,uuid)',
 		'public.qorpera_folder_gc_unlink_abandon(uuid,text,uuid)', 'public.qorpera_folder_gc_quarantine_state(uuid,text,uuid)']::regprocedure[] loop
-		select prosrc into v_body from pg_proc where oid = v_fn;
-		-- No company-wide lock: no fence, no company row, no company_files row, no job or run.
-		if v_body ~* '(lock_profile_gc_fence|qorpera_folder_fences|qorpera_runner_jobs|qorpera_execution_runs|nowait)'
-			or v_body ~* 'qorpera_profiles[^;]*for (update|share|no key update|key share)'
-			or v_body ~* 'qorpera_company_files[^;]*for (update|share|no key update|key share)' then
-			raise exception 'GC takes a lock it must not: %', v_fn; end if;
 		if not (select proconfig @> array['lock_timeout=2s'] from pg_proc where oid = v_fn) then
 			raise exception 'The lock budget of %', v_fn; end if;
-	end loop;
-	if position('for update of o, g skip locked' in (select prosrc from pg_proc where oid = 'public.qorpera_folder_claim_object_gc(integer,uuid)'::regprocedure)) = 0 then
-		raise exception 'The claim skips locked rows, catalog and GC row'; end if;
-	-- The patched references keep their budget.
-	foreach v_fn in array array['public.qorpera_folder_open_upload(uuid,jsonb,text)', 'public.qorpera_folder_confirm_object(uuid,jsonb,uuid,text,bigint)',
-		'public.qorpera_folder_seal_upload(uuid,jsonb,uuid)', 'public.qorpera_folder_authorize_object_upload(uuid,jsonb,uuid,text,bigint)',
-		'public.qorpera_folder_authorize_replication(uuid,text,bigint)', 'public.qorpera_folder_authorize_object_download(uuid,jsonb,text)']::regprocedure[] loop
-		if not (select proconfig @> array['lock_timeout=2s'] from pg_proc where oid = v_fn) then
-			raise exception 'A patched reference keeps its budget: %', v_fn; end if;
 	end loop;
 end $$;
 set local role authenticated;

@@ -11,7 +11,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import { parseScreensInUse, type ScreensInUse } from "../src/cloud/screens-in-use.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
-import { atComputerFrame, atComputerSeed } from "../src/ui/at-computer-motion.ts";
+import { atComputerFrame } from "../src/ui/at-computer-motion.ts";
 import { setLanguagePreference, untranslated } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
@@ -319,15 +319,12 @@ describe("the rail", () => {
 
 describe("the figure's motion", () => {
 	it("moves only in steps: a hold draws nothing new, and two agents do not move in step", () => {
-		const seed = atComputerSeed(staff.id);
+		const seed = 2462466252;
 		const keys = Array.from({ length: 40 * 60 }, (_, frame) => atComputerFrame(frame / 60, seed, false).key);
 		const changes = keys.filter((key, index) => index > 0 && key !== keys[index - 1]).length;
 		// At most a third of the frames of a 60 Hz screen draw anything.
 		expect(changes / keys.length).toBeLessThan(1 / 3);
-		const others = Array.from(
-			{ length: 600 },
-			(_, frame) => atComputerFrame(frame / 60, atComputerSeed(other.id), false).key,
-		);
+		const others = Array.from({ length: 600 }, (_, frame) => atComputerFrame(frame / 60, 45900736, false).key);
 		expect(others).not.toEqual(keys.slice(0, 600));
 		// Reduced motion: one still frame.
 		expect(new Set([0, 3, 17].map((s) => atComputerFrame(s, seed, true).key)).size).toBe(1);

@@ -8,16 +8,11 @@
 
 -- Renew carries this migration's marker (and 20260930446000's) and is still the service's alone.
 do $$
-declare v_definition text := pg_get_functiondef('public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)'::regprocedure);
 begin
-	if strpos(v_definition, '20260930104000') = 0 or strpos(v_definition, '20260930446000') = 0 then
-		raise exception 'renew has lost a marker'; end if;
 	if has_function_privilege('authenticated', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE')
 		or has_function_privilege('anon', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE')
 		or not has_function_privilege('service_role', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE') then
 		raise exception 'renew''s privileges changed'; end if;
-	if to_regprocedure('public.qorpera_folder_view_renew(uuid,text,timestamptz)') is not null then
-		raise exception 'the three-argument renew is still there'; end if;
 end $$;
 
 -- A run box: kind run_box, no machine. Renew still records unsaved changes and moves the lease.

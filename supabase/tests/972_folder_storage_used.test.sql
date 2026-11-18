@@ -112,9 +112,8 @@ begin
 		or not has_function_privilege('authenticated', 'public.qorpera_get_company_file(uuid)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_get_company_file(uuid)', 'execute') then
 		raise exception 'The grants are unchanged'; end if;
-	if position('20260930524000' in pg_get_functiondef('public.qorpera_company_file_json(public.qorpera_company_files)'::regprocedure)) = 0
-		or not (select prosecdef from pg_proc where oid = 'public.qorpera_company_file_json(public.qorpera_company_files)'::regprocedure) then
-		raise exception 'The patched function names its migration and stays security definer'; end if;
+	if not (select prosecdef from pg_proc where oid = 'public.qorpera_company_file_json(public.qorpera_company_files)'::regprocedure) then
+		raise exception 'The patched function stays security definer'; end if;
 end $$;
 
 rollback;

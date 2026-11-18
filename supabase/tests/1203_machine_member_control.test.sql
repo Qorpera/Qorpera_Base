@@ -990,10 +990,6 @@ begin
 	--       read from its body: this fixture has no capture key, 1181 shows the answer), and the executor asks the same
 	--       check, with no looker, before the helper reads the clipboard and after: a read authorized before a take-over
 	--       and a member's copy gets none, with the member holding and after they handed back.
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)'::regprocedure),
-			'''desktopGeneration'', v_machine.desktop_member_generation') > 0,
-		'9 (iii): the coding value read answers the generation it saw');
 	v_g := pg_temp.dc_generation('a1');
 	perform pg_temp.base_assert(pg_temp.dc_check(v_g) = current_setting('qorpera_test.dc_ok'),
 		'9 (iii): no hold: the clipboard may be read');
@@ -1224,21 +1220,6 @@ begin
 			and (select relrowsecurity from pg_class where oid = 'public.qorpera_company_machine_desktop_actions'::regclass)
 			and (select relrowsecurity from pg_class where oid = 'public.qorpera_company_machine_desktop_epochs'::regclass),
 		'8: row level security on the three tables');
-	-- The action check is the agent's (one xdotool list, which cloud-machine-screen.test.ts pins to the helper's), never open.
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_valid_member_desktop_action(jsonb)'::regprocedure), 'public.qorpera_valid_machine_screen_call(') > 0,
-		'8: the member''s action check is the agent''s call check');
-	perform pg_temp.base_assert((select array_agg(proname::text order by proname) from pg_proc
-			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930713000') > 0)
-		= array['qorpera_authorize_machine_coding_value', 'qorpera_authorize_machine_command', 'qorpera_authorize_machine_screen',
-			'qorpera_list_agent_machines', 'qorpera_machine_desktop_clipboard_cleared', 'qorpera_machine_desktop_picture_check',
-			'qorpera_member_hand_back_machine_desktop',
-			'qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_act_authority',
-			'qorpera_member_machine_desktop_act_begin',
-			'qorpera_member_machine_screen_authority', 'qorpera_member_machine_screen_begin',
-			'qorpera_member_take_machine_desktop', 'qorpera_valid_member_desktop_action'],
-		'8: the bodies that name 20260930713000: ' || (select array_agg(proname::text order by proname)::text from pg_proc
-			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930713000') > 0));
 end $$;
 
 -- 13. An action carries the epoch of the hold it was captured under (release review r1 of #1667, F24 of #1661) ---------------

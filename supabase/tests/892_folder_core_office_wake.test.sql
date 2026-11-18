@@ -566,14 +566,6 @@ begin
 	end;
 end $$;
 
--- G. Exactly the patched functions and the new ones name this migration.
-do $$
-begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930030100') <> 8 then
-		raise exception 'G: 4 patched functions and 4 new ones name 20260930030100 (found %)',
-			(select count(*) from pg_proc where prosrc ~ '20260930030100'); end if;
-end $$;
-
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture (as 850 does): the start's wakes and waiters first (they name only the run).

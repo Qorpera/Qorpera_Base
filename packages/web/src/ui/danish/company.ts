@@ -51,7 +51,6 @@ export const COMPANY: Record<string, string> = {
 		"{name} er nu en mappe, så denne version kan ikke gendannes.",
 	"You may not change {name}.": "Du må ikke ændre {name}.",
 
-	// The live Company File (app/views/live-company-file.ts)
 	"Retry opening Company File": "Prøv at åbne Virksomhedsfilen igen",
 
 	// Organization (app/views/organization.ts)

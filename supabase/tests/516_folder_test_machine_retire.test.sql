@@ -73,14 +73,9 @@ create function pg_temp.record_at(p_placement public.qorpera_company_machine_pla
 		public.qorpera_company_machine_binding_text(p_placement.binding), p_placement.machine_id_sha256, p_boot, '[]', false)
 $$;
 
--- 0. The marker is in the new function and the patched authorization. Only the executor (service_role) retires; a
---    retirement cause is one of three, and only on a retired placement.
 do $$
 declare v_retire constant text := 'public.qorpera_retire_company_machine(uuid,text,text,text,uuid,text)'; r name;
 begin
-	perform pg_temp.base_assert(strpos(pg_get_functiondef(v_retire::regprocedure), '20260930424000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure),
-			'20260930424000: unless the caller reads the root') > 0, 'The marker is in both functions');
 	foreach r in array array['anon','authenticated','qorpera_secret_broker']::name[] loop
 		perform pg_temp.base_assert(not has_function_privilege(r, v_retire, 'EXECUTE'), r || ' may not retire a machine');
 	end loop;

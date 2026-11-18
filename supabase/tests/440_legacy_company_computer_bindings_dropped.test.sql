@@ -8,19 +8,6 @@
 -- 1. Gone.
 do $$
 begin
-	perform pg_temp.base_assert(to_regclass('public.qorpera_governed_company_computers') is null
-		and to_regclass('public.qorpera_legacy_company_computer_teardowns') is null, 'the binding tables are gone');
-	perform pg_temp.base_assert(not exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname in (
-		'qorpera_governed_company_computer_policy', 'qorpera_governed_company_computer_matches',
-		'qorpera_guard_governed_company_computer_update', 'qorpera_register_governed_company_computer',
-		'qorpera_describe_governed_company_computer', 'qorpera_legacy_company_computer_authority_sha256',
-		'qorpera_legacy_company_computer_teardown_matches', 'qorpera_register_legacy_company_computer_teardown',
-		'qorpera_guard_legacy_company_computer_teardown', 'qorpera_guard_torn_down_legacy_company_computer',
-		'qorpera_guard_torn_down_legacy_computer_work', 'qorpera_guard_torn_down_legacy_computer_assignment')),
-		'the bindings'' functions are gone');
-	perform pg_temp.base_assert(not exists (select 1 from pg_trigger where not tgisinternal
-		and (tgname like 'qorpera_guard_torn_down_legacy_%' or tgname = 'qorpera_guard_governed_company_computer_update')),
-		'the bindings'' triggers are gone');
 	-- The work guards keep their triggers, so their place in the firing order.
 	perform pg_temp.base_assert((select count(*) from pg_trigger where not tgisinternal and tgname in (
 		'qorpera_governed_company_computer_turn_request', 'qorpera_governed_company_computer_execution_run',

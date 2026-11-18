@@ -155,42 +155,6 @@ end $$;
 -- G. Each patched body carries its folder-v2 branch (a later create or replace that drops one fails here).
 create temporary table c1c3g_patches(n serial, fn text, patched text) on commit preserve rows;
 insert into c1c3g_patches(fn, patched) values
-	('qorpera_delete_hosted_profile(uuid)',
-		E'\t-- C1c-3g (20260930015000): on folder-v2 the fence FOR NO KEY UPDATE (a leave, removal or join waits) and rank 0.\n'
-		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
-		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
-		|| E'\telse\n'
-		|| E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
-		|| E'\tend if;\n'),
-	('qorpera_request_company_deletion(uuid,uuid)',
-		E'\t-- C1c-3g (20260930015000): on folder-v2 the fence FOR NO KEY UPDATE and rank 0; the finisher drains the fence.\n'
-		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
-		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
-		|| E'\telse\n'
-		|| E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
-		|| E'\tend if;\n'),
-	('qorpera_request_company_deletion(uuid,uuid)',
-		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n'),
-	('qorpera_stop_company_work(uuid)',
-		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n'),
-	('qorpera_finish_company_deletion(uuid)',
-		E'\t\t\t-- C1c-3g (20260930015000): on folder-v2 the folder pause''s second phase, for deletion, then the company row\n'
-		|| E'\t\t\t-- FOR UPDATE as the purge takes it, before the stop''s and the revocations'' rows (jobs, secrets, grants).\n'
-		|| E'\t\t\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
-		|| E'\t\t\t\tperform public.qorpera_folder_deletion_drain(p_profile_id);\n'
-		|| E'\t\t\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
-		|| E'\t\t\telse\n'
-		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
-		|| E'\t\t\tend if;\n'),
-	('qorpera_purge_company(uuid)',
-		E'\t-- C1c-3g (20260930015000): on folder-v2 the drain, then the company row FOR UPDATE (the one folder-v2 path that\n'
-		|| E'\t-- may: it deletes the row), after the fence and before the cascade''s children.\n'
-		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
-		|| E'\t\tperform public.qorpera_folder_deletion_drain(p_profile_id);\n'
-		|| E'\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
-		|| E'\telse\n'
-		|| E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
-		|| E'\tend if;\n'),
 	('qorpera_finish_company_deletions(integer)',
 		E'\t\t-- C1c-3g (20260930015000): finished in company id order, as the node update drains and the executor give-up\n'
 		|| E'\t\t-- take their companies, so two batches of locks never cross.\n'

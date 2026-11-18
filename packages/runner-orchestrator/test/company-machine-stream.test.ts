@@ -1,5 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { chmod, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { inflateSync } from "node:zlib";
@@ -1265,15 +1270,36 @@ describe("a desktop's live picture (20260930745000)", () => {
 		20_000,
 	);
 
-	it("runs its relay as root on SQL's boot only, with the desktop running, and nothing else", () => {
-		for (const part of [
-			'[ "$boot" = "$0" ]; } || exit 97',
-			"command -v python3 >/dev/null 2>&1 || exit 98",
-			"systemctl is-active --quiet qorpera-machine-desktop.service || exit 95",
-			'exec python3 -c "$1"',
-		])
-			expect(COMPANY_MACHINE_DESKTOP_VIEW).toContain(part);
-		expect(COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM).toContain("socket.create_connection(('127.0.0.1', 5901)");
+	it.skipIf(process.platform !== "linux" || spawnSync("python3", ["-c", "0"]).status !== 0)(
+		"runs its relay only on SQL's boot, with python3 and the desktop running, in a real shell",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "desktop-view-")));
+			try {
+				const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+				const run = (bootId = boot) =>
+					spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_DESKTOP_VIEW, bootId, "import sys; sys.exit(7)"], {
+						env: { PATH: bin },
+					}).status;
+				const systemctl = async (body: string) => {
+					await writeFile(join(bin, "systemctl"), `#!/bin/sh\n${body}\n`);
+					await chmod(join(bin, "systemctl"), 0o755);
+				};
+				expect(run(randomUUID())).toBe(97);
+				expect(run()).toBe(98);
+				const python = spawnSync("/bin/sh", ["-c", "command -v python3"], { encoding: "utf8" }).stdout.trim();
+				await symlink(python, join(bin, "python3"));
+				await systemctl("exit 3");
+				expect(run()).toBe(95);
+				await systemctl('[ "$*" = "is-active --quiet qorpera-machine-desktop.service" ] || exit 9');
+				expect(run(randomUUID())).toBe(97);
+				expect(run()).toBe(7);
+			} finally {
+				await rm(bin, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("runs nothing else from its relay: no subprocess, shell, exec, eval or file open", () => {
 		expect(COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM).not.toMatch(/subprocess|os\.system|exec\(|eval\(|open\(/);
 	});
 });

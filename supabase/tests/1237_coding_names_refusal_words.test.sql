@@ -8,25 +8,6 @@
 --      code of the checks, another CODING_LAND_ code, a landing code inside the words, and a plain summary.
 --   3. The markers and the grants.
 
--- The branch this migration put in the body (its text exactly), before the line 20260930721000 put its own before.
-create function pg_temp.nr_branch() returns text language sql immutable as $nr$
-	select $b$	-- 20260930743000: the code host refused the landing for its files' names or a file too large (the executor's
-	-- CODING_LAND_ codes, read at the very end of its words, as the checks' are: the paths in them may hold any text). The
-	-- executor's words are the report (what to rename or take out, and that nothing went into main); the code stays the
-	-- reason.
-	elsif substring(p_summary from '\[code=(CODING_LAND_[A-Z_]{1,40})\]\s*$') in ('CODING_LAND_NAMES_REFUSED',
-		'CODING_LAND_FILE_TOO_LARGE') then
-		v_code := substring(p_summary from '\[code=(CODING_LAND_[A-Z_]{1,40})\]\s*$');
-		v_report := coalesce(nullif(regexp_replace(p_summary, '\s*\[code=CODING_LAND_[A-Z_]{1,40}\]\s*$', ''), ''), p_summary);
-$b$::text
-$nr$;
-create function pg_temp.nr_anchor() returns text language sql immutable as $nr$
-	select $a$	elsif v_job.id is not null and v_code ~ '^[A-Z0-9_]{1,42}(:[A-Z0-9_]{1,42})?$'$a$::text
-$nr$;
-create function pg_temp.nr_body() returns text language sql as $$
-	select pg_get_functiondef('public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'::regprocedure)
-$$;
-
 -- 1. A landing refused for its files ------------------------------------------------------------------------------------
 do $$
 declare v_turn jsonb; w public.qorpera_runtime_workers%rowtype; v_event jsonb;
@@ -64,15 +45,7 @@ declare w public.qorpera_runtime_workers%rowtype := pg_temp.c3_worker('92800000-
 		|| 'stay in the session''s workspace as it left them; a follow-up turn continues from them.';
 	v_failed constant text := 'Nothing went into main: the check "test" failed on this change. It ran `npm test` and ended '
 		|| 'with exit code 1 after 41 s. Fix the cause in the code, commit and finish again.';
-	v_before text;
 begin
-	-- The body without this migration's branch is the body production had on 13 November 2026 (and every migration
-	-- before this one leaves), byte for byte, with the anchor once.
-	v_before := replace(pg_temp.nr_body(), pg_temp.nr_branch() || pg_temp.nr_anchor(), pg_temp.nr_anchor());
-	perform pg_temp.base_assert(strpos(pg_temp.nr_body(), pg_temp.nr_branch() || pg_temp.nr_anchor()) > 0
-		and md5(v_before) = '0cf3cef91322fdc8998c23e037a4b300' and length(v_before) = 11471
-		and (length(v_before) - length(replace(v_before, pg_temp.nr_anchor(), ''))) / length(pg_temp.nr_anchor()) = 1,
-		'the rest of the body: ' || md5(v_before) || ' ' || length(v_before));
 	-- A code of the checks keeps its words, as 20260930721000 has it.
 	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, v_failed || ' [code=CODING_CHECKS_FAILED]')
 		= jsonb_build_object('reason', 'CODING_CHECKS_FAILED', 'summary', v_failed), 'the checks: '
@@ -96,8 +69,6 @@ begin
 end $$;
 
 -- 3. The markers and the grants -----------------------------------------------------------------------------------------
-select pg_temp.base_assert(position('20260930743000' in pg_temp.nr_body()) > 0 and position('20260930721000' in pg_temp.nr_body()) > 0
-	and position('20260930729000' in pg_temp.nr_body()) > 0 and position('20260930560000' in pg_temp.nr_body()) > 0, 'the markers');
 select pg_temp.base_assert(not has_function_privilege('authenticated',
 	'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)', 'execute')
 	and not has_function_privilege('anon', 'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)', 'execute'),

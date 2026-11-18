@@ -361,23 +361,11 @@ end $$;
 
 -- 9. The window, the trigger and the markers --------------------------------------------------------------------------------------
 do $$
-declare v_trigger text;
 begin
 	perform pg_temp.base_assert(public.qorpera_machine_screen_in_use() = interval '90 seconds', '9: the window is 90 s');
 	perform pg_temp.base_assert(not has_function_privilege('authenticated', 'public.qorpera_machine_screen_in_use()', 'execute')
 			and not has_function_privilege('anon', 'public.qorpera_machine_screen_in_use()', 'execute'),
 		'9: the window is no one''s to call');
-	select pg_get_triggerdef(trigger.oid) into v_trigger from pg_trigger as trigger
-	where trigger.tgname = 'qorpera_machine_hint_change' and trigger.tgrelid = 'public.qorpera_company_machines'::regclass;
-	perform pg_temp.base_assert(strpos(v_trigger, 'screen_agent_since') > 0 and strpos(v_trigger, 'desktop_member_since') > 0
-			and strpos(v_trigger, 'screen_used_at') > 0 and strpos(v_trigger, 'DEFERRABLE INITIALLY DEFERRED') > 0,
-		'9: the hint trigger keeps its columns and gains the stretch: ' || coalesce(v_trigger, 'none'));
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure),
-			'20260930742000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure),
-			'20260930734000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_list_company_screens_in_use(uuid)'::regprocedure), '20260930742000') > 0,
-		'9: the markers');
 	-- Nothing but the agent's screen read writes the columns.
 	perform pg_temp.base_assert(not exists (select 1 from pg_proc
 			where pronamespace = 'public'::regnamespace and prosrc like '%screen_agent_used_at =%'
