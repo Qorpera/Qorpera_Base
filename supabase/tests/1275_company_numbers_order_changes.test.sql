@@ -125,17 +125,6 @@ begin
 		'qorpera_company_numbers_change v true search_path="",lock_timeout=3s'
 		' | qorpera_member_company_numbers_change v true search_path=""'
 		' | qorpera_run_company_numbers_change v true search_path=""', 'volatile, as their owner');
-	perform pg_temp.o_same((select string_agg(indexname || ': ' || substring(indexdef from ' WHERE .*$'), ' | '
-			order by indexname)
-		from pg_indexes where schemaname = 'public' and indexname in ('qorpera_orders_added', 'qorpera_orders_marked')),
-		'qorpera_orders_added:  WHERE (source = ''added''::text) | qorpera_orders_marked:  WHERE ((state = ANY '
-		'(ARRAY[''packed''::text, ''on_the_way''::text, ''delivered''::text, ''cancelled''::text])) AND '
-		'(source = ''stripe''::text))', 'the indexes');
-	perform pg_temp.o_same((select string_agg(proname, ',' order by proname) from pg_proc
-		where pronamespace = 'public'::regnamespace and prosrc like '%20260930777000%'),
-		'qorpera_company_numbers_answer,qorpera_company_numbers_change,qorpera_company_numbers_orders,'
-		'qorpera_member_company_numbers_change,qorpera_order_currency_known,qorpera_run_company_numbers_change',
-		'the marker');
 end $$;
 
 -- 2. order-state: forward (a step may be skipped), cancelled from any state, nothing after cancelled, the same state

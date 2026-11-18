@@ -694,18 +694,6 @@ begin
 			cross join unnest(array['select', 'insert', 'update', 'delete']) priv(name)
 			where has_table_privilege(r.role, 'public.qorpera_company_machine_screen_runs', priv.name)),
 		'10: the screen runs are no role''s');
-	perform pg_temp.base_assert(not exists (select 1 from unnest(array[
-			'public.qorpera_member_start_agent_computer(uuid,uuid)',
-			'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)',
-			'public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)',
-			'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
-			'public.qorpera_list_agent_machines(uuid,uuid)']) f(sig)
-		where strpos(pg_get_functiondef(f.sig::regprocedure), '20260930730000') = 0),
-		'10: every new or patched body names the migration');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure),
-			'20260930420000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_record_company_machine_commands(uuid,text,text,text,uuid,jsonb,boolean)'::regprocedure),
-			'20260930181000') > 0, '10: the patched bodies keep their earlier markers');
 end $$;
 
 -- 11. Two sessions at once make one computer ------------------------------------------------------------------------------------

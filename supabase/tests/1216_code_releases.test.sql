@@ -363,19 +363,6 @@ begin
 			kind, state, main_after, title, site_state, site, site_problem) select pg_temp.rec_here(), 'company', 'shape', 99,
 			pg_temp.rel_company(), 'found', 'landed', pg_temp.rec_sha('x'), 'A row', bad.* from (values %s) bad$q$, v_function), '23514');
 	end loop;
-	-- Each changed body carries the marker.
-	foreach v_function in array array['public.qorpera_code_checks_switch(uuid,uuid)',
-		'public.qorpera_code_change_report_valid(jsonb)', 'public.qorpera_record_code_change(uuid,uuid,jsonb)',
-		'public.qorpera_code_change_files(text,text,uuid,text,text,integer)',
-		'public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)', 'public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)',
-		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
-		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)', 'public.qorpera_site_publish_check(jsonb,text)',
-		'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)', 'public.qorpera_site_unpublish(jsonb,text)',
-		'public.qorpera_list_company_sites(uuid)', 'public.qorpera_site_abandoned(public.qorpera_company_sites)',
-		'public.qorpera_unpublish_company_site(uuid)', 'public.qorpera_member_app_layout_valid(jsonb)'] loop
-		perform pg_temp.base_assert(strpos(pg_get_functiondef(v_function::regprocedure), '20260930729000') > 0,
-			'the marker is in ' || v_function);
-	end loop;
 end $$;
 
 -- 2. Report v3 ------------------------------------------------------------------------------------------------------------

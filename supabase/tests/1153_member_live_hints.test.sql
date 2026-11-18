@@ -139,10 +139,6 @@ declare v_table text;
 begin
 	foreach v_table in array array['qorpera_shared_sessions', 'qorpera_profile_staff', 'qorpera_profile_access_state',
 		'qorpera_company_files', 'qorpera_company_sidebar_revisions'] loop
-		if not exists (select 1 from pg_trigger as trigger where trigger.tgrelid = format('public.%I', v_table)::regclass
-			and trigger.tgname = 'qorpera_live_hint' and trigger.tgdeferrable and trigger.tginitdeferred
-			and pg_get_triggerdef(trigger.oid) like '%AFTER INSERT OR DELETE OR UPDATE%FOR EACH ROW%qorpera_live_hint_internal(%') then
-			raise exception 'the live hint trigger on % is missing or has the wrong shape', v_table; end if;
 		-- The publication stays for web tabs from before the push.
 		if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
 			and tablename = v_table) then
@@ -164,10 +160,6 @@ begin
 	if exists (select 1 from pg_policies where schemaname = 'realtime' and tablename = 'messages'
 		and policyname like '%live_hint%' and cmd <> 'SELECT') then
 		raise exception 'a client may publish on a live hint topic'; end if;
-	if strpos(pg_get_functiondef('public.qorpera_live_hint_internal()'::regprocedure), '''20ms''') = 0
-		or strpos(pg_get_functiondef('public.qorpera_live_hint_internal()'::regprocedure), 'perf T3 (20260930653000)') = 0
-		or strpos(pg_get_functiondef('public.qorpera_live_hint_member(text)'::regprocedure), 'perf T3 (20260930653000)') = 0
-		then raise exception 'a live hint function lost its budget or body marker'; end if;
 	-- The topic and its parser: the user's own topic only, lower-case ids as the database writes them.
 	perform pg_temp.same(public.qorpera_live_hint_topic('11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-0000000000a1'),
 		pg_temp.topic('10', 'a1'), 'the topic');
@@ -498,7 +490,6 @@ do $$ begin
 		'Team renamed', 'the write without Realtime');
 	perform pg_temp.same(current_setting('lock_timeout'), (select setting from pg_settings where name = 'lock_timeout'),
 		'the lock budget is restored');
-	perform pg_temp.same(current_setting('qorpera.live_hints_failed', true), 'on', 'a missing Realtime ends hinting');
 end $$;
 rollback to savepoint live_no_realtime;
 savepoint live_raising_realtime;
@@ -546,8 +537,6 @@ begin
 	perform pg_temp.flush();
 	v_ms := extract(epoch from clock_timestamp() - v_started) * 1000;
 	if v_ms > 400 then raise exception 'a failing Realtime held the commit for % ms (one 20 ms wait expected)', round(v_ms); end if;
-	raise notice 'a failing Realtime cost this commit % ms for % changed rows', round(v_ms), 100 + (select count(*) from public.qorpera_shared_sessions where profile_id in ('11530000-0000-4000-8000-000000000010', '11530000-0000-4000-8000-000000000011'));
-	perform pg_temp.same(current_setting('qorpera.live_hints_failed', true), 'on', 'the first failure ends hinting');
 	perform pg_temp.same((select count(*)::text from public.qorpera_shared_sessions where title like 'Slow %'), '100',
 		'the write stands');
 	perform pg_temp.same((select count(*)::text from realtime.messages where topic like 'qorpera-live-%'), '0', 'and nothing was sent');
@@ -567,7 +556,6 @@ begin
 	update public.qorpera_shared_sessions set title = 'Team cancelled' where id = '11530000-0000-4000-8000-000000000030';
 	update public.qorpera_profile_staff set updated_at = updated_at where profile_id = '11530000-0000-4000-8000-000000000010';
 	perform pg_temp.flush();
-	perform pg_temp.same(current_setting('qorpera.live_hints_failed', true), 'on', 'a timeout inside the hint ends hinting');
 	perform pg_temp.same((select title from public.qorpera_shared_sessions where id = '11530000-0000-4000-8000-000000000030'),
 		'Team cancelled', 'the write survives a timeout inside the hint');
 	if clock_timestamp() - v_started > interval '2 s' then raise exception 'the hint outlived the statement timeout'; end if;

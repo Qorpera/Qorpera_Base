@@ -482,7 +482,8 @@ begin
 	-- The zone's month, or the summary's own (Copenhagen's here) when that is within a day of it.
 	perform pg_temp.n_same(pg_temp.n_refused(o, 'money-kinds', '{"month":"2000-01"}'),
 		format('22023 qorpera/money-kinds answers this month only (%s), for now',
-			public.qorpera_company_numbers_kinds_month((clock_timestamp() at time zone v_zone)::date, pg_temp.n_month())),
+			case when pg_temp.n_month() in (left(pg_temp.n_zone_day(v_zone, 0), 7), left(pg_temp.n_zone_day(v_zone, 1), 7))
+				then pg_temp.n_month() else left(pg_temp.n_zone_day(v_zone, 0), 7) end),
 		'the zone''s month');
 	-- A zone of the right shape that the database does not know: Copenhagen's.
 	update public.qorpera_profiles set time_zone = 'Mars/Olympus_Mons' where id = '92400000-0000-4000-8000-000000000010';

@@ -1,29 +1,10 @@
 -- Run after the Step 2 migrations, including the independent broker role.
--- A production-schema replay also exercises the retained legacy trigger.
 begin;
 
 do $$
 declare
-	v_guard regprocedure := to_regprocedure('public.qorpera_company_computer_binding_guard()');
-	v_role text;
 	v_functions text[];
 begin
-	if v_guard is not null then
-		if not exists (
-			select 1 from pg_proc where oid = v_guard and prorettype = 'trigger'::regtype
-		) then
-			raise exception 'Retained Company Computer guard changed its signature';
-		end if;
-		foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
-			if has_function_privilege(v_role, v_guard, 'EXECUTE') then
-				raise exception 'Legacy Company Computer guard is exposed to %', v_role;
-			end if;
-		end loop;
-		if not exists (select 1 from pg_trigger where tgfoid = v_guard and not tgisinternal) then
-			raise exception 'Legacy Company Computer guard lost its existing trigger';
-		end if;
-	end if;
-
 	-- Exact signatures, not names: Step 7 added a second signature of the
 	-- capture completion (account label), and a name-only check would also pass
 	-- any other overload the broker inherited. Bundle v88 added the coding

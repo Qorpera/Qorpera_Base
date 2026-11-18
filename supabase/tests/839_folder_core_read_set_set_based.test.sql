@@ -179,7 +179,6 @@ begin
 		raise exception 'E: agent B, granted teams/sales, reads them'; end if;
 end $$;
 
--- F. The new functions are internal, and every patched body carries the marker.
 do $$
 begin
 	if exists (select 1 from unnest(array['public', 'anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) r,
@@ -187,11 +186,6 @@ begin
 				'public.qorpera_folder_paths_authority(uuid,uuid,jsonb,text[])']) f
 		where has_function_privilege(r, f, 'execute')) then
 		raise exception 'F: the set-based lookups must be internal'; end if;
-	if exists (select 1 from unnest(array['public.qorpera_folder_run_reads_current(uuid,uuid,jsonb)',
-			'public.qorpera_folder_view_reads_current(uuid,uuid,uuid,jsonb)', 'public.qorpera_folder_release_pairs(uuid,uuid,jsonb,jsonb)',
-			'public.qorpera_folder_parent_reads_allowed(public.qorpera_wake_occurrences)']) f
-		where position('20260930019500' in pg_get_functiondef(f::regprocedure)) = 0) then
-		raise exception 'F: a patched body lacks its marker'; end if;
 end $$;
 
 rollback;

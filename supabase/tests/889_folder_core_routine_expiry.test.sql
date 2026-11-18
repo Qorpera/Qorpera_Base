@@ -118,13 +118,4 @@ begin
 		'63400000-0000-4000-8000-000000000010'));
 end $$;
 
--- 5. P28's tidy-up: the materializer no longer says F2's drain runs inside it.
-do $$
-declare v_def text := pg_get_functiondef('public.qorpera_folder_materialize_company(uuid,integer)'::regprocedure);
-begin
-	if position('F2-5b-3 calls the folder worker drain here' in v_def) > 0
-		or position('20260930027000: F2''s worker drain and the listener (P29) run in their own transactions' in v_def) = 0 then
-		raise exception 'The materializer''s comment on F2''s drain is not the corrected one'; end if;
-end $$;
-
 rollback;

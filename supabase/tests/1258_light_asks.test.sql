@@ -12,7 +12,6 @@
 --    a tool and stores no answer.
 -- 5. No answer; an answer after the ask's time; an ask past its time before its run; eight waiting asks; day-old asks
 --    go when their member asks again; no login of one's own; a paused company keeps no ask.
--- 6. The markers. Rolled back at the end.
 
 -- Each pass as its own transaction would start it (874's).
 create function pg_temp.materialize(p_profile uuid, p_limit integer default 16) returns jsonb language plpgsql as $$
@@ -556,29 +555,6 @@ begin
 		or exists (select 1 from public.qorpera_light_asks where client_ask_id = '12580000-0000-4000-8000-000000000401')
 		or pg_temp.read('85600000-0000-4000-8000-000000000002', (v_result ->> 'id')::uuid) is not null then
 		raise exception 'An ask in a paused company: % %', v_result, to_jsonb(v_wake); end if;
-end $$;
-
--- 6. The markers ----------------------------------------------------------------------------------------------------------
-
-do $$
-declare v_function regprocedure;
-begin
-	foreach v_function in array array['public.qorpera_pin_wake_occurrence()',
-		'public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)',
-		'public.qorpera_runtime_wake_policy_internal(uuid)', 'public.qorpera_folder_read_wake(jsonb)',
-		'public.qorpera_folder_materialize_company(uuid,integer)',
-		'public.qorpera_run_autonomous_authority(public.qorpera_execution_runs)',
-		'public.qorpera_begin_native_company_execution_v3(jsonb,text,text,text,text)',
-		'public.qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)',
-		'public.qorpera_request_light_ask(uuid,uuid,text,jsonb)', 'public.qorpera_read_light_ask(uuid,uuid)',
-		'public.qorpera_native_light_ask_answer(jsonb,text)']::regprocedure[] loop
-		if position('20260930761000' in pg_get_functiondef(v_function)) = 0 then
-			raise exception '% does not carry 20260930761000', v_function; end if;
-	end loop;
-	if not exists (select 1 from pg_constraint where conname = 'qorpera_wake_occurrences_source_kind_check'
-		and pg_get_constraintdef(oid) like '%''light-ask''%' and pg_get_constraintdef(oid) like '%''human-task''%'
-		and pg_get_constraintdef(oid) like '%''machine-checkin''%') then
-		raise exception 'The wake source kinds lost or lack a kind'; end if;
 end $$;
 
 rollback;

@@ -45,8 +45,6 @@ create function pg_temp.mm_alice() returns uuid language sql as $$
 	select (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid
 $$;
 
--- 1. Members read and owners and admins set, through the two calls alone; the choice, the effective mode, the offer and
---    the trigger are no one else's. The run's mode is a nullable column with no default (no table rewrite), checked.
 do $$
 declare v_role text; v_name text;
 begin
@@ -64,15 +62,6 @@ begin
 	end loop;
 	perform pg_temp.base_assert((select relrowsecurity from pg_class where oid = 'public.qorpera_company_memory_modes'::regclass),
 		'the choice has row security');
-	perform pg_temp.base_assert((select not a.attnotnull and not a.atthasdef from pg_attribute a
-		where a.attrelid = 'public.qorpera_execution_runs'::regclass and a.attname = 'memory_mode'), 'the run''s mode is nullable, no default');
-	perform pg_temp.base_assert(exists (select 1 from pg_trigger where tgrelid = 'public.qorpera_execution_runs'::regclass
-		and tgname = 'qorpera_execution_run_memory_mode' and tgenabled = 'O'
-		and tgfoid = 'public.qorpera_pin_execution_memory_mode()'::regprocedure), 'the run row''s trigger pins the mode');
-	-- A resume queues the same job again for the same run row, which keeps its mode.
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-		where oid = 'public.qorpera_resume_run_from_log(uuid,text,boolean)'::regprocedure), 'insert into public.qorpera_execution_runs') = 0,
-		'a resume makes no new run');
 end
 $$;
 

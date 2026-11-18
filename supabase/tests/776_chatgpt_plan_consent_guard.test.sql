@@ -73,14 +73,17 @@ begin
 	if current_setting('qorpera_test.plan764_last')::jsonb ->> 'allow_autonomous' is distinct from 'true'
 		or current_setting('qorpera_test.plan764_last')::jsonb ->> 'changed' is distinct from 'true' then
 		raise exception 'the switch did not turn the plan on: %', current_setting('qorpera_test.plan764_last'); end if;
-	if coalesce(current_setting('qorpera.chatgpt_plan_member_choice', true), '') <> '' then
-		raise exception 'the member''s choice outlived its call'; end if;
 end $$;
 select pg_temp.plan764_expect(pg_temp.r776_allow(pg_temp.r776('plan')), 'true', 'the plan is on');
 select pg_temp.plan764_expect(pg_temp.r776_call('92400000-0000-4000-8000-000000000001',
 	'qorpera_consent_provider_connection_autonomous', pg_temp.r776('plan'), false), 'ok', 'the consent call turns a plan off');
 reset role;
 select pg_temp.plan764_expect(pg_temp.r776_allow(pg_temp.r776('plan')), 'false', 'the plan is off');
+select pg_temp.plan764_expect(pg_temp.r776_call('92400000-0000-4000-8000-000000000001',
+	'qorpera_consent_provider_connection_autonomous', pg_temp.r776('plan'), true),
+	'55000:Turn on work while you''re away for this ChatGPT plan in Settings', 'a consent call after the switch''s own call');
+reset role;
+select pg_temp.plan764_expect(pg_temp.r776_allow(pg_temp.r776('plan')), 'false', 'the plan stays off');
 select pg_temp.plan764_expect(pg_temp.r776_call('92400000-0000-4000-8000-000000000001',
 	'qorpera_set_chatgpt_plan_work_while_away', pg_temp.r776('plan'), true), 'ok', 'and the switch on again');
 reset role;

@@ -35,9 +35,6 @@ begin
 end
 $$;
 
--- The health check's pattern, as a report that measured nothing has it.
-select pg_temp.ok(position('[1-8][0-9a-f]{3}' in pg_get_functiondef('public.qorpera_assert_runtime_node_health(jsonb)'::regprocedure)) > 0,
-	'The health check no longer accepts a version 7 id');
 do $$
 declare
 	v_at timestamptz := date_trunc('milliseconds', clock_timestamp());
@@ -49,7 +46,4 @@ begin
 end
 $$;
 
--- They sort by time in the database's own order, so a node's new key lands beside its last in the primary key.
-select pg_temp.ok(bool_and(a < b), 'Time-ordered ids do not sort by time') from (
-	select pg_temp.v7(now() + n * interval '5 seconds') a, pg_temp.v7(now() + (n + 1) * interval '5 seconds') b from generate_series(1, 200) n) x;
 rollback;

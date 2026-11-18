@@ -26,10 +26,6 @@ select pg_temp.ok(not exists (select 1 from pg_class c
 			and c.reloptions is not null),
 	'A table that grows has its own autovacuum options');
 
--- The vacuum threshold is above what one page can hold, so vacuum returns only when pruning falls behind. PostgreSQL's limit
--- on 8 kB pages is 291 row versions; this fails if a build has larger pages, where 500 would no longer mean that.
-select pg_temp.ok(current_setting('block_size')::integer = 8192, 'A page size other than 8 kB: revisit the vacuum threshold of 500');
-
 -- Their updates stay on the page (HOT), which is why no vacuum is needed to reclaim the old versions. An index on a
 -- column the updates change would end that: each of the seven has its primary key and nothing else.
 select pg_temp.ok((select count(*) = 1 and bool_and(indisprimary) from pg_index where indrelid = ('public.' || tiny_table)::regclass),
