@@ -191,7 +191,9 @@ export class ProgramPage {
 				? phone
 					? t("For this phone")
 					: t("For this computer")
-				: null;
+				: offer && this.#system
+					? t("Not made for {kind} yet", { kind: PROGRAM_KIND_NAMES[this.#system] })
+					: null;
 		replace(
 			this.#get,
 			button,

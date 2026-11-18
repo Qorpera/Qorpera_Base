@@ -136,7 +136,7 @@ describe("a program's page", () => {
 	it("offers the first form by its kind where the computer has none, and Install on an Android phone", async () => {
 		const windows = await page("windows");
 		expect(windows.button().textContent).toBe("Download for Android");
-		expect(windows.text(".program-note")).toBe("");
+		expect(windows.text(".program-note")).toBe("Not made for Windows yet");
 		const phone = await page("android");
 		expect(phone.button().textContent).toBe("Install");
 		expect(phone.text(".program-note")).toBe("For this phone");
