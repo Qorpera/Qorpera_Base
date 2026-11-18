@@ -13,7 +13,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src data: blob:; worker-src blob:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src data: blob:; worker-src blob: data:; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Page</title>
@@ -93,8 +93,51 @@
 		const make = scope.URL.createObjectURL;
 		const BlobOf = scope.Blob;
 		const quote = scope.JSON.stringify;
+		const call = scope.Reflect.apply;
+		const Request = scope.XMLHttpRequest;
+		const part = (name) => Request && scope.Object.getOwnPropertyDescriptor(Request.prototype, name);
+		const [open, send, status, text] = ["open", "send", "status", "responseText"].map(part);
+		const Encoder = scope.TextEncoder;
+		const encode = Encoder.prototype.encode;
+		const piece = scope.Uint8Array.prototype.subarray;
+		const fromCodes = scope.String.fromCharCode;
+		const toBase64 = scope.btoa;
+		const logError = scope.console.error;
+		const consoleOf = scope.console;
+		const URL_CHARS = 2 * 1024 * 1024;
+		const dataOf = (text) => {
+			const bytes = call(encode, new Encoder(), [text]);
+			let binary = "";
+			for (let at = 0; at < bytes.length; at += 32768)
+				binary += call(fromCodes, null, call(piece, bytes, [at, at + 32768]));
+			return `data:text/javascript;base64,${toBase64(binary)}`;
+		};
+		// WHY: in this opaque-origin frame a module worker starts from a data: address, never from a blob; its source is
+		// read here and run after the guard, and a data: worker keeps the frame's policy.
+		const sourceOf = (address) => {
+			if (!open || !/^(?:blob|data):/i.test(address)) return null;
+			try {
+				const request = new Request();
+				call(open.value, request, ["GET", address, false]);
+				call(send.value, request, []);
+				return call(status.get, request, []) === 200 ? call(text.get, request, []) : null;
+			} catch {
+				return null;
+			}
+		};
 		const started = function Worker(address, options) {
-			const run = options && options.type === "module" ? "await import(" : "importScripts(";
+			const module = options && options.type === "module";
+			const own = module ? sourceOf(String(address)) : null;
+			const run = module ? "await import(" : "importScripts(";
+			if (own !== null) {
+				const data = dataOf(`((s) => (0, eval)("(" + s + ")")(self, s))(${quote(source)});\n${own}`);
+				if (data.length <= URL_CHARS) return new Real(data, options);
+				try {
+					call(logError, consoleOf, [
+						`Qorpera: a module worker of ${Math.ceil(((data.length - 28) * 3) / 4096)} KiB is too large to start here (at most 1,532 KiB)`,
+					]);
+				} catch {}
+			}
 			const body = `(${source})(self, ${quote(source)});\n${run}${quote(String(address))});`;
 			return new Real(make(new BlobOf([body], { type: "text/javascript" })), options);
 		};
@@ -783,6 +826,7 @@
 		if (Array.isArray(data.missing))
 			for (const path of data.missing)
 				if (typeof path === "string") said(`${path} is not in the page's folder, so the page shows without it`);
+		if (Array.isArray(data.said)) for (const line of data.said) if (typeof line === "string") said(line);
 		apply(open, document, []);
 		if (live) {
 			seenFiles = ownFiles(live, base);
