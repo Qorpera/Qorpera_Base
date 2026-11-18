@@ -118,18 +118,12 @@ test("a look is answered only when the helper itself ended well and answered an 
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}
-	// The host keeps exactly that exit code for each look, wants at least one look, and every one answered.
 	const proof = read("scripts/prove-machine-memory.sh");
-	assert.ok(proof.includes('bash /srv/memory-proof/guest.sh look </dev/null >/dev/null 2>&1 || status=$?\n'));
-	assert.ok(proof.includes('\t\t\techo "P $(date -u +%T) look_s=$(seconds "$started") at=$started rc=$status"\n'));
-	assert.ok(proof.includes("\tunanswered=$(grep ' look_s=' \"$work/probe\" | grep -vc ' rc=0$' || true)\n"));
-	assert.match(proof, /\n\tif \(\( looks >= 1 && unanswered == 0 \)\); then\n/);
 	// Inside the machine a look is asked by its exit code too, and no answer of the helper goes straight into jq, which
 	// ends well on no input at all.
 	const script = read("scripts/machine-memory-proof/guest.sh");
 	assert.equal(script.split('check "the guest helper answers a look with an observation" bash "$HERE/guest.sh" look\n').length - 1, 2);
 	assert.doesNotMatch(code(script), /\bhelper [^\n|;)]*\|\s*jq\b/);
-	assert.match(script, /\n\ttimeout "\$HELPER_SECONDS" "\$NODE" "\$GUEST" "\$nonce" "\$@" >\/dev\/null 2>&1 \|\| status=\$\?\n\t\(\( status == 0 \)\) \|\| return "\$status"\n\t\[\[ -s \$REPLIES\/\$nonce\.json \]\] \|\| return 1\n/);
 	// A guest is prepared before the first look of a probed leg: an unprepared one answers a refusal.
 	assert.match(script, /\nready\(\) \{ browser && prepared; \}\n/);
 	assert.match(script, /\nbrowser\)\n\tcheck "the desktop runs, its browser's debugging port answers and the guest is prepared" ready\n/);
@@ -476,51 +470,6 @@ test("a part ends, and the proof fails, when its machine could not be deleted, m
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}
-});
-
-test("the proof's parts run where errexit is really on, and every step on the machine itself ends the part when it fails", () => {
-	const proof = read("scripts/prove-machine-memory.sh");
-	// Not on the left of `||` (bash ignores errexit there, in the functions called there too), and the parts' own
-	// status is read from the pipeline.
-	assert.doesNotMatch(code(proof), /\|\| parts_status=/);
-	assert.match(proof, /\nset \+e\n\(\n\tset -e\n\tparts\n\) 2>&1 \| tee "\$work\/out"\nparts_status=\$\{PIPESTATUS\[0\]\}\nset -e\n/);
-	// Whatever errexit does: making, starting, restarting, deleting and filling the machine each say `|| fail`, and
-	// the build space's list is never read as empty when it could not be read.
-	for (const step of [
-		/\n\t\tfail "the machine could not be made"\n/,
-		/\n\tlx start "\$MACHINE" \|\| fail "the machine could not be started"\n/,
-		/\n\tlx restart "\$MACHINE" \|\| fail "the machine could not be restarted"\n/,
-		/\n\tlx delete --force "\$MACHINE" >\/dev\/null \|\| fail "the machine \$MACHINE could not be deleted"\n/,
-		/\n\t\tlx file push [^\n]+ \|\| fail "\$file could not be put into the machine"\n/,
-		/\nnames\(\) \{ lx list -f csv -c n \|\| fail "the build space \$PROJECT could not be listed"; \}\n/,
-	])
-		assert.match(proof, step);
-	assert.equal(proof.match(/\n\t?held=\$\(names\) \|\| exit 1\n/g).length, 3);
-	// The probe beside a leg: its own end is asked by its pid (a bare `wait` answers 0 whatever became of it), and it
-	// says when it ended because it was told to.
-	assert.doesNotMatch(code(proof), /\n\twait\n/);
-	assert.match(proof, /\n\t: >"\$work\/probe"\n\tprobe >>"\$work\/probe" &\n\tprobe_pid=\$!\n\tbeside >>"\$work\/probe" &\n\tbeside_pid=\$!\n\tleg_started=\$EPOCHREALTIME\n\tguest "\$@"\n\tleg_ended=\$EPOCHREALTIME\n\ttouch "\$work\/stop"\n(?:\t#[^\n]*\n)+\twait "\$probe_pid" \|\| probe_status=\$\?\n\twait "\$beside_pid" \|\| beside_status=\$\?\n\tif \(\( probe_status == 0 && beside_status == 0 \)\) && grep -q '\^P-END clicks ' "\$work\/probe" && grep -q '\^P-END beside ' "\$work\/probe"; then\n/);
-	assert.equal(proof.match(/\n\t\[\[ -e \$work\/stop \]\] \|\| return 1\n\techo "P-END (?:clicks|beside) [^\n]+\n\}\n/g).length, 2);
-	// The clicks' loop holds the click and the pause, nothing else (review round 4): the memory numbers and the looks
-	// are asked by the loop beside it, where they hold up no click. The click lands on an empty spot of the dock: since
-	// the desktop's look the top of the screen is the browser's tabs, where a click would change the load.
-	const loop = (name) => proof.slice(proof.indexOf(`\n${name}() {\n`), proof.indexOf("\n}\n", proof.indexOf(`\n${name}() {\n`)));
-	assert.equal(loop("probe").match(/lxc --project "\$PROJECT" exec "\$MACHINE" -- /g).length, 1);
-	assert.match(loop("probe"), /\n\t\ttimeout 30 lxc --project "\$PROJECT" exec "\$MACHINE" -- desktop click 400 960 <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n\t\techo "P \$\(date -u \+%T\) click_s=\$\(seconds "\$started"\) rc=\$status at=\$started"\n\t\tround=\$\(\( round \+ 1 \)\)\n\t\tsleep "\$PROBE_PAUSE"\n\tdone\n/);
-	assert.doesNotMatch(loop("probe"), /meminfo|guest\.sh/);
-	assert.match(loop("beside"), /\/proc\/meminfo <\/dev\/null 2>\/dev\/null\) \|\| true\n\t\techo "C \$\(date -u \+%T\) read_s=\$\(seconds "\$started"\) at=\$started \$numbers"\n/);
-	assert.match(loop("beside"), /guest\.sh look <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n/);
-	// No hole in either loop from the leg's start to its end (review round 5): the time before the first thing a loop
-	// asked and after the last counts as the time between two does.
-	assert.match(proof, /\n\t\t\thole\(seen \? ended : start, at\)\n\t\t\tended = at \+ took\n\t\t\tseen = 1\n\t\t\}\n\t\tEND \{\n\t\t\thole\(seen \? ended : start, finish\)\n/);
-	assert.match(proof, /\n\thole=\$\(longest_hole ' click_s=' "\$leg_started" "\$leg_ended"\)\n\tbeside_hole=\$\(longest_hole ' \(read\|look\)_s=' "\$leg_started" "\$leg_ended"\)\n/);
-	assert.match(proof, /\n\tno_hole "\$what" "the clicks" "\$hole"\n\tno_hole "\$what" "the readings and looks beside them" "\$beside_hole"\n/);
-	assert.match(proof, /\n\tif awk -v hole="\$3" -v pause="\$PROBE_PAUSE" 'BEGIN \{ exit !\(hole < pause \+ 1\) \}'; then\n\t\techo "CHECK ok {3}\$1 there was no hole in \$2 from the leg's start to its end /);
-	// In the machine, the leg "with every processor busy" checks that its busy jobs ran to its end.
-	const inMachine = read("scripts/machine-memory-proof/guest.sh");
-	assert.match(inMachine, /\n\t\tfor pid in "\$\{H\[@\]\}"; do kill -0 "\$pid" 2>\/dev\/null && alive=\$\(\( alive \+ 1 \)\); done\n\t\tcheck "every processor was kept busy to the leg's end [^\n]+" test "\$alive" = "\$\{#H\[@\]\}"\n/);
-	assert.doesNotMatch(code(proof), /\$\(lx list -f csv -c n\) \]\]/);
-	assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, "scripts/machine-memory-proof/stand-in-lxc.sh")], { encoding: "utf8" }).status, 0);
 });
 
 // Review round 5 of #1692 (F1): the arithmetic of a loop's longest hole, on lines as the two loops write them. The

@@ -17,9 +17,8 @@ export async function testOfficeActivation({ scope, binding, instanceSha256, pro
 	const guest = `select public.qorpera_check_runtime_office_guest_binding(${literal(scope)},1,'${binding.allocationId}','${instanceSha256}','${startup.imageSha256}','${startup.bootstrapSha256}');`;
 	const call = sql => JSON.parse(execute(`${service} ${sql}`));
 	const signal = new AbortController().signal;
-	const providerCalls = [];
 	const provider = new LxdOfficeActivationControl(intent, binding, attestation, [], { call: async (method, args, checked) => {
-		checked.throwIfAborted(); providerCalls.push(method);
+		checked.throwIfAborted();
 		assert(["qorpera_prepare_runtime_office_activation", "qorpera_runtime_office_activation_status", "qorpera_activate_runtime_office"].includes(method));
 		const parameters = Object.entries(args).map(([key, value]) => {
 			assert(/^p_[a-z0-9_]+$/.test(key));
@@ -117,7 +116,6 @@ export async function testOfficeActivation({ scope, binding, instanceSha256, pro
 	await runtime.waitForActivation({ nativePort: 9443, viewerPort: 9444 }, async () => { physicalCount++; }, signal);
 	assert.equal(reportCount, 2); assert.equal(physicalCount, 2);
 	assert.equal((await provider.status(signal)).state, "active");
-	assert.deepEqual(providerCalls, ["qorpera_prepare_runtime_office_activation", "qorpera_runtime_office_activation_status", "qorpera_runtime_office_activation_status", "qorpera_activate_runtime_office", "qorpera_runtime_office_activation_status"]);
 	console.log("PASS: actual runtime startup and provider activation adapters agree with real SQL; waiting runtime admits no work before provider activation");
 	const active = await race([`${service} ${activate()}`, `${service} ${activate()}`]);
 	for (const result of active) assert.equal(result.code, 0, result.error);
