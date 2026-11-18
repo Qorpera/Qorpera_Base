@@ -5,7 +5,6 @@
 -- 2. Cases the rewritten wall must keep, each with its answer: company logins with no owner, a later reading of a revoked
 -- connection, of an old version or of another member, a reading at exactly the signal's time, and a connection on this
 -- one's credential capsule, which closes it through a sibling.
--- 3. One check works out each company's wall once.
 -- 4. The due list agrees with the company's scan: work at a wall is not due.
 -- 5. The due list's check is last, and one that fails stops only its own company.
 -- 6. Work paid by another login or another sponsor version is due beside it, and it goes on once its login has room.
@@ -201,8 +200,6 @@ select pg_temp.base_assert(public.qorpera_native_account_usage_limit_reset(pg_te
 	and public.qorpera_native_account_remaining(pg_temp.d1_id(1, 6), 1) = -1,
 	'a capsule''s other holder closed a connection with no sibling');
 
--- 3. A login in 8 companies, as on production. With no wall in force (no reading names a reset, and the signals, 13 to 165
--- hours old with none of their own, have run out) each company's wall is worked out once, not 72 times.
 do $$
 declare v_n integer; v_i integer;
 begin

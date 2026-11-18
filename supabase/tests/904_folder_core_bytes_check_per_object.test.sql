@@ -210,8 +210,6 @@ begin
 		raise exception 'D: a value the array does not hold has no position'; end if;
 end $$;
 
--- E. The functions: markers; the helpers are definer-rights (the two that read tables) or pure, with an empty search path,
--- for no API role, and take no lock (761's rule); the commit sorts its array and calls the two loops, not statements.
 do $$
 declare v_fn record;
 begin

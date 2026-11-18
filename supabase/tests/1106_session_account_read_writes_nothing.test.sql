@@ -99,7 +99,6 @@ create function pg_temp.a6_place(p_session uuid) returns text language sql as $$
 	select ctid::text from public.qorpera_member_session_accounts
 	where profile_id = pg_temp.a6('profile') and session_id = p_session and user_id = pg_temp.a6('owner')
 $$;
--- A call that changes nothing: the answer, with no row moved, none locked and no room asked for (p_room: it may ask).
 create function pg_temp.a6_quiet(p_label text, p_session uuid, p_room boolean default false, p_lock_seen boolean default true)
 returns uuid language plpgsql as $$
 declare v_place text := pg_temp.a6_place(p_session); v_answer uuid;
@@ -237,7 +236,6 @@ select pg_temp.base_error(format('select public.qorpera_select_member_session_ac
 	pg_temp.a6('profile'), pg_temp.a6('savedB')), '42501', 'Conversation accounts unavailable');
 select pg_temp.base_claims('service_role');
 
--- 7. The new helper is the database's own, and the two functions carry the markers guards read.
 select pg_temp.base_assert(not has_function_privilege('anon','public.qorpera_member_live_account_bindings(uuid,uuid)','execute')
 	and not has_function_privilege('authenticated','public.qorpera_member_live_account_bindings(uuid,uuid)','execute')
 	and not has_function_privilege('service_role','public.qorpera_member_live_account_bindings(uuid,uuid)','execute'),
