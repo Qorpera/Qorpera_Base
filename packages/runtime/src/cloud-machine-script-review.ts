@@ -56,6 +56,8 @@ const SOURCED_WORDS = new Set([
 	"trap",
 	"CDPATH",
 	"enable",
+	"BASH_ENV",
+	"ENV",
 ]);
 const RESERVED = new Set([
 	"if",

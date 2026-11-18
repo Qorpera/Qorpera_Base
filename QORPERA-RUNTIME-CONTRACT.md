@@ -7043,13 +7043,13 @@ bundle; no migration, host call or image moves.
    `export`, `unset`, `hash`, `enable`, `declare`, `typeset`, `readonly`, `local`) occurs in the command, or in the
    folder of the `cd <path>` commands before it in the unbroken `&&` chain from the command's start (pipelines
    included; a `source f` there keeps the chain only when f, read whole and without its full-line comments, contains
-   none of `cd pushd popd eval source exec command builtin alias shopt trap CDPATH enable`, starts no line with `.` and
-   defines no function named like a runner); otherwise it is not shown. The runtime reads each named file on the
-   machine before the review with one fixed read-only command of its own through the same receipts and command gateway
-   (its receipt always completes, also when the machine refuses or does not answer its start), and gives the reviewer
-   its text in the action's `contents`: each file whole, at most 64 KiB a file, 128 KiB and 8 files a command. Known
-   limit: the files are read when the action is reviewed; a file changed between that read and the command's start in
-   the same call is not detected.
+   none of `cd pushd popd eval source exec command builtin alias shopt trap CDPATH enable BASH_ENV ENV`, starts no line
+   with `.` and defines no function named like a runner); otherwise it is not shown. The runtime reads each named file
+   on the machine before the review with one fixed read-only command of its own through the same receipts and command
+   gateway (its receipt always completes, also when the machine refuses or does not answer its start), and gives the
+   reviewer its text in the action's `contents`: each file whole, at most 64 KiB a file, 128 KiB and 8 files a command.
+   Known limit: the files are read when the action is reviewed; a file changed between that read and the command's
+   start in the same call is not detected.
 2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
    bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
    variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the

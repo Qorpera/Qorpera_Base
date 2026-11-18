@@ -388,6 +388,12 @@ describe("the files a machine command runs", () => {
 			files: [{ path: activate, mentioned: false }],
 			notShown: ["main.py: the folder it is in could not be told"],
 		});
+		for (const text of ["export BASH_ENV=/x\n", "ENV=/x\n"]) {
+			const settled = new Set(cloudScriptKeepsFolder(text) ? [activate] : []);
+			expect(cloudCommandScripts(command, undefined, settled).notShown, text).toEqual([
+				"main.py: the folder it is in could not be told",
+			]);
+		}
 		expect(cloudScriptKeepsFolder("VIRTUAL_ENV=/srv/app/.venv\ndeactivate () {\n  VIRTUAL_ENV=\n}\n")).toBe(true);
 		expect(cloudScriptKeepsFolder(VENV_ACTIVATE)).toBe(true);
 		expect(
@@ -414,6 +420,8 @@ describe("the files a machine command runs", () => {
 			". ./more.sh\n",
 			"CDPATH=/elsewhere\n",
 			"export CDPATH=/x\n",
+			"export BASH_ENV=/x\n",
+			"ENV=/x\n",
 			"true # cd\n",
 			"cd /x\n",
 			". ./other.sh\n",
