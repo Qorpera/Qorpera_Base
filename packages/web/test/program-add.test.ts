@@ -660,14 +660,14 @@ describe("the New program page", () => {
 			const shown = page(c.host);
 			drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
 			(await dropped(shown))("Cancel");
-			await until(() => c.fake.commits.filter((each) => each.units.some(listing)).length === 2);
+			await until(() => c.fake.commits.filter((each) => listing(each.units)).length === 2);
 			await settle();
 			await settle();
 			expect(c.fake.has("apps/lagerliste/app.toml")).toBe(true);
 			expect(c.fake.has("apps/lagerliste/versions/1/Lagerliste.exe")).toBe(true);
 			expect(parseProgram(c.fake.text("apps/lagerliste/program.json") ?? "")?.versions).toHaveLength(1);
 			expect(c.commits().flat()).not.toContain("delete");
-			const [sent, replayed] = c.fake.commits.filter((each) => each.units.some(listing));
+			const [sent, replayed] = c.fake.commits.filter((each) => listing(each.units));
 			expect(replayed?.operationKey).toBe(sent?.operationKey);
 		});
 
