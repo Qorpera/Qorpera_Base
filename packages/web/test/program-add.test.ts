@@ -319,7 +319,7 @@ describe("the New program page", () => {
 		const c = company();
 		const release = c.holdUploads();
 		const shown = page(c.host);
-		drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste-1.0-setup.exe")]);
+		drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste-1.0-setup.exe", "x".repeat(50))]);
 		await until(() => c.uploads.length === 1);
 		expect(shown.el.querySelector(".program-tile-initial")?.textContent).toBe("L");
 		expect(shown.el.querySelector(".program-tile-file strong")?.textContent).toBe("Lagerliste-1.0-setup.exe");
