@@ -936,13 +936,18 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(noMachines).not.toContain("- Commands (");
 	expect(noMachines).not.toContain("Playwright's addInitScript");
 	expect(noMachines).toContain(
-		"Before you link an app, look at it as a demanding designer, fix the weakest thing, and look again. Then cover the words",
+		"Before you link an app, look at it as a demanding designer, fix the weakest thing, and look again. Hold it against the founders' own words",
 	);
 	expect(compile(without("manage_worker"))).not.toContain("# Code projects");
 	expect(compile(without("manage_worker"))).not.toContain("- Bigger work or many files");
 	expect(compile(without("manage_worker"))).not.toContain("- Work a member asks Claude Code to do");
 	expect(compile(without("manage_code"))).not.toContain("manage_code");
 	expect(compile(without("hire_agent"))).not.toContain("hire one when no agent fits");
+	expect(full).not.toContain("hire_team");
+	expect(compile(new Set([...all, "hire_team"]))).toContain(
+		"add the product's builders once it is clear, with first assignments that move the first concept. Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent. Set up your daily plan routine.",
+	);
+	expect(compile(new Set([...all, "hire_team"]), true)).not.toContain("hire_team");
 	expect(compile(without("manage_hook"))).not.toContain("Never open the company's first email address");
 	expect(compile(without("manage_hook"))).toContain("Say in a few lines who you hired and what each finds out first.");
 	expect(compile(without("offer_agents_to_member"))).not.toContain("offer_agents_to_member");
@@ -1119,7 +1124,7 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		"As soon as you know what the company is about, hire the team that builds the vision with you, each with a first assignment due within a day or two: a researcher for the customers and their problem, a market watcher, a strategist who weighs the options, and a Brand owner for the logo and the look",
 		// v11 (Jonas, 9 November 2026): the brand owner makes a first identity at once, with the official logo where the
 		// app shows it, and keeps the brand current; renaming the company is deferred.
-		"the official logo at QorperaOS/brand/logo.svg",
+		"the official logo, QorperaOS/brand/logo.svg",
 		"leave the company's name alone, because a new name must also reach the registry, the mail and the bank",
 		"brand, suppliers and stock",
 		"Set up your daily plan routine.",
@@ -2091,24 +2096,24 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "77714000b4b642da7d480b06e68faea203c7142ac8b903266b02d28884967017",
-			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
+			instructions: "792d97afab4a8dd356eb09a9a4de178098e2a294895641e65905be7480fb1fc4",
+			prompt: "d0d165dd3ec02d42be86627b746db78dec12f84ea9b074a535a20ae17077a10f",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "4a15f2f4940a9d35353659d89f05d204849d77c11cde89126629cfd4050f2593",
-			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
+			instructions: "09ff6942a3b6feb0cfd748c49d6af01dd7858431506e8774bb262a49fde0c62a",
+			prompt: "fa5484d70ef2438b94e068f615ed012ae5a7843a12be83985a904ad93a5f1706",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "77714000b4b642da7d480b06e68faea203c7142ac8b903266b02d28884967017",
-			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
+			instructions: "792d97afab4a8dd356eb09a9a4de178098e2a294895641e65905be7480fb1fc4",
+			prompt: "27106a9a7f751dbbb76094cf196c71056eb84e687dd6f76a531068d602b26f35",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -2237,7 +2242,7 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"As soon as the vision names a product, hire its builders as a strong company in that field would",
 		"add the product's builders once it is clear",
 		"The vision holds the product as the founders describe it, at their ambition",
-		"You see that the solution comes first, write the concept brief with the founders and see the concepts through (see Concepts).",
+		"You write the concept brief with the founders, see that the first concept reaches them at once with the solution worked out beside it, and see the concepts through (see Concepts).",
 	])
 		expect(cofounder).toContain(rule);
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
@@ -2316,7 +2321,7 @@ it("works out the solution before the brief, whatever example the founders showe
 	// get a product that works at scale; the platform derives it, without the founder knowing software.
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"The solution comes first.",
+		"The first concept comes at once, from what the founders described; the solution is worked out beside it and corrects it.",
 		"treat it as the need, never the method, and never ask them how to build it",
 		"in plain words in strategy/solution.md",
 		"how the strongest companies build it and why the quick ways fail",
@@ -2344,7 +2349,7 @@ it("makes concepts in four steps, looks at pictures, and writes to coworkers in 
 	// and their threads read as test reports.
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"Then four steps, none skipped, because building before the idea is shaped gives a guess dressed up as a product:",
+		"Concepts take four steps, none skipped, because building before the idea is shaped gives a guess dressed up as a product:",
 		"1. Brief: strategy/concept-brief.md, for the team: the product in one sentence",
 		"2. Look: screenshots of the best products and other references in research/moodboard/",
 		"Research that is only text is not looking.",
@@ -2410,7 +2415,7 @@ it("has an interface app show a thing to see and handle, never a document or a s
 		// The concepts app showed the brief as six boxes of text: "The concepts interface carries no concept of anything".
 		"opening on the key moments, never on the brief's text",
 		"1. Brief: strategy/concept-brief.md, for the team",
-		"show it as a storyboard in the concepts app",
+		"The first concept shows those moments as a customer will meet them",
 		"Build nothing further until it shows what they said.",
 	])
 		expect(instructions).toContain(rule);
@@ -2504,7 +2509,7 @@ it("has a founder choose the company's email address on a card once it has a nam
 		"Say in a few lines who you hired and what each finds out first; when the address card goes out in the same run, raise it last, with your hello as its text.",
 		"While the vision's first line is # No name yet, the company has no name.",
 		"On Not yet carry on without one, and ask again only when something waits for the name: the email address, a logo with lettering, a website's address.",
-		"with no name yet, that first identity is colours and a mark without lettering",
+		"with no name yet, the directions and that identity carry a mark without lettering",
 		"The founding can be agreed with no name: the first line then stays # No name yet.",
 	])
 		expect(cofounder).toContain(words);

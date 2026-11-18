@@ -86,6 +86,29 @@
   not apply before `20260930786000`). The coding executor moves before the switch (its command authority takes a run at
   `xhigh`). The guest moves: the native provider host (`26e07eb7`), the ephemeral runner (`df616dab`, #1887) and the two
   LXD bootstraps; the native Codex stays `9c299f88`.
+- Agents show the product first (hire overlay v19; the founder, 17 Nov 2026, on the lead's review of the test company
+  mywave: "1-4 straight yes", and "make sure they are not feeling forced to only use SVG"; contract, the 2026-11-17
+  amendment; lanes/mywave-fixes-20261117/MAP-C.md). Concepts: the first concept comes at once, from what the founders
+  described, made by the product's owner in its first run before any document but the brief: a physical product as a
+  render that looks real, software as real screens to click through, never wireframes, line drawings or form fields; the
+  solution is worked out beside it; plans for later stages wait for the founders' answer (an order of work, not a cap);
+  what is simulated or undecided goes in strategy/solution.md, never on a concept's screens. Apps: judged against the
+  founders' own words; SVG only for an app's icons and the logo, anything else in whatever shows it best; what the logo
+  file may hold (a drawn mark or one embedded picture, nothing outside it, shown as small as about 34 px). Ideas: never
+  keep the company's product and subject out of a worker's pictures. The Co-Founder: the builders' first assignments
+  move the first concept; the Brand owner's first assignment is two to four directions, each the product in its world in
+  a real picture or film, and only the chosen one becomes the identity and its logo (with no name yet, a mark without
+  lettering); it acts in the run an owner says it
+  is blocked; the founding hires the first team in one `hire_team` call (#1922), later hires several at once with it or
+  one with `hire_agent`. An owner: a refused or blocked step leaves
+  the outcome its own. The board kit's choose guide says the poster carries the direction; ask_member no longer names an
+  SVG sketch. Platform update `product-shown-first`. The overlay's version-history doc comment has no v19 entry: the
+  comment check refuses an edited comment there; this entry and the contract carry it. Measured on master
+  a2bcfa67b (#1922 included) merged in: staff instruction pins `77714000b4b6` → `792d97afab4a8dd356eb09a9a4de178098e2a294895641e65905be7480fb1fc4`
+  (conversation and private), the worker's `4a15f2f4940a` →
+  `09ff6942a3b6feb0cfd748c49d6af01dd7858431506e8774bb262a49fde0c62a`, every prompt (overlay v19), and both catalog pins
+  (ask_member): `a1ff85fb723361253d3f9c9c6ab309d613fd56c5cf8d940983654367c7c1265f` and
+  `2d5c2163f63319dda9570e1e0e6358db6cdc01c97da816720112ab3a9c45bf23`. The runtime bundle only; no SQL, no web, no node program.
 - The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure
   they are running with bypass permissions, and all permissions turned ON"; lanes/agent-box-20261113/harness-permissions/
   AUDIT.md; the runtime bundle only). `CLAUDE_BOX_TOOLS` goes from 8 to 18: Task (sub-agents), WebSearch, Skill,
