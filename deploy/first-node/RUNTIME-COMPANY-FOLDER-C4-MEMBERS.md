@@ -327,7 +327,8 @@ the gateway's publisher calls; it is in the folder core since `20260928279520`).
 
 **The one path.** Only `apps/<name>/versions/<version>/<file>` takes bytes from a browser, each part passing the shared
 checks (`programUploadPath` in `cloud-client/app-program.ts`: an app's folder name, `isProgramVersion`,
-`isProgramFileName`). Any other path is refused (403) before anyone is asked. A file is 1 byte to 256 MiB (the folder's
+`isProgramFileName`, the last two also requiring that the joined path passes `parseCloudCompanyPath`, so no `%`, `:`,
+ending dot or space, device name such as `con`, non-NFC text or C1 control is taken). Any other path is refused (403) before anyone is asked. A file is 1 byte to 256 MiB (the folder's
 64 chunks of 4 MiB, and the web's download limit: what a member adds, members can get); more is 413, before any byte
 is staged.
 
@@ -342,7 +343,11 @@ folder call after it goes as that member with the service key.
    as the member (`qorpera_folder_open_upload`), puts the manifest object, and keeps the upload in memory. Answer:
    `{schema, uploadId, have}`, `have` the pieces it already holds. A member has one upload in flight on the gateway: a
    second file is 429 while the first was touched in the last 60 s; the same file again (same path and manifest)
-   resumes the first, with its `have`. A finished upload, or one idle past 60 s, gives way.
+   resumes the first, with its `have`, but only while its intent can still be alive: within 13 minutes of its open or
+   its last renew (an open intent lasts 15). Past that, and for a finished upload, the open starts afresh. Any request
+   of any member, and a sweep each minute, forgets an upload no request touched for 60 s, with the pieces it held. A
+   renew, a put or a seal the core refuses (403: the intent ran out or is not the member's) forgets the upload too, so
+   the member's next open starts afresh.
 2. `PUT …/<environment>/<upload>/<piece>` (`0` to `63`, `application/octet-stream`) puts one piece: exactly its size,
    its SHA-256 the one named at the open (400 otherwise), into the store under the member's intent
    (`qorpera_folder_authorize_object_upload`, the store's put, `qorpera_folder_confirm_object`), unless the intent

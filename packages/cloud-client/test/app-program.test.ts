@@ -97,6 +97,18 @@ describe("program apps", () => {
 			expect(isProgramFileName(name), name).toBe(true);
 		for (const name of ["", "a/b.apk", "..", ".", "a\\b", 'a"b', "x".repeat(201)])
 			expect(isProgramFileName(name), name).toBe(false);
+		for (const name of [
+			"Setup 100%.exe",
+			"a:b.exe",
+			"setup.",
+			"setup ",
+			"con.exe",
+			"AUX.apk",
+			"e\u0301.exe",
+			"a\u0085b.exe",
+		])
+			expect(isProgramFileName(name), name).toBe(false);
+		for (const version of ["1.", "0.1."]) expect(isProgramVersion(version), version).toBe(false);
 	});
 
 	it("writes and reads back the kept versions, newest first, and refuses a list that does not hold together", () => {
