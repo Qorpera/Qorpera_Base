@@ -810,6 +810,11 @@ export class CloudMemberFolderFileCache {
 /** At most this many of a file's chunks are asked for at once. */
 const CHUNKS_AT_ONCE = 4;
 
+export interface CloudMemberFolderKeptObjects {
+	take(sha256: string, signal: AbortSignal): Promise<Uint8Array | undefined>;
+	keep(sha256: string, bytes: Uint8Array): void;
+}
+
 export class CloudMemberFolderClient {
 	readonly #environmentId: string;
 	readonly #controlOrigin: string;
@@ -820,6 +825,7 @@ export class CloudMemberFolderClient {
 	readonly #timeoutMs: number;
 	readonly #pieceRetryMs: number;
 	readonly #files: CloudMemberFolderFileCache | undefined;
+	readonly #kept: CloudMemberFolderKeptObjects | undefined;
 
 	constructor(options: {
 		environmentId: string;
@@ -833,6 +839,7 @@ export class CloudMemberFolderClient {
 		pieceRetryMs?: number;
 		/** `readFile`: bytes already read, kept across this member's clients of the same company. */
 		files?: CloudMemberFolderFileCache;
+		kept?: CloudMemberFolderKeptObjects;
 	}) {
 		if (
 			!isUuid(options.environmentId) ||
@@ -850,6 +857,7 @@ export class CloudMemberFolderClient {
 		this.#timeoutMs = options.timeoutMs ?? 30_000;
 		this.#pieceRetryMs = options.pieceRetryMs ?? 1000;
 		this.#files = options.files;
+		this.#kept = options.kept;
 		if (
 			!Number.isSafeInteger(this.#timeoutMs) ||
 			this.#timeoutMs < 1 ||
@@ -1012,17 +1020,18 @@ export class CloudMemberFolderClient {
 		if (reference.bytes > maximumBytes)
 			throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
 		const files = this.#files;
-		if (!files || options?.cached !== true) return this.#readFile(reference, signal);
+		const live = options?.cached === true;
+		if (!files || !live) return this.#readFile(reference, signal, live);
 		const key = `${this.#environmentId}/${reference.manifestSha256}/${reference.fileSha256}/${reference.bytes}`;
-		return files.read(key, signal, (readSignal) => this.#readFile(reference, readSignal));
+		return files.read(key, signal, (readSignal) => this.#readFile(reference, readSignal, true));
 	}
 
-	#readFile(reference: CloudMemberFolderFile, signal: AbortSignal): Promise<Uint8Array> {
+	#readFile(reference: CloudMemberFolderFile, signal: AbortSignal, live: boolean): Promise<Uint8Array> {
 		return withCloudDeadline(
 			async (requestSignal) => {
 				const chunks = manifestPieces(
 					reference,
-					await this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal),
+					await this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal, live),
 				);
 				const bytes = new Uint8Array(reference.bytes);
 				const offsets: number[] = [];
@@ -1036,7 +1045,7 @@ export class CloudMemberFolderClient {
 					while (next < chunks.length) {
 						const index = next++;
 						const chunk = chunks[index]!;
-						const part = await this.#object(chunk.sha256, chunk.bytes, requestSignal);
+						const part = await this.#object(chunk.sha256, chunk.bytes, requestSignal, live);
 						if (part.byteLength !== chunk.bytes) invalid("chunk");
 						bytes.set(part, offsets[index]);
 					}
@@ -1065,14 +1074,16 @@ export class CloudMemberFolderClient {
 		reference: CloudMemberFolderFile,
 		signal: AbortSignal,
 		onPiece: (piece: Uint8Array, index: number, count: number) => void,
+		options?: { readonly cached?: boolean },
 	): Promise<void> {
 		if (!Number.isSafeInteger(reference.bytes) || reference.bytes < 0 || reference.bytes > MAX_FILE_BYTES)
 			throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
 		signal.throwIfAborted();
+		const live = options?.cached === true;
 		const pieces = manifestPieces(
 			reference,
 			await this.#tried(
-				(requestSignal) => this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal),
+				(requestSignal) => this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal, live),
 				signal,
 			),
 		);
@@ -1080,7 +1091,7 @@ export class CloudMemberFolderClient {
 		const held: Uint8Array[] = [];
 		for (const [index, piece] of pieces.entries()) {
 			const part = await this.#tried(
-				(requestSignal) => this.#object(piece.sha256, piece.bytes, requestSignal),
+				(requestSignal) => this.#object(piece.sha256, piece.bytes, requestSignal, live),
 				signal,
 			);
 			if (part.byteLength !== piece.bytes) invalid("chunk");
@@ -1162,7 +1173,16 @@ export class CloudMemberFolderClient {
 	}
 
 	/** One object through the member folder route, checked against its hash. */
-	async #object(sha256: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
+	async #object(sha256: string, maximum: number, signal: AbortSignal, live: boolean): Promise<Uint8Array> {
+		const kept = live ? this.#kept : undefined;
+		if (kept) {
+			const held = await kept.take(sha256, signal).catch(() => undefined);
+			signal.throwIfAborted();
+			if (held && held.byteLength <= maximum && (await cloudFileBytesSha256(held)) === sha256) {
+				signal.throwIfAborted();
+				return held;
+			}
+		}
 		const token = await this.#token(signal);
 		// No `cache` option: the route answers "no-store" itself, and asking here too would only make Chrome send the CORS
 		// preflight again on every read, one more round trip each time.
@@ -1184,6 +1204,10 @@ export class CloudMemberFolderClient {
 		const declared = response.headers.get("content-length");
 		if ((declared !== null && Number(declared) !== bytes.length) || (await cloudFileBytesSha256(bytes)) !== sha256)
 			throw new CloudMemberFolderError("Company folder object failed integrity verification");
+		if (kept)
+			void Promise.resolve(bytes)
+				.then((read) => kept.keep(sha256, read))
+				.catch(() => undefined);
 		return bytes;
 	}
 }
