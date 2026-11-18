@@ -43,7 +43,8 @@ export async function runNativeIsolationChild(args: string[]): Promise<void> {
 		throw new Error("Invalid native namespace entry");
 	const sockets = new Set<Socket>();
 	const server = createServer((client) => {
-		if (sockets.size >= 16) {
+		// WHY: two sockets a connection, and room for a Claude read's 32; the relay outside holds each run to its own cap.
+		if (sockets.size >= 64) {
 			client.destroy();
 			return;
 		}
