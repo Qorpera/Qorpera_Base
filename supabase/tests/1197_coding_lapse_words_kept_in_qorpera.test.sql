@@ -8,7 +8,7 @@ insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id,
 values ('91197000-0000-4000-8000-0000000000d1', 'member', '92400000-0000-4000-8000-000000000010',
 	'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000001', 'exec-1170', repeat('7', 64), '{}');
 set local session_replication_role = origin;
-create function pg_temp.lapse_github(p_publishing boolean) returns jsonb language plpgsql as $f$
+create function pg_temp.lapse_github(p_publishing boolean, p_github boolean default true) returns jsonb language plpgsql as $f$
 declare v_pass jsonb; v_turn jsonb; v_token uuid;
 begin
 	perform pg_temp.base_claims('service_role');
@@ -27,7 +27,8 @@ begin
 		perform public.qorpera_record_coding_progress('91170000-0000-4000-8000-0000000000b1', v_token, 'publishing', 'Publishing');
 	end if;
 	perform set_config('session_replication_role', 'replica', true);
-	update public.qorpera_coding_sessions set lease_until = clock_timestamp() - interval '1 second', repository = pg_temp.c3_repo()
+	update public.qorpera_coding_sessions set lease_until = clock_timestamp() - interval '1 second',
+		repository = case when p_github then pg_temp.c3_repo() else repository end
 	where worker_id = '91170000-0000-4000-8000-0000000000b1';
 	perform set_config('session_replication_role', 'origin', true);
 	perform public.qorpera_claim_coding_session('exec-1170', 60);
@@ -41,6 +42,10 @@ rollback to savepoint lapse_github;
 select pg_temp.base_assert(pg_temp.lapse_github(false) ->> 'summary' = 'The coding executor stopped responding; the workspace is '
 	|| 'kept. Commit bbbbbbbbbbbb was submitted but not published; a follow-up can publish it.',
 	'a GitHub repository''s lapse before publishing');
+rollback to savepoint lapse_github;
+select pg_temp.base_assert(pg_temp.lapse_github(false, false) ->> 'summary' = 'The coding executor stopped responding; the '
+	|| 'workspace is kept. Commit bbbbbbbbbbbb was handed in but had not reached main; a follow-up hands it in again.',
+	'a repository kept in Qorpera''s lapse before handing in');
 rollback to savepoint lapse_github;
 do $$
 declare v_claim jsonb; v_begin jsonb; v_pass jsonb; v_turn jsonb; v_token uuid;

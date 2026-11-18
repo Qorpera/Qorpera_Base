@@ -83,8 +83,6 @@ begin
 	-- The commit's own locked set (every catalog object, sorted collate "C"), and the same set out of order.
 	select array_agg(sha256 order by sha256 collate "C"), array_agg(sha256 order by md5(sha256)) into v_catalog, v_catalog_unsorted
 	from public.qorpera_profile_objects where profile_id = v_profile;
-	-- A copy's check, the old statement against the new loop: a copy of p24d-a (the whole file), with every object locked
-	-- (sorted, unsorted), one missing, or none.
 	for v_locked in select l from (values (v_catalog), (v_catalog_unsorted), (array_remove(v_catalog, v_whole ->> 'fileSha256')),
 			('{}'::text[])) x(l) loop
 		v_old := exists (select 1 from public.qorpera_folder_unit_objects('63400000-0000-4000-8000-000000000020', v_profile,
@@ -149,9 +147,6 @@ begin
 		raise exception 'A: a run references what it sealed itself'; end if;
 end $$;
 
--- B. Reads. 300 files with the commit's locked set (every object of the catalog, in hash order). The old body read the
--- company's whole catalog on every call (the planner hashed it, expecting the proof's objects to be 100 rows); the new one
--- reads each file's two rows, with custom plans and with generic ones. The plan cache is reset for each.
 create function pg_temp.reads() returns bigint language plpgsql as $$
 declare v_locked text[]; v_rows bigint; v_bad integer;
 begin

@@ -1,9 +1,4 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- Asking which login pays for a conversation works out no room and writes nothing when nothing changes (20260930606000,
--- perf sprint 7 Nov 2026, measure A6). The web asks when a thread opens and every 30 s while one is open; on production
--- each call took 48 to 102 ms, nearly all of it room the function never read, rewrote its saved row and held the
--- conversation's row. Here the base's owner has logins A and B. Each world runs the previous text, undone, and then the new
--- one: same answer, same saved row. A call that changes nothing moves no row, locks none and asks for no room.
 
 -- A conversation this transaction never locked, as a copy of Bob's thread, made without triggers: the fixture's passes hold
 -- the rows of the threads they made, a foreign key's check holds the row it names, and an update keeps a lock its own
@@ -166,7 +161,6 @@ $$;
 -- The checks start here.
 select pg_temp.a6_reading(pg_temp.a6('b'), 20);
 
--- 1. A new conversation's first choice: B, with room. It is written, under the lock, and the same on both texts.
 select pg_temp.a6_conversation('first');
 select pg_temp.base_assert(pg_temp.a6_writes('first choice', pg_temp.a6('first')) = pg_temp.a6('b'), 'a first choice did not write B');
 select pg_temp.base_assert(pg_temp.a6_world('first choice', pg_temp.a6('first')) = pg_temp.a6('b'), 'a first choice did not take B');

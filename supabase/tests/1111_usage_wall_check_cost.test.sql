@@ -106,8 +106,6 @@ select pg_temp.d1_version(1, 1, 101), pg_temp.d1_version(1, 2, 1, 1), pg_temp.d1
 select pg_temp.base_assert((select count(*) = 4 from public.qorpera_account_login_sibling_connections(pg_temp.d1_id(1, 1))),
 	'connection 1 has the login''s other companies: 2 and 12 on capsule 2, and 7 and 10');
 
--- 2. The cases that decide a wall, each with its answer, on the new text and the previous one. All signals name a reset an
--- hour ahead unless said otherwise, and readings name account 'e' or 'd'.
 create function pg_temp.d1_clear() returns void language sql as $$
 	delete from public.qorpera_native_provider_account_metadata where connection_id::text like '11110001-%';
 	delete from public.qorpera_provider_connection_usage_signals where provider_connection_id::text like '11110001-%';
@@ -118,7 +116,6 @@ language sql as $$
 	select pg_temp.d1_reading(p_n, p_version, p_identity, jsonb_build_object('observedAt', p_at,
 		'windows', jsonb_build_array(pg_temp.d1_window(p_used))))
 $$;
--- The wall of a connection, the same in both texts, is held (to the signal's reset) or not.
 create function pg_temp.d1_expect(p_n integer, p_held boolean, p_case text) returns void language plpgsql as $$
 declare v_new timestamptz := public.qorpera_native_account_usage_limit_reset_company(pg_temp.d1_id(1, p_n));
 begin
@@ -221,8 +218,6 @@ end $$;
 set local session_replication_role = origin;
 select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1) = -1,
 	'the login''s room is ' || public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1));
--- At a wall (a reading now names a reset ahead, so all those signals hold) the previous text ran one per company and this
--- one stops at the first.
 select pg_temp.d1_reading(21, 1, repeat('c', 64), pg_temp.d1_usage(3)) \g /dev/null
 select pg_temp.base_assert(public.qorpera_native_account_remaining(pg_temp.d1_id(1, 21), 1) = 0, 'the login at its wall has room');
 
