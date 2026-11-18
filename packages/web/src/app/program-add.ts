@@ -15,6 +15,7 @@ import {
 import {
 	CLOUD_MEMBER_FOLDER_UPLOAD_MAX_BYTES,
 	type CloudMemberFolderClient,
+	type CloudMemberFolderCommit,
 	CloudMemberFolderError,
 	type CloudMemberFolderUnit,
 	type CloudMemberFolderUploadFile,
@@ -239,7 +240,6 @@ export interface ProgramAddPlan {
 	readonly onSettling?: () => void;
 	readonly taken?: readonly string[];
 	readonly now?: () => Date;
-	readonly key?: () => string;
 }
 
 interface Placed {
@@ -248,6 +248,12 @@ interface Placed {
 	readonly prepared: CloudMemberFolderUploadFile;
 	version: string;
 	entry: string | null;
+}
+
+interface Pending {
+	readonly key: string;
+	readonly units: readonly CloudMemberFolderUnit[];
+	readonly apply: (commit: CloudMemberFolderCommit) => void;
 }
 
 const SETTLE_MS = 30_000;
@@ -262,6 +268,11 @@ export class ProgramAdd {
 	#listed = false;
 	#settling = false;
 	#running: Promise<unknown> | undefined;
+	#userId: string | undefined;
+	#date: Date | undefined;
+	#pending: Pending | undefined;
+	#inflight: { readonly file: File; readonly kind: ProgramKind; readonly version: string } | undefined;
+	readonly #keys = new Map<string, string>();
 	readonly #placed = new Map<File, Placed>();
 	readonly #prepared = new Map<File, CloudMemberFolderUploadFile>();
 
@@ -288,6 +299,47 @@ export class ProgramAdd {
 		return `${this.#app}/${programFilePath(version, file.name)}`;
 	}
 
+	#key(what: string): string {
+		const known = this.#keys.get(what);
+		if (known) return known;
+		const key = `web:${crypto.randomUUID()}`;
+		this.#keys.set(what, key);
+		return key;
+	}
+
+	async #commit(
+		units: readonly CloudMemberFolderUnit[],
+		signal: AbortSignal,
+		apply: (commit: CloudMemberFolderCommit) => void,
+	): Promise<CloudMemberFolderCommit> {
+		const key = this.#key(JSON.stringify(units));
+		this.#pending = { key, units, apply };
+		const commit = await this.#folder().commit(key, units, signal);
+		this.#pending = undefined;
+		apply(commit);
+		return commit;
+	}
+
+	async #replay(signal: AbortSignal): Promise<void> {
+		const pending = this.#pending;
+		if (!pending) return;
+		const commit = await this.#folder().commit(pending.key, pending.units, signal);
+		this.#pending = undefined;
+		pending.apply(commit);
+	}
+
+	#lists(program: Program | null): boolean {
+		const ours = [...this.#prepared.values()];
+		return (
+			ours.length > 0 &&
+			program?.versions.some(
+				(version) =>
+					version.userId === this.#userId &&
+					ours.every((prepared) => version.forms.some((form) => form.sha256 === prepared.fileSha256)),
+			) === true
+		);
+	}
+
 	run(plan: ProgramAddPlan): Promise<void> {
 		const running = this.#run(plan);
 		this.#running = running.catch(() => undefined);
@@ -296,12 +348,27 @@ export class ProgramAdd {
 
 	async discard(): Promise<void> {
 		await this.#running;
-		if (this.#listed) return;
-		const placed = [...this.#placed.values()];
-		this.#placed.clear();
 		const signal = AbortSignal.timeout(SETTLE_MS);
 		const folder = this.#folder();
 		try {
+			await this.#replay(signal);
+			if (this.#listed || (this.#prepared.size > 0 && this.#lists((await this.#kept(signal)).program))) return;
+			const inflight = this.#inflight;
+			const prepared = inflight ? this.#prepared.get(inflight.file) : undefined;
+			if (inflight && prepared && !this.#placed.has(inflight.file)) {
+				const entry = (await folder.read(this.#path(inflight.version, inflight.file), signal)).entry;
+				if (entry?.file?.fileSha256 === prepared.fileSha256 && entry.file.bytes === prepared.bytes)
+					this.#placed.set(inflight.file, {
+						file: inflight.file,
+						kind: inflight.kind,
+						prepared,
+						version: inflight.version,
+						entry: entry.version,
+					});
+			}
+			const placed = [...this.#placed.values()];
+			this.#placed.clear();
+			this.#inflight = undefined;
 			if (this.#claimed) {
 				const read = await folder.read(this.#app, signal);
 				if (read.entry?.kind === "folder")
@@ -329,21 +396,24 @@ export class ProgramAdd {
 		}
 	}
 
-	async #claim(taken: Set<string>, key: () => string, signal: AbortSignal): Promise<void> {
+	#kept(signal: AbortSignal) {
+		return readKept(this.#folder(), `${this.#app}/${PROGRAM_FILE}`, signal);
+	}
+
+	async #claim(taken: Set<string>, signal: AbortSignal): Promise<void> {
 		for (let attempt = 1; attempt <= CLAIM_TRIES; attempt++) {
-			const commit = await this.#folder().commit(
-				key(),
+			const commit = await this.#commit(
 				[
 					{ op: "mkdir", path: APPS_FOLDER },
 					{ op: "mkdir", path: this.#app },
 				],
 				signal,
+				(answer) => {
+					if (answer.units[1]?.outcome === "saved") this.#claimed = true;
+				},
 			);
+			if (this.#claimed) return;
 			const claim = commit.units[1];
-			if (claim?.outcome === "saved") {
-				this.#claimed = true;
-				return;
-			}
 			if (claim?.outcome === "denied") throw new ProgramAddRefusal("denied");
 			if (claim?.outcome !== "conflict") throw new ProgramAddRefusal("refused", claim?.reason ?? null);
 			taken.add(this.#slug);
@@ -354,14 +424,20 @@ export class ProgramAdd {
 
 	async #run(plan: ProgramAddPlan): Promise<void> {
 		const { signal } = plan;
-		const key = plan.key ?? (() => `web:${crypto.randomUUID()}`);
 		const now = plan.now ?? (() => new Date());
-		if (this.#isNew && !this.#claimed) await this.#claim(new Set(plan.taken ?? []), key, signal);
+		this.#userId = plan.userId;
+		await this.#replay(AbortSignal.timeout(SETTLE_MS));
+		if (this.#listed) return;
+		if (this.#isNew && !this.#claimed) await this.#claim(new Set(plan.taken ?? []), signal);
 		const programPath = `${this.#app}/${PROGRAM_FILE}`;
 		const total = plan.files.reduce((sum, each) => sum + each.file.size, 0);
 		let done = [...this.#placed.values()].reduce((sum, each) => sum + each.file.size, 0);
 		plan.onProgress?.(done, total);
 		let kept = await readKept(this.#folder(), programPath, signal);
+		if (this.#lists(kept.program)) {
+			this.#listed = true;
+			return;
+		}
 		const draft = programWithVersion(
 			kept.program,
 			nextMemberVersion(kept.program),
@@ -370,7 +446,8 @@ export class ProgramAdd {
 			now(),
 		);
 		if (!fits(draft)) throw new ProgramAddRefusal("full");
-		let version = [...this.#placed.values()][0]?.version ?? nextMemberVersion(kept.program);
+		let version =
+			[...this.#placed.values()][0]?.version ?? this.#inflight?.version ?? nextMemberVersion(kept.program);
 		for (const { file, kind } of plan.files) {
 			if (this.#placed.has(file)) continue;
 			let prepared = this.#prepared.get(file);
@@ -378,12 +455,16 @@ export class ProgramAdd {
 				prepared = await prepareCloudMemberFolderUpload(file, signal);
 				this.#prepared.set(file, prepared);
 			}
+			if (this.#inflight?.file === file) version = this.#inflight.version;
 			for (let attempt = 1; ; attempt++) {
-				const put = await this.#folder().uploadFile(this.#path(version, file), file, prepared, {
-					operationKey: key(),
+				const path = this.#path(version, file);
+				this.#inflight = { file, kind, version };
+				const put = await this.#folder().uploadFile(path, file, prepared, {
+					operationKey: this.#key(`upload:${path}:${prepared.fileSha256}`),
 					signal,
 					onProgress: (sent) => plan.onProgress?.(done + sent, total),
 				});
+				this.#inflight = undefined;
 				if (put.outcome === "saved") {
 					this.#placed.set(file, { file, kind, prepared, version, entry: put.version });
 					break;
@@ -404,17 +485,17 @@ export class ProgramAdd {
 		this.#settling = true;
 		plan.onSettling?.();
 		try {
-			await this.#keep(plan, programPath, kept, key, now);
+			this.#date ??= now();
+			await this.#keep(plan, programPath, kept);
 		} finally {
 			this.#settling = false;
 		}
 	}
 
-	async #move(placed: readonly Placed[], version: string, key: () => string, signal: AbortSignal): Promise<void> {
+	async #move(placed: readonly Placed[], version: string, signal: AbortSignal): Promise<void> {
 		const moving = placed.filter((each) => each.version !== version);
 		if (moving.length === 0) return;
-		const commit = await this.#folder().commit(
-			key(),
+		const commit = await this.#commit(
 			[
 				{ op: "mkdir", path: `${this.#app}/versions/${version}` },
 				...moving.map(
@@ -427,14 +508,15 @@ export class ProgramAdd {
 				),
 			],
 			signal,
+			(answer) => {
+				for (const [index, each] of moving.entries()) {
+					const unit = answer.units[index + 1];
+					if (unit?.outcome !== "saved") continue;
+					each.version = version;
+					each.entry = unit.version;
+				}
+			},
 		);
-		for (const [index, each] of moving.entries()) {
-			const unit = commit.units[index + 1];
-			if (unit?.outcome === "saved") {
-				each.version = version;
-				each.entry = unit.version;
-			}
-		}
 		const failed = commit.units.slice(1).find((unit) => unit.outcome !== "saved");
 		if (failed) throw new ProgramAddRefusal(failed.outcome === "denied" ? "denied" : "taken");
 	}
@@ -443,26 +525,30 @@ export class ProgramAdd {
 		plan: ProgramAddPlan,
 		programPath: string,
 		first: { readonly program: Program | null; readonly version: string | null },
-		key: () => string,
-		now: () => Date,
 	): Promise<void> {
 		const signal = AbortSignal.timeout(SETTLE_MS);
+		const at = this.#date ?? new Date();
 		let kept = first;
 		let manifest = this.#isNew && kept.program === null;
 		for (let attempt = 1; ; attempt++) {
+			if (this.#lists(kept.program)) {
+				this.#listed = true;
+				return;
+			}
 			const placed = plan.files.map(({ file }) => this.#placed.get(file)!);
-			const at = placed[0]!.version;
+			const head = placed[0]!.version;
 			const free =
-				placed.every((each) => each.version === at) && !kept.program?.versions.some((each) => each.version === at);
+				placed.every((each) => each.version === head) &&
+				!kept.program?.versions.some((each) => each.version === head);
 			const version = free
-				? at
+				? head
 				: nextMemberVersion({
 						versions: [
 							...(kept.program?.versions ?? []),
 							...placed.map((each) => ({ version: each.version, date: "", forms: [] })),
 						],
 					});
-			await this.#move(placed, version, key, signal);
+			await this.#move(placed, version, signal);
 			const text = programWithVersion(
 				kept.program,
 				version,
@@ -473,7 +559,7 @@ export class ProgramAdd {
 					sha256: each.prepared.fileSha256,
 				})),
 				plan.userId,
-				now(),
+				at,
 			);
 			if (!fits(text)) throw new ProgramAddRefusal("full");
 			const units: CloudMemberFolderUnit[] = [
@@ -501,15 +587,16 @@ export class ProgramAdd {
 					: []),
 				{ op: "write", path: programPath, text, ...(kept.version ? { expectedVersion: kept.version } : {}) },
 			];
-			const commit = await this.#folder().commit(key(), units, signal);
+			const withManifest = manifest;
+			const commit = await this.#commit(units, signal, (answer) => {
+				if (withManifest && answer.units[0]?.outcome === "saved") manifest = false;
+				if (answer.units.at(-1)?.outcome === "saved") {
+					this.#listed = true;
+					this.#placed.clear();
+				}
+			});
 			const written = commit.units.at(-1);
-			if (manifest && commit.units[0]?.outcome === "saved") manifest = false;
-			if (written?.outcome === "saved") {
-				this.#listed = true;
-				this.#placed.clear();
-				this.#prepared.clear();
-				return;
-			}
+			if (written?.outcome === "saved") return;
 			if (written?.outcome === "denied") throw new ProgramAddRefusal("denied");
 			if (written?.outcome === "refused") throw new ProgramAddRefusal("refused", written.reason);
 			if (written?.outcome !== "conflict" || attempt === TRIES) throw new ProgramAddRefusal("taken");

@@ -867,7 +867,13 @@ the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop
 bubble reads "Putting it in place for everyone in <company>." Leaving the page or Stop ends it: what was placed is
 deleted again (a new program's claimed folder whole), once any finish already sent has answered, so nothing is
 listed. Once the last change set (`app.toml`, `program.json`, and a move before it) is sent, Stop goes and it is not
-cut short: it settles, and nothing it lists is deleted. A refusal says too large (the
+cut short: it settles, and nothing it lists is deleted. **A lost answer** (the folder saved, the reply never came)
+changes nothing on screen it should not: every change set keeps its operation key for the life of the add, keyed by
+what it sends (the kept version's date is fixed once, so the same change set is the same request), and before Try
+again and before any delete, the change set whose answer was lost is sent again with the same key: the commit route
+replays what it did (C4 §5), and only what is known not saved is deleted, moved or written again. A file's upload keeps
+its key and path the same way, and the gateway answers `saved` for that very file. As a second check, a `program.json`
+whose versions hold one by this member with all of this add's files (by SHA-256) counts as listed. A refusal says too large (the
 size and the most), not allowed, the company paused, another of the member's programs still going up, someone adding
 at the same moment (Try again), that version already having this file, the company folder's own refusal in its words
 (no retry), a name the folder does not take, or the connection dropped (Try again, which continues where it stopped). After it, the

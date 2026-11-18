@@ -50,6 +50,8 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 	let refuse: unknown;
 	let outcome: { outcome: "refused"; version: null; reason: string } | undefined;
 	let names: (() => string[]) | undefined;
+	let lose: ((units: readonly CloudMemberFolderUnit[]) => boolean) | undefined;
+	let loseFinish = false;
 	const uploadFile = vi.fn(
 		async (
 			path: string,
@@ -63,12 +65,19 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 			options.onProgress?.(Math.floor(prepared.bytes * 0.4), prepared.bytes);
 			if (hold) await hold;
 			if (outcome) return outcome;
+			const text = await blob.text();
+			if (fake.text(path) === text)
+				return { outcome: "saved" as const, version: fake.version(path) ?? null, reason: null };
 			const parts = path.split("/");
 			const units: CloudMemberFolderUnit[] = [
 				...[1, 2, 3, 4].map((depth) => ({ op: "mkdir" as const, path: parts.slice(0, depth).join("/") })),
-				{ op: "write", path, text: await blob.text() },
+				{ op: "write", path, text },
 			];
 			const written = (await fake.folder.commit(options.operationKey, units, options.signal)).units.at(-1);
+			if (loseFinish) {
+				loseFinish = false;
+				throw new TypeError("Failed to fetch");
+			}
 			return written?.outcome === "saved"
 				? { outcome: "saved" as const, version: written.version, reason: null }
 				: {
@@ -80,7 +89,12 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 	);
 	const commit = vi.fn(async (key: string, units: readonly CloudMemberFolderUnit[], signal: AbortSignal) => {
 		if (textHold && units.some((unit) => "path" in unit && unit.path.endsWith("/program.json"))) await textHold;
-		return fake.folder.commit(key, units, signal);
+		const answer = await fake.folder.commit(key, units, signal);
+		if (lose?.(units)) {
+			lose = undefined;
+			throw new TypeError("Failed to fetch");
+		}
+		return answer;
 	});
 	const folder = { ...fake.folder, commit, uploadFile };
 	const opened: string[] = [];
@@ -129,6 +143,12 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 			};
 		},
 		commits: () => fake.commits.map((each) => each.units.map((unit) => unit.op)),
+		loseAnswerTo: (match: (units: readonly CloudMemberFolderUnit[]) => boolean) => {
+			lose = match;
+		},
+		loseFinishAnswer: () => {
+			loseFinish = true;
+		},
 	};
 }
 
@@ -516,6 +536,87 @@ describe("the New program page", () => {
 		expect(shown.el.querySelector(".program-drop-status.is-said span")?.textContent).toBe(
 			"This file can't be put in place as it is named. Rename it and drop it again.",
 		);
+	});
+
+	describe("when an answer is lost after the company folder saved", () => {
+		const listing = (units: readonly CloudMemberFolderUnit[]) =>
+			units.some((unit) => "path" in unit && unit.path.endsWith("/program.json"));
+		const claiming = (units: readonly CloudMemberFolderUnit[]) =>
+			units.length === 2 && units.every((unit) => unit.op === "mkdir");
+		const dropped = async (shown: NewProgramPage) => {
+			await until(() => shown.el.querySelector(".program-drop-status.is-said") !== null);
+			expect(shown.el.querySelector(".program-drop-status.is-said span")?.textContent).toBe(
+				"The connection dropped.",
+			);
+			return (label: string) =>
+				[...shown.el.querySelectorAll<HTMLButtonElement>(".program-drop-status.is-said button")]
+					.find((button) => button.textContent === label)!
+					.click();
+		};
+
+		it("Cancel after the last change set's lost answer leaves the listed program as it is", async () => {
+			const c = company();
+			c.loseAnswerTo(listing);
+			const shown = page(c.host);
+			drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+			(await dropped(shown))("Cancel");
+			await until(() => c.fake.commits.filter((each) => each.units.some(listing)).length === 2);
+			await settle();
+			await settle();
+			expect(c.fake.has("apps/lagerliste/app.toml")).toBe(true);
+			expect(c.fake.has("apps/lagerliste/versions/1/Lagerliste.exe")).toBe(true);
+			expect(parseProgram(c.fake.text("apps/lagerliste/program.json") ?? "")?.versions).toHaveLength(1);
+			expect(c.commits().flat()).not.toContain("delete");
+			const [sent, replayed] = c.fake.commits.filter((each) => each.units.some(listing));
+			expect(replayed?.operationKey).toBe(sent?.operationKey);
+		});
+
+		it("Try again after it lists version 1 once and moves nothing", async () => {
+			const c = company();
+			c.loseAnswerTo(listing);
+			const shown = page(c.host);
+			drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+			(await dropped(shown))("Try again");
+			await until(() => c.opened.length === 1);
+			expect(c.opened).toEqual(["lagerliste"]);
+			expect(
+				parseProgram(c.fake.text("apps/lagerliste/program.json") ?? "")?.versions.map((each) => each.version),
+			).toEqual(["1"]);
+			expect(c.commits().flat()).not.toContain("move");
+			expect(c.uploads).toHaveLength(1);
+		});
+
+		it("Try again after the claim's lost answer keeps the folder it claimed", async () => {
+			const c = company();
+			c.loseAnswerTo(claiming);
+			const shown = page(c.host);
+			drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+			(await dropped(shown))("Try again");
+			await until(() => c.opened.length === 1);
+			expect(c.opened).toEqual(["lagerliste"]);
+			expect(c.fake.has("apps/lagerliste-2")).toBe(false);
+		});
+
+		it("Try again after the finish's lost answer puts the file once, with the same key, and Cancel deletes it", async () => {
+			const again = company();
+			again.loseFinishAnswer();
+			const shown = page(again.host);
+			drop(shown.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+			(await dropped(shown))("Try again");
+			await until(() => again.opened.length === 1);
+			expect(again.uploads.map((each) => each.path)).toEqual([
+				"apps/lagerliste/versions/1/Lagerliste.exe",
+				"apps/lagerliste/versions/1/Lagerliste.exe",
+			]);
+			expect(again.uploads[1]?.key).toBe(again.uploads[0]?.key);
+			expect(again.fake.children("apps/lagerliste/versions")).toEqual(["apps/lagerliste/versions/1"]);
+			const cancel = company();
+			cancel.loseFinishAnswer();
+			const other = page(cancel.host);
+			drop(other.el.querySelector(".program-drop")!, [file("Lagerliste.exe")]);
+			(await dropped(other))("Cancel");
+			await until(() => !cancel.fake.has("apps/lagerliste"));
+		});
 	});
 
 	it("speaks Danish", () => {
