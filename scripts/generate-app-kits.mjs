@@ -35,6 +35,7 @@ export const KIT_ENGINE_SOURCES = {
 	MAP_ENGINE_JS: "packages/runtime/kits/map/engine.js",
 	RING_ENGINE_JS: "packages/runtime/kits/ring/engine.js",
 	FLOW_ENGINE_JS: "packages/runtime/kits/flow/engine.js",
+	ROADMAP_ENGINE_JS: "packages/runtime/kits/roadmap/engine.js",
 };
 /** What an agent is told of each data kit: what it draws and what its data file holds. */
 export const KIT_GUIDE_SOURCES = {
@@ -48,6 +49,7 @@ export const KIT_GUIDE_SOURCES = {
 	MAP_KIT_GUIDE: "packages/runtime/kits/map/KIT.md",
 	RING_KIT_GUIDE: "packages/runtime/kits/ring/KIT.md",
 	FLOW_KIT_GUIDE: "packages/runtime/kits/flow/KIT.md",
+	ROADMAP_KIT_GUIDE: "packages/runtime/kits/roadmap/KIT.md",
 };
 export const KIT_ENGINES_GENERATED = "packages/runtime/src/cloud-app-kit-engines.generated.ts";
 /** The agents' figures, by id (the web's STAFF_CHARACTER_IDS), each a small WebP a kit page carries as a data: URL. */
