@@ -1773,6 +1773,7 @@ export class CloudActionReviewGate {
 	readonly #holdMs: number;
 	readonly #pollMs: number;
 	readonly #reviewWaitsMs: readonly number[];
+	readonly #reviewRetryMs: number;
 	readonly #request: string;
 	readonly #mandate: string | null;
 	readonly #connectorEffects: ReadonlyMap<string, "read" | "write">;
@@ -1796,6 +1797,7 @@ export class CloudActionReviewGate {
 		observability?: CloudRuntimeObservability;
 		pollMs?: number;
 		reviewWaitsMs?: readonly number[];
+		reviewRetryMs?: number;
 	}) {
 		if (!Number.isSafeInteger(options.holdMs) || options.holdMs < 0) throw new Error("Invalid action review hold");
 		this.#binding = options.binding;
@@ -1806,6 +1808,7 @@ export class CloudActionReviewGate {
 		this.#holdMs = options.holdMs;
 		this.#pollMs = options.pollMs ?? POLL_MS;
 		this.#reviewWaitsMs = options.reviewWaitsMs ?? REVIEW_WAITS_MS;
+		this.#reviewRetryMs = options.reviewRetryMs ?? REVIEW_RETRY_MS;
 		this.#connectorEffects = options.connectorEffects ?? new Map();
 		this.#offlineShells = options.offlineShells ?? new Set();
 		this.#facts = options.facts ?? {};
@@ -1905,14 +1908,16 @@ export class CloudActionReviewGate {
 				break;
 			} catch (error) {
 				signal.throwIfAborted();
-				span?.finish("failed", { errorCategory: "review_unavailable" });
 				const wait = this.#reviewWaitsMs[attempt];
 				if (
 					!(error instanceof CloudActionReviewBusy) ||
 					wait === undefined ||
-					Date.now() - asked + wait > REVIEW_RETRY_MS
-				)
+					Date.now() - asked + wait > this.#reviewRetryMs
+				) {
+					span?.finish("failed", { errorCategory: "review_unavailable" });
 					return { run: false, text: CLOUD_REVIEW_UNAVAILABLE };
+				}
+				span?.finish("failed", { errorCategory: "provider_failed" });
 				await cloudControlPause(wait, signal);
 			}
 		}

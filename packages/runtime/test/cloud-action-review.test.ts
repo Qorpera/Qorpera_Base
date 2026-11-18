@@ -2126,6 +2126,8 @@ function gate(options: {
 	reviewerFails?: boolean;
 	reviewAnswers?: unknown[];
 	reviewWaitsMs?: number[];
+	reviewRetryMs?: number;
+	spans?: string[];
 	request?: string;
 	mandate?: string;
 }) {
@@ -2181,6 +2183,19 @@ function gate(options: {
 		holdMs: options.holdMs ?? 0,
 		pollMs: 1,
 		...(options.reviewWaitsMs ? { reviewWaitsMs: options.reviewWaitsMs } : {}),
+		...(options.reviewRetryMs === undefined ? {} : { reviewRetryMs: options.reviewRetryMs }),
+		...(options.spans
+			? {
+					observability: {
+						start: (name: string) => ({
+							finish: (status: string, fields?: { errorCategory?: string }) =>
+								options.spans?.push(
+									`${name} ${status}${fields?.errorCategory ? ` ${fields.errorCategory}` : ""}`,
+								),
+						}),
+					} as never,
+				}
+			: {}),
 		connectorEffects: new Map([["gmail_send_message", "write"]]),
 	});
 	const abort = new AbortController();
@@ -2561,13 +2576,30 @@ describe("the review step", () => {
 		const allow = { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" };
 		const deny = { ...allow, decision: "deny", builtIn: "not_requested", reason: "No." };
 		const busy = () => new CloudActionReviewBusy();
-		const retried = gate({ reviewAnswers: [busy(), busy(), allow], reviewWaitsMs: [1, 1, 1] });
+		const spans: string[] = [];
+		const retried = gate({ reviewAnswers: [busy(), busy(), allow], reviewWaitsMs: [1, 1, 1], spans });
 		expect(await retried.check()).toEqual({ run: true, reviewId: undefined });
 		expect(retried.review).toHaveBeenCalledTimes(3);
-		const spent = gate({ reviewAnswers: [busy(), busy(), busy(), allow], reviewWaitsMs: [1, 1] });
+		expect(spans).toEqual([
+			"action_review failed provider_failed",
+			"action_review failed provider_failed",
+			"action_review succeeded",
+		]);
+		spans.length = 0;
+		const spent = gate({ reviewAnswers: [busy(), busy(), busy(), allow], reviewWaitsMs: [1, 1], spans });
 		expect(await spent.check()).toEqual({ run: false, text: CLOUD_REVIEW_UNAVAILABLE });
 		expect(spent.review).toHaveBeenCalledTimes(3);
 		expect(spent.calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review"]);
+		expect(spans).toEqual([
+			"action_review failed provider_failed",
+			"action_review failed provider_failed",
+			"action_review failed review_unavailable",
+		]);
+		spans.length = 0;
+		const late = gate({ reviewAnswers: [busy(), busy(), allow], reviewWaitsMs: [1, 60], reviewRetryMs: 30, spans });
+		expect(await late.check()).toEqual({ run: false, text: CLOUD_REVIEW_UNAVAILABLE });
+		expect(late.review).toHaveBeenCalledTimes(2);
+		expect(spans).toEqual(["action_review failed provider_failed", "action_review failed review_unavailable"]);
 		const denied = gate({
 			reviewAnswers: [deny, allow],
 			reviewWaitsMs: [1],
@@ -3982,6 +4014,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 				}),
 			).not.toHaveProperty("guards");
 	});
+
 	describe("the files a command runs (17 November 2026, mywave)", () => {
 		const INSTRUCTION_BYTES = 12866;
 		const FETCH = "import urllib.request\nfor url in MAKERS:\n    urllib.request.urlopen(url).read()\n";

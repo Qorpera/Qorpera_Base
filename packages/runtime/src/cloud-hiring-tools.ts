@@ -22,32 +22,50 @@ const TEAM_ARGUMENT_BYTES = 90 * 1024;
 /** The todo a folder-v2 hire's first assignment becomes holds at most this much (§2 "todo"). */
 const FOLDER_ASSIGNMENT_BYTES = 4000;
 
-function text(value: unknown, maxBytes: number, singleLine: boolean): string {
-	if (
-		typeof value !== "string" ||
-		!value.trim() ||
-		value.includes("\0") ||
-		(singleLine && /[\r\n]/.test(value)) ||
-		Buffer.byteLength(value.trim()) > maxBytes ||
-		Buffer.from(value).toString("utf8") !== value
-	)
-		throw new Error("Invalid hire text");
+const HIRE_HOLDS = "name, role, jobDescription, firstAssignment and figure (figure is optional)";
+const KEY_RULE =
+	"one key for the call: 1 to 96 letters, digits, '.', '_', ':' or '-', starting with a letter or a digit";
+
+function text(value: unknown, field: string, maxBytes: number, singleLine: boolean, where: string, bound = ""): string {
+	const refuse = (problem: string) => new CloudToolArgumentRefusal(`${where}${field} ${problem}`);
+	if (value === undefined) throw refuse("is missing");
+	if (typeof value !== "string") throw refuse("must be text");
+	if (!value.trim()) throw refuse("is empty");
+	if (value.includes("\0")) throw refuse("holds a NUL character: remove it");
+	if (singleLine && /[\r\n]/.test(value)) throw refuse("must be one line, with no line breaks");
+	if (Buffer.from(value).toString("utf8") !== value) throw refuse("is not valid text");
+	if (Buffer.byteLength(value.trim()) > maxBytes) throw refuse(`holds at most ${maxBytes} bytes${bound}: shorten it`);
 	return value.trim();
 }
 
-function hireFields(a: Record<string, unknown>) {
-	if (typeof a.firstAssignment === "string" && Buffer.byteLength(a.firstAssignment.trim()) > FOLDER_ASSIGNMENT_BYTES)
-		throw new CloudToolArgumentRefusal(
-			`firstAssignment holds at most ${FOLDER_ASSIGNMENT_BYTES} bytes in this company: shorten it`,
-		);
-	if (a.figure !== undefined && !isStaffCharacterId(a.figure)) throw new Error("Invalid hire figure");
-	return {
-		name: text(a.name, 160, true),
-		role: text(a.role, 320, true),
-		jobDescription: text(a.jobDescription, 16384, false),
-		firstAssignment: text(a.firstAssignment, FOLDER_ASSIGNMENT_BYTES, false),
-		figure: (a.figure as string | undefined) ?? "planet",
+function holdsOther(value: object, allowed: readonly string[]): boolean {
+	return Object.keys(value).some((key) => !allowed.includes(key));
+}
+
+function operationKeyOf(value: unknown): string {
+	if (value === undefined) throw new CloudToolArgumentRefusal(`operationKey is missing: ${KEY_RULE}`);
+	if (typeof value !== "string" || !OPERATION_KEY.test(value))
+		throw new CloudToolArgumentRefusal(`operationKey is not a valid key: ${KEY_RULE}`);
+	return value;
+}
+
+function hireFields(a: Record<string, unknown>, where: string) {
+	const hire = {
+		name: text(a.name, "name", 160, true, where),
+		role: text(a.role, "role", 320, true, where),
+		jobDescription: text(a.jobDescription, "jobDescription", 16384, false, where),
+		firstAssignment: text(
+			a.firstAssignment,
+			"firstAssignment",
+			FOLDER_ASSIGNMENT_BYTES,
+			false,
+			where,
+			" in this company",
+		),
 	};
+	if (a.figure !== undefined && !isStaffCharacterId(a.figure))
+		throw new CloudToolArgumentRefusal(`${where}figure must be one of ${STAFF_CHARACTER_IDS.join(", ")}`);
+	return { ...hire, figure: (a.figure as string | undefined) ?? "planet" };
 }
 
 function teamRequest(team: { operationKey: string; hires: readonly Record<string, string>[] }): string {
@@ -118,7 +136,7 @@ export const CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER = [
 ].join("\n");
 export const CLOUD_HIRE_TEAM_TOOL_DESCRIPTION = [
 	`Hire two or more new coworkers at one time, above all the company's first team, so that each starts knowing the others: one call, one review, and the whole team is saved together. Each is for a continuing responsibility that nobody owns, not for a one-off task (give that to a worker); one hire, at any later time as the company evolves, goes by hire_agent. First see who owns what: each coworker's agent.md under ${osPath("agents")}/ says what it does.`,
-	`hires holds 2 to 12, each with the fields hire_agent takes and a name no other hire or coworker has. Each hire is the agent's own folder, ${osPath("agents")}/<name>/agent.md, with its job description and the instructions it works by; its first assignment becomes an open todo in its todos folder. When the answer's outcome is saved, the platform starts each on its first assignment by itself, usually within a minute, and each one's first run already lists the whole team: tell the member who you hired and why. When your own access to the company's files is limited, the team waits for an owner or admin to approve it on one card.`,
+	`operationKey is given once, for the whole call, never inside a hire. hires holds 2 to 12 hires, and each hire holds only name (one line of at most 160 bytes, a name no other hire or coworker has), role (one line of at most 320 bytes), jobDescription (at most 16,384 bytes), firstAssignment (at most 4,000 bytes) and figure (optional). Each hire is the agent's own folder, ${osPath("agents")}/<name>/agent.md, with its job description and the instructions it works by; its first assignment becomes an open todo in its todos folder. When the answer's outcome is saved, the platform starts each on its first assignment by itself, usually within a minute, and each one's first run already lists the whole team: tell the member who you hired and why. When your own access to the company's files is limited, the team waits for an owner or admin to approve it on one card.`,
 	"All hires together hold at most about 80 KB of text; hire a larger team in two calls. A conflict or a refusal needs a new operationKey.",
 ].join("\n");
 /** The end of an agent's role (the company's reading of itself, 20260930766000): its agent.md set to archived. */
@@ -189,17 +207,14 @@ export function cloudHiringTools(
 			},
 		},
 		parseArguments(value) {
-			if (
-				!value ||
-				typeof value !== "object" ||
-				Array.isArray(value) ||
-				Object.keys(value).some((key) => !FIELDS.includes(key as (typeof FIELDS)[number]))
-			)
-				throw new Error("Invalid hire request");
+			if (!value || typeof value !== "object" || Array.isArray(value))
+				throw new CloudToolArgumentRefusal(`hire_agent takes one object with operationKey, ${HIRE_HOLDS}`);
+			if (holdsOther(value, FIELDS))
+				throw new CloudToolArgumentRefusal(
+					`hire_agent takes operationKey, ${HIRE_HOLDS}; it was given a key that is none of these`,
+				);
 			const a = value as Record<string, unknown>;
-			if (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey))
-				throw new Error("Invalid hire key");
-			const hire = { operationKey: a.operationKey, ...hireFields(a) };
+			const hire = { operationKey: operationKeyOf(a.operationKey), ...hireFields(a, "") };
 			refuseRebinding(hires, hire.operationKey, hireRequest(hire), "hire");
 			// The hire's files are checked now, before the automatic review.
 			folderHiring.check(hire as unknown as CloudFolderHire);
@@ -263,8 +278,8 @@ export function cloudHiringTools(
 				throw new Error("Invalid group chat membership");
 			const chat = {
 				operationKey: a.operationKey,
-				name: text(a.name, 256, true),
-				purpose: text(a.purpose, 2048, false),
+				name: text(a.name, "name", 256, true, ""),
+				purpose: text(a.purpose, "purpose", 2048, false, ""),
 				coworkerIds: [...(a.coworkerIds as string[])].sort(),
 				includeRequestingMember: a.includeRequestingMember !== false,
 			};
@@ -368,31 +383,38 @@ export function cloudHiringTools(
 			},
 		},
 		parseArguments(value) {
-			if (
-				!value ||
-				typeof value !== "object" ||
-				Array.isArray(value) ||
-				Object.keys(value).some((key) => !TEAM_FIELDS.includes(key as (typeof TEAM_FIELDS)[number]))
-			)
-				throw new Error("Invalid team hire request");
+			const takes = `hire_team takes operationKey, once for the whole call, and hires, a list of ${TEAM_HIRES_MIN} to ${TEAM_HIRES_MAX} hires`;
+			if (!value || typeof value !== "object" || Array.isArray(value))
+				throw new CloudToolArgumentRefusal(`${takes}, as one object`);
+			if (holdsOther(value, TEAM_FIELDS))
+				throw new CloudToolArgumentRefusal(`${takes}; it was given a key that is neither`);
 			const a = value as Record<string, unknown>;
-			if (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey))
-				throw new Error("Invalid team hire key");
-			if (!Array.isArray(a.hires) || a.hires.length < TEAM_HIRES_MIN || a.hires.length > TEAM_HIRES_MAX)
+			const operationKey = operationKeyOf(a.operationKey);
+			if (a.hires === undefined)
+				throw new CloudToolArgumentRefusal(`hires is missing: ${takes}, each holding ${HIRE_HOLDS}`);
+			if (!Array.isArray(a.hires))
 				throw new CloudToolArgumentRefusal(
-					`hires holds ${TEAM_HIRES_MIN} to ${TEAM_HIRES_MAX} hires; hire one coworker with hire_agent`,
+					`hires must be a list of hire objects${typeof a.hires === "string" ? ", not text holding one: send the list itself" : ""}`,
+				);
+			if (a.hires.length < TEAM_HIRES_MIN || a.hires.length > TEAM_HIRES_MAX)
+				throw new CloudToolArgumentRefusal(
+					`hires holds ${TEAM_HIRES_MIN} to ${TEAM_HIRES_MAX} hires and has ${a.hires.length}; ${a.hires.length < TEAM_HIRES_MIN ? "hire one coworker with hire_agent" : "hire a larger team in two calls"}`,
 				);
 			const team = {
-				operationKey: a.operationKey,
-				hires: a.hires.map((hire: unknown) => {
-					if (
-						!hire ||
-						typeof hire !== "object" ||
-						Array.isArray(hire) ||
-						Object.keys(hire).some((key) => !MEMBER_FIELDS.includes(key as (typeof MEMBER_FIELDS)[number]))
-					)
-						throw new Error("Invalid team hire");
-					return hireFields(hire as Record<string, unknown>);
+				operationKey,
+				hires: a.hires.map((hire: unknown, index: number) => {
+					const where = `hire ${index + 1}: `;
+					if (!hire || typeof hire !== "object" || Array.isArray(hire))
+						throw new CloudToolArgumentRefusal(`hire ${index + 1} must be an object holding ${HIRE_HOLDS}`);
+					if ("operationKey" in hire)
+						throw new CloudToolArgumentRefusal(
+							`${where}operationKey is given once for the whole call, never inside a hire. A hire holds ${HIRE_HOLDS}`,
+						);
+					if (holdsOther(hire, MEMBER_FIELDS))
+						throw new CloudToolArgumentRefusal(
+							`${where}holds a key that is not a field of a hire. A hire holds ${HIRE_HOLDS}`,
+						);
+					return hireFields(hire as Record<string, unknown>, where);
 				}),
 			};
 			refuseRebinding(teams, team.operationKey, teamRequest(team), "team");
