@@ -59,7 +59,6 @@ test("production builds and accepts in the host's own LXD: no stage, no alias, n
 	assert.deepEqual(deletes(production), ['lx delete --force "$vm"', 'lx image delete "$base"']);
 	assert.deepEqual(deletes(accept), ['la delete --force "$vm"', 'la image delete "$fingerprint"',
 		'lxc --force-local project delete "$throwaway" </dev/null']);
-	// The folder program comes built and must be the pinned build; the image is the clean commit's.
 	assert.doesNotMatch(production, /node scripts\/build-folder-program/);
 });
 
