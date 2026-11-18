@@ -857,6 +857,127 @@ describe("the object kit's engine", () => {
 	});
 });
 
+describe("the object kit's engine with a model", () => {
+	const turntable = { picture: "pictures/box.webp", frames: 4, columns: 4, frameWidth: 560, frameHeight: 560 };
+	const parts = [
+		{
+			id: "lid",
+			name: "Lid",
+			state: "known",
+			node: "Lid",
+			track: [
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+			],
+		},
+	];
+	const box = (more: Record<string, unknown>) => ({ lang: "en", title: "The box", parts, ...more });
+	async function openObject(data: object, more: Record<string, unknown> = {}) {
+		const bridge = standIn(JSON.stringify(data));
+		page.QORPERA_KIT = { app: "demo", kit: "object", data: "object.json" };
+		page.qorpera = { ...bridge.qorpera, ...more };
+		new Function(kitFile("object", "engine.js"))();
+		await settle();
+		return bridge;
+	}
+	const said = () => vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const object = () => document.querySelector(".ok-object") as HTMLElement;
+
+	it("draws a turntable-only page as before: no 3D library asked for, nothing of the live mode in it", async () => {
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		const warn = said();
+		await openObject(box({ turntable }), { file });
+		drawFrames(3);
+		expect(file).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
+		expect(document.querySelector("main.ok")?.classList.contains("live")).toBe(false);
+		expect(document.querySelectorAll(".ok-gl, .ok-wait, .ok-none, script[src]")).toHaveLength(0);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-hint")?.classList.contains("show")).toBe(true);
+	});
+
+	it("shows the turntable as today where the browser has no WebGL, and says why in the console", async () => {
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		const warn = said();
+		await openObject(box({ model: "box.glb", turntable }), { file });
+		drawFrames(3);
+		expect(file).not.toHaveBeenCalled();
+		expect(document.querySelector("main.ok")?.classList.contains("live")).toBe(false);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-none")).toBeNull();
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(warn).toHaveBeenCalledWith(
+			"Object kit: this browser cannot draw live 3D (it has no WebGL 2), so the page shows the thing's picture instead.",
+		);
+	});
+
+	it("says in one quiet line, in the page's language, that the model could not be shown when it has no picture", async () => {
+		said();
+		await openObject({ ...box({ model: "box.glb" }), lang: "da" });
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("Modellen kunne ikke vises.");
+		document.body.replaceChildren();
+		await openObject(box({ model: "box.glb", words: { nomodel: "No model here." } }));
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("No model here.");
+		expect(document.querySelectorAll(".ok-label")).toHaveLength(1);
+		expect(document.querySelectorAll(".ok-fact")).toHaveLength(0);
+	});
+
+	it("shows the poster still while the library and the model arrive, and a quiet mark where there is no picture", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		await openObject(box({ model: "box.glb", turntable }), { file });
+		drawFrames(3);
+		expect(file).toHaveBeenCalledWith("three.js");
+		expect(file).not.toHaveBeenCalledWith("box.glb");
+		expect(document.head.querySelector("script[src]")?.getAttribute("src")).toBe("blob:null/three.js");
+		expect(object().getAttribute("role")).toBe("img");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(document.querySelector(".ok-none")).toBeNull();
+		document.body.replaceChildren();
+		document.head.replaceChildren();
+		await openObject(box({ model: "box.glb" }), { file });
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(true);
+		expect(document.querySelector(".ok-none")).toBeNull();
+	});
+
+	it("falls back to the turntable, or the line, when the 3D library cannot be read", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const warn = said();
+		const file = vi.fn(async (path: string) => {
+			throw new Error(`${path} is not in the page's folder`);
+		});
+		await openObject(box({ model: "model/box.glb", turntable }), { file });
+		await settle();
+		drawFrames(3);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(document.querySelector(".ok-none")).toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			"Object kit: model/box.glb could not be shown (three.js is not in the page's folder). The page shows the thing's picture instead.",
+		);
+		document.body.replaceChildren();
+		await openObject(box({ model: "model/box.glb" }), { file });
+		await settle();
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("The model could not be shown.");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+	});
+
+	it("reads a model, a light and a view only as paths of the app's own folder", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		said();
+		await openObject(box({ model: "https://example.com/box.glb", turntable }), { file });
+		expect(file).not.toHaveBeenCalled();
+		expect(object().getAttribute("role")).toBe("slider");
+		document.body.replaceChildren();
+		await openObject(box({ model: "../box.glb" }), { file });
+		expect(file).not.toHaveBeenCalled();
+		expect(document.querySelector(".ok-empty, .ok-none, .ok-wait")).toBeNull();
+	});
+});
+
 describe("each data kit's note to the app's owner", () => {
 	interface Thing {
 		readonly id: string;

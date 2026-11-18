@@ -12,6 +12,20 @@
   release, a real turn of the pinned Codex (0.155.1, `9c299f88`) on `gpt-6.2-sol` must pass on a Codex login: its built-in
   catalog does not list the model, and the provider refuses a model newer than the client allows. Way back: a migration
   that sets the roster rows and the index default back to `gpt-6-astra` (the conversations stay on GPT-6.2 Sol).
+- The object kit draws a real 3D model, live in the member's browser (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b,
+  17 Nov 2026; Jonas: "Yes, all three" on the app-files design page): `object.json`'s `model` (and a variant's) names a
+  `.glb` in the app's folder, drawn with three.js 0.186.1 (MIT) and its GLTF loader, which `save_app` writes into the app
+  as `three.js` and `three.license.txt` only when the data names a model (`kitLibrary`; vendored by
+  `scripts/build-object-kit-three.mjs` into `kits/object/vendor/`, held as `cloud-app-kit-three.generated.ts`). Image-based
+  studio light (RoomEnvironment through PMREM, or the data's `environment` .hdr), AgX tone mapping, a soft contact shadow,
+  fitted from the model's bounds and opened at a three-quarter view or the data's `view`; drag turns and tilts, pinch or
+  wheel zooms, a double tap resets, it turns by itself until touched (never with reduced motion), and it draws only while
+  something moves. A part's `node` names its object in the model: its dot is found on the model and hidden where the
+  model covers it, and a tap turns the thing to where the part shows most. With no WebGL, a lost context or a model that
+  does not load, the page shows the turntable or picture as before, else one line that the model could not be shown. A
+  turntable-only app writes and draws exactly what it did. `parseKitData` refuses a model, light or view that is not
+  one; `kitNotes` names a model the folder lacks and a model with no picture beside it. The object guide says how to
+  export from Blender; `PLATFORM_UPDATES` tells the Co-Founder (`object-kit-live-3d`).
 - No cap on an interface app's files (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, 17 Nov 2026; Jonas: "also uncap the file-sizes"): `save_app` writes text files of any kind that is not binary, each as large as one call carries, lists the app's whole folder and releases only what the save drew on, and refuses no app for its count or size; `make_picture` no longer checks an app's room; an explainer's clips have no count bound. `company_write` and `company_edit` take as much text as one call carries (`MAX_TOOL_ARGUMENT_BYTES`, 960 KiB). save_app's words say so, and that fonts, sound and 3D models are files of the app; `PLATFORM_UPDATES` tells the Co-Founder. `MAX_CLOUD_PICTURE_BYTES` stays 12 MiB as the picture lane's own bound.
 - The first team in one step (the founder, 17 November 2026: "on 5, I agree with batch hiring, but we should allow for
   continuous hiring as the company evolves"; contract 14.1, the 2026-11-17 amendment; migration `20260930799000`, SQL
