@@ -989,6 +989,11 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	// The company's map is the Co-Founder's own app, in its planning run when it can save one (overlay v18).
 	expect(planning(all)).toContain("Keep the company's map as your own posted app, named company");
 	expect(planning(without("save_app"))).not.toContain("Keep the company's map");
+	expect(planning(all)).toContain("Only when the agreed vision is wide enough to span several products or fields");
+	expect(planning(all)).toContain("made with make_picture before you save");
+	expect(planning(without("make_picture"))).toContain("named roadmap, made with save_app's roadmap kit");
+	expect(planning(without("make_picture"))).not.toContain("made with make_picture before you save");
+	expect(planning(without("save_app"))).not.toContain("roadmap");
 	expect(planning(without("save_app"))).toContain(
 		"An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason.",
 	);
@@ -2115,7 +2120,7 @@ it.each([
 		"conversation",
 		{
 			instructions: "83618e1bb2375654fa9f61bfa66f3dda71840193ddca4683948e3de4da4e7000",
-			prompt: "8d4de0aa97c4fd1b1e41b05fc0f4eaa49296049c3d0c7c476a955d015db99df0",
+			prompt: "7e4a7e8063dedf742dcd4dfac22cea8a1dee228e4edbb768d67f816730535f24",
 		},
 	],
 	[
@@ -2123,7 +2128,7 @@ it.each([
 		"worker",
 		{
 			instructions: "33b7fa81adbffcbafdc44b99d6deffc391d0ba54dc9033f001908fb32dcd2b3e",
-			prompt: "44a41b632be600e8f1070908278c1a70e1b044e95c40f957a5b2d5b81d682bf1",
+			prompt: "3bfe3b476d1a5d4d01429530fa5f4b95a6efa140a45ffeeec1dddf340a78dee1",
 		},
 	],
 	[
@@ -2131,7 +2136,7 @@ it.each([
 		"private",
 		{
 			instructions: "83618e1bb2375654fa9f61bfa66f3dda71840193ddca4683948e3de4da4e7000",
-			prompt: "9cb69c8a1cdf1d2bca1865206e55fb2efb05db9fa5333ad636bb07c78861cfb0",
+			prompt: "c3a4f4d86b311528d9eca215170714b41bf54ff56db00cbe0de41b6ea0be9af3",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

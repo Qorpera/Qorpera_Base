@@ -158,7 +158,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-18",
 		title: "A roadmap for a wide mission",
-		text: "A company whose mission is wide enough to span several products or fields can now keep one roadmap: an interface app of the kit roadmap, in apps/roadmap. Its page shows the ambition as one big picture with its title and its products or fields as tiles, each opening into its goals in order and each goal into the ideas tried for it. A part that is reached shows a picture of the world it made, made with make_picture. It has no dates. If your mission is that wide and has no roadmap, have one agent make it, and change it only when a goal is reached, added or dropped; app_guide about roadmap says how.",
+		text: "A company whose mission is wide enough to span several products or fields can now keep one roadmap: an interface app of the kit roadmap, in apps/roadmap. Its page shows the ambition as one big picture with its title and its products or fields as tiles, each opening into its goals in order and each goal into the ideas tried for it. A part that is reached shows a picture of the world it made, made with make_picture. It has no dates. If your mission is that wide and has no roadmap, make it yourself, as your own posted app, and change it only when a goal is reached, added or dropped; app_guide about roadmap says how.",
 	},
 ]);
 

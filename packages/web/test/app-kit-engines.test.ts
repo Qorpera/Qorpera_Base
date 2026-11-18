@@ -2554,7 +2554,6 @@ describe("the roadmap kit's engine", () => {
 		media.hidden = true;
 		media.innerHTML = [
 			'<img data-kit-src="pictures/home.png" src="blob:home" alt="">',
-			'<img data-kit-src="pictures/filter.png" src="blob:filter" alt="">',
 			'<img data-kit-src="figure:crown" src="data:image/webp;base64,crown" alt="">',
 		].join("");
 		document.body.append(media);
@@ -2587,7 +2586,7 @@ describe("the roadmap kit's engine", () => {
 			"A filter any family can afford · Now",
 			"Water close to every door · Still open",
 		]);
-		expect(tiles()[0]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:filter");
+		expect(tiles()[0]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:pictures/filter.png");
 		expect(tiles()[1]?.classList.contains("is-open")).toBe(true);
 		expect(tiles()[1]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:pictures/well.png");
 		const figures = [...(tiles()[0]?.querySelectorAll(".rm-fig img") ?? [])];
@@ -2595,6 +2594,7 @@ describe("the roadmap kit's engine", () => {
 		expect(tiles()[0]?.querySelectorAll(".rm-fig")).toHaveLength(1);
 		expect(shows(".rm-trail")).toBe(false);
 		expect(shows(".rm-open")).toBe(false);
+		expect(file).not.toHaveBeenCalledWith("pictures/home.png");
 		expect(file).not.toHaveBeenCalledWith("pictures/family.png");
 	});
 

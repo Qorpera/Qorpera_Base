@@ -84,7 +84,7 @@ export type CloudRuntimeAgentKind = "cofounder" | "employee";
  * v4 (Jonas, 4 October 2026): the Co-Founder's first job is the onboarding. It builds the vision with the founders,
  * drafts it in its own words and revises it until every founder approves, and only then writes vision/vision.md and
  * proposes the first hires. v3 (folder core C4, P28b) moved it onto the company folder's own files. */
-export const CLOUD_RUNTIME_HIRE_OVERLAY_VERSION = "qorpera.hire-overlay/v20";
+export const CLOUD_RUNTIME_HIRE_OVERLAY_VERSION = "qorpera.hire-overlay/v21";
 
 const VISION = osPath("vision/vision.md");
 const READING = osPath("vision/reading.md");
@@ -174,6 +174,10 @@ const PLANNING_CHECKS =
 /** For a run that can save an app: the company's map, the Co-Founder's own app, in the place v17's company app had. */
 const PLANNING_MAP =
 	"Keep the company's map as your own posted app, named company, made with save_app's map kit with the reading as its first layer: under each thing, what is being made there, as deep as you can keep true, and a thing that has an interface of its own opens it. Change it in the run that changes what it shows.";
+const PLANNING_ROADMAP =
+	"Only when the agreed vision is wide enough to span several products or fields, keep the company's roadmap too, as your own posted app, named roadmap, made with save_app's roadmap kit. Change it only when a goal is reached, added or dropped: it is never a task list, and a company of one product has none.";
+const PLANNING_ROADMAP_PICTURES =
+	"A roadmap's part gets a picture of the world once it is reached, made with make_picture before you save.";
 /** For a run that can organize the apps drawer. */
 const PLANNING_APPS =
 	"Look at how the apps drawer is grouped (organize_apps list), and sort it only on a sign: more than eight apps loose, a group of one or of more than twelve, a top-level group with no colour, or a new product or area with no group.";
@@ -261,7 +265,13 @@ function cloudCoFounderPlanning(has: (tool: string) => boolean, visionAgreed: bo
 		PLANNING_SENSES,
 		sentences(PLANNING_FIX, !visionAgreed && PLANNING_DRAFT),
 		...(has("update_reading") ? [planningTeam(has("end_role"))] : []),
-		sentences(PLANNING_CHECKS, has("save_app") && PLANNING_MAP, has("organize_apps") && PLANNING_APPS),
+		sentences(
+			PLANNING_CHECKS,
+			has("save_app") && PLANNING_MAP,
+			has("save_app") && PLANNING_ROADMAP,
+			has("save_app") && has("make_picture") && PLANNING_ROADMAP_PICTURES,
+			has("organize_apps") && PLANNING_APPS,
+		),
 		sentences(has("offer_agents_to_member") && PLANNING_OFFER, PLANNING_ACT),
 		PLANNING_WRITE,
 		...(has("good_will_list") ? [PLANNING_GOOD_WILL] : []),

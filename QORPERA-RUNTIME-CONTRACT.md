@@ -7195,6 +7195,18 @@ bundle; no migration, host call or image moves.
 4. **Order.** An older web reads the kit as a manifest with problems and hides the app: the web goes live first, then
    the runtime bundle that carries the kit.
 
+### 2026-11-18 amendment: the Co-Founder keeps a roadmap for a wide vision
+
+> Follows the roadmap kit (RUNTIME-INTERFACE-APPS.md §3b, the founder's pick of its design, 18 November 2026). The hire
+> overlay is v21. It goes live with the runtime bundle that carries it.
+
+1. **Only for a wide vision.** In its planning run, a Co-Founder that can save an app keeps the company's roadmap only
+   when the agreed vision spans several products or fields: its own posted app, named `roadmap`, of the kit `roadmap`,
+   beside the company's map. A company of one product has none.
+2. **Pictures, and rarely changed.** A part reached gets a picture of the world it made, from `make_picture`, before
+   the save (that sentence only where the run has `make_picture`). The roadmap changes when a goal is reached, added or
+   dropped, and is never a task list.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

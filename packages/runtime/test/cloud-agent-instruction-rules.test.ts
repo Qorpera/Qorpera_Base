@@ -1352,6 +1352,12 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	[
 		"7",
+		"the roadmap of a wide vision",
+		"Only when the agreed vision is wide enough to span several products or fields, keep the company's roadmap too, as your own posted app, named roadmap, made with save_app's roadmap kit. Change it only when a goal is reached, added or dropped: it is never a task list, and a company of one product has none. A roadmap's part gets a picture of the world once it is reached, made with make_picture before you save.",
+		PLANNING,
+	],
+	[
+		"7",
 		"a retired interface stays retired",
 		"An interface a member retired stays retired: organize_apps list marks it, and save_app refuses it with the reason. Never ask for it to be remade.",
 		PLANNING,
