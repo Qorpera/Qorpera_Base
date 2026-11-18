@@ -594,7 +594,7 @@ describe("composer model selector", () => {
 			models: before,
 			version: 0,
 		});
-		const panel = await open(f.view, "Model: Opus 5.5, High effort");
+		const panel = await open(f.view);
 		part(panel, "provider").click();
 		await settle();
 		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { modelId: "gpt-6-astra" }, 0, expect.any(AbortSignal));
@@ -614,7 +614,7 @@ describe("composer model selector", () => {
 			serviceTier: "fast",
 			version: 0,
 		});
-		const panel = await open(f.view, "Model: GPT-6.2 Sol, Low effort, Fast");
+		const panel = await open(f.view);
 		expect(part(panel, "fast").title).toBe("Fast: 2x speed, uses more of your plan");
 		part(panel, "pick").click();
 		expect(choice(panel, "GPT-6.2 Sol").getAttribute("aria-checked")).toBe("true");
