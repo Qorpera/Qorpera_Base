@@ -6,6 +6,7 @@ import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
+import { showCompanyName } from "../../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
@@ -565,7 +566,8 @@ export class SettingsView {
 			replace(this.#storageContent);
 		}
 		if (this.#mode !== "storage") return;
-		this.#storageCompany.textContent = company?.profile.profileName ?? t("Storage");
+		if (company) showCompanyName(this.#storageCompany, company.profile.profileName);
+		else this.#storageCompany.textContent = t("Storage");
 		this.#drawStorageUsage();
 		// Shown again after a failed read, Storage reads its usage again.
 		if (shown && this.#fileError && !this.#fileLoading) this.#fileError = undefined;
@@ -578,16 +580,18 @@ export class SettingsView {
 		if (!authority || !team) {
 			replace(
 				this.#storageContent,
-				state?.loading
-					? notice("neutral", t("Opening Company File"))
-					: h(
-							"div",
-							null,
-							notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
-							button(t("Retry company"), () => {
-								if (!company.store.get().loading) void company.refreshAll();
-							}),
-						),
+				state?.connectionLost
+					? notice("neutral", t("Can't reach Qorpera. Trying again…"))
+					: state?.loading
+						? notice("neutral", t("Opening Company File"))
+						: h(
+								"div",
+								null,
+								notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
+								button(t("Retry company"), () => {
+									if (!company.store.get().loading) void company.refreshAll();
+								}),
+							),
 			);
 			return;
 		}

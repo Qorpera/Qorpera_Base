@@ -16,8 +16,10 @@ import {
 	type ClaudeWorkerLogins,
 	type ClaudeWorkerOpenedLogin,
 	ClaudeWorkerStream,
+	claudeWorkerBlocked,
 	claudeWorkerBrief,
 	claudeWorkerPrompt,
+	claudeWorkerReportedOutputs,
 	claudeWorkerReportText,
 	claudeWorkerScratchPrefix,
 	claudeWorkerSessionId,
@@ -172,17 +174,12 @@ describe("what Claude Code is told", () => {
 		]);
 	});
 
-	it("admits Claude Code's own eight tools as the run's catalog, and no tool of Qorpera's", () => {
-		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual([
-			"claude_code_bash",
-			"claude_code_read",
-			"claude_code_edit",
-			"claude_code_write",
-			"claude_code_notebookedit",
-			"claude_code_grep",
-			"claude_code_glob",
-			"claude_code_taskstop",
-		]);
+	it("admits Claude Code's own tools as the run's catalog, and no tool of Qorpera's", () => {
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual(
+			CLAUDE_BOX_TOOLS.map((name) => `claude_code_${name.toLowerCase()}`),
+		);
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toContain("claude_code_task");
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).not.toContain("claude_code_webfetch");
 		for (const tool of CLAUDE_WORKER_CATALOG.tools)
 			expect(tool.inputSchema).toEqual({ type: "object", additionalProperties: false });
 		expect(claudeWorkerSessionId({ model: "claude-sonnet-5-5", sessionId: "abc-1" })).toBe(
@@ -239,7 +236,32 @@ describe("the stream", () => {
 		expect(stream.limit).toBeNull();
 	});
 
-	it("names other tools than the eight, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
+	it("says what each of the box's other tools was asked, in the run's steps", () => {
+		const stream = new ClaudeWorkerStream(() => 0);
+		stream.push(init());
+		const calls: [string, unknown][] = [
+			["Monitor", { command: "tail -f /var/log/app.log\nmore", description: "watch" }],
+			["Monitor", { ws: { url: "wss://example.com/feed" }, description: "feed" }],
+			["Task", { subagent_type: "general-purpose", description: "sort the notes", prompt: "long" }],
+			["WebSearch", { query: "danish vat rules" }],
+			["Skill", { skill: "pdf" }],
+			["TaskCreate", { subject: "s", description: "d" }],
+		];
+		calls.forEach(([name, input], index) => {
+			stream.push(use(`w${index}`, name, input));
+			stream.push(answer(`w${index}`));
+		});
+		expect(stream.steps.map((step) => step.what)).toEqual([
+			"tail -f /var/log/app.log",
+			"wss://example.com/feed",
+			"general-purpose: sort the notes",
+			"danish vat rules",
+			"pdf",
+			"",
+		]);
+	});
+
+	it("names other tools than the box's, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
 		const other = new ClaudeWorkerStream();
 		other.push(init([...CLAUDE_BOX_TOOLS, "WebFetch"]));
 		expect(other.toolsAsAllowed()).toBe(false);
@@ -679,12 +701,14 @@ describe("a Claude Code worker's run", () => {
 		};
 		const words = (needs: string) => ({ outcome: "blocked", summary: needs, needs, steps: 0 });
 		const never = vi.fn();
-		expect(await run(vault({ refused: "SIGNED_OUT" }).logins, never)).toEqual(
-			words("Claude Code could not sign in as Ada: their Claude sign-in has ended. Ask them to sign in again."),
-		);
-		expect(await run(vault({ refused: "NOT_OPEN" }).logins, never)).toEqual(
-			words(CLAUDE_WORKER_WORDS.notOpen("Ada")),
-		);
+		expect(await run(vault({ refused: "SIGNED_OUT" }).logins, never)).toEqual({
+			...words("Claude Code could not sign in as Ada: their Claude sign-in has ended. Ask them to sign in again."),
+			claudeSide: "signed_out",
+		});
+		expect(await run(vault({ refused: "NOT_OPEN" }).logins, never)).toEqual({
+			...words(CLAUDE_WORKER_WORDS.notOpen("Ada")),
+			claudeSide: "not_open",
+		});
 		expect(never).not.toHaveBeenCalled();
 		expect(
 			await run(vault().logins, async () => {
@@ -696,18 +720,25 @@ describe("a Claude Code worker's run", () => {
 			),
 			login: { sealed: 0, stale: 0 },
 			boxFailure: "box-unknown",
+			claudeSide: "could_not_start",
 		});
 		expect(
 			await run(vault().logins, async () => {
 				throw new CloudHomeChannelRefused("HOME_SFTP_MISSING");
 			}),
-		).toMatchObject({ outcome: "blocked", needs: CLOUD_HOME_OUTDATED, boxFailure: "box-unknown:HOME_SFTP_MISSING" });
+		).toMatchObject({
+			outcome: "blocked",
+			needs: CLOUD_HOME_OUTDATED,
+			boxFailure: "box-unknown:HOME_SFTP_MISSING",
+			claudeSide: "could_not_start",
+		});
 		// Other tools than the eight: stopped at its first line.
 		const wrong = standInBox([init(["Bash", "WebFetch"]), use("t1", "WebFetch", {}), answer("t1"), result("x")]);
 		expect(await run(vault().logins, wrong.launch)).toMatchObject({
 			outcome: "blocked",
 			needs: CLAUDE_WORKER_WORDS.toolsWrong,
 			steps: 0,
+			claudeSide: "could_not_start",
 		});
 		// The plan's limit, in Claude Code's words; nothing ran after it.
 		expect(
@@ -724,6 +755,8 @@ describe("a Claude Code worker's run", () => {
 		).toMatchObject({
 			outcome: "blocked",
 			needs: `Ada's Claude plan has reached its limit. Claude Code said: "You've hit your limit · resets 9pm (UTC)". Nothing was changed after that point.`,
+			steps: 1,
+			claudeSide: "limit",
 		});
 		// A sign-in that failed inside Claude Code; a stream cut before its result; an error result.
 		expect(
@@ -735,19 +768,30 @@ describe("a Claude Code worker's run", () => {
 					result("x", "success", true),
 				]).launch,
 			),
-		).toMatchObject({ needs: CLAUDE_WORKER_WORDS.signedOut("Ada") });
-		expect(
-			await run(vault().logins, standInBox([init(), use("t1", "Bash", { command: "a" }), answer("t1")]).launch),
-		).toMatchObject({ needs: CLAUDE_WORKER_WORDS.cut(true) });
+		).toMatchObject({ needs: CLAUDE_WORKER_WORDS.signedOut("Ada"), claudeSide: "signed_out" });
+		const cut = await run(
+			vault().logins,
+			standInBox([init(), use("t1", "Bash", { command: "a" }), answer("t1")]).launch,
+		);
+		expect(cut).toMatchObject({ needs: CLAUDE_WORKER_WORDS.cut(true), steps: 1 });
+		expect(cut.claudeSide).toBeUndefined();
 		expect(await run(vault().logins, standInBox([init()]).launch)).toMatchObject({
 			needs: CLAUDE_WORKER_WORDS.cut(false),
+			claudeSide: "could_not_start",
 		});
-		expect(
-			await run(
-				vault().logins,
-				standInBox([init(), result("I could not read the notes.", "error_during_execution", true)]).launch,
-			),
-		).toMatchObject({ needs: `Claude Code could not finish the work. It said: "I could not read the notes.".` });
+		const failed = await run(
+			vault().logins,
+			standInBox([init(), result("I could not read the notes.", "error_during_execution", true)]).launch,
+		);
+		expect(failed).toMatchObject({
+			needs: `Claude Code could not finish the work. It said: "I could not read the notes.".`,
+		});
+		expect(failed.claudeSide).toBeUndefined();
+		expect(claudeWorkerBlocked(CLAUDE_WORKER_WORDS.boxFailed)).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.boxFailed,
+			claudeSide: "could_not_start",
+		});
 	});
 });
 
@@ -869,6 +913,7 @@ describe("review round 1 of #1835", () => {
 			summary: CLAUDE_WORKER_WORDS.openFailed("Ada"),
 			needs: CLAUDE_WORKER_WORDS.openFailed("Ada"),
 			steps: 0,
+			claudeSide: "could_not_start",
 		});
 		expect(CLAUDE_WORKER_WORDS.openFailed("Ada")).toBe(
 			"Claude Code could not open Ada's sign-in on Qorpera's side now; nothing ran on the agent's machine. Try again later.",
@@ -884,7 +929,11 @@ describe("review round 1 of #1835", () => {
 				root: join(runRoot, "missing", "deeper"),
 				signal: new AbortController().signal,
 			}),
-		).toMatchObject({ outcome: "blocked", needs: CLAUDE_WORKER_WORDS.openFailed("Ada") });
+		).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.openFailed("Ada"),
+			claudeSide: "could_not_start",
+		});
 		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
 		expect(launch).not.toHaveBeenCalled();
 		const stopped = new AbortController();
@@ -942,6 +991,70 @@ describe("review round 1 of #1835", () => {
 		const stopped = new AbortController();
 		stopped.abort();
 		await expect(claudeWorkerSettledOutputs(async () => [], stopped.signal, { sleep })).rejects.toThrow();
+	});
+});
+
+describe("the report's file list", () => {
+	it("leaves out Claude Code's own temporary file of a file the run wrote (run 7a174bc9, 16 Nov)", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["product/backup-review.md.tmp.9.58b93b9e96db", "product/backup-review.md", "product/results.md"],
+				"product/results.md",
+			),
+		).toEqual(["product/backup-review.md"]);
+		expect(
+			claudeWorkerReportedOutputs(
+				["a/b.md", "a/b.md.tmp.123456.0123456789ab", "a/c.tmp.77.abcdefabcdef", "a/c"],
+				"w/results.md",
+			),
+		).toEqual(["a/b.md", "a/c"]);
+	});
+
+	it("leaves out Claude Code's temporary file of the results file too, and the results file", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["product/results.md", "product/results.md.tmp.9.58b93b9e96db", "product/plan.pdf"],
+				"product/results.md",
+			),
+		).toEqual(["product/plan.pdf"]);
+	});
+
+	it("pairs a temporary file with its file as the folder does, whatever the case", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["Product/Backup-Review.md", "product/backup-review.md.tmp.9.58b93b9e96db"],
+				"w/results.md",
+			),
+		).toEqual(["Product/Backup-Review.md"]);
+	});
+
+	it("keeps every other name, a member's own included", () => {
+		const kept = [
+			"notes/plan.md.tmp.9.58b93b9e96db",
+			"notes/report.md.tmp.9.58B93B9E96DB",
+			"notes/report.md.tmp.0.58b93b9e96db",
+			"notes/report.md.tmp.9.58b93b9e96d",
+			"notes/report.md.tmp.9.58b93b9e96dbe",
+			"notes/report.md.tmp.x.58b93b9e96db",
+			"notes/report.md.tmp",
+			"notes/report.md.tmp.9",
+			"notes/other.md",
+		];
+		expect(claudeWorkerReportedOutputs([...kept, "notes/report.md"], "w/results.md")).toEqual([
+			...kept,
+			"notes/report.md",
+		]);
+	});
+
+	it("keeps only well-formed names and never the results file", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["ok.md", 7, null, " lead.md", "trail.md ", "a\nb.md", "x".repeat(257), "w/results.md"],
+				"w/results.md",
+			),
+		).toEqual(["ok.md"]);
+		expect(claudeWorkerReportedOutputs(undefined, "w/results.md")).toEqual([]);
+		expect(claudeWorkerReportedOutputs({ outputs: ["a.md"] }, "w/results.md")).toEqual([]);
 	});
 });
 

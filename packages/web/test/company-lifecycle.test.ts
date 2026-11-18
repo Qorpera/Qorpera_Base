@@ -636,6 +636,143 @@ describe("answering a card", () => {
 		expect(cards[0]!.querySelector("button")).not.toBeNull();
 		expect(cards[1]!.querySelector("button")).toBeNull();
 	});
+	describe("the address card", () => {
+		const mailbox = (local: string, status: "active" | "paused" = "active", n = 0) => ({
+			schema: "qorpera.event-hook/v1",
+			id: id(700 + n),
+			name: `mail-${local}`,
+			purpose: local,
+			proof: "mail",
+			status,
+			email: `${local}@inbox.qorpera.com`,
+			createdAt: "2026-11-17T10:00:00Z",
+		});
+		function mail(f: ReturnType<typeof company>, existing: Record<string, unknown>[] = []) {
+			const hooks: Record<string, unknown>[] = [...existing];
+			const calls: { name: string; args: Record<string, unknown> }[] = [];
+			const base = vi.mocked(f.cloud.rpc).getMockImplementation();
+			vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+				calls.push({ name, args });
+				if (name === "qorpera_list_event_hooks") return hooks;
+				if (name === "qorpera_create_company_mailbox") {
+					const made = mailbox(String(args.p_local_part), "active", hooks.length + 1);
+					hooks.push(made);
+					return made;
+				}
+				if (name === "qorpera_set_event_hook_status") {
+					for (const hook of hooks) if (hook.id === args.p_hook_id) hook.status = args.p_status;
+					return null;
+				}
+				if (name === "qorpera_company_mail_handles") return { domain: "inbox.qorpera.com", handles: [] };
+				if (name === "qorpera_company_mail_handle_status") return "free";
+				return base?.(name, args);
+			});
+			const named = (rpc: string) => calls.filter((call) => call.name === rpc).map((call) => call.args);
+			return { hooks, named };
+		}
+
+		it("makes hello.<handle> as the member, then answers the card with its address", async () => {
+			const f = company();
+			f.controller.store.set({ sessions: [thread] });
+			const { named } = mail(f);
+			const answer = vi.spyOn(f.api, "answerInteraction").mockResolvedValue(answered);
+			await f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave");
+			expect(named("qorpera_create_company_mailbox")).toEqual([
+				{
+					p_profile_id: profileA.profileId,
+					p_environment_id: profileA.environmentId,
+					p_local_part: "hello.lerhave",
+					p_purpose: "The company's main email",
+				},
+			]);
+			expect(answer).toHaveBeenCalledOnce();
+			expect(answer.mock.calls[0]!.slice(2, 5)).toEqual([
+				id(593),
+				"answered",
+				{ values: ["hello.lerhave@inbox.qorpera.com"] },
+			]);
+		});
+
+		it("uses an address the company has already, resuming it when it is paused, and makes none twice", async () => {
+			const f = company();
+			f.controller.store.set({ sessions: [thread] });
+			const { named } = mail(f, [mailbox("hello.lerhave", "paused")]);
+			const answer = vi
+				.spyOn(f.api, "answerInteraction")
+				.mockRejectedValueOnce(new Error("Network unavailable"))
+				.mockResolvedValue(answered);
+			await expect(f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave")).rejects.toThrow(
+				"Network unavailable",
+			);
+			expect(named("qorpera_set_event_hook_status")).toEqual([{ p_hook_id: id(700), p_status: "active" }]);
+			await f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave");
+			expect(named("qorpera_create_company_mailbox")).toEqual([]);
+			expect(named("qorpera_set_event_hook_status")).toHaveLength(1);
+			expect(answer).toHaveBeenCalledTimes(2);
+			expect(answer.mock.calls[1]![4]).toEqual({ values: ["hello.lerhave@inbox.qorpera.com"] });
+		});
+
+		it("answers once when the address is made but the answer fails, and the retry makes no second one", async () => {
+			const f = company();
+			f.controller.store.set({ sessions: [thread] });
+			const { named } = mail(f);
+			vi.spyOn(f.api, "answerInteraction")
+				.mockRejectedValueOnce(new Error("Network unavailable"))
+				.mockResolvedValue(answered);
+			await expect(f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave")).rejects.toThrow();
+			await f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave");
+			expect(named("qorpera_create_company_mailbox")).toHaveLength(1);
+		});
+
+		it("says why in plain words when the cloud refuses the address, and answers nothing", async () => {
+			const f = company();
+			f.controller.store.set({ sessions: [thread] });
+			vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+				if (name === "qorpera_list_event_hooks") return [];
+				throw new CloudRpcError(name, { code: "23505", message: "This address is taken" }, 409);
+			});
+			const answer = vi.spyOn(f.api, "answerInteraction");
+			await expect(f.controller.chooseMailAddress(thread.sessionId, id(593), "brooks")).rejects.toThrow(
+				"This address is taken.",
+			);
+			expect(answer).not.toHaveBeenCalled();
+		});
+
+		it("is drawn in the thread for the member it waits for, and follows their role", async () => {
+			const f = company();
+			f.controller.store.set({ loading: false, sessions: [thread] });
+			mail(f);
+			const request = card(1, userA.id);
+			const entry = (request.body as unknown as { entry: { data: Record<string, unknown> } }).entry;
+			entry.data = {
+				...entry.data,
+				title: "Your company's email address",
+				payload: {
+					allowCustom: true,
+					input: { kind: "mail_address" },
+					options: [{ label: "lerhave", value: "lerhave" }],
+				},
+			};
+			vi.mocked(f.api.readSessionEvents).mockResolvedValue([request, card(2, userB.id)]);
+			void f.controller.loadConversation(thread.sessionId);
+			const view = new ConversationView(f.controller, thread.sessionId, {
+				sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+			});
+			cleanup.push(() => view.dispose());
+			document.body.append(view.el);
+			await settle();
+			const field = () => view.el.querySelector<HTMLInputElement>(".interaction-address-handle");
+			expect(field()?.value).toBe("lerhave");
+			expect(field()?.disabled).toBe(false);
+			expect(view.el.querySelectorAll(".interaction-address")).toHaveLength(1);
+			f.controller.store.set({ team: { ...team, role: "contributor" } });
+			await settle();
+			expect(field()?.disabled).toBe(true);
+			expect(view.el.querySelector(".interaction-address-check")?.textContent).toBe(
+				"Only founders and admins can choose the address",
+			);
+		});
+	});
 });
 
 describe("conversation lifecycle regressions", () => {

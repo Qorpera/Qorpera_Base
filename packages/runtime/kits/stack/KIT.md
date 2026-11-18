@@ -14,7 +14,7 @@ with the answer, as in the chat: act on it, then write `answer` into the card, o
 
 ## Fields
 
-- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): the page's name and one quiet line.
+- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): read only by screen readers; the page draws no title block.
 - `cards`: up to 24 in order, the most urgent first. A card:
   - `id`: letters, digits, `-`. `title` (48): the question, such as "Pay the parts bill?".
   - `value`: the number that matters, such as 4200; or a short text (18), such as "Shop v2". `unit` (10): "kr".

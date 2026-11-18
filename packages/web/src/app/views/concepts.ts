@@ -1,3 +1,4 @@
+import { companyInSentence } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { h, icon, linkHref, replace, setLinkHref } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
@@ -284,7 +285,7 @@ export class ConceptsView {
 		const concepts = this.#concepts();
 		const selected = this.#selected();
 		const company = this.#host.companyName();
-		const backLabel = t("Back to {name}", { name: company });
+		const backLabel = t("Back to {name}", { name: companyInSentence(company) });
 		const href = this.#host.back();
 		if (linkHref(this.#back) !== href) setLinkHref(this.#back, href);
 		if (this.#back.getAttribute("aria-label") !== backLabel) {

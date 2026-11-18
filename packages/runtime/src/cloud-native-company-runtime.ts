@@ -34,6 +34,7 @@ import {
 	claudeWorkerBrief,
 	claudeWorkerLogins,
 	claudeWorkerPrompt,
+	claudeWorkerReportedOutputs,
 	claudeWorkerSessionId,
 	claudeWorkerSettledOutputs,
 	runClaudeWorker,
@@ -205,6 +206,8 @@ const CLOUD_CLAUDE_USAGE_EVERY_MS = 60_000;
  * sign-ins, or no home channel): refused, never run on Codex. */
 export const CLAUDE_WORKER_NOT_CARRIED =
 	"Claude Code workers run in their own composition, which this node does not carry; nothing ran on Codex";
+
+const CLAUDE_WORKER_FALLBACK_ATTEMPTS = 3;
 
 /** What a host that carries the Claude Code worker's composition gives it (slice C4c). */
 export interface CloudClaudeWorkerHost {
@@ -506,7 +509,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				wake.payload.harness === "claude-code"
 			) {
 				stage = "claude-worker";
-				if (!this.#claudeWorker || !this.#homeChannel) throw new Error(CLAUDE_WORKER_NOT_CARRIED);
+				if (!this.#claudeWorker || !this.#homeChannel) {
+					if (!(await this.#claudeWorkerFellBack(binding, "could_not_start", [], signal)))
+						throw new Error(CLAUDE_WORKER_NOT_CARRIED);
+					composition.finish("succeeded", { outputBytes: 0 });
+					return {
+						providerSessionId: claudeWorkerSessionId({ boxFailure: "not-carried" }),
+						delivery: { messageCount: 0, finalMessageId: null },
+					};
+				}
 				const outputFolder = wake.payload.outputFolder;
 				if (typeof outputFolder !== "string") throw new Error("Invalid worker dispatch wake");
 				return await this.#claudeCodeWorker(identityRoot, signal, {
@@ -1877,17 +1888,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								{ p_binding: binding },
 								readSignal,
 							)) as { outputs?: unknown };
-							return (Array.isArray(after?.outputs) ? after.outputs : []).filter(
-								(path): path is string =>
-									typeof path === "string" &&
-									path === path.trim() &&
-									!/[\r\n]/.test(path) &&
-									Buffer.byteLength(path) <= 256 &&
-									path !== `${input.outputFolder}/results.md`,
-							);
+							return claudeWorkerReportedOutputs(after?.outputs, `${input.outputFolder}/results.md`);
 						}, runSignal)
 					).slice(0, 4)
 				: [];
+			if (outcome.claudeSide && (await this.#claudeWorkerFellBack(binding, outcome.claudeSide, outputs, runSignal)))
+				return {
+					providerSessionId: claudeWorkerSessionId(outcome),
+					delivery: { messageCount: 0, finalMessageId: null },
+				};
 			const workers = new CloudFolderWorkers({
 				folder,
 				operations,
@@ -1925,6 +1934,31 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 		} finally {
 			run.close();
+		}
+	}
+
+	async #claudeWorkerFellBack(
+		binding: CloudNativeToolBinding,
+		reason: NonNullable<ClaudeWorkerOutcome["claudeSide"]>,
+		changed: readonly string[],
+		signal: AbortSignal,
+	): Promise<boolean> {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				const answer = (await this.#paths.call(
+					"qorpera_claude_worker_fall_back",
+					{ p_binding: binding, p_reason: reason, p_changed: [...changed] },
+					signal,
+				)) as { state?: unknown } | null;
+				return answer?.state === "fell_back";
+			} catch {
+				signal.throwIfAborted();
+				if (attempt >= CLAUDE_WORKER_FALLBACK_ATTEMPTS) {
+					console.error("The Claude Code worker's fallback to Codex was not saved");
+					return false;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 1000 * attempt).unref?.());
+			}
 		}
 	}
 

@@ -38,6 +38,7 @@ const COFOUNDER_TOOLS = [
 	"good_will_list",
 	"good_will_mark",
 	"hire_agent",
+	"hire_team",
 	"list_hooks",
 	"machine_cancel",
 	"machine_delete",
@@ -128,6 +129,7 @@ const PRIVATE_TOOLS = EMPLOYEE_TOOLS.filter(
 			"create_group_chat",
 			"end_role",
 			"hire_agent",
+			"hire_team",
 			"manage_code",
 			"manage_todo",
 			"manage_worker",
@@ -565,7 +567,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"4",
 		"held messages",
-		"wake.payload.heldMessages: messages coworkers left without waking you, already seen by members; answer one only when you were asked something.",
+		"wake.payload.heldMessages: more coworker messages for you, oldest first, already seen by members: notes left without waking you and messages that waited for this run; answer each one that asks you something.",
 		STAFF,
 	],
 	[
@@ -723,7 +725,13 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"look before linking, at two widths",
-		"open it from /company/apps/<name>/ in a browser on a machine at 1280 and 390 px wide, save both screenshots outside apps/, look at them with company_read, fix the weakest thing, look again.",
+		"open it from /company/apps/<name>/ in a browser on a machine at 1280 and 390 px wide, save both screenshots outside apps/, look at them with company_read, fix the weakest thing, look once more, then link it.",
+		ALL,
+	],
+	[
+		"5",
+		"a look on a machine is not a test in the app",
+		"A look on a machine sees the files, not the app as members open it: say it was looked at on a machine, never that it was tested in the app.",
 		ALL,
 	],
 	[
@@ -733,8 +741,18 @@ const RULES: [string, string, string, Run[]][] = [
 		ALL,
 	],
 	["5", "a live-data page's stand-in", "Playwright's addInitScript", ALL],
-	["5", "the official logo", "Only the brand's owner changes QorperaOS/brand/logo.svg.", ALL],
-	["5", "an app has no network", "An app has no network: put everything it needs in it.", ALL],
+	[
+		"5",
+		"the official logo",
+		"Only the brand's owner changes the logo: a square SVG of a drawn mark or one embedded picture (a data: URL), because nothing outside it loads, shown as small as about 34 px, so a detailed picture usually needs a simpler mark. Explore a logo in any medium; only the chosen mark becomes that file.",
+		ALL,
+	],
+	[
+		"5",
+		"an app has no network",
+		"An app has no network: put everything it needs in its folder, pictures and films too.",
+		ALL,
+	],
 	["5", "post_app", "Post an app with post_app when every member should keep coming back to it", STAFF],
 	["5", "going live waits for a yes", "it goes live on a member's yes, because customers cannot unsee it", STAFF],
 	[
@@ -759,14 +777,14 @@ const RULES: [string, string, string, Run[]][] = [
 	["5", "concepts, never demos", "Call them concepts, never demos.", STAFF],
 	[
 		"5",
-		"the Concepts viewer",
-		'Each step is an app of its own with concept = true and a cover, titled with the product\'s name and "concepts", so it opens in the Concepts viewer',
+		"the concept apps in the Concepts viewer",
+		'The first concept, the directions and the build are each an app of its own with concept = true and a cover, titled with the product\'s name and "concepts", so they open in the Concepts viewer',
 		STAFF,
 	],
 	[
 		"5",
-		"the first concept on the day of the brief",
-		"whoever owns the product makes the first on the day of the first brief, opening on the key moments, never on the brief's text",
+		"the first concept in the owner's first run",
+		"The product's owner makes it in its first run, with its own workers, before any document but the brief; where parts have owners of their own, each makes its part in its own first run (the form rendered in use, the app's screens) and the product's owner puts them in one concept app.",
 		STAFF,
 	],
 	[
@@ -808,7 +826,12 @@ const RULES: [string, string, string, Run[]][] = [
 		"When something is hard, say what and how you will get there; never build something smaller instead.",
 		STAFF,
 	],
-	["5", "the solution first", "The solution comes first.", STAFF],
+	[
+		"5",
+		"the solution beside the first concept",
+		"The first concept comes at once, from what the founders described; the solution is worked out beside it and corrects it.",
+		STAFF,
+	],
 	[
 		"5",
 		"the need, never the method",
@@ -838,16 +861,106 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"four steps, none skipped",
-		"Then four steps, none skipped, because building before the idea is shaped gives a guess dressed up as a product:",
+		"Concepts go in this order, each shaped by the founders' answer to the one before, and none is skipped, because building before the idea is shaped gives a guess dressed up as a product:",
 		STAFF,
 	],
 	[
 		"5",
-		"the brief and the storyboard",
-		"show it as a storyboard in the concepts app (one screen or scene per moment, two or three words each, plainly a first sketch)",
+		"the first concept looks real",
+		"It shows those moments as a customer will meet them: a physical product as a render of the thing in use that looks real, software as real screens of those moments to click through, in the look of the best products in its field; never wireframes, line drawings or form fields on a blank page.",
 		STAFF,
 	],
-	["5", "nothing further until the storyboard", "Build nothing further until it shows what they said.", STAFF],
+	[
+		"5",
+		"a first take asked about on a card",
+		"Ask on a card that links the app whether this is their product and what is missing, in the run that first makes it viewable, even when more parts are coming: improving it comes after, in the open.",
+		STAFF,
+	],
+	[
+		"5",
+		"the brand's owner told when the card goes out",
+		"When that card goes out, the product's owner tells the brand's owner at once, with its link, in a message that wakes it (priority true).",
+		STAFF,
+	],
+	["5", "nothing further until the first concept", "Build nothing further until it shows what they said.", STAFF],
+	[
+		"5",
+		"one first concept, the same hour",
+		"1. First concept: one take on the product, not several, shown to the founders the same hour its builders are hired. Its brief is strategy/concept-brief.md, for the team:",
+		STAFF,
+	],
+	[
+		"5",
+		"the first concept waits for nobody",
+		"Each works from the brief, the founders' words and its own judgement, and waits for nobody's input, no reference pictures, no brand and no finding, because the first concept exists to be corrected.",
+		STAFF,
+	],
+	[
+		"5",
+		"references come after the answer and are not a concept",
+		"2. Look, from their answer: screenshots of the best products and other references in research/moodboard/, each with a note on what works and what does not in its look and feel, shown with the board kit's wall in an app titled for what it holds, never with concept = true: other companies' products are references, not a concept.",
+		STAFF,
+	],
+	[
+		"5",
+		"directions from the founders' answer",
+		"3. Directions, from their answer: several clearly different, quick directions of the key moments, judged by looking against the brief, the founders' answer and the moodboard;",
+		STAFF,
+	],
+	[
+		"5",
+		"several ideas, never for the first concept",
+		"do not settle on the first idea; the one exception is the first concept, one take that the founders correct (step 1 of Concepts).",
+		STAFF,
+	],
+	[
+		"7",
+		"what the founders will see, in hours",
+		"When you tell the founders what the team does first, say what they will see and when, in hours.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"the brand's directions follow the first concept",
+		"Until the first concept is shown, its first run only prepares: it reads the brief and the founders' own words for how the company should feel, and makes no directions;",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the brand's directions start when told, or at once without a product",
+		"it starts them in the run the product's owner tells it the concept's card went out, or in its first run when the vision names no product to show as a concept. Its card comes after the concept's, taking in what the founders say of it; the first concept never waits for it.",
+		FOUNDING,
+	],
+	[
+		"5",
+		"plans for later stages wait",
+		"plans for later stages (test and lab protocols, cost and resource models, production, support) wait for their answer unless a founder asks for one, because it can change all of them; a card left unanswered for two working days no longer holds them. This orders the work and caps none of it.",
+		STAFF,
+	],
+	[
+		"5",
+		"no notes on a concept's screens",
+		"What is simulated, unproven or undecided is said once in strategy/solution.md, never as notes on a concept's screens; only a generated picture still says it is an illustration.",
+		STAFF,
+	],
+	[
+		"5",
+		"judged by eye against the founders' words",
+		"Hold it against the founders' own words for how it should feel: would they know it at a glance? Contrast, licences and a size it must read at are checks, not that judgement.",
+		ALL,
+	],
+	[
+		"5",
+		"SVG only where the app draws the file",
+		"SVG is required only where the app draws the file itself: an app's icons and the logo, QorperaOS/brand/logo.svg; anything else you design takes whatever shows it best (a generated picture, a render, a photo, a film, canvas or WebGL).",
+		ALL,
+	],
+	[
+		"5",
+		"ideas on the company's own product",
+		"Each idea is shown on the company's own product and subject; never keep them out of a worker's pictures.",
+		STAFF,
+	],
 	["5", "the moodboard", "screenshots of the best products and other references in research/moodboard/", STAFF],
 	["5", "text is not looking", "Research that is only text is not looking.", STAFF],
 	["5", "directions picked by the founders", "picked by the founders on a card that previews them", STAFF],
@@ -875,7 +988,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"other pages are ordinary files",
-		"Other pages, prototypes and mockups are ordinary files, self-contained (inline CSS and JavaScript), which members open live from a folder: link.",
+		"Other pages, prototypes and mockups are ordinary files, which members open live from a folder: link; a page loads the files beside it (styles, scripts, pictures, fonts, sound, video, models) by relative paths, as an app's page does.",
 		ALL,
 	],
 	[
@@ -1021,7 +1134,19 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the Co-Founder sees the concepts through",
-		"You see that the solution comes first, write the concept brief with the founders and see the concepts through (see Concepts).",
+		"You write the concept brief with the founders, see that the first concept reaches them the same hour the builders are hired, and see the concepts through (see Concepts).",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"builders' first assignments move the first concept",
+		"The product's owner's first assignment is the first concept; each builder whose part it shows makes that part in its own first run (for a device with an app: the form rendered in use, the app's screens), and the others work out the solution beside it: none gets a foundation document first or waits for another, and plans for later stages wait for the founders' answer to it.",
+		COFOUNDER,
+	],
+	[
+		"7",
+		"a blocked owner gets an answer in that run",
+		"When an owner tells you it is blocked, act in that run: another agent, a worker, another source, or the one exact step asked of the founders on a card.",
 		COFOUNDER,
 	],
 	[
@@ -1072,27 +1197,64 @@ const RULES: [string, string, string, Run[]][] = [
 	["7", "read the vision first", "In your first run, read the vision", FOUNDING],
 	[
 		"7",
-		"the main mailbox",
-		"Before your hello, open the company's email: manage_hook, action create, kind mailbox, localPart the company's name in lowercase",
+		"the main mailbox: a founder chooses it",
+		"Never open the company's first email address yourself: a founder chooses it. Once the company has a name and owns no address (list_hooks shows its mailboxes), ask the founder who opened it, in that run, on an address card",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the address card's handle suggestions",
+		"allowCustom: true, input {kind: mail_address}, and one to three options, each a handle made from the name as its label and value",
+		FOUNDING,
+	],
+	["7", "no address card without a name", "While the company has no name, do not ask.", FOUNDING],
+	[
+		"7",
+		"the name card",
+		"offer the founders up to three names, once, on a question card with allowCustom: true and a Not yet option",
+		FOUNDING,
+	],
+	[
+		"7",
+		"a brand with no name yet",
+		"with no name yet, the directions and that identity carry a mark without lettering",
 		FOUNDING,
 	],
 	[
 		"7",
 		"the first team",
-		"a researcher for the customers and their problem, a market watcher, a strategist who weighs the options, and a Brand owner for the logo and the look",
+		"a researcher for the customers and their problem, a market watcher and a strategist who weighs the options, each with a first assignment due within a day or two, and a Brand owner for the logo and the look",
 		FOUNDING,
 	],
 	["7", "the hello", "Then a short, warm hello", FOUNDING],
 	[
 		"7",
-		"the address and the hires in the hello",
-		"Give the email address and, in a few lines, who you hired and what each finds out first.",
+		"the hires in the hello, the address card last",
+		"Say in a few lines who you hired and what each finds out first; when the address card goes out in the same run, raise it last, with your hello as its text.",
 		FOUNDING,
 	],
 	[
 		"7",
-		"the brand's first identity",
-		"the official logo at QorperaOS/brand/logo.svg (a square, self-contained SVG with no outside fonts, pictures or links, readable at 32 px",
+		"the brand's first directions",
+		"The Brand owner's first assignment is two to four clearly different directions, each the company's product as the first concept shows it, in its world in that look, in a real picture (rendered or generated) or a short film with the feeling the founders' own words name, for the founders to pick from on a card (the board kit's choose).",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the chosen direction becomes the identity",
+		"Only the chosen one becomes the identity in QorperaOS/brand/: colours, fonts, a short guide and the official logo, QorperaOS/brand/logo.svg, which the app shows wherever the company appears; with no name yet, the directions and that identity carry a mark without lettering.",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the product's builders move the first concept",
+		"add the product's builders once it is clear, with first assignments that make the first concept within the hour or work out the solution beside it.",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the first team in one hire_team call",
+		"Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent. Set up your daily plan routine.",
 		FOUNDING,
 	],
 	[
@@ -1122,6 +1284,24 @@ const RULES: [string, string, string, Run[]][] = [
 		HAND_OFF,
 	],
 	["7", "never hire an owner twice", "check QorperaOS/agents/ first, so none is hired twice", HAND_OFF],
+	[
+		"7",
+		"the address card after the founding",
+		'When the company has a name and owns no email address (list_hooks shows its mailboxes), never open one yourself: raise the address card, a question card with a title such as "Your company\'s email address", allowCustom: true, input {kind: mail_address}',
+		["cofounder-member-agreed", "cofounder-routine-agreed"],
+	],
+	[
+		"7",
+		"names after the founding, only when something waits",
+		"While the vision's first line is # No name yet, offer names only when something waits for one (the email address, a logo with lettering, a website's address): up to three on a question card with allowCustom: true and a Not yet option",
+		["cofounder-member-agreed", "cofounder-routine-agreed"],
+	],
+	[
+		"7",
+		"agreed with no name",
+		"The founding can be agreed with no name: the first line then stays # No name yet.",
+		HAND_OFF,
+	],
 	[
 		"7",
 		"a failed founding step",
@@ -1309,6 +1489,18 @@ const RULES: [string, string, string, Run[]][] = [
 		EMPLOYEE,
 	],
 	["8", "no templates", "Make files when the work needs them, never templates in advance.", EMPLOYEE],
+	[
+		"8",
+		"plans for later stages wait for the first concept",
+		"Plans for later stages wait until the founders have said the first concept is their product (see Concepts).",
+		EMPLOYEE,
+	],
+	[
+		"8",
+		"a refused or blocked step: the outcome is still yours",
+		"When a step of your work, or of a worker's, is refused or blocked, the outcome is still yours: leave the refused step refused and reach the outcome another honest way (the web tools, another source, plain steps); when you cannot, ask a member on a card for the one thing you need, or tell the Co-Founder in one line when no member can give it. A todo marked blocked with nobody asked is no answer.",
+		EMPLOYEE,
+	],
 	[
 		"8",
 		"a real exception",
@@ -1613,7 +1805,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"10",
 		"a coworker message coordinates",
-		"To a coworker, write what you need, what you hand over or what changed for them",
+		"Write to a coworker when you need something from them, when they wait for something from you, or when what you found changes their work",
 		STAFF,
 	],
 	[
@@ -1813,6 +2005,45 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		["the hand-off once the founding is done", "close Start with the founders", ["cofounder-member-agreed"]],
 		["calling a skill by name", "/its-name", [...WORKERS, "read-only-worker"]],
 		["the Co-Founder's role", "# Your role: Co-Founder", [...EMPLOYEE, ...WORKERS]],
+		[
+			"the four steps before anything is shown",
+			"four steps, none skipped",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"every step a concept app",
+			"Each step is an app of its own",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		["the brief as step 1", "1. Brief:", [...STAFF, ...WORKERS, "private-conversation", "read-only-worker"]],
+		[
+			"a first concept due at once",
+			"reaches them at once",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"the team's first assignments all due in days",
+			"each with a first assignment due within a day or two:",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"first assignments that move the first concept",
+			"first assignments that move the first concept",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"brand directions timed only by the concept being shown",
+			"It starts as soon as the first concept is shown",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		["the first concept for a worker", "1. First concept:", [...WORKERS, "read-only-worker"]],
+		[
+			"the first team in one call once the founding is done",
+			"hire_team",
+			["cofounder-member-agreed", "cofounder-routine-agreed", ...EMPLOYEE, ...WORKERS],
+		],
+		["a sketch for the first concept", "plainly a first sketch", [...STAFF, ...WORKERS]],
+		["the solution ahead of the first concept", "The solution comes first.", [...STAFF, ...WORKERS]],
 		// The reading is the Co-Founder's to keep, its senses too; the owner's wake question is the owner's.
 		[
 			"keeping the reading",
@@ -1851,6 +2082,11 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		],
 	] as const)("leaves out %s where it does not apply", (_what, words, runs) => {
 		for (const run of runs) expect(compiled.get(run), `${run}: ${words}`).not.toContain(words);
+	});
+
+	it("points to Concepts only where the Concepts section is", () => {
+		for (const [run, text] of compiled)
+			if (text.includes("(see Concepts)")) expect(text, run).toContain("\n# Concepts\n");
 	});
 
 	it("names only kits save_app takes", () => {
@@ -1905,4 +2141,21 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 				if (!held.has(tool) && !MEANT.has(tool)) expect(text.includes(tool), `${run} names ${tool}`).toBe(false);
 		}
 	});
+});
+
+it("keeps an owner's later-stage plans waiting only before the vision is agreed, and only beside Concepts", () => {
+	const words =
+		"Plans for later stages wait until the founders have said the first concept is their product (see Concepts).";
+	const every = () => true;
+	const noApps = (tool: string) => tool !== "save_app";
+	expect(cloudRuntimeHireBehavior("employee")).toContain(words);
+	expect(cloudRuntimeHireBehavior("employee", { has: every, visionAgreed: false })).toContain(
+		`Make files when the work needs them, never templates in advance. ${words}\nThe company's reading`,
+	);
+	expect(cloudRuntimeHireBehavior("employee", { has: every, visionAgreed: true })).not.toContain(words);
+	const withoutApps = cloudRuntimeHireBehavior("employee", { has: noApps, visionAgreed: false });
+	expect(withoutApps).not.toContain("(see Concepts)");
+	expect(withoutApps).toContain(
+		"Make files when the work needs them, never templates in advance.\nThe company's reading",
+	);
 });

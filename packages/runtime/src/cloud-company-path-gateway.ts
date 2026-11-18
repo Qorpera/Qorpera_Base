@@ -31,6 +31,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_close_home_session"
 	// A Claude Code worker's run: its member's name and what it changed (20260930772000).
 	| "qorpera_claude_worker_run_facts"
+	| "qorpera_claude_worker_fall_back"
 	| "qorpera_record_claude_run_usage"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"

@@ -124,6 +124,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_company_reading_tools.sql",
 			// A Claude Code worker's run reads its member's name and what its home changed (20260930772000).
 			"_claude_code_worker_on_home.sql",
+			"_claude_first_for_workers.sql",
 			"_claude_login_usage.sql",
 		].flatMap((suffix) =>
 			rowsOf(

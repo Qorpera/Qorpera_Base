@@ -22,6 +22,10 @@ returns jsonb language sql as $$
 	select jsonb_build_object('action', 'create', 'kind', 'mailbox', 'operationKey', p_key, 'localPart', p_local_part,
 		'purpose', p_purpose)
 $$;
+create function pg_temp.e3a_mail_name(p_local_part text) returns text language sql as $$
+	select 'mail-' || left(regexp_replace(p_local_part, '[^a-z0-9-]', '-', 'g'), 52) || '-'
+		|| left(encode(extensions.digest(p_local_part, 'sha256'), 'hex'), 6)
+$$;
 create function pg_temp.e3a_status(p_key text, p_action text, p_hook text) returns jsonb language sql as $$
 	select jsonb_build_object('action', p_action, 'operationKey', p_key, 'hook', p_hook)
 $$;
@@ -248,32 +252,34 @@ begin
 end $$;
 
 update public.qorpera_mail_settings set domain = 'inbox.example.test';
+insert into public.qorpera_company_mail_handles(handle, profile_id, claimed_by_user_id)
+values ('acme', '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000001');
 
 do $$
 declare b jsonb := pg_temp.e3a_binding('owner'); r jsonb; h public.qorpera_event_hooks; v_box public.qorpera_company_mailboxes;
-	v_name text := 'mail-team-sales-eu-' || left(encode(extensions.digest('team.sales_eu'::text, 'sha256'), 'hex'), 6);
+	v_name text := pg_temp.e3a_mail_name('sales_eu.acme');
 begin
-	r := pg_temp.e3a_hook(b, pg_temp.e3a_mailbox('e3a-mailbox-0001', 'sales', ' Sales mail from customers. '));
-	h := pg_temp.e3a_row('mail-sales');
+	r := pg_temp.e3a_hook(b, pg_temp.e3a_mailbox('e3a-mailbox-0001', 'sales.acme', ' Sales mail from customers. '));
+	h := pg_temp.e3a_row(pg_temp.e3a_mail_name('sales.acme'));
 	select * into v_box from public.qorpera_company_mailboxes where hook_id = h.id;
 	if h.proof <> 'mail' or h.max_body_bytes <> 262144 or h.per_minute <> 120 or h.purpose <> 'Sales mail from customers.'
 		or h.created_by_staff_agent_id <> '63400000-0000-4000-8000-0000000000a1' or h.created_by_user_id is not null
-		or v_box.local_part <> 'sales' or v_box.created_by_user_id is not null or v_box.removed_at is not null
+		or v_box.local_part <> 'sales.acme' or v_box.created_by_user_id is not null or v_box.removed_at is not null
 		or v_box.profile_id <> h.profile_id or v_box.environment_id <> h.environment_id then
 		raise exception 'The mailbox''s rows: %, %', to_jsonb(h), to_jsonb(v_box); end if;
-	if r -> 'hook' <> public.qorpera_event_hook_descriptor(h, false) or r -> 'hook' ->> 'email' <> 'sales@inbox.example.test'
+	if r -> 'hook' <> public.qorpera_event_hook_descriptor(h, false) or r -> 'hook' ->> 'email' <> 'sales.acme@inbox.example.test'
 		or (r -> 'hook') ?| array['address', 'path', 'url'] or strpos(r::text, h.address) > 0
 		or (pg_temp.e3a_receipt(b, 'e3a-mailbox-0001')).result <> r then
 		raise exception 'The mailbox''s answer: %', r; end if;
 	if pg_temp.e3a_marks('mailbox', h.id) <> 1 or pg_temp.e3a_marks('hook', h.id) <> 0 then
 		raise exception 'The new mailbox marks its file once, as a mailbox'; end if;
-	if pg_temp.e3a_hook(b, pg_temp.e3a_mailbox('e3a-mailbox-0001', 'sales', 'Sales mail from customers.')) <> r then
+	if pg_temp.e3a_hook(b, pg_temp.e3a_mailbox('e3a-mailbox-0001', 'sales.acme', 'Sales mail from customers.')) <> r then
 		raise exception 'A mailbox''s replay answers the first answer'; end if;
-	perform pg_temp.raises_like(pg_temp.e3a_call(pg_temp.e3a_binding('admin'), pg_temp.e3a_mailbox('e3a-mailbox-0002', 'sales')),
+	perform pg_temp.raises_like(pg_temp.e3a_call(pg_temp.e3a_binding('admin'), pg_temp.e3a_mailbox('e3a-mailbox-0002', 'sales.acme')),
 		'23505', 'This address is taken');
 	-- A local part that is no hook name takes E1's short digest.
-	r := pg_temp.e3a_hook(b, pg_temp.e3a_mailbox('e3a-mailbox-0003', 'team.sales_eu', 'Sales mail from Europe.'));
-	if r -> 'hook' ->> 'name' <> v_name or r -> 'hook' ->> 'email' <> 'team.sales_eu@inbox.example.test'
+	r := pg_temp.e3a_hook(b, pg_temp.e3a_mailbox('e3a-mailbox-0003', 'sales_eu.acme', 'Sales mail from Europe.'));
+	if r -> 'hook' ->> 'name' <> v_name or r -> 'hook' ->> 'email' <> 'sales_eu.acme@inbox.example.test'
 		or (pg_temp.e3a_row(v_name)).id is null then
 		raise exception 'A dotted mailbox''s name: %', r; end if;
 end $$;
@@ -350,12 +356,14 @@ begin
 	if (r -> 'hook' ->> 'id')::uuid = v_id or r2 -> 'hook' ->> 'id' <> r -> 'hook' ->> 'id' or r2 -> 'hook' ->> 'status' <> 'paused' then
 		raise exception 'A new hook of the name is the one found: %, %', r, r2; end if;
 	-- A mailbox's hook removed: the address is free again.
-	r := pg_temp.e3a_hook(o, pg_temp.e3a_status('e3a-remove-0002', 'remove', 'mail-sales'));
+	r := pg_temp.e3a_hook(o, pg_temp.e3a_status('e3a-remove-0002', 'remove',
+		pg_temp.e3a_mail_name('sales.acme')));
 	v_box := (r -> 'hook' ->> 'id')::uuid;
 	if (select removed_at from public.qorpera_company_mailboxes where hook_id = v_box) is null then
 		raise exception 'A mailbox is removed with its hook'; end if;
-	r := pg_temp.e3a_hook(o, pg_temp.e3a_mailbox('e3a-mailbox-0005', 'sales', 'Sales mail again.'));
-	if (r -> 'hook' ->> 'id')::uuid = v_box or r -> 'hook' ->> 'name' <> 'mail-sales' or r -> 'hook' ->> 'email' <> 'sales@inbox.example.test' then
+	r := pg_temp.e3a_hook(o, pg_temp.e3a_mailbox('e3a-mailbox-0005', 'sales.acme', 'Sales mail again.'));
+	if (r -> 'hook' ->> 'id')::uuid = v_box or r -> 'hook' ->> 'name' <> pg_temp.e3a_mail_name('sales.acme')
+		or r -> 'hook' ->> 'email' <> 'sales.acme@inbox.example.test' then
 		raise exception 'A freed address opens again: %', r; end if;
 	-- Another company's hook of a name is not this company's.
 	insert into public.qorpera_event_hooks(profile_id, environment_id, name, purpose, proof, address)

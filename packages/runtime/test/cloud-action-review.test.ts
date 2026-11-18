@@ -9,8 +9,10 @@ import {
 	CLOUD_MACHINE_SCREEN_WORK_ASK_REASON,
 	CLOUD_MACHINE_SCREEN_WORK_REASON,
 	CLOUD_MACHINE_WORK_REASON,
+	CLOUD_REVIEW_UNAVAILABLE,
 	CLOUD_WORKER_WORK_ASK_REASON,
 	type CloudActionGuards,
+	CloudActionReviewBusy,
 	type CloudActionReviewControl,
 	type CloudActionReviewer,
 	CloudActionReviewGate,
@@ -176,7 +178,7 @@ describe("which calls are reviewed", () => {
 		],
 		[
 			"manage_hook",
-			{ action: "create", kind: "mailbox", localPart: "sales", purpose: "Sales.", operationKey: "k" },
+			{ action: "create", kind: "mailbox", localPart: "sales.acme", purpose: "Sales.", operationKey: "k" },
 			"external",
 		],
 		// A signed hook too: the vault makes its secret, for one site (E3b).
@@ -197,6 +199,7 @@ describe("which calls are reviewed", () => {
 		["manage_hook", { action: "resume", hook: "site-form", operationKey: "k" }, "internal"],
 		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
 		["hire_agent", {}, "delegation"],
+		["hire_team", { operationKey: "k", hires: [] }, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		// The company's reading of itself (20260930766000): saving it is bookkeeping; ending a role changes who works here.
 		["update_reading", { operationKey: "k", attention: "product" }, "internal"],
@@ -484,13 +487,13 @@ describe("what the card shows", () => {
 			describeCloudAction(tool("manage_hook"), {
 				action: "create",
 				kind: "mailbox",
-				localPart: "sales",
+				localPart: "sales.acme",
 				purpose: "Sales mail from customers.",
 				operationKey: "k",
 			}),
 		).toEqual({
 			title: "Open a mailbox",
-			target: "sales",
+			target: "sales.acme",
 			details: {
 				purpose: "Sales mail from customers.",
 				effect: "Anyone may send email to this address; what arrives can wake the company's routines",
@@ -2026,11 +2029,11 @@ describe("what the reviewer reads as the mandate", () => {
 		);
 	});
 
-	it("lets the Co-Founder open the company's main mailbox in any run (10 November 2026)", () => {
-		// Jonas, 10 November: a company should have its email from the start, without a card in the founder's way.
+	it("leaves the company's first address to a founder's address card, and judges another under its handle like any mailbox (17 November 2026)", () => {
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"The Co-Founder opening the company's main mailbox, named after the company, is part of founding and is requested in every run, members' runs included.",
+			"The company's first email address is made by a founder on the address card, so the Co-Founder opening a first address (under a new handle) is not requested; adding another address under a handle the company already owns is judged like any other mailbox.",
 		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).not.toContain("main mailbox, named after the company");
 	});
 
 	it("tells the reviewer a routine never narrows the job, and to ask rather than deny when unsure (4 November 2026)", () => {
@@ -2120,6 +2123,10 @@ function gate(options: {
 	failMs?: number;
 	holdMs?: number;
 	reviewerFails?: boolean;
+	reviewAnswers?: unknown[];
+	reviewWaitsMs?: number[];
+	reviewRetryMs?: number;
+	spans?: string[];
 	request?: string;
 	mandate?: string;
 }) {
@@ -2159,6 +2166,11 @@ function gate(options: {
 	};
 	const review = vi.fn<CloudActionReviewer["review"]>(async () => {
 		if (options.reviewerFails) throw new Error("PRIVATE_REVIEWER_FAILURE");
+		if (options.reviewAnswers) {
+			const answer = options.reviewAnswers.shift();
+			if (answer instanceof Error) throw answer;
+			return answer;
+		}
 		return options.verdict ?? { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" };
 	});
 	const instance = new CloudActionReviewGate({
@@ -2169,6 +2181,20 @@ function gate(options: {
 		...(options.mandate === undefined ? {} : { mandate: options.mandate }),
 		holdMs: options.holdMs ?? 0,
 		pollMs: 1,
+		...(options.reviewWaitsMs ? { reviewWaitsMs: options.reviewWaitsMs } : {}),
+		...(options.reviewRetryMs === undefined ? {} : { reviewRetryMs: options.reviewRetryMs }),
+		...(options.spans
+			? {
+					observability: {
+						start: (name: string) => ({
+							finish: (status: string, fields?: { errorCategory?: string }) =>
+								options.spans?.push(
+									`${name} ${status}${fields?.errorCategory ? ` ${fields.errorCategory}` : ""}`,
+								),
+						}),
+					} as never,
+				}
+			: {}),
 		connectorEffects: new Map([["gmail_send_message", "write"]]),
 	});
 	const abort = new AbortController();
@@ -2518,6 +2544,13 @@ describe("the review step", () => {
 			run: false,
 			text: expect.stringMatching(/^REVIEW_DENIED: Nobody asked to email Bob\. /),
 		});
+		const text = (result as { text: string }).text;
+		expect(text).toContain("Do not retry it, reword it or reach it another way");
+		expect(text).toContain(
+			"the one thing your work needs to go on, such as another source, a file or a decision. Its answer never lets you repeat this action.",
+		);
+		expect(text).toContain("as a worker, report your work blocked with this reason");
+		expect(text).toContain("(a card answer does not count)");
 	});
 
 	it("gives the agent the reviewer's whole reason, not a name's 120 bytes (4 November 2026)", async () => {
@@ -2536,6 +2569,50 @@ describe("the review step", () => {
 		expect(result).toEqual({ run: false, text: expect.stringMatching(/^REVIEW_UNAVAILABLE: /) });
 		expect(JSON.stringify(result)).not.toContain("PRIVATE");
 		expect(calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review"]);
+	});
+
+	it("asks a reviewer the provider turned away again, and never a verdict or a failure (17 November 2026)", async () => {
+		const allow = { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" };
+		const deny = { ...allow, decision: "deny", builtIn: "not_requested", reason: "No." };
+		const busy = () => new CloudActionReviewBusy();
+		const spans: string[] = [];
+		const retried = gate({ reviewAnswers: [busy(), busy(), allow], reviewWaitsMs: [1, 1, 1], spans });
+		expect(await retried.check()).toEqual({ run: true, reviewId: undefined });
+		expect(retried.review).toHaveBeenCalledTimes(3);
+		expect(spans).toEqual([
+			"action_review failed provider_failed",
+			"action_review failed provider_failed",
+			"action_review succeeded",
+		]);
+		spans.length = 0;
+		const spent = gate({ reviewAnswers: [busy(), busy(), busy(), allow], reviewWaitsMs: [1, 1], spans });
+		expect(await spent.check()).toEqual({ run: false, text: CLOUD_REVIEW_UNAVAILABLE });
+		expect(spent.review).toHaveBeenCalledTimes(3);
+		expect(spent.calls.map((call) => call.method)).toEqual(["qorpera_begin_action_review"]);
+		expect(spans).toEqual([
+			"action_review failed provider_failed",
+			"action_review failed provider_failed",
+			"action_review failed review_unavailable",
+		]);
+		spans.length = 0;
+		const late = gate({ reviewAnswers: [busy(), busy(), allow], reviewWaitsMs: [1, 60], reviewRetryMs: 30, spans });
+		expect(await late.check()).toEqual({ run: false, text: CLOUD_REVIEW_UNAVAILABLE });
+		expect(late.review).toHaveBeenCalledTimes(2);
+		expect(spans).toEqual(["action_review failed provider_failed", "action_review failed review_unavailable"]);
+		const denied = gate({
+			reviewAnswers: [deny, allow],
+			reviewWaitsMs: [1],
+			record: { decision: "deny", reason: "No." },
+		});
+		expect(await denied.check()).toMatchObject({ run: false, text: expect.stringMatching(/^REVIEW_DENIED: No\. /) });
+		expect(denied.review).toHaveBeenCalledTimes(1);
+		for (const answer of [{ decision: "maybe" }, new Error("PRIVATE_REVIEWER_FAILURE")]) {
+			const once = gate({ reviewAnswers: [answer, allow], reviewWaitsMs: [1] });
+			expect(await once.check()).toEqual({ run: false, text: CLOUD_REVIEW_UNAVAILABLE });
+			expect(once.review).toHaveBeenCalledTimes(1);
+		}
+		expect(CLOUD_REVIEW_UNAVAILABLE).toContain("could not be checked just now");
+		expect(CLOUD_REVIEW_UNAVAILABLE).toContain("never that a safety review or the platform was unavailable");
 	});
 
 	it("refuses an ask where no card can be raised", async () => {
@@ -3138,6 +3215,60 @@ describe("company sites (20260930550000)", () => {
 				effect: "Its routines pause and its threads close; its files stay, and a member can bring it back",
 			},
 		});
+		expect(
+			describeCloudAction(tool("hire_team"), {
+				operationKey: "k",
+				hires: [
+					{
+						name: "Market",
+						role: "Market research",
+						jobDescription: "Own the market.",
+						firstAssignment: "Size it.",
+						figure: "acorn",
+					},
+					{
+						name: "Brand",
+						role: "Brand owner",
+						jobDescription: "Own the brand.",
+						firstAssignment: "Name it.\nThen more.",
+					},
+				],
+			}),
+		).toEqual({
+			title: "Hire a team of 2 agents",
+			target: "Market and Brand",
+			details: {
+				"Hire 1: Market": "Market research · first task: Size it. · job: Own the market.",
+				"Hire 2: Brand": "Brand owner · first task: Name it. Then more. · job: Own the brand.",
+			},
+		});
+		const twelve = Array.from({ length: 12 }, (_, n) => ({
+			name: `Area ${n}`,
+			role: "Owner",
+			jobDescription: `Never share the price list. ${"y".repeat(2000)}`,
+			firstAssignment: "x".repeat(900),
+		}));
+		const card = describeCloudAction(tool("hire_team"), { operationKey: "k", hires: twelve });
+		expect(Object.keys(card.details)).toEqual(twelve.map((hire, n) => `Hire ${n + 1}: ${hire.name}`));
+		for (const value of Object.values(card.details)) {
+			expect(Buffer.byteLength(value)).toBeLessThanOrEqual(600);
+			expect(value).toMatch(/^Owner · first task: x+ \[\.\.\.\] · job: Never share the price list\. y+ \[\.\.\.\]$/);
+			const [, task, job] = value.split(" · ");
+			expect(Math.abs(Buffer.byteLength(task ?? "") - Buffer.byteLength(job ?? ""))).toBeLessThan(16);
+		}
+		const reserved = describeCloudAction(tool("hire_team"), {
+			operationKey: "k",
+			hires: [
+				{ name: "path", role: "Paths", jobDescription: "Own paths.", firstAssignment: "Map them." },
+				{ name: "command", role: "Commands", jobDescription: "Own commands.", firstAssignment: "List them." },
+			],
+		});
+		expect(reserved.details).toEqual({
+			"Hire 1: path": "Paths · first task: Map them. · job: Own paths.",
+			"Hire 2: command": "Commands · first task: List them. · job: Own commands.",
+		});
+		for (const key of Object.keys(reserved.details))
+			expect(["path", "name", "title", "subject", "body", "text", "intent", "task", "command"]).not.toContain(key);
 		// One already ended says so on its card (review r1 of #1819: it is answered after its receipt, not refused).
 		expect(
 			describeCloudAction(tool("end_role"), {
