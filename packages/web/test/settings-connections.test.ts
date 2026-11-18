@@ -113,6 +113,11 @@ function card(label: string): HTMLElement {
 		(item) => item.querySelector("strong")?.textContent === label,
 	)!;
 }
+function claudeLoginCard(loginId?: string): HTMLElement | null {
+	return view.el.querySelector<HTMLElement>(
+		loginId ? `.connection-card[data-claude-login-id="${loginId}"]` : ".connection-card[data-claude-login-id]",
+	);
+}
 function status(label: string): string | null {
 	return card(label).querySelector('small[role="status"]')!.textContent;
 }
@@ -1658,7 +1663,7 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 		expect(link.textContent).toBe("Open Claude sign-in");
 		expect(link.href).toBe("https://claude.com/cai/oauth/authorize?code=true&state=fixture");
 		expect(status(CLAUDE)).toBe("Sign in on Claude's page, then paste the code it shows you here.");
-		expect(card(CLAUDE).textContent).toContain("Used only for coding sessions you start.");
+		expect(card(CLAUDE).textContent).toContain("Claude chats and Claude Code work. Never routines.");
 		// Nothing is sent without a code.
 		paste("   ");
 		await settle();
@@ -1675,10 +1680,12 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 		expect(submitCode).toHaveBeenCalledTimes(1);
 		expect(submitCode).toHaveBeenCalledWith("anthropic-code#state");
 		expect(view.el.querySelector(".connection-code")).toBeNull();
-		expect(view.el.textContent).toContain("Claude is connected. It is used only for coding sessions you start.");
-		const saved = card("Claude · coding only");
+		expect(view.el.textContent).toContain("Claude is connected. New Claude work in all your companies uses it.");
+		const saved = claudeLoginCard();
 		expect(saved.textContent).toContain("member@example.com");
-		expect(saved.textContent).toContain("Agents never use it for chats or routines.");
+		expect(saved.textContent).toContain("Claude chats and Claude Code work, in all your companies. Never routines.");
+		expect(saved.querySelector(".badge")).toBeNull();
+		expect(saved.textContent).not.toContain("Use this");
 		// No sponsor is made for it: it is no provider connection.
 		expect(client.createMemberSponsor).toHaveBeenCalledTimes(1);
 		expect(client.createMemberSponsor).toHaveBeenCalledWith(
@@ -1705,9 +1712,9 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 				clientConnectionId: vi.mocked(client.beginProviderLogin).mock.calls[0]![0].clientConnectionId,
 			},
 		];
-		await vi.waitFor(() => expect(card("Claude · coding only")).toBeDefined(), { timeout: 5000 });
-		expect(view.el.textContent).toContain("Claude is connected. It is used only for coding sessions you start.");
-		expect(card(CLAUDE)).toBeUndefined();
+		await vi.waitFor(() => expect(claudeLoginCard()).not.toBeNull(), { timeout: 5000 });
+		expect(view.el.textContent).toContain("Claude is connected. New Claude work in all your companies uses it.");
+		expect(view.el.querySelector(".connection-attempt")).toBeNull();
 	});
 
 	it("says a refused code did not work and offers a new sign-in", async () => {
@@ -1735,10 +1742,10 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 		view = new ConnectionsView(client, new AbortController().signal);
 		document.body.append(view.el);
 		await settle();
-		card("Claude · coding only").querySelector<HTMLButtonElement>("button")!.click();
+		claudeLoginCard()!.querySelector<HTMLButtonElement>("button")!.click();
 		await settle();
-		expect(client.signOutClaude).toHaveBeenCalledWith(id(95), expect.any(AbortSignal));
-		expect(card("Claude · coding only")).toBeUndefined();
+		expect(client.signOutClaude).toHaveBeenCalledWith(id(95), expect.any(AbortSignal), undefined);
+		expect(claudeLoginCard()).toBeNull();
 	});
 });
 
@@ -1769,7 +1776,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		useBy: "2026-11-30T10:00:00.000Z",
 		usable: "now" as const,
 	};
-	type ReadClaude = (options: { reset?: string; force?: boolean }) => Promise<string>;
+	type ReadClaude = (options: { loginId: string; reset?: string; force?: boolean }) => Promise<string>;
 	async function claudeView(listed: WebClaudeLogin, readClaude = vi.fn<ReadClaude>(async () => id(99))) {
 		const logins = { signInOpen: true, readable: true, logins: [listed] };
 		const client = {
@@ -1785,7 +1792,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		await settle();
 		return { client, logins };
 	}
-	const claudeCard = () => card("Claude · coding only");
+	const claudeCard = () => claudeLoginCard()!;
 	const bars = () =>
 		[...claudeCard().querySelectorAll(".connection-usage-window")].map((window) => window.textContent);
 
@@ -1815,7 +1822,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 			expect.stringMatching(/^Weekly.*13% left$/),
 			expect.stringMatching(/^Weekly · Fable.*91% left$/),
 		]);
-		expect(client.readClaude).toHaveBeenCalledWith({ force: false }, expect.any(AbortSignal));
+		expect(client.readClaude).toHaveBeenCalledWith({ loginId: id(97), force: false }, expect.any(AbortSignal));
 		expect(claudeCard().querySelector(".connection-resets")).toBeNull();
 	});
 
@@ -1834,7 +1841,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		);
 		row.querySelector<HTMLButtonElement>("button")!.click();
 		await settle();
-		expect(readClaude).toHaveBeenLastCalledWith({ reset: "full" }, expect.any(AbortSignal));
+		expect(readClaude).toHaveBeenLastCalledWith({ loginId: id(97), reset: "full" }, expect.any(AbortSignal));
 		expect(claudeCard().querySelector(".connection-resets")).toBeNull();
 		expect(claudeCard().querySelectorAll(".connection-usage-meter.refilling")).toHaveLength(2);
 		expect(claudeCard().textContent).toContain("Using a reset…");
@@ -1848,7 +1855,7 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		finish.resolve(id(90));
 		await settle();
 		expect(claudeCard().querySelector(".reset-done")!.textContent).toContain("Reset used · no resets left");
-		expect(readClaude).toHaveBeenLastCalledWith({ force: true }, expect.any(AbortSignal));
+		expect(readClaude).toHaveBeenLastCalledWith({ loginId: id(97), force: true }, expect.any(AbortSignal));
 		expect(client.signOutClaude).not.toHaveBeenCalled();
 	});
 
@@ -1961,5 +1968,171 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		const failed = claudeCard().querySelector<HTMLElement>(".connection-resets.is-ready")!;
 		expect(failed.querySelector("strong")!.textContent).toBe("Couldn't reset your limits");
 		expect(failed.querySelector("button")!.textContent).toBe("Try again");
+	});
+});
+
+describe("several Claude logins, one In use", () => {
+	const work: WebClaudeLogin = {
+		loginId: id(70),
+		clientConnectionId: id(71),
+		createdAt: timestamp,
+		providerAccountEmail: "work@example.com",
+		inUse: true,
+	};
+	const home: WebClaudeLogin = {
+		loginId: id(72),
+		clientConnectionId: id(73),
+		createdAt: timestamp,
+		providerAccountEmail: "home@example.com",
+	};
+	const spare: WebClaudeLogin = {
+		loginId: id(74),
+		clientConnectionId: id(75),
+		createdAt: timestamp,
+		providerAccountEmail: "spare@example.com",
+	};
+	async function several(
+		logins: WebClaudeLogin[],
+		readClaude?: (options: { loginId: string; force?: boolean }) => Promise<string>,
+	) {
+		const listed = { signInOpen: true, readable: readClaude !== undefined, logins };
+		const client = {
+			listConnections: vi.fn(async () => structuredClone(observed())),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+			onboardingAvailable: true,
+			beginProviderLogin: vi.fn(
+				async (
+					input: Parameters<WebNativeSubscription["beginProviderLogin"]>[0],
+				): Promise<WebNativeProviderLogin> => ({
+					loginId: input.clientLoginId,
+					clientConnectionId: input.clientConnectionId,
+					status: "awaiting_member",
+					interactionUrl: "https://claude.com/cai/oauth/authorize?code=true&state=fixture",
+					expiresAt: new Date(Date.now() + 60_000).toISOString(),
+					submitCode: async () => "completed" as const,
+				}),
+			),
+			listClaudeLogins: vi.fn(async () => structuredClone(listed)),
+			useClaude: vi.fn(async (loginId: string) => {
+				listed.logins = listed.logins.map((login) => ({ ...login, inUse: login.loginId === loginId }));
+			}),
+			signOutClaude: vi.fn(async (loginId: string, _signal?: AbortSignal, next?: string) => {
+				listed.logins = listed.logins
+					.filter((login) => login.loginId !== loginId)
+					.map((login) => (next ? { ...login, inUse: login.loginId === next } : login));
+			}),
+			...(readClaude ? { readClaude: vi.fn(readClaude) } : {}),
+		};
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		return { client, listed };
+	}
+	const buttons = (element: Element) =>
+		[...element.querySelectorAll<HTMLButtonElement>("button")].map((item) => item.textContent);
+	const press = (element: Element, label: string) =>
+		[...element.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!.click();
+
+	it("tags the login In use, lists it first, and offers Use this on the other", async () => {
+		await several([{ ...home }, { ...work }]);
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".connection-card[data-claude-login-id]")];
+		expect(cards.map((item) => item.dataset.claudeLoginId)).toEqual([id(70), id(72)]);
+		expect(cards[0]!.querySelector("strong")!.textContent).toBe("Claude In use");
+		expect(cards[0]!.querySelector(".badge.badge-ok")!.textContent).toBe("In use");
+		expect(cards[0]!.textContent).toContain("Claude chats and Claude Code work, in all your companies. Never routines.");
+		expect(buttons(cards[0]!)).toEqual(["Sign out"]);
+		expect(cards[1]!.querySelector(".badge")).toBeNull();
+		expect(cards[1]!.textContent).toContain("Not in use. New Claude work goes to the login marked In use.");
+		expect(buttons(cards[1]!)).toEqual(["Use this", "Sign out"]);
+	});
+
+	it("moves In use only on the member's click", async () => {
+		const { client } = await several([{ ...work }, { ...home }]);
+		expect(client.useClaude).not.toHaveBeenCalled();
+		press(claudeLoginCard(id(72))!, "Use this");
+		await settle();
+		expect(client.useClaude).toHaveBeenCalledWith(id(72), expect.any(AbortSignal));
+		expect(claudeLoginCard(id(72))!.querySelector(".badge")!.textContent).toBe("In use");
+		expect(buttons(claudeLoginCard(id(70))!)).toEqual(["Use this", "Sign out"]);
+	});
+
+	it("offers another Claude login in Add account and keeps the login in use through the new sign-in", async () => {
+		const { client, listed } = await several([{ ...work }]);
+		addAccount("Another Claude login");
+		await settle();
+		const attempt = view.el.querySelector<HTMLElement>(".connection-attempt")!;
+		expect(attempt.querySelector("strong")!.textContent).toBe("Another Claude login");
+		expect(attempt.querySelector('small[role="status"]')!.textContent).toBe(
+			"Sign in on Claude's page with the other account, then paste the code here. work@example.com stays in use until you pick the new one.",
+		);
+		listed.logins = [
+			...listed.logins,
+			{
+				...home,
+				clientConnectionId: vi.mocked(client.beginProviderLogin).mock.calls[0]![0].clientConnectionId,
+			},
+		];
+		const input = attempt.querySelector<HTMLInputElement>(".connection-code input")!;
+		input.value = "anthropic-code#state";
+		input.dispatchEvent(new Event("input"));
+		attempt.querySelector<HTMLFormElement>(".connection-code")!.requestSubmit();
+		await settle();
+		await settle();
+		expect(view.el.textContent).toContain("Claude login added. work@example.com stays in use until you pick another.");
+		expect(client.useClaude).not.toHaveBeenCalled();
+	});
+
+	it("asks before signing out the login in use and names the login that takes over", async () => {
+		const { client } = await several([{ ...work }, { ...home }]);
+		press(claudeLoginCard(id(70))!, "Sign out");
+		await settle();
+		expect(client.signOutClaude).not.toHaveBeenCalled();
+		const strip = claudeLoginCard(id(70))!.querySelector<HTMLElement>(".connection-resets.is-ready")!;
+		expect(strip.querySelector("strong")!.textContent).toBe("Sign out of this Claude login?");
+		expect(strip.querySelector("small")!.textContent).toBe(
+			"New Claude work moves to home@example.com. Work already running keeps this login until it ends.",
+		);
+		expect(buttons(strip)).toEqual(["Sign out", "Cancel"]);
+		press(strip, "Cancel");
+		await settle();
+		expect(claudeLoginCard(id(70))!.querySelector(".connection-resets")).toBeNull();
+		press(claudeLoginCard(id(70))!, "Sign out");
+		await settle();
+		press(claudeLoginCard(id(70))!.querySelector(".connection-resets")!, "Sign out");
+		await settle();
+		expect(client.signOutClaude).toHaveBeenCalledWith(id(70), expect.any(AbortSignal), id(72));
+		expect(claudeLoginCard(id(70))).toBeNull();
+		expect(claudeLoginCard(id(72))!.querySelector(".badge")).toBeNull();
+		expect(claudeLoginCard(id(72))!.textContent).toContain("Claude chats and Claude Code work");
+	});
+
+	it("offers one Use button per other login with three, and signs out a login not in use at once", async () => {
+		const { client } = await several([{ ...work }, { ...home }, { ...spare }]);
+		press(claudeLoginCard(id(72))!, "Sign out");
+		await settle();
+		expect(client.signOutClaude).toHaveBeenCalledWith(id(72), expect.any(AbortSignal), undefined);
+		press(claudeLoginCard(id(70))!, "Sign out");
+		await settle();
+		expect(client.signOutClaude).toHaveBeenCalledTimes(1);
+		view.dispose();
+		document.body.replaceChildren();
+		await several([{ ...work }, { ...home }, { ...spare }]);
+		press(claudeLoginCard(id(70))!, "Sign out");
+		await settle();
+		const strip = claudeLoginCard(id(70))!.querySelector<HTMLElement>(".connection-resets")!;
+		expect(strip.querySelector("small")!.textContent).toBe(
+			"Pick the login new Claude work uses. Work already running keeps this one until it ends.",
+		);
+		expect(buttons(strip)).toEqual(["Use home@example.com", "Use spare@example.com", "Cancel"]);
+	});
+
+	it("reads the usage of every login, each by its own id", async () => {
+		const reads: string[] = [];
+		await several([{ ...work }, { ...home }], async (options) => {
+			reads.push(options.loginId);
+			return id(99);
+		});
+		expect(reads).toEqual([id(70), id(72)]);
 	});
 });

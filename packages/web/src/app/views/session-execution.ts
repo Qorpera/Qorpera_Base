@@ -7,6 +7,7 @@ import type {
 	WebExecutionConnections,
 	WebMemberConnection,
 	WebNativeSubscription,
+	WebClaudeLogin,
 } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { withReply } from "../../cloud/wall-reply.ts";
@@ -168,6 +169,9 @@ export class SessionExecutionView {
 	#countedFor: string | undefined;
 	#countRequest: AbortController | undefined;
 	#moved: { login: string | undefined; stuck: boolean; done: boolean; title: string; detail?: string } | undefined;
+	#claudeOut: { login: WebClaudeLogin; until: string; next: WebClaudeLogin } | undefined;
+	#claudeMoved: { loginId: string; account: string } | undefined;
+	#claudeSwitching = false;
 
 	constructor(
 		company: CompanyController,
@@ -329,6 +333,78 @@ export class SessionExecutionView {
 				: undefined,
 		);
 		void this.#hydrateUsage();
+		void this.#readClaude(signal);
+	}
+
+	async #readClaude(signal: AbortSignal): Promise<void> {
+		if (!this.#native.listClaudeLogins) return;
+		let logins: readonly WebClaudeLogin[];
+		try {
+			logins = (await this.#native.listClaudeLogins(signal)).logins;
+		} catch {
+			return;
+		}
+		if (signal.aborted) return;
+		const now = Date.now();
+		const usedUp = (login: WebClaudeLogin) =>
+			login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
+		const inUse = logins.find((login) => login.inUse);
+		const next = inUse && usedUp(inUse) ? logins.find((login) => login !== inUse && !usedUp(login)) : undefined;
+		this.#claudeOut = inUse?.usedUpUntil && next ? { login: inUse, until: inUse.usedUpUntil, next } : undefined;
+		if (this.#claudeMoved && (inUse?.loginId !== this.#claudeMoved.loginId || usedUp(inUse)))
+			this.#claudeMoved = undefined;
+		this.#render();
+	}
+
+	async #useClaude(next: WebClaudeLogin): Promise<void> {
+		if (!this.#native.useClaude || this.#claudeSwitching || this.#lifetime.signal.aborted) return;
+		this.#claudeSwitching = true;
+		this.#render();
+		try {
+			await this.#native.useClaude(next.loginId, this.#lifetime.signal);
+			this.#claudeMoved = {
+				loginId: next.loginId,
+				account: next.providerAccountEmail ?? t("your other Claude login"),
+			};
+			this.#claudeOut = undefined;
+		} catch {
+			this.#error = t("The Claude login could not be switched. Try again.");
+		} finally {
+			this.#claudeSwitching = false;
+		}
+		if (!this.#lifetime.signal.aborted) this.#render();
+	}
+
+	#claudeCard(): HTMLElement | null {
+		if (this.#claudeMoved) {
+			const card = usageCard(
+				t("New Claude work now uses {account}", { account: this.#claudeMoved.account }),
+				undefined,
+				true,
+				[],
+			);
+			card.setAttribute("role", "status");
+			return card;
+		}
+		const out = this.#claudeOut;
+		if (!out) return null;
+		const other = out.next.providerAccountEmail ?? t("your other Claude login");
+		return usageCard(
+			t("Claude is out of usage until {time}", { time: fmtTime(out.until) }),
+			t("{account} is used up. Keep going with {other}", {
+				account: out.login.providerAccountEmail ?? t("Your Claude login"),
+				other,
+			}),
+			false,
+			[
+				button(t("Continue"), () => void this.#useClaude(out.next), {
+					small: true,
+					primary: true,
+					disabled: this.#claudeSwitching,
+					title: t("Use {account}", { account: other }),
+				}),
+			],
+		);
 	}
 
 	async #hydrateUsage(): Promise<void> {
@@ -802,6 +878,9 @@ export class SessionExecutionView {
 			this.canSend,
 			this.#sameLogin,
 			this.#moved,
+			this.#claudeOut,
+			this.#claudeMoved,
+			this.#claudeSwitching,
 		]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
@@ -846,7 +925,7 @@ export class SessionExecutionView {
 									? this.#choice(this.#observed, !canWrite)
 									: (this.#usageWall(this.#observed, locked, false) ??
 										h("p", { class: "muted" }, this.#unavailableReason(this.#observed)))
-								: null)),
+								: this.#claudeCard())),
 		);
 	}
 

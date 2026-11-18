@@ -44,12 +44,13 @@ export interface WebNativeProviderLogin {
 	submitCode?: (code: string, signal?: AbortSignal) => Promise<"completed" | "saving">;
 }
 
-/** A member's Claude login (20260930564000): their own, used only for coding sessions they start. */
 export interface WebClaudeLogin {
 	loginId: string;
 	providerAccountEmail?: string;
 	createdAt: string;
 	clientConnectionId: string;
+	inUse?: boolean;
+	usedUpUntil?: string;
 	usage?: WebClaudeUsage;
 	resets?: WebClaudeResets;
 	lastReset?: WebClaudeLastReset;
@@ -207,7 +208,10 @@ function parseClaudeLogins(value: unknown): WebClaudeLogins {
 			typeof entry.clientConnectionId !== "string" ||
 			!UUID_PATTERN.test(entry.clientConnectionId) ||
 			typeof entry.createdAt !== "string" ||
-			(entry.providerAccountEmail !== null && typeof entry.providerAccountEmail !== "string")
+			(entry.providerAccountEmail !== null && typeof entry.providerAccountEmail !== "string") ||
+			(entry.usedUpUntil !== undefined &&
+				entry.usedUpUntil !== null &&
+				(typeof entry.usedUpUntil !== "string" || !Number.isFinite(Date.parse(entry.usedUpUntil))))
 		)
 			throw new Error("Invalid cloud response");
 		const usage = parseClaudeUsage(entry.usage);
@@ -223,6 +227,8 @@ function parseClaudeLogins(value: unknown): WebClaudeLogins {
 			...(usage ? { usage } : {}),
 			...(resets ? { resets } : {}),
 			...(lastReset ? { lastReset } : {}),
+			...(entry.inUse === true ? { inUse: true } : {}),
+			...(typeof entry.usedUpUntil === "string" ? { usedUpUntil: entry.usedUpUntil } : {}),
 		});
 	}
 	return { signInOpen: input.signInOpen === true, readable: input.readable === true, logins };
@@ -328,8 +334,12 @@ export interface WebNativeSubscription {
 	/** The member's Claude login and whether they may sign in with Claude here (20260930564000). */
 	listClaudeLogins?(signal?: AbortSignal): Promise<WebClaudeLogins>;
 	/** Ends the member's Claude login; its sealed files are wiped. */
-	signOutClaude?(loginId: string, signal?: AbortSignal): Promise<void>;
-	readClaude?(options: { force?: boolean; reset?: WebClaudeResetKind }, signal?: AbortSignal): Promise<string>;
+	signOutClaude?(loginId: string, signal?: AbortSignal, nextLoginId?: string): Promise<void>;
+	useClaude?(loginId: string, signal?: AbortSignal): Promise<void>;
+	readClaude?(
+		options: { loginId: string; force?: boolean; reset?: WebClaudeResetKind },
+		signal?: AbortSignal,
+	): Promise<string>;
 	/** Begins "Continue with ChatGPT": OpenAI's address to send the browser to, and what this tab keeps. */
 	beginChatGptPlanSignIn?(
 		displayName: string,
@@ -1229,11 +1239,12 @@ export function createWebNativeSubscription(
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 		listClaudeLogins: async (signal) =>
 			parseClaudeLogins(await rpc("qorpera_list_claude_logins", { p_profile_id: profileId }, signal)),
-		readClaude: async ({ force = false, reset }, signal) =>
+		readClaude: async ({ loginId, force = false, reset }, signal) =>
 			withCloudDeadline(
 				async (deadline) => {
 					current();
 					if (!loginBase) throw new Error("Account refresh is not configured");
+					if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid Claude login.");
 					const capability = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
 						.replaceAll("+", "-")
 						.replaceAll("/", "_")
@@ -1241,6 +1252,7 @@ export function createWebNativeSubscription(
 					const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(capability));
 					const args = {
 						p_profile_id: profileId,
+						p_claude_login_id: loginId,
 						p_client_request_id: crypto.randomUUID(),
 						p_capability_sha256: Array.from(new Uint8Array(digest), (byte) =>
 							byte.toString(16).padStart(2, "0"),
@@ -1311,9 +1323,21 @@ export function createWebNativeSubscription(
 				reset ? 120_000 : 60_000,
 				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 			),
-		signOutClaude: async (loginId, signal) => {
+		useClaude: async (loginId, signal) => {
 			if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid Claude login.");
-			const value = (await rpc("qorpera_sign_out_claude_login", { p_login_id: loginId }, signal)) as {
+			const value = (await rpc("qorpera_use_claude_login", { p_login_id: loginId }, signal)) as {
+				loginId?: unknown;
+			} | null;
+			if (value?.loginId !== loginId) throw new Error("Invalid cloud response");
+		},
+		signOutClaude: async (loginId, signal, nextLoginId) => {
+			if (!UUID_PATTERN.test(loginId) || (nextLoginId !== undefined && !UUID_PATTERN.test(nextLoginId)))
+				throw new Error("Invalid Claude login.");
+			const value = (await rpc(
+				"qorpera_sign_out_claude_login",
+				{ p_login_id: loginId, ...(nextLoginId ? { p_next_login_id: nextLoginId } : {}) },
+				signal,
+			)) as {
 				loginId?: unknown;
 				status?: unknown;
 			} | null;

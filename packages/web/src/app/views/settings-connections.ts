@@ -43,6 +43,7 @@ export type ConnectionsClient = Pick<
 			| "listClaudeLogins"
 			| "signOutClaude"
 			| "readClaude"
+			| "useClaude"
 		>
 	>;
 
@@ -245,8 +246,8 @@ export class ConnectionsView {
 	#accountLogins = new Map<string, WebAccountLogin>();
 	/** All of the member's account logins, also those this company does not use. */
 	#logins: readonly WebAccountLogin[] = [];
-	/** The member's Claude login (coding sessions only) and whether they may sign in with Claude here. */
 	#claude: WebClaudeLogins | undefined;
+	#claudeLeaving: string | undefined;
 	#claudeReset: ClaudeResetUse | undefined;
 	/** Settings with no company open: only the member's account logins, signed in through `companyName`. */
 	readonly #accountWide: { companyName: string } | undefined;
@@ -440,12 +441,18 @@ export class ConnectionsView {
 			if (this.#lifetime.signal.aborted) return;
 			const codex =
 				this.#shown().some(live) && this.#claudeReset?.phase !== "using" && this.#client.refreshAccountMetadata;
-			const claude = this.#claudeReadable() && this.#client.readClaude;
+			const claude = this.#claudeReadable() ? this.#client.readClaude : undefined;
 			if (!codex && !claude) return;
 			const forced = this.#metadataForced;
+			const logins = this.#claude?.logins ?? [];
 			const reads = await Promise.allSettled([
 				codex ? this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced) : undefined,
-				claude ? this.#client.readClaude!({ force: forced }, this.#lifetime.signal) : undefined,
+				claude
+					? (async () => {
+							for (const login of logins)
+								await claude({ loginId: login.loginId, force: forced }, this.#lifetime.signal);
+						})()
+					: undefined,
 			]);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
 			if (reads.some((read) => read.status === "rejected")) throw new Error("Usage could not be refreshed");
@@ -530,8 +537,7 @@ export class ConnectionsView {
 				if (attempt.sending && !claudeFinished) continue;
 				if (attempt.login && (finished || claudeFinished || Date.parse(attempt.login.expiresAt) <= Date.now())) {
 					this.#attempts.delete(provider);
-					if (claudeFinished)
-						this.#outcome = t("Claude is connected. It is used only for coding sessions you start.");
+					if (claudeFinished) this.#outcome = this.#claudeAdded(attempt.login.clientConnectionId);
 					// With no company open only account logins are listed: say where a company login went, and that a
 					// sign-in ended without one.
 					if (this.#accountWide && provider === "openai" && !finished)
@@ -632,6 +638,7 @@ export class ConnectionsView {
 	async #sendCode(attempt: Attempt): Promise<void> {
 		const login = attempt.login;
 		const code = attempt.code?.trim() ?? "";
+		let added = false;
 		if (!login?.submitCode || attempt.sending || this.#lifetime.signal.aborted) return;
 		if (!code) {
 			attempt.error = t("Paste the code from Claude first.");
@@ -645,7 +652,7 @@ export class ConnectionsView {
 			if ((await login.submitCode(code)) === "saving") attempt.saving = true;
 			else {
 				if (this.#attempts.get("anthropic") === attempt) this.#attempts.delete("anthropic");
-				this.#outcome = t("Claude is connected. It is used only for coding sessions you start.");
+				added = true;
 			}
 		} catch (error) {
 			attempt.login = undefined;
@@ -658,16 +665,52 @@ export class ConnectionsView {
 			attempt.sending = false;
 		}
 		this.#signIns.changed();
-		if (!this.#lifetime.signal.aborted) void this.#refresh();
+		if (this.#lifetime.signal.aborted) return;
+		await this.#refresh();
+		if (added && !this.#lifetime.signal.aborted) {
+			this.#outcome = this.#claudeAdded(login.clientConnectionId);
+			this.#draw();
+		}
 	}
-	async #signOutClaude(login: WebClaudeLogin): Promise<void> {
+	#claudeAdded(clientConnectionId: string): string {
+		const logins = this.#claude?.logins ?? [];
+		const added = logins.find((login) => login.clientConnectionId === clientConnectionId);
+		const inUse = logins.find((login) => login.inUse);
+		return added && inUse && added !== inUse
+			? t("Claude login added. {email} stays in use until you pick another.", {
+					email: inUse.providerAccountEmail ?? t("Your other Claude login"),
+				})
+			: t("Claude is connected. New Claude work in all your companies uses it.");
+	}
+	async #useClaude(login: WebClaudeLogin): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted || !this.#client.useClaude) return;
+		this.#working = `claude-use:${login.loginId}`;
+		this.#error = undefined;
+		this.#draw();
+		try {
+			await this.#client.useClaude(login.loginId, this.#lifetime.signal);
+		} catch {
+			this.#error = t("The Claude login could not be switched. Try again.");
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
+	}
+	async #signOutClaude(login: WebClaudeLogin, next?: WebClaudeLogin): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted || !this.#client.signOutClaude) return;
+		const others = (this.#claude?.logins ?? []).filter((item) => item.loginId !== login.loginId);
+		if (login.inUse && others.length && !next) {
+			this.#claudeLeaving = login.loginId;
+			this.#draw();
+			return;
+		}
+		this.#claudeLeaving = undefined;
 		this.#working = `claude:${login.loginId}`;
 		this.#error = undefined;
 		this.#draw();
 		let failed = false;
 		try {
-			await this.#client.signOutClaude(login.loginId, this.#lifetime.signal);
+			await this.#client.signOutClaude(login.loginId, this.#lifetime.signal, next?.loginId);
 		} catch {
 			failed = true;
 		} finally {
@@ -691,7 +734,7 @@ export class ConnectionsView {
 		this.#claudeReset = use;
 		this.#draw();
 		try {
-			const requestId = await read({ reset: entry.kind }, this.#lifetime.signal);
+			const requestId = await read({ loginId: login.loginId, reset: entry.kind }, this.#lifetime.signal);
 			await this.#refresh();
 			const last = this.#claude?.logins.find((each) => each.loginId === login.loginId)?.lastReset;
 			use.phase = last?.requestId === requestId ? last.outcome : "unconfirmed";
@@ -820,14 +863,62 @@ export class ConnectionsView {
 			);
 		});
 	}
-	/** The member's Claude login: theirs alone, in all their companies, for coding sessions only. */
 	#claudeCard(login: WebClaudeLogin): HTMLElement {
+		const logins = this.#claude?.logins ?? [];
+		const several = logins.length > 1;
 		const working = this.#working === `claude:${login.loginId}`;
 		const using = this.#claudeReset?.loginId === login.loginId && this.#claudeReset.phase === "using";
+		const leaving = this.#claudeLeaving === login.loginId;
 		const signOut = button(working ? t("Signing out…") : t("Sign out"), () => void this.#signOutClaude(login), {
-			disabled: Boolean(this.#working) || !this.#client.signOutClaude || using,
+			disabled: Boolean(this.#working) || !this.#client.signOutClaude || using || leaving,
 		});
 		signOut.dataset.focusKey = `claude:${login.loginId}`;
+		const switching = this.#working === `claude-use:${login.loginId}`;
+		const use =
+			several && !login.inUse
+				? button(switching ? t("Switching…") : t("Use this"), () => void this.#useClaude(login), {
+						disabled: Boolean(this.#working) || !this.#client.useClaude,
+					})
+				: null;
+		if (use) use.dataset.focusKey = `claude-use:${login.loginId}`;
+		const others = logins.filter((item) => item.loginId !== login.loginId);
+		const leave = leaving
+			? h(
+					"div",
+					{ class: "connection-resets is-ready", role: "group" },
+					h(
+						"div",
+						{ class: "settings-copy" },
+						h("strong", null, t("Sign out of this Claude login?")),
+						h(
+							"small",
+							null,
+							others.length === 1
+								? t("New Claude work moves to {email}. Work already running keeps this login until it ends.", {
+										email: others[0]!.providerAccountEmail ?? t("your other Claude login"),
+									})
+								: t("Pick the login new Claude work uses. Work already running keeps this one until it ends."),
+						),
+					),
+					h(
+						"div",
+						{ class: "connection-actions" },
+						...others.map((other) =>
+							button(
+								others.length === 1
+									? t("Sign out")
+									: t("Use {email}", { email: other.providerAccountEmail ?? t("your other Claude login") }),
+								() => void this.#signOutClaude(login, other),
+								{ primary: true, disabled: Boolean(this.#working) },
+							),
+						),
+						button(t("Cancel"), () => {
+							this.#claudeLeaving = undefined;
+							this.#draw();
+						}),
+					),
+				)
+			: null;
 		return h(
 			"article",
 			{ class: "connection-card", dataset: { claudeLoginId: login.loginId } },
@@ -835,18 +926,24 @@ export class ConnectionsView {
 			h(
 				"div",
 				{ class: "settings-copy" },
-				h("strong", null, t("Claude · coding only")),
+				h(
+					"strong",
+					null,
+					t("Claude"),
+					several && login.inUse ? [" ", h("span", { class: "badge badge-ok" }, t("In use"))] : null,
+				),
 				h("small", { class: "connection-email" }, login.providerAccountEmail ?? t("Email unavailable")),
 				h(
 					"small",
 					{ class: "connection-scope" },
-					t(
-						"Used only for coding sessions you start, in all your companies. Agents never use it for chats or routines.",
-					),
+					several && !login.inUse
+						? t("Not in use. New Claude work goes to the login marked In use.")
+						: t("Claude chats and Claude Code work, in all your companies. Never routines."),
 				),
 			),
-			h("div", { class: "connection-actions" }, signOut),
+			h("div", { class: "connection-actions" }, use, signOut),
 			...(this.#claudeReadable() || login.usage ? this.#claudeUsage(login, using) : []),
+			leave,
 		);
 	}
 	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
@@ -1178,12 +1275,19 @@ export class ConnectionsView {
 	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
 		const claude = Boolean(attempt.login?.submitCode);
+		const inUse = provider.id === "anthropic" ? this.#claude?.logins.find((login) => login.inUse) : undefined;
 		const status = attempt.starting
 			? t("Preparing sign-in. The first time can take a minute or two.")
 			: attempt.sending || attempt.saving
 				? t("Connecting Claude…")
 				: attempt.login && claude
-					? (attempt.error ?? t("Sign in on Claude's page, then paste the code it shows you here."))
+					? (attempt.error ??
+						(inUse
+							? t(
+									"Sign in on Claude's page with the other account, then paste the code here. {email} stays in use until you pick the new one.",
+									{ email: inUse.providerAccountEmail ?? t("Your Claude login") },
+								)
+							: t("Sign in on Claude's page, then paste the code it shows you here.")))
 					: attempt.login
 						? t("Waiting for you to finish signing in…")
 						: (attempt.error ?? t("Sign-in has not finished."));
@@ -1234,11 +1338,7 @@ export class ConnectionsView {
 							connect.dataset.focusKey = `connect:${provider.id}`;
 							return connect;
 						})(),
-						h(
-							"small",
-							null,
-							t("Used only for coding sessions you start. Agents never use it for chats or routines."),
-						),
+						h("small", null, t("Claude chats and Claude Code work. Never routines.")),
 					)
 				: null;
 		return h(
@@ -1248,7 +1348,7 @@ export class ConnectionsView {
 			h(
 				"div",
 				{ class: "settings-copy" },
-				h("strong", null, provider.label),
+				h("strong", null, inUse ? t("Another Claude login") : provider.label),
 				h("small", { role: "status", tabindex: -1, dataset: { focusKey: `status:${provider.id}` } }, status),
 			),
 			action,
@@ -1309,7 +1409,9 @@ export class ConnectionsView {
 					...accounts.map((connection) =>
 						this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1),
 					),
-					...(this.#claude?.logins ?? []).map((login) => this.#claudeCard(login)),
+					...[...(this.#claude?.logins ?? [])]
+						.sort((a, b) => Number(Boolean(b.inUse)) - Number(Boolean(a.inUse)))
+						.map((login) => this.#claudeCard(login)),
 				];
 		// Greyed out, not disabled: a disabled button would drop keyboard focus
 		// to "Add account" at the read's first redraw. A press checks the state
@@ -1428,7 +1530,9 @@ export class ConnectionsView {
 														src: `./assets/${provider.logo}`,
 														alt: "",
 													}),
-													provider.label,
+													provider.id === "anthropic" && this.#claude?.logins.length
+														? t("Another Claude login")
+														: provider.label,
 												],
 												() => void this.#connect(provider.id),
 												{
