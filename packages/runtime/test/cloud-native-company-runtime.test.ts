@@ -3538,7 +3538,11 @@ it("records a sign-in the provider refused against the exact binding before the 
 			);
 		if (method === "qorpera_record_provider_usage_signal") {
 			expect(args).toEqual({ p_binding: f.binding, p_signal_kind: "sign_in_refused" });
-			return { schema: "qorpera.provider-usage-signal-receipt/v1", runId: f.binding.runId, signalKind: "sign_in_refused" };
+			return {
+				schema: "qorpera.provider-usage-signal-receipt/v1",
+				runId: f.binding.runId,
+				signalKind: "sign_in_refused",
+			};
 		}
 		return original(method, args, signal);
 	});
