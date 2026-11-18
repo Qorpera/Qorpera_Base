@@ -785,10 +785,13 @@ app's frame cannot start a download. Its manifest's `entry` stays `index.html` a
 opens into `apps/<name>/versions/<version>/` through `/company`, and calls `save_app` with `kit: "program"` and one
 file, `program.json`, holding:
 
-- `version`: short text, letters, digits and `. _ + -`, at most 24 characters, not starting with a dot and with no
-  `..` (`isProgramVersion`); it is the folder's name under `versions/`;
+- `version`: short text, letters, digits and `. _ + -`, at most 24 characters, not starting or ending with a dot and
+  with no `..` (`isProgramVersion`); it is the folder's name under `versions/`;
 - `forms`: 1 to 5 `{"for", "file"}`, `for` one of `android`, `linux`, `windows`, `mac`, `iphone`, at most one each;
-  `file` one file's name in `versions/<version>/`, no folder, at most 200 characters (`isProgramFileName`);
+  `file` one file's name in `versions/<version>/`, no folder, at most 200 characters, and one the company folder
+  takes (`isProgramFileName` requires that the joined path passes `parseCloudCompanyPath`: no `%`, `:`, ending dot or
+  space, device name such as `con`, non-NFC text or C1 control; `save_app` refuses such a hand-in in plain words, and
+  a member's drop says the file can't be used as it is named);
 - `screens` (optional): `{"phone", "desktop"}`, each a `.png`, `.jpg` or `.webp` in the app's folder: real
   screenshots of the running program.
 

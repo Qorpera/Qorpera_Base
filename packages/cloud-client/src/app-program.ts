@@ -1,4 +1,5 @@
 import { isUuid } from "@qorpera/contracts";
+import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import { APP_COVER_KINDS, APPS_FOLDER, appFileKind, appFolder, appRelativePath } from "./interface-apps.ts";
 
 export const PROGRAM_KIT = "program";
@@ -49,12 +50,22 @@ export interface Program extends ProgramHandIn {
 export const isProgramKind = (value: unknown): value is ProgramKind =>
 	typeof value === "string" && (PROGRAM_KINDS as readonly string[]).includes(value);
 
+const folderTakes = (path: string) => {
+	try {
+		parseCloudCompanyPath(path);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
 export function isProgramVersion(value: unknown): value is string {
 	return (
 		typeof value === "string" &&
 		value.length <= PROGRAM_VERSION_MAX_CHARS &&
 		VERSION.test(value) &&
-		!value.includes("..")
+		!value.includes("..") &&
+		folderTakes(`${APPS_FOLDER}/program/${PROGRAM_VERSIONS_FOLDER}/${value}/program`)
 	);
 }
 
@@ -64,7 +75,8 @@ export function isProgramFileName(value: unknown): value is string {
 		[...value].length <= PROGRAM_FILE_NAME_MAX_CHARS &&
 		!value.includes("/") &&
 		!/[\0-\x1f\x7f"<>\\]/.test(value) &&
-		appRelativePath(value) === value
+		appRelativePath(value) === value &&
+		folderTakes(`${APPS_FOLDER}/program/${PROGRAM_VERSIONS_FOLDER}/1/${value}`)
 	);
 }
 
@@ -98,7 +110,7 @@ function readForms(value: unknown): Read<ProgramForm[]> {
 			return { problem: `form ${index + 1}'s for must be one of ${PROGRAM_KINDS.join(", ")}` };
 		if (!isProgramFileName(file))
 			return {
-				problem: `form ${index + 1}'s file must be one file's name in versions/<version>/, such as fokusur-0.1.apk: no folder, at most ${PROGRAM_FILE_NAME_MAX_CHARS} characters`,
+				problem: `form ${index + 1}'s file must be one file's name in versions/<version>/, such as fokusur-0.1.apk: no folder, at most ${PROGRAM_FILE_NAME_MAX_CHARS} characters, and a name the company folder takes (no %, :, ending dot or space, or a device name such as con)`,
 			};
 		if (forms.some((each) => each.for === kind))
 			return { problem: `forms name ${kind} twice: one file for each kind` };
@@ -133,7 +145,7 @@ function readVersion(value: unknown): Read<string> {
 	return isProgramVersion(value)
 		? { value }
 		: {
-				problem: `version must be short text such as 0.1: letters, digits and . _ + -, at most ${PROGRAM_VERSION_MAX_CHARS} characters`,
+				problem: `version must be short text such as 0.1: letters, digits and . _ + -, at most ${PROGRAM_VERSION_MAX_CHARS} characters, not ending in a dot`,
 			};
 }
 

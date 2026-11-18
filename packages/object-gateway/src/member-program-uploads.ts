@@ -19,6 +19,7 @@ const MAX_REQUEST_BYTES = 16 * 1024;
 const HELD_AHEAD = 4;
 const IDLE_MS = 60_000;
 const RENEW_MS = 10 * 60_000;
+const ALIVE_MS = 13 * 60_000;
 const REQUEST_MS = 30_000;
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -65,9 +66,22 @@ type Publish = (
 ) => Promise<unknown>;
 
 const uploads = new Map<string, Upload>();
+let clock: () => number = Date.now;
+let sweeping: ReturnType<typeof setInterval> | undefined;
+
+function drop(userId: string): void {
+	uploads.get(userId)?.held.clear();
+	uploads.delete(userId);
+}
+
+function sweep(now: number): void {
+	for (const [user, upload] of uploads) if (now - upload.touched > IDLE_MS) drop(user);
+}
 
 export function forgetMemberProgramUploads(): void {
-	uploads.clear();
+	for (const user of [...uploads.keys()]) drop(user);
+	clearInterval(sweeping);
+	sweeping = undefined;
 }
 
 const invalid = (): never => {
@@ -226,9 +240,9 @@ async function open(
 	const text = manifestText(request.fileSha256, request.bytes, mediaType, request.pieces);
 	const manifestSha256 = contentHash(text);
 	const mine = uploads.get(userId);
-	if (
+	if (mine && (mine.finished || now - mine.renewed >= ALIVE_MS)) drop(userId);
+	else if (
 		mine &&
-		!mine.finished &&
 		mine.environmentId === environmentId &&
 		mine.path === request.path &&
 		mine.manifestSha256 === manifestSha256
@@ -237,7 +251,6 @@ async function open(
 		send(response, 200, { schema: "qorpera.member-program-upload/v1", uploadId: mine.id, have: received(mine) });
 		return;
 	}
-	for (const [user, other] of uploads) if (other.finished || now - other.touched > IDLE_MS) uploads.delete(user);
 	if (uploads.has(userId)) {
 		send(response, 429, { error: "Another file of this member is going up" });
 		return;
@@ -276,6 +289,10 @@ async function open(
 		return;
 	}
 	uploads.set(userId, upload);
+	if (!sweeping) {
+		sweeping = setInterval(() => sweep(clock()), IDLE_MS);
+		sweeping.unref?.();
+	}
 	send(response, 200, { schema: "qorpera.member-program-upload/v1", uploadId: upload.id, have: [] });
 }
 
@@ -341,7 +358,7 @@ async function finish(
 		return;
 	}
 	if (upload.digest !== upload.fileSha256) {
-		uploads.delete(upload.userId);
+		drop(upload.userId);
 		throw new ObjectDependencyError(400);
 	}
 	const sealed = schema(
@@ -349,7 +366,7 @@ async function finish(
 		"qorpera.folder-seal/v1",
 	);
 	if (sealed.state !== "sealed") {
-		uploads.delete(upload.userId);
+		drop(upload.userId);
 		send(response, 409, { error: "The file must go up again" });
 		return;
 	}
@@ -435,6 +452,8 @@ export async function serveMemberProgramUpload(
 		const actor = member.actor;
 		const publish: Publish = (method, args) =>
 			options.authority.publisher(method, { p_environment_id: environmentId, p_actor: actor, ...args }, signal);
+		clock = now;
+		sweep(now());
 		if (opening) {
 			await open(response, actor.userId, environmentId, opening, publish, options, now());
 			return;
@@ -444,13 +463,18 @@ export async function serveMemberProgramUpload(
 			throw new ObjectDependencyError(404);
 		upload.touched = now();
 		if (kind === "stop") {
-			if (!upload.finished) uploads.delete(actor.userId);
+			if (!upload.finished) drop(actor.userId);
 			response.writeHead(204, { "cache-control": "private, no-store" });
 			response.end();
 			return;
 		}
+		const gone = (error: unknown): never => {
+			if (error instanceof ObjectDependencyError && error.status === 403 && uploads.get(actor.userId) === upload)
+				drop(actor.userId);
+			throw error;
+		};
 		if (kind === "piece") {
-			await piece(request, response, upload, Number(step), publish, options);
+			await piece(request, response, upload, Number(step), publish, options).catch(gone);
 			return;
 		}
 		await finish(
@@ -479,7 +503,7 @@ export async function serveMemberProgramUpload(
 					: { fileSha256: "", bytes: -1, version: entry.version };
 			},
 			observation,
-		);
+		).catch(gone);
 	} finally {
 		clearTimeout(timer);
 	}

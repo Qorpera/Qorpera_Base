@@ -29,6 +29,7 @@ async function gateway(
 		present?: string[];
 		folder?: Map<string, Entry>;
 		write?: () => Record<string, unknown>;
+		renewRefused?: boolean;
 	} = {},
 ) {
 	const folder = options.folder ?? new Map<string, Entry>();
@@ -92,6 +93,7 @@ async function gateway(
 				case "qorpera_folder_confirm_object":
 					return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes, stored: true };
 				case "qorpera_folder_renew_upload":
+					if (options.renewRefused) throw new ObjectDependencyError(403);
 					return {
 						schema: "qorpera.folder-upload-renew/v1",
 						intentId: args.p_intent,
@@ -435,10 +437,47 @@ describe("a member's program file put into the company's place for programs", ()
 		const upload = await uploadOf(await g.open(file));
 		expect((await g.piece(upload, 0, file.pieces[0]!)).status).toBe(200);
 		expect(g.stored.has(digest(file.pieces[0]!))).toBe(false);
-		g.later(11 * 60_000);
+		for (let minute = 0; minute < 11; minute++) {
+			g.later(59_000);
+			expect(((await (await g.open(file)).json()) as { uploadId: string }).uploadId).toBe(upload);
+		}
 		expect((await g.piece(upload, 1, file.pieces[1]!)).status).toBe(200);
 		expect(g.methods().filter((method) => method === "qorpera_folder_renew_upload")).toHaveLength(1);
 		expect((await g.finish(upload)).status).toBe(200);
+	});
+
+	it("opens afresh instead of resuming an upload whose intent can have run out, and forgets one the core refused", async () => {
+		const file = program(9 * MiB);
+		const g = await gateway();
+		const upload = await uploadOf(await g.open(file));
+		expect((await g.piece(upload, 0, file.pieces[0]!)).status).toBe(200);
+		for (let step = 0; step < 15; step++) {
+			g.later(55_000);
+			const resumed = (await (await g.open(file)).json()) as { uploadId: string };
+			if (step < 14) expect(resumed.uploadId).toBe(upload);
+			else expect(resumed.uploadId).not.toBe(upload);
+		}
+		expect(g.methods().filter((method) => method === "qorpera_folder_open_upload")).toHaveLength(2);
+		const refused = await gateway({ renewRefused: true });
+		const first = await uploadOf(await refused.open(file));
+		for (let minute = 0; minute < 11; minute++) {
+			refused.later(59_000);
+			await refused.open(file);
+		}
+		expect((await refused.piece(first, 0, file.pieces[0]!)).status).toBe(403);
+		expect((await refused.piece(first, 1, randomBytes(10))).status).toBe(404);
+		const again = await uploadOf(await refused.open(file));
+		expect(again).not.toBe(first);
+	});
+
+	it("forgets an upload nobody touched for a minute at the next request of anyone, with the pieces it held", async () => {
+		const file = program(9 * MiB);
+		const g = await gateway();
+		const upload = await uploadOf(await g.open(file));
+		expect((await g.piece(upload, 1, file.pieces[1]!)).status).toBe(200);
+		g.later(61_000);
+		expect((await g.open(program(10), path, otherToken)).status).toBe(200);
+		expect((await g.piece(upload, 0, randomBytes(10))).status).toBe(404);
 	});
 
 	it("answers the writer check's refusals: signed out, not a member, a paused company", async () => {
