@@ -7050,6 +7050,30 @@ worker's run is claimed only by a shared execution host), never before it.
    a drawn mark or one embedded picture and nothing outside it. Anything else an agent designs takes whatever shows it
    best.
 
+### 2026-11-17 amendment: an interface app holds any file; a page opened by itself loads the files beside it
+
+> The founder, 17 November 2026: "also uncap the file-sizes... they are meant to be able to do anything, the cap is a
+> major constraint", and "Yes, all three" on the design page. The detail is RUNTIME-INTERFACE-APPS.md (§2 "Files", "How
+> a page is put together" and "A page opened by itself", §7 step 13). The web part goes live when it merges; the agents'
+> words with the runtime bundle that carries them.
+
+1. **No cap on an app's files.** An interface app holds any number of files, of any kind and of any size the company
+   folder stores (256 MiB a file, the folder's own bound). `save_app` writes text files of any kind that is not binary,
+   each as large as one call carries; a machine writes the rest. `make_picture` no longer checks an app's room.
+2. **Pages read their files when they use them.** An app's page opens first and reads each file of its folder when it
+   uses it, by relative paths in its markup and styles and by `fetch`, `qorpera.file` or `qorpera.bytes` in a script.
+3. **A page opened by itself.** This replaces the rule of the 2026-10-21 amendment's list that "HTML pages and
+   prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from the network)". Such
+   a page is still an ordinary file that members open live in the app, but it loads the files beside it (styles,
+   scripts, pictures, fonts, sound, video, models) by relative paths, as an app's page does, and the agents'
+   instructions say so.
+4. **What stays.** A page still has no network: the frame's policy adds only `blob:` and `data:` sources. A page opened
+   by itself reads only files in its own folder and below it, never one in a folder the platform keeps, always as the
+   member's own read, and has no live sources, no changes and no links.
+5. **The write tools.** This replaces the 2026-10-21 amendment's "`company_write` takes up to 512 KiB of text": `company_write` and
+   `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`), which stays below
+   the native session's 1 MiB message.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
