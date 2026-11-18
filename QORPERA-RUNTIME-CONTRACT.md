@@ -7089,8 +7089,10 @@ worker's run is claimed only by a shared execution host), never before it.
    coming. The Co-Founder tells the founders what they will see and when, in hours.
 2. **Then the rest, from their answer.** The look (references, never shown as a concept app), the directions and the
    build follow the founders' answer. The several-ideas rule is never for the first concept. The Brand owner's
-   directions show the product as the first concept shows it, start once it is shown and come on their own card after
-   it. "Due within a day or two" stays for the research assignments only.
+   directions show the product as the first concept shows it. Until the concept's card goes out, the Brand owner only
+   prepares; the product's owner tells it, with the link, in a message that wakes it, and the directions start in that
+   run (in the Brand owner's first run when the vision names no product to show), on their own card after the
+   concept's. "Due within a day or two" stays for the research assignments only.
 3. **A look on a machine** is one round that ends in the link, and is reported as a look at the files on a machine,
    never as a test in the app.
 

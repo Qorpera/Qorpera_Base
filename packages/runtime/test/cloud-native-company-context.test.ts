@@ -963,7 +963,7 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	expect(full).toContain("1. First concept: one take on the product, not several");
 	expect(compile(without("save_app"))).not.toContain("1. First concept:");
 	expect(compile(new Set([...all, "hire_team"]))).toContain(
-		"add the product's builders once it is clear, with first assignments that make the first concept within the hour. Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent. Set up your daily plan routine.",
+		"add the product's builders once it is clear, with first assignments that make the first concept within the hour or work out the solution beside it. Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent. Set up your daily plan routine.",
 	);
 	expect(compile(new Set([...all, "hire_team"]), true)).not.toContain("hire_team");
 	expect(compile(without("manage_hook"))).not.toContain("Never open the company's first email address");
@@ -2114,7 +2114,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "19ce041169b39218dbaff31548cbc55d7404f0e78f43b5018a5e897043e124ba",
+			instructions: "aa5ad7d474ac388ee4a2ecc208f3d631fe275a49688f621749bf75ed751ffc17",
 			prompt: "8d4de0aa97c4fd1b1e41b05fc0f4eaa49296049c3d0c7c476a955d015db99df0",
 		},
 	],
@@ -2130,7 +2130,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "19ce041169b39218dbaff31548cbc55d7404f0e78f43b5018a5e897043e124ba",
+			instructions: "aa5ad7d474ac388ee4a2ecc208f3d631fe275a49688f621749bf75ed751ffc17",
 			prompt: "9cb69c8a1cdf1d2bca1865206e55fb2efb05db9fa5333ad636bb07c78861cfb0",
 		},
 	],

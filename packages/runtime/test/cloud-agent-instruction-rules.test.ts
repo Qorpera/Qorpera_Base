@@ -876,6 +876,12 @@ const RULES: [string, string, string, Run[]][] = [
 		"Ask on a card that links the app whether this is their product and what is missing, in the run that first makes it viewable, even when more parts are coming: improving it comes after, in the open.",
 		STAFF,
 	],
+	[
+		"5",
+		"the brand's owner told when the card goes out",
+		"When that card goes out, the product's owner tells the brand's owner at once, with its link, in a message that wakes it (priority true).",
+		STAFF,
+	],
 	["5", "nothing further until the first concept", "Build nothing further until it shows what they said.", STAFF],
 	[
 		"5",
@@ -916,7 +922,13 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the brand's directions follow the first concept",
-		"It starts as soon as the first concept is shown and raises its card after the concept's, taking in what the founders say of it; the first concept never waits for it.",
+		"Until the first concept is shown, its first run only prepares: it reads the brief and the founders' own words for how the company should feel, and makes no directions;",
+		FOUNDING,
+	],
+	[
+		"7",
+		"the brand's directions start when told, or at once without a product",
+		"it starts them in the run the product's owner tells it the concept's card went out, or in its first run when the vision names no product to show as a concept. Its card comes after the concept's, taking in what the founders say of it; the first concept never waits for it.",
 		FOUNDING,
 	],
 	[
@@ -1236,7 +1248,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"7",
 		"the product's builders move the first concept",
-		"add the product's builders once it is clear, with first assignments that make the first concept within the hour.",
+		"add the product's builders once it is clear, with first assignments that make the first concept within the hour or work out the solution beside it.",
 		FOUNDING,
 	],
 	[
@@ -2017,6 +2029,11 @@ describe("every rule the rewrite kept is in the runs it applies to", () => {
 		[
 			"first assignments that move the first concept",
 			"first assignments that move the first concept",
+			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
+		],
+		[
+			"brand directions timed only by the concept being shown",
+			"It starts as soon as the first concept is shown",
 			[...STAFF, ...WORKERS, "private-conversation", "read-only-worker"],
 		],
 		["the first concept for a worker", "1. First concept:", [...WORKERS, "read-only-worker"]],
