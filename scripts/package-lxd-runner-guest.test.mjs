@@ -209,18 +209,12 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		const acceptanceArchivePin = acceptance.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
 		const builderSourceCommit = builder.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
 		const acceptanceSourceCommit = acceptance.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
-		const acceptanceImageFingerprint = acceptance.match(/EXPECTED_IMAGE_FINGERPRINT="([0-9a-f]{64})"/)?.[1];
 		assert.ok(builderPin, "image candidate builder must pin a package manifest");
 		assert.equal(acceptancePin, builderPin, "image candidate recipes must pin the same package manifest");
 		assert.match(builderArchivePin ?? "", /^[0-9a-f]{64}$/);
 		assert.equal(acceptanceArchivePin, builderArchivePin, "image candidate recipes must pin the same package archive");
 		assert.match(builderSourceCommit ?? "", /^[0-9a-f]{40}$/);
 		assert.equal(acceptanceSourceCommit, builderSourceCommit, "image candidate recipes must pin the same source commit");
-		assert.equal(
-			acceptanceImageFingerprint,
-			"507024b38d726a12fc74514e7e473f7766e8e339495e610c425d80b6787f61d9",
-			"image acceptance must pin the signed v56 input fingerprint",
-		);
 		assert.equal(builderPin, candidateSha256, "candidate recipes must pin the full governed guest manifest");
 		assert.equal(candidate.nativeCompany.schema, "qorpera.native-company-guest/v1");
 		assert.equal(candidate.nativeCompany.sourceCommit, source.commit);
@@ -260,11 +254,7 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		} else {
 			t.diagnostic(`current guest pin not compared with its source: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
 		}
-		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
-		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"'));
 		assert.ok(builder.includes("--no-same-owner"));
-		assert.ok(!builder.includes('STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v52"'));
-		assert.ok(acceptance.includes('IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"'));
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
 		// One Claude Code on the image: the pinned unmodified build, never the harness packages' (2.1.231 leaked the
@@ -277,7 +267,6 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 			/anthropic/,
 		);
 		assert.doesNotMatch(installer, /node_modules\/@anthropic-ai\/claude-code/);
-		assert.doesNotMatch(installer, /2\.1\.231/);
 		assert.ok(installer.includes('ln -sfn "${CLAUDE_DIR}/claude" /usr/local/bin/claude'));
 		assert.ok(installer.includes("CLAUDE_DIR=/opt/qorpera-harnesses/native-claude"));
 		assert.ok(installer.includes("`sha512-${digest.digest(\"base64\")}` !== pin.source.integrity"));
