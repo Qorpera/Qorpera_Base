@@ -1,15 +1,17 @@
 # Changelog
 
 ## [Unreleased]
-- The review reads the script it judges (2026-11-17 amendment, brief A of the mywave review): a `machine_run` command
-  that runs a file has that file read on the machine before its review and shown whole to the reviewer (64 KiB a file,
-  128 KiB and 8 files a command). A file it could not be shown is never on its own a reason to deny or to raise a card:
-  the guards are answered from what is visible, and only the reviewer's own ask about such a command stays an ask rather
-  than becoming the fixed rule's allow. A card's approval covers the reviewed files' digests, so an identical call
-  repeated after a file was edited is reviewed again; the machine runs the model's command byte for byte. A denial names
-  the next step (a card asking for what the work needs, or a worker's blocked report). The agent's home reads no files
-  (known limit). Runtime bundle only: no migration, host call, executor or image moves; it rolls with the next runtime
-  release.
+- The review reads the scripts a machine command names (2026-11-17 amendment, brief A of the mywave review). Only a
+  plain command is looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing
+  bash would expand); a script in it is named only when every word before its path is on fixed allow-lists, and a
+  relative path only in the start folder of a command with no folder or setup word, or after leading `cd <path> &&` in
+  the unbroken chain. Each named file is read on the machine before the review and shown whole (64 KiB a file, 128 KiB
+  and 8 files a command); a card's approval covers the reviewed files' digests; the machine runs the model's command
+  byte for byte. The files are evidence, not proof of what runs: the agent's own login shell and profile decide what a
+  program name runs, and the reviewer is told so. A file not shown is never on its own a reason to deny or ask. A denial
+  names the next step (a card asking for what the work needs, or a worker's blocked report). Known limits: the agent's
+  home reads no files; a file changed between the read and the start is not detected. Runtime bundle only: no migration,
+  host call, executor or image moves; it rolls with the next runtime release.
 - A review whose model turn met the provider's rate limit, usage limit or an overload is asked again after 5, 10, 20, 30
   and 30 seconds, within two minutes, before the call is refused (2026-11-17 amendment, item 5); REVIEW_UNAVAILABLE now
   tells the agent to say the step could not be checked just now. Runtime bundle only.

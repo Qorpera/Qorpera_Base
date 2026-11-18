@@ -1118,7 +1118,7 @@ export function cloudMachineTools(options: {
 					const text = scriptTexts.get(entry.sha256);
 					if (text !== undefined && cloudScriptKeepsFolder(text)) settled.add(entry.path);
 				}
-				parsed = cloudCommandScripts(String(input.command), undefined, false, settled);
+				parsed = cloudCommandScripts(String(input.command), undefined, settled);
 			}
 			const files = parsed.files.map(
 				(file) =>

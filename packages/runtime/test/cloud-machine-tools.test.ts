@@ -2927,11 +2927,11 @@ describe("the files a machine command runs, read for its review (17 November 202
 				f.boundary.close();
 			}
 		};
-		const plain = await look({ [activate]: 'export VIRTUAL_ENV="/srv/app/.venv"\n', [main]: "print('EEG')\n" });
+		const plain = await look({ [activate]: "VIRTUAL_ENV=/srv/app/.venv\n", [main]: "print('EEG')\n" });
 		expect(plain.reads).toBe(2);
 		expect(plain.contents).toMatchObject({
 			files: [
-				{ path: activate, text: 'export VIRTUAL_ENV="/srv/app/.venv"\n' },
+				{ path: activate, text: "VIRTUAL_ENV=/srv/app/.venv\n" },
 				{ path: main, text: "print('EEG')\n" },
 			],
 		});

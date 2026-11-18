@@ -7029,23 +7029,26 @@ read the script it judges…"): "1-4 straight yes." It amends the review of a co
 (`machine_run`, reviewed as an outside effect since step 6d, and the fixed machine rule of 4 November 2026) and goes live with a runtime
 bundle; no migration, host call or image moves.
 
-1. **What the reviewer reads.** When a `machine_run` command runs a file (an interpreter and a path, `./x`, `source x`,
-   also behind `cd dir &&`, assignments, `timeout`/`nice`-style prefixes and `bash -c '…'`), the runtime reads that
-   file on the machine before the review, with one fixed read-only command of its own through the same receipts and
-   command gateway (its receipt always completes, also when the machine refuses or does not answer its start, so it
-   never holds the run's later changes), and gives the reviewer its text in the action's `contents`: each file whole,
-   at most 64 KiB a file, 128 KiB and 8 files a command. Files they load or import are not shown, and the contents say
-   so. A command the runtime does not recognise as running a file is reviewed as before. A relative path is named only
-   when its folder is certain from the text alone: nothing anywhere in the command can change the folder, or the file
-   runs in an unbroken `&&` chain after leading `cd <literal path>` commands (a pipeline that is an operand of that
-   chain stays in it) (a sourced file read whole that can change no folder keeps that); otherwise it is not shown. A
-   file is named only when every word of its command before its path is on fixed allow-lists: literal assignments that
-   do not steer which code runs, the prefixes `env` (assignments only), `time`, `nohup`, `nice [-n N]`, `timeout
-   <duration>`, `xvfb-run [-a]`, and per-interpreter options (`python3 -u -B -O -q`; `bash`/`sh -e -u -x -o
-   pipefail|errexit|nounset`; none for the others); anything else is not shown. Known limit: the files are read when
-   the action is reviewed; a file changed between that read and the command's start in the same call is not detected. A
-   check of the bytes in the command itself would only close those seconds, while the files a script loads stay unseen
-   and unbound anyway, and it would put a platform line in front of the agent's command.
+1. **What the reviewer reads.** A `machine_run` command is looked at only when its whole text is plain: words of
+   `A-Za-z0-9_./-+=:,@%`, single- or double-quoted strings of those characters and spaces, the separators `;`, newline,
+   `&&` and `|`, and the output redirections `>`, `>>`, `2>`, `2>>`, `2>&1` and `&>`; on such text bash expands
+   nothing. Any other character or construct names no file ("the command uses shell features the review does not
+   follow"). In a plain command a script is named only when every word before its path is on fixed allow-lists: literal
+   assignments that do not steer which code runs (not PATH, CDPATH, ENV, BASH_ENV, IFS, HOME, PWD, OLDPWD, the PYTHON*,
+   NODE_*, RUBY*, PERL5* and LD_* steering names, BASH_FUNC_*), the prefixes `env` (assignments only), `time`, `nohup`,
+   `nice` [`-n N`], `timeout <duration>`, `xvfb-run` [`-a`], and per-interpreter options (`python3 -u -B -O -q`;
+   `bash`/`sh` `-e -u -x -eu -ex -eux -o pipefail|errexit|nounset`; none for the others; `deno run <path>`). An
+   absolute path is named wherever it stands. A relative path is named in the start folder when no folder or setup word
+   (`cd`, `pushd`, `popd`, `source`, `.`, `eval`, `exec`, `command`, `builtin`, `alias`, `shopt`, `trap`, `set`,
+   `export`, `unset`, `hash`, `enable`, `declare`, `typeset`, `readonly`, `local`) occurs in the command, or in the
+   folder of the `cd <path>` commands before it in the unbroken `&&` chain from the command's start (pipelines
+   included; a `source f` there keeps the chain only when f, read whole, contains none of those words even in comments
+   and defines no function named like a runner); otherwise it is not shown. The runtime reads each named file on the
+   machine before the review with one fixed read-only command of its own through the same receipts and command gateway
+   (its receipt always completes, also when the machine refuses or does not answer its start), and gives the reviewer
+   its text in the action's `contents`: each file whole, at most 64 KiB a file, 128 KiB and 8 files a command. Known
+   limit: the files are read when the action is reviewed; a file changed between that read and the command's start in
+   the same call is not detected.
 2. **What it could not read is not a reason to stop it.** A file that is missing, not a plain file, binary or over the
    bound, a read that failed, code piped into a shell (`curl … | sh`) or printed into `-c`/`eval`, and a path behind a
    variable are listed in `contents.notShown`. The reviewer answers the guards from what it can see (the command, the
@@ -7071,6 +7074,12 @@ bundle; no migration, host call or image moves.
    was unavailable.
 6. **Known limit.** The agent's home (`home_command`) reads no files for its review; its commands are reviewed as
    before.
+7. **Known limit: evidence, not a wall.** The files are the ones the command names, as they are on the machine now.
+   They are evidence about the work, not proof of what will run: commands run in the agent's own login shell, so its
+   profile files, PATH and functions decide what a program name runs, and no reading of the command text can see that.
+   The reviewer is told so and judges the command, the request, the mandate and the contents together; the feature lets
+   an honest script be judged on its contents instead of guessed at, without making the review easier to fool than it
+   was.
 
 ## 20. Enforcement matrix
 
