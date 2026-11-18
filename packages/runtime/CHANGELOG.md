@@ -1,6 +1,16 @@
 # Changelog
 
 ## [Unreleased]
+- A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
+  a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
+  other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a
+  worker reports its work blocked with the reason, any other agent asks a member on a card (`ask_member`), or in its
+  reply where it has no cards, for the one thing the work needs; the card's answer never lets it repeat the action. A
+  review whose model turn met the provider's rate limit, usage limit or an overload (`CloudActionReviewBusy`) is asked
+  again after 5, 10, 20, 30 and 30 seconds within two minutes before the call is refused; verdicts, invalid verdicts,
+  timeouts and other failures are never asked again. REVIEW_UNAVAILABLE tells the agent to say the step could not be
+  checked just now, never that a safety review was unavailable. Runtime bundle only: no migration, host call, executor
+  or image moves.
 - hire_team's first call no longer fails blind (the founder, 18 Nov 2026: "fix the hire_team first-call refusal"; in both
   companies started on v255 the Co-Founder's first hire_team was refused as bare `INVALID_ARGUMENTS` and its second call
   succeeded). Every refusal of hire_team's and hire_agent's arguments is now a `CloudToolArgumentRefusal` the model

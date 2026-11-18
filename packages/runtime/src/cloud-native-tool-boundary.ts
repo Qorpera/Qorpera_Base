@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CLOUD_TOOL_RESULT_MAX_BYTES } from "@qorpera/cloud-client/cloud-tool-result";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudActionGateResult } from "./cloud-action-review.ts";
+import { CLOUD_REVIEW_UNAVAILABLE, type CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
 	CloudCompanyPathParentMissing,
@@ -1245,7 +1245,7 @@ export class CloudNativeToolBoundary {
 			} catch {
 				return reported("denied", {
 					kind: "text",
-					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
+					value: CLOUD_REVIEW_UNAVAILABLE,
 				});
 			}
 			if (!gate.run) {
