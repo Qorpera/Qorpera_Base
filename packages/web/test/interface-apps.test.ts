@@ -666,7 +666,7 @@ describe("an app's module scripts", () => {
 		if (!assembled.ok) throw new Error(assembled.message);
 		expect(pieces).toHaveBeenCalledOnce();
 		expect(whole.mock.calls.map(([file]) => (file as { bytes: number }).bytes)).not.toContain(bytes.length);
-		const modules = assembled.framed.files.filter(([token]) => token.endsWith("-module"));
+		const modules = (assembled.framed.files ?? []).filter(([token]) => token.endsWith("-module"));
 		expect(modules).toHaveLength(1);
 		expect(modules[0]?.[1].size).toBe(bytes.length + "\n//# sourceURL=qorpera-module:/big.js".length);
 	});
