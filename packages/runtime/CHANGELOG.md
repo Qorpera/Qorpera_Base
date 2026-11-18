@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Agents' words about company databases name the command `data` on a company machine (slice 8a; words only, the runtime bundle only; runs that are offered `machine_run`): that it acts as the machine's own company folder (its `/company`, `:viewer` the member the machine was started for unless a call gives `viewer=`), that it prints JSON, the four verbs for a run that may apply and change (a held step still goes through `data_apply`) and only describe and query for a worker, and that a machine made before the command existed lacks it and is taken again by a start with the same cpus and memory and no larger disk (change cpus or memory, ask a larger disk, or delete each old one). The platform update `data-on-machines` tells the Co-Founder once. Pins: the staff instructions (a conversation and a private conversation) `d7de80e9dfb3` → `c87c9a47ae639767f2c72d4812253bb2cc0802ab295faf6ea4909c65af4744e5`, the worker's `2be17d453add` → `29c202822805a9f20a11d9be245c10367f458af643aaec8c94d35ebff87ab847`, measured on a test VM; the prompts do not move.
 - Release v255 (master since v254's release merge: the first team in one step, #1922; agents show the product first,
   #1919; an interface app holds any file, #1928's runtime part; the object kit draws a real 3D model, #1934; the machine
   fill check finds the sandboxed desktop Chromium, #1893): runtime bundle 255
