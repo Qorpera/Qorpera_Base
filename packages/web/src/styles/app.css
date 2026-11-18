@@ -321,6 +321,7 @@ label > input, label > select { font-weight: 400; }
 .rail-company:hover, .rail-company[aria-expanded="true"] { background: var(--rail-hover); }
 .rail-company:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
 .rail-company-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.rail-company-name.company-unnamed { color: var(--rail-small); font-style: italic; font-weight: 550; }
 .rail-company-chevron { flex: none; display: grid; color: var(--rail-small); }
 .rail-company-chevron .icon { width: 14px; height: 14px; transition: transform var(--motion-base) var(--ease-spring); }
 .rail-company[aria-expanded="true"] .rail-company-chevron .icon { transform: rotate(180deg); }
@@ -861,7 +862,7 @@ textarea.hero-idea:focus-visible { outline: none; }
 }
 a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, var(--sidebar-selection) 13%, var(--bg)); }
 .hero-invitation > span:nth-child(2) { flex: 1; min-width: 0; }
-.hero-invitation .company-inviter { position: static; width: 38px; height: 38px; font-size: 13px; box-shadow: none; }
+.hero-invitation .company-inviter { position: relative; inset: auto; width: 38px; height: 38px; font-size: 13px; box-shadow: none; }
 .hero-invitation .hero-invitation-logo { width: 38px; height: 38px; }
 
 @media (max-width: 760px) {

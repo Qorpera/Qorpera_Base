@@ -419,15 +419,22 @@ export const SETTINGS: Record<string, string> = {
 	"What it is for, e.g. new orders from the shop": "Hvad den er til, f.eks. nye ordrer fra webshoppen",
 	"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.":
 		"Små bogstaver, tal og bindestreger, og den starter med et bogstav. Virksomhedens agenter læser, hvad den er til, når der kommer noget.",
-	"The part before the @: lowercase letters, digits, dots, hyphens and underscores.":
-		"Delen før @: små bogstaver, tal, punktummer, bindestreger og understregninger.",
+	"The first part of the address: lowercase letters, digits, hyphens and underscores.":
+		"Adressens første del: små bogstaver, tal, bindestreger og understregninger.",
+	"The first part, then the company's part, which every address of the company ends with.":
+		"Den første del og så virksomhedens del, som alle virksomhedens adresser slutter med.",
+	"e.g. acme": "f.eks. acme",
+	"Your email address waits for a name": "Jeres e-mailadresse venter på et navn",
+	"The company's part of its addresses could not be read.": "Virksomhedens del af dens adresser kunne ikke hentes.",
 	Add: "Tilføj",
 	"Adding…": "Tilføjer…",
 	"A webhook name is lowercase letters, digits and hyphens, and starts with a letter.":
 		"Et webhooknavn består af små bogstaver, tal og bindestreger og starter med et bogstav.",
 	"Names beginning with mail- belong to mailboxes.": "Navne, der begynder med mail-, hører til postkasser.",
-	"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.":
-		"Et postkassenavn består af små bogstaver, tal, punktummer, bindestreger og understregninger og starter og slutter med et bogstav eller et tal.",
+	"A mailbox name is lowercase letters, digits, hyphens and underscores, and starts and ends with a letter or digit.":
+		"Et postkassenavn består af små bogstaver, tal, bindestreger og understregninger og starter og slutter med et bogstav eller et tal.",
+	"A new address is a name, a dot and the company's handle, like hello.acme.":
+		"En ny adresse er et navn, et punktum og virksomhedens del, som hello.acme.",
 	"Say what it is for, in one line.": "Skriv på én linje, hvad den er til.",
 	"A webhook with this name already exists.": "Der findes allerede en webhook med dette navn.",
 	"This address is taken.": "Denne adresse er taget.",

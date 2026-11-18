@@ -1,5 +1,5 @@
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
-import { type AppAnswer, type AppCall, AppFrame } from "../../ui/app-frame.ts";
+import { type AppAnswer, type AppCall, AppFrame, type FramedPage } from "../../ui/app-frame.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { framePage } from "../../ui/page-frame.ts";
@@ -12,6 +12,7 @@ import {
 	type AppLink,
 	assembleApp,
 	type CompanyApp,
+	PageFiles,
 } from "../interface-apps.ts";
 import { AppAskBar } from "./app-ask-bar.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
@@ -135,6 +136,7 @@ export class AppPanel {
 	readonly #back: { readonly href: string; readonly label: string } | undefined;
 	#frame: AppFrame | undefined;
 	#page: string | undefined;
+	#files: PageFiles | undefined;
 	#path: string | undefined;
 	#loading: Promise<void> | undefined;
 	#again = false;
@@ -308,6 +310,7 @@ export class AppPanel {
 		this.#frame = undefined;
 		this.#serve(null);
 		this.#page = undefined;
+		this.#files = undefined;
 		this.#withdraw();
 		this.#body.classList.remove("is-dark");
 		const line = h("p", { class: "side-panel-status" }, text);
@@ -457,16 +460,24 @@ export class AppPanel {
 
 	#answer(call: AppCall): Promise<AppAnswer> {
 		// A page of the Company File is no app: it reads nothing, and its links open nothing.
-		return this.#serving
-			? this.#serving.bridge.answer(call)
+		if (this.#serving) return this.#serving.bridge.answer(call);
+		return this.#files
+			? this.#files.answer(call)
 			: Promise.resolve({ ok: false, error: "Only an app in apps/ reads the company's data" });
 	}
 
 	async #load(fresh: boolean): Promise<void> {
 		const signal = this.#lifetime.signal;
-		if (!this.#frame) replace(this.#body, h("p", { class: "side-panel-status" }, t("Opening…")));
+		const waiting = h("p", { class: "side-panel-status" }, t("Opening…"));
+		if (!this.#frame) replace(this.#body, waiting);
+		const progress = (read: number, of: number) => {
+			if (of > 4 * 1024 * 1024)
+				waiting.textContent = t("Opening… {percent}%", { percent: Math.floor((read / of) * 100) });
+		};
 		const folder = this.#host.folder();
-		let page: string | null;
+		let page: FramedPage;
+		let key: string;
+		let files: PageFiles | undefined;
 		let served: (CompanyApp & { readonly manifest: AppManifest }) | null = null;
 		let name: string;
 		let dark = false;
@@ -519,33 +530,45 @@ export class AppPanel {
 				const scheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
 				look = { scheme, brand: this.#brand };
 			}
-			const assembled = await assembleApp(folder, { path: app.path, entry: manifest.entry }, signal, look);
+			const assembled = await assembleApp(folder, { path: app.path, entry: manifest.entry }, signal, look, progress);
 			if (signal.aborted) return;
 			if (!assembled.ok) return this.#status(assembled.message);
-			page = assembled.page;
+			page = assembled.framed;
+			key = assembled.key;
 			dark = assembled.scheme === "dark";
 		} else {
 			const path = this.target.path;
 			this.#path = path;
 			name = path.slice(path.lastIndexOf("/") + 1);
 			this.#heading(name, null, null);
-			const entry = (await folder.read(path, signal)).entry;
+			const root = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+			const assembled = await assembleApp(folder, { path: root, entry: name }, signal, undefined, progress);
 			if (signal.aborted) return;
-			if (entry?.kind !== "file" || !entry.file || entry.file.bytes > 1024 * 1024)
-				return this.#status(t("This page can't be shown here."));
-			let html: string;
-			try {
-				html = new TextDecoder("utf-8", { fatal: true }).decode(
-					await folder.readFile(entry.file, signal, 1024 * 1024),
-				);
-			} catch {
-				return this.#status(t("This page can't be shown here."));
+			if (assembled.ok) {
+				page = assembled.framed;
+				key = assembled.key;
+				files = new PageFiles(folder, root, signal);
+			} else {
+				const entry = (await folder.read(path, signal)).entry;
+				if (signal.aborted) return;
+				if (entry?.kind !== "file" || !entry.file || entry.file.bytes > 1024 * 1024)
+					return this.#status(t("This page can't be shown here."));
+				let html: string;
+				try {
+					html = new TextDecoder("utf-8", { fatal: true }).decode(
+						await folder.readFile(entry.file, signal, 1024 * 1024),
+					);
+				} catch {
+					return this.#status(t("This page can't be shown here."));
+				}
+				if (signal.aborted) return;
+				const alone = framePage(html);
+				if (alone === null) return this.#status(t("This page can't be shown live."));
+				page = { html: alone };
+				key = alone;
 			}
-			if (signal.aborted) return;
-			page = framePage(html);
-			if (page === null) return this.#status(t("This page can't be shown live."));
 		}
-		const same = !fresh && this.#frame !== undefined && page === this.#page;
+		const same = !fresh && this.#frame !== undefined && key === this.#page;
 		// With a new page, and under the same page when the app's manifest changed: what it may read and ask for now.
 		if (!same || (served !== null && this.#serving?.version !== served.version)) this.#serve(served);
 		if (same) {
@@ -560,7 +583,8 @@ export class AppPanel {
 			this.#status(t("This app reloaded itself. Press Reload to start it again."));
 		});
 		this.#frame = frame;
-		this.#page = page;
+		this.#page = key;
+		this.#files = files;
 		// What stands behind the page until it has drawn: white, or the dark page's own colour.
 		this.#body.classList.toggle("is-dark", dark);
 		// The frame document loads, then the page written into it: "Opening…" stays over it until the page is there.
