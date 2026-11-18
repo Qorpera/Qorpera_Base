@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Several Claude logins per member, one In use (the founder, 18 Nov 2026: "Yes, allow several", then "Picks stand"; migration `20260930804000`, SQL test 1300). A member may hold several active Claude logins; exactly one is In use, and new Claude work takes it: a Claude Code worker's dispatch, a Claude-first worker, and a follow-up to a running worker. A run already started keeps its login. Only the member moves it (`qorpera_use_claude_login`, or a sign-out of the login In use that names the next one; without it that sign-out is refused). A sign-in of the same account replaces its row and keeps its state; another account joins Not in use. The list says per login whether it is In use and until when it is used up (`usedUpUntil`, from the usage #1909 records); a run's usage now also records which limit refused it (`limitType`, Claude Code's `rateLimitType`), so a run refused by one model's weekly limit does not count the login used up. Usage reads name their login (`qorpera_begin_claude_login_read` with `p_claude_login_id`; the old call reads the login In use). Roll the migration before the runtime bundle that sends `limitType`.
 - Release v258 (Claude plan usage and limit resets read by the unmodified Claude Code, backend, #1909, with migration
   `20260930793000` and SQL test 1290; the Claude Code box's relay holds 32 connections, #1933; both held drafts merged in
   the release branch at their approved heads): runtime bundle 258

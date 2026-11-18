@@ -805,9 +805,13 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   writes it once to Claude Code's input; Claude Code exchanges it itself.
 - **Keep:** the vault seals Claude Code's `.credentials.json` and `.claude.json`, unread
   (`qorpera.claude-login-files/v1`, field `claude_login_files`), under the member's key, and completes the sign-in
-  with `qorpera_complete_claude_login_sign_in` into `qorpera_claude_logins` (one active per member; a newer sign-in
-  replaces it). No provider connection, capsule, model login or sponsor is made, and nothing that runs agents reads
-  the table. Members list and sign out their own (`qorpera_list_claude_logins`, `qorpera_sign_out_claude_login`).
+  with `qorpera_complete_claude_login_sign_in` into `qorpera_claude_logins`. A member may hold several; exactly one
+  is In use (`in_use`, `20260930804000`), and new Claude work takes it. A sign-in of the same account (the same email,
+  ignoring case) replaces that row and keeps its In-use state; another account joins Not in use, unless the member has
+  no other login. No provider connection, capsule, model login or sponsor is made. Members list theirs
+  (`qorpera_list_claude_logins`, with `inUse` and `usedUpUntil`), pick the one In use (`qorpera_use_claude_login`) and
+  sign out (`qorpera_sign_out_claude_login`; signing out the login In use while others remain names the next one,
+  `p_next_login_id`, or is refused).
 - **Deploy (in this order):**
   1. Apply migration `20260930564000` (with the release). Until step 7 nobody can begin a Claude sign-in: the
      allow-list is empty and the web offers no Claude button.
