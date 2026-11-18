@@ -118,6 +118,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "The product shown first, looking real",
 		text: "The first concept now comes first: in its first run the product's owner shows the product in its key moments as a customer will meet it (a physical product as a render that looks real, software as real screens to click through), before any document but the brief, and the solution is worked out beside it. Plans for later stages wait until the founders say it is their product. A brand direction is the product in its world in that look, in real pictures; only the chosen one becomes the identity and its logo. If your founders have not yet seen their product looking real, have its owner make that concept now; if they have not yet picked a look, have the brand directions made as pictures.",
 	},
+	{
+		id: "app-files-uncapped",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "Interface apps hold any file",
+		text: "An interface app no longer has a cap on its files: any number, any size the company folder stores, any kind. Fonts, sound, 3D models, wasm and large scripts such as a 3D library are files in the app's folder, written from a company machine and named by their path. The page opens first and reads each file when it uses it: by a relative path in its markup and styles, and in a script by fetch(path), qorpera.file(path) or qorpera.bytes(path); a page opened by itself loads the files beside it the same way. company_write takes as much text as one call carries. A product can now be shown live in 3D, with its own type and sound.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

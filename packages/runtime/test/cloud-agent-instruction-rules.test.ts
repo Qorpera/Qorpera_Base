@@ -928,7 +928,7 @@ const RULES: [string, string, string, Run[]][] = [
 	[
 		"5",
 		"other pages are ordinary files",
-		"Other pages, prototypes and mockups are ordinary files, self-contained (inline CSS and JavaScript), which members open live from a folder: link.",
+		"Other pages, prototypes and mockups are ordinary files, which members open live from a folder: link; a page loads the files beside it (styles, scripts, pictures, fonts, sound, video, models) by relative paths, as an app's page does.",
 		ALL,
 	],
 	[

@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- No cap on an interface app's files (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, 17 Nov 2026; Jonas: "also uncap the file-sizes"): `save_app` writes text files of any kind that is not binary, each as large as one call carries, lists the app's whole folder and releases only what the save drew on, and refuses no app for its count or size; `make_picture` no longer checks an app's room; an explainer's clips have no count bound. `company_write` and `company_edit` take as much text as one call carries (`MAX_TOOL_ARGUMENT_BYTES`, 960 KiB). save_app's words say so, and that fonts, sound and 3D models are files of the app; `PLATFORM_UPDATES` tells the Co-Founder. `MAX_CLOUD_PICTURE_BYTES` stays 12 MiB as the picture lane's own bound.
 - The first team in one step (the founder, 17 November 2026: "on 5, I agree with batch hiring, but we should allow for
   continuous hiring as the company evolves"; contract 14.1, the 2026-11-17 amendment; migration `20260930799000`, SQL
   test 1296; lanes/mywave-fixes-20261117/DESIGN-B.md). A new runtime tool, `hire_team`, hires 2 to 12 coworkers in one

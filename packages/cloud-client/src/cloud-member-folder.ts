@@ -193,7 +193,6 @@ export function parseCloudMemberFolderRead(value: unknown): CloudMemberFolderRea
 	return { asOfSeq: seq(read.asOfSeq, "read"), entry: read.found ? parseCloudMemberFolderEntry(read.entry) : null };
 }
 
-/** The most paths one `readMany` reads (an app's limit of files). */
 export const CLOUD_MEMBER_FOLDER_READ_MANY = 64;
 
 export function parseCloudMemberFolderReadMany(value: unknown, count: number): CloudMemberFolderRead[] {

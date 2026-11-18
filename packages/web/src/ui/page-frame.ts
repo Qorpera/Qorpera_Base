@@ -28,10 +28,6 @@ export const PAGE_ESCAPE = "qorpera-page-escape";
 /** Link hints the browser acts on without asking the page's policy. */
 const NETWORK_HINTS = new Set(["dns-prefetch", "preconnect"]);
 
-function isMessage(data: unknown, type: string): boolean {
-	return typeof data === "object" && data !== null && (data as { type?: unknown }).type === type;
-}
-
 /** Template attributes that make the parser attach a shadow root (the second is the older spelling). */
 const DECLARATIVE_SHADOW_ROOT = ["shadowrootmode", "shadowroot"];
 
@@ -77,55 +73,4 @@ export function framePage(html: string): string | null {
 		else element.remove();
 	const handed = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
 	return unfit(parse(handed)).length === 0 ? handed : null;
-}
-
-/** The pages of one view's frames. Only a frame made here is answered, with its own page, each time it is ready (a
- * page that reloads itself is handed its page again); a frame gone from the page is forgotten. Escape pressed in a
- * frame's page reaches the app as Escape pressed on the frame, so what shows the page closes as it does for Escape
- * anywhere else in it (a key pressed in a frame never reaches the app on its own: 3 Nov 2026, a page shown across
- * the window would not close, and the keys typed next went into the page). */
-export class PageFrames {
-	readonly #pages = new Map<HTMLIFrameElement, string>();
-	/** Frames that have had their page: once out of the page, they are done. */
-	readonly #shown = new WeakSet<HTMLIFrameElement>();
-
-	constructor(signal: AbortSignal) {
-		window.addEventListener("message", (event) => this.#answer(event), { signal });
-		signal.addEventListener("abort", () => this.#pages.clear(), { once: true });
-	}
-
-	/** A frame that shows `page` (what framePage handed over) once it is in the page; `title` names it for assistive
-	 * technology. The pages of frames
-	 * that had theirs and are gone from the page go first, so a view that shows page after page keeps only the pages
-	 * still shown (a frame made but not yet put in keeps its own). */
-	frame(page: string, title: string, className: string): HTMLIFrameElement {
-		for (const done of this.#pages.keys()) if (this.#shown.has(done) && !done.isConnected) this.#pages.delete(done);
-		const frame = document.createElement("iframe");
-		frame.className = className;
-		frame.setAttribute("sandbox", "allow-scripts");
-		frame.setAttribute("referrerpolicy", "no-referrer");
-		frame.setAttribute("src", PAGE_FRAME_URL);
-		frame.title = title;
-		this.#pages.set(frame, page);
-		return frame;
-	}
-
-	#answer(event: MessageEvent): void {
-		if (event.source === null) return;
-		if (isMessage(event.data, PAGE_ESCAPE)) {
-			for (const frame of this.#pages.keys())
-				if (frame.isConnected && frame.contentWindow === event.source)
-					frame.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-			return;
-		}
-		if (!isMessage(event.data, PAGE_READY)) return;
-		for (const [frame, html] of this.#pages) {
-			if (!frame.isConnected) this.#pages.delete(frame);
-			// The frame has no origin, so its window is the only thing that tells it apart.
-			else if (frame.contentWindow === event.source) {
-				frame.contentWindow.postMessage({ type: PAGE_CONTENT, html }, "*");
-				this.#shown.add(frame);
-			}
-		}
-	}
 }

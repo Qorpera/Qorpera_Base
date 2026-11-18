@@ -75,11 +75,16 @@ write, with the tools they already have, and need no migration.
 Unknown keys, bad types and bad values are problems; an app whose manifest has problems is not shown (its card says
 so and links the file).
 
-**Files.** Kinds: `.html .htm .css .js .mjs .json .txt .md .csv .svg .png .jpg .jpeg .gif .webp`. Each file at most
-512 KiB (the write tools' bound), at most 64 files, at most 4 MiB in all. Other kinds may sit in the folder (an agent's
-notes) but are never loaded into the page.
-**Videos** (Jonas, 7 November 2026: demo videos of design ideas): `.mp4 .webm`, each at most 12 MiB and 48 MiB in all, on
-top of the limits above. An agent writes them from a machine or moves them in; no text tool writes one.
+**Files** (amended 17 November 2026; Jonas: "also uncap the file-sizes... they are meant to be able to do anything,
+the cap is a major constraint"). An app holds files of any kind, in any number and of any size the company folder
+stores: 256 MiB a file, the folder's own bound (64 pieces of 4 MiB), which stays a step of its own. A page loads any of
+them. A known extension is handed over with its media type (`APP_FILE_TYPES`: pages, styles, scripts and data,
+pictures including `.avif .bmp .ico`, video `.mp4 .webm .mov .m4v`, sound `.mp3 .m4a .aac .wav .ogg .oga .opus
+.flac`, fonts `.woff2 .woff .ttf .otf`, 3D `.glb .gltf .bin .obj .usdz .hdr .exr .ktx2`, `.wasm .pdf .xml .map`); any
+other as `application/octet-stream`. `save_app` writes the text files, of any kind that is not binary
+(`APP_BINARY_KINDS`), each as large as one call carries; a machine writes the rest, or moves them in. Until 17 November
+2026 a page loaded 17 kinds, each page or code file at most 512 KiB, at most 64 files and 4 MiB of pages and code, and
+pictures and videos (Jonas, 7 November 2026: demo videos of design ideas) at most 12 MiB each and 48 MiB in all.
 **Icons** (Jonas, 12 November 2026: "change the icons of the interfaces and have a generate icon button too for them to
 create a new custom one based on it's name or contents"): an app's own icons are `icons/<id>.svg` in its folder, an id
 of lowercase letters, digits and hyphens (`compass`, `trail-sign`), at most 12 an app. Each is drawn as the built-in
@@ -90,15 +95,52 @@ at most 8 KiB. The web and `save_app` read a file alike, so what the web could n
 one, or another emblem, under Icon and colour in the app's menu in the drawer; Generate icon there asks the app's maker
 (its `owner`, else the Co-Founder) in the chat to draw 3 more.
 
-**How a page is put together.** The frame has no origin and no network, so the host (the web app, with the member's
-own read authority) reads the entry and the files it names and hands the frame one self-contained page:
-- `<link rel="stylesheet" href="x.css">` becomes `<style>` with the file's text;
-- `<script src="x.js">` becomes an inline `<script>` (its `type` kept);
-- `src` of `img`, `source`, `audio`, `video` and `url(...)` in styles become `data:` URLs;
-- only relative paths inside the app's folder are resolved; anything else (`https:`, `/abs`, `..` out of the folder)
-  is left as written, and the frame's policy blocks it.
-Module scripts may not `import` other files in v1 (inline them or use classic scripts). The page then goes through
-`framePage` exactly as a Company File page does.
+**How a page is put together** (amended 17 November 2026: the page opens first, and a file is read when the page uses
+it). The frame has no origin and no network. The host (the web app, with the member's own read authority) reads the
+entry, puts the page together and hands it to the frame with the files its first paint needs, as blobs; every other
+file of the app comes through the port when the page uses it (`file`, §5). Until then the host packed every file a
+page named into it as `data:` URLs before anything showed.
+- `<link rel="stylesheet" href="x.css">` becomes `<style>` with the file's text, and each `url(...)` in it, in a
+  `<style>` and in a `style` attribute names the file's mark; those files (pictures, fonts) come with the page.
+- `<script src="x.js">` becomes an inline `<script>` (its `type` kept) when it is at most 128 KiB
+  (`PAGE_TEXT_INLINE_BYTES`); a larger one keeps its place and order and comes as a file of its own
+  (`text/javascript`). Measured in headless Chromium on node 2 (17 November 2026, median of 9, hand-over to run): up
+  to 128 KiB inline and a file of its own take the same time (16 to 24 ms); from 256 KiB the file of its own is
+  faster (256 KiB 18 against 26 ms, 1 MiB 22 against 30, 4 MiB 29 against 63).
+- A picture (`img src`, a `video` poster, an SVG `image href`) comes with the page when it is in a `hidden` part of
+  the page (it is there for a script to read: a kit's `#kit-media`), or when it is at most 2 MiB
+  (`PAGE_MEDIA_FILE_BYTES`) and the page's pictures, video and sound sent with it so far stay within 16 MiB
+  (`PAGE_MEDIA_BYTES`) and 24 files (`PAGE_MEDIA_FILES`). Video and sound (`video`, `audio`, `source`, `track` src)
+  come with the page when at most 2 MiB, within the same 16 MiB and 24 files. These are budgets for the first paint,
+  never a reason a file does not load. Anything else is marked to come later (`data-qorpera-src`, `-poster`, `-href`, with
+  its path in the app): the frame reads it when its element comes near the screen (a screen's height ahead), or for
+  sound when it is played, loaded or plays by itself. A copy of a marked element (`cloneNode`) is marked too.
+- A file's mark is `qorpera-file-<the first 32 hex of its hash>-<its kind>`; the frame puts an address of its own
+  (`blob:`) in its place before the page is written. Nothing large travels as a `data:` URL.
+- A file the page names that the folder does not hold loads nothing; the frame's console names it in plain words.
+- A script reads any file of the app by a relative path, with no code of its own: `fetch` and `XMLHttpRequest` (GET
+  or HEAD) answer from the app's file (a file it lacks is a 404, said in the console), an element's `src` or poster
+  set to one, `new Audio(path)` and `setAttribute` load it, and `qorpera.file(path)` gives an address the page can use
+  (for a worker, a module's `import()`, a model or a font) and `qorpera.bytes(path)` its bytes (an `ArrayBuffer`).
+  `fetch`, `XMLHttpRequest` and `qorpera.bytes` ask the host each time, so a page sees a file that changed; an address
+  an element or `qorpera.file` was given stays for the page's life. A read that failed is asked again next time.
+  So a stock 3D, font or audio loader reads its files as anywhere. A relative `src` written by a script into markup
+  (`innerHTML`) is read too, after the browser has refused it once.
+- Only relative paths inside the app's folder are read; anything else (`https:`, `/abs`, `..` out of the folder) is
+  left as written, and the frame's policy blocks it. A module script's own relative `import` is not resolved: it
+  imports by the address `qorpera.file` gives.
+- While the files of the first paint arrive, the app's "Opening…" says how far it is, when they pass 4 MiB.
+- A file larger than 8 MiB is read piece by piece (4 MiB pieces, one at a time for one file, at most 8 files at once
+  for a page) and built into one blob as the pieces arrive, so no second whole copy is held beside it.
+The page then goes through `framePage` exactly as a Company File page does.
+
+**A page opened by itself** (17 November 2026). An HTML page opened from the company folder (a `folder:` link beside a
+chat, or Storage's preview) is put together and loads its files the same way, with the folder it stands in as its
+root, and a port that answers `file` alone: it reads only files in its own folder and below (no `..` out of it, no
+company path from the top), never one in a folder the platform keeps (`APP_CLOSED_FOLDERS`; a page standing in one
+reads none), always as the member's own read, and has no live sources, no changes and no links. A page that reloads itself is handed its page again with a new port, as Storage did before; an app's page
+that does so stays stopped until Reload, since its port carries the member's live data and requests. One that cannot be put
+together (a page in a platform folder) is shown as before, by itself.
 
 **The base style** (10 November 2026; `packages/web/src/app/interface-app-style.ts`). The host gives every app's page
 one small stylesheet to start from. Before it, the host gave a page no style at all, so each agent made up a look: six
@@ -261,8 +303,9 @@ web does not already answer. What the kit adds is that the agent writes one file
   runtime, held together by a test). Changing one word of a caption gives it a new name, so that caption alone
   falls silent until it is recorded again. `save_app` writes those elements from `voice/clips.json`
   (`{"clips": [{"caption": "3f0a9c1e", "file": "3f0a9c1e.mp4", "seconds": 5.42}]}`): one clip a caption, the file
-  the caption's hash with `.mp4` or `.webm`, at most 60 seconds, at most 56 clips (an app's 64 files less the rest),
-  and only clips whose file is in `voice/`. A list that does not read costs the video its voice, never the save.
+  the caption's hash with `.mp4` or `.webm`, at most 60 seconds, any number of them (until 17 November 2026 at most
+  56, an app's 64 files less the rest; the answer's look advises 25 to 35 captions), and only clips whose file is in
+  `voice/`. A list that does not read costs the video its voice, never the save.
   The web's page builder puts each clip into the page as it puts a video in (§2: `source[src]`), so the web knows
   nothing of the kit. A spoken caption lasts as long as its clip and half a second. The player speaks the clip of
   the caption on screen through one audio element, with the timeline as the clock: pause, scrub and jump are the
@@ -463,14 +506,9 @@ migration `20260930746000`, which only names the tool among a run's observations
   the change for review (the answer's `state` is `proposed`), a missing folder is refused, a stale or present file is a
   conflict. Before the picture is made, the tool refuses a path whose folder is not there and a path that is a folder or
   a link: each picture costs the member's plan. Exists and version are checked at the commit only, as company_write's.
-- **An app's room.** For a path under `apps/<name>/`, before the picture is made the tool lists the app as save_app
-  does (`appFileSizes`, `APP_LIST_LIMIT`) and refuses (`APP_TOO_LARGE`) when one more file would pass 64, or when less
-  than 4 MiB of the 48 MiB of pictures and videos is left (the file the call replaces not counted). Once the picture is
-  made, the app is listed again and counted the same way with the picture's real bytes, since another run may have
-  filled it during the generation (`APP_TOO_LARGE`: made, not saved). The commit checks the target's version only (the
-  folder core has no precondition on a folder's listing for a write), so the moment between that listing and the commit
-  stays open, as between save_app's own listing and commit: the bound is held at each save and by the page's reader,
-  not by the commit.
+- **An app's room** (removed 17 November 2026, with every cap on an app's files): a picture goes into an app whatever
+  the app holds. Until then the tool listed the app as save_app did and refused (`APP_TOO_LARGE`) past 64 files or
+  48 MiB of pictures and videos.
 - **A repeat costs no picture within the run.** The tool keeps, for the run's life, what it answered per
   `operationKey` (the newest 256 calls, with the picture itself for the newest 4). A repeat of the same call is answered
   from there before anything is made: the same answer, the picture again when it is kept; a call whose outcome stayed
@@ -851,7 +889,12 @@ Rules:
   `reads`, because nothing is read for it. The answer is the same whether or not what the link names is there, and the
   frame document drops it, so a page learns nothing from a link.
 - **No requests of its own**: the frame keeps `sandbox="allow-scripts"`, no origin, the frame document's policy
-  (`default-src 'none'`, no `connect-src`), and this app's `frame-src 'self'`. Some side channels remain (a
+  (`default-src 'none'`), and this app's `frame-src 'self'`. Since 17 November 2026 the policy names `blob:` and
+  `data:` and nothing else for what the page's own files need: `script-src 'unsafe-inline' 'unsafe-eval' blob:;
+  font-src data: blob:; connect-src data: blob:; worker-src blob:` (with `img-src` and `media-src data: blob:` as
+  before). A `blob:` address is one the frame made from bytes it holds, and a worker the page starts keeps the frame's
+  policy; `scripts/test-web-app-frame-browser.mjs` proves in Chromium that the page and its worker reach nothing on
+  the network by fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon, an element or a frame, and have no WebRTC. Some side channels remain (a
   `dns-prefetch`/`preconnect` link the page's script adds is acted on before anything can take it out): blocking them is
   best effort, not a boundary.
 
@@ -1058,7 +1101,7 @@ An independent Opus review of this design and the frame ran on 5 November 2026 b
 | M1 threat model | corrected above; side channels are best effort |
 | M2 reads: allow list, path checks, never-in-bridge | platform folders refused, host path checks, the list above |
 | M3 runtime prefetch hints can't be removed | dropped the plan; said so |
-| M4 budgets survive Reload; request size; host-side limits | budget per app per tab; 4 KiB params; 64 files / 4 MiB enforced when the host reads |
+| M4 budgets survive Reload; request size; host-side limits | budget per app per tab; 4 KiB params. Since 17 November 2026 an app's files have no cap (§2): a read of the page's own file (`file`) takes no share of the minute's budget, the host reads 8 files at once at most, and a refused one counts toward the frame's 300 refusals |
 | L1 path resolution, fixed data: types | URL-style resolution inside the app folder, escapes refused, type by extension |
 | L2 freeze `qorpera` | frozen, with the frame document's own copies of the port methods |
 
@@ -1193,6 +1236,15 @@ thread's "Quoted from an email" title).
 12. Retired interfaces (§3e, 15 November 2026): the file's format (`cloud-client/app-retired.ts`) and the runtime's
     refusals and list label (`cloud-folder-app-retired.ts`). No migration, no tool name, no node change. The web's part
     (the menu item, hiding, the retired page and the way back) is a change of its own, released after the runtime.
+
+13. No cap on an app's files (17 November 2026; Jonas: "also uncap the file-sizes"): every kind, count and size bound
+    on an app's files is gone from the format (`cloud-client/interface-apps.ts`), the web's reader, `save_app` (it
+    lists the app's whole folder and releases what the save drew on) and `make_picture`; the web puts the page
+    together with the files of its first paint as blobs and reads every other file when the page uses it (§2), also
+    for a page opened by itself; the frame document's policy names `blob:` and `data:` for fonts, fetch, workers,
+    module scripts and wasm; `company_write` and `company_edit` take as much text as one call carries (960 KiB,
+    `MAX_TOOL_ARGUMENT_BYTES`, under the native session's 1 MiB message). No migration and no node change; the web goes
+    live when it merges, the runtime with the next bundle.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway
