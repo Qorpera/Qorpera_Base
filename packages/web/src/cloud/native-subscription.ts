@@ -220,6 +220,19 @@ export interface WebNativeSubscription {
  * window of an attempt that already completed (`held`), only a reset that has
  * passed since justifies another: usage that attempt could not observe, or
  * that has merely aged, would not be observed by asking again. */
+export function usageRefreshReads<T extends NativeMemberConnection>(accounts: {
+	computeIdentity?: NativeExecutionConnections["computeIdentity"];
+	connections: readonly T[];
+}): T[] {
+	if (!accounts.computeIdentity) return [];
+	return accounts.connections.filter(
+		(account) =>
+			account.provider === "openai" &&
+			account.nativeHarness === "codex-cli" &&
+			account.connectionStatus === "active" &&
+			account.authorizationState === "active",
+	);
+}
 function usageStale(account: NativeMemberConnection, now: number, held: boolean): boolean {
 	const usage = account.providerAccountUsage;
 	if (!usage) return !held;
@@ -651,13 +664,7 @@ export function createWebNativeSubscription(
 				const work = withCloudDeadline(
 					async (deadline) => {
 						const accounts = known ?? (await client(deadline).listConnections(profileId));
-						const eligible = accounts.connections.filter(
-							(account) =>
-								account.provider === "openai" &&
-								account.nativeHarness === "codex-cli" &&
-								account.connectionStatus === "active" &&
-								account.authorizationState === "active",
-						);
+						const eligible = usageRefreshReads(accounts);
 						if (!accounts.computeIdentity || !eligible.length) return;
 						// A completed attempt keeps its authority until it expires: at most one
 						// attempt per expiry window, however often views ask, unless a reset

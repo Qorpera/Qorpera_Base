@@ -666,6 +666,44 @@ describe("member model account settings", () => {
 		expect(view.el.textContent).not.toContain(notice);
 		expect(cardOf("silent@example.com").textContent).toContain("100% left");
 	});
+	it("says ChatGPT did not answer only for a login the refresh reads", async () => {
+		const silent = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const claude = {
+			...silent,
+			connectionId: id(83),
+			clientConnectionId: id(183),
+			provider: "anthropic",
+			nativeHarness: "claude-code" as const,
+			providerAccountEmail: "claude@example.com",
+		};
+		const { client, lifetime } = await setup(true, observed(silent, claude));
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await settle();
+		const notices = [...view.el.querySelectorAll(".connection-card")].filter((item) =>
+			item.textContent?.includes("ChatGPT did not answer"),
+		);
+		expect(notices.map((item) => item.textContent?.includes("member@example.com"))).toEqual([true]);
+		expect(view.el.textContent).toContain("claude@example.com");
+	});
+	it("says ChatGPT did not answer for nobody when the refresh had no identity to read with", async () => {
+		const silent = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const { client, lifetime } = await setup(true, { connections: [silent] });
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenLastCalledWith(expect.any(AbortSignal), true);
+		expect(view.el.textContent).toContain("member@example.com");
+		expect(view.el.textContent).not.toContain("ChatGPT did not answer");
+	});
 	it("never says ChatGPT did not answer after a read the member did not ask for", async () => {
 		const stuck = {
 			...connected,

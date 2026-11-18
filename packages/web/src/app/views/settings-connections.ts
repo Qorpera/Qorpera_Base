@@ -9,6 +9,7 @@ import {
 	ClaudeCodeError,
 	PlanSwitchBusyError,
 	planLogin,
+	usageRefreshReads,
 	type WebAccountLogin,
 	type WebClaudeLogin,
 	type WebClaudeLogins,
@@ -388,18 +389,18 @@ export class ConnectionsView {
 			if (this.#lifetime.signal.aborted || !this.#shown().some(live)) return;
 			const forced = this.#metadataForced;
 			const before = new Map(
-				this.#shown()
-					.filter(live)
-					.map((connection) => [connection.connectionId, connection.providerAccountUsage?.observedAt]),
+				this.#refreshReads().map((connection) => [
+					connection.connectionId,
+					connection.providerAccountUsage?.observedAt,
+				]),
 			);
 			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
 			if (forced && !this.#lifetime.signal.aborted)
 				this.#unansweredByOwnRefresh = new Map(
-					this.#shown()
+					this.#refreshReads()
 						.filter(
 							(connection) =>
-								live(connection) &&
 								before.has(connection.connectionId) &&
 								before.get(connection.connectionId) === connection.providerAccountUsage?.observedAt,
 						)
@@ -865,6 +866,12 @@ export class ConnectionsView {
 		return this.#accountWide
 			? connections.filter((connection) => this.#accountLogins.has(connection.connectionId))
 			: connections;
+	}
+	#refreshReads(): WebMemberConnection[] {
+		const shown = new Set(this.#shown().map((connection) => connection.connectionId));
+		return usageRefreshReads(this.#connections ?? { connections: [] }).filter((connection) =>
+			shown.has(connection.connectionId),
+		);
 	}
 	#usage(connection: NativeMemberConnection): HTMLElement {
 		const usage = connection.providerAccountUsage;
