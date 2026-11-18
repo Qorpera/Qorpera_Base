@@ -9,7 +9,7 @@ import {
 	ClaudeCodeError,
 	PlanSwitchBusyError,
 	planLogin,
-	usageRefreshReads,
+	loginsAUsageRefreshReads,
 	type WebAccountLogin,
 	type WebClaudeLogin,
 	type WebClaudeLogins,
@@ -869,7 +869,7 @@ export class ConnectionsView {
 	}
 	#refreshReads(): WebMemberConnection[] {
 		const shown = new Set(this.#shown().map((connection) => connection.connectionId));
-		return usageRefreshReads(this.#connections ?? { connections: [] }).filter((connection) =>
+		return loginsAUsageRefreshReads(this.#connections ?? { connections: [] }).filter((connection) =>
 			shown.has(connection.connectionId),
 		);
 	}

@@ -214,13 +214,7 @@ export interface WebNativeSubscription {
 	signOutEverywhere?(loginId: string, signal?: AbortSignal): Promise<void>;
 }
 
-/** The same rule as the server's admission: usage observed within the last
- * minute whose windows have not reset needs no new observation. Requesting one
- * anyway records an attempt, and a stale one boots a login guest. Inside the
- * window of an attempt that already completed (`held`), only a reset that has
- * passed since justifies another: usage that attempt could not observe, or
- * that has merely aged, would not be observed by asking again. */
-export function usageRefreshReads<T extends NativeMemberConnection>(accounts: {
+export function loginsAUsageRefreshReads<T extends NativeMemberConnection>(accounts: {
 	computeIdentity?: NativeExecutionConnections["computeIdentity"];
 	connections: readonly T[];
 }): T[] {
@@ -233,6 +227,12 @@ export function usageRefreshReads<T extends NativeMemberConnection>(accounts: {
 			account.authorizationState === "active",
 	);
 }
+/** The same rule as the server's admission: usage observed within the last
+ * minute whose windows have not reset needs no new observation. Requesting one
+ * anyway records an attempt, and a stale one boots a login guest. Inside the
+ * window of an attempt that already completed (`held`), only a reset that has
+ * passed since justifies another: usage that attempt could not observe, or
+ * that has merely aged, would not be observed by asking again. */
 function usageStale(account: NativeMemberConnection, now: number, held: boolean): boolean {
 	const usage = account.providerAccountUsage;
 	if (!usage) return !held;
@@ -664,7 +664,7 @@ export function createWebNativeSubscription(
 				const work = withCloudDeadline(
 					async (deadline) => {
 						const accounts = known ?? (await client(deadline).listConnections(profileId));
-						const eligible = usageRefreshReads(accounts);
+						const eligible = loginsAUsageRefreshReads(accounts);
 						if (!accounts.computeIdentity || !eligible.length) return;
 						// A completed attempt keeps its authority until it expires: at most one
 						// attempt per expiry window, however often views ask, unless a reset
