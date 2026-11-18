@@ -120,6 +120,11 @@ describe("tools on demand", () => {
 		// The Co-Founder hires whatever the count; an employee opens hire_agent on demand.
 		expect(cloudToolsOnDemand(staff, "cofounder").deferred.has("hire_agent")).toBe(false);
 		expect(cloudToolsOnDemand(employee, "employee").deferred.has("hire_agent")).toBe(true);
+		expect(cloudToolsOnDemand(staff, "cofounder").deferred.has("hire_team")).toBe(false);
+		expect(cloudToolsOnDemand(employee, "employee").deferred.has("hire_team")).toBe(true);
+		expect(
+			cloudToolsOnDemand(employee, "employee").tools.find((tool) => tool.name === CLOUD_MORE_TOOLS)?.description,
+		).toContain("\n- hire_team: hire two or more coworkers at once, each knowing the others");
 		expect(cloudToolsOnDemand(staff, "cofounder").deferred.has("update_reading")).toBe(false);
 		expect(employee.map((tool) => tool.name)).not.toContain("update_reading");
 		expect(cloudToolsOnDemand(staff, "cofounder").deferred.has("end_role")).toBe(true);

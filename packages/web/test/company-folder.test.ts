@@ -1017,10 +1017,16 @@ describe("a folder-v2 company's Company File", () => {
 			["Page", "true"],
 			["Source", "false"],
 		]);
-		// The frame asks for its page once it is ready, and gets this one.
 		const send = vi.spyOn(frame.contentWindow!, "postMessage");
 		ready(frame);
-		expect(send).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		frame.dispatchEvent(new Event("load"));
+		await settle();
+		const handed = `<!doctype html><html><head></head><body>${html}</body></html>`;
+		expect(send).toHaveBeenCalledExactlyOnceWith(
+			{ type: "qorpera-page", html: handed, files: [], missing: [], base: "" },
+			"*",
+			[expect.any(MessagePort)],
+		);
 		// Its source, and back to the same frame, which keeps the page's state.
 		views[1]!.click();
 		const source = host.querySelector<HTMLElement>(".files-page-source")!;
@@ -1041,7 +1047,13 @@ describe("a folder-v2 company's Company File", () => {
 		expect(large.getAttribute("sandbox")).toBe("allow-scripts");
 		const sendLarge = vi.spyOn(large.contentWindow!, "postMessage");
 		ready(large);
-		expect(sendLarge).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		large.dispatchEvent(new Event("load"));
+		await settle();
+		expect(sendLarge).toHaveBeenCalledExactlyOnceWith(
+			{ type: "qorpera-page", html: handed, files: [], missing: [], base: "" },
+			"*",
+			[expect.any(MessagePort)],
+		);
 		dialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
 		expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
 		// Another file shows as it did; the page's view starts as the page again for the next page.

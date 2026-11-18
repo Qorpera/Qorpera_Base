@@ -2212,6 +2212,41 @@ describe("a failed run at its login's usage limit", () => {
 		expect([...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent)).toEqual([
 			"Dismiss",
 		]);
+		const turnedAway = {
+			...recovery,
+			usageLimit: false,
+			rateLimited: true,
+			requestedByUserId: userA.id,
+			sponsorBindingId: id(100),
+			lastError: "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+		};
+		const ownMessage = "Your message didn't go through: ChatGPT got too many requests at once. The login is fine.";
+		const turnedAwayRun = "ChatGPT turned this run away because too many requests came at once. The login is fine.";
+		const buttons = () => [...f.view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent);
+		f.company.store.set({ recoveries: { [run.runId]: turnedAway } });
+		await settle();
+		expect(reason()).toBe(ownMessage);
+		f.company.store.set({
+			activity: [{ ...run, sourceKind: "room_delivery" as const }],
+			recoveries: { [run.runId]: { ...turnedAway, sourceKind: "room_delivery" as const } },
+		});
+		await settle();
+		expect(reason()).toBe(ownMessage);
+		expect(buttons()).toEqual(["Try again", "Dismiss"]);
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: { ...turnedAway, sourceKind: "room_delivery" as const, requestedByUserId: userB.id },
+			},
+		});
+		await settle();
+		expect(reason()).toBe(turnedAwayRun);
+		f.company.store.set({
+			activity: [{ ...run, sourceKind: "wake" as const }],
+			recoveries: { [run.runId]: { ...turnedAway, sourceKind: "wake" as const } },
+		});
+		await settle();
+		expect(reason()).toBe(turnedAwayRun);
+		f.company.store.set({ activity: [run] });
 		// Another member's login refused: the card is the agent's, so this member reads who can act.
 		f.company.store.set({
 			recoveries: {
@@ -2563,6 +2598,19 @@ describe("a run waiting at its login's usage limit", () => {
 		});
 		await settle();
 		expect(continueButton(f.view)).toBeNull();
+	});
+
+	it("says a rate-limit wait tries again by itself and offers no other login, even when the cloud says movable", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		f.company.store.set({ activity: [paused(id(100), { rateLimited: true, movable: true })] });
+		await settle();
+		expect(title(f.view)).toBe("Fixture agent is waiting to go on");
+		expect(reason(f.view)).toBe(
+			"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.",
+		);
+		expect(continueButton(f.view)).toBeNull();
+		expect(buttons(f.view)).toEqual([]);
 	});
 
 	it("offers only logins the move can use, and none for work that cannot move", async () => {

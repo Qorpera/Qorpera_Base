@@ -35,21 +35,15 @@ import { APP_GROUPS_PATH, isAppGroupId } from "@qorpera/cloud-client/app-groups"
 import { APP_ICONS_FOLDER, APP_ICONS_MAX, appIconIdOf, parseAppIcon } from "@qorpera/cloud-client/app-icons";
 import { AGENT_COLOURS, companyPathKey } from "@qorpera/cloud-client/company-state-shared";
 import {
+	APP_BINARY_KINDS,
 	APP_CLOSED_FOLDERS,
 	APP_COVER_KINDS,
 	APP_DEFAULT_ENTRY,
-	APP_FILE_MAX_BYTES,
 	APP_FILE_TYPES,
 	APP_KITS,
 	APP_MANIFEST,
 	APP_MANIFEST_MAX_BYTES,
-	APP_MAX_BYTES,
-	APP_MAX_FILES,
-	APP_MEDIA_KINDS,
 	APP_READS,
-	APP_TEXT_KINDS,
-	APP_VIDEO_FILE_MAX_BYTES,
-	APP_VIDEOS_MAX_BYTES,
 	APP_WRITE_ANSWERS,
 	APP_WRITES_MAX,
 	type AppManifest,
@@ -84,8 +78,11 @@ import {
 	KIT_ENGINE,
 	KIT_ENGINE_JS,
 	KIT_PAGE,
+	KIT_THREE,
+	KIT_THREE_LICENSE,
 	kitBindings,
 	kitDataFile,
+	kitLibrary,
 	kitNotes,
 	kitPage,
 	parseKitData,
@@ -124,18 +121,19 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 /** Files one save_app call writes, at most. */
 const FILES_PER_CALL = 32;
-/** The app's entries a save lists to check its totals: more than an app may hold. make_picture lists the same. */
-export const APP_LIST_LIMIT = 200;
-
-/** An app's files as save_app counts them against its bounds, from its folder's recursive listing: each file of a kind an
- * app holds, by its path inside the app in lower case, with its bytes. make_picture counts them the same way before a
- * picture is made. */
-export function appFileSizes(entries: readonly CloudCompanyFolderEntry[], root: string): Map<string, number> {
-	const sizes = new Map<string, number>();
-	for (const item of entries)
-		if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
-			sizes.set(item.path.slice(root.length + 1).toLowerCase(), item.file.bytes);
-	return sizes;
+async function listWhole(
+	folder: CloudCompanyFolderClient,
+	root: string,
+	signal: AbortSignal,
+): Promise<CloudCompanyFolderEntry[]> {
+	const entries: CloudCompanyFolderEntry[] = [];
+	let after: string | undefined;
+	for (;;) {
+		const page = await folder.list(root, { recursive: true, ...(after === undefined ? {} : { after }) }, signal);
+		entries.push(...page.entries);
+		if (page.next === null) return entries;
+		after = page.next;
+	}
 }
 
 /** What save_app says of `manifest.emblem`: the schema's enum lists the pictures (24 since 12 November 2026). */
@@ -341,14 +339,11 @@ function parseFiles(value: JsonValue | undefined): AppFile[] {
 				`${relative}: an app's own icon is ${APP_ICONS_FOLDER}/<id>.svg, its id lowercase letters, digits and hyphens, such as ${APP_ICONS_FOLDER}/compass.svg or ${APP_ICONS_FOLDER}/trail-sign.svg`,
 			);
 		const kind = appFileKind(relative);
-		if (!APP_TEXT_KINDS.has(kind))
+		if (APP_BINARY_KINDS.has(kind))
 			throw new CloudToolArgumentRefusal(
-				`${relative}: an app's text files are ${[...APP_TEXT_KINDS].map((name) => `.${name}`).join(" ")}; put a picture in the folder with company_write's sibling tools or as an inline SVG or data: URL`,
+				`${relative}: a .${kind} file is not text; write it into the app's folder from a company machine, under /company/apps/<name>/`,
 			);
-		if (typeof file.text !== "string" || Buffer.byteLength(file.text) > APP_FILE_MAX_BYTES)
-			throw new CloudToolArgumentRefusal(
-				`${relative}: text must be UTF-8 of at most ${APP_FILE_MAX_BYTES / 1024} KiB`,
-			);
+		if (typeof file.text !== "string") throw new CloudToolArgumentRefusal(`${relative}: text must be UTF-8 text`);
 		if (icon) {
 			const drawn = parseAppIcon(file.text);
 			if (!drawn.ok) throw new CloudToolArgumentRefusal(`${relative}: ${drawn.problem}`);
@@ -376,7 +371,7 @@ const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly strin
 	model: [KIT_ENGINE, KIT_PAGE],
 	board: [KIT_ENGINE, KIT_PAGE],
 	path: [KIT_ENGINE, KIT_PAGE],
-	object: [KIT_ENGINE, KIT_PAGE],
+	object: [KIT_ENGINE, KIT_PAGE, KIT_THREE, KIT_THREE_LICENSE],
 	curve: [KIT_ENGINE, KIT_PAGE],
 	stack: [KIT_ENGINE, KIT_PAGE],
 	shelf: [KIT_ENGINE, KIT_PAGE],
@@ -762,9 +757,9 @@ export function cloudAppTools(options: {
 		description: [
 			"Make or change an interface app: a small web page in apps/<name>/ that lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch), opened as a page of its own. Text to read stays a file. It applies at once.",
 			`- name: the app's folder (lowercase letters, digits and hyphens). manifest: title, and optionally about, emblem, colour, kit, entry (the page that opens, ${APP_DEFAULT_ENTRY} by default), reads, writes, concept and cover; null keeps the manifest. A new app needs a manifest and its entry, which a kit writes. group: a group of the apps drawer (organize_apps list) to put a new app in, last; a concept goes in none.`,
-			`- files: at most ${FILES_PER_CALL} a call (.html, .css, .js, .json, .svg, .md, .csv, .txt), each at most ${APP_FILE_MAX_BYTES / 1024} KiB; pages and code ${APP_MAX_BYTES / 1024 / 1024} MiB in all. Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) written into the app's folder from a company machine may be ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each, ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all.`,
+			`- files: at most ${FILES_PER_CALL} text files a call (a page, its styles, scripts and data), each as large as one call carries. An app has no other bound on its files: any number, size or kind. Pictures, video, sound, fonts and 3D models are files in its folder too, written from a company machine and named by their path.`,
 			"Kits draw nearly every app: you write the kit's one file among files (<kit>.json, such as model.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit. What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved. Change the data with save_app, not company_write. A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
-			"A page you write by hand (the product's own prototype, or a working tool no kit draws) is the entry alone, so every view is in it, as tabs or sections. It gets its pictures and videos only where it names them as it opens (<img src>, <video src>, a poster, url() in its styles): a script cannot load one later, so put every picture it may show in the page, hidden ones too. Its other files it uses by relative paths, and a script reads text files with qorpera.read(path). No page has a network. The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line, then the thing; labels and numbers, not sentences, boxes of text, a date or a list of what you did; what is not known yet drawn as open, such as a dashed outline or a question mark, not written about. Give it something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the product follows the product's own design instead. Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
+			"A page you write by hand (the product's own prototype, or a working tool no kit draws) is the entry alone, so every view is in it, as tabs or sections. It opens at once and reads each of its files when it uses it, by a relative path: <img src>, <video src>, <audio src>, a poster, url() in its styles (a font's @font-face too), and in a script fetch(path), qorpera.file(path) for an address or qorpera.bytes(path) for the bytes, so a 3D, font or sound library loads its files as anywhere. No page has a network. The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off): a title of two or three words, at most one short line, then the thing; labels and numbers, not sentences, boxes of text, a date or a list of what you did; what is not known yet drawn as open, such as a dashed outline or a question mark, not written about. Give it something to do: a control that changes what it shows, or a choice a member makes (writes). A prototype of the product follows the product's own design instead. Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
 			"Live data: a page's script reads the company through the qorpera object (qorpera.read, list, table, todos, agents, questions; reads names its sources) and asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them). Qorpera shows the member what will be saved, and only their yes saves it. app_guide reads and writes say how.",
 			"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
 			"A concept (concept true, cover a picture of it) shows in the Concepts viewer, full screen beside Qorpera's own panel, which names it and says who made it: its page is the visual, edge to edge, with no title, strapline, caption, frame or band, only the few controls it needs, small and at the visual, and no base style.",
@@ -820,7 +815,7 @@ export function cloudAppTools(options: {
 						required: ["path", "text"],
 						properties: {
 							path: { type: "string", maxLength: 1024 },
-							text: { type: "string", maxLength: APP_FILE_MAX_BYTES },
+							text: { type: "string", maxLength: MAX_TOOL_ARGUMENT_BYTES },
 						},
 					},
 				},
@@ -945,6 +940,7 @@ export function cloudAppTools(options: {
 						...files,
 						{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
 						{ path: KIT_PAGE, text: kitPage(request.name, kit, manifest.name, data, holds, manifest.concept) },
+						...kitLibrary(kit, data),
 					];
 				}
 				if (!files.some((file) => file.path.toLowerCase() === manifest.entry.toLowerCase()))
@@ -952,11 +948,6 @@ export function cloudAppTools(options: {
 						`APP_ENTRY_MISSING: a new app needs its entry, ${manifest.entry}, among files`,
 					);
 				refuseTooManyIcons(files, new Map());
-				const total = files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0);
-				if (files.length + 1 > APP_MAX_FILES || total > APP_MAX_BYTES)
-					throw new CloudToolRefusal(
-						`APP_TOO_LARGE: an app holds at most ${APP_MAX_FILES} files and ${APP_MAX_BYTES / 1024 / 1024} MiB in all`,
-					);
 				const contents: CloudCompanyFolderNewEntry[] = [
 					{
 						path: APP_MANIFEST,
@@ -1056,11 +1047,22 @@ export function cloudAppTools(options: {
 				);
 			refuseUnread(kit, request.files);
 			// The app's totals, with this call's files in place of the ones they replace.
-			const listed = await folder
-				.list(root, { recursive: true, limit: APP_LIST_LIMIT }, context.signal)
-				.catch((error) => unavailable(error, "saved"));
-			reads.push(...listed.entries);
-			const byKey = new Map(listed.entries.map((item) => [item.path.slice(root.length + 1).toLowerCase(), item]));
+			const listed = await listWhole(folder, root, context.signal).catch((error) => unavailable(error, "saved"));
+			const inApp = new Map(listed.map((item) => [item.path.slice(root.length + 1).toLowerCase(), item]));
+			const drawnOn = new Set<CloudCompanyFolderEntry>();
+			const byKey = {
+				get(key: string): CloudCompanyFolderEntry | undefined {
+					const found = inApp.get(key);
+					if (found && !drawnOn.has(found)) {
+						drawnOn.add(found);
+						reads.push(found);
+					}
+					return found;
+				},
+				has(key: string): boolean {
+					return byKey.get(key) !== undefined;
+				},
+			};
 			// A kit's own files, written where the folder holds none or other text: the engine of this runtime, and the
 			// page with the title as it is now and the voice clips the folder holds. A save of scenes.js alone leaves
 			// them as they are.
@@ -1124,6 +1126,7 @@ export function cloudAppTools(options: {
 				for (const file of [
 					{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
 					{ path: KIT_PAGE, text: kitPage(request.name, kit, title, data, holds, concept) },
+					...kitLibrary(kit, data),
 				]) {
 					const found = byKey.get(file.path);
 					if (found?.kind !== "file" || found.file.fileSha256 !== sha256hex(file.text)) files = [...files, file];
@@ -1142,31 +1145,9 @@ export function cloudAppTools(options: {
 							},
 				);
 			}
-			refuseTooManyIcons(files, new Map([...byKey].filter(([path, item]) => item.kind === "file" && inIcons(path))));
-			const sizes = appFileSizes(listed.entries, root);
-			for (const file of files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
-			// A picture or video counts as a file, and toward the pictures' and videos' own bound, which the page's reader
-			// holds it to; every file to its own bound, since the page's reader shows no app with one past it (7 November
-			// 2026: a machine wrote 10 MB pages into an app that then never opened).
-			const media = (path: string) => APP_MEDIA_KINDS.has(appFileKind(path));
-			const total = [...sizes].reduce((sum, [path, bytes]) => (media(path) ? sum : sum + bytes), 0);
-			const mediaTotal = [...sizes].reduce((sum, [path, bytes]) => (media(path) ? sum + bytes : sum), 0);
-			if (
-				listed.next !== null ||
-				sizes.size > APP_MAX_FILES ||
-				total > APP_MAX_BYTES ||
-				mediaTotal > APP_VIDEOS_MAX_BYTES
-			)
-				throw new CloudToolRefusal(
-					`APP_TOO_LARGE: an app holds at most ${APP_MAX_FILES} files, ${APP_MAX_BYTES / 1024 / 1024} MiB of pages and code, and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB of pictures and videos; remove files with company_delete first`,
-				);
-			const over = [...sizes].find(([path, bytes]) =>
-				media(path) ? bytes > APP_VIDEO_FILE_MAX_BYTES : bytes > APP_FILE_MAX_BYTES,
-			);
-			if (over)
-				throw new CloudToolRefusal(
-					`APP_FILE_TOO_LARGE: ${over[0]} is ${Math.ceil(over[1] / 1024)} KiB; a page or code file loads at most ${APP_FILE_MAX_BYTES / 1024} KiB and a picture or video at most ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB, so the app would not open. Put pictures in their own files, not inside a page, and make it smaller or remove it with company_delete`,
-				);
+			const icons = [...inApp].filter(([path, item]) => item.kind === "file" && inIcons(path));
+			for (const [path] of icons) byKey.get(path);
+			refuseTooManyIcons(files, new Map(icons));
 			for (const folderPath of foldersOf(files.map((file) => file.path))) {
 				const found = byKey.get(folderPath.toLowerCase());
 				if (found === undefined) units.push({ op: "mkdir", path: `${root}/${folderPath}` });

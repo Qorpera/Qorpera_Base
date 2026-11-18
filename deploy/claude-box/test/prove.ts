@@ -331,10 +331,16 @@ async function run(options: RunOptions): Promise<Record<string, unknown>> {
 			// still there (the command sleeps 8 s): prove.sh then looks at the home.
 			await new Promise((resolve) => setTimeout(resolve, 15_000));
 		} else if (options.endAfterMs !== undefined) {
-			await new Promise((resolve) => setTimeout(resolve, options.endAfterMs));
-			record.endedByRun = true;
-			await box.close();
-			code = await box.exited;
+			const late = Symbol("late");
+			const first = await Promise.race([
+				box.exited,
+				new Promise<typeof late>((resolve) => setTimeout(() => resolve(late), options.endAfterMs).unref()),
+			]);
+			if (first === late) {
+				record.endedByRun = true;
+				await box.close();
+				code = await box.exited;
+			} else code = first;
 		} else code = await box.exited;
 		await reading;
 		writeFileSync(join(OUT, `stream-${options.tag}.jsonl`), `${lines.join("\n")}\n`);
@@ -421,6 +427,14 @@ async function main(): Promise<void> {
 		const folder = loginFolder({ ".credentials.json": credentials("FILE", false), ".claude.json": ONBOARDED });
 		await run({ tag: "alias-s1", scenario: scen("alias"), login: { folder } });
 		await run({ tag: "alias-s2", scenario: scen("attack-next"), login: { folder } });
+	} else if (mode === "open") {
+		const folder = loginFolder({ ".credentials.json": credentials("FILE", false), ".claude.json": ONBOARDED });
+		await run({ tag: "open-s1", scenario: scen("open"), login: { folder }, endAfterMs: 300_000 });
+		await run({ tag: "open-s2", scenario: scen("attack-next"), login: { folder } });
+	} else if (mode === "open-parts") {
+		const folder = loginFolder({ ".credentials.json": credentials("FILE", false), ".claude.json": ONBOARDED });
+		for (const part of ["open-monitor", "open-agent", "open-worktree", "open-rest"])
+			await run({ tag: part, scenario: scen(part), login: { folder }, endAfterMs: 120_000 });
 	} else if (mode === "stop") {
 		await run({ tag: "stop", scenario: scen("stop"), login: { token: token() }, abortAfter: { step: "bg-long", ms: 3000 } });
 	} else if (mode === "two") {

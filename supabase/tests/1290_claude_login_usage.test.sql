@@ -10,8 +10,11 @@ begin
 		pg_temp.c4_brief('12900000-0000-4000-8000-0000000000b1'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the dispatch: ' || v_result::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'cu-dispatch-2', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12900000-0000-4000-8000-0000000000b2', null, 'Read the notes'));
+		pg_temp.c4_brief('12900000-0000-4000-8000-0000000000b2', 'codex', 'Read the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the plain dispatch: ' || v_result::text);
+	perform pg_temp.base_assert((pg_temp.c4_worker('12900000-0000-4000-8000-0000000000b2')).harness is null
+		and (pg_temp.c4_worker('12900000-0000-4000-8000-0000000000b2')).claude_login_id is null,
+		'the plain dispatch asks for Codex, so Claude first leaves it a Codex worker');
 	perform pg_temp.c4_drain();
 	perform pg_temp.base_materialize();
 	select * into strict v_wake from public.qorpera_wake_occurrences

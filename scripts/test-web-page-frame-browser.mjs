@@ -6,8 +6,6 @@
 // link hints in its markup. Each attempt aims at a listener here (HTTP, a STUN
 // port on UDP, a TCP port), and Chrome's net log shows every host name it looked up.
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-page-frame-browser.mjs
-// PAGE_FRAME_DOCUMENT=<file> serves another frame document, PAGE_FRAME_MODULE=<file> bundles another page-frame.ts (to
-// see a weaker one fail).
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -52,14 +50,31 @@ function headersFor(path) {
 // The app's side: the frame code as the web app ships it, in a page that hands the frame the variant's page.
 const parent = await build({
 	stdin: {
-		contents: `import { framePage, PageFrames } from ${JSON.stringify(process.env.PAGE_FRAME_MODULE ?? join(web, "src/ui/page-frame.ts"))};
+		contents: `import { assembleApp, PageFiles } from ${JSON.stringify(join(web, "src/app/interface-apps.ts"))};
+import { AppFrame } from ${JSON.stringify(join(web, "src/ui/app-frame.ts"))};
 window.reports = [];
 addEventListener("message", (event) => { if (event.data && typeof event.data.probe === "string") window.reports.push(event.data.probe); });
 const variant = new URLSearchParams(location.search).get("v");
 const { page } = await (await fetch("/variant/" + variant)).json();
-const handed = framePage(page);
-if (handed === null) window.reports.push("not live");
-else document.body.append(new PageFrames(new AbortController().signal).frame(handed, "Page", "page"));`,
+const hex = async (data) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+const stored = new Map();
+for (const [path, text] of [["pages/index.html", page], ["pages/beside.txt", "beside"]]) {
+	const bytes = new TextEncoder().encode(text);
+	stored.set(path, { bytes, file: { manifestSha256: await hex(new TextEncoder().encode(path)), fileSha256: await hex(bytes), bytes: bytes.length, mediaType: "text/plain", executable: false } });
+}
+const entry = (path) => stored.has(path) ? { path, kind: "file", version: "00000000-0000-4000-8000-000000000001", seq: 1, updatedAt: "2026-11-17T00:00:00Z", file: stored.get(path).file, target: null } : null;
+const folder = {
+	read: async (path) => ({ asOfSeq: 1, entry: entry(path) }),
+	list: async () => ({ asOfSeq: 1, entries: [], next: null }),
+	readFile: async (file) => [...stored.values()].find((one) => one.file.fileSha256 === file.fileSha256).bytes,
+};
+const signal = new AbortController().signal;
+const assembled = await assembleApp(folder, { path: "pages", entry: "index.html" }, signal);
+if (!assembled.ok) window.reports.push("not live");
+else {
+	const files = new PageFiles(folder, "pages", signal);
+	document.body.append(new AppFrame(assembled.framed, "Page", "page", (call) => files.answer(call), () => {}, { again: true }).frame);
+}`,
 		resolveDir: repository,
 		loader: "ts",
 	},
@@ -167,6 +182,14 @@ document.body.append(host); ${say('"root added"')};</script></body>`,
 <link rel="preconnect" href="https://preconnect-hint.leak.invalid"><link rel="prefetch" href="${origin}/probe/prefetch">
 <link rel="preload" as="fetch" href="${origin}/probe/preload"><link rel="modulepreload" href="${origin}/probe/modulepreload">
 <link rel="prerender" href="${origin}/probe/prerender"></head><body><script>${say('"hinted"')}</script></body>`,
+	"a page that reloads itself": () =>
+		`<!doctype html><p>Again</p><script>
+if (window.name !== "reloaded") {
+	window.name = "reloaded";
+	${say('"before reload"')};
+	location.reload();
+} else fetch("beside.txt").then((answer) => answer.text()).then((text) => ${say('"after reload, beside: " + text')}, () => ${say('"after reload, no file"')});
+</script>`,
 };
 const expected = {
 	runs: ["ran, rgb(1, 2, 3), no storage, no cookies"],
@@ -185,6 +208,7 @@ const expected = {
 	"webrtc from a declarative shadow root written during the parse": ["written"],
 	"webrtc from a declarative shadow root by setHTMLUnsafe": ["refused TypeError"],
 	"link hints in the markup": ["hinted"],
+	"a page that reloads itself": ["before reload", "after reload, beside: beside"],
 };
 
 let origin;

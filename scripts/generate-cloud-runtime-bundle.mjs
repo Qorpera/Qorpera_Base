@@ -7,22 +7,11 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025299_runtime_bundle_activation_v252.sql";
-const activationVersion = 252;
-const previousActivationVersion = 251;
-const previousActivationSha256 = "27a9118662d860eecae26f6b94168adaea1c75e5279a62c0e5c06e23a83bae72";
-const activationRequires = Object.freeze([
-	[
-		"20260930784000_conversation_claude_models",
-		"conversation models (#1877): bundle 252 declares modelPolicy.claudeChoice, which an older kernel's manifest check refuses; 784000 makes the check take it and pins a member's Claude pick on the run",
-		"to_regprocedure('public.qorpera_pin_execution_claude_choice()') is not null",
-	],
-	[
-		"20260930785000_move_all_chats_to_another_login",
-		"#1876 (the founder's go for v252): one click moves all of a member's chats waiting on a used-up login to another of their own logins; its web, merged in this release, calls the two new functions",
-		"to_regprocedure('public.qorpera_choose_member_sessions_account(uuid,uuid,uuid)') is not null",
-	],
-]);
+const activation = "supabase/migrations/20260929025699_runtime_bundle_activation_v256.sql";
+const activationVersion = 256;
+const previousActivationVersion = 255;
+const previousActivationSha256 = "edc4809a810baeef27a0d28bbc98bdceaf244c194c97d7e381f27939984e3484";
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);

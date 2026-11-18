@@ -15,6 +15,7 @@ import type {
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { HostedFriend } from "../cloud/types.ts";
+import { isUnnamed } from "../ui/company-name.ts";
 import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 import { ConnectionsView, memberProviderSignIns } from "./views/settings-connections.ts";
@@ -90,7 +91,6 @@ export interface FoundingState {
 	/** Opened alone from the new-company box's arrow: the company starts by itself, and the page shows that start (or
 	 * the ChatGPT step before it) instead of the table (Jonas, 9 Nov 2026). */
 	autoStart?: boolean;
-	startedAlone?: boolean;
 	/** What the others are writing: one per person and field, newest first. */
 	liveText?: FounderLive[];
 }
@@ -410,7 +410,6 @@ export class FoundingController {
 		void this.startAlone(table.revision, (now) => now.seats.length === 1).then(() => {
 			this.#autoStarting = false;
 			if (this.disposed) return;
-			if (this.store.get().table?.phase === "started") this.store.set({ startedAlone: true });
 			this.#endAutoStart();
 		});
 	}
@@ -776,7 +775,9 @@ export class FoundingController {
 				live.field === "vision"
 					? table.vision
 					: live.field === "name"
-						? table.companyName
+						? isUnnamed(table.companyName)
+							? ""
+							: table.companyName
 						: (seats.get(live.userId)?.role ?? "");
 			const key = `${live.userId}:${live.field}`;
 			const prior = texts.get(key);

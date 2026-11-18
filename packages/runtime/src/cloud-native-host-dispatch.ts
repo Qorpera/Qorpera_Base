@@ -45,6 +45,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_bind_native_company_context", "standard"],
 	["qorpera_check_company_path_mutation", "standard"],
 	["qorpera_check_native_run", "standard"],
+	["qorpera_claude_worker_fall_back", "standard"],
 	["qorpera_claude_worker_run_facts", "standard"],
 	["qorpera_close_home_session", "standard"],
 	["qorpera_cofounder_crew", "standard"],
