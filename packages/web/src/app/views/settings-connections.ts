@@ -449,8 +449,15 @@ export class ConnectionsView {
 				codex ? this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced) : undefined,
 				claude
 					? (async () => {
+							const each = [];
 							for (const login of logins)
-								await claude({ loginId: login.loginId, force: forced }, this.#lifetime.signal);
+								each.push(
+									await claude({ loginId: login.loginId, force: forced }, this.#lifetime.signal).then(
+										() => true,
+										() => false,
+									),
+								);
+							if (each.includes(false)) throw new Error("A Claude login's usage could not be read");
 						})()
 					: undefined,
 			]);
@@ -673,10 +680,8 @@ export class ConnectionsView {
 		}
 	}
 	#claudeAdded(clientConnectionId: string): string {
-		const logins = this.#claude?.logins ?? [];
-		const added = logins.find((login) => login.clientConnectionId === clientConnectionId);
-		const inUse = logins.find((login) => login.inUse);
-		return added && inUse && added !== inUse
+		const inUse = this.#claude?.logins.find((login) => login.inUse);
+		return inUse && inUse.clientConnectionId !== clientConnectionId
 			? t("Claude login added. {email} stays in use until you pick another.", {
 					email: inUse.providerAccountEmail ?? t("Your other Claude login"),
 				})
@@ -687,13 +692,18 @@ export class ConnectionsView {
 		this.#working = `claude-use:${login.loginId}`;
 		this.#error = undefined;
 		this.#draw();
+		let failed = false;
 		try {
 			await this.#client.useClaude(login.loginId, this.#lifetime.signal);
 		} catch {
-			this.#error = t("The Claude login could not be switched. Try again.");
+			failed = true;
 		} finally {
 			this.#working = undefined;
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
+		if (failed && !this.#lifetime.signal.aborted && !this.#error) {
+			this.#error = t("The Claude login could not be switched. Try again.");
+			this.#draw();
 		}
 	}
 	async #signOutClaude(login: WebClaudeLogin, next?: WebClaudeLogin): Promise<void> {

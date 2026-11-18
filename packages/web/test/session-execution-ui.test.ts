@@ -2648,7 +2648,7 @@ describe("the chat's card when the Claude login in use is used up", () => {
 	}
 	const title = (view: ConversationView) => view.el.querySelector(".usage-wall-title")?.textContent;
 
-	it("names the used-up login and the one to keep going with, and moves new Claude work only on Continue", async () => {
+	it("names the used-up login and the one to keep going with in any chat, and moves new Claude work only on Continue", async () => {
 		const f = claudeSetup([{ ...work }, { ...home }]);
 		await settle();
 		expect(title(f.view)).toBe(`Claude is out of usage until ${fmtTime(until)}`);
@@ -2670,6 +2670,16 @@ describe("the chat's card when the Claude login in use is used up", () => {
 		refresh();
 		await settle();
 		expect(title(f.view)).toBe("New Claude work now uses home@example.com");
+	});
+
+	it("says so when Continue could not switch the login, and keeps the card", async () => {
+		const f = claudeSetup([{ ...work }, { ...home }]);
+		await settle();
+		f.useClaude.mockRejectedValueOnce(new Error("refused"));
+		buttonNamed(f.view, "Continue")!.click();
+		await settle();
+		expect(f.view.el.textContent).toContain("The Claude login could not be switched. Try again.");
+		expect(title(f.view)).toBe(`Claude is out of usage until ${fmtTime(until)}`);
 	});
 
 	it("reads the Claude logins once a minute at most, not on every read of the accounts", async () => {

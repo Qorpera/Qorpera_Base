@@ -2131,6 +2131,26 @@ describe("several Claude logins, one In use", () => {
 		expect(buttons(strip)).toEqual(["Use home@example.com", "Use spare@example.com", "Cancel"]);
 	});
 
+	it("says so when Use this could not switch the login, and keeps the tag where it was", async () => {
+		const { client } = await several([{ ...work }, { ...home }]);
+		client.useClaude.mockRejectedValueOnce(new Error("refused"));
+		press(claudeLoginCard(id(72))!, "Use this");
+		await settle();
+		expect(view.el.textContent).toContain("The Claude login could not be switched. Try again.");
+		expect(claudeLoginCard(id(70))!.querySelector(".badge")!.textContent).toBe("In use");
+	});
+
+	it("reads every login's usage even when one read fails, and then says the refresh failed", async () => {
+		const reads: string[] = [];
+		await several([{ ...work }, { ...home }, { ...spare }], async (options) => {
+			reads.push(options.loginId);
+			if (options.loginId === id(70)) throw new Error("unavailable");
+			return id(99);
+		});
+		expect(reads).toEqual([id(70), id(72), id(74)]);
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+	});
+
 	it("reads the usage of every login, each by its own id", async () => {
 		const reads: string[] = [];
 		await several([{ ...work }, { ...home }], async (options) => {
