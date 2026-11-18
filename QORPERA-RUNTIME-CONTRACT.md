@@ -7022,6 +7022,23 @@ worker's run is claimed only by a shared execution host), never before it.
    login; a usage reading does not end the wait. The recovery read of a failed run says `rate_limited`, so the thread
    says the provider got too many requests at once and the login is fine, never to check the login.
 
+### 2026-11-17 amendment: a refusal names the next step; a busy review waits
+
+Founder decision of 17 November 2026 on the mywave review ("A refusal must never be a dead end."): "1-4 straight yes."
+It amends the action review's refusals (`REVIEW_DENIED`, `REVIEW_UNAVAILABLE`) and goes live with a runtime bundle; no
+migration, host call or image moves. The review reading a command's script, decided the same day, follows on its own.
+
+1. **A refusal names the next step.** A denial still says not to retry, reword or reach the action another way, and
+   that only a member's new message (a card answer does not count) lets the agent make it once more. It now adds: when
+   the work cannot go on without it, a worker reports its work blocked with the reason, and any other agent raises a card
+   (`ask_member`), or says it in its reply where it has no cards, in one line: what stopped, why, and the one thing the
+   work needs (another source, a file, a decision); the card's answer never lets it repeat the refused action.
+2. **A review that cannot run waits first.** A review whose model turn ended at the provider's rate limit, usage limit
+   or an overload is asked again after 5, 10, 20, 30 and 30 seconds, within two minutes of the first ask, before the
+   call is refused as unavailable. A verdict, an invalid verdict, a timeout or another failure is never asked again. The
+   refusal tells the agent to say to a member that the step could not be checked just now, never that a safety review
+   was unavailable.
+
 ### 2026-11-17 amendment: agents show the product first
 
 > The founder, 17 November 2026, on the lead's review of his test company mywave (the storyboard reached the founders

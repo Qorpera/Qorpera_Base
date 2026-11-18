@@ -38,6 +38,8 @@ const POLL_MS = 2_000;
 /** One review is one short model turn; one that does not answer in this time is
  * "review unavailable" (the call does not run), never an approval. */
 const REVIEW_DEADLINE_MS = 90_000;
+const REVIEW_RETRY_MS = 120_000;
+const REVIEW_WAITS_MS = [5_000, 10_000, 20_000, 30_000, 30_000];
 const REQUEST_BYTES = 4096;
 const DETAIL_BYTES = 600;
 /** Text the member approves (a file's content, an issue's body, an agent's or worker's instructions): an excerpt. */
@@ -1656,6 +1658,16 @@ export function cloudActionReviewMandate(
 	return `${head}\n\n${label}${text ? bounded(text, room) : "(none)"}`;
 }
 
+export class CloudActionReviewBusy extends Error {
+	constructor() {
+		super("Action reviewer's provider is busy");
+		this.name = "CloudActionReviewBusy";
+	}
+}
+
+export const CLOUD_REVIEW_UNAVAILABLE =
+	"REVIEW_UNAVAILABLE: This step could not be checked just now, so it did not happen. You may try the identical call once more later in this run; if it fails again, go on with the rest of your work and tell the member in everyday words that this step could not be checked just now, never that a safety review or the platform was unavailable.";
+
 /** The reviewer's model conversation. The runtime attaches the run's Codex session to it. */
 export interface CloudActionReviewer {
 	review(
@@ -1714,6 +1726,9 @@ function object(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
+export const CLOUD_DENIED_NEXT =
+	"If your work cannot go on without it, do not stop at a note or a status message, where nobody can act on it: as a worker, report your work blocked with this reason; otherwise raise a card (ask_member), or say it in your reply where you have no cards, in one line: what stopped, why, and the one thing your work needs to go on, such as another source, a file or a decision. Its answer never lets you repeat this action.";
+
 /** The approval a reviewed call runs on. Its id is only passed on: the recorder checks it in SQL, and a call without
  * one can still run, but cannot save a reviewed folder change. */
 function approved(reviewId: unknown): CloudActionGateResult {
@@ -1750,6 +1765,7 @@ export class CloudActionReviewGate {
 	readonly #reviewer: CloudActionReviewer;
 	readonly #holdMs: number;
 	readonly #pollMs: number;
+	readonly #reviewWaitsMs: readonly number[];
 	readonly #request: string;
 	readonly #mandate: string | null;
 	readonly #connectorEffects: ReadonlyMap<string, "read" | "write">;
@@ -1772,6 +1788,7 @@ export class CloudActionReviewGate {
 		facts?: Omit<CloudActionFacts, "requester">;
 		observability?: CloudRuntimeObservability;
 		pollMs?: number;
+		reviewWaitsMs?: readonly number[];
 	}) {
 		if (!Number.isSafeInteger(options.holdMs) || options.holdMs < 0) throw new Error("Invalid action review hold");
 		this.#binding = options.binding;
@@ -1781,6 +1798,7 @@ export class CloudActionReviewGate {
 		this.#mandate = options.mandate ?? null;
 		this.#holdMs = options.holdMs;
 		this.#pollMs = options.pollMs ?? POLL_MS;
+		this.#reviewWaitsMs = options.reviewWaitsMs ?? REVIEW_WAITS_MS;
 		this.#connectorEffects = options.connectorEffects ?? new Map();
 		this.#offlineShells = options.offlineShells ?? new Set();
 		this.#facts = options.facts ?? {};
@@ -1811,7 +1829,7 @@ export class CloudActionReviewGate {
 		if (begin.state === "approved") return approved(begin.reviewId);
 		if (begin.state === "declined")
 			return denied(
-				"REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), do it once more: repeat the identical call, which will then wait for approval on a card, or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.",
+				`REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path. ${CLOUD_DENIED_NEXT} Only if a member then asks for it again in a new message here (a card answer does not count), do it once more: repeat the identical call, which will then wait for approval on a card, or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.`,
 				begin.reviewId,
 			);
 		if (begin.state === "used")
@@ -1854,29 +1872,37 @@ export class CloudActionReviewGate {
 			},
 			rules: begin.rules,
 		});
-		const span = this.#observability?.start("action_review");
 		let verdict: CloudActionVerdict;
-		try {
-			const deadline = AbortSignal.any([signal, AbortSignal.timeout(REVIEW_DEADLINE_MS)]);
-			verdict = parseCloudActionVerdict(
-				await this.#reviewer.review(
-					{
-						instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
-						prompt,
-						model: CLOUD_ACTION_REVIEW_MODEL,
-						effort: CLOUD_ACTION_REVIEW_EFFORT,
-					},
-					deadline,
-				),
-			);
-			span?.finish("succeeded", { inputBytes: Buffer.byteLength(prompt) });
-		} catch {
-			signal.throwIfAborted();
-			span?.finish("failed", { errorCategory: "review_unavailable" });
-			return {
-				run: false,
-				text: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
-			};
+		const asked = Date.now();
+		for (let attempt = 0; ; attempt += 1) {
+			const span = this.#observability?.start("action_review");
+			try {
+				const deadline = AbortSignal.any([signal, AbortSignal.timeout(REVIEW_DEADLINE_MS)]);
+				verdict = parseCloudActionVerdict(
+					await this.#reviewer.review(
+						{
+							instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
+							prompt,
+							model: CLOUD_ACTION_REVIEW_MODEL,
+							effort: CLOUD_ACTION_REVIEW_EFFORT,
+						},
+						deadline,
+					),
+				);
+				span?.finish("succeeded", { inputBytes: Buffer.byteLength(prompt) });
+				break;
+			} catch (error) {
+				signal.throwIfAborted();
+				span?.finish("failed", { errorCategory: "review_unavailable" });
+				const wait = this.#reviewWaitsMs[attempt];
+				if (
+					!(error instanceof CloudActionReviewBusy) ||
+					wait === undefined ||
+					Date.now() - asked + wait > REVIEW_RETRY_MS
+				)
+					return { run: false, text: CLOUD_REVIEW_UNAVAILABLE };
+				await cloudControlPause(wait, signal);
+			}
 		}
 		// The company's Ask first rules, by id, as begin gave them.
 		const askFirst = new Set(
@@ -1922,7 +1948,7 @@ export class CloudActionReviewGate {
 		if (recorded.decision === "allow") return approved(recorded.reviewId);
 		if (recorded.decision === "deny")
 			return denied(
-				`REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), do it once more: repeat the identical call, which will then wait for approval on a card, or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.`,
+				`REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path. ${CLOUD_DENIED_NEXT} Only if a member then asks for it again in a new message here (a card answer does not count), do it once more: repeat the identical call, which will then wait for approval on a card, or, only when you no longer have its exact arguments, make the same action once with what you have now, which is reviewed again.`,
 				recorded.reviewId,
 			);
 		if (recorded.decision !== "ask") throw new Error("Action review response is invalid");

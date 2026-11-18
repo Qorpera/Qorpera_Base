@@ -316,6 +316,12 @@ async function handle(message) {
 			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
 			return;
 		}
+		if (mode === "review-busy") {
+			const codexErrorInfo = { responseTooManyFailedAttempts: { httpStatusCode: 429 } };
+			write({ method: "error", params: { threadId: reviewThreadId, turnId: reviewTurnId, willRetry: false, error: { message: "Too many requests", codexErrorInfo } } });
+			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "failed", error: { message: "Too many requests", codexErrorInfo: "usageLimitExceeded" } } } });
+			return;
+		}
 		if (mode === "review-wrong-tool") {
 			// The reviewer reaches for the agent's tool: refused, and no verdict follows.
 			write({ id: "reviewer_wrong_tool", method: "item/tool/call", params: {
