@@ -91,8 +91,9 @@ for each row when (new.provider_account_usage is not null and new.provider_accou
 execute function public.qorpera_native_account_reading_noted();
 
 create function public.qorpera_native_account_full_reading_hold(p_connection_id uuid)
-returns timestamptz language sql stable security definer set search_path = '' as $$
-	select mark.full_until
+returns timestamptz language plpgsql stable security definer set search_path = '' as $$
+begin
+	return (select mark.full_until
 	from public.qorpera_provider_connections as connection
 	cross join lateral (select v.version from public.qorpera_provider_connection_versions as v
 		where v.connection_id = connection.id order by v.version desc limit 1) as current_version
@@ -101,8 +102,8 @@ returns timestamptz language sql stable security definer set search_path = '' as
 	join public.qorpera_native_account_usage_marks as mark on mark.owner_user_id = connection.owner_user_id
 		and mark.provider = connection.provider and mark.provider_account_identity = own.provider_account_identity
 	where connection.id = p_connection_id and mark.full_until > statement_timestamp()
-		and (mark.room_observed_at is null or mark.room_observed_at < mark.full_observed_at)
-$$;
+		and (mark.room_observed_at is null or mark.room_observed_at < mark.full_observed_at));
+end $$;
 revoke all on function public.qorpera_native_account_full_reading_hold(uuid) from public, anon, authenticated, service_role;
 
 select pg_temp.account_hold_replace('public.qorpera_native_account_usage_limit_reset_company(uuid)'::regprocedure,

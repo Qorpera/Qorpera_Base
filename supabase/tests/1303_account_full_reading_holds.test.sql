@@ -116,6 +116,27 @@ select pg_temp.ah_reading(0, interval '10 minutes', 100, interval '2 days') \g /
 select pg_temp.base_assert(pg_temp.ah_held(interval '2 days'),
 	'a full reading did not keep the hold: ' || pg_temp.ah_text(pg_temp.ah_wall()));
 
+select pg_temp.ah_company_a(3, false) \g /dev/null
+select pg_temp.ah_company_a(4, false) \g /dev/null
+set local session_replication_role = replica;
+update public.qorpera_provider_connections set status = 'revoked' where id = pg_temp.ah_id(1, 3);
+insert into public.qorpera_provider_connection_versions
+select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+	to_jsonb(v) || jsonb_build_object('version', 2, 'credential_capsule_id', pg_temp.ah_id(5, 14)))).*
+from public.qorpera_provider_connection_versions as v where v.connection_id = pg_temp.ah_id(1, 4) and v.version = 1;
+set local session_replication_role = origin;
+select pg_temp.ah_reading(3, interval '0 seconds', 10, interval '7 days') \g /dev/null
+select pg_temp.base_assert(pg_temp.ah_held(interval '2 days'),
+	'a revoked connection''s reading with room ended the hold: ' || pg_temp.ah_text(pg_temp.ah_wall()));
+select pg_temp.ah_reading(4, interval '0 seconds', 10, interval '7 days') \g /dev/null
+select pg_temp.base_assert(pg_temp.ah_held(interval '2 days'),
+	'an older version''s reading with room ended the hold: ' || pg_temp.ah_text(pg_temp.ah_wall()));
+select pg_temp.ah_reading(3, interval '1 minute', 100, interval '3 days', repeat('d', 64)) \g /dev/null
+select pg_temp.ah_reading(4, interval '1 minute', 100, interval '3 days', repeat('d', 64)) \g /dev/null
+select pg_temp.base_assert(not exists (select 1 from public.qorpera_native_account_usage_marks
+		where provider_account_identity = repeat('d', 64)),
+	'a full reading on a revoked connection or an older version made a mark');
+
 select pg_temp.ah_reading(0, interval '0 seconds', 10, interval '7 days') \g /dev/null
 select pg_temp.base_assert(pg_temp.ah_free(), 'a reading with room did not end the hold: ' || pg_temp.ah_text(pg_temp.ah_wall()));
 select pg_temp.base_assert(public.qorpera_release_paused_runs_with_room(pg_temp.ah_identity()) = 1,
