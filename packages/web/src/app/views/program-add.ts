@@ -51,10 +51,18 @@ export class ProgramDrop {
 	#going = false;
 	#disposed = false;
 
-	constructor(host: ProgramAddHost, target: ProgramDropTarget, done: (folder: string) => void) {
+	readonly #onGoing: ((going: boolean) => void) | undefined;
+
+	constructor(
+		host: ProgramAddHost,
+		target: ProgramDropTarget,
+		done: (folder: string) => void,
+		onGoing?: (going: boolean) => void,
+	) {
 		this.#host = host;
 		this.#target = target;
 		this.#done = done;
+		this.#onGoing = onGoing;
 		this.#phone = isPhoneSystem(host.system !== undefined ? host.system : memberSystem(navigator));
 		this.#input = h("input", {
 			type: "file",
@@ -132,6 +140,7 @@ export class ProgramDrop {
 
 	#idle(problem?: string): void {
 		this.#going = false;
+		this.#onGoing?.(false);
 		this.el.classList.remove("is-going", "is-asking");
 		this.el.classList.toggle("is-phone", this.#phone);
 		const line = problem ? h("p", { class: "program-drop-problem", role: "status" }, problem) : null;
@@ -252,6 +261,7 @@ export class ProgramDrop {
 		const run = new AbortController();
 		this.#run = run;
 		this.#going = true;
+		this.#onGoing?.(true);
 		this.el.classList.add("is-going");
 		this.el.classList.remove("is-asking", "is-over");
 		const first = files[0]!.file;
@@ -307,12 +317,14 @@ export class ProgramDrop {
 
 	#failed(refusal: ProgramAddRefusal): void {
 		this.#going = false;
+		this.#onGoing?.(false);
 		const words: Record<ProgramAddRefusal["reason"], string> = {
 			full: t("This program holds as many versions as it can."),
 			denied: t("You can't add programs in this company."),
 			paused: t("The company is paused. Add the program when it runs again."),
 			busy: t("Another program of yours is still going up. Try again in a moment."),
 			taken: t("Someone added to this program at the same moment. Try again."),
+			exists: t("That version already has this file."),
 			gone: t("This program's program.json can't be read."),
 			offline: t("The connection dropped."),
 		};
@@ -352,7 +364,22 @@ export class NewProgramPage {
 	readonly #drop: ProgramDrop;
 
 	constructor(host: ProgramAddHost) {
-		this.#drop = new ProgramDrop(host, { kind: "new" }, (folder) => host.opened(folder));
+		const company = host.companyName();
+		const say = h(
+			"div",
+			{ class: "text" },
+			t("Made something yourself? Drop it here and everyone in {company} can get it.", { company }),
+		);
+		this.#drop = new ProgramDrop(
+			host,
+			{ kind: "new" },
+			(folder) => host.opened(folder),
+			(going) => {
+				say.textContent = going
+					? t("Putting it in place for everyone in {company}.", { company })
+					: t("Made something yourself? Drop it here and everyone in {company} can get it.", { company });
+			},
+		);
 		const figure = host.cofounder?.() ?? null;
 		this.el = h(
 			"div",
@@ -362,24 +389,7 @@ export class NewProgramPage {
 				"div",
 				{ class: "program-field is-adding" },
 				this.#drop.el,
-				figure
-					? h(
-							"div",
-							{ class: "program-say" },
-							figure,
-							h(
-								"div",
-								{ class: "bubble" },
-								h(
-									"div",
-									{ class: "text" },
-									t("Made something yourself? Drop it here and everyone in {company} can get it.", {
-										company: host.companyName(),
-									}),
-								),
-							),
-						)
-					: null,
+				figure ? h("div", { class: "program-say" }, figure, h("div", { class: "bubble" }, say)) : null,
 			),
 		);
 	}

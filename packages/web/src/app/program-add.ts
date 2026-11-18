@@ -165,7 +165,7 @@ export interface ProgramTarget {
 export type ProgramAddFolder = Pick<CloudMemberFolderClient, "read" | "readFile" | "commit" | "uploadFile">;
 
 export class ProgramAddRefusal extends Error {
-	readonly reason: "full" | "denied" | "paused" | "busy" | "taken" | "gone" | "offline";
+	readonly reason: "full" | "denied" | "paused" | "busy" | "taken" | "exists" | "gone" | "offline";
 	constructor(reason: ProgramAddRefusal["reason"]) {
 		super(`Program add refused: ${reason}`);
 		this.reason = reason;
@@ -276,18 +276,17 @@ export class ProgramAdd {
 				this.#prepared.set(file, prepared);
 			}
 			for (let attempt = 1; ; attempt++) {
-				const commit = await this.#folder().uploadFile(this.#path(version, file), file, prepared, {
+				const put = await this.#folder().uploadFile(this.#path(version, file), file, prepared, {
 					operationKey: key(),
 					signal,
 					onProgress: (sent) => plan.onProgress?.(done + sent, total),
 				});
-				const written = commit.units.at(-1);
-				if (written?.outcome === "saved") {
-					this.#placed.set(file, { file, kind, prepared, version, entry: written.version });
+				if (put.outcome === "saved") {
+					this.#placed.set(file, { file, kind, prepared, version, entry: put.version });
 					break;
 				}
-				if (written?.outcome === "denied") throw new ProgramAddRefusal("denied");
-				if (attempt === TRIES) throw new ProgramAddRefusal("taken");
+				if (put.outcome === "denied") throw new ProgramAddRefusal("denied");
+				if (attempt === TRIES) throw new ProgramAddRefusal(put.outcome === "exists" ? "exists" : "taken");
 				kept = await readKept(this.#folder(), programPath, signal);
 				version = nextMemberVersion({
 					versions: [...(kept.program?.versions ?? []), { version, date: "", forms: [] }],

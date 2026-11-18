@@ -65,7 +65,14 @@ function company(fake: FolderFake = folderFake({ seed: ["apps"] })) {
 				...[1, 2, 3, 4].map((depth) => ({ op: "mkdir" as const, path: parts.slice(0, depth).join("/") })),
 				{ op: "write", path, text: await blob.text() },
 			];
-			return fake.folder.commit(options.operationKey, units, options.signal);
+			const written = (await fake.folder.commit(options.operationKey, units, options.signal)).units.at(-1);
+			return written?.outcome === "saved"
+				? { outcome: "saved" as const, version: written.version, reason: null }
+				: {
+						outcome: written?.outcome === "denied" ? ("denied" as const) : ("exists" as const),
+						version: null,
+						reason: written?.reason ?? null,
+					};
 		},
 	);
 	const folder = { ...fake.folder, uploadFile };
@@ -240,6 +247,29 @@ describe("a member's new program", () => {
 		expect(c.fake.has("apps/lagerliste/versions/2/b.exe")).toBe(false);
 	});
 
+	it("never puts a file over one already there: it takes the next version, and says so when every one has it", async () => {
+		const c = company();
+		c.fake.put("apps/lagerliste/app.toml", 'name = "Lagerliste"\nkit = "program"\nposted = true\n');
+		for (const version of ["1", "2", "3"]) c.fake.put(`apps/lagerliste/versions/${version}/b.exe`, "someone else's");
+		const error = await new ProgramAdd(c.host.writer, { folder: "lagerliste", name: "Lagerliste", isNew: false })
+			.run({
+				target: { folder: "lagerliste", name: "Lagerliste", isNew: false },
+				files: [{ file: file("b.exe"), kind: "windows" }],
+				userId: ME,
+				signal: new AbortController().signal,
+			})
+			.catch((caught: unknown) => caught);
+		expect(error).toMatchObject({ reason: "exists" });
+		expect(c.uploads.map((each) => each.path)).toEqual([
+			"apps/lagerliste/versions/1/b.exe",
+			"apps/lagerliste/versions/2/b.exe",
+			"apps/lagerliste/versions/3/b.exe",
+		]);
+		for (const version of ["1", "2", "3"])
+			expect(c.fake.text(`apps/lagerliste/versions/${version}/b.exe`)).toBe("someone else's");
+		expect(c.fake.has("apps/lagerliste/program.json")).toBe(false);
+	});
+
 	it("says a program.json past the commit route's 64 KiB takes no member's version, before any byte goes up", async () => {
 		const c = company();
 		c.fake.put("apps/full/app.toml", 'name = "Full"\nkit = "program"\nposted = true\n');
@@ -328,6 +358,7 @@ describe("the New program page", () => {
 		);
 		expect(shown.el.querySelector<HTMLElement>(".program-drop-tile")?.style.getPropertyValue("--share")).toBe("40%");
 		expect(shown.el.querySelector(".program-drop-status button")?.textContent).toBe("Stop");
+		expect(shown.el.querySelector(".bubble")?.textContent).toBe("Putting it in place for everyone in Fokusur.");
 		expect(shown.el.querySelector(".spinner")).toBeNull();
 		release();
 		await until(() => c.opened.length === 1);
@@ -371,6 +402,9 @@ describe("the New program page", () => {
 			drop(area(), [file("Lagerliste.exe")]);
 			await until(() => shown.el.querySelector(".program-drop-status.is-said") !== null);
 			expect(shown.el.querySelector(".program-drop-status.is-said span")?.textContent).toBe(words);
+			expect(shown.el.querySelector(".bubble")?.textContent).toBe(
+				"Made something yourself? Drop it here and everyone in Fokusur can get it.",
+			);
 			const buttons = [...shown.el.querySelectorAll<HTMLButtonElement>(".program-drop-status.is-said button")];
 			expect(buttons.map((button) => button.textContent)).toEqual(
 				status === null ? ["Try again", "Cancel"] : ["Cancel"],

@@ -341,6 +341,8 @@ export const CONVERSATION: Record<string, string> = {
 		"En anden tilføjede til programmet i samme øjeblik. Prøv igen.",
 	"The connection dropped.": "Forbindelsen blev afbrudt.",
 	"Add a version": "Tilføj en version",
+	"Putting it in place for everyone in {company}.": "Lægger det på plads til alle i {company}.",
+	"That version already has this file.": "Den version har allerede denne fil.",
 	"Version {version} · added by you": "Version {version} · tilføjet af dig",
 	"Version {version} · added by {name}": "Version {version} · tilføjet af {name}",
 	"This app reloaded itself. Press Reload to start it again.":
