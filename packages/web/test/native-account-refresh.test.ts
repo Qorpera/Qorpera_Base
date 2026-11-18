@@ -616,7 +616,11 @@ describe("Claude reads and resets", () => {
 					{ ...base, loginId: id(96), inUse: false, usedUpUntil: null },
 				],
 			},
-			{ schema: "qorpera.claude-logins/v1", signInOpen: true, logins: [{ ...base, loginId: id(97), usedUpUntil: "soon" }] },
+			{
+				schema: "qorpera.claude-logins/v1",
+				signInOpen: true,
+				logins: [{ ...base, loginId: id(97), usedUpUntil: "soon" }],
+			},
 			{ schema: "qorpera.claude-login-use/v1", loginId: id(96), logins: [] },
 			{ schema: "qorpera.claude-login-sign-out/v1", loginId: id(97), status: "revoked" },
 		];

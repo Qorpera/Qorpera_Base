@@ -1681,7 +1681,7 @@ describe("Claude sign-in (coding only, offered while the member may sign in with
 		expect(submitCode).toHaveBeenCalledWith("anthropic-code#state");
 		expect(view.el.querySelector(".connection-code")).toBeNull();
 		expect(view.el.textContent).toContain("Claude is connected. New Claude work in all your companies uses it.");
-		const saved = claudeLoginCard();
+		const saved = claudeLoginCard()!;
 		expect(saved.textContent).toContain("member@example.com");
 		expect(saved.textContent).toContain("Claude chats and Claude Code work, in all your companies. Never routines.");
 		expect(saved.querySelector(".badge")).toBeNull();
@@ -2040,7 +2040,9 @@ describe("several Claude logins, one In use", () => {
 		expect(cards.map((item) => item.dataset.claudeLoginId)).toEqual([id(70), id(72)]);
 		expect(cards[0]!.querySelector("strong")!.textContent).toBe("Claude In use");
 		expect(cards[0]!.querySelector(".badge.badge-ok")!.textContent).toBe("In use");
-		expect(cards[0]!.textContent).toContain("Claude chats and Claude Code work, in all your companies. Never routines.");
+		expect(cards[0]!.textContent).toContain(
+			"Claude chats and Claude Code work, in all your companies. Never routines.",
+		);
 		expect(buttons(cards[0]!)).toEqual(["Sign out"]);
 		expect(cards[1]!.querySelector(".badge")).toBeNull();
 		expect(cards[1]!.textContent).toContain("Not in use. New Claude work goes to the login marked In use.");
@@ -2079,7 +2081,9 @@ describe("several Claude logins, one In use", () => {
 		attempt.querySelector<HTMLFormElement>(".connection-code")!.requestSubmit();
 		await settle();
 		await settle();
-		expect(view.el.textContent).toContain("Claude login added. work@example.com stays in use until you pick another.");
+		expect(view.el.textContent).toContain(
+			"Claude login added. work@example.com stays in use until you pick another.",
+		);
 		expect(client.useClaude).not.toHaveBeenCalled();
 	});
 

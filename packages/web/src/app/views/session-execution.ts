@@ -4,10 +4,10 @@ import type {
 	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type {
+	WebClaudeLogin,
 	WebExecutionConnections,
 	WebMemberConnection,
 	WebNativeSubscription,
-	WebClaudeLogin,
 } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { withReply } from "../../cloud/wall-reply.ts";
@@ -346,8 +346,7 @@ export class SessionExecutionView {
 		}
 		if (signal.aborted) return;
 		const now = Date.now();
-		const usedUp = (login: WebClaudeLogin) =>
-			login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
+		const usedUp = (login: WebClaudeLogin) => login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
 		const inUse = logins.find((login) => login.inUse);
 		const next = inUse && usedUp(inUse) ? logins.find((login) => login !== inUse && !usedUp(login)) : undefined;
 		this.#claudeOut = inUse?.usedUpUntil && next ? { login: inUse, until: inUse.usedUpUntil, next } : undefined;

@@ -97,7 +97,10 @@ function setup(
 	selectSessionAccount?: WebNativeSubscription["selectSessionAccount"],
 	refreshAccountMetadata?: WebNativeSubscription["refreshAccountMetadata"],
 	chooseSessionAccount?: WebNativeSubscription["chooseSessionAccount"],
-	more: Pick<WebNativeSubscription, "countSessionsOnAccount" | "chooseSessionsAccount" | "listClaudeLogins" | "useClaude"> = {},
+	more: Pick<
+		WebNativeSubscription,
+		"countSessionsOnAccount" | "chooseSessionsAccount" | "listClaudeLogins" | "useClaude"
+	> = {},
 ) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
