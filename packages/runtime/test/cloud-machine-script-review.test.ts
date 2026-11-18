@@ -147,9 +147,9 @@ describe("a file is named only for the first command after leading cds, in the f
 			}
 			shapes.push(
 				"cd d1 && @ | tee log",
-				"cd d1 && @ | tee",
+				"cd d1 && @ | uniq - 5",
 				"cd d1 && @ 2>&1 | tail -40",
-				"cd d1 && test -e s2 | @",
+				"cd d1 && @ | sort -o out",
 				"cd d1 && test -e s2 | @ | cat",
 				"cd d1 && cd d2 && @ | grep /",
 				"cd d1 && test -e s2 | cat && @",
@@ -182,13 +182,14 @@ describe("a file is named only for the first command after leading cds, in the f
 				"cd d1 && @ ; cd d2",
 				"cd d1 && cd d2 && @ && cd d3",
 				"cd d1 && @ | cd d2",
-				"cd d1 && cd d2 ; @",
+				"cd d1 && cd d2 && @ | head -n 1",
 				"printf -v CDPATH /tmp && cd d1 && @",
 				"printf -v PATH /tmp && cd d1 && @",
 				"eval cd d2 && cd d1 && @",
 				"builtin cd d2 && cd d1 && @",
 				"true && cd d1 && @",
 			);
+			expect(new Set(shapes).size).toBe(shapes.length);
 			for (const shape of shapes) expect(cloudCommandTokens(shape.replace("@", "pwd")), shape).toBeDefined();
 			const named = new Map<string, Array<string | null>>();
 			for (const shape of shapes)
@@ -248,6 +249,8 @@ describe("a file is named only for the first command after leading cds, in the f
 				"cd d1 ; @ | tee log",
 				"cd d1 && cd d2 ; @",
 				"cd d1 && @ | tee log",
+				"cd d1 && @ | tee",
+				"cd d1 && @ | uniq - 5",
 				"cd d1 && @ > out",
 				"cd d1 2> err && @",
 				"cd d1 && env A=1 @",
