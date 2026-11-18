@@ -386,8 +386,20 @@ class AppFiles {
 		const file = await this.file(path);
 		if (file === null) return null;
 		if (this.#warm || !this.#inPieces(file)) return this.text(path);
-		const blob = await this.pageBlob(path, "text/javascript");
-		return blob === null ? null : blob.text();
+		const folder = this.#folder;
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		const parts: string[] = [];
+		this.planned += file.bytes;
+		this.onProgress?.();
+		await this.#turn(() =>
+			folder.readFilePieces!(file, this.#signal, (piece) => {
+				parts.push(decoder.decode(piece, { stream: true }));
+			}),
+		);
+		parts.push(decoder.decode());
+		this.bytes += file.bytes;
+		this.onProgress?.();
+		return parts.join("");
 	}
 
 	async pageBlob(path: string, type: string): Promise<Blob | null> {
