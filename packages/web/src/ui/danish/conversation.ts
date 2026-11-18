@@ -212,6 +212,12 @@ export const CONVERSATION: Record<string, string> = {
 		"Din seneste kørsel stoppede, fordi et login nåede sin forbrugsgrænse. Fortsæt venligst det arbejde.",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
+	"Your message didn't go through: ChatGPT got too many requests at once. The login is fine.":
+		"Din besked gik ikke igennem: ChatGPT fik for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT turned this run away because too many requests came at once. The login is fine.":
+		"ChatGPT afviste kørslen, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden.",
+	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.":
+		"ChatGPT har travlt med for mange forespørgsler på én gang. Arbejdet venter et par minutter og prøver så igen af sig selv. Loginnet er i orden.",
 	"The run lost its connection while it was working. This is usually brief.":
 		"Kørslen mistede forbindelsen, mens den arbejdede. Det går som regel hurtigt over.",
 	"The run could not load the login that pays for it. Check that login in Settings → AI subscriptions, or choose another login for this conversation.":
@@ -690,4 +696,13 @@ export const CONVERSATION: Record<string, string> = {
 	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
 	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
 	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
+	"The company's part of the address": "Virksomhedens del af adressen",
+	"Use this address": "Brug denne adresse",
+	"The address can be chosen in the chat.": "Adressen kan vælges i chatten.",
+	"The address could not be made. Try again.": "Adressen kunne ikke oprettes. Prøv igen.",
+	"Only founders and admins can choose the address": "Kun stiftere og administratorer kan vælge adressen",
+	Free: "Ledig",
+	"Already yours": "Allerede jeres",
+	"That one belongs to another company": "Den tilhører en anden virksomhed",
+	"Use a–z, 0–9 and hyphens": "Brug a–z, 0–9 og bindestreger",
 };

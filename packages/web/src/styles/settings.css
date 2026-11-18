@@ -391,6 +391,9 @@
 .hook-domain { font-size: 13px; overflow-wrap: anywhere; }
 .hook-form-actions { display: flex; gap: 8px; }
 .hook-form .service-outcome { grid-column: auto; }
+.hook-form-row.is-address { gap: 2px; }
+.hook-form-row.is-address input { flex: 1 1 6ch; }
+.hook-form-row.is-address input:first-child { flex: 0 1 14ch; text-align: right; }
 /* Language & region: rows in one card, each value a small button that opens
    a searchable list (preference-picker.ts), as the desktop reference does. */
 .settings-rows { border-radius: 13px; background: #f1f1ef; }
@@ -427,6 +430,12 @@
 /* Company logos (ui/company-logos.ts): a company's own logo covers its figure, in a rounded square. */
 .company-logo.has-logo > :not(img.company-logo-picture) { visibility: hidden; }
 .company-logo-picture { position: absolute; inset: 4%; width: 92%; height: 92%; object-fit: contain; border-radius: 22%; pointer-events: none; user-select: none; }
+.company-unnamed, .company-name.company-unnamed { color: var(--text-muted); font-style: italic; font-weight: 500; }
+.company-logo.is-unnamed { container-type: size; }
+.company-logo-unknown {
+	position: absolute; inset: 8%; display: grid; place-items: center; border: 1.5px dashed var(--border-strong); border-radius: 24%;
+	color: var(--text-muted); font-size: 46cqmin; font-weight: 600; line-height: 1;
+}
 
 /* Settings → Company → Brand: the official name and logo. */
 .settings-brand-row { display: flex; align-items: flex-end; gap: 18px; }

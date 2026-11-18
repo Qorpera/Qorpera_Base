@@ -1,12 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
-import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
+import { ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const QUARANTINE = ".quarantine";
 const MAX_QUARANTINED_BYTES = 8 * 1024 * 1024;
+// WHY: a timed-out hard-NFS syscall keeps its libuv worker until the OS lets go. Two lanes leave at least two of
+// the four default workers to the journal, so more lanes need a larger pool first.
+const LANES = 2;
+const MAX_WAITING = 512;
+
+interface Lane {
+	overdue: boolean;
+}
+
+interface Waiting {
+	readonly key: string;
+	start(): void;
+	refuse(): void;
+}
 
 export type ObjectWriteResult = "exists" | "stored";
 
@@ -30,12 +44,20 @@ function digest(bytes: Uint8Array): string {
 export class FileSystemObjectStore {
 	readonly #root: string;
 	readonly #timeoutMs: number;
-	readonly #inFlight = new Set<string>();
+	readonly #waitMs: number;
+	readonly #inFlight = new Map<string, Lane>();
+	readonly #waiting = new Set<Waiting>();
+	readonly #reading = new Map<string, Promise<Uint8Array>>();
 	#health: ObjectDependencyHealth = { status: "unknown" };
 
-	constructor(root: string, timeoutMs = 5_000) {
+	constructor(root: string, timeoutMs = 5_000, waitMs = 2_000) {
+		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000)
+			throw new Error("Object operation deadline is invalid");
+		if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 30_000)
+			throw new Error("Object operation wait is invalid");
 		this.#root = resolve(root);
 		this.#timeoutMs = timeoutMs;
+		this.#waitMs = waitMs;
 	}
 
 	async put(profileId: string, sha256: string, bytes: Uint8Array): Promise<ObjectWriteResult> {
@@ -94,8 +116,23 @@ export class FileSystemObjectStore {
 		return "stored";
 	}
 
-	async get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> {
-		return this.#io(this.#objectPath(profileId, sha256), () => this.#get(profileId, sha256, expectedBytes));
+	get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> {
+		let path: string;
+		try {
+			path = this.#objectPath(profileId, sha256);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const shared = `${path}:${expectedBytes}`;
+		const underWay = this.#reading.get(shared);
+		if (underWay) return underWay;
+		const reading = this.#io(path, () => this.#get(profileId, sha256, expectedBytes));
+		this.#reading.set(shared, reading);
+		const settled = () => {
+			if (this.#reading.get(shared) === reading) this.#reading.delete(shared);
+		};
+		reading.then(settled, settled);
+		return reading;
 	}
 
 	async #get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> {
@@ -296,18 +333,89 @@ export class FileSystemObjectStore {
 		});
 	}
 
-	async #io<T>(key: string, operation: () => Promise<T>): Promise<T> {
-		// A timed-out hard-NFS syscall can remain in the OS. Keep its slot until
-		// it actually settles: no unbounded queue, no delete overtaking a late
-		// write, and at least two default libuv workers remain for the journal.
-		if (this.#inFlight.has(key) || this.#inFlight.size >= 2) throw new ObjectDependencyError(503);
-		this.#inFlight.add(key);
-		const pending = Promise.resolve().then(operation);
-		void pending.then(
-			() => this.#inFlight.delete(key),
-			() => this.#inFlight.delete(key),
-		);
-		return boundedObjectOperation(() => pending, this.#timeoutMs);
+	#io<T>(key: string, operation: () => Promise<T>): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			const start = () => {
+				const lane: Lane = { overdue: false };
+				this.#inFlight.set(key, lane);
+				const deadline = setTimeout(() => {
+					lane.overdue = true;
+					reject(new ObjectDependencyError(503));
+					this.#refuseStranded();
+				}, this.#timeoutMs);
+				const settled = () => {
+					clearTimeout(deadline);
+					this.#inFlight.delete(key);
+					this.#admit();
+				};
+				Promise.resolve().then(operation).then(resolve, reject).then(settled, settled);
+			};
+			if (this.#stranded(key)) {
+				reject(new ObjectDependencyError(503));
+				return;
+			}
+			if (this.#open(key) && !this.#queued(key)) {
+				start();
+				return;
+			}
+			if (this.#waiting.size >= MAX_WAITING || this.#waitMs === 0) {
+				reject(new ObjectDependencyError(503));
+				return;
+			}
+			const waiting: Waiting = {
+				key,
+				start: () => {
+					clearTimeout(patience);
+					start();
+				},
+				refuse: () => {
+					clearTimeout(patience);
+					reject(new ObjectDependencyError(503));
+				},
+			};
+			const patience = setTimeout(() => {
+				this.#waiting.delete(waiting);
+				waiting.refuse();
+			}, this.#waitMs);
+			this.#waiting.add(waiting);
+		});
+	}
+
+	#open(key: string): boolean {
+		return !this.#inFlight.has(key) && this.#inFlight.size < LANES;
+	}
+
+	#queued(key: string): boolean {
+		for (const waiting of this.#waiting) if (waiting.key === key) return true;
+		return false;
+	}
+
+	#stranded(key: string): boolean {
+		if (this.#inFlight.get(key)?.overdue) return true;
+		if (this.#inFlight.size < LANES) return false;
+		for (const lane of this.#inFlight.values()) if (!lane.overdue) return false;
+		return true;
+	}
+
+	#refuseStranded(): void {
+		for (const waiting of [...this.#waiting]) {
+			if (!this.#stranded(waiting.key)) continue;
+			this.#waiting.delete(waiting);
+			waiting.refuse();
+		}
+	}
+
+	#admit(): void {
+		const behind = new Set<string>();
+		for (const waiting of [...this.#waiting]) {
+			if (this.#inFlight.size >= LANES) return;
+			if (behind.has(waiting.key) || this.#inFlight.has(waiting.key)) {
+				behind.add(waiting.key);
+				continue;
+			}
+			this.#waiting.delete(waiting);
+			waiting.start();
+		}
 	}
 
 	/** Creates a directory and its missing parents, syncing each new name into its parent. */

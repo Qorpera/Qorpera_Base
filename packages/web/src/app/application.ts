@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
-import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
+import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
@@ -26,6 +26,7 @@ import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
+import { companyNameText } from "../ui/company-name.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
@@ -126,6 +127,7 @@ export function mountApplication(
 	api = new CloudApi(cloud),
 	workspaceActions: WorkspaceActions = {},
 ): () => void {
+	translateCloudErrors(t);
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
 	/** The founding table on screen, if any; one at a time, like the company. */
@@ -1964,7 +1966,7 @@ export function mountApplication(
 					h(
 						"section",
 						{ class: "page" },
-						h("h1", null, controller.profile.profileName),
+						h("h1", null, companyNameText(controller.profile.profileName)),
 						notice("neutral", homeReason),
 						first
 							? h(

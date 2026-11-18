@@ -1593,6 +1593,20 @@ Member consent MUST be distinguished durably from policy approval in that
 member's name; an agent retry MUST NOT manufacture or renew member consent.
 Completed operations retain their receipt replay semantics.
 
+2026-11-17 amendment: a team in one step (founder, 17 November: "on 5, I agree
+with batch hiring, but we should allow for continuous hiring as the company
+evolves"). An agent that hires two to twelve coworkers at one time does it in
+one call, `hire_team`: one automatic review of the call, recorded for all of
+its new agent folders, and one Company File commit, which indexes every new
+agent in its own transaction. So no new agent's first run starts before the
+whole team exists, and each first run lists the others as coworkers. A unit
+that conflicts (its folder was made meanwhile by another save) is that hire's
+outcome alone: the others are saved, and the answer names each hire's outcome.
+The restricted hire above applies to the call as a whole: one owners-and-admins
+card names every hire. `hire_agent` stays the way to hire one coworker at any
+time; a later hire is every agent's coworker from its next run, with no message
+needed (migration 20260930799000).
+
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
 agent applies one authorized Company File deletion operation and matching
@@ -1853,9 +1867,9 @@ company-visible and answerable:
 - The receiver wakes **in its own shared thread** under the pair policy:
   initial send forbidden, final send optional, silence allowed (no count on
   public sends since bundle v92). It answers the coworker through the same peer channel, which
-  puts the answer in the pair transcript and wakes the sender in the sender's
-  thread under the same policy. A member post in either thread is a human wake
-  and starts a new causal root.
+  puts the answer in the pair transcript and, sent with `priority: true`, wakes
+  the sender in the sender's thread under the same policy. A member post in
+  either thread is a human wake and starts a new causal root.
 - An exchange is not bounded by "agent already visited". Until bundle v92 the
   kernel bounded it by **hops** (at most 6 peer messages per causal root and 20
   per pair per rolling hour). Since v92 (founder, 2026-09-24) there is no hop
@@ -1868,6 +1882,34 @@ company-visible and answerable:
   same way, it wakes nobody; the recipient reads it, as data, at the start of
   its next wake of any kind. Held messages extend no chain. Thanks, status
   and FYIs are sent held.
+- Amendment 2026-11-17 (the sender chooses, the founder: "Build, no cap").
+  `send_coworker_message` requires `priority` on every call; the runtime
+  refuses a call without it before dispatch, with the reason. `priority: true`
+  is for what the receiver must act on or answer for the work to go on: a
+  request, a question, the answer or handover it waits for, a member's decision
+  that changes its work. Everything else worth telling is sent held, and what
+  the files and todos already show is not sent. An answer wakes the agent that
+  asked only when it is sent with `priority: true`; the coworker wake's protocol
+  tells the answering agent to send it so. No reply says only received, agreed
+  or done. The database's default for an absent `p_priority` stays true.
+- Amendment 2026-11-17 (waiting messages arrive together; migration
+  `20260930798000`). An agent's coworker wakes run one at a time in its own
+  thread. When the run of a coworker wake reads its wake, it takes over the
+  other coworker wakes still queued in that thread with the same payer, made
+  no later than the run, oldest first: each passes its own run's checks, its
+  message is delivered to the run in `heldMessages` in full (12 lines and
+  19200 bytes of shown text at most; the rest wait for the next run). A taken
+  message's wake stays queued, held by that run: when the run's job completes
+  it is cancelled as delivered; when the job fails or is cancelled (a Stop of
+  the run's chain included) it becomes a run of its own, unless its own chain
+  is stopped. A taken message is answered under the taking run's chain: what
+  the agent sends from that run carries that run's causal root and hop count.
+  A member's Stop of the taken message's own chain after the take cancels its
+  held wake, so it never runs on its own, but does not reach the taking run
+  or what that run sends; a Stop of the taking run's chain ends both. A lone
+  message, the send and its receipt are unchanged, and there is no cap on
+  chain depth or message count. A held note is shown up to 1600 bytes and is
+  marked when cut.
 - **One Stop ends the chain** (2026-10-22 amendment, item 4). A member's Stop
   of a run in a conversation (7.3) ends that run's whole chain: every live run
   with the same causal root (the other agent's, the agents' workers'), every
@@ -2493,6 +2535,12 @@ member's other login); the 2026-10-04 amendment below settles it.
 > made while they are there: their own login pays for it, a ChatGPT plan too,
 > whether or not it works while they are away. See the
 > [light asks amendment](#2026-11-14-amendment-light-asks), item 3.
+
+> **Amended 2026-11-17.** A member's own message that the provider turns
+> away for too many requests, before it took any effect, waits and runs again
+> on the same login instead of failing. See the
+> [member-message amendment](#2026-11-17-amendment-a-members-message-waits-at-a-rate-limit)
+> in section 19.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
@@ -6952,6 +7000,27 @@ worker's run is claimed only by a shared execution host), never before it.
    machine has the home.
 4. **The way back** is one statement, and leaves the listed companies on:
    `update public.qorpera_home_settings set every_company = false where singleton;`
+
+### 2026-11-17 amendment: a member's message waits at a rate limit
+
+> The founder, 17 November 2026, to an item that read "A member's message must never disappear. Fewer notes will make
+> the limit rarer, but your own message still needs a retry or a visible 'didn't go through'": "1-4 straight yes". It
+> builds section 17's "transient rate limiting (retry)" for work a member started, and nothing else: no account
+> cool-down, no cap on turns, no change to claims, routines or file wakes. It goes live with migration `20260930801000`
+> alone.
+
+1. **What waits.** A run a member started (`session_turn`, a member's message in a conversation, or `room_delivery`, a
+   member's post in a room or an agent's thread) that has started, that the native adapter recorded `rate_limited` for
+   on this attempt, and that has had no effect yet (no operation receipt but a cancelled one, no public message, no open
+   proposal), pauses as a run at its usage limit does: `run_paused` marked `pausedFor: "rate_limited"`, the same login
+   and sponsor version, no attempt spent. It comes back after 1, 2, 4, 8 and then 15 minutes for its first to fifth
+   wait, each 0.8 to 1.2 times that at random, never before a reset the provider named (at most 6 hours).
+2. **When it stops waiting.** After its last wait (`rate_limit_waits`, 5, in `qorpera_member_rate_limit_settings`; 0
+   restores the old failure), or once it had an effect, it fails as before and waits for review. Runs no member started
+   fail as before.
+3. **What members read.** A waiting run's activity says `paused_for: "rate_limited"` and is never movable to another
+   login; a usage reading does not end the wait. The recovery read of a failed run says `rate_limited`, so the thread
+   says the provider got too many requests at once and the login is fine, never to check the login.
 
 ### 2026-11-17 amendment: the review reads the script it judges
 
