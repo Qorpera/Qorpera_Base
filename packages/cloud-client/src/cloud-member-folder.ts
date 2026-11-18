@@ -1,7 +1,7 @@
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { CloudSha256, cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
-import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
+import { CloudRequestTimeoutError, readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
 /*
  * A member's view of a folder-v2 company's folder (folder core C4, P27a and P27b;
@@ -811,6 +811,34 @@ export class CloudMemberFolderFileCache {
 const CHUNKS_AT_ONCE = 4;
 const PIECES_AT_ONCE = 3;
 const UPLOAD_AHEAD_TRIES = 60;
+const PIECE_DEADLINE_MS = 40_000;
+const FINISH_OUTCOMES = ["saved", "exists", "denied", "refused", "conflict"] as const;
+
+export interface CloudMemberFolderUploadResult {
+	readonly outcome: (typeof FINISH_OUTCOMES)[number];
+	readonly version: string | null;
+	readonly reason: string | null;
+}
+
+function parseUploadFinish(value: unknown): CloudMemberFolderUploadResult {
+	const input = closed(value, ["schema", "outcome", "version"], ["reason"], "upload finish");
+	if (
+		input.schema !== "qorpera.member-program-finish/v1" ||
+		(input.reason !== undefined && typeof input.reason !== "string")
+	)
+		invalid("upload finish");
+	const outcome = oneOf(input.outcome, FINISH_OUTCOMES, "upload finish");
+	const version = input.version === null ? null : idOf(input.version, "upload finish");
+	if ((outcome === "saved") !== (version !== null)) invalid("upload finish");
+	return { outcome, version, reason: (input.reason as string | undefined) ?? null };
+}
+
+interface Retry {
+	readonly aheadTries?: number;
+	readonly deadlineMs?: number;
+	readonly slow?: () => boolean;
+	readonly around?: <T>(run: () => Promise<T>) => Promise<T>;
+}
 export const CLOUD_MEMBER_FOLDER_UPLOAD_MAX_BYTES = MAX_FILE_BYTES;
 
 export interface CloudMemberFolderUploadFile {
@@ -1150,7 +1178,7 @@ export class CloudMemberFolderClient {
 			readonly signal: AbortSignal;
 			readonly onProgress?: (sent: number, total: number) => void;
 		},
-	): Promise<CloudMemberFolderCommit> {
+	): Promise<CloudMemberFolderUploadResult> {
 		const target = path(pathValue);
 		const { signal, operationKey } = options;
 		if (!OPERATION_KEY.test(operationKey) || prepared.bytes !== file.size)
@@ -1203,11 +1231,7 @@ export class CloudMemberFolderClient {
 							),
 						signal,
 					);
-					const parts = target.split("/");
-					return parseCloudMemberFolderCommit(answer, [
-						...[1, 2, 3, 4].map((depth) => ({ op: "mkdir" as const, path: parts.slice(0, depth).join("/") })),
-						{ op: "write", path: target, text: "" },
-					]);
+					return parseUploadFinish(answer);
 				} catch (error) {
 					if (!(error instanceof UploadGone) || attempt === 2) throw error;
 				}
@@ -1229,18 +1253,36 @@ export class CloudMemberFolderClient {
 		let sent = have.reduce((total, index) => total + size(index), 0);
 		options.onProgress?.(sent, prepared.bytes);
 		let next = 0;
+		let atOnce = PIECES_AT_ONCE;
+		let lane: Promise<unknown> = Promise.resolve();
+		const alone = <T>(run: () => Promise<T>): Promise<T> => {
+			const turn = lane.then(run);
+			lane = turn.catch(() => undefined);
+			return turn;
+		};
 		const failed = new AbortController();
 		const signal = AbortSignal.any([options.signal, failed.signal]);
-		const worker = async () => {
-			while (next < waiting.length) {
+		const worker = async (place: number) => {
+			while (next < waiting.length && place < atOnce) {
 				const index = waiting[next++]!;
 				const start = index * CHUNK_BYTES;
+				let together = atOnce > 1;
 				try {
 					await this.#retried(
 						(requestSignal) =>
 							this.#send(`${at}/${index}`, "PUT", file.slice(start, start + size(index)), requestSignal),
 						signal,
-						UPLOAD_AHEAD_TRIES,
+						{
+							aheadTries: UPLOAD_AHEAD_TRIES,
+							deadlineMs: Math.min(120_000, Math.max(this.#timeoutMs, PIECE_DEADLINE_MS)),
+							slow: () => {
+								atOnce = 1;
+								const first = together;
+								together = false;
+								return first;
+							},
+							around: (run) => (atOnce === 1 ? alone(run) : run()),
+						},
 					);
 				} catch (error) {
 					failed.abort(error);
@@ -1250,25 +1292,32 @@ export class CloudMemberFolderClient {
 				options.onProgress?.(sent, prepared.bytes);
 			}
 		};
-		await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, waiting.length) }, worker));
+		await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, waiting.length) }, (_, place) => worker(place)));
 	}
 
 	async #retried(
 		send: (signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
-		aheadTries = PIECE_TRIES,
+		retry: Retry = {},
 	): Promise<unknown> {
+		const around = retry.around ?? ((run) => run());
 		for (let attempt = 1, ahead = 0; ; attempt++) {
 			try {
-				return await withCloudDeadline(send, this.#timeoutMs, signal);
+				return await around(() => withCloudDeadline(send, retry.deadlineMs ?? this.#timeoutMs, signal));
 			} catch (error) {
 				const status = error instanceof CloudMemberFolderError ? error.status : null;
-				if (status === 409 && ahead++ < aheadTries) {
+				if (status === 409 && ahead++ < (retry.aheadTries ?? PIECE_TRIES)) {
 					attempt--;
 					await pause(this.#pieceRetryMs, signal);
 					continue;
 				}
-				if (signal.aborted || (status !== null && status < 500) || attempt === PIECE_TRIES) throw error;
+				const late = error instanceof CloudRequestTimeoutError || status === 408 || status === 504;
+				if (signal.aborted || (status !== null && status < 500 && status !== 408)) throw error;
+				if (late && retry.slow?.()) {
+					attempt--;
+					continue;
+				}
+				if (attempt === PIECE_TRIES) throw error;
 				await pause(this.#pieceRetryMs * attempt, signal);
 			}
 		}

@@ -34,8 +34,9 @@ describe("SHA-256 piece by piece", () => {
 function gateway(
 	options: {
 		have?: number[];
-		piece?: (index: number, call: number) => Response | undefined;
+		piece?: (index: number, call: number) => Response | undefined | Promise<Response | undefined>;
 		open?: (call: number) => Response | undefined;
+		finish?: Record<string, unknown>;
 	} = {},
 ) {
 	const requests: { method: string; path: string; body: Uint8Array | null; type: string | null }[] = [];
@@ -76,23 +77,13 @@ function gateway(
 				const index = Number(step[2]);
 				const call = (pieces.get(index) ?? 0) + 1;
 				pieces.set(index, call);
-				const scripted = options.piece?.(index, call);
+				const scripted = await options.piece?.(index, call);
 				if (scripted) return scripted;
 				return Response.json({ schema: "qorpera.member-program-piece/v1", piece: index, bytes: bytes?.length });
 			}
-			return Response.json({
-				schema: "qorpera.folder-commit/v1",
-				commitId,
-				seq: 4,
-				replay: false,
-				units: [
-					{ unit: 1, op: "mkdir", path: "apps", outcome: "conflict", reason: "exists" },
-					{ unit: 2, op: "mkdir", path: "apps/lagerliste", outcome: "saved" },
-					{ unit: 3, op: "mkdir", path: "apps/lagerliste/versions", outcome: "saved" },
-					{ unit: 4, op: "mkdir", path: "apps/lagerliste/versions/1", outcome: "saved" },
-					{ unit: 5, op: "write", path, outcome: "saved", version: commitId },
-				],
-			});
+			return Response.json(
+				options.finish ?? { schema: "qorpera.member-program-finish/v1", outcome: "saved", version: commitId },
+			);
 		},
 	});
 	const put = () => requests.filter((request) => request.method === "PUT");
@@ -123,7 +114,7 @@ describe("a member's program file going up", () => {
 				progress.push(sent);
 			},
 		});
-		expect(commit.units.at(-1)?.outcome).toBe("saved");
+		expect(commit).toEqual({ outcome: "saved", version: commitId, reason: null });
 		const [open] = g.requests;
 		expect(open?.path).toBe(`/v1/member-program-uploads/${env}`);
 		expect(JSON.parse(new TextDecoder().decode(open?.body ?? new Uint8Array()))).toEqual({
@@ -188,8 +179,70 @@ describe("a member's program file going up", () => {
 			operationKey: "web:k",
 			signal: new AbortController().signal,
 		});
-		expect(commit.seq).toBe(4);
+		expect(commit.version).toBe(commitId);
 		expect(g.requests.filter((request) => request.path === `/v1/member-program-uploads/${env}`)).toHaveLength(2);
+	});
+
+	it("answers a file already at its path, another or this one, as the gateway found it", async () => {
+		const { blob } = fileOf(10);
+		const prepared = await prepareCloudMemberFolderUpload(blob, new AbortController().signal);
+		const exists = gateway({
+			finish: { schema: "qorpera.member-program-finish/v1", outcome: "exists", version: null },
+		});
+		expect(
+			await exists.folder.uploadFile(path, blob, prepared, {
+				operationKey: "web:k",
+				signal: new AbortController().signal,
+			}),
+		).toEqual({ outcome: "exists", version: null, reason: null });
+		const denied = gateway({
+			finish: { schema: "qorpera.member-program-finish/v1", outcome: "denied", version: null, reason: "denied" },
+		});
+		expect(
+			(
+				await denied.folder.uploadFile(path, blob, prepared, {
+					operationKey: "web:k",
+					signal: new AbortController().signal,
+				})
+			).reason,
+		).toBe("denied");
+		const broken = gateway({
+			finish: { schema: "qorpera.member-program-finish/v1", outcome: "saved", version: null },
+		});
+		await expect(
+			broken.folder.uploadFile(path, blob, prepared, {
+				operationKey: "web:k",
+				signal: new AbortController().signal,
+			}),
+		).rejects.toThrow("Invalid company folder upload finish");
+	});
+
+	it("goes down to one piece at a time on a line too slow for three, and only then counts a late piece as a try", async () => {
+		const { blob } = fileOf(20 * MiB);
+		const prepared = await prepareCloudMemberFolderUpload(blob, new AbortController().signal);
+		let going = 0;
+		const g = gateway({
+			piece: async () => {
+				going++;
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				const late = going > 1;
+				going--;
+				return late ? new Response(null, { status: 408 }) : undefined;
+			},
+		});
+		const result = await g.folder.uploadFile(path, blob, prepared, {
+			operationKey: "web:k",
+			signal: new AbortController().signal,
+		});
+		expect(result.outcome).toBe("saved");
+		const sent = new Set(g.put().map((request) => request.path));
+		expect(sent.size).toBe(5);
+		const dead = gateway({ piece: () => new Response(null, { status: 408 }) });
+		const error = await dead.folder
+			.uploadFile(path, blob, prepared, { operationKey: "web:k", signal: new AbortController().signal })
+			.catch((caught: unknown) => caught);
+		expect((error as CloudMemberFolderError).status).toBe(408);
+		expect(dead.put().length).toBeLessThan(12);
 	});
 
 	it("refuses a file past 256 MiB before any request, and gives a refusal its status without trying again", async () => {
