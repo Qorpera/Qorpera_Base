@@ -8,7 +8,6 @@ import type { CompanyController } from "./company.ts";
 import type { MailList, MailListRequest } from "./company-mail.ts";
 import { mailListKey } from "./company-mail.ts";
 import { rowInstant } from "./interface-sources.ts";
-import type { InterfaceRow } from "./interfaces.ts";
 
 export const MAIL_SOURCES: Readonly<
 	Record<string, { readonly columns: readonly string[]; readonly time: string | null }>
@@ -32,7 +31,7 @@ export const MAIL_SOURCES: Readonly<
 	mail_addresses: { columns: ["address", "handled_by", "routine", "last_7_days"], time: null },
 };
 
-export function isMailSource(source: string): boolean {
+function isMailSource(source: string): boolean {
 	return Object.hasOwn(MAIL_SOURCES, source);
 }
 
@@ -63,34 +62,9 @@ export function mailRow(item: MailThreadSummary): TableRow {
 	};
 }
 
-const rowKey = (thread: string) => `mail:${thread}`;
-
 /** The read of the list a request names, or undefined while it is being read. */
 export function mailList(company: CompanyController, request: MailListRequest): MailList | undefined {
 	return company.store.get().mail?.lists[mailListKey(request)];
-}
-
-/** The `mail` rows of the list a request names, newest first, as far as its pages are read. */
-function mailRows(company: CompanyController, request: MailListRequest = {}): InterfaceRow[] | undefined {
-	if (company.store.get().mail === undefined) return undefined;
-	return (mailList(company, request)?.threads ?? []).map((item) => ({ row: mailRow(item), key: rowKey(item.thread) }));
-}
-
-/** The rows of a mail source, or undefined for another source or before the company's mail is read. `mail` is its
- * whole list here; a `mail` block reads the list its view names (`mailRows`). */
-export function mailSourceRows(company: CompanyController, source: string): InterfaceRow[] | undefined {
-	const mail = company.store.get().mail;
-	if (!isMailSource(source) || mail === undefined) return undefined;
-	if (source === "mail") return mailRows(company);
-	return mail.addresses.map((address) => ({
-		row: {
-			address: address.address,
-			handled_by: address.handledBy.map((agent) => agent.staffAgentId),
-			routine: address.routines.length ? address.routines.map((routine) => routine.title).join(", ") : null,
-			last_7_days: address.last7Days,
-		},
-		key: `mail_addresses:${address.address}`,
-	}));
 }
 
 /** A thread's summary from any list read, newest read first. */
@@ -100,15 +74,4 @@ export function mailSummary(company: CompanyController, thread: string): MailThr
 		if (found) return found;
 	}
 	return undefined;
-}
-
-/** Whether a thread is account mail (A1), as far as it is read: its summary or its read says so. The cloud takes no
- * quote of it (`qorpera_check_member_quotes`), as it shows none of its words. */
-export function isAccountMail(company: CompanyController, thread: string): boolean {
-	if (mailSummary(company, thread)?.account) return true;
-	const read = company.store.get().mail?.threads[thread];
-	return (
-		read?.status === "ready" &&
-		read.thread.messages.some((message) => message.kind === "received" && message.account !== undefined)
-	);
 }

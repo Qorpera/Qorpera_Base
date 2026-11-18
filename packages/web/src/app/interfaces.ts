@@ -5,53 +5,31 @@
  * definition the web ships (the cloud client's library; Bank's is app/bank-page.ts and views/bank.ts draws it), never
  * from the company's folder: whatever its QorperaOS/interfaces/ holds, Pulse, a page an agent wrote or a file named like
  * one of the three, is never shown, and every other page name, in the tab, a link or a button, is a page that isn't
- * there.
- *
- * Only the parts whose source the client can read are drawn: a part without its source is not drawn, and a page with no
- * part to draw is not listed (the client contract's rule against rendering missing machinery). Those sources are the
- * company's members and what waits for this member, read from the company's live state, its mail
- * (app/interface-mail.ts), and its tables and files that hold no outside content, read from its folder
- * (app/interface-folder.ts). */
+ * there. */
 
 import { AREAS_TABLE, INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
 	type InterfaceBlock,
-	type InterfaceButton,
 	type InterfaceFile,
 	type InterfaceQuery,
 	interfaceOutsideColumns,
 	parseInterfaceFile,
 	parseTableFile,
-	type TableFile,
-	type TableRow,
-	tableRowKey,
 } from "@qorpera/cloud-client/interfaces";
 import { INTERFACE_PAGES } from "../cloud/interface-pages.ts";
-import { t } from "../ui/preferences.ts";
 import { BANK_INTERFACE } from "./bank-page.ts";
-import { type CompanyController, isAgentPairSession } from "./company.ts";
+import type { CompanyController } from "./company.ts";
 import { DATA_INTERFACE, DATA_PAGE } from "./data-page.ts";
 import type { FolderProblem, FolderTable } from "./interface-folder.ts";
-import { isMailSource, mailSource, mailSourceRows } from "./interface-mail.ts";
+import { mailSource } from "./interface-mail.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
-import { fileSourceText, rowInstant } from "./interface-sources.ts";
+import { fileSourceText } from "./interface-sources.ts";
 
 /** A page the Interfaces tab lists: its name and the definition the web ships for it. */
 export interface CompanyInterface {
 	/** The page's name, its route: `#/c/{id}/i/{name}`. */
 	readonly name: string;
 	readonly file: InterfaceFile;
-}
-
-/** One row a block shows, with where it leads. A row from the company's live state leads to the thread it is
- * about; that link is the platform's, never the file's. */
-export interface InterfaceRow {
-	readonly row: TableRow;
-	readonly href?: string;
-	/** The row is about something happening right now (an agent writing). */
-	readonly live?: boolean;
-	/** The row's identity within its source, which an opened row follows through live updates. */
-	readonly key: string;
 }
 
 const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail", "text"]);
@@ -61,13 +39,8 @@ const OPENED_KINDS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["detail"]);
  * use. */
 const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[]; readonly time: string | null }>> = {
 	waiting: { columns: ["id", "kind", "title", "from", "due"], time: "due" },
-	// One row per member (§4): `id` is what a `member` cell holds, the member's account id, which is also what their
-	// `picture` is found by.
 	members: { columns: ["id", "name", "picture", "role", "here"], time: null },
 };
-/** Columns that hold an agent's id: drawn as the agent's name. A table's columns say what they hold by their type. */
-const AGENT_COLUMNS: ReadonlySet<string> = new Set(["agent", "from", "handled_by", "kept_by"]);
-
 /** A source as a block reads it. */
 export interface InterfaceSource {
 	readonly columns: readonly string[];
@@ -78,19 +51,10 @@ export interface InterfaceSource {
 	readonly problems: readonly FolderProblem[];
 }
 
-/** The `waiting` kinds whose row has a platform card the member answers in its thread. A mention leads to a
- * conversation, not a card. */
-const CARD_KINDS: ReadonlySet<string> = new Set(["review", "question", "mail", "task", "run"]);
-export function rowHasCard(source: string, row: TableRow): boolean {
-	return source === "waiting" && typeof row.kind === "string" && CARD_KINDS.has(row.kind);
-}
-
 /** The sources the shipped pages never draw: Members' cards (Interfaces C6d). A company's folder keeps its cards
  * table and the library still seeds it; the page just doesn't read it. */
 const HIDDEN_SOURCES: ReadonlySet<string> = new Set(["table:cards"]);
 
-/** `file` without what reads a hidden source: a block from one, a board part from one, and a lookup column that looks
- * one up. */
 function withoutHiddenSources(file: InterfaceFile): InterfaceFile {
 	const hidden = (source: string) => HIDDEN_SOURCES.has(source);
 	return {
@@ -152,16 +116,7 @@ export function pagesOn(pages: InterfacePagesState | undefined): InterfaceFile[]
 	return pagesShown(pages).map((entry) => entry.file);
 }
 
-/** Whether a source's column names are the platform's (the live state's, the mail's and the folder's own files'), so
- * drawn in the member's language. A table's own columns are the company's words. */
-export function isLiveSource(source: string): boolean {
-	return Object.hasOwn(LIVE_SOURCES, source) || isMailSource(source);
-}
-
 let noAreas: FolderTable | undefined;
-/** A table source as the folder was last read. A company whose folder has no `QorperaOS/tables/areas/` yet reads it as
- * the library's table with no rows (Interfaces C6d): the Members page draws its board empty, and the first area a
- * member adds writes the table (app/interface-areas.ts). A `table:<name>` source is `QorperaOS/tables/<name>/`. */
 function folderTable(company: CompanyController, source: string): FolderTable | undefined {
 	if (!source.startsWith("table:")) return undefined;
 	const name = source.slice("table:".length);
@@ -177,11 +132,6 @@ function folderTable(company: CompanyController, source: string): FolderTable | 
 	return noAreas;
 }
 
-/** A table source's definition as last read from the folder, or null. */
-export function tableDefinition(company: CompanyController, source: string): TableFile | null {
-	return folderTable(company, source)?.table ?? null;
-}
-
 /** A `file:` source's text, without its settings block. A file whose text is outside content (under `hooks/` or
  * `QorperaOS/human-tasks/`, §4) is not read: the blocks can't show it with its outside-content mark yet (the 2026-10-02
  * interfaces amendment, item 3). The source names the file's whole path, as `file:QorperaOS/rules/shared-areas.md`. */
@@ -192,8 +142,6 @@ function folderText(company: CompanyController, source: string): string | undefi
 	return text === undefined ? undefined : fileSourceText(path, text);
 }
 
-/** A source this client can read, or undefined: the live state's, and a folder-v2 company's tables, files and own
- * files' sources (`vision`, `agents`, ...) once its folder is read. */
 export function interfaceSource(company: CompanyController, source: string): InterfaceSource | undefined {
 	const live = Object.hasOwn(LIVE_SOURCES, source) ? LIVE_SOURCES[source] : undefined;
 	if (live) return { ...live, readable: true, problems: [] };
@@ -210,21 +158,6 @@ export function interfaceSource(company: CompanyController, source: string): Int
 	if (folderText(company, source) !== undefined)
 		return { columns: ["text"], time: null, readable: true, problems: [] };
 	return undefined;
-}
-
-/** What a column's values are the ids of, so a page shows names: the live sources' agent columns, the folder sources'
- * id columns, and a table's `agent`, `member` and `agents` columns (§5: "a stable id; the client shows the name"). */
-export function idColumn(
-	company: CompanyController,
-	source: string,
-	column: string,
-): "agent" | "member" | "agents" | "members" | null {
-	if (source.startsWith("table:")) {
-		const type = folderTable(company, source)?.table?.columns.find((candidate) => candidate.name === column)?.type;
-		return type === "agent" || type === "member" || type === "agents" ? type : null;
-	}
-	if (source === "mail_addresses") return column === "handled_by" ? "agents" : null;
-	return AGENT_COLUMNS.has(column) ? "agent" : null;
 }
 
 export function drawableBlock(block: InterfaceBlock, company: CompanyController): boolean {
@@ -273,7 +206,7 @@ export const QUOTE_RECORD_COLUMNS: Readonly<Record<string, string>> = {
 
 /** A block in a view. A view built from another (`from_view`) shows that view's blocks and narrows each with its
  * own `where`: rows must match both, the view's filter first, then the block's own query. */
-export interface ViewBlock {
+interface ViewBlock {
 	readonly block: InterfaceBlock;
 	/** The `where` of every view this one is built from, each narrowing the next; empty for a view's own blocks. */
 	readonly narrow: readonly NonNullable<InterfaceQuery["where"]>[];
@@ -324,30 +257,6 @@ export function viewBlocks(view: InterfaceViewShape, company: CompanyController)
 	);
 }
 
-/** A button as this client draws it. */
-export type DrawnButton =
-	| { readonly verb: "answer"; readonly label: string }
-	| { readonly verb: "message"; readonly label: string; readonly to: string; readonly text: string }
-	| { readonly verb: "open"; readonly label: string; readonly target: string };
-
-export function blockButtons(file: InterfaceFile, block: InterfaceBlock): DrawnButton[] {
-	return block.buttons.flatMap((name): DrawnButton[] => {
-		if (name === "answer") return [{ verb: "answer", label: t("Answer") }];
-		const button: InterfaceButton | undefined = file.buttons.find((candidate) => candidate.id === name);
-		if (!button || button.who === "agents") return [];
-		if (button.verb === "answer") return [{ verb: "answer", label: button.label }];
-		if (button.verb === "message" && button.to !== null)
-			return [{ verb: "message", label: button.label, to: button.to, text: button.text ?? "" }];
-		if (
-			button.verb === "open" &&
-			button.target !== null &&
-			(button.target === "row" || button.target.startsWith("agent:") || button.target.startsWith("interface:"))
-		)
-			return [{ verb: "open", label: button.label, target: button.target }];
-		return [];
-	});
-}
-
 function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 	return file.needs.every((need) => {
 		if (need === "team") return (company.store.get().team?.members.length ?? 0) >= 2;
@@ -365,25 +274,6 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 function ownerOrAdmin(company: CompanyController): boolean {
 	const role = company.store.get().team?.role;
 	return role === "owner" || role === "admin";
-}
-
-/** The ids of the company's members now, or undefined until they are read. */
-function memberIds(company: CompanyController): ReadonlySet<string> | undefined {
-	const members = company.store.get().team?.members;
-	return members && new Set(members.map((member) => member.userId));
-}
-
-/** Whether a member cell's value names someone who is no longer a member of the company (Interfaces C6d). Nothing
- * clears such a cell: it counts as empty for the members who stay, who take or offer it as an empty one. False for an
- * empty cell, and while the members are not read. */
-export function namesLeaver(company: CompanyController, value: unknown): boolean {
-	return typeof value === "string" && value !== "" && memberIds(company)?.has(value) === false;
-}
-
-/** How a page names someone who left: by the name presence still knows, else as "Someone who left". */
-export function leaverName(company: CompanyController, id: string): string {
-	const name = company.store.get().here?.find((present) => present.userId === id)?.name;
-	return name ? t("{name} (left)", { name }) : t("Someone who left");
 }
 
 /** Whether `[access] members` lets this member see the page. It only narrows: the data is read with the
@@ -434,84 +324,4 @@ export function hiddenInterfaces(company: CompanyController): CompanyInterface[]
 
 export function companyInterface(company: CompanyController, name: string): CompanyInterface | undefined {
 	return companyInterfaces(company).find((entry) => entry.name === name);
-}
-
-/** The rows of a source this client reads, or undefined when it can't read it. */
-export function interfaceRows(company: CompanyController, source: string): InterfaceRow[] | undefined {
-	if (isMailSource(source)) return mailSourceRows(company, source);
-	const state = company.store.get();
-	const profileId = company.profile.profileId;
-	const agents = state.staff.filter((agent) => agent.employmentStatus === "active");
-	const agentHref = (agentId: string) =>
-		agentId === company.cofounderId() ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agentId}`;
-	// To the second, as every row's time is: the live state's times may carry milliseconds.
-	const since = (agentId: string) => rowInstant(company.activityFor(agentId)?.updatedAt);
-	// A waiting item is its kind and its run: when one is answered and another comes for the same agent, an open
-	// row never turns into the new one.
-	const runKey = (kind: string, agentId: string) => `${kind}:${company.activityFor(agentId)?.runId ?? agentId}`;
-	if (source === "waiting") {
-		const rows: InterfaceRow[] = [];
-		for (const agent of agents) {
-			const now = company.agentState(agent.id);
-			if (now === "decision") {
-				// What it waits on this member for, when the cloud says: a card's question, an approval's action.
-				const what = company.waitingFor(agent.id)?.what;
-				const waitingSince = rowInstant(state.waitingOnMe?.[agent.id]?.latestAt);
-				rows.push({
-					row: {
-						id: agent.id,
-						// An agent waiting on a member's decision: an action or change for review.
-						kind: "review",
-						title: what
-							? t("{name} needs you: {what}", { name: agent.displayName, what })
-							: t("{name} needs you", { name: agent.displayName }),
-						from: agent.id,
-						due: waitingSince ?? since(agent.id),
-					},
-					href: agentHref(agent.id),
-					key: runKey("review", agent.id),
-				});
-			} else if (now === "failed") {
-				rows.push({
-					row: {
-						id: agent.id,
-						kind: "run",
-						title: t("{name} has a run that did not finish", { name: agent.displayName }),
-						from: agent.id,
-						due: since(agent.id),
-					},
-					href: agentHref(agent.id),
-					key: runKey("run", agent.id),
-				});
-			}
-		}
-		for (const [sessionId, count] of Object.entries(state.mentions ?? {})) {
-			const session = state.sessions.find((item) => item.sessionId === sessionId);
-			// Only conversations the rail itself offers: open ones, never an agent pair's transcript.
-			if (!session || count <= 0 || session.status !== "open" || isAgentPairSession(session)) continue;
-			rows.push({
-				row: {
-					id: sessionId,
-					kind: "mention",
-					title: t("You were mentioned in {conversation}", { conversation: session.title }),
-					from: session.staffAgentId ?? null,
-					due: null,
-				},
-				href: `#/c/${profileId}/chat/${sessionId}`,
-				key: `mention:${sessionId}`,
-			});
-		}
-		return rows;
-	}
-	// A table's rows that fit its definition, each known by its key, so an open row stays open while its other
-	// columns change.
-	const table = folderTable(company, source);
-	if (table) {
-		const definition = table.table;
-		return definition ? table.rows.map((row) => ({ row, key: `${source}:${tableRowKey(definition, row)}` })) : [];
-	}
-	// A file is one row: its text.
-	const text = folderText(company, source);
-	if (text !== undefined) return [{ row: { text }, key: source }];
-	return undefined;
 }
