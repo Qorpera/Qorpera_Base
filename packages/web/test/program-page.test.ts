@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { type Program, writeProgram } from "@qorpera/cloud-client/app-program";
+import type { CloudMemberFolderFile } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readApps } from "../src/app/interface-apps.ts";
@@ -63,6 +64,18 @@ async function company(program: Program = PROGRAM) {
 	fake.put("apps/fokusur/app.toml", 'name = "Fokusur"\nkit = "program"\nemblem = "page"\nposted = true\n');
 	fake.put("apps/fokusur/versions/0.2/fokusur-0.2.apk", APK);
 	fake.put("apps/fokusur/versions/0.1/fokusur-0.1.tar.gz", TAR);
+	const read = fake.folder.read.getMockImplementation();
+	if (!read) throw new Error("the fake folder has no read");
+	const files = new Map<string, CloudMemberFolderFile>();
+	// WHY: the fake hands a file a new hash on every read; a real folder's hash is its content's.
+	fake.folder.read.mockImplementation(async (path, at) => {
+		const found = await read(path, at);
+		const file = found.entry?.file;
+		if (!found.entry || !file) return found;
+		const same = files.get(found.entry.version) ?? file;
+		files.set(found.entry.version, same);
+		return { ...found, entry: { ...found.entry, file: same } };
+	});
 	const signal = new AbortController().signal;
 	const versions = await Promise.all(
 		program.versions.map(async (each) => ({
