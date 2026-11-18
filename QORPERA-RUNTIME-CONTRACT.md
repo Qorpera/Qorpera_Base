@@ -7205,8 +7205,10 @@ bundle; no migration, host call or image moves.
 1. **The signal.** A Codex turn that ends with the pinned discriminant `unauthorized` is the usage signal
    `sign_in_refused`, recorded against the run's exact binding as the others are. No other discriminant, status or text
    raises it. It never moves work to another login.
-2. **The renewal.** The signal makes the paying login's renewal due now, through the one renewal lock; a refused renewal
-   sets `needs_sign_in` as before.
+2. **The renewal.** The signal makes the paying login's renewal due now (for a plan login, not before OpenAI's earliest
+   renewal time), through the one renewal lock; a refused renewal sets `needs_sign_in` as before. In a plan login's
+   window before that time, the 30-minute hold can lapse and a member's message can use up its five waits before a
+   renewal is allowed.
 3. **The wait.** Until the renewal's outcome (at most 30 minutes), new work paid by the login waits as at a usage limit,
    and a member's message that had no effect waits and tries again on the same login as at a rate limit
    (`paused_for: "sign_in_refused"`). The recovery read of a failed run says `sign_in_refused` once its login needs a

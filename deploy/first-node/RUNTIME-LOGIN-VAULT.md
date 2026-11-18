@@ -760,8 +760,10 @@ days before its renewal was due, and every run on it failed while the login stay
   the account login of its link): `refused_version` is its current version and `refused_at` the time, only while the
   login is `active`, the version is not already marked, and that version existed when the run's lease began (a version
   renewed during the run is not the one the provider refused).
-- **The renewal.** A login whose current version is its `refused_version` is due now
-  (`qorpera_model_login_renewal_due`), for a run's issue and for the vault's idle passes, which take such a login first.
+- **The renewal.** A login whose current version is its `refused_version` is due now (for a plan login, not before
+  OpenAI's earliest renewal time, `renew_not_before`) (`qorpera_model_login_renewal_due`), for a run's issue and for the
+  vault's idle passes, which take such a login first. In a plan login's window before that time (up to an hour after a
+  renewal), the 30-minute hold can lapse and a member's message can use up its five waits before a renewal is allowed.
   It goes through the same lock, commit and release as any renewal: a good renewal is a newer version and work goes on;
   a refused one sets `needs_sign_in` exactly as before (a newer version is never marked; a revoked login stays revoked).
   Codex logins and ChatGPT plan logins only; a Claude login is never a vault model login.
@@ -773,9 +775,9 @@ days before its renewal was due, and every run on it failed while the login stay
 - **A member's message.** A run a member started that had no effect yet waits and tries again on the same login as at a
   rate limit (`pausedFor: "sign_in_refused"`, the same five waits), unless the login already needs a new sign-in. The
   next attempt's issue renews the pass first when no other caller has.
-- **What the member reads.** The member's connection list says `login_status` for a vault login; Settings says ChatGPT
-  no longer accepts the sign-in and offers Sign in again, the chat says so before the usage-limit sentence, and a run's
-  recovery says `sign_in_refused` once its login needs a new sign-in.
+- **What the member reads.** The member's connection list says `login_status` for a vault login, and a run's recovery
+  says `sign_in_refused` once its login needs a new sign-in. The web half (#1959) reads them: Settings says ChatGPT no
+  longer accepts the sign-in and offers Sign in again, and the chat says so before the usage-limit sentence.
 - **Not covered.** The vault's usage reads keep no status, so a refused usage read raises nothing; a run does.
 
 ## Moving and retiring

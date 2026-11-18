@@ -130,8 +130,11 @@ create function pg_temp.sr_turned_away(p_binding jsonb) returns jsonb language s
 	select pg_temp.rr_fail(p_binding,
 		'Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]')
 $$;
+create function pg_temp.sr_company_idle() returns jsonb language sql as $$
+	select public.qorpera_take_idle_model_login_renewal('13040000-0000-4000-8000-000000000040', repeat('c', 64))
+$$;
 grant execute on function pg_temp.sr_idle(), pg_temp.sr_issue(boolean), pg_temp.sr_release(text, boolean),
-	pg_temp.sr_commit(text) to qorpera_secret_broker;
+	pg_temp.sr_commit(text), pg_temp.sr_company_idle() to qorpera_secret_broker;
 
 do $$
 declare v_role text; v_function text;
@@ -166,6 +169,89 @@ begin
 		'a version made after the run''s lease began is never marked by that run');
 end $$;
 rollback to savepoint sr_newer_than_lease;
+
+savepoint sr_company_login;
+do $$
+declare v_capsule uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'credentialCapsuleId')::uuid;
+	v_identity uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'computeIdentityId')::uuid;
+begin
+	delete from public.qorpera_model_login_links where credential_capsule_id = v_capsule;
+	update public.qorpera_native_credential_capsules
+	set encrypted_capsule_reference = 'model-login/13040000-0000-4000-8000-000000000200' where id = v_capsule;
+	insert into public.qorpera_model_logins(id, profile_id, compute_identity_id, credential_capsule_id, broker_authority_id,
+		provider, native_harness, current_version, access_issued_at, access_expires_at)
+	values ('13040000-0000-4000-8000-000000000200', '92400000-0000-4000-8000-000000000010', v_identity, v_capsule,
+		'13040000-0000-4000-8000-000000000040', 'openai', 'codex-cli', 1, clock_timestamp() - interval '10 minutes',
+		clock_timestamp() + interval '10 days');
+	insert into public.qorpera_native_credential_capsules(id, profile_id, compute_identity_id, ownership_kind, owner_user_id,
+		provider, native_harness, encrypted_capsule_reference, attestation_policy_sha256, created_by_user_id)
+	values ('13040000-0000-4000-8000-000000000031', '92400000-0000-4000-8000-000000000010', v_identity, 'member',
+		'92400000-0000-4000-8000-000000000001', 'openai', 'codex-cli',
+		'model-login/13040000-0000-4000-8000-000000000201', repeat('0', 64), '92400000-0000-4000-8000-000000000001');
+	insert into public.qorpera_model_logins(id, profile_id, compute_identity_id, credential_capsule_id, broker_authority_id,
+		provider, native_harness, current_version, access_issued_at, access_expires_at)
+	values ('13040000-0000-4000-8000-000000000201', '92400000-0000-4000-8000-000000000010', v_identity,
+		'13040000-0000-4000-8000-000000000031', '13040000-0000-4000-8000-000000000040', 'openai', 'codex-cli', 1,
+		clock_timestamp() - interval '9 days', clock_timestamp() + interval '1 day');
+	insert into public.qorpera_model_login_versions(login_id, version, broker_authority_id, key_id, encrypted_envelope,
+		envelope_sha256, origin, access_issued_at, access_expires_at, created_at)
+	select login.id, 1, login.broker_authority_id, 'vault-root-1', ('company-envelope-' || login.id)::bytea,
+		encode(sha256(('company-envelope-' || login.id)::bytea), 'hex'), 'sign_in', login.access_issued_at,
+		login.access_expires_at, clock_timestamp() - interval '1 day'
+	from public.qorpera_model_logins as login
+	where login.id in ('13040000-0000-4000-8000-000000000200', '13040000-0000-4000-8000-000000000201');
+	insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, owner_user_id, provider,
+		created_by_user_id)
+	values ('13040000-0000-4000-8000-000000000061', '92400000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
+		'92400000-0000-4000-8000-000000000001', 'openai', '92400000-0000-4000-8000-000000000001');
+	insert into public.qorpera_provider_connection_versions(connection_id, version, authentication_mode, native_harness,
+		billing_source, consent_version, consented_by_user_id, allow_autonomous, quota_policy, created_by_user_id,
+		credential_capsule_id, authorization_state, max_native_concurrency)
+	values ('13040000-0000-4000-8000-000000000061', 1, 'native_subscription', 'codex-cli', 'personal_subscription',
+		'qorpera-native-provider-autonomous-consent/v1', '92400000-0000-4000-8000-000000000001', true,
+		'{"monthly_microusd":1,"reservation_microusd":1,"max_calls_per_run":128,"max_input_tokens_per_run":100000000,"max_output_tokens_per_run":100000000,"max_concurrent_runs":32}',
+		'92400000-0000-4000-8000-000000000001', '13040000-0000-4000-8000-000000000031', 'active', 32);
+	perform pg_temp.base_assert((public.qorpera_capsule_model_login(v_capsule)).id = '13040000-0000-4000-8000-000000000200',
+		'the run''s capsule is a company login''s now');
+	perform pg_temp.base_assert(not pg_temp.sr_a_waits(), 'the company login holds nothing before a refusal');
+	perform pg_temp.sr_refuse(current_setting('qorpera_test.base_binding')::jsonb);
+	perform pg_temp.base_assert((pg_temp.sr_login('13040000-0000-4000-8000-000000000200')).refused_version = 1
+		and (pg_temp.sr_login('13040000-0000-4000-8000-000000000201')).refused_version is null
+		and (pg_temp.sr_login()).refused_version is null,
+		'a refusal on a run of a company login''s capsule marks that login, and no other');
+	perform pg_temp.base_assert(pg_temp.sr_a_waits(), 'new work the company login pays for waits');
+end $$;
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.sr_company_idle', pg_temp.sr_company_idle()::text, true) \g /dev/null
+reset session authorization;
+select pg_temp.base_assert(current_setting('qorpera_test.sr_company_idle')::jsonb ->> 'loginId'
+		= '13040000-0000-4000-8000-000000000200',
+	'the company''s idle pass renews the refused login before one closer to its end: '
+		|| current_setting('qorpera_test.sr_company_idle'));
+do $$
+declare v_login public.qorpera_model_logins;
+begin
+	update public.qorpera_model_logins set login_kind = 'chatgpt_plan', renewal_token = null, renewal_until = null,
+		renew_not_before = clock_timestamp() + interval '40 minutes'
+	where id = '13040000-0000-4000-8000-000000000200';
+	v_login := pg_temp.sr_login('13040000-0000-4000-8000-000000000200');
+	perform pg_temp.base_assert(v_login.refused_version = v_login.current_version
+		and not public.qorpera_model_login_renewal_due(v_login, clock_timestamp(), false)
+		and not public.qorpera_model_login_renewal_due(v_login, clock_timestamp(), true),
+		'a refused plan pass is not due before OpenAI''s earliest renewal time');
+	update public.qorpera_model_logins set renew_not_before = clock_timestamp() - interval '1 second'
+	where id = '13040000-0000-4000-8000-000000000200';
+	v_login := pg_temp.sr_login('13040000-0000-4000-8000-000000000200');
+	perform pg_temp.base_assert(public.qorpera_model_login_renewal_due(v_login, clock_timestamp(), false)
+		and public.qorpera_model_login_renewal_due(v_login, clock_timestamp(), true),
+		'and due at once after it');
+	update public.qorpera_model_logins set refused_version = null, refused_at = null
+	where id = '13040000-0000-4000-8000-000000000200';
+	perform pg_temp.base_assert(not public.qorpera_model_login_renewal_due(
+			pg_temp.sr_login('13040000-0000-4000-8000-000000000200'), clock_timestamp(), true),
+		'a plan pass nobody refused keeps its own rule');
+end $$;
+rollback to savepoint sr_company_login;
 
 do $$
 declare v_receipt jsonb; v_login public.qorpera_model_logins;
