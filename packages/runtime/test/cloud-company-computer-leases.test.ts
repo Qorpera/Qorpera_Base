@@ -295,4 +295,20 @@ describe("guest action interlock and takeover drain", () => {
 		work.resolve();
 		await first;
 	});
+
+	it("does not let a generation reset erase a fence", async () => {
+		const gate = new CompanyComputerScreenActionGate();
+		await gate.fence(computerBinding(), 2, new AbortController().signal);
+		const next = { ...computerBinding(), screenGeneration: 2 };
+		await expect(
+			gate.perform({
+				lease: { ...computerLease(), binding: next, epoch: 3 },
+				operation: computerOperation(),
+				signal: new AbortController().signal,
+				authorize: async () => undefined,
+				execute: async () => "unsafe",
+			}),
+		).rejects.toThrow("SCREEN_BINDING_MISMATCH");
+		await expect(gate.fence(next, 3, new AbortController().signal)).rejects.toThrow("SCREEN_BINDING_MISMATCH");
+	});
 });
