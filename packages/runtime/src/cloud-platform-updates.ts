@@ -105,11 +105,25 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "A message that wakes a coworker starts a full run for it, and most of the team's messages were news: a file is ready, input was worked in, a step is done. send_coworker_message now asks each time whether to wake (priority). Wake a coworker only for what it must act on or answer: a request, a question, the answer or handover it waits for (sent with priority true), a member's decision that changes its work. Other news worth telling is a note it reads at its next turn, and what the files and todos already show needs no message. Nobody replies to say received, agreed or done. In job descriptions, ask for results in files, not for reports by message.",
 	},
 	{
+		id: "hire-team",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "Hire a team in one step",
+		text: "hire_team hires two or more coworkers in one call: one review, and the whole team is saved together, so each one's first run already lists all the others as coworkers and nobody waits for a colleague who is still being hired. Use it whenever you hire several at once, above all the first team. hire_agent stays the way to hire one coworker at any time as the company grows: a later hire shows up among everyone's coworkers at their next run, with no message needed.",
+	},
+	{
+		id: "product-shown-first",
+		kind: "behaviour",
+		date: "2026-11-17",
+		title: "The product shown first, looking real",
+		text: "The first concept now comes first: in its first run the product's owner shows the product in its key moments as a customer will meet it (a physical product as a render that looks real, software as real screens to click through), before any document but the brief, and the solution is worked out beside it. Plans for later stages wait until the founders say it is their product. A brand direction is the product in its world in that look, in real pictures; only the chosen one becomes the identity and its logo. If your founders have not yet seen their product looking real, have its owner make that concept now; if they have not yet picked a look, have the brand directions made as pictures.",
+	},
+	{
 		id: "app-files-uncapped",
 		kind: "capability",
 		date: "2026-11-17",
 		title: "Interface apps hold any file",
-		text: "An interface app no longer has a cap on its files: any number, any size the company folder stores, any kind. Fonts, sound, 3D models, wasm and large scripts such as a 3D library are files in the app's folder, written from a company machine and named by their path. The page opens first and reads each file when it uses it: by a relative path in its markup and styles, and in a script by fetch(path), qorpera.file(path) or qorpera.bytes(path). company_write takes as much text as one call carries. A product can now be shown live in 3D, with its own type and sound.",
+		text: "An interface app no longer has a cap on its files: any number, any size the company folder stores, any kind. Fonts, sound, 3D models, wasm and large scripts such as a 3D library are files in the app's folder, written from a company machine and named by their path. The page opens first and reads each file when it uses it: by a relative path in its markup and styles, and in a script by fetch(path), qorpera.file(path) or qorpera.bytes(path); a page opened by itself loads the files beside it the same way. company_write takes as much text as one call carries. A product can now be shown live in 3D, with its own type and sound.",
 	},
 	{
 		id: "object-kit-live-3d",

@@ -1593,6 +1593,20 @@ Member consent MUST be distinguished durably from policy approval in that
 member's name; an agent retry MUST NOT manufacture or renew member consent.
 Completed operations retain their receipt replay semantics.
 
+2026-11-17 amendment: a team in one step (founder, 17 November: "on 5, I agree
+with batch hiring, but we should allow for continuous hiring as the company
+evolves"). An agent that hires two to twelve coworkers at one time does it in
+one call, `hire_team`: one automatic review of the call, recorded for all of
+its new agent folders, and one Company File commit, which indexes every new
+agent in its own transaction. So no new agent's first run starts before the
+whole team exists, and each first run lists the others as coworkers. A unit
+that conflicts (its folder was made meanwhile by another save) is that hire's
+outcome alone: the others are saved, and the answer names each hire's outcome.
+The restricted hire above applies to the call as a whole: one owners-and-admins
+card names every hire. `hire_agent` stays the way to hire one coworker at any
+time; a later hire is every agent's coworker from its next run, with no message
+needed (migration 20260930799000).
+
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
 agent applies one authorized Company File deletion operation and matching
@@ -7007,6 +7021,58 @@ worker's run is claimed only by a shared execution host), never before it.
 3. **What members read.** A waiting run's activity says `paused_for: "rate_limited"` and is never movable to another
    login; a usage reading does not end the wait. The recovery read of a failed run says `rate_limited`, so the thread
    says the provider got too many requests at once and the login is fine, never to check the login.
+
+### 2026-11-17 amendment: agents show the product first
+
+> The founder, 17 November 2026, on the lead's review of his test company mywave (the storyboard reached the founders
+> 53 minutes after the start, as form fields beside a line drawing, after more than 30 documents): "1-4 straight yes",
+> and "make sure they are not feeling forced to only use SVG". It adds to the 2026-10-22 amendment's item 3. The hire
+> overlay is v19. It goes live with the runtime bundle that carries it.
+
+1. **The first concept first.** The product's owner makes the first concept in its first run, before any document but
+   the brief: the product in its key moments as a customer will meet it, a physical product as a render that looks
+   real, software as real screens to click through. The solution (strategy/solution.md) is worked out beside it and
+   corrects it. Until the founders say it is their product, plans for later stages wait for their answer unless a
+   founder asks for one, and a card left unanswered for two working days no longer holds them; that orders the work
+   and caps none of it. The owner's role repeats it only before the vision is agreed; the Concepts section carries it
+   for every staff run that can save an app, and the Co-Founder's product paragraph always. What is simulated or
+   undecided is said in the solution, never as notes on a concept's screens.
+2. **The founding team.** The first assignments of the researcher, market watcher and strategist stay due within a day
+   or two. The product's builders get first assignments that move the first concept. The Brand owner's first assignment
+   is two to four directions, each the company's product in its world in a real picture or film, picked by the founders
+   on a card; only the chosen one becomes the identity in `QorperaOS/brand/` with its logo. A founding run offered
+   `hire_team` is told to hire the first team in one call, and later ones several at once with `hire_team` or one with
+   `hire_agent`.
+3. **Blocked work.** An owner whose step is refused or blocked still owns the outcome: the refused step stays refused,
+   and it reaches the outcome another honest way, or asks a member on a card, or tells the Co-Founder. The Co-Founder
+   acts in the run an owner tells it, besides the planning run's rule for a blocker reported twice.
+4. **SVG only where the app draws the file.** An app's icons and `QorperaOS/brand/logo.svg` are SVG; the logo may hold
+   a drawn mark or one embedded picture and nothing outside it. Anything else an agent designs takes whatever shows it
+   best.
+
+### 2026-11-17 amendment: an interface app holds any file; a page opened by itself loads the files beside it
+
+> The founder, 17 November 2026: "also uncap the file-sizes... they are meant to be able to do anything, the cap is a
+> major constraint", and "Yes, all three" on the design page. The detail is RUNTIME-INTERFACE-APPS.md (§2 "Files", "How
+> a page is put together" and "A page opened by itself", §7 step 13). The web part goes live when it merges; the agents'
+> words with the runtime bundle that carries them.
+
+1. **No cap on an app's files.** An interface app holds any number of files, of any kind and of any size the company
+   folder stores (256 MiB a file, the folder's own bound). `save_app` writes text files of any kind that is not binary,
+   each as large as one call carries; a machine writes the rest. `make_picture` no longer checks an app's room.
+2. **Pages read their files when they use them.** An app's page opens first and reads each file of its folder when it
+   uses it, by relative paths in its markup and styles and by `fetch`, `qorpera.file` or `qorpera.bytes` in a script.
+3. **A page opened by itself.** This replaces the rule of the 2026-10-21 amendment's list that "HTML pages and
+   prototypes are ordinary files, written self-contained (inline CSS and JavaScript, nothing from the network)". Such
+   a page is still an ordinary file that members open live in the app, but it loads the files beside it (styles,
+   scripts, pictures, fonts, sound, video, models) by relative paths, as an app's page does, and the agents'
+   instructions say so.
+4. **What stays.** A page still has no network: the frame's policy adds only `blob:` and `data:` sources. A page opened
+   by itself reads only files in its own folder and below it, never one in a folder the platform keeps, always as the
+   member's own read, and has no live sources, no changes and no links.
+5. **The write tools.** This replaces the 2026-10-21 amendment's "`company_write` takes up to 512 KiB of text":
+   `company_write` and `company_edit` now take as much text as one call carries, 960 KiB (`MAX_TOOL_ARGUMENT_BYTES`),
+   which stays below the native session's 1 MiB message.
 
 ## 20. Enforcement matrix
 
