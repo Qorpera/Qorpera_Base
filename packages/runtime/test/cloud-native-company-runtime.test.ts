@@ -1302,6 +1302,7 @@ it.each([
 				"ask_member",
 				"create_group_chat",
 				"hire_agent",
+				"hire_team",
 				// Ending an agent's role, beside hiring (20260930766000).
 				"end_role",
 				"manage_routine",
@@ -1360,7 +1361,7 @@ it.each([
 				"ask_member",
 				"update_memory",
 				"more_tools",
-				...(agentKind === "cofounder" ? ["hire_agent", "update_reading"] : []),
+				...(agentKind === "cofounder" ? ["hire_agent", "hire_team", "update_reading"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -4066,6 +4067,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"recall_memory",
 		"read_skill",
 		"hire_agent",
+		"hire_team",
 		"manage_todo",
 		"manage_worker",
 		"send_message",
@@ -4108,10 +4110,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"fe9e1e3b07766385e7a33ba15d73beb7360e8fc3ab898899ceeeed05da0672d2",
+		"79b74a0c32bf2eb2884df9fc0f0d5de5961b50ffbab6b9220c3a188287a469e8",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"616006824eb84412ba61c74fe9770354e4fb36075c7097c80aeb59458e2699bf",
+		"68a86e3bbbaca313d50e2fb6e08329090d2a55c503746853d283d7c4fbda69b9",
 	);
 });
 

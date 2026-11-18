@@ -1593,6 +1593,20 @@ Member consent MUST be distinguished durably from policy approval in that
 member's name; an agent retry MUST NOT manufacture or renew member consent.
 Completed operations retain their receipt replay semantics.
 
+2026-11-17 amendment: a team in one step (founder, 17 November: "on 5, I agree
+with batch hiring, but we should allow for continuous hiring as the company
+evolves"). An agent that hires two to twelve coworkers at one time does it in
+one call, `hire_team`: one automatic review of the call, recorded for all of
+its new agent folders, and one Company File commit, which indexes every new
+agent in its own transaction. So no new agent's first run starts before the
+whole team exists, and each first run lists the others as coworkers. A unit
+that conflicts (its folder was made meanwhile by another save) is that hire's
+outcome alone: the others are saved, and the answer names each hire's outcome.
+The restricted hire above applies to the call as a whole: one owners-and-admins
+card names every hire. `hire_agent` stays the way to hire one coworker at any
+time; a later hire is every agent's coworker from its next run, with no message
+needed (migration 20260930799000).
+
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
 agent applies one authorized Company File deletion operation and matching
