@@ -827,6 +827,25 @@ first, then the runtime bundle that carries the kit.
 Not built in this step: a member's own upload, the on-screen trial, a link for friends, signing keys, public pages, a
 Remove of a version, a desktop program of Qorpera's own.
 
+**A member's own program** (step 2; Jonas, 18 November 2026: "then build step 2, add your own"). A member who may
+write the company folder makes a new program by giving one file, or several at once (one for each kind), or adds a
+version to a program a member made (a manifest without `owner`); never to an agent's program, whose versions are the
+agent's. The bytes go up through the object gateway's member program route (RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7),
+the only folder path that takes bytes from a browser: `apps/<name>/versions/<version>/<file>`, at most 256 MiB a
+file. Then the text, through the member commit route (C4 §5) in one change set: a new program's `app.toml` (kit
+`program`, its name, no `owner`, `posted = true`, the default emblem) and `program.json` (`writeProgram`; each form with
+the size and SHA-256 of what was staged, so the page's download check holds), with `expectedVersion` when the program
+has one, so two members adding at once conflict and the second reads the newer list, takes the next version and moves
+its files there in the same change set. A member's versions are named `1`, `2` and so on (the next whole number not
+kept). A `program.json` past the commit route's 64 KiB text cannot take a member's version: the page says "This
+program holds as many versions as it can."
+
+**Who added it.** A kept version may carry `userId`, the member who added it from the web (`ProgramVersion.userId`,
+a lower-case UUID; any other value makes the file unread). `parseProgram` keeps it and `writeProgram` writes it;
+`save_app` keeps it on the versions it does not touch, and an agent's own version never has it (a hand-in naming
+`userId` is refused: it is not a field of a hand-in). A runtime bundle from before this keeps the versions but drops
+the field when an agent saves the program: the version then reads by its day, not "added by".
+
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
@@ -1388,6 +1407,13 @@ thread's "Quoted from an email" title).
     checks and kept list (`cloud-app-kit-program.ts`), `app_guide program`, the company context's sentence and the
     platform update `program-kit`; the web's native page with Download and earlier versions. No migration and no node
     change. The web goes first (an older web hides a program app), then the runtime bundle.
+
+16. A member's own program (§3f, 18 November 2026): the object gateway's member program route and its Edge Function
+    allow-list (RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7), cloud-client's `prepareCloudMemberFolderUpload`,
+    `uploadFile` and `CloudSha256`, `ProgramVersion.userId`; the web's New program page, its drawer entry and Add a
+    version. No migration, no new host call, no change to the folder service. Order: the object gateway on node 1 and
+    the member company gateway function (either first: each refuses the route without the other), then the web; the
+    runtime bundle that keeps `userId` through an agent's save may come at any time after.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

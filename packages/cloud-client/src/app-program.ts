@@ -1,4 +1,5 @@
-import { APP_COVER_KINDS, appFileKind, appRelativePath } from "./interface-apps.ts";
+import { isUuid } from "@qorpera/contracts";
+import { APP_COVER_KINDS, APPS_FOLDER, appFileKind, appFolder, appRelativePath } from "./interface-apps.ts";
 
 export const PROGRAM_KIT = "program";
 export const PROGRAM_FILE = "program.json";
@@ -38,6 +39,7 @@ export interface ProgramVersion {
 	readonly version: string;
 	readonly date: string;
 	readonly forms: readonly ProgramKeptForm[];
+	readonly userId?: string;
 }
 
 export interface Program extends ProgramHandIn {
@@ -68,6 +70,16 @@ export function isProgramFileName(value: unknown): value is string {
 
 export const programFilePath = (version: string, file: string): string =>
 	`${PROGRAM_VERSIONS_FOLDER}/${version}/${file}`;
+
+export function programUploadPath(
+	path: string,
+): { readonly name: string; readonly version: string; readonly file: string } | null {
+	const parts = path.split("/");
+	if (parts.length !== 5 || parts[0] !== APPS_FOLDER || parts[2] !== PROGRAM_VERSIONS_FOLDER) return null;
+	const [, name = "", , version, file] = parts;
+	if (appFolder(name) === null || !isProgramVersion(version) || !isProgramFileName(file)) return null;
+	return { name, version, file };
+}
 
 export function programFormsInOrder<T extends ProgramForm>(forms: readonly T[]): T[] {
 	return [...forms].sort((a, b) => PROGRAM_KINDS.indexOf(a.for) - PROGRAM_KINDS.indexOf(b.for));
@@ -161,8 +173,9 @@ export function parseProgramHandIn(text: string): { readonly handIn: ProgramHand
 
 function readKept(value: unknown): ProgramVersion | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-	const { version, date, forms } = value as Record<string, unknown>;
+	const { version, date, forms, userId } = value as Record<string, unknown>;
 	if (!isProgramVersion(version) || typeof date !== "string" || !Number.isFinite(Date.parse(date))) return null;
+	if (userId !== undefined && !isUuid(userId)) return null;
 	const read = readForms(forms);
 	if ("problem" in read || !Array.isArray(forms)) return null;
 	const kept: ProgramKeptForm[] = [];
@@ -172,7 +185,7 @@ function readKept(value: unknown): ProgramVersion | null {
 			return null;
 		kept.push({ ...form, bytes: bytes as number, sha256 });
 	}
-	return { version, date, forms: kept };
+	return { version, date, forms: kept, ...(userId === undefined ? {} : { userId }) };
 }
 
 export function parseProgram(text: string): Program | null {

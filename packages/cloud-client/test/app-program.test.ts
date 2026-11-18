@@ -6,6 +6,7 @@ import {
 	parseProgram,
 	parseProgramHandIn,
 	programFormsInOrder,
+	programUploadPath,
 	writeProgram,
 } from "../src/app-program.ts";
 import { parseAppManifest } from "../src/interface-apps.ts";
@@ -133,6 +134,42 @@ describe("program apps", () => {
 			}),
 		).toBeNull();
 		expect(parseProgram("not json")).toBeNull();
+	});
+
+	it("keeps the member who added a version, and refuses one that is no member's id", () => {
+		const member = "35000000-0000-4000-8000-0000000000ab";
+		const added: Program = {
+			...program,
+			versions: [{ ...program.versions[0]!, userId: member }, program.versions[1]!],
+		};
+		const read = parseProgram(writeProgram(added));
+		expect(read?.versions.map((each) => each.userId)).toEqual([member, undefined]);
+		expect(JSON.parse(writeProgram(program)).versions[0]).not.toHaveProperty("userId");
+		for (const userId of ["Jonas", 7, null, member.toUpperCase()]) {
+			const copy = JSON.parse(writeProgram(program));
+			copy.versions[0].userId = userId;
+			expect(parseProgram(JSON.stringify(copy)), String(userId)).toBeNull();
+		}
+	});
+
+	it("names the one folder path a member's browser may put a program's file at", () => {
+		expect(programUploadPath("apps/lagerliste/versions/1/Lagerliste-1.0-setup.exe")).toEqual({
+			name: "lagerliste",
+			version: "1",
+			file: "Lagerliste-1.0-setup.exe",
+		});
+		for (const path of [
+			"apps/lagerliste/app.toml",
+			"apps/lagerliste/program.json",
+			"apps/lagerliste/versions/1",
+			"apps/lagerliste/versions/1/a/b.exe",
+			"apps/Lagerliste/versions/1/a.exe",
+			"apps/lagerliste/versions/0..1/a.exe",
+			"apps/lagerliste/screens/1/a.png",
+			"code/apps/lagerliste/versions/1/a.exe",
+			"apps/lagerliste/versions/1/..",
+		])
+			expect(programUploadPath(path), path).toBeNull();
 	});
 
 	it("puts forms in the fixed order of kinds", () => {

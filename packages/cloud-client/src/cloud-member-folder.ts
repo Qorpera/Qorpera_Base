@@ -1,6 +1,6 @@
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
-import { cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
+import { CloudSha256, cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
 /*
@@ -809,6 +809,46 @@ export class CloudMemberFolderFileCache {
 
 /** At most this many of a file's chunks are asked for at once. */
 const CHUNKS_AT_ONCE = 4;
+const PIECES_AT_ONCE = 3;
+const UPLOAD_AHEAD_TRIES = 60;
+export const CLOUD_MEMBER_FOLDER_UPLOAD_MAX_BYTES = MAX_FILE_BYTES;
+
+export interface CloudMemberFolderUploadFile {
+	readonly bytes: number;
+	readonly fileSha256: string;
+	readonly pieces: readonly string[];
+}
+
+class UploadGone extends CloudMemberFolderError {}
+
+export async function prepareCloudMemberFolderUpload(
+	file: Blob,
+	signal: AbortSignal,
+): Promise<CloudMemberFolderUploadFile> {
+	if (file.size < 1 || file.size > MAX_FILE_BYTES)
+		throw new CloudMemberFolderError("Company folder file exceeds the upload limit", 413);
+	const whole = new CloudSha256();
+	const pieces: string[] = [];
+	for (let start = 0; start < file.size; start += CHUNK_BYTES) {
+		signal.throwIfAborted();
+		const bytes = new Uint8Array(await file.slice(start, start + CHUNK_BYTES).arrayBuffer());
+		pieces.push(await cloudFileBytesSha256(bytes));
+		whole.update(bytes);
+	}
+	signal.throwIfAborted();
+	return { bytes: file.size, fileSha256: whole.hex(), pieces };
+}
+
+function parseUploadOpen(value: unknown, count: number): { uploadId: string; have: number[] } {
+	const input = closed(value, ["schema", "uploadId", "have"], [], "upload");
+	if (
+		input.schema !== "qorpera.member-program-upload/v1" ||
+		!Array.isArray(input.have) ||
+		input.have.some((index) => !Number.isSafeInteger(index) || index < 0 || index >= count)
+	)
+		invalid("upload");
+	return { uploadId: idOf(input.uploadId, "upload id"), have: input.have as number[] };
+}
 
 export class CloudMemberFolderClient {
 	readonly #environmentId: string;
@@ -1099,6 +1139,165 @@ export class CloudMemberFolderClient {
 			throw new CloudMemberFolderError("Company folder bytes do not match their entry");
 		signal.throwIfAborted();
 		for (const [index, part] of held.entries()) onPiece(part, index, held.length);
+	}
+
+	async uploadFile(
+		pathValue: string,
+		file: Blob,
+		prepared: CloudMemberFolderUploadFile,
+		options: {
+			readonly operationKey: string;
+			readonly signal: AbortSignal;
+			readonly onProgress?: (sent: number, total: number) => void;
+		},
+	): Promise<CloudMemberFolderCommit> {
+		const target = path(pathValue);
+		const { signal, operationKey } = options;
+		if (!OPERATION_KEY.test(operationKey) || prepared.bytes !== file.size)
+			throw new CloudMemberFolderError("Invalid company folder upload");
+		if (prepared.bytes > MAX_FILE_BYTES)
+			throw new CloudMemberFolderError("Company folder file exceeds the upload limit", 413);
+		const base = `${this.#objectOrigin}/v1/member-program-uploads/${this.#environmentId}`;
+		let uploadId: string | undefined;
+		const stopped = () => {
+			if (uploadId === undefined) return;
+			const at = `${base}/${uploadId}/stop`;
+			void withCloudDeadline(
+				async (stopSignal) =>
+					this.#send(at, "POST", JSON.stringify({ schema: "qorpera.member-program-stop/v1" }), stopSignal),
+				5_000,
+			).catch(() => undefined);
+		};
+		signal.addEventListener("abort", stopped, { once: true });
+		try {
+			for (let attempt = 1; ; attempt++) {
+				try {
+					const opened = parseUploadOpen(
+						await this.#retried(
+							(requestSignal) =>
+								this.#send(
+									base,
+									"POST",
+									JSON.stringify({
+										schema: "qorpera.member-program-upload/v1",
+										path: target,
+										bytes: prepared.bytes,
+										fileSha256: prepared.fileSha256,
+										pieces: prepared.pieces,
+									}),
+									requestSignal,
+								),
+							signal,
+						),
+						prepared.pieces.length,
+					);
+					uploadId = opened.uploadId;
+					await this.#putPieces(`${base}/${opened.uploadId}`, file, prepared, opened.have, options);
+					const answer = await this.#retried(
+						(requestSignal) =>
+							this.#send(
+								`${base}/${opened.uploadId}`,
+								"POST",
+								JSON.stringify({ schema: "qorpera.member-program-finish/v1", operationKey }),
+								requestSignal,
+							),
+						signal,
+					);
+					const parts = target.split("/");
+					return parseCloudMemberFolderCommit(answer, [
+						...[1, 2, 3, 4].map((depth) => ({ op: "mkdir" as const, path: parts.slice(0, depth).join("/") })),
+						{ op: "write", path: target, text: "" },
+					]);
+				} catch (error) {
+					if (!(error instanceof UploadGone) || attempt === 2) throw error;
+				}
+			}
+		} finally {
+			signal.removeEventListener("abort", stopped);
+		}
+	}
+
+	async #putPieces(
+		at: string,
+		file: Blob,
+		prepared: CloudMemberFolderUploadFile,
+		have: readonly number[],
+		options: { readonly signal: AbortSignal; readonly onProgress?: (sent: number, total: number) => void },
+	): Promise<void> {
+		const size = (index: number) => Math.min(CHUNK_BYTES, prepared.bytes - index * CHUNK_BYTES);
+		const waiting = prepared.pieces.map((_, index) => index).filter((index) => !have.includes(index));
+		let sent = have.reduce((total, index) => total + size(index), 0);
+		options.onProgress?.(sent, prepared.bytes);
+		let next = 0;
+		const failed = new AbortController();
+		const signal = AbortSignal.any([options.signal, failed.signal]);
+		const worker = async () => {
+			while (next < waiting.length) {
+				const index = waiting[next++]!;
+				const start = index * CHUNK_BYTES;
+				try {
+					await this.#retried(
+						(requestSignal) =>
+							this.#send(`${at}/${index}`, "PUT", file.slice(start, start + size(index)), requestSignal),
+						signal,
+						UPLOAD_AHEAD_TRIES,
+					);
+				} catch (error) {
+					failed.abort(error);
+					throw error;
+				}
+				sent += size(index);
+				options.onProgress?.(sent, prepared.bytes);
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, waiting.length) }, worker));
+	}
+
+	async #retried(
+		send: (signal: AbortSignal) => Promise<unknown>,
+		signal: AbortSignal,
+		aheadTries = PIECE_TRIES,
+	): Promise<unknown> {
+		for (let attempt = 1, ahead = 0; ; attempt++) {
+			try {
+				return await withCloudDeadline(send, this.#timeoutMs, signal);
+			} catch (error) {
+				const status = error instanceof CloudMemberFolderError ? error.status : null;
+				if (status === 409 && ahead++ < aheadTries) {
+					attempt--;
+					await pause(this.#pieceRetryMs, signal);
+					continue;
+				}
+				if (signal.aborted || (status !== null && status < 500) || attempt === PIECE_TRIES) throw error;
+				await pause(this.#pieceRetryMs * attempt, signal);
+			}
+		}
+	}
+
+	async #send(at: string, method: "POST" | "PUT", body: string | Blob, signal: AbortSignal): Promise<unknown> {
+		const token = await this.#token(signal);
+		const response = await this.#fetch(at, {
+			method,
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": typeof body === "string" ? "application/json" : "application/octet-stream",
+			},
+			body,
+			signal,
+			redirect: "error",
+		});
+		if (response.status === 204) return null;
+		if (response.status !== 200) {
+			void response.body?.cancel().catch(() => undefined);
+			if (response.status === 404) throw new UploadGone("Company folder upload is gone", 404);
+			throw refusal(response.status, "Company folder upload");
+		}
+		const bytes = await readBoundedCloudResponse(response, MAX_ANSWER_BYTES, signal);
+		try {
+			return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+		} catch {
+			invalid("upload answer");
+		}
 	}
 
 	/** One read under the client's deadline, tried up to three times. */

@@ -1096,6 +1096,77 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(wrongMethod.status, 405);
 	});
+	it("forwards a member's program upload: its open, finish and stop up to 16 KiB, each piece up to 4 MiB", async () => {
+		const open = `/v1/member-program-uploads/${id}`;
+		const finish = `${open}/${id}`;
+		const stop = `${finish}/stop`;
+		const piece = `${finish}/63`;
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${headers.get("content-type")}`);
+			assert.equal(headers.get("authorization"), "Bearer member.jwt.token");
+			return Response.json({ ok: true });
+		};
+		const step = new Uint8Array(16 * 1024).fill(32);
+		for (const path of [open, finish, stop]) {
+			const response = await forward(
+				request(path, { method: "POST", body: step, headers: { "content-type": "application/json" } }),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(response.status, 200);
+			const over = await forward(
+				request(path, {
+					method: "POST",
+					body: new Uint8Array(16 * 1024 + 1),
+					headers: { "content-type": "application/json" },
+				}),
+				{ upstreamUrl, fetchImplementation: async () => assert.fail("oversized step forwarded") },
+			);
+			assert.equal(over.status, 413);
+		}
+		const bytes = new Uint8Array(4 * 1024 * 1024).fill(7);
+		const put = await forward(
+			request(piece, { method: "PUT", body: bytes, headers: { "content-type": "application/octet-stream" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(put.status, 200);
+		const oversized = await forward(request(piece, { method: "PUT", body: new Uint8Array(4 * 1024 * 1024 + 1) }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("oversized piece forwarded"),
+		});
+		assert.equal(oversized.status, 413);
+		assert.deepEqual(seen, [
+			`POST ${open} application/json`,
+			`POST ${finish} application/json`,
+			`POST ${stop} application/json`,
+			`PUT ${piece} application/octet-stream`,
+		]);
+		for (const path of [`${finish}/64`, `${finish}/07`, `${open}/x`, `${stop}/1`]) {
+			const response = await forward(request(path, { method: "POST", body: "{}" }), {
+				upstreamUrl,
+				fetchImplementation: async () => assert.fail("unknown program route forwarded"),
+			});
+			assert.equal(response.status, 404);
+		}
+		const preflight = await forward(
+			request(piece, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "PUT",
+					"access-control-request-headers": "authorization, content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("preflight forwarded") },
+		);
+		assert.equal(preflight.status, 204);
+		assert.equal(preflight.headers.get("access-control-allow-methods"), "PUT");
+		const wrongMethod = await forward(request(finish, { method: "PUT", body: "x" }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("wrong method forwarded"),
+		});
+		assert.equal(wrongMethod.status, 405);
+	});
 	it("reads an upload only for a signed-in member, into one buffer of its stated size", async () => {
 		const upload = `/v1/member-session-attachments/upload/${id}/${id}/${"c".repeat(64)}`;
 		const size = 8 * 1024 * 1024;
