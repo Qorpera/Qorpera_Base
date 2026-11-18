@@ -454,8 +454,9 @@ export function runFailureInterrupted(
 	jobStatus: "failed" | "cancelled",
 	usageLimit?: boolean,
 	rateLimited?: boolean,
+	signInRefused?: boolean,
 ): boolean {
-	const kind = classifyRunFailure(lastError, jobStatus, usageLimit, rateLimited);
+	const kind = classifyRunFailure(lastError, jobStatus, usageLimit, rateLimited, signInRefused);
 	return (
 		kind === "lost" ||
 		kind === "rate_limited" ||

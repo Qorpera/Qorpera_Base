@@ -445,7 +445,8 @@ export class SessionExecutionView {
 		const own = this.#own();
 		if (!observed || !own || !this.#keeps(own)) return undefined;
 		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
-		if (!connection || remainingAllowance(connection, Date.now()) !== 0) return undefined;
+		if (!connection || refusedSignIn(connection) || remainingAllowance(connection, Date.now()) !== 0)
+			return undefined;
 		try {
 			selectSessionExecutionSponsor(observed, own, this.#company.userId);
 			return own;
@@ -863,7 +864,7 @@ export class SessionExecutionView {
 		const own = this.#own();
 		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
 		if (!own || !connection || !this.#keeps(own)) return null;
-		const atLimit = remainingAllowance(connection, Date.now()) === 0;
+		const atLimit = !refusedSignIn(connection) && remainingAllowance(connection, Date.now()) === 0;
 		const available = this.#available();
 		const name = (connectionId: string) => this.#account(observed, connectionId, available);
 		const [first, ...rest] =

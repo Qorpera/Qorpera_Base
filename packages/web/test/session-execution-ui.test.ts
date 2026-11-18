@@ -2678,6 +2678,23 @@ describe("a login ChatGPT no longer accepts", () => {
 		);
 	});
 
+	it("does not wait on its usage limit: the sign-in sentence, and nothing can be sent", async () => {
+		const f = setup(true, withUsage([80, 40]));
+		await settle();
+		f.listConnections.mockResolvedValue(refused([0, 0]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.querySelector(".usage-wall-title")?.textContent).toBe(
+			"ChatGPT no longer accepts the sign-in for dead@example.test. Sign in again in Settings → AI subscriptions.",
+		);
+		expect(f.view.el.querySelector(".usage-wall-sub")).toBeNull();
+		expect(f.view.el.textContent).not.toContain("Out of usage");
+	});
+
 	it("keeps the usage-limit sentence when no login needs a new sign-in", async () => {
 		const f = setup(true, withUsage([0, 0]));
 		await settle();

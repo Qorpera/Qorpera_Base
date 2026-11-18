@@ -1626,6 +1626,17 @@ describe("a sign-in ChatGPT no longer accepts", () => {
 		expect(view.el.textContent).not.toContain("ChatGPT no longer accepts this sign-in.");
 		expect(view.el.textContent).not.toContain("Added ");
 	});
+
+	it("keeps it beside a working login when neither has an email", async () => {
+		const unnamed: WebMemberConnection = { ...refused };
+		delete unnamed.providerAccountEmail;
+		const fresh: WebMemberConnection = { ...connected, connectionId: id(83), clientConnectionId: id(183) };
+		delete fresh.providerAccountEmail;
+		await setup(true, observed(unnamed, fresh));
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".connection-card")];
+		expect(cards.map((item) => item.dataset.connectionId)).toEqual([unnamed.connectionId, id(83)]);
+		expect(view.el.querySelector('[data-action="sign-in-again"]')).not.toBeNull();
+	});
 });
 
 describe("Claude sign-in (coding only, offered while the member may sign in with it)", () => {

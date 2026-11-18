@@ -367,8 +367,17 @@ describe("a run ChatGPT no longer accepts the login's sign-in for (2026093080800
 		expect(classifyRunFailure(refused, "failed", false, true, true)).toBe("rate_limited");
 	});
 
-	it("is not worth trying again as it is", () => {
-		expect(runFailureInterrupted(refused, "failed", false, false)).toBe(false);
+	it("is not worth trying again as it is, whatever its last error reads as", () => {
+		const timedOut = "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TIMEOUT]";
+		const dropped =
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE]";
+		const lost = "Runner lease expired before durable completion; durable attempt output requires review";
+		for (const error of [refused, timedOut, dropped, lost]) {
+			expect(runFailureInterrupted(error, "failed", false, false, true)).toBe(false);
+		}
+		for (const error of [timedOut, dropped, lost]) {
+			expect(runFailureInterrupted(error, "failed", false, false, false)).toBe(true);
+		}
 	});
 
 	it("says a waiting run tries again by itself while its sign-in is renewed", () => {

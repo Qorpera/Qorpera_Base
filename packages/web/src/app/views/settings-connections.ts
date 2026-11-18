@@ -1089,6 +1089,7 @@ export class ConnectionsView {
 		const cardAccounts = accounts.filter(
 			(connection) =>
 				!refused(connection) ||
+				connection.providerAccountEmail === undefined ||
 				!accounts.some((other) => lookalike(other) === lookalike(connection) && live(other) && !refused(other)),
 		);
 		const lookalikes = new Map<string, number>();

@@ -3981,7 +3981,13 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit, recovery.rateLimited);
+			runFailureInterrupted(
+				recovery.lastError,
+				recovery.jobStatus,
+				recovery.usageLimit,
+				recovery.rateLimited,
+				recovery.signInRefused,
+			);
 		const key = JSON.stringify([
 			runId,
 			hidden,
