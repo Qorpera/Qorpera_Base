@@ -274,6 +274,8 @@ export const AGENTS: Record<string, string> = {
 		"ChatGPT afviste sessionens forespørgsel, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.":
 		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning venter og fortsætter af sig selv, når grænsen er nulstillet.",
+	"ChatGPT no longer accepts the sign-in of the login that pays for this session. Sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"ChatGPT godtager ikke længere det login, der betaler for sessionen. Log ind igen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
 		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.":

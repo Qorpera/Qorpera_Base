@@ -3967,6 +3967,7 @@ export class ConversationView {
 							recovery.rateLimited,
 							(recovery.sourceKind === "session_turn" || recovery.sourceKind === "room_delivery") &&
 								recovery.requestedByUserId === this.#company.userId.toLowerCase(),
+							recovery.signInRefused,
 						)
 					: undefined;
 		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
@@ -4120,6 +4121,7 @@ export class ConversationView {
 				...(payerName ? { payerName } : {}),
 			},
 			paused.rateLimited,
+			paused.signInRefused,
 		);
 		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
 		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;

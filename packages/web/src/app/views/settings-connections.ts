@@ -172,6 +172,16 @@ function planReason(reason: string | undefined): string {
 
 const live = (connection: NativeMemberConnection) =>
 	connection.connectionStatus === "active" && connection.authorizationState === "active";
+const needsSignIn = (connection: WebMemberConnection, account: WebAccountLogin | undefined) =>
+	connection.loginStatus === "needs_sign_in" || account?.status === "needs_sign_in";
+const replaced = (login: WebAccountLogin, logins: readonly WebAccountLogin[]) =>
+	login.status === "needs_sign_in" &&
+	login.providerAccountEmail !== undefined &&
+	logins.some(
+		(other) =>
+			other.status === "active" &&
+			other.providerAccountEmail?.toLowerCase() === login.providerAccountEmail?.toLowerCase(),
+	);
 /** Cards with the same provider and email read the same. */
 const lookalike = (connection: NativeMemberConnection) =>
 	`${connection.provider}\n${connection.providerAccountEmail?.toLowerCase() ?? ""}`;
@@ -782,6 +792,7 @@ export class ConnectionsView {
 					)
 				: null;
 		if (everywhere) everywhere.dataset.focusKey = `everywhere:${account?.loginId}`;
+		const refused = needsSignIn(connection, account);
 		return h(
 			"article",
 			{ class: "connection-card", dataset: { connectionId: connection.connectionId } },
@@ -802,12 +813,14 @@ export class ConnectionsView {
 						)
 					: null,
 				account ? h("small", { class: "connection-scope" }, t("Used in all your companies")) : null,
-				!live(connection)
-					? h("small", { role: "status" }, t("Sign out and add this account again to reconnect."))
-					: null,
+				refused
+					? h("small", { role: "status" }, t("ChatGPT no longer accepts this sign-in."))
+					: !live(connection)
+						? h("small", { role: "status" }, t("Sign out and add this account again to reconnect."))
+						: null,
 			),
-			h("div", { class: "connection-actions" }, signOut, everywhere),
-			this.#usage(connection),
+			h("div", { class: "connection-actions" }, refused ? this.#signInAgain() : null, signOut, everywhere),
+			refused ? null : this.#usage(connection),
 			this.#away(connection),
 		);
 	}
@@ -825,6 +838,7 @@ export class ConnectionsView {
 		);
 		everywhere.dataset.focusKey = `everywhere:${login.loginId}`;
 		const usable = login.status === "active" && (!connection || live(connection));
+		const refused = login.status === "needs_sign_in";
 		return h(
 			"article",
 			{ class: "connection-card", dataset: { loginId: login.loginId } },
@@ -835,11 +849,32 @@ export class ConnectionsView {
 				h("strong", null, PROVIDERS[0]!.label),
 				h("small", { class: "connection-email" }, login.providerAccountEmail ?? t("Email unavailable")),
 				h("small", { class: "connection-scope" }, t("Used in all your companies")),
-				usable ? null : h("small", { role: "status" }, t("Sign out and add this account again to reconnect.")),
+				refused
+					? h("small", { role: "status" }, t("ChatGPT no longer accepts this sign-in."))
+					: usable
+						? null
+						: h("small", { role: "status" }, t("Sign out and add this account again to reconnect.")),
 			),
-			h("div", { class: "connection-actions" }, everywhere),
-			connection ? this.#usage(connection) : h("div", { class: "connection-usage muted" }, t("Usage unavailable")),
+			h("div", { class: "connection-actions" }, refused ? this.#signInAgain() : null, everywhere),
+			refused
+				? null
+				: connection
+					? this.#usage(connection)
+					: h("div", { class: "connection-usage muted" }, t("Usage unavailable")),
 		);
+	}
+	#signInAgain(): HTMLElement {
+		const openai = this.#attempts.get("openai");
+		const again = button(t("Sign in again"), () => void this.#connect("openai"), {
+			disabled:
+				this.#loading ||
+				!this.#client.onboardingAvailable ||
+				!this.#begin ||
+				Boolean(openai?.starting || openai?.login),
+		});
+		again.dataset.action = "sign-in-again";
+		again.dataset.focusKey = "sign-in-again";
+		return again;
 	}
 	/** The connections whose usage this page shows: with no company open, only the account logins' links. */
 	#shown(): readonly WebMemberConnection[] {
@@ -1049,15 +1084,24 @@ export class ConnectionsView {
 					(attempt) => attempt.login?.clientConnectionId === connection.clientConnectionId && !live(connection),
 				),
 		);
+		const refused = (connection: WebMemberConnection) =>
+			needsSignIn(connection, this.#accountLogins.get(connection.connectionId));
+		const cardAccounts = accounts.filter(
+			(connection) =>
+				!refused(connection) ||
+				!accounts.some(
+					(other) => lookalike(other) === lookalike(connection) && live(other) && !refused(other),
+				),
+		);
 		const lookalikes = new Map<string, number>();
-		for (const key of accounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
+		for (const key of cardAccounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
 		const accountWide = Boolean(this.#accountWide);
 		// With no company open the cards are the member's account logins, whichever companies use them.
 		const cards = accountWide
-			? this.#logins.map((login) => this.#login(login))
+			? this.#logins.filter((login) => !replaced(login, this.#logins)).map((login) => this.#login(login))
 			: [
-					...accounts.map((connection) =>
+					...cardAccounts.map((connection) =>
 						this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1),
 					),
 					...(this.#claude?.logins ?? []).map((login) => this.#claudeCard(login)),

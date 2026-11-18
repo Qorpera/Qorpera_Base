@@ -9,6 +9,7 @@ export type RunFailureKind =
 	| "computer_hours"
 	| "usage_limit"
 	| "rate_limited"
+	| "sign_in_refused"
 	| "provider_refused"
 	| "connection"
 	| "login_unavailable"
@@ -28,6 +29,7 @@ export function classifyRunFailure(
 	jobStatus: "failed" | "cancelled",
 	usageLimit?: boolean,
 	rateLimited?: boolean,
+	signInRefused?: boolean,
 ): RunFailureKind {
 	// The company ran out of computer hours and its hour to finish running work ended: the one
 	// code that decides the class, since it names the company's hours, not Qorpera's machinery.
@@ -37,6 +39,7 @@ export function classifyRunFailure(
 	// only an older cloud, which says nothing, leaves it to the error text below.
 	if (usageLimit === true) return "usage_limit";
 	if (rateLimited === true) return "rate_limited";
+	if (signInRefused === true) return "sign_in_refused";
 	// The run ended, but the cloud refused its completion because work was left unsettled, such as a save whose outcome
 	// is unknown (30 October 2026). The runner fails it at once with this code; it used to go silent and read as lost
 	// contact minutes later.
@@ -105,6 +108,9 @@ const REASONS: Record<RunFailureKind, string> = {
 		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again once the limit resets.",
 	),
 	rate_limited: phrase("ChatGPT turned this run away because too many requests came at once. The login is fine."),
+	sign_in_refused: phrase(
+		"ChatGPT no longer accepts this login's sign-in, so the work stopped. Sign in again in Settings → AI subscriptions.",
+	),
 	// The member whose login paid checks it or picks another one; the work never moves to another login by itself.
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
@@ -133,6 +139,9 @@ const REASONS: Record<RunFailureKind, string> = {
 /** The same, for a member whose own login did not pay for the run, or when the web cannot tell: the card is the agent's,
  * so every member reads it, and only the member whose login it is can check it. */
 const REASONS_FOR_OTHERS: Partial<Record<RunFailureKind, string>> = {
+	sign_in_refused: phrase(
+		"ChatGPT no longer accepts the sign-in of the login that pays for this run, so the work stopped. The member whose login it is can sign in again in Settings → AI subscriptions.",
+	),
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.",
 	),
@@ -182,8 +191,9 @@ export function runFailureReason(
 	payer: RunPayer = {},
 	rateLimited?: boolean,
 	ownMessage?: boolean,
+	signInRefused?: boolean,
 ): string {
-	const kind = classifyRunFailure(lastError, jobStatus, usageLimit, rateLimited);
+	const kind = classifyRunFailure(lastError, jobStatus, usageLimit, rateLimited, signInRefused);
 	if (kind === "rate_limited" && ownMessage === true) return t(MESSAGE_RATE_LIMITED);
 	const resetsAt = payer.resetsAt;
 	const time = kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now() ? fmtTime(resetsAt) : undefined;
@@ -211,7 +221,13 @@ export function runFailureReason(
 	return t((payer.own === true ? undefined : REASONS_FOR_OTHERS[kind]) ?? REASONS[kind]);
 }
 
-export function runWaitingReason(until: string, payer: RunPayer = {}, rateLimited?: boolean): string {
+export function runWaitingReason(
+	until: string,
+	payer: RunPayer = {},
+	rateLimited?: boolean,
+	signInRefused?: boolean,
+): string {
+	if (signInRefused === true) return t(SIGN_IN_WAIT);
 	if (rateLimited === true) return t(RATE_LIMIT_WAIT);
 	const time = fmtTime(until);
 	if (payer.own === true && payer.continuable === true)
@@ -238,6 +254,10 @@ const RATE_LIMIT_WAIT = phrase(
 	"ChatGPT is busy with too many requests at once. This work waits a few minutes and then tries again by itself. The login is fine.",
 );
 
+const SIGN_IN_WAIT = phrase(
+	"ChatGPT did not accept this login's sign-in. Qorpera is renewing it, and the work tries again by itself in a few minutes.",
+);
+
 // The coding executor's own words for a turn that ended with no coding_finish or
 // coding_ask, or that was stopped (runner-orchestrator coding-executor.ts). Any
 // other failure it reports carries the run's last error after its own prefix.
@@ -257,6 +277,9 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	),
 	rate_limited: phrase(
 		"ChatGPT turned the session's request away because too many requests came at once. The login is fine. The workspace is kept; a follow-up continues it.",
+	),
+	sign_in_refused: phrase(
+		"ChatGPT no longer accepts the sign-in of the login that pays for this session. Sign in again in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
 	),
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
