@@ -120,13 +120,12 @@ export async function runOfficialCodexBoundaryProbe(
 				input: Array<Record<string, unknown>>;
 				reasoning?: { effort?: string };
 			};
-			// Codex 0.170.0 defaults to GPT-6.2 Sol; provider-default sends no model name.
+			// WHY: provider-default sends no model name; Codex 0.170.0's own default is GPT-6.2 Sol.
 			assert.equal(parsed.model, model === "provider-default" ? "gpt-6.2-sol" : model);
 			if (providerModel) assert.equal(parsed.model, providerModel);
 			providerModel = parsed.model;
 			assert.equal(parsed.reasoning?.effort, "low");
 			const additionalTools = parsed.input.filter((item) => item.type === "additional_tools");
-			// The 0.170.0 catalog enables Responses Lite for every GPT-6 and GPT-5.6 model; an unknown model has none.
 			const responsesLite = RESPONSES_LITE_MODELS.has(parsed.model);
 			assert.equal(additionalTools.length, responsesLite ? 1 : 0);
 			if (responsesLite) assert.equal(parsed.tools, undefined);

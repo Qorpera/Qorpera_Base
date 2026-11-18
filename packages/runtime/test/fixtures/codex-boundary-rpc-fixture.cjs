@@ -214,7 +214,7 @@ let voiceLateSent;
 const voiceLate = new Promise((resolve) => { voiceLateSent = resolve; });
 
 // A picture call (cloud-picture-channel.ts): a side thread with Codex's image tool on, whose one turn makes one picture,
-// saved where Codex 0.170.0 keeps it. The agent's turn waits meanwhile, until the test lets it end.
+// saved where Codex 0.155.1 keeps it. The agent's turn waits meanwhile, until the test lets it end.
 const pictureMode = mode.startsWith("picture");
 const pictureThreadId = "thread_picture";
 const pictureTurnId = "turn_picture";

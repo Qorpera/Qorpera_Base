@@ -198,7 +198,7 @@ export async function runNativeCodexCompactionProbe(
 					if (capture) captureActive = false;
 					else active = false;
 				}
-				// Codex 0.170.0 has no remote compaction v1 (/v1/responses/compact); only v2 remains.
+				// Codex 0.155.1 has no remote compaction v1 (/v1/responses/compact); only v2 remains.
 				if (mode === "remote-v2") {
 					assert.equal(request.url, "/v1/responses");
 					assert(parsed.input.some((item) => item.type === "compaction_trigger"));

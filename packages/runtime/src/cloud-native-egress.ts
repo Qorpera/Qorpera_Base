@@ -17,7 +17,7 @@ export const NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS = Object.freeze(["platform.claud
  * (NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS). */
 export const NATIVE_CLAUDE_CODE_EGRESS_HOSTS = Object.freeze(["api.anthropic.com"]);
 /** A voice call's control connection: Codex makes the call at chatgpt.com, then joins it over a websocket at OpenAI's
- * API (`OPENAI_REALTIME_API_BASE_URL`, Codex 0.170.0). A Codex login's relay passes it only while a call is open
+ * API (`OPENAI_REALTIME_API_BASE_URL`, Codex 0.155.1). A Codex login's relay passes it only while a call is open
  * (`allowRealtime`); the call's sound never passes the relay. */
 export const NATIVE_CODEX_REALTIME_EGRESS_HOSTS = Object.freeze(["api.openai.com"]);
 export const NATIVE_EGRESS_SOCKET_NAME = "egress.sock";
@@ -33,7 +33,7 @@ const MAX_CONNECTIONS = 8;
 const IDLE_MS = 30_000;
 /** How long a connection may be silent while a picture is being made (`allowLongWaits`): Codex's images request sends
  * nothing back until the picture exists, which takes up to a few minutes, and keeps no ping on the connection (Codex
- * 0.170.0, ext/image-generation/src/backend.rs). Longer than a picture call waits (CLOUD_PICTURE_MS, 4 minutes). */
+ * 0.155.1, ext/image-generation/src/backend.rs). Longer than a picture call waits (CLOUD_PICTURE_MS, 4 minutes). */
 export const NATIVE_EGRESS_LONG_IDLE_MS = 5 * 60_000;
 
 export function nativeEgressPublicAddress(address: string): boolean {
