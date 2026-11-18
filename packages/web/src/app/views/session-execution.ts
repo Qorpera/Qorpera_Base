@@ -128,6 +128,8 @@ function usageCard(
  * unavailable" until the page was reloaded.) */
 export const ACCOUNT_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000, 30_000, 60_000];
 
+const CLAUDE_READ_EVERY_MS = 60_000;
+
 /** One of the member's logins that can pay for a conversation, as the composer's Login page lists it. */
 export interface SessionLogin {
 	readonly connectionId: string;
@@ -172,6 +174,7 @@ export class SessionExecutionView {
 	#claudeOut: { login: WebClaudeLogin; until: string; next: WebClaudeLogin } | undefined;
 	#claudeMoved: { loginId: string; account: string } | undefined;
 	#claudeSwitching = false;
+	#claudeReadAt: number | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -333,11 +336,13 @@ export class SessionExecutionView {
 				: undefined,
 		);
 		void this.#hydrateUsage();
-		void this.#readClaude(signal);
+		if (this.#claudeReadAt === undefined || Date.now() - this.#claudeReadAt >= CLAUDE_READ_EVERY_MS)
+			void this.#readClaude(signal);
 	}
 
 	async #readClaude(signal: AbortSignal): Promise<void> {
 		if (!this.#native.listClaudeLogins) return;
+		this.#claudeReadAt = Date.now();
 		let logins: readonly WebClaudeLogin[];
 		try {
 			logins = (await this.#native.listClaudeLogins(signal)).logins;

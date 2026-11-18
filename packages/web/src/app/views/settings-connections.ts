@@ -868,7 +868,8 @@ export class ConnectionsView {
 		const several = logins.length > 1;
 		const working = this.#working === `claude:${login.loginId}`;
 		const using = this.#claudeReset?.loginId === login.loginId && this.#claudeReset.phase === "using";
-		const leaving = this.#claudeLeaving === login.loginId;
+		const others = logins.filter((item) => item.loginId !== login.loginId);
+		const leaving = this.#claudeLeaving === login.loginId && login.inUse === true && others.length > 0;
 		const signOut = button(working ? t("Signing out…") : t("Sign out"), () => void this.#signOutClaude(login), {
 			disabled: Boolean(this.#working) || !this.#client.signOutClaude || using || leaving,
 		});
@@ -881,7 +882,6 @@ export class ConnectionsView {
 					})
 				: null;
 		if (use) use.dataset.focusKey = `claude-use:${login.loginId}`;
-		const others = logins.filter((item) => item.loginId !== login.loginId);
 		const leave = leaving
 			? h(
 					"div",

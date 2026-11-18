@@ -2672,18 +2672,29 @@ describe("the chat's card when the Claude login in use is used up", () => {
 		expect(title(f.view)).toBe("New Claude work now uses home@example.com");
 	});
 
+	it("reads the Claude logins once a minute at most, not on every read of the accounts", async () => {
+		const f = claudeSetup([{ ...work }, { ...home }]);
+		await settle();
+		refresh();
+		await settle();
+		refresh();
+		await settle();
+		expect(f.native.listClaudeLogins).toHaveBeenCalledTimes(1);
+	});
+
 	it("shows nothing while no other login has room, or the login in use has room", async () => {
-		const f = claudeSetup([{ ...work }, { ...home, usedUpUntil: until }]);
-		await settle();
-		expect(f.view.el.querySelector(".usage-wall")).toBeNull();
-		f.listed.logins = [{ ...work }];
-		refresh();
-		await settle();
-		expect(f.view.el.querySelector(".usage-wall")).toBeNull();
-		f.listed.logins = [{ ...work, usedUpUntil: new Date(Date.now() - 60_000).toISOString() }, { ...home }];
-		refresh();
-		await settle();
-		expect(f.view.el.querySelector(".usage-wall")).toBeNull();
-		expect(f.useClaude).not.toHaveBeenCalled();
+		for (const logins of [
+			[{ ...work }, { ...home, usedUpUntil: until }],
+			[{ ...work }],
+			[{ ...work, usedUpUntil: new Date(Date.now() - 60_000).toISOString() }, { ...home }],
+		]) {
+			const f = claudeSetup(logins);
+			await settle();
+			expect(f.view.el.querySelector(".usage-wall")).toBeNull();
+			expect(f.useClaude).not.toHaveBeenCalled();
+			dispose?.();
+			dispose = undefined;
+			document.body.replaceChildren();
+		}
 	});
 });
