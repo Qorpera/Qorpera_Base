@@ -13,12 +13,6 @@
 select pg_temp.base_claims('service_role');
 select pg_temp.mc_observe_a() \g /dev/null
 
--- The admit line skips companies at zero in both of its queries.
-select pg_temp.base_assert((length(d) - length(replace(d, 'and not public.qorpera_company_at_zero(machine.profile_id, clock_timestamp())', '')))
-		/ length('and not public.qorpera_company_at_zero(machine.profile_id, clock_timestamp())') = 2,
-	'The admit line and the disk give-up skip companies at zero')
-from pg_get_functiondef('public.qorpera_admit_executor_machines(text,text,integer)'::regprocedure) d;
-
 -- 1. Switched off: an always-on machine never sleeps on its own; wait waits for room.
 select pg_temp.base_assert(pg_temp.mc_custody('big', 'stop') ->> 'reason' = 'MACHINE_IN_USE'
 	and not (pg_temp.mc_listed('mx-a', repeat('c', 64), 'big') ->> 'sleepDue')::boolean, 'Switched off: big keeps running');

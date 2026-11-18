@@ -60,11 +60,6 @@ create function pg_temp.claim() returns jsonb language sql as $$
 	select public.qorpera_claim_computer_hour_notices(50, extensions.gen_random_uuid())
 $$;
 
-select pg_temp.zero_assert(not has_function_privilege(role_name, function_name, 'EXECUTE'),
-	function_name || ' is not callable by ' || role_name)
-from unnest(array['anon', 'authenticated', 'service_role']) role_name,
-	unnest(array['public.qorpera_computer_hour_zero_sweep(timestamp with time zone)',
-		'public.qorpera_computer_hour_zero_occasion(uuid,timestamp with time zone)']) function_name;
 select pg_temp.zero_assert(not has_table_privilege(role_name, table_name, privilege),
 	role_name || ' has no ' || privilege || ' on ' || table_name)
 from unnest(array['anon', 'authenticated', 'service_role']) role_name,

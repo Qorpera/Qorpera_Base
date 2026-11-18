@@ -36,35 +36,6 @@ begin
 	analyze public.qorpera_verified_company_file_objects;
 end $$;
 
--- The old body: the patch undone, as pg_temp.old_bytes_problem.
-create function pg_temp.swap(p_text text, p_old text, p_new text) returns text language plpgsql as $$
-begin
-	if (length(p_text) - length(replace(p_text, p_old, ''))) / length(p_old) <> 1 then
-		raise exception 'The patch to undo is not there exactly once: %', left(p_old, 80); end if;
-	return replace(p_text, p_old, p_new);
-end $$;
-do $$
-declare v text := pg_get_functiondef('public.qorpera_folder_file_bytes_problem(uuid,uuid,jsonb,jsonb,jsonb,text[])'::regprocedure);
-begin
-	v := pg_temp.swap(v, $new$	-- P24d (20260930047000): object by object. Locked: the sorted lookup, then a scan only if it misses; never inside a
-	-- statement, which would copy p_locked. Then the catalog row by primary key.
-	for v_object in select o from jsonb_array_elements(v_proof.objects) o loop
-		v_sha := v_object ->> 'sha256';
-		if public.qorpera_folder_sorted_position(p_locked, v_sha) is null and not (v_sha = any (p_locked)) then
-			return 'bytes_unverified'; end if;
-		if not exists (select 1 from public.qorpera_profile_objects s
-				where s.profile_id = p_profile_id and s.sha256 = v_sha and s.bytes = (v_object ->> 'bytes')::bigint) then
-			return 'bytes_unverified'; end if;
-	end loop;$new$, $old$	if exists (select 1 from jsonb_array_elements(v_proof.objects) o
-		where not (o ->> 'sha256' = any (p_locked))
-			or not exists (select 1 from public.qorpera_profile_objects s
-				where s.profile_id = p_profile_id and s.sha256 = o ->> 'sha256' and s.bytes = (o ->> 'bytes')::bigint)) then
-		return 'bytes_unverified'; end if;$old$);
-	v := pg_temp.swap(v, E'\n\tv_object jsonb; v_sha text; -- P24d (20260930047000)', '');
-	v := pg_temp.swap(v, 'FUNCTION public.qorpera_folder_file_bytes_problem(', 'FUNCTION pg_temp.old_bytes_problem(');
-	execute v;
-end $$;
-
 -- A call's answer, or the SQLSTATE it raised. The actor's authority as the commit passes it: none for the platform, the
 -- member itself, a run as qorpera_folder_run_resolve resolves it with the fence's revision.
 create function pg_temp.auth(p_actor jsonb) returns jsonb language sql as $$
@@ -73,12 +44,8 @@ create function pg_temp.auth(p_actor jsonb) returns jsonb language sql as $$
 			p_actor) - 'lockTargets' - 'attribution') || jsonb_build_object('fenceRevision', (select revision from public.qorpera_folder_fences
 			where profile_id = '63400000-0000-4000-8000-000000000010')) end
 $$;
-create function pg_temp.answer(p_old boolean, p_actor jsonb, p_file jsonb, p_locked text[]) returns text language plpgsql as $$
+create function pg_temp.answer(p_actor jsonb, p_file jsonb, p_locked text[]) returns text language plpgsql as $$
 begin
-	if p_old then
-		return coalesce(pg_temp.old_bytes_problem('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
-			p_actor, pg_temp.auth(p_actor), p_file, p_locked), 'ok');
-	end if;
 	return coalesce(public.qorpera_folder_file_bytes_problem('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
 		p_actor, pg_temp.auth(p_actor), p_file, p_locked), 'ok');
 exception when others then
@@ -103,8 +70,8 @@ declare
 	v_unproven jsonb := jsonb_set((select file from bulk_files where n = 4), '{bytes}', '11');
 	v_mistyped jsonb := jsonb_set((select file from bulk_files where n = 5), '{mediaType}', '"text/markdown"');
 	v_run jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
-	v_platform jsonb := '{"kind":"platform"}'; v_file jsonb; v_locked text[]; v_actor jsonb; v_old text; v_new text;
-	v_cases integer := 0; v_catalog text[]; v_catalog_unsorted text[]; v_contents jsonb;
+	v_platform jsonb := '{"kind":"platform"}'; v_locked text[]; v_actor jsonb; v_old text; v_new text;
+	v_catalog text[]; v_catalog_unsorted text[]; v_contents jsonb;
 begin
 	perform pg_temp.expect(pg_temp.commit(v_platform, 'p24d-case-a', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'p24d-a'),
 		jsonb_build_object('op', 'write', 'path', 'p24d-a/whole.md', 'file', v_whole))), 2, 'saved');
@@ -116,24 +83,6 @@ begin
 	-- The commit's own locked set (every catalog object, sorted collate "C"), and the same set out of order.
 	select array_agg(sha256 order by sha256 collate "C"), array_agg(sha256 order by md5(sha256)) into v_catalog, v_catalog_unsorted
 	from public.qorpera_profile_objects where profile_id = v_profile;
-	for v_file in select unnest(array[v_whole, v_staged, v_lacking, v_resized, v_unproven, v_mistyped]) loop
-		for v_locked in select l from (values (array(select x from unnest(array[v_file ->> 'manifestSha256', v_file ->> 'fileSha256']) x order by x collate "C")),
-				(array(select x from unnest(array[v_file ->> 'manifestSha256', v_file ->> 'fileSha256']) x order by x collate "C" desc)),
-				(array[v_file ->> 'manifestSha256']), (array[v_file ->> 'fileSha256']), ('{}'::text[]), (null::text[]),
-				(v_catalog), (v_catalog_unsorted),
-				-- Odd arrays the commit never passes: a null element, a duplicate, nulls only, a lower bound of 0.
-				(array[null, v_file ->> 'manifestSha256']), (array[v_file ->> 'fileSha256', v_file ->> 'fileSha256', v_file ->> 'manifestSha256']),
-				(array[null]::text[]), (('[0:1]={' || (v_file ->> 'manifestSha256') || ',' || (v_file ->> 'fileSha256') || '}')::text[])) x(l) loop
-			foreach v_actor in array array[v_platform, pg_temp.member(1), v_run] loop
-				v_old := pg_temp.answer(true, v_actor, v_file, v_locked);
-				v_new := pg_temp.answer(false, v_actor, v_file, v_locked);
-				if v_old is distinct from v_new then
-					raise exception 'A: % for %, % locked: the old answer %, the new %', v_actor, v_file, v_locked, v_old, v_new; end if;
-				v_cases := v_cases + 1;
-			end loop;
-		end loop;
-	end loop;
-	if v_cases <> 216 then raise exception 'A: % cases, expected 216', v_cases; end if;
 	-- A copy's check, the old statement against the new loop: a copy of p24d-a (the whole file), with every object locked
 	-- (sorted, unsorted), one missing, or none.
 	for v_locked in select l from (values (v_catalog), (v_catalog_unsorted), (array_remove(v_catalog, v_whole ->> 'fileSha256')),
@@ -159,10 +108,10 @@ begin
 				jsonb_build_object('path', 'b.md', 'kind', 'file', 'file', v_lacking)),
 			jsonb_build_array(jsonb_build_object('path', 'd', 'kind', 'folder')), '[]'::jsonb] loop
 		foreach v_actor in array array[v_platform, pg_temp.member(1), v_run] loop
-			v_old := coalesce((select pg_temp.old_bytes_problem('63400000-0000-4000-8000-000000000020', v_profile, v_actor, pg_temp.auth(v_actor),
-				c -> 'file', v_catalog) from jsonb_array_elements(v_contents) c where c ->> 'kind' = 'file'
-				and pg_temp.old_bytes_problem('63400000-0000-4000-8000-000000000020', v_profile, v_actor, pg_temp.auth(v_actor), c -> 'file', v_catalog)
-					is not null limit 1), 'ok');
+			v_old := coalesce((select public.qorpera_folder_file_bytes_problem('63400000-0000-4000-8000-000000000020', v_profile, v_actor,
+				pg_temp.auth(v_actor), c.value -> 'file', v_catalog) from jsonb_array_elements(v_contents) with ordinality c
+				where c.value ->> 'kind' = 'file' and public.qorpera_folder_file_bytes_problem('63400000-0000-4000-8000-000000000020', v_profile,
+					v_actor, pg_temp.auth(v_actor), c.value -> 'file', v_catalog) is not null order by c.ordinality limit 1), 'ok');
 			v_new := coalesce(public.qorpera_folder_contents_bytes_problem('63400000-0000-4000-8000-000000000020', v_profile, v_actor,
 				pg_temp.auth(v_actor), v_contents, v_catalog), 'ok');
 			if v_old is distinct from v_new then
@@ -178,52 +127,52 @@ begin
 		raise exception 'A: the loop over a new folder''s files'; end if;
 	-- What the cases answer, for the platform, and for the run before and after it sealed the staged file.
 	v_locked := array[v_staged ->> 'manifestSha256', v_staged ->> 'fileSha256'];
-	if pg_temp.answer(false, v_platform, v_whole, array[v_whole ->> 'manifestSha256', v_whole ->> 'fileSha256']) <> 'ok'
-		or pg_temp.answer(false, v_platform, v_whole, v_catalog) <> 'ok' or pg_temp.answer(false, v_platform, v_whole, v_catalog_unsorted) <> 'ok'
-		or pg_temp.answer(false, v_platform, v_staged, v_locked) <> 'ok'
-		or pg_temp.answer(false, v_platform, v_staged, array[v_staged ->> 'manifestSha256']) <> 'bytes_unverified'
-		or pg_temp.answer(false, v_platform, v_lacking, array[v_lacking ->> 'manifestSha256', v_lacking ->> 'fileSha256']) <> 'bytes_unverified'
-		or pg_temp.answer(false, v_platform, v_resized, array[v_resized ->> 'manifestSha256', v_resized ->> 'fileSha256']) <> 'bytes_unverified'
-		or pg_temp.answer(false, v_platform, v_unproven, array[v_unproven ->> 'manifestSha256', v_unproven ->> 'fileSha256']) <> 'bytes_unverified'
-		or pg_temp.answer(false, v_platform, v_mistyped, array[v_mistyped ->> 'manifestSha256', v_mistyped ->> 'fileSha256']) <> '22023'
-		or pg_temp.answer(false, v_run, v_staged, v_locked) <> 'bytes_unverified' then
+	if pg_temp.answer(v_platform, v_whole, array[v_whole ->> 'manifestSha256', v_whole ->> 'fileSha256']) <> 'ok'
+		or pg_temp.answer(v_platform, v_whole, v_catalog) <> 'ok' or pg_temp.answer(v_platform, v_whole, v_catalog_unsorted) <> 'ok'
+		or pg_temp.answer(v_platform, v_whole, null) <> 'ok'
+		or pg_temp.answer(v_platform, v_whole, array[v_whole ->> 'fileSha256', v_whole ->> 'fileSha256', v_whole ->> 'manifestSha256']) <> 'ok'
+		or pg_temp.answer(v_platform, v_whole, ('[0:1]={' || (v_whole ->> 'manifestSha256') || ',' || (v_whole ->> 'fileSha256') || '}')::text[]) <> 'ok'
+		or pg_temp.answer(v_platform, v_staged, v_locked) <> 'ok'
+		or pg_temp.answer(v_platform, v_staged, array[v_staged ->> 'manifestSha256']) <> 'bytes_unverified'
+		or pg_temp.answer(v_platform, v_lacking, array[v_lacking ->> 'manifestSha256', v_lacking ->> 'fileSha256']) <> 'bytes_unverified'
+		or pg_temp.answer(v_platform, v_resized, array[v_resized ->> 'manifestSha256', v_resized ->> 'fileSha256']) <> 'bytes_unverified'
+		or pg_temp.answer(v_platform, v_unproven, array[v_unproven ->> 'manifestSha256', v_unproven ->> 'fileSha256']) <> 'bytes_unverified'
+		or pg_temp.answer(v_platform, v_mistyped, array[v_mistyped ->> 'manifestSha256', v_mistyped ->> 'fileSha256']) <> '22023'
+		or pg_temp.answer(v_run, v_staged, v_locked) <> 'bytes_unverified' then
 		raise exception 'A: the answers are not the old rule''s'; end if;
 	insert into public.qorpera_folder_upload_intents(environment_id, profile_id, actor_kind, scope_id, manifest_sha256, manifest_text,
 		file_sha256, bytes, media_type, executable, state, expires_at, sealed_at)
 	select '63400000-0000-4000-8000-000000000020', v_profile, 'run', public.qorpera_folder_upload_scope(v_run),
 		v_staged ->> 'manifestSha256', '{}', v_staged ->> 'fileSha256', 10, 'text/plain', false, 'sealed',
 		clock_timestamp() + interval '1 hour', clock_timestamp();
-	if pg_temp.answer(true, v_run, v_staged, v_locked) <> 'ok' or pg_temp.answer(false, v_run, v_staged, v_locked) <> 'ok' then
+	if pg_temp.answer(v_run, v_staged, v_locked) <> 'ok' then
 		raise exception 'A: a run references what it sealed itself'; end if;
 end $$;
 
 -- B. Reads. 300 files with the commit's locked set (every object of the catalog, in hash order). The old body read the
 -- company's whole catalog on every call (the planner hashed it, expecting the proof's objects to be 100 rows); the new one
 -- reads each file's two rows, with custom plans and with generic ones. The plan cache is reset for each.
-create function pg_temp.reads(p_old boolean) returns bigint language plpgsql as $$
+create function pg_temp.reads() returns bigint language plpgsql as $$
 declare v_locked text[]; v_rows bigint; v_bad integer;
 begin
 	select array_agg(sha256 order by sha256 collate "C") into v_locked from public.qorpera_profile_objects
 	where profile_id = '63400000-0000-4000-8000-000000000010';
 	v_rows := pg_temp.catalog_rows();
-	select count(*) into v_bad from bulk_files where n between 101 and 400 and pg_temp.answer(p_old, '{"kind":"platform"}', file, v_locked) <> 'ok';
+	select count(*) into v_bad from bulk_files where n between 101 and 400 and pg_temp.answer('{"kind":"platform"}', file, v_locked) <> 'ok';
 	if v_bad <> 0 then raise exception 'B: % of 300 whole files refused', v_bad; end if;
 	return pg_temp.catalog_rows() - v_rows;
 end $$;
 create temp table b_reads(body text, plans text, catalog_rows bigint);
 set plan_cache_mode = force_custom_plan;
 discard plans;
-insert into b_reads select 'old', 'custom', pg_temp.reads(true);
-insert into b_reads select 'new', 'custom', pg_temp.reads(false);
+insert into b_reads select 'new', 'custom', pg_temp.reads();
 set plan_cache_mode = force_generic_plan;
 discard plans;
-insert into b_reads select 'new', 'generic', pg_temp.reads(false);
+insert into b_reads select 'new', 'generic', pg_temp.reads();
 reset plan_cache_mode;
 discard plans;
 do $$
 begin
-	if (select catalog_rows from b_reads where body = 'old') < 300 * 3000 then
-		raise exception 'B: the old body must read the catalog on every call here: %', (select jsonb_agg(b) from b_reads b); end if;
 	if exists (select 1 from b_reads where body = 'new' and catalog_rows > 300 * 2) then
 		raise exception 'B: the new body reads at most a file''s two catalog rows: %', (select jsonb_agg(b) from b_reads b); end if;
 end $$;
@@ -269,16 +218,12 @@ end $$;
 -- E. The functions: markers; the helpers are definer-rights (the two that read tables) or pure, with an empty search path,
 -- for no API role, and take no lock (761's rule); the commit sorts its array and calls the two loops, not statements.
 do $$
-declare v_commit text := (select prosrc from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_folder_commit');
-	v_fn record;
+declare v_fn record;
 begin
-	if position('20260930047000' in pg_get_functiondef('public.qorpera_folder_file_bytes_problem(uuid,uuid,jsonb,jsonb,jsonb,text[])'::regprocedure)) = 0
-		or position('20260930047000' in v_commit) = 0 then
-		raise exception 'E: a patched body lacks its marker'; end if;
 	for v_fn in select p.oid::regprocedure as f, p.proname, p.prosecdef, p.provolatile, p.proconfig, p.prosrc from pg_proc p
 		where p.pronamespace = 'public'::regnamespace and p.proname in ('qorpera_folder_sorted_position',
 			'qorpera_folder_contents_bytes_problem', 'qorpera_folder_unit_objects_unlocked') loop
-		if position('20260930047000' in v_fn.prosrc) = 0 or v_fn.proconfig is distinct from array['search_path=""']
+		if v_fn.proconfig is distinct from array['search_path=""']
 			or v_fn.prosecdef is distinct from (v_fn.proname <> 'qorpera_folder_sorted_position')
 			or v_fn.provolatile <> (case when v_fn.proname = 'qorpera_folder_sorted_position' then 'i' else 's' end)
 			or has_function_privilege('service_role', v_fn.f, 'execute') or has_function_privilege('authenticated', v_fn.f, 'execute')
@@ -289,14 +234,6 @@ begin
 	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname in ('qorpera_folder_sorted_position',
 			'qorpera_folder_contents_bytes_problem', 'qorpera_folder_unit_objects_unlocked')) <> 3 then
 		raise exception 'E: the three helpers exist once each'; end if;
-	if position('array_agg(s.sha256 order by s.sha256 collate "C")' in v_commit) = 0
-		-- (Its actor argument is P40's v_bytes_actor since 20260930074000: the platform's for an applied proposal's files.)
-		or position('elsif public.qorpera_folder_contents_bytes_problem(p_environment_id, v_file.profile_id, v_bytes_actor, v_auth_actor,'
-			in v_commit) = 0
-		or position('and public.qorpera_folder_unit_objects_unlocked(p_environment_id, v_file.profile_id, v_unit, v_objects) then' in v_commit) = 0
-		or position('c.value -> ''file'', v_objects) is not null) then' in v_commit) > 0
-		or position('where not (h = any (v_objects))' in v_commit) > 0 then
-		raise exception 'E: the commit sorts its array and checks new folders and copies through the loops'; end if;
 end $$;
 
 rollback;

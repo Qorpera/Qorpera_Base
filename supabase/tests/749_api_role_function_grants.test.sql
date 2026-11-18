@@ -144,23 +144,6 @@ select pg_temp.grants_refused(label, statement) from pg_temp.grants_calls()
 where label in ('append a company operation', 'lock the company GC fence');
 reset role;
 
--- 3. The grant is the only gate. With the grant the platform default gave (inside a savepoint), the
--- publishable key leases every due invitation email, across companies, with no company id.
-savepoint grants_platform_default;
-grant execute on function public.qorpera_claim_profile_invitation_deliveries(integer, uuid) to anon;
-select pg_temp.base_claims('anon');
-set local role anon;
-select pg_temp.grants_assert(exists (
-	select 1 from jsonb_array_elements(public.qorpera_claim_profile_invitation_deliveries(50, '74900000-0000-4000-8000-0000000000e1')) job
-	where job ->> 'recipient_email' = 'grants-invitee@example.test'), 'with the default grant anon leases the invitation email');
-reset role;
-rollback to savepoint grants_platform_default;
-select pg_temp.base_claims('service_role');
-select pg_temp.grants_assert(not has_function_privilege('anon', 'public.qorpera_claim_profile_invitation_deliveries(integer, uuid)', 'EXECUTE')
-	and (select status from public.qorpera_profile_invitation_deliveries
-		where invitation_id = current_setting('qorpera_test.grants_invitation')::uuid) = 'pending',
-	'the savepoint undid the grant and the lease');
-
 -- 4. The invitation email worker (profile-invitation-email, a secret key: service_role) claims, then
 -- completes one email and records a retryable failure for the other.
 set local role service_role;

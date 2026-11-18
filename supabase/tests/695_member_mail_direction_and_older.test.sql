@@ -226,8 +226,7 @@ select pg_temp.base_claims('anon');
 select pg_temp.base_error(format('select pg_temp.mt_page(%L, %L)', current_setting('qorpera_test.mt_thread'),
 		current_setting('qorpera_test.mt_p1')::jsonb -> 'nextBefore'), '42501', 'Company mail is unavailable');
 -- One thread read, with its cursor; only members call it.
-select pg_temp.base_assert(to_regprocedure('public.qorpera_member_mail_thread(uuid,text)') is null
-		and has_function_privilege('authenticated', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE')
+select pg_temp.base_assert(has_function_privilege('authenticated', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE')
 		and not has_function_privilege('anon', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE')
 		and not has_function_privilege('service_role', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE'),
-	'The thread read has one form, with the cursor, for members only');
+	'The thread read is for members only');

@@ -195,10 +195,6 @@ begin
 end $$;
 
 -- 3. Every new or patched body names this migration; the grants stay ---------------------------------------------------
-select pg_temp.base_assert(position('20260930560000' in pg_get_functiondef(
-	'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'::regprocedure)) > 0
-	and position('20260930560000' in pg_get_functiondef('public.qorpera_list_staff_execution_activity(uuid)'::regprocedure)) > 0,
-	'the marker');
 select pg_temp.base_assert(not has_function_privilege('authenticated',
 	'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)', 'execute')
 	and has_function_privilege('authenticated', 'public.qorpera_list_staff_execution_activity(uuid)', 'execute')

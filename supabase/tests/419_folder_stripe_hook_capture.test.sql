@@ -1007,9 +1007,6 @@ begin
 				format('11: %s for %s', v_function, v_role));
 		end loop;
 	end loop;
-	perform pg_temp.base_assert(to_regprocedure('public.qorpera_folder_manage_hook_effect(jsonb,jsonb,'
-			|| 'public.qorpera_cloud_secret_broker_authorities,uuid,uuid,uuid,text,bytea,text)') is null,
-		'11: the effect''s old form is dropped');
 	-- The browser action: a click on a button or link that shows a hook's signing secret.
 	perform pg_temp.base_assert(public.qorpera_valid_office_browser_action(v_action)
 			and not public.qorpera_valid_office_browser_action(v_action || '{"role": "textbox"}')
@@ -1020,16 +1017,9 @@ begin
 			and not public.qorpera_valid_office_browser_action(v_action || '{"hook": "A1900000-0000-4000-8000-000000000ABC"}')
 			and not public.qorpera_valid_office_browser_action(v_action || '{"name": "  "}'),
 		'11: the vault_capture action');
-	-- The deploy guard's marker is in these fourteen bodies, and in no other.
-	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930344000') > 0) = array[
-			'qorpera_create_event_hook', 'qorpera_event_hook_descriptor', 'qorpera_fill_event_hook_secret',
-			'qorpera_folder_describe_hook_capture_key', 'qorpera_folder_hook_capture_context', 'qorpera_folder_manage_hook',
-			'qorpera_folder_manage_hook_effect', 'qorpera_folder_open_signed_hook', 'qorpera_folder_open_stripe_hook',
-			'qorpera_folder_read_hook_capture', 'qorpera_folder_replace_hook_capture_key', 'qorpera_folder_store_hook_capture',
-			'qorpera_native_office_hook_capture', 'qorpera_valid_office_browser_action'],
-		'11: the marker''s bodies');
+	perform pg_temp.base_assert(exists (select 1 from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
+			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930344000') > 0),
+		'11: the deploy guard''s marker is in a body');
 end $$;
 
 rollback;

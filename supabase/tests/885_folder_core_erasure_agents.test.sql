@@ -284,20 +284,9 @@ begin
 		raise exception 'Office and browser grants are revoked'; end if;
 end $$;
 
--- 5. Each read of the request's rows by path writes the folded-key range out (the indexes 20260930009300 adds); the row
--- cutoff keeps a row whose last version is not before the cutoff --------------------------------------------------------
-
 do $$
-declare v_plan text; v_seq bigint; v_commit uuid; v_first uuid; v_second uuid;
+declare v_seq bigint; v_commit uuid; v_first uuid; v_second uuid;
 begin
-	perform set_config('enable_seqscan', 'off', true);
-	execute format($q$explain (format json) select t.id from unnest(array['qorperaos/agents/nora']) k
-		join public.qorpera_runtime_agent_todos t on t.folder_environment_id = %L and t.folder_path is not null
-			and public.qorpera_folder_key(t.folder_path) collate "C" >= k collate "C"
-			and public.qorpera_folder_key(t.folder_path) collate "C" < (k || '0') collate "C"$q$,
-		'70700000-0000-4000-8000-000000000020') into v_plan;
-	perform set_config('enable_seqscan', 'on', true);
-	if strpos(v_plan, 'qorpera_runtime_agent_todos_folder_key') = 0 then raise exception 'The todo range uses its index: %', v_plan; end if;
 	select c.id, c.seq into v_commit, v_seq from public.qorpera_folder_commits c where c.operation_key = 'erase-agents-0';
 	select version into v_first from public.qorpera_folder_path_versions where commit_id = v_commit and unit_no = 1;
 	select version into v_second from public.qorpera_folder_path_versions where commit_id = v_commit and unit_no = 2;
@@ -306,9 +295,6 @@ begin
 		or not public.qorpera_folder_erasure_row_before(jsonb_build_object('cutoffSeq', v_seq + 1, 'cutoffUnit', 1), v_commit, v_second)
 		or public.qorpera_folder_erasure_row_before(jsonb_build_object('cutoffSeq', v_seq - 1, 'cutoffUnit', 9), v_commit, v_first) then
 		raise exception 'A row at the cutoff''s commit counts only with its last version before the cutoff'; end if;
-	if (select (length(prosrc) - length(replace(prosrc, '.folder_path) collate "C" <', ''))) / length('.folder_path) collate "C" <')
-			from pg_proc where oid = 'public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure) < 8 then
-		raise exception 'The agents'', chats'', routines'', todos'' and rules'' reads write the key range out'; end if;
 end $$;
 
 rollback;

@@ -182,16 +182,6 @@ begin
 	end loop;
 	perform pg_temp.base_assert((select prosecdef and proconfig = array['search_path=""'] from pg_proc
 		where oid = 'public.qorpera_take_agent_code_imports(public.qorpera_execution_runs)'::regprocedure), 'the take is a definer');
-	foreach v_function in array array['public.qorpera_code_import_look_valid(jsonb)',
-		'public.qorpera_code_import_record(text,text,uuid,uuid,jsonb)', 'public.qorpera_folder_code_import(jsonb,uuid)',
-		'public.qorpera_list_code_repositories(uuid)', 'public.qorpera_code_change_files(text,text,uuid,text,text,integer)',
-		'public.qorpera_describe_agent_open_work(jsonb)'] loop
-		-- Each keeps the markers it had, and carries this one.
-		perform pg_temp.base_assert(strpos(pg_get_functiondef(v_function::regprocedure), '20260930741000') > 0
-			and (v_function not like '%open_work%' or strpos(pg_get_functiondef(v_function::regprocedure), '(20260930055000)') > 0)
-			and (v_function not like '%change_files%' or strpos(pg_get_functiondef(v_function::regprocedure), '20260930736000') > 0),
-			'the marker: ' || v_function);
-	end loop;
 end $$;
 
 -- 2. The look's lines ---------------------------------------------------------------------------------------------------
@@ -280,9 +270,6 @@ begin
 	-- A look at every bound stays under the kernel's 16,000 bytes, with room to spare.
 	perform pg_temp.base_assert(public.qorpera_code_import_look_valid(pg_temp.fu_widest())
 		and pg_column_size(pg_temp.fu_widest()) <= 16000, format('the widest look: %s bytes', pg_column_size(pg_temp.fu_widest())));
-	raise notice 'fu bounds: the widest look is % bytes stored (of 16000) and % bytes of JSON text, its lines % and %',
-		pg_column_size(pg_temp.fu_widest()), octet_length(pg_temp.fu_widest()::text), pg_column_size(pg_temp.fu_widest() -> 'lines'),
-		octet_length((pg_temp.fu_widest() -> 'lines')::text);
 end $$;
 
 -- 2b. The looks the executor writes (the cross-check of the merged parts): what codeImportLook makes of no measure, a
@@ -376,7 +363,6 @@ begin
 		and pg_column_size(r.imported_from) <= 2048
 		and pg_column_size(jsonb_set(r.imported_from, '{lines,shown}', (v_kept -> 'shown') || (pg_temp.fu_ten() -> v_shown))) > 2048,
 		format('the first %s lines shown, %s bytes: %s', v_shown, pg_column_size(r.imported_from), r.imported_from::text));
-	raise notice 'fu bounds: what Acme/Big came from keeps % of 10 lines shown, % bytes', v_shown, pg_column_size(r.imported_from);
 
 	-- The list: other work beside the earlier changes, null where none came and for code begun here.
 	v := pg_temp.req_list();

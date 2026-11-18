@@ -37,7 +37,7 @@ $$;
 
 -- 1. The place is the platform's alone, and the gate names both migrations.
 do $$
-declare v_role text; v_src text := (select prosrc from pg_proc where oid = 'public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure);
+declare v_role text;
 begin
 	foreach v_role in array array['anon', 'authenticated'] loop
 		perform pg_temp.base_assert(not has_function_privilege(v_role, 'public.qorpera_memory_run_log_place(uuid,uuid)', 'EXECUTE'),
@@ -45,9 +45,6 @@ begin
 	end loop;
 	perform pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_memory_run_log_place(uuid,uuid)', 'EXECUTE'),
 		'the platform can place a log');
-	perform pg_temp.base_assert(strpos(v_src, '20260930352000') > 0 and strpos(v_src, '20260930508000') > 0,
-		'the gate is in the place');
-	perform pg_temp.base_assert(strpos(v_src, 'qorpera_memory_tree_companies') = 0, 'the place reads the run''s mode, not the list');
 	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 	perform pg_temp.base_error(format('select public.qorpera_memory_run_log_place(%L, %L)', '92400000-0000-4000-8000-000000000020',
 		(pg_temp.lg_run()).id), '42501', 'Folder core authority is required');

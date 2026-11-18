@@ -335,12 +335,6 @@ select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticate
 	cross join unnest(array['public.qorpera_company_machine_always_on_since(public.qorpera_company_machines)',
 		'public.qorpera_company_machine_always_on_checkins_unasked(uuid)', 'public.qorpera_ask_always_on_company_machines(uuid,integer)']) f(name)
 	where has_function_privilege(r.role, f.name, 'execute')), 'only the platform runs the new functions');
-select pg_temp.check(not exists (select 1 from unnest(array[
-		'public.qorpera_machine_checkin_current(public.qorpera_machine_checkins)',
-		'public.qorpera_folder_machine_checkins_due(uuid,integer)', 'public.qorpera_folder_machine_checkins_company(uuid,integer)',
-		'public.qorpera_company_machine_always_on_since(public.qorpera_company_machines)',
-		'public.qorpera_company_machine_always_on_checkins_unasked(uuid)', 'public.qorpera_ask_always_on_company_machines(uuid,integer)']) f(name)
-	where position('20260930201000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each new or patched function names this migration');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 

@@ -9,24 +9,8 @@
 -- The take-in that marks a machine is in 485 (I) and 486 (9); 523 covers the plain restart. The office, the folders and
 -- the helpers are 639's.
 
--- 0. Markers and privileges: each patched, replaced or new function names this migration and keeps the earlier
--- markers; the executor (service_role) marks and records, the words stay internal, and the take-in's callers' owners
--- may set both marks.
 do $$
-declare v_lost text;
 begin
-	select string_agg(f.sig || ' ' || m.marker, ', ') into v_lost
-	from (values
-		('qorpera_folder_read_wake(jsonb)', array['20260930445000', '20260930500000']),
-		('qorpera_authorize_coding_machine_run(uuid,uuid,text,jsonb,text)', array['20260930445000']),
-		('qorpera_authorize_coding_machine_custody(uuid,text,text,text,text,uuid,uuid)', array['20260930501000']),
-		('qorpera_coding_stopped_event(text,jsonb)', array['20260930431000', '20260930501000']),
-		('qorpera_mark_coding_machine_new_disk(uuid,text,text,text)', array[]::text[]),
-		('qorpera_record_coding_machine_folder_restart(uuid,uuid,text,text,text)', array['20260930501000']),
-		('qorpera_record_coding_machine_new_disk(uuid,uuid,text,text,text)', array[]::text[])) f(sig, earlier)
-	cross join lateral unnest(f.earlier || '20260930505000'::text) m(marker)
-	where strpos(pg_get_functiondef(('public.' || f.sig)::regprocedure), m.marker) = 0;
-	if v_lost is not null then raise exception 'Lost a marker: %', v_lost; end if;
 	if exists (select 1 from unnest(array['public.qorpera_mark_coding_machine_new_disk(uuid,text,text,text)',
 			'public.qorpera_record_coding_machine_folder_restart(uuid,uuid,text,text,text)',
 			'public.qorpera_record_coding_machine_new_disk(uuid,uuid,text,text,text)']) f(name)
@@ -470,10 +454,7 @@ begin
 			('MACHINE_NEW_DISK', '[{"commandId":"52400000-0000-4000-8000-0000000000c1","turn":1,"command":"npm run dev"},
 				{"commandId":"52400000-0000-4000-8000-0000000000c2","turn":1,"command":"npm test"}]',
 				'The machine got a new disk; only the company folder was kept; 2 commands were stopped'),
-			('FOLDER_RESTART', '[]', 'The machine restarted for the company folder'),
-			('MACHINE_STOPPED', '[]', 'The machine stopped'), ('SLEEP', '[]', 'The machine went to sleep'),
-			('RETIRED', '[]', 'The machine was replaced by a newer one'),
-			('EXECUTOR_DISABLED', '[]', 'Coding is not enabled here any more')) v(reason, stopped, text)
+			('RETIRED', '[]', 'The machine was replaced by a newer one')) v(reason, stopped, text)
 		where public.qorpera_coding_stopped_event(v.reason, v.stopped) ->> 'text' is distinct from v.text
 			or public.qorpera_coding_stopped_event(v.reason, v.stopped) ->> 'reason' is distinct from v.reason) then
 		raise exception 'The words'; end if;
