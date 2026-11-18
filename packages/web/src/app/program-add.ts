@@ -476,6 +476,7 @@ export class ProgramAdd {
 			if (this.#placed.has(file)) continue;
 			const prepared = this.#prepared.get(file)!;
 			if (this.#inflight?.file === file) version = this.#inflight.version;
+			const tried: string[] = [];
 			for (let attempt = 1; ; attempt++) {
 				const path = this.#path(version, file);
 				this.#inflight = { file, kind, version };
@@ -493,8 +494,12 @@ export class ProgramAdd {
 				if (put.outcome === "refused") throw new ProgramAddRefusal("refused", put.reason);
 				if (attempt === TRIES) throw new ProgramAddRefusal(put.outcome === "exists" ? "exists" : "taken");
 				kept = await readKept(this.#folder(), programPath, signal);
+				tried.push(version);
 				version = nextMemberVersion({
-					versions: [...(kept.program?.versions ?? []), { version, date: "", forms: [] }],
+					versions: [
+						...(kept.program?.versions ?? []),
+						...tried.map((each) => ({ version: each, date: "", forms: [] })),
+					],
 				});
 			}
 			signal.throwIfAborted();
