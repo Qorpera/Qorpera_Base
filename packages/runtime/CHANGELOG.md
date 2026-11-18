@@ -17,6 +17,13 @@
   another command, a second script, a script after `source`, one with a variable set before it and one whose output goes
   to a file are not shown; the agent's home reads no files; a file changed between the read and the start is not
   detected. Runtime bundle only: no migration, host call, executor or image moves.
+- Release v256 (master since v255's release merge: agents learn the `data` command on a company machine, #1881;
+  hire_team and hire_agent say what is wrong with refused arguments, #1938; the first concept really comes first, hire
+  overlay v20, #1939; the action review asks again when its reviewer is busy and its refusals name the next step, #1942;
+  module scripts of an app's page, #1937, is web and live already): runtime bundle 256
+  `f5554c77635269caa6cd788b0e956367d6a625293af1a385c2a32a9f143e860a` (activation `20260929025699`, previous 255
+  `edc4809a810b`). No migration: the activation requires nothing new. The guest moves: the native provider host
+  (`2271544c`, 5,452,429 bytes); the ephemeral runner, the two LXD bootstraps and the native Codex (`9c299f88`) stay.
 - A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
   a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
   other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a
