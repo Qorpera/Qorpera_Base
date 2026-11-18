@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+- hire_team's first call no longer fails blind (the founder, 18 Nov 2026: "fix the hire_team first-call refusal"; in both
+  companies started on v255 the Co-Founder's first hire_team was refused as bare `INVALID_ARGUMENTS` and its second call
+  succeeded). Every refusal of hire_team's and hire_agent's arguments is now a `CloudToolArgumentRefusal` the model
+  reads: which hire (by position and name), which field and what is wrong (a key that is not a field, naming it and the
+  fields a hire holds; an operationKey inside a hire, which goes once for the whole call; a missing, empty, non-text or
+  multi-line field; a text over its bound in bytes; hires as text or under another key; a figure that is not one).
+  Names in a refusal are cut to 60 characters and to the plain characters the boundary passes. What is accepted is
+  unchanged, hire_agent's schema and description byte for byte; create_group_chat's name and purpose share the checks,
+  so its refusals of those say what is wrong too. hire_team's description now names the five fields a hire holds and
+  their bounds in words, and says operationKey goes once for the call, never inside a hire (1,215 to 1,449 bytes); the
+  catalog pins moved. Runtime bundle only.
 - Release v255 (master since v254's release merge: the first team in one step, #1922; agents show the product first,
   #1919; an interface app holds any file, #1928's runtime part; the object kit draws a real 3D model, #1934; the machine
   fill check finds the sandboxed desktop Chromium, #1893): runtime bundle 255
