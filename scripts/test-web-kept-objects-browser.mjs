@@ -23,6 +23,7 @@ const raw = () => new Promise((done, failed) => {
 	opening.onerror = () => failed(opening.error);
 });
 const names = async () => (await indexedDB.databases()).map((database) => database.name);
+const seeded = (at) => "f".repeat(48) + at.toString(16).padStart(16, "0");
 
 async function file(text, sizes) {
 	const bytes = new TextEncoder().encode(text);
@@ -118,7 +119,7 @@ window.checks = {
 		const transaction = database.transaction(["bytes", "index", "owner"], "readwrite");
 		const small = filled(300, 1).buffer;
 		for (let at = 0; at < count; at++) {
-			const name = at.toString(16).padStart(64, "a");
+			const name = seeded(at);
 			transaction.objectStore("bytes").put(small, name);
 			transaction.objectStore("index").put({ sha256: name, bytes: 300, used: at });
 		}
@@ -136,7 +137,49 @@ window.checks = {
 		await kept.settled();
 		const ms = Math.round(performance.now() - started);
 		const after = await Promise.all(fresh.map(([hash]) => kept.take(hash, signal)));
-		return { ms, early: taken.filter(Boolean).length, kept: after.filter(Boolean).length, old: (await kept.take("0".padStart(64, "a"), signal)) !== undefined };
+		return { ms, early: taken.filter(Boolean).length, kept: after.filter(Boolean).length, old: (await kept.take(seeded(0), signal)) !== undefined };
+	},
+	async evictsInSteps(member, count) {
+		const kept = new KeptObjects(member, { maxBytes: count * 30 });
+		await kept.take("0".repeat(64), signal);
+		const database = await raw();
+		const seeding = database.transaction(["bytes", "index", "owner"], "readwrite");
+		const small = filled(300, 1).buffer;
+		for (let at = 0; at < count; at++) {
+			const name = seeded(at);
+			seeding.objectStore("bytes").put(small, name);
+			seeding.objectStore("index").put({ sha256: name, bytes: 300, used: at });
+		}
+		seeding.objectStore("owner").put(count * 300, "bytes");
+		await new Promise((done) => { seeding.oncomplete = done; });
+		const bytes = filled(2000, 4);
+		const hash = await sha(bytes);
+		const started = performance.now();
+		kept.keep(hash, bytes);
+		let slowest = 0;
+		let misses = 0;
+		let takes = 0;
+		let evicting = true;
+		const taking = (async () => {
+			await new Promise((done) => setTimeout(done, 20));
+			while (evicting) {
+				const started = performance.now();
+				if ((await kept.take(hash, signal)) === undefined) misses++;
+				slowest = Math.max(slowest, performance.now() - started);
+				takes++;
+			}
+		})();
+		await kept.settled();
+		const ms = Math.round(performance.now() - started);
+		evicting = false;
+		await taking;
+		const reading = database.transaction(["index", "owner"], "readonly");
+		const [left, total] = await Promise.all([
+			new Promise((done) => { const counting = reading.objectStore("index").count(); counting.onsuccess = () => done(counting.result); }),
+			new Promise((done) => { const asking = reading.objectStore("owner").get("bytes"); asking.onsuccess = () => done(asking.result); }),
+		]);
+		database.close();
+		return { ms, takes, misses, slowest: Math.round(slowest), left, total, limit: count * 30, still: (await kept.take(hash, signal)) !== undefined };
 	},
 	async givesUpOnAStore(member) {
 		const never = { open: () => ({}), deleteDatabase: () => ({}) };
@@ -261,6 +304,15 @@ try {
 	assert.deepEqual({ kept: full.kept, old: full.old }, { kept: 200, old: true });
 	assert.ok(full.ms < 4000, `200 keeps and takes beside 50,000 kept objects took ${full.ms} ms`);
 	passed.push(`keeping and taking stay quick beside 50,000 kept objects (200 of each in ${full.ms} ms)`);
+
+	const steps = await run(page, "evictsInSteps", "member-i", 5000);
+	assert.equal(steps.misses, 0);
+	assert.ok(steps.takes >= 20, `only ${steps.takes} reads ran beside the eviction`);
+	assert.ok(steps.slowest < 4000, `a read beside an eviction waited ${steps.slowest} ms`);
+	assert.equal(steps.still, true);
+	assert.equal(steps.total, (steps.left - 1) * 300 + 2000);
+	assert.ok(steps.total <= steps.limit * 0.9 && steps.total > steps.limit * 0.9 - 2000, `kept ${steps.total} of ${steps.limit}`);
+	passed.push(`an eviction of ${5001 - steps.left} objects runs in steps (${steps.ms} ms): ${steps.takes} reads beside it all answered, the slowest in ${steps.slowest} ms`);
 
 	const hung = await run(page, "givesUpOnAStore", "member-h");
 	assert.equal(hung.stopped.value, undefined);

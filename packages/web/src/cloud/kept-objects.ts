@@ -7,9 +7,12 @@ const INDEX = "index";
 const OWNER = "owner";
 const OWNER_KEY = "member";
 const TOTAL_KEY = "bytes";
+const FLOOR_KEY = "floor";
 const BY_USED = "used";
 const STORES = [BYTES, INDEX, OWNER];
+const OPEN_MS = 4000;
 const TAKE_MS = 4000;
+const EVICT_AT_ONCE = 64;
 const LATE = Symbol("late");
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
@@ -105,15 +108,17 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 
 	async take(sha256: string, signal: AbortSignal): Promise<Uint8Array | undefined> {
 		if (this.#closed || signal.aborted || !SHA256.test(sha256)) return undefined;
-		const taken = await bounded(this.#taken(sha256), TAKE_MS, signal).catch(() => undefined);
-		if (taken !== LATE) return taken;
-		void this.close();
-		return undefined;
+		const database = await bounded(this.#open(), OPEN_MS, signal);
+		if (database === LATE) {
+			void this.close();
+			return undefined;
+		}
+		if (!database || this.#closed) return undefined;
+		const taken = await bounded(this.#taken(database, sha256), TAKE_MS, signal).catch(() => undefined);
+		return taken === LATE ? undefined : taken;
 	}
 
-	async #taken(sha256: string): Promise<Uint8Array | undefined> {
-		const database = await this.#open();
-		if (!database || this.#closed) return undefined;
+	async #taken(database: IDBDatabase, sha256: string): Promise<Uint8Array | undefined> {
 		const transaction = database.transaction([BYTES, INDEX], "readonly");
 		const [held, entry] = await Promise.all([
 			answered(transaction.objectStore(BYTES).get(sha256) as IDBRequest<unknown>),
@@ -143,33 +148,60 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 			index.put({ sha256, bytes: copy.byteLength, used: this.#now() } satisfies KeptEntry);
 			let total =
 				(typeof counted === "number" ? counted : 0) - (isEntry(before) ? before.bytes : 0) + copy.byteLength;
-			if (total > this.#maxBytes) {
-				const enough = this.#maxBytes * TRIM_TO;
-				const oldest = index.index(BY_USED).openCursor();
-				await new Promise<void>((resolve, reject) => {
-					oldest.onerror = () => reject(oldest.error);
-					oldest.onsuccess = () => {
-						const cursor = oldest.result;
-						if (!cursor || total <= enough) {
-							resolve();
-							return;
-						}
-						const entry: unknown = cursor.value;
-						if (isEntry(entry) && entry.sha256 !== sha256) {
-							stores.objectStore(BYTES).delete(entry.sha256);
-							cursor.delete();
-							total -= entry.bytes;
-						}
-						cursor.continue();
-					};
-				});
-			}
+			let more = false;
+			if (total > this.#maxBytes) ({ total, more } = await this.#evicted(stores, total, sha256));
 			owner.put(total, TOTAL_KEY);
+			if (more) this.#trim(sha256);
 		});
 	}
 
-	settled(): Promise<void> {
-		return this.#writing;
+	#trim(spared: string): void {
+		this.#write(async (stores) => {
+			const owner = stores.objectStore(OWNER);
+			const counted = await answered(owner.get(TOTAL_KEY) as IDBRequest<unknown>);
+			if (typeof counted !== "number" || counted <= this.#maxBytes * TRIM_TO) return;
+			const { total, more } = await this.#evicted(stores, counted, spared);
+			owner.put(total, TOTAL_KEY);
+			if (more) this.#trim(spared);
+		});
+	}
+
+	async #evicted(stores: IDBTransaction, from: number, spared: string): Promise<{ total: number; more: boolean }> {
+		const enough = this.#maxBytes * TRIM_TO;
+		const owner = stores.objectStore(OWNER);
+		const index = stores.objectStore(INDEX);
+		const floor = await answered(owner.get(FLOOR_KEY) as IDBRequest<unknown>);
+		const oldest = (
+			(await answered(
+				index
+					.index(BY_USED)
+					.getAll(typeof floor === "number" ? IDBKeyRange.lowerBound(floor) : null, EVICT_AT_ONCE) as IDBRequest<
+					unknown[]
+				>,
+			)) as unknown[]
+		).filter(isEntry);
+		let total = from;
+		let reached: number | undefined;
+		for (const entry of oldest) {
+			if (total <= enough) break;
+			reached = entry.used;
+			if (entry.sha256 === spared) continue;
+			stores.objectStore(BYTES).delete(entry.sha256);
+			index.delete(entry.sha256);
+			total -= entry.bytes;
+		}
+		const over = total > enough;
+		const ended = oldest.length < EVICT_AT_ONCE;
+		if (ended && over && typeof floor === "number") owner.delete(FLOOR_KEY);
+		else if (reached !== undefined) owner.put(reached, FLOOR_KEY);
+		return { total, more: over && (!ended || typeof floor === "number") };
+	}
+
+	async settled(): Promise<void> {
+		for (let seen: Promise<void> | undefined; seen !== this.#writing; ) {
+			seen = this.#writing;
+			await seen;
+		}
 	}
 
 	close(): Promise<void> {
@@ -236,6 +268,7 @@ export class KeptObjects implements CloudMemberFolderKeptObjects {
 		if ((await answered(owner.get(OWNER_KEY) as IDBRequest<unknown>)) !== this.#memberId) {
 			transaction.objectStore(BYTES).clear();
 			transaction.objectStore(INDEX).clear();
+			owner.clear();
 			owner.put(this.#memberId, OWNER_KEY);
 			owner.put(0, TOTAL_KEY);
 		}
