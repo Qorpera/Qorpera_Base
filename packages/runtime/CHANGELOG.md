@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+- hire_team's first call no longer fails blind (the founder, 18 Nov 2026: "fix the hire_team first-call refusal"; in both
+  companies started on v255 the Co-Founder's first hire_team was refused as bare `INVALID_ARGUMENTS` and its second call
+  succeeded). Every refusal of hire_team's and hire_agent's arguments is now a `CloudToolArgumentRefusal` the model
+  reads: which hire (by its position), which field and what is wrong (a key that is not a field, with the fields a hire
+  holds; an operationKey inside a hire, which goes once for the whole call; a missing, empty, non-text or multi-line
+  field; a text over its bound in bytes; hires as text or a top-level key that is neither field; a figure that is not
+  one). A refusal never repeats what the model wrote: no key and no name. What is accepted is unchanged, hire_agent's
+  schema and description byte for byte; create_group_chat's name and purpose share the checks, so its refusals of
+  those say what is wrong too. hire_team's description now names the five fields a hire holds and their bounds in
+  words, and says operationKey goes once for the call, never inside a hire (1,215 to 1,449 bytes); the catalog pins
+  moved. Runtime bundle only.
 - Agents' words about company databases name the command `data` on a company machine (slice 8a; words only, the runtime bundle only; runs that are offered `machine_run`): that it acts as the machine's own company folder (its `/company`, `:viewer` the member the machine was started for unless a call gives `viewer=`), that it prints JSON, the four verbs for a run that may apply and change (a held step still goes through `data_apply`) and only describe and query for a worker, and that a machine made before the command existed lacks it and is taken again by a start with the same cpus and memory and no larger disk (change cpus or memory, ask a larger disk, or delete each old one). The platform update `data-on-machines` tells the Co-Founder once. Pins: the staff instructions (a conversation and a private conversation) `d7de80e9dfb3` → `c87c9a47ae639767f2c72d4812253bb2cc0802ab295faf6ea4909c65af4744e5`, the worker's `2be17d453add` → `29c202822805a9f20a11d9be245c10367f458af643aaec8c94d35ebff87ab847`, measured on a test VM; the prompts do not move.
 - Release v255 (master since v254's release merge: the first team in one step, #1922; agents show the product first,
   #1919; an interface app holds any file, #1928's runtime part; the object kit draws a real 3D model, #1934; the machine
