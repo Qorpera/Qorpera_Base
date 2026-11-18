@@ -213,6 +213,7 @@ export class ConnectionsView {
 	#metadataForced = false;
 	#usageUpdating = false;
 	#usageError: string | undefined;
+	#unansweredByOwnRefresh: ReadonlyMap<string, string | undefined> = new Map();
 	/** "Continue with ChatGPT": offered while the company may use plan logins, asked when the
 	 * member opens Add account (nobody else makes the request). */
 	#planChecked = false;
@@ -385,8 +386,25 @@ export class ConnectionsView {
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
 			if (this.#lifetime.signal.aborted || !this.#shown().some(live)) return;
-			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, this.#metadataForced);
+			const forced = this.#metadataForced;
+			const before = new Map(
+				this.#shown()
+					.filter(live)
+					.map((connection) => [connection.connectionId, connection.providerAccountUsage?.observedAt]),
+			);
+			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
+			if (forced && !this.#lifetime.signal.aborted)
+				this.#unansweredByOwnRefresh = new Map(
+					this.#shown()
+						.filter(
+							(connection) =>
+								live(connection) &&
+								before.has(connection.connectionId) &&
+								before.get(connection.connectionId) === connection.providerAccountUsage?.observedAt,
+						)
+						.map((connection) => [connection.connectionId, connection.providerAccountUsage?.observedAt]),
+				);
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = t("Usage could not be refreshed. Try again.");
 		} finally {
@@ -860,13 +878,23 @@ export class ConnectionsView {
 					t("Usage limit reached · resets in {time}", { time: resetCountdown(limitResetIn) }),
 				)
 			: null;
+		const unanswered =
+			live(connection) &&
+			this.#unansweredByOwnRefresh.has(connection.connectionId) &&
+			this.#unansweredByOwnRefresh.get(connection.connectionId) === usage?.observedAt
+				? h(
+						"span",
+						{ class: "connection-usage-limit", role: "status" },
+						t(
+							"ChatGPT did not answer for this account just now. If this stays, sign out and add this account again.",
+						),
+					)
+				: null;
 		if (!usage || !live(connection))
-			return h("div", { class: "connection-usage muted" }, limitNotice ?? t("Usage unavailable"));
+			return h("div", { class: "connection-usage muted" }, limitNotice ?? t("Usage unavailable"), unanswered);
 		const stale =
 			limitReached || now - Date.parse(usage.observedAt) > USAGE_FRESH_MS || Date.parse(usage.observedAt) > now;
 		const checked = fmtTime(usage.observedAt);
-		// An old reading never says "left" (the limit may be reached since) but says
-		// when it was taken, unless the host's clock ran ahead of this one.
 		const dated = Date.parse(usage.observedAt) <= now;
 		// One bar needs no name; two (5 hours and Weekly) would look alike without one.
 		const named = usage.windows.length > 1;
@@ -874,6 +902,7 @@ export class ConnectionsView {
 			"div",
 			{ class: "connection-usage" },
 			limitNotice,
+			unanswered,
 			...usage.windows.map((window) => {
 				const resetIn = window.resetAt ? Date.parse(window.resetAt) - now : undefined;
 				const expired = resetIn !== undefined && resetIn <= 0;
@@ -882,8 +911,8 @@ export class ConnectionsView {
 					? t("Usage unavailable")
 					: stale
 						? dated
-							? t("{percent}% at last check · {time}", { percent: remaining, time: checked })
-							: t("{percent}% at last check", { percent: remaining })
+							? t("{percent}% left at last check · {time}", { percent: remaining, time: checked })
+							: t("{percent}% left at last check", { percent: remaining })
 						: t("{percent}% left", { percent: remaining });
 				const fill = h("span");
 				// CSSOM property updates work with the release CSP; style attributes do not.
