@@ -103,6 +103,10 @@ function sameName(name: string): string {
 	return name.trim().normalize("NFC").toLocaleLowerCase("en");
 }
 
+function plainMessage(message: string): string {
+	return message.replace(/[^\u0020-\u007e\u00c0-\u00ff]/g, "-");
+}
+
 /** One id per (namespace, run, operation key), formatted as the legacy hire's agent id (cloud-hiring-tools.ts), in a
  * namespace of its own so it never meets the legacy hire's or a group chat's. */
 export function hashedId(namespace: string, runId: string, operationKey: string): string {
@@ -426,24 +430,24 @@ export class CloudFolderHiring {
 	}
 
 	checkTeam(request: CloudFolderTeamHire): void {
-		const seen = new Map<string, string>();
-		for (const hire of request.hires) {
+		const seen = new Map<string, number>();
+		for (const [index, hire] of request.hires.entries()) {
 			const earlier = seen.get(sameName(hire.name));
 			if (earlier !== undefined)
 				throw new CloudToolArgumentRefusal(
-					`Two hires are named ${earlier}: name each by its own work, and never a name a coworker already has`,
+					`hire ${index + 1}: name is the same as hire ${earlier + 1}'s: name each by its own work, and never a name a coworker already has`,
 				);
-			seen.set(sameName(hire.name), hire.name.trim());
+			seen.set(sameName(hire.name), index);
 		}
-		const problems = request.hires.flatMap((hire) =>
+		const problems = request.hires.flatMap((hire, index) =>
 			problemsOf(
 				osPath("agents/agent"),
 				hireFiles(hire, PLACEHOLDER_ID, PLACEHOLDER_ID, this.#identity.requesterUserId),
-			).map((problem) => ({ message: `${hire.name.trim()}: ${problem.message}` })),
+			).map((problem) => ({ message: `hire ${index + 1}: ${problem.message}` })),
 		);
 		if (problems.length)
 			throw new CloudToolArgumentRefusal(
-				invalidMessage(problems, "This team cannot be saved as the company's files"),
+				plainMessage(invalidMessage(problems, "This team cannot be saved as the company's files")),
 			);
 	}
 
