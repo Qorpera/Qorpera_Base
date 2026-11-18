@@ -639,6 +639,74 @@ describe("an app's module scripts", () => {
 		expect(viewer).toContain("import 'data:text/javascript,1';");
 	});
 
+	it("binds JSON and CSS module imports as they are, and refuses another kind with a plain line", async () => {
+		const { map, source, said, handed } = await open({
+			"apps/mod/index.html": '<script type="module" src="viewer.js"></script>',
+			"apps/mod/viewer.js":
+				'import config from "./config.json" with { type: "json" };\nimport sheet from \'./look.css\' with {type:\'css\'};\nconst more = await import("./more.json", { with: { type: "json" } });\nimport notes from "./notes.txt" with { type: "text" };\nimport plain from "./plain.js" with { };',
+			"apps/mod/config.json": '{ "name": "klokkesten" }\n',
+			"apps/mod/more.json": '{ "count": 3 }',
+			"apps/mod/look.css": "p { color: red }",
+			"apps/mod/notes.txt": "notes",
+			"apps/mod/plain.js": "export default 1;",
+		});
+		expect(said).toEqual(["viewer.js imports ./notes.txt as text, which a page can't import"]);
+		const viewer = await source("viewer.js");
+		expect(viewer).toContain('import config from "qorpera-module:/config.json?type=json" with { type: "json" };');
+		expect(viewer).toContain("import sheet from 'qorpera-module:/look.css?type=css' with {type:'css'};");
+		expect(viewer).toContain('await import("qorpera-module:/more.json?type=json", { with: { type: "json" } });');
+		expect(viewer).toContain('import notes from "./notes.txt" with { type: "text" };');
+		expect(viewer).toContain('import plain from "qorpera-module:/plain.js" with { };');
+		const file = (virtual: string) => handed.get(map.imports[virtual] ?? "");
+		expect(await textOf(file("qorpera-module:/config.json?type=json"))).toBe('{ "name": "klokkesten" }\n');
+		expect(file("qorpera-module:/config.json?type=json")?.type).toBe("application/json");
+		expect(map.imports["qorpera-module:/config.json?type=json"]).toMatch(/^qorpera-file-[0-9a-f]{32}-json$/);
+		expect(map.imports["qorpera-module:/look.css?type=css"]).toBe(`data:text/css;base64,${btoa("p { color: red }")}`);
+		expect(await textOf(file("qorpera-module:/more.json?type=json"))).toBe('{ "count": 3 }');
+		expect(Object.keys(map.imports).some((key) => key.includes("notes"))).toBe(false);
+	});
+
+	it("maps an import-map prefix that names the app's own folder, from the root and from a page below it", async () => {
+		const fromRoot = await open({
+			"apps/mod/index.html":
+				'<script type="importmap">{"imports": {"@/": "./", "app/": "./"}}</script><script type="module">import "@/lib/x.js"; import "app/y.js";</script>',
+			"apps/mod/lib/x.js": "1",
+			"apps/mod/y.js": "2",
+		});
+		expect(fromRoot.said).toEqual([]);
+		expect(fromRoot.page.querySelector("script[type=module]")?.textContent).toBe(
+			'import "qorpera-module:/lib/x.js"; import "qorpera-module:/y.js";',
+		);
+		const fromBelow = await open(
+			{
+				"apps/mod/pages/index.html":
+					'<script type="importmap">{"imports": {"~/": "../", "out/": "../../"}}</script><script type="module">import "~/lib/x.js"; import "out/z.js";</script>',
+				"apps/mod/lib/x.js": "1",
+			},
+			"pages/index.html",
+		);
+		expect(fromBelow.said).toEqual([
+			"the page imports out/z.js, which the page's import map names outside its folder",
+		]);
+		expect(fromBelow.page.querySelector("script[type=module]")?.textContent).toBe(
+			'import "qorpera-module:/lib/x.js"; import "out/z.js";',
+		);
+	});
+
+	it("gives import.meta.url with each part of a path escaped, so a neighbour resolves to the right file", async () => {
+		const { source, said, map } = await open({
+			"apps/mod/index.html": '<script type="module" src="two%20words/m%C3%B8de%20%26%20co.js"></script>',
+			"apps/mod/two words/møde & co.js": "const near = new URL('./near.txt', import.meta.url);",
+		});
+		expect([said, Object.keys(map.imports)]).toEqual([[], ["qorpera-module:/two%20words/m%C3%B8de%20%26%20co.js"]]);
+		const url = new URL("./page-preview/two%20words/m%C3%B8de%20%26%20co.js", document.baseURI).href;
+		expect(await source("two%20words/m%C3%B8de%20%26%20co.js")).toContain(
+			`new URL('./near.txt', ${JSON.stringify(url)})`,
+		);
+		const near = new URL("./near.txt", url).href.slice(new URL("./page-preview/", document.baseURI).href.length);
+		expect(resolveAppPath("", near)).toBe("two words/near.txt");
+	});
+
 	it("reads a large module piece by piece and binds a module the page names twice once", async () => {
 		const bytes = new TextEncoder().encode(`export const big = "${"x".repeat(9 * 1024 * 1024)}";`);
 		const f = fakeFolder({

@@ -7,6 +7,7 @@ export interface ImportSpecifier {
 	readonly se: number;
 	readonly d: number;
 	readonly a: number;
+	readonly at: readonly (readonly [string, string])[] | null;
 }
 
 export interface ExportSpecifier {

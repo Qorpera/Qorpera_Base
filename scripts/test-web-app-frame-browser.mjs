@@ -808,12 +808,13 @@ Promise.all([
 		beside: { "apps/secret.js": 'qorpera.read("secret ran");' },
 		files: {
 			"index.html": `<!doctype html><meta charset="utf-8"><p>Modules</p>
-<script type="importmap">{ "imports": { "util": "./lib/util.js", "lib/": "./lib/" } }</script>
+<script type="importmap">{ "imports": { "util": "./lib/util.js", "lib/": "./lib/", "@/": "./" } }</script>
 <script type="module" src="./main.js"></script>
 <script type="module">import "OUTSIDE/m-static.js"; qorpera.read("https ran");</script>
 <script type="module">import "lodash"; qorpera.read("lodash ran");</script>
 <script type="module">import "../secret.js"; qorpera.read("outside ran");</script>
 <script type="module">import "./gone.js"; qorpera.read("gone ran");</script>
+<script type="module">import notes from "./notes.txt" with { type: "text" }; qorpera.read("text ran");</script>
 <script type="module">import { a } from "./a.js"; qorpera.read("inline " + a + " " + globalThis.order.filter((name) => name === "a").length);</script>`,
 			"main.js": `import { a, fromB } from "./a.js";
 import { deep } from "./n1.js";
@@ -821,7 +822,13 @@ import { u } from "util";
 import { p } from "lib/prefixed.js";
 import "./side.js";
 import { again } from "./again.js";
+import { deep as viaRoot } from "@/sub/n3.js";
+import config from "./config.json" with { type: "json" };
+import sheet from "./look.css" with { type: "css" };
+import { odd } from "./two%20words/m%C3%B8de%20%26%20co.js";
 ${MODULE_WORKER}
+document.adoptedStyleSheets = [sheet];
+const more = await import("./more.json", { with: { type: "json" } });
 const dyn = await import("./dyn.js");
 const plain = await import(await qorpera.file("plain.js"));
 let stack;
@@ -838,6 +845,12 @@ const seen = {
 	stack: stack.trim(),
 	worker: await ask(await qorpera.file("worker-plain.js")),
 	workerImports: await ask(await qorpera.file("worker-imports.js")),
+	bigWorker: await ask(await qorpera.file("worker-big.js")),
+	hugeWorker: await ask(await qorpera.file("worker-huge.js")),
+	root: viaRoot,
+	json: config.name + " " + more.default.count,
+	css: getComputedStyle(document.querySelector("p")).color,
+	odd: await odd,
 };
 qorpera.read("cases " + JSON.stringify(seen));
 `,
@@ -869,6 +882,14 @@ export const p = fetch(new URL("./data.txt", import.meta.url)).then((answer) => 
 			"worker-plain.js": `postMessage(["plain", Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name) && self[name] !== undefined)]);\n`,
 			"worker-imports.js": `import { dep } from "./worker-dep.js";\npostMessage(["imports", dep]);\n`,
 			"worker-dep.js": `export const dep = "dep";\n`,
+			"worker-big.js": `postMessage("big");\n//${"é".repeat(700_000)}\n`,
+			"worker-huge.js": `postMessage("huge");\n//${"x".repeat(2_500_000)}\n`,
+			"config.json": `{ "name": "klokkesten" }\n`,
+			"more.json": `{ "count": 3 }`,
+			"look.css": "p { color: rgb(1, 2, 3); }",
+			"notes.txt": "notes",
+			"two words/møde & co.js": `export const odd = fetch(new URL("./near.txt", import.meta.url)).then((answer) => answer.text()).then((text) => text + " " + import.meta.url.replace(new URL("./", location.href).href, "./"));\n`,
+			"two words/near.txt": "near",
 		},
 		calls: [
 			"read inline a 1",
@@ -885,6 +906,12 @@ export const p = fetch(new URL("./data.txt", import.meta.url)).then((answer) => 
 				stack: "at Module.boom (qorpera-module:/thrower.js:2:8)",
 				worker: ["plain", []],
 				workerImports: "failed",
+				bigWorker: "big",
+				hugeWorker: "failed",
+				root: "n3",
+				json: "klokkesten 3",
+				css: "rgb(1, 2, 3)",
+				odd: "near ./two%20words/m%C3%B8de%20%26%20co.js",
 			})}`,
 		],
 		console: [
@@ -892,6 +919,8 @@ export const p = fetch(new URL("./data.txt", import.meta.url)).then((answer) => 
 			"Qorpera: the page imports lodash, which the page's import map does not name",
 			"Qorpera: the page imports ../secret.js, which is outside the page's folder",
 			"Qorpera: the page imports ./gone.js, which is not in the page's folder",
+			"Qorpera: the page imports ./notes.txt as text, which a page can't import",
+			/^Qorpera: a module worker of 24\d\d KiB is too large to start here \(at most 1,532 KiB\)$/,
 		],
 	},
 	"a module page and a module worker stay off the network": {
@@ -1023,7 +1052,11 @@ const pages = [
 	...Object.entries(variants).map(([name, variant]) => [name, variant, `?v=${encodeURIComponent(name)}`]),
 	...Object.entries(folderVariants).map(([name, variant]) => [
 		name,
-		{ ...variant, wait: 1000, console: (variant.console ?? []).map((line) => line.replaceAll("OUTSIDE", OUTSIDE)) },
+		{
+			...variant,
+			wait: 1000,
+			console: (variant.console ?? []).map((line) => (typeof line === "string" ? line.replaceAll("OUTSIDE", OUTSIDE) : line)),
+		},
 		`?m=${encodeURIComponent(name)}`,
 	]),
 ];
@@ -1086,7 +1119,7 @@ try {
 			tabs,
 			outside: [...outsideHits],
 			elsewhere: elsewhere.filter((url) => !/^(?:blob|data):/.test(url)),
-			told: (variant.console ?? []).filter((line) => !said.includes(line)),
+			told: (variant.console ?? []).filter((line) => !said.some((one) => (line instanceof RegExp ? line.test(one) : one === line))),
 		};
 		page.off("framenavigated", loaded);
 		console.log(`${name}: ${JSON.stringify(seen)}`);
@@ -1102,7 +1135,7 @@ try {
 				told: [],
 			});
 		} catch (error) {
-			failures.push(`${name}: ${error.message.split("\n")[0]} ${JSON.stringify(seen)}`);
+			failures.push(`${name}: ${error.message.split("\n")[0]} ${JSON.stringify(seen)} console ${JSON.stringify(said.slice(-12))}`);
 		}
 	}
 } finally {

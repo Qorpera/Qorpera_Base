@@ -19,9 +19,20 @@ interface PageMap {
 type Resolved = { readonly path: string } | { readonly kept: true } | { readonly refused: string };
 
 interface Bound {
-	readonly path: string;
 	readonly token: string;
-	readonly blob: Blob;
+	readonly blob: Blob | null;
+}
+
+const KINDS: Readonly<Record<string, { readonly type: string; readonly suffix: string }>> = {
+	js: { type: "text/javascript", suffix: "module" },
+	json: { type: "application/json", suffix: "json" },
+	css: { type: "text/css", suffix: "" },
+};
+
+function dataAddress(type: string, bytes: Uint8Array): string {
+	let binary = "";
+	for (let at = 0; at < bytes.length; at += 32768) binary += String.fromCharCode(...bytes.subarray(at, at + 32768));
+	return `data:${type};base64,${btoa(binary)}`;
 }
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -31,11 +42,20 @@ const META = 3;
 
 export const MODULE_SCHEME = "qorpera-module:";
 
-export function virtualModule(path: string): string {
-	return `${MODULE_SCHEME}/${path
+const encoded = (path: string) =>
+	path
 		.split("/")
 		.map((part) => encodeURIComponent(part).replace(/'/g, "%27"))
-		.join("/")}`;
+		.join("/");
+
+export function virtualModule(path: string, kind = "js"): string {
+	return `${MODULE_SCHEME}/${encoded(path)}${kind === "js" ? "" : `?type=${kind}`}`;
+}
+
+function kindOf(source: string, found: ImportSpecifier): string {
+	if (found.a < 0) return "js";
+	if (found.at) return found.at.find(([key]) => key === "type")?.[1] ?? "js";
+	return /\btype\s*:\s*(["'])([^"'\\]*)\1/.exec(source.slice(found.a, found.se))?.[2] ?? "js";
 }
 
 const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
@@ -59,11 +79,12 @@ function pageMap(scripts: readonly HTMLScriptElement[], reader: ModuleReader, ba
 		for (const [key, value] of Object.entries(imports)) {
 			if (typeof value !== "string" || key === "" || RELATIVE.test(key) || key.startsWith("/") || SCHEME.test(key))
 				continue;
-			const local = SCHEME.test(value) || value.startsWith("/") ? null : reader.resolve(base, value);
+			const outside = SCHEME.test(value) || value.startsWith("/");
 			if (key.endsWith("/")) {
+				const probe = outside || !value.endsWith("/") ? null : reader.resolve(base, `${value}_`);
 				if (!prefixes.some(([known]) => known === key))
-					prefixes.push([key, local === null || !value.endsWith("/") ? null : `${local}/`]);
-			} else if (!exact.has(key)) exact.set(key, local);
+					prefixes.push([key, probe === null || !probe.endsWith("_") ? null : probe.slice(0, -1)]);
+			} else if (!exact.has(key)) exact.set(key, outside ? null : reader.resolve(base, value));
 		}
 	}
 	prefixes.sort((a, b) => b[0].length - a[0].length);
@@ -104,7 +125,7 @@ export async function bindModules(
 	const bound = new Map<string, Promise<Bound | null>>();
 	const metaUrl = (path: string) =>
 		base === "" || path.startsWith(`${base}/`)
-			? `${frameFolder}${base === "" ? path : path.slice(base.length + 1)}`
+			? `${frameFolder}${encoded(base === "" ? path : path.slice(base.length + 1))}`
 			: null;
 
 	const rewrite = (source: string, name: string, from: string, url: string | null): string => {
@@ -131,9 +152,14 @@ export async function bindModules(
 				said.push(`${name} imports ${found.n}, ${resolved.refused}`);
 				continue;
 			}
-			const virtual = virtualModule(resolved.path);
+			const kind = kindOf(source, found);
+			if (!KINDS[kind]) {
+				said.push(`${name} imports ${found.n} as ${kind}, which a page can't import`);
+				continue;
+			}
+			const virtual = virtualModule(resolved.path, kind);
 			edits.push([found.s, found.e, DYNAMIC.has(found.t) ? JSON.stringify(virtual) : virtual]);
-			void load(resolved.path, name, found.n);
+			void load(resolved.path, kind, name, found.n);
 		}
 		let out = source;
 		for (const [start, end, text] of [...edits].sort((a, b) => b[0] - a[0]))
@@ -141,8 +167,9 @@ export async function bindModules(
 		return out;
 	};
 
-	const load = (path: string, importer: string, specifier: string): Promise<Bound | null> => {
-		const known = bound.get(path);
+	const load = (path: string, kind: string, importer: string, specifier: string): Promise<Bound | null> => {
+		const virtual = virtualModule(path, kind);
+		const known = bound.get(virtual);
 		if (known) return known;
 		const reading = (async () => {
 			const source = await reader.text(path).catch(() => null);
@@ -150,13 +177,19 @@ export async function bindModules(
 				said.push(`${importer} imports ${specifier}, which is not in the page's folder`);
 				return null;
 			}
-			const text = `${rewrite(source, path, dirOf(path), metaUrl(path))}\n//# sourceURL=${virtualModule(path)}`;
+			const text =
+				kind === "js" ? `${rewrite(source, path, dirOf(path), metaUrl(path))}\n//# sourceURL=${virtual}` : source;
 			if (reader.warm) return null;
 			const bytes = new TextEncoder().encode(text);
-			const token = `qorpera-file-${await sha32(bytes)}-module`;
-			return { path, token, blob: new Blob([bytes as BlobPart], { type: "text/javascript" }) };
+			const { type, suffix } = KINDS[kind]!;
+			// WHY: the frame's style-src names data: but not blob:, so a CSS module comes as a data: address.
+			if (suffix === "") return { token: dataAddress(type, bytes), blob: null };
+			return {
+				token: `qorpera-file-${await sha32(bytes)}-${suffix}`,
+				blob: new Blob([bytes as BlobPart], { type }),
+			};
 		})();
-		bound.set(path, reading);
+		bound.set(virtual, reading);
 		return reading;
 	};
 
@@ -171,7 +204,7 @@ export async function bindModules(
 			continue;
 		}
 		const path = reader.resolve(base, src);
-		if (path !== null) void load(path, "the page", src);
+		if (path !== null) void load(path, "js", "the page", src);
 	}
 	for (const link of [...page.querySelectorAll<HTMLLinkElement>("link[rel~='modulepreload' i][href]")])
 		if (reader.resolve(base, link.getAttribute("href") ?? "") !== null) changes.push(() => link.remove());
@@ -182,9 +215,9 @@ export async function bindModules(
 		await Promise.all([...bound.values()]);
 	}
 	const results = new Map<string, Bound>();
-	for (const [path, reading] of bound) {
+	for (const [virtual, reading] of bound) {
 		const result = await reading;
-		if (result) results.set(path, result);
+		if (result) results.set(virtual, result);
 	}
 	for (const change of changes) change();
 	for (const script of scripts) {
@@ -192,14 +225,14 @@ export async function bindModules(
 		if (src === null) continue;
 		const path = reader.resolve(base, src);
 		if (path === null) continue;
-		const result = results.get(path);
+		const result = results.get(virtualModule(path));
 		if (result) script.setAttribute("src", result.token);
 		else script.removeAttribute("src");
 	}
 	const imports: Record<string, string> = {};
-	for (const [path, result] of results) imports[virtualModule(path)] = result.token;
+	for (const [virtual, result] of results) imports[virtual] = result.token;
 	for (const [key, path] of map.exact) {
-		const result = path === null ? undefined : results.get(path);
+		const result = path === null ? undefined : results.get(virtualModule(path));
 		if (result) imports[key] = result.token;
 	}
 	for (const script of maps) script.remove();
@@ -208,6 +241,6 @@ export async function bindModules(
 	element.textContent = JSON.stringify({ imports }).replace(/</g, "\\u003c");
 	page.head.prepend(element);
 	const files = new Map<string, Blob>();
-	for (const result of results.values()) files.set(result.token, result.blob);
+	for (const result of results.values()) if (result.blob) files.set(result.token, result.blob);
 	return { files, said };
 }

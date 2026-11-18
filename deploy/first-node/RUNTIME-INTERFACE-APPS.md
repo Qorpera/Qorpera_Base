@@ -133,21 +133,26 @@ page named into it as `data:` URLs before anything showed.
   Klokkesten's 3D page stayed on "Åbner modellen …"). `<script type="module" src>` and an inline module import the
   page's own files as anywhere: static `import … from`, `export … from` and `import "…"` with a relative path at any
   depth, a bare name the page's `<script type="importmap">` maps to a file of the folder (an exact name such as
-  `"three"`, or a prefix such as `"three/addons/"`), a literal `import("./x.js")`, and cycles between modules. The host
+  `"three"`, or a prefix such as `"three/addons/"` or `"@/": "./"` for the app's own folder), a literal
+  `import("./x.js")`, cycles between modules, and JSON and CSS modules (`with { type: "json" }` or `"css"`: the file
+  as it is, a JSON one as an `application/json` blob, a CSS one as a `data:` address since the frame's `style-src`
+  names `data:` and not `blob:`; a CSS module's own `url()` is not read). The host
   reads the graph while it puts the page together (`app/app-modules.ts`, with es-module-lexer 2.3.1, MIT, vendored in
   `src/vendor/es-module-lexer`): each module's specifiers become `qorpera-module:/<path>`, an import map the host
   writes first in the head maps each such name (and each exact name of the page's map) to the module's `blob:`, and the
   page's own maps go. So each module is evaluated once, in the order the browser gives, and a stack names
   `qorpera-module:/<path>:<line>:<column>` of the file as written. `import.meta.url` is the module's place in the frame
-  (`<frame folder>/<path>`), so `new URL("./x.bin", import.meta.url)` and `fetch` of it read the neighbour file; an
+  (`<frame folder>/<path>`, each part escaped, so a name with a space, `&` or `ø` stays the file's), so `new URL("./x.bin", import.meta.url)` and `fetch` of it read the neighbour file; an
   inline module's is the frame document's. A module is read whole (piece by piece above 8 MiB) and copied once for its
   blob. A specifier that is not a file of the folder (`https:`, `/abs`, `..` out of it, a bare name the map does not
-  name or maps elsewhere, a missing file) is left as written, fails alone, and the console says so in one line
-  (`Qorpera: viewer.js imports lodash, which the page's import map does not name`). Not resolved: an `import()` of a
+  name or maps elsewhere, a missing file, an import of another `type`) is left as written, fails alone, and the console
+  says so in one line (`Qorpera: viewer.js imports lodash, which the page's import map does not name`). Not resolved: an `import()` of a
   computed name, an import map's `scopes`, and modules a module worker imports.
 - A module worker (`new Worker(url, { type: "module" })`) starts from an address `qorpera.file` gives (18 November
-  2026): the frame reads its source and starts it from a `data:` address after the worker guard, under the frame's
-  policy. It runs code of its own file only; its own `import`s are not resolved.
+  2026): the frame reads its source and starts it from a `data:` address (base64) after the worker guard, under the
+  frame's policy. It runs code of its own file only; its own `import`s are not resolved. Chromium takes an address of
+  at most 2 MiB, so a module worker's file can be at most 1,532 KiB (measured on node 2: 1,569,335 bytes start, 1,570,312
+  do not); a larger one does not start, fails alone, and the console says so in one `Qorpera:` line.
 - While the files of the first paint arrive, the app's "Opening…" says how far it is, when they pass 4 MiB.
 - A file larger than 8 MiB is read piece by piece (4 MiB pieces, one at a time for one file, at most 8 files at once
   for a page) and built into one blob as the pieces arrive, so no second whole copy is held beside it.
