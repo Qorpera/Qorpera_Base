@@ -1679,7 +1679,15 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
 function reviewRun(
-	mode: "review" | "review-no-verdict" | "review-busy" | "review-wrong-tool" | "review-context" | "review-compact",
+	mode:
+		| "review"
+		| "review-no-verdict"
+		| "review-busy-notice"
+		| "review-busy-turn"
+		| "review-busy-retrying"
+		| "review-wrong-tool"
+		| "review-context"
+		| "review-compact",
 	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
 	compactor?: MemoryCompactChannel,
 	request = "Email Bob.",
@@ -1811,12 +1819,19 @@ it("composes only the agent's requests from its run, never a reviewer's", async 
 });
 
 it("tells the review step that a reviewer the provider turned away is busy, so it may ask again (17 November 2026)", async () => {
-	const { result, execute, evidence, reviewErrors } = reviewRun("review-busy");
-	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
-	expect(execute).not.toHaveBeenCalled();
-	expect(reviewErrors).toEqual([expect.any(CloudActionReviewBusy)]);
-	const recorded = JSON.parse(await readFile(evidence, "utf8"));
-	expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text).toBe(CLOUD_REVIEW_UNAVAILABLE);
+	for (const [mode, busy] of [
+		["review-busy-notice", true],
+		["review-busy-turn", true],
+		["review-busy-retrying", false],
+	] as const) {
+		const { result, execute, evidence, reviewErrors } = reviewRun(mode);
+		await expect(result, mode).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(execute, mode).not.toHaveBeenCalled();
+		expect(reviewErrors, mode).toEqual([expect.any(Error)]);
+		expect(reviewErrors[0] instanceof CloudActionReviewBusy, mode).toBe(busy);
+		const recorded = JSON.parse(await readFile(evidence, "utf8"));
+		expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text, mode).toBe(CLOUD_REVIEW_UNAVAILABLE);
+	}
 });
 
 it("never runs an acting call when the reviewer ends without a verdict", async () => {
