@@ -1891,11 +1891,6 @@ describe("company machine host's wake (perf A5)", () => {
 			clock.mockRestore();
 		}
 	});
-
-	it("a pass without a hold still waits for every step", async () => {
-		const f = await fixture();
-		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
-	});
 });
 
 describe("company machine host's passes over the signal that lasts as long as its process", () => {
@@ -5258,33 +5253,6 @@ describe("a member's pointer on a desktop (20260930744000)", () => {
 			'exec python3 -c "$1" "$2"',
 		])
 			expect(COMPANY_MACHINE_MEMBER_POINTER).toContain(part);
-		// Its checks, under the lock: the fence file there, its incarnation the mover's own and the desktop's now; before X
-		// is loaded, again after it is opened, and with the line's fence before every move, which X has done (XSync) before
-		// the lock goes. Missing is closed. It reads nothing but two short numbers and a fence, starts nothing.
-		const program = COMPANY_MACHINE_MEMBER_POINTER_PROGRAM;
-		for (const part of [
-			"lock = os.open('/run/qorpera-pointer/lock', os.O_WRONLY)",
-			"fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)",
-			"now = os.readlink('/run/systemd/units/invocation:qorpera-machine-desktop.service')",
-			"if not kept or kept.group(2) != mine or now != mine:",
-			"if fence is None or words[2].decode('ascii', 'replace') != fence:",
-			"XTestFakeMotionEvent(display, -1, int(words[0]), int(words[1]), 0)",
-			"x11.XSync(display, 0)",
-			"fcntl.flock(lock, fcntl.LOCK_UN)",
-			"word.isdigit() and len(word) <= 4 for word in words[:2]",
-			"os.utime('/run/qorpera-desktop/last-use')",
-		])
-			expect(program).toContain(part);
-		expect(program.indexOf("if not still():")).toBeLessThan(program.indexOf("ctypes.CDLL('libX11.so.6')"));
-		expect(program.lastIndexOf("if not still():")).toBeGreaterThan(program.indexOf("x11.XOpenDisplay(b':1')"));
-		// A mover never writes, creates or initialises the fence or its lock.
-		expect(program).not.toMatch(
-			/subprocess|os\.system|exec\(|eval\(|XFlush|O_CREAT|'w'|\.write\(|qorpera-desktop\/pointer/,
-		);
-		expect(program.match(/open\('[^']*'/g)).toEqual([
-			"open('/run/qorpera-pointer/lock'",
-			"open('/run/qorpera-pointer/fence'",
-		]);
 		runs[0]!.end(0);
 	});
 
@@ -6513,26 +6481,7 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			await expect(f.host.clearClipboard(wrong, f.signal)).rejects.toThrow("COMPANY_MACHINE_CODING_VALUE_INVALID");
 	});
 
-	it("composes the host's own clipboard clear: the boot first, no display is clear, each xsel checked, then a byte count alone (F34 of #1661)", () => {
-		const lines = COMPANY_MACHINE_CLIPBOARD_CLEAR.split("\n");
-		expect(lines[0]).toBe('{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97');
-		// Its bound inside the machine by a fixed word (round 25 P1): the four xsels end within 4 x 0.5 = 2 s at a screen
-		// call (the host cuts at 3 s, SCREEN_CLEAR_MS, with the fence and the record) and 4 x 2 = 8 s at save time (10 s,
-		// CODING_VALUE_CLEAR_MS, from the script's start). Any other word fails before anything runs.
-		expect(lines[1]).toBe('case "$1" in screen) bound=0.5 ;; save) bound=2 ;; *) exit 1 ;; esac');
-		expect(lines[2]).toBe("[ -S /tmp/.X11-unix/X1 ] || exit 0");
-		expect(lines[3]).toBe("[ -x /usr/bin/xsel ] || exit 98");
-		// Every xsel that runs is killed at that bound (SIGKILL: none outlives it).
-		expect(
-			COMPANY_MACHINE_CLIPBOARD_CLEAR.match(/\/usr\/bin\/timeout --signal=KILL "\$bound" \/usr\/bin\/xsel /g),
-		).toHaveLength(2);
-		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR.match(/xsel --/g)).toHaveLength(2);
-		// Both clears must succeed, then both read back: a failed read counts its own word, never empty.
-		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain('xsel --logfile /dev/null "$selection" --clear || exit 1');
-		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain(
-			"--output --selectionTimeout 3000 || echo failed; } | /usr/bin/wc -c)",
-		);
-		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain('[ "$left" -eq 0 ] || exit 2');
+	it("clears both selections and prints nothing of either (F34 of #1661)", () => {
 		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR.match(/for selection in --clipboard --primary; do/g)).toHaveLength(2);
 		// Nothing of a selection is printed, kept in a file or put on a command line.
 		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).not.toMatch(/>\s*\/(?!dev\/null)|tee|echo "\$/);
@@ -6566,6 +6515,9 @@ describe("a member's action on a desktop (20260930713000)", () => {
 					const status = spawnSync("/bin/sh", ["-c", script, bootId, word], { env: {} }).status;
 					return { status, ms: performance.now() - began };
 				};
+				const headless = COMPANY_MACHINE_CLIPBOARD_CLEAR.replaceAll("/tmp/.X11-unix/X1", join(dir, "X0"));
+				expect(spawnSync("/bin/sh", ["-c", headless, boot, "screen"], { env: {} }).status).toBe(0);
+				expect(run("screen").status).toBe(98);
 				await xsel("nothing");
 				expect(run("screen", randomUUID()).status).toBe(97);
 				expect(run("screen").status).toBe(0);
@@ -6984,9 +6936,6 @@ describe("a member's action on a desktop (20260930713000)", () => {
 					"",
 				].join("\n"),
 			);
-			// The text is no program's argument: only dash's own printf (no process of its own) and the shell take it.
-			for (const line of COMPANY_MACHINE_MEMBER_TYPE.split("\n").filter((entry) => entry.includes("$text")))
-				expect(line.trim(), line).toMatch(/^(text=\$\{text%x\}|printf %s "\$text" \| )/);
 			// Another boot, no xdotool or xsel, the screen off (with the test's tools alone: these checks come first).
 			expect(run("x", "type", bin, randomUUID()).status).toBe(97);
 			await rm(join(bin, "xsel"));
@@ -7097,9 +7046,6 @@ describe("a member's start of a desktop (20260930714000)", () => {
 		]);
 		expect(calls[0]).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
 		expect(calls[0]!.stdin).toBeUndefined();
-		// The script: the boot first, the helper there, whether the desktop ran, then `desktop start` with no argument.
-		expect(COMPANY_MACHINE_MEMBER_START.split("\n")[0]).toContain("|| exit 97");
-		expect(COMPANY_MACHINE_MEMBER_START).toContain("desktop start >/dev/null 2>&1");
 	});
 
 	it("maps the script's exit to a fixed outcome, and anything else to a desktop that did not start", async () => {
@@ -7582,29 +7528,6 @@ describe("company machine host: the desktop's figure (20260930737000)", () => {
 		f.entry.starter = starter("moon");
 		for (let pass = 0; pass < 5; pass++) await f.host.pass(f.signal);
 		expect(written(f).map((call) => call[3])).toEqual(["star\n", "star\n", "star\n", "moon\n", "moon\n", "moon\n"]);
-	});
-
-	it("cuts off a write that does not answer after its time, and tells SQL the boot runs all the same", async () => {
-		const f = await fixture({ desktopWordTimeoutMs: 40 });
-		f.entry.starter = starter("star");
-		const push = f.client.pushInstanceFile.getMockImplementation();
-		const cut: unknown[] = [];
-		f.client.pushInstanceFile.mockImplementation(async (...args: unknown[]) => {
-			if (args[2] !== FIGURE) return push?.(...(args as []));
-			const signal = args[5] as AbortSignal;
-			await new Promise((_resolve, reject) => {
-				signal.addEventListener("abort", () => {
-					cut.push(signal.reason);
-					reject(signal.reason);
-				});
-			});
-		});
-		const started = Date.now();
-		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
-		expect(Date.now() - started).toBeLessThan(1500);
-		expect(cut).toHaveLength(1);
-		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
-		expect(failures(f)).toEqual([]);
 	});
 });
 

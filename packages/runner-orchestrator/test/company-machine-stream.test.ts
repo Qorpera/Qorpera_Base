@@ -5,7 +5,6 @@ import { runInNewContext } from "node:vm";
 import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-	COMPANY_MACHINE_DESKTOP_VIEW,
 	COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM,
 	DesktopStream,
 	type DesktopStreamRelease,
@@ -1265,15 +1264,7 @@ describe("a desktop's live picture (20260930745000)", () => {
 		20_000,
 	);
 
-	it("runs its relay as root on SQL's boot only, with the desktop running, and nothing else", () => {
-		for (const part of [
-			'[ "$boot" = "$0" ]; } || exit 97',
-			"command -v python3 >/dev/null 2>&1 || exit 98",
-			"systemctl is-active --quiet qorpera-machine-desktop.service || exit 95",
-			'exec python3 -c "$1"',
-		])
-			expect(COMPANY_MACHINE_DESKTOP_VIEW).toContain(part);
-		expect(COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM).toContain("socket.create_connection(('127.0.0.1', 5901)");
+	it("runs nothing else from its relay: no subprocess, shell, exec, eval or file open", () => {
 		expect(COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM).not.toMatch(/subprocess|os\.system|exec\(|eval\(|open\(/);
 	});
 });

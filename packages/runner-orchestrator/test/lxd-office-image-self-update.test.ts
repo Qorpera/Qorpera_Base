@@ -3,6 +3,7 @@ import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { GUEST_IMAGE_SELF_UPDATE_UNITS } from "../../runtime/src/lxd-guest-image-updates.ts";
 import { OFFICE_IMAGE_SELF_UPDATE_UNITS } from "../src/lxd-office-image-installation.ts";
 import {
 	assertOfficeImageSelfUpdateMasked,
@@ -44,13 +45,7 @@ async function systemd(options: { running?: string; unmaskable?: string; reports
 
 describe("office image self-update masking", () => {
 	it("covers the same five units as the guests", () => {
-		expect(OFFICE_IMAGE_SELF_UPDATE_UNITS).toEqual([
-			"apt-daily.timer",
-			"apt-daily-upgrade.timer",
-			"apt-daily.service",
-			"apt-daily-upgrade.service",
-			"unattended-upgrades.service",
-		]);
+		expect(OFFICE_IMAGE_SELF_UPDATE_UNITS).toEqual(GUEST_IMAGE_SELF_UPDATE_UNITS);
 	});
 
 	it("masks all five before checking for a running job, then proves every mask", async () => {
