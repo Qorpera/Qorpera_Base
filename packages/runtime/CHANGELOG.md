@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- The roadmap kit (RUNTIME-INTERFACE-APPS.md §3b, 18 Nov 2026; the founder picked its design that day): `save_app` with `kit: "roadmap"` takes `roadmap.json`, a wide mission as a tree of parts (2 to 7 at the top, 1 to 12 in a layer, three layers under the title, 80 parts; `state` done, now, later or open; pictures `.png`, `.jpg` or `.webp`; no dates), refused with why when its engine cannot draw it (`roadmapProblem`). Its page names only the top layer's pictures in `#kit-media`, so it opens after those; a deeper layer's pictures load through `qorpera.file` as a member opens it. `reading` is added to its reads when a part names an agent, and its page then carries the agents' figures. Its look names the parts that are done or now with no picture. `app_guide roadmap`; the platform update `roadmap-kit`. No migration.
 - Release v257 (master since v256's release merge: the automatic review reads the script a machine command runs,
   #1924; program pages step 1, the kit `program` with kept versions and a Download page, #1941, whose web part is live
   on its merge; tests that guard no behaviour pruned, with the runner-orchestrator code only they kept alive, #1949,

@@ -47,6 +47,8 @@ import {
 	PATH_KIT_GUIDE,
 	RING_ENGINE_JS,
 	RING_KIT_GUIDE,
+	ROADMAP_ENGINE_JS,
+	ROADMAP_KIT_GUIDE,
 	SHELF_ENGINE_JS,
 	SHELF_KIT_GUIDE,
 	STACK_ENGINE_JS,
@@ -67,6 +69,7 @@ export const DATA_KITS = Object.freeze([
 	"map",
 	"ring",
 	"flow",
+	"roadmap",
 ] as const);
 export type DataKit = (typeof DATA_KITS)[number];
 
@@ -95,6 +98,7 @@ export const KIT_ENGINE_JS: Readonly<Record<DataKit, string>> = Object.freeze({
 	map: MAP_ENGINE_JS,
 	ring: RING_ENGINE_JS,
 	flow: FLOW_ENGINE_JS,
+	roadmap: ROADMAP_ENGINE_JS,
 });
 
 /** What an agent is told of each kit (packages/runtime/kits/<kit>/KIT.md): what it draws and what its data holds.
@@ -110,6 +114,7 @@ export const KIT_GUIDE: Readonly<Record<DataKit, string>> = Object.freeze({
 	map: MAP_KIT_GUIDE,
 	ring: RING_KIT_GUIDE,
 	flow: FLOW_KIT_GUIDE,
+	roadmap: ROADMAP_KIT_GUIDE,
 });
 
 /** What each kit's data must hold for its engine to have anything to draw. */
@@ -124,6 +129,7 @@ const KIT_NEEDS: Readonly<Record<DataKit, readonly string[]>> = Object.freeze({
 	map: ["top"],
 	ring: [],
 	flow: ["from", "to"],
+	roadmap: ["title", "parts"],
 });
 
 /** A text a member reads on a kit's page is a label or a short note: past this many characters an engine cuts it. */
@@ -348,6 +354,10 @@ export function parseKitData(
 	}
 	if (kit === "flow") {
 		const problem = flowProblem(data);
+		if (problem) return { problem: `${file} ${problem}` };
+	}
+	if (kit === "roadmap") {
+		const problem = roadmapProblem(data);
 		if (problem) return { problem: `${file} ${problem}` };
 	}
 	return { data };
@@ -613,6 +623,110 @@ function flowProblem(data: Readonly<Record<string, unknown>>): string | null {
 	return null;
 }
 
+export const ROADMAP_BOUNDS = Object.freeze({ top: [2, 7], parts: 12, depth: 3, all: 80, agents: 4 });
+const ROADMAP_STATES: readonly unknown[] = ["done", "now", "later", "open"];
+const ROADMAP_STANDS: readonly unknown[] = ["in order", "side by side"];
+const ROADMAP_PICTURE = /\.(?:png|jpe?g|webp)$/i;
+const ROADMAP_DATES = ["date", "dates", "due", "when", "start", "end", "deadline", "year", "quarter", "month"];
+
+type RoadmapNode = Readonly<Record<string, unknown>>;
+
+const roadmapParts = (node: RoadmapNode): readonly unknown[] => (Array.isArray(node.parts) ? node.parts : []);
+
+const roadmapPicture = (value: unknown): value is string => isOwnFile(value) && ROADMAP_PICTURE.test(value);
+
+function roadmapProblem(data: RoadmapNode): string | null {
+	if (typeof data.title !== "string" || data.title.trim() === "")
+		return "needs a title: the ambition in a few words, drawn large over its picture";
+	if (!Array.isArray(data.parts)) return "has parts that are no list: the products or fields the ambition spans";
+	const [fewest, most] = ROADMAP_BOUNDS.top;
+	if (data.parts.length < fewest || data.parts.length > most)
+		return `needs ${fewest} to ${most} parts at its top, the products or fields the ambition spans: it has ${data.parts.length}`;
+	let count = 0;
+	const nodeProblem = (node: RoadmapNode, at: string): string | null => {
+		const date = ROADMAP_DATES.find((key) => node[key] !== undefined);
+		if (date) return `has a ${date} ${at}: a roadmap has no dates, the order of the parts is the order`;
+		if (node.picture !== undefined && !roadmapPicture(node.picture))
+			return `has a picture ${at} that is not the path of a .png, .jpg or .webp file in the app's folder, such as "pictures/well.png"`;
+		if (node.stand !== undefined && !ROADMAP_STANDS.includes(node.stand))
+			return `has a stand ${at} that is not "in order" or "side by side"`;
+		if (node.parts !== undefined && !Array.isArray(node.parts)) return `has parts ${at} that are no list`;
+		return null;
+	};
+	const walk = (node: RoadmapNode, where: string, depth: number): string | null => {
+		const problem = nodeProblem(node, depth === 0 ? "at its top" : `in ${where}`);
+		if (problem) return problem;
+		const parts = roadmapParts(node);
+		if (depth > 0 && parts.length > ROADMAP_BOUNDS.parts)
+			return `has ${parts.length} parts in ${where}: the roadmap kit draws ${ROADMAP_BOUNDS.parts} at most in one layer`;
+		if (depth === ROADMAP_BOUNDS.depth && parts.length > 0)
+			return `goes ${depth + 1} layers under its title in ${where}: the roadmap kit opens ${ROADMAP_BOUNDS.depth} at most`;
+		for (const [index, part] of parts.entries()) {
+			const inside = depth === 0 ? "its top" : where;
+			if (typeof part !== "object" || part === null || Array.isArray(part))
+				return `has a part in ${inside} that is no object (number ${index + 1})`;
+			const each = part as RoadmapNode;
+			if (typeof each.name !== "string" || each.name.trim() === "")
+				return `has a part in ${inside} with no name (number ${index + 1})`;
+			const name = each.name.trim();
+			if (each.state === undefined) return `has a part ${name} with no state: "done", "now", "later" or "open"`;
+			if (!ROADMAP_STATES.includes(each.state))
+				return `has a part ${name} with a state the roadmap kit does not draw: "done", "now", "later" or "open"`;
+			if (
+				each.agents !== undefined &&
+				!(
+					Array.isArray(each.agents) &&
+					each.agents.length <= ROADMAP_BOUNDS.agents &&
+					each.agents.every((agent) => typeof agent === "string" && agent.trim() !== "")
+				)
+			)
+				return `has agents in ${name} that are not 0 to ${ROADMAP_BOUNDS.agents} agents' names`;
+			count++;
+			const problem = walk(each, name, depth + 1);
+			if (problem) return problem;
+		}
+		return null;
+	};
+	const problem = walk(data, "", 0);
+	if (problem) return problem;
+	if (count > ROADMAP_BOUNDS.all) return `holds ${count} parts: the roadmap kit draws ${ROADMAP_BOUNDS.all} at most`;
+	return null;
+}
+
+export function roadmapNamesAgents(data: unknown): boolean {
+	if (typeof data !== "object" || data === null) return false;
+	const node = data as RoadmapNode;
+	return (Array.isArray(node.agents) && node.agents.length > 0) || roadmapParts(node).some(roadmapNamesAgents);
+}
+
+export function roadmapFirstPictures(data: RoadmapNode): string[] {
+	const found: string[] = [];
+	for (const node of [data, ...roadmapParts(data)]) {
+		const picture = typeof node === "object" && node !== null ? (node as RoadmapNode).picture : undefined;
+		if (roadmapPicture(picture) && !found.includes(picture)) found.push(picture);
+	}
+	return found;
+}
+
+function roadmapUnpictured(data: RoadmapNode): string[] {
+	const found: string[] = [];
+	const walk = (node: RoadmapNode) => {
+		for (const part of roadmapParts(node)) {
+			if (typeof part !== "object" || part === null) continue;
+			const each = part as RoadmapNode;
+			if (
+				(each.state === "done" || each.state === "now") &&
+				each.picture === undefined &&
+				typeof each.name === "string"
+			)
+				found.push(each.name.trim());
+			walk(each);
+		}
+	};
+	walk(data);
+	return found;
+}
+
 /**
  * Every picture and video of the app's own folder that the data names, once, in the data's order: any text that ends
  * in a picture's or video's extension and is a plain path inside the folder. An address (`https://…`, `folder:…`), a
@@ -689,7 +803,7 @@ export function kitPage(
 		"</head>",
 		"<body>",
 		'<div hidden id="kit-media">',
-		...kitMedia(data)
+		...(kit === "roadmap" ? roadmapFirstPictures(data) : kitMedia(data))
 			.filter(holds)
 			.map((path) =>
 				VIDEO.test(path)
@@ -698,9 +812,10 @@ export function kitPage(
 			),
 		// A map's agents are found when the page opens (its data names them, or the company's reading does), so its page
 		// carries every figure.
-		...(kit === "map" ? Object.keys(KIT_FIGURES) : kitFigures(data)).map(
-			(id) => `<img data-kit-src="figure:${id}" src="${KIT_FIGURES[id]}" alt="">`,
-		),
+		...(kit === "map" || (kit === "roadmap" && roadmapNamesAgents(data))
+			? Object.keys(KIT_FIGURES)
+			: kitFigures(data)
+		).map((id) => `<img data-kit-src="figure:${id}" src="${KIT_FIGURES[id]}" alt="">`),
 		"</div>",
 		`<script type="application/json" id="kit-data">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>`,
 		`<script>window.QORPERA_KIT = ${kitJson};${KIT_OUTSIDE_QORPERA}${KIT_LIVE_VALUES}</script>`,
@@ -731,7 +846,7 @@ export function kitNotes(
 	const missing = kitMedia(data).filter((path) => !holds(path));
 	if (missing.length > 0)
 		notes.push(
-			`${missing.length === 1 ? "1 picture or video is" : `${missing.length} pictures or videos are`} named in ${kitDataFile(kit)} but not in the app's folder (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}): the page shows a placeholder there. Write ${missing.length === 1 ? "it" : "them"} into the app's folder from a machine, then save the app again so the page names ${missing.length === 1 ? "it" : "them"}.`,
+			`${missing.length === 1 ? "1 picture or video is" : `${missing.length} pictures or videos are`} named in ${kitDataFile(kit)} but not in the app's folder (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}): the page shows a placeholder there. Write ${missing.length === 1 ? "it" : "them"} into the app's folder from a machine${kit === "roadmap" ? `: the page shows ${missing.length === 1 ? "it" : "them"} once ${missing.length === 1 ? "it is" : "they are"} there` : `, then save the app again so the page names ${missing.length === 1 ? "it" : "them"}`}.`,
 		);
 	if (kit === "object") {
 		const models = kitModels(kit, data);
@@ -786,6 +901,13 @@ export function kitNotes(
 		if (count > 0)
 			notes.push(
 				`${count === 1 ? "1 mark or wedge is" : `${count} marks or wedges are`} outside the ring's ${typeof data.span === "string" ? data.span : "year"}, ${date(first)} to ${date(after - 1)}: the page leaves ${count === 1 ? "it" : "them"} out. Give start, or take ${count === 1 ? "it" : "them"} away.`,
+			);
+	}
+	if (kit === "roadmap") {
+		const bare = roadmapUnpictured(data);
+		if (bare.length > 0)
+			notes.push(
+				`${bare.length === 1 ? "1 part that is done or now has" : `${bare.length} parts that are done or now have`} no picture (${bare.slice(0, 3).join(", ")}${bare.length > 3 ? ", …" : ""}): a part reached is shown by a picture of the world it made. Make ${bare.length === 1 ? "it" : "them"} with make_picture into the app's pictures/ folder, name ${bare.length === 1 ? "it" : "them"} in picture and save again.`,
 			);
 	}
 	if (kit === "flow") {

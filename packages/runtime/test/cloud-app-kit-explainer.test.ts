@@ -271,6 +271,7 @@ it("tells an agent in the explainer's guide only what the engine can draw", asyn
 		"map",
 		"ring",
 		"flow",
+		"roadmap",
 		"program",
 		null,
 	]);

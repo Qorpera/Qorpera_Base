@@ -153,6 +153,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Programs members download",
 		text: "A program for a computer or a phone now has a home: an interface app of the kit program. Build the real thing on a machine, copy one file for each kind (Android, Linux, Windows, Mac, iPhone) into the app's versions/<version>/ folder, with real screenshots beside them, and save it with save_app. Its page shows the program and a Download for the member's own computer or phone, and every version stays. Link the app when you tell a member, never a machine or a folder. If your company makes such a product, keep its builds there; app_guide about program says how.",
 	},
+	{
+		id: "roadmap-kit",
+		kind: "capability",
+		date: "2026-11-18",
+		title: "A roadmap for a wide mission",
+		text: "A company whose mission is wide enough to span several products or fields can now keep one roadmap: an interface app of the kit roadmap, in apps/roadmap. Its page shows the ambition as one big picture with its title and its products or fields as tiles, each opening into its goals in order and each goal into the ideas tried for it. A part that is reached shows a picture of the world it made, made with make_picture. It has no dates. If your mission is that wide and has no roadmap, have one agent make it, and change it only when a goal is reached, added or dropped; app_guide about roadmap says how.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
