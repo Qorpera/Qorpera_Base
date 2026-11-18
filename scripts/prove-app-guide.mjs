@@ -72,13 +72,15 @@ finish(
 				"map",
 				"ring",
 				"flow",
+				"roadmap",
 				"explainer",
+				"program",
 				"style",
 				"reads",
 				"writes",
 				"icons",
 			]);
-			pass("the model is offered app_guide with its sixteen guides");
+			pass("the model is offered app_guide with its eighteen guides");
 
 			const [blind, guide, saved] = outputs;
 			assert.equal(blind.envelope.status, "denied");

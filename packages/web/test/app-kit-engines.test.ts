@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
  * `window.qorpera` (reads that fail and then work, questions that come later, the rows a Save asks for), with the ten
  * seconds of the bridge's pace on a fake clock, and a page that changes size. What they draw is looked at in a browser. */
 
-const KITS = ["model", "board", "path", "object", "curve", "stack", "shelf", "map", "ring", "flow"] as const;
+const KITS = ["model", "board", "path", "object", "curve", "stack", "shelf", "map", "ring", "flow", "roadmap"] as const;
 type Kit = (typeof KITS)[number];
 /** The kits where a member opens a thing, with a note to the app's owner at its foot. */
 const THING_KITS = ["model", "board", "path", "object", "shelf"] as const;
@@ -1326,14 +1326,16 @@ describe("a kit's page as a concept", () => {
 		map: { root: "mp--bare", header: ".mp-head", kept: ".mp-thing" },
 		ring: { root: "rk--bare", header: ".rk-head", kept: ".rk-stage" },
 		flow: { root: "fk--bare", header: ".fk-head", kept: ".fk-stage" },
+		roadmap: { root: "rm--bare", header: ".rm-head", kept: ".rm-tile" },
 	};
+	const HIDDEN_TITLE = KITS.filter((kit) => kit !== "roadmap");
 	/** What the page shows of an element: jsdom reads the engine's own stylesheet for a class selector. */
 	const shows = (selector: string) => {
 		const found = document.querySelector(selector);
 		return found !== null && getComputedStyle(found).display !== "none";
 	};
 
-	it.each(KITS)("of %s keeps its title for screen readers only when the page is no concept", async (kit) => {
+	it.each(HIDDEN_TITLE)("of %s keeps its title for screen readers only when the page is no concept", async (kit) => {
 		await open(kit, example(kit));
 		drawFrames(3);
 		const root = document.querySelector("main") as HTMLElement;
@@ -2506,5 +2508,180 @@ describe("the flow kit's engine", () => {
 		expect(sub()).toBe("in allnot known");
 		expect(document.querySelectorAll(".fk-band.unk")).toHaveLength(1);
 		expect(document.querySelector(".fk-q")?.textContent).toBe("?");
+	});
+});
+
+describe("the roadmap kit's engine", () => {
+	const part = (name: string, more: Record<string, unknown> = {}) => ({ name, state: "later", ...more });
+	const roadmap = {
+		lang: "en",
+		title: "Paradise on earth",
+		picture: "pictures/paradise.png",
+		stand: "side by side",
+		parts: [
+			part("Qorpera", {
+				caption: "Europe builds again",
+				picture: "pictures/q5.png",
+				state: "now",
+				agents: ["Co-Founder", "Nobody"],
+				stand: "in order",
+				kind: "Goal",
+				parts: [
+					part("People try building with AI", {
+						label: "People try",
+						picture: "pictures/q1.png",
+						state: "now",
+						agents: ["Co-Founder"],
+						parts: [
+							part("A box of your own", { picture: "pictures/box.png", state: "now" }),
+							part("Insured", { state: "open" }),
+						],
+					}),
+					part("Good ideas get compute and capital", { label: "Ideas get backed", picture: "pictures/q2.png" }),
+					part("Europe competes with America", {
+						label: "Europe competes",
+						state: "done",
+						picture: "pictures/q4.png",
+					}),
+				],
+			}),
+			part("The unlived life", {
+				caption: "If a perfect world is not enough",
+				state: "open",
+				picture: "pictures/u3.png",
+			}),
+		],
+	};
+	async function openRoadmap(data: unknown, file?: Mock) {
+		const media = document.createElement("div");
+		media.id = "kit-media";
+		media.hidden = true;
+		media.innerHTML = [
+			'<img data-kit-src="pictures/paradise.png" src="blob:paradise" alt="">',
+			'<img data-kit-src="pictures/q5.png" src="blob:q5" alt="">',
+			'<img data-kit-src="figure:crown" src="data:image/webp;base64,crown" alt="">',
+		].join("");
+		document.body.append(media);
+		const bridge = standIn(JSON.stringify(data));
+		const reading = vi.fn(async () => ({ team: [{ name: "Co-Founder", figure: "crown", working: true }] }));
+		page.QORPERA_KIT = { app: "roadmap", kit: "roadmap", data: "roadmap.json" };
+		page.qorpera = { ...bridge.qorpera, reading, ...(file ? { file } : {}) };
+		new Function(kitFile("roadmap", "engine.js"))();
+		await settle();
+		return { ...bridge, reading };
+	}
+	const tiles = () => [...document.querySelectorAll<HTMLButtonElement>(".rm-strip .rm-tile")];
+	const caps = () => tiles().map((tile) => tile.querySelector(".rm-cap b")?.textContent);
+	const stage = () =>
+		[...document.querySelectorAll<HTMLImageElement>(".rm-pic")].map((pic) => pic.getAttribute("src"));
+	const text = (selector: string) => document.querySelector(selector)?.textContent ?? null;
+	const shows = (selector: string) => {
+		const found = document.querySelector<HTMLElement>(selector);
+		return found !== null && !found.hidden && getComputedStyle(found).display !== "none";
+	};
+
+	it("draws the ambition's picture and title, its parts as tiles, the agents on a part now and a part in question dashed", async () => {
+		const file = vi.fn(async (path: string) => `blob:${path}`);
+		await openRoadmap(roadmap, file);
+		expect(text("h1")).toBe("Paradise on earth");
+		expect(getComputedStyle(document.querySelector(".rm-head") as Element).position).not.toBe("absolute");
+		expect(stage()).toContain("blob:paradise");
+		expect(caps()).toEqual(["Qorpera", "The unlived life"]);
+		expect(tiles().map((tile) => tile.querySelector(".rm-cap small")?.textContent)).toEqual([
+			"Europe builds again · Now",
+			"If a perfect world is not enough · Still open",
+		]);
+		expect(tiles()[0]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:q5");
+		expect(tiles()[1]?.classList.contains("is-open")).toBe(true);
+		expect(tiles()[1]?.querySelector("img.rm-thumb")?.getAttribute("src")).toBe("blob:pictures/u3.png");
+		const figures = [...(tiles()[0]?.querySelectorAll(".rm-fig img") ?? [])];
+		expect(figures.map((figure) => figure.getAttribute("alt"))).toEqual(["Co-Founder is on it now"]);
+		expect(tiles()[0]?.querySelectorAll(".rm-fig")).toHaveLength(1);
+		expect(shows(".rm-trail")).toBe(false);
+		expect(shows(".rm-open")).toBe(false);
+		expect(file).not.toHaveBeenCalledWith("pictures/q1.png");
+	});
+
+	it("opens a part into its goals as rising, numbered steps, the one now on the stage", async () => {
+		const file = vi.fn(async (path: string) => `blob:${path}`);
+		await openRoadmap(roadmap, file);
+		tiles()[0]?.click();
+		await settle();
+		expect(text("h1")).toBe("People try building with AI");
+		expect(text(".rm-kicker")).toBe("Qorpera · Goal 1 of 3 · Now");
+		expect(text(".rm-line")).toBe("A box of your own · Insured");
+		expect(text(".rm-trail")).toBe("‹ Paradise on earth");
+		expect(caps()).toEqual(["1 · People try", "2 · Ideas get backed", "3 · Europe competes"]);
+		expect(tiles().map((tile) => tile.style.getPropertyValue("--f"))).toEqual(["0", "0.5", "1"]);
+		expect(tiles().map((tile) => tile.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
+		expect(tiles()[2]?.querySelector(".rm-check")).not.toBeNull();
+		expect(file).toHaveBeenCalledWith("pictures/q1.png");
+		expect(stage()).toContain("blob:pictures/q1.png");
+		expect(document.activeElement).toBe(tiles()[0]);
+		expect(shows(".rm-open")).toBe(true);
+		tiles()[1]?.click();
+		await settle();
+		expect(text("h1")).toBe("Good ideas get compute and capital");
+		expect(text(".rm-kicker")).toBe("Qorpera · Goal 2 of 3");
+		expect(text(".rm-line")).toBe("Not shaped yet");
+		expect(shows(".rm-open")).toBe(false);
+		expect(stage()).toContain("blob:pictures/q2.png");
+		expect(tiles().map((tile) => tile.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+		expect(document.activeElement).toBe(tiles()[1]);
+	});
+
+	it("opens a goal into its ideas side by side, a part with no picture a dashed tile, and goes up by the path or Escape", async () => {
+		const file = vi.fn(async (path: string) => `blob:${path}`);
+		await openRoadmap(roadmap, file);
+		tiles()[0]?.click();
+		await settle();
+		document.querySelector<HTMLButtonElement>(".rm-open")?.click();
+		await settle();
+		expect(text("h1")).toBe("A box of your own");
+		expect(text(".rm-kicker")).toBe("People try building with AI · Now");
+		expect(caps()).toEqual(["A box of your own", "Insured"]);
+		expect(tiles().map((tile) => tile.style.getPropertyValue("--f"))).toEqual(["", ""]);
+		expect(tiles()[1]?.classList.contains("is-bare")).toBe(true);
+		expect(tiles()[1]?.textContent).toContain("No picture yet");
+		expect(tiles()[1]?.querySelector("img")).toBeNull();
+		tiles()[1]?.click();
+		await settle();
+		expect(text(".rm-kicker")).toBe("People try building with AI · Still open");
+		expect(document.querySelectorAll(".rm-pic.on")).toHaveLength(0);
+		const crumbs = [...document.querySelectorAll<HTMLButtonElement>(".rm-trail .rm-crumb")];
+		expect(crumbs.map((crumb) => crumb.textContent)).toEqual(["‹ Paradise on earth", "Qorpera"]);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await settle();
+		expect(text("h1")).toBe("People try building with AI");
+		expect(document.activeElement).toBe(tiles()[0]);
+		document.querySelector<HTMLButtonElement>(".rm-trail .rm-crumb")?.click();
+		await settle();
+		expect(text("h1")).toBe("Paradise on earth");
+		expect(document.activeElement).toBe(tiles()[0]);
+	});
+
+	it("draws a dashed tile for a picture the app's folder does not give, and the dark ground on the stage", async () => {
+		const file = vi.fn(async (path: string) => {
+			if (path === "pictures/q1.png") throw new Error("pictures/q1.png is not in the page's folder");
+			return `blob:${path}`;
+		});
+		await openRoadmap(roadmap, file);
+		tiles()[0]?.click();
+		await settle();
+		expect(tiles()[0]?.classList.contains("is-bare")).toBe(true);
+		expect(tiles()[0]?.textContent).toContain("No picture yet");
+		expect(stage()).not.toContain("blob:pictures/q1.png");
+		expect(file.mock.calls.filter(([path]) => path === "pictures/q1.png")).toHaveLength(1);
+	});
+
+	it("speaks Danish when the data's language is Danish", async () => {
+		await openRoadmap({ ...roadmap, lang: "da" });
+		tiles()[0]?.click();
+		await settle();
+		expect(text(".rm-kicker")).toBe("Qorpera · Goal 1 af 3 · Nu");
+		expect(text(".rm-open")).toBe("Åbn ›");
+		tiles()[1]?.click();
+		await settle();
+		expect(text(".rm-line")).toBe("Ikke formet endnu");
 	});
 });

@@ -108,12 +108,24 @@ describe("interface apps", () => {
 				{
 					line: 2,
 					message:
-						"kit must be one of explainer, model, board, path, object, curve, stack, shelf, map, ring, flow, program",
+						"kit must be one of explainer, model, board, path, object, curve, stack, shelf, map, ring, flow, roadmap, program",
 				},
 			],
 		});
 		// The data kits (13, 14 and 15 November 2026) read and write the same way.
-		for (const name of ["model", "board", "path", "object", "curve", "stack", "shelf", "map", "ring", "flow"]) {
+		for (const name of [
+			"model",
+			"board",
+			"path",
+			"object",
+			"curve",
+			"stack",
+			"shelf",
+			"map",
+			"ring",
+			"flow",
+			"roadmap",
+		]) {
 			const data = parseAppManifest(`name = "X"\nkit = "${name}"\n`);
 			expect(data.ok && data.manifest).toMatchObject({ kit: name, entry: "index.html" });
 			expect(parseAppManifest(data.ok ? writeAppManifest(data.manifest) : "")).toEqual(data);
