@@ -5,10 +5,6 @@ import { PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "./page-fr
  * safe to answer: the page is handed over once, with one end of a MessageChannel. The frame document keeps that port
  * from the page and reads through it with a frozen `qorpera` object (public/page-preview/index.html); the app answers
  * only on its own end, never on window messages, which every sandboxed frame on the page could send.
- * - One frame, one hand-over: a frame made here is answered the first time it says it is ready, and never again.
- * - A frame that says it is ready a second time, or loads a second time, has left the document it was handed (it
- *   reloaded or went somewhere): its port is closed and `left` is called, and the panel shows a new frame only when the
- *   member asks (Reload). A document the frame shows later has no port.
  * - Escape in the page reaches the frame as Escape (page-frame.ts' rule), so the panel closes as it does elsewhere.
  * - The frame follows no link. A link the member clicks in the page comes over the port as one more call (`open`),
  *   which the frame document alone sends, and the host opens what it allows (app/interface-apps.ts `appLink`).
@@ -25,6 +21,13 @@ export interface AppCall {
 
 export type AppAnswer = { ok: true; value: unknown } | { ok: false; error: string };
 
+export interface FramedPage {
+	readonly html: string;
+	readonly files?: readonly (readonly [string, Blob])[];
+	readonly missing?: readonly string[];
+	readonly base?: string;
+}
+
 /** What the host answers a page's calls with. */
 export type AppCallHandler = (call: AppCall) => Promise<AppAnswer>;
 
@@ -35,9 +38,11 @@ const MAX_REFUSED = 300;
 
 export class AppFrame {
 	readonly frame: HTMLIFrameElement;
-	readonly #page: string;
+	#page: FramedPage | undefined;
+	#asked = false;
 	readonly #handle: AppCallHandler;
 	readonly #left: () => void;
+	readonly #again: boolean;
 	readonly #lifetime = new AbortController();
 	#port: MessagePort | undefined;
 	#handed = false;
@@ -49,8 +54,21 @@ export class AppFrame {
 	 * page may not close what it is shown in to dodge it (security review r1, L3). */
 	holdEscape = false;
 
-	constructor(page: string, title: string, className: string, handle: AppCallHandler, left: () => void) {
-		this.#page = page;
+	constructor(
+		page: FramedPage | Promise<FramedPage>,
+		title: string,
+		className: string,
+		handle: AppCallHandler,
+		left: () => void,
+		options: { readonly again?: boolean } = {},
+	) {
+		this.#again = options.again === true;
+		if (page instanceof Promise)
+			void page.then((made) => {
+				this.#page = made;
+				if (this.#asked) this.#handOver();
+			});
+		else this.#page = page;
 		this.#handle = handle;
 		this.#left = left;
 		const frame = document.createElement("iframe");
@@ -62,12 +80,10 @@ export class AppFrame {
 		this.frame = frame;
 		const signal = this.#lifetime.signal;
 		window.addEventListener("message", (event) => this.#message(event), { signal });
-		// The frame document's load, then the page's own (written into it, it loads once more): any load after the page's
-		// own means another document. The page is handed over only once the frame document has said it is ready and has
-		// loaded, so the two loads never run together.
 		frame.addEventListener(
 			"load",
 			() => {
+				if (this.#again) return;
 				this.#loads++;
 				if (this.#loads > 2) this.#leave();
 				else if (this.#loads === 1 && this.#ready) this.#handOver();
@@ -114,6 +130,14 @@ export class AppFrame {
 			return;
 		}
 		if (data.type !== PAGE_READY) return;
+		if (this.#again) {
+			this.#port?.close();
+			this.#port = undefined;
+			this.#handed = false;
+			this.#ready = true;
+			this.#handOver();
+			return;
+		}
 		if (this.#ready) {
 			this.#leave();
 			return;
@@ -123,15 +147,21 @@ export class AppFrame {
 	}
 
 	#handOver(): void {
-		if (this.#handed) return;
+		this.#asked = true;
+		if (this.#handed || !this.#page || this.#lifetime.signal.aborted) return;
 		this.#handed = true;
+		const { html, files = [], missing = [], base = "" } = this.#page;
 		const channel = new MessageChannel();
 		this.#port = channel.port1;
 		channel.port1.addEventListener("message", (call) => void this.#call(call.data), {
 			signal: this.#lifetime.signal,
 		});
 		channel.port1.start();
-		this.frame.contentWindow?.postMessage({ type: PAGE_CONTENT, html: this.#page }, "*", [channel.port2]);
+		this.frame.contentWindow?.postMessage(
+			{ type: PAGE_CONTENT, html, files: files.map(([token, blob]) => [token, blob]), missing: [...missing], base },
+			"*",
+			[channel.port2],
+		);
 	}
 
 	async #call(data: unknown): Promise<void> {

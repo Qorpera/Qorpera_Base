@@ -79,9 +79,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
-/** The most a tool may raise its own argument bound to (`CloudNativeTool.maxArgumentBytes`): a file write of up to
- * 512 KiB of text, escaped (21 October 2026). It stays below the native session's 1 MiB message, which carries the
- * call. */
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;

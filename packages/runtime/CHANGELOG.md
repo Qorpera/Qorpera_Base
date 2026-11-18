@@ -15,6 +15,29 @@
 - A review whose model turn met the provider's rate limit, usage limit or an overload is asked again after 5, 10, 20, 30
   and 30 seconds, within two minutes, before the call is refused (2026-11-17 amendment, item 5); REVIEW_UNAVAILABLE now
   tells the agent to say the step could not be checked just now. Runtime bundle only.
+- Release v255 (master since v254's release merge: the first team in one step, #1922; agents show the product first,
+  #1919; an interface app holds any file, #1928's runtime part; the object kit draws a real 3D model, #1934; the machine
+  fill check finds the sandboxed desktop Chromium, #1893): runtime bundle 255
+  `edc4809a810baeef27a0d28bbc98bdceaf244c194c97d7e381f27939984e3484` (activation `20260929025599`, previous 254
+  `73401553e004`). Its activation requires `20260930799000` (`hire_team` in the three recorders), which the roll's
+  `migrate` runs before the switch; #1928's web part is live before it. The guest moves: the native provider host
+  (`03ae4570`, 5,443,322 bytes with three.js); the ephemeral runner, the two LXD bootstraps and the native Codex
+  (`9c299f88`) stay.
+- The object kit draws a real 3D model, live in the member's browser (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b,
+  17 Nov 2026; Jonas: "Yes, all three" on the app-files design page): `object.json`'s `model` (and a variant's) names a
+  `.glb` in the app's folder, drawn with three.js 0.186.1 (MIT) and its GLTF loader, which `save_app` writes into the app
+  as `three.js` and `three.license.txt` only when the data names a model (`kitLibrary`; vendored by
+  `scripts/build-object-kit-three.mjs` into `kits/object/vendor/`, held as `cloud-app-kit-three.generated.ts`). Image-based
+  studio light (RoomEnvironment through PMREM, or the data's `environment` .hdr), AgX tone mapping, a soft contact shadow,
+  fitted from the model's bounds and opened at a three-quarter view or the data's `view`; drag turns and tilts, pinch or
+  wheel zooms, a double tap resets, it turns by itself until touched (never with reduced motion), and it draws only while
+  something moves. A part's `node` names its object in the model: its dot is found on the model and hidden where the
+  model covers it, and a tap turns the thing to where the part shows most. With no WebGL, a lost context or a model that
+  does not load, the page shows the turntable or picture as before, else one line that the model could not be shown. A
+  turntable-only app writes and draws exactly what it did. `parseKitData` refuses a model, light or view that is not
+  one; `kitNotes` names a model the folder lacks and a model with no picture beside it. The object guide says how to
+  export from Blender; `PLATFORM_UPDATES` tells the Co-Founder (`object-kit-live-3d`).
+- No cap on an interface app's files (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, 17 Nov 2026; Jonas: "also uncap the file-sizes"): `save_app` writes text files of any kind that is not binary, each as large as one call carries, lists the app's whole folder and releases only what the save drew on, and refuses no app for its count or size; `make_picture` no longer checks an app's room; an explainer's clips have no count bound. `company_write` and `company_edit` take as much text as one call carries (`MAX_TOOL_ARGUMENT_BYTES`, 960 KiB). save_app's words say so, and that fonts, sound and 3D models are files of the app; `PLATFORM_UPDATES` tells the Co-Founder. `MAX_CLOUD_PICTURE_BYTES` stays 12 MiB as the picture lane's own bound.
 - The first team in one step (the founder, 17 November 2026: "on 5, I agree with batch hiring, but we should allow for
   continuous hiring as the company evolves"; contract 14.1, the 2026-11-17 amendment; migration `20260930799000`, SQL
   test 1296; lanes/mywave-fixes-20261117/DESIGN-B.md). A new runtime tool, `hire_team`, hires 2 to 12 coworkers in one
@@ -99,6 +122,29 @@
   not apply before `20260930786000`). The coding executor moves before the switch (its command authority takes a run at
   `xhigh`). The guest moves: the native provider host (`26e07eb7`), the ephemeral runner (`df616dab`, #1887) and the two
   LXD bootstraps; the native Codex stays `9c299f88`.
+- Agents show the product first (hire overlay v19; the founder, 17 Nov 2026, on the lead's review of the test company
+  mywave: "1-4 straight yes", and "make sure they are not feeling forced to only use SVG"; contract, the 2026-11-17
+  amendment; lanes/mywave-fixes-20261117/MAP-C.md). Concepts: the first concept comes at once, from what the founders
+  described, made by the product's owner in its first run before any document but the brief: a physical product as a
+  render that looks real, software as real screens to click through, never wireframes, line drawings or form fields; the
+  solution is worked out beside it; plans for later stages wait for the founders' answer (an order of work, not a cap);
+  what is simulated or undecided goes in strategy/solution.md, never on a concept's screens. Apps: judged against the
+  founders' own words; SVG only for an app's icons and the logo, anything else in whatever shows it best; what the logo
+  file may hold (a drawn mark or one embedded picture, nothing outside it, shown as small as about 34 px). Ideas: never
+  keep the company's product and subject out of a worker's pictures. The Co-Founder: the builders' first assignments
+  move the first concept; the Brand owner's first assignment is two to four directions, each the product in its world in
+  a real picture or film, and only the chosen one becomes the identity and its logo (with no name yet, a mark without
+  lettering); it acts in the run an owner says it
+  is blocked; the founding hires the first team in one `hire_team` call (#1922), later hires several at once with it or
+  one with `hire_agent`. An owner: a refused or blocked step leaves
+  the outcome its own. The board kit's choose guide says the poster carries the direction; ask_member no longer names an
+  SVG sketch. Platform update `product-shown-first`. The overlay's version-history doc comment has no v19 entry: the
+  comment check refuses an edited comment there; this entry and the contract carry it. Measured on master
+  a2bcfa67b (#1922 included) merged in: staff instruction pins `77714000b4b6` → `792d97afab4a8dd356eb09a9a4de178098e2a294895641e65905be7480fb1fc4`
+  (conversation and private), the worker's `4a15f2f4940a` →
+  `09ff6942a3b6feb0cfd748c49d6af01dd7858431506e8774bb262a49fde0c62a`, every prompt (overlay v19), and both catalog pins
+  (ask_member): `a1ff85fb723361253d3f9c9c6ab309d613fd56c5cf8d940983654367c7c1265f` and
+  `2d5c2163f63319dda9570e1e0e6358db6cdc01c97da816720112ab3a9c45bf23`. The runtime bundle only; no SQL, no web, no node program.
 - The Claude Code box offers every built-in tool of 2.1.325's print mode but ten (the founder, 16 Nov 2026: "make sure
   they are running with bypass permissions, and all permissions turned ON"; lanes/agent-box-20261113/harness-permissions/
   AUDIT.md; the runtime bundle only). `CLAUDE_BOX_TOOLS` goes from 8 to 18: Task (sub-agents), WebSearch, Skill,

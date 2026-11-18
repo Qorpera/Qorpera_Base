@@ -22,9 +22,7 @@ export const EXPLAINER_SCENES = "scenes.js";
 export const EXPLAINER_CLIPS = "voice/clips.json";
 /** `voice/clips.json` is read up to this size. */
 export const EXPLAINER_CLIPS_MAX_BYTES = 64 * 1024;
-/** Spoken captions a video holds at most: an app's 64 files, less its manifest, the kit's three and the clips' list,
- * with a few left for the agent's own. */
-export const EXPLAINER_MAX_CLIPS = 56;
+export const EXPLAINER_MANY_CAPTIONS = 56;
 /** A clip is at most this long: a caption is a sentence or two. */
 const CLIP_MAX_SECONDS = 60;
 /** A caption of more words than this is two ideas. */
@@ -63,12 +61,6 @@ export function captionHash(text: string): string {
 	return hash.toString(16).padStart(8, "0");
 }
 
-/**
- * The clips `voice/clips.json` lists, in its order: `{ "clips": [{ "caption": "3f0a9c1e", "file": "3f0a9c1e.mp4",
- * "seconds": 5.42 }] }`. A clip's file is its caption's hash with `.mp4` or `.webm`, so the page names nothing outside
- * `voice/`. Whatever does not read as a clip is left out, one clip a caption, at most EXPLAINER_MAX_CLIPS: a list that
- * went wrong costs the video its voice there, never the video.
- */
 export function parseExplainerClips(text: string): ExplainerClip[] {
 	let value: unknown;
 	try {
@@ -80,7 +72,6 @@ export function parseExplainerClips(text: string): ExplainerClip[] {
 	if (!Array.isArray(listed)) return [];
 	const clips = new Map<string, ExplainerClip>();
 	for (const item of listed) {
-		if (clips.size >= EXPLAINER_MAX_CLIPS) break;
 		if (typeof item !== "object" || item === null) continue;
 		const { caption, file, seconds } = item as { caption?: unknown; file?: unknown; seconds?: unknown };
 		if (typeof caption !== "string" || !/^[0-9a-f]{8}$/.test(caption) || clips.has(caption)) continue;
@@ -196,10 +187,8 @@ export function explainerNotes(scenes: string): string[] {
 		notes.push(
 			"The page makes the video (V) and starts it: take new Video(…) and V.start() out of scenes.js, which only adds parts and scenes to V.",
 		);
-	if (captions.length > EXPLAINER_MAX_CLIPS)
-		notes.push(
-			`${captions.length} captions: a video speaks at most ${EXPLAINER_MAX_CLIPS}, and is best at 25 to 35. Cut it to the one thing it explains.`,
-		);
+	if (captions.length > EXPLAINER_MANY_CAPTIONS)
+		notes.push(`${captions.length} captions: a video is best at 25 to 35. Cut it to the one thing it explains.`);
 	const long = captions.filter((caption) => words(caption) > CAPTION_WORDS);
 	if (long.length > 0)
 		notes.push(

@@ -12,7 +12,7 @@
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-app-frame-browser.mjs
 // APP_FRAME_DOCUMENT=<file> serves another frame document (to see a weaker one fail); ONLY=<name> runs one page.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,8 +53,27 @@ const parent = await build({
 		contents: `import { AppFrame } from ${JSON.stringify(join(web, "src/ui/app-frame.ts"))};
 window.calls = [];
 window.left = 0;
-const { page } = await (await fetch("/variant/" + new URLSearchParams(location.search).get("v"))).json();
-const frame = new AppFrame(page, "App", "app", async (call) => {
+const variant = new URLSearchParams(location.search).get("v");
+const { page, handed = {} } = await (await fetch("/variant/" + encodeURIComponent(variant))).json();
+const fileOf = async (path) => {
+	const answer = await fetch("/file/" + path);
+	return answer.ok ? new Blob([await answer.arrayBuffer()], { type: answer.headers.get("content-type") }) : null;
+};
+const files = await Promise.all(Object.entries(handed).map(async ([token, path]) => [token, await fileOf(path)]));
+const frame = new AppFrame({ html: page, files, base: "" }, "App", "app", async (call) => {
+	if (call.method === "file") {
+		const path = (call.params.base ? call.params.base + "/" : "") + call.params.path.replace(/^\\.\\//, "");
+		if (path === "counter.txt") {
+			window.counted = (window.counted ?? 0) + 1;
+			return { ok: true, value: new Blob([String(window.counted)]) };
+		}
+		if (path === "flaky.txt") {
+			window.flaky = (window.flaky ?? 0) + 1;
+			return window.flaky === 1 ? { ok: false, error: "flaky.txt could not be read now" } : { ok: true, value: new Blob(["steady"]) };
+		}
+		const blob = /^[a-z0-9.-]+$/.test(path) ? await fileOf(path) : null;
+		return blob ? { ok: true, value: blob } : { ok: false, error: path + " is not in the page's folder" };
+	}
 	window.calls.push(
 		call.method === "open"
 			? "open " + call.params.href
@@ -81,6 +100,75 @@ document.body.append(frame.frame);`,
  * so it also fits in an attribute. */
 const say = (text) => `qorpera.read('${text}')`;
 const style = "<style>a, .box { display: block; height: 30px; } svg { display: block; }</style>";
+const WORKER_SOURCE = `const OUT = "OUTSIDE";
+const ways = {};
+const tried = (name, attempt) =>
+	Promise.race([attempt(), new Promise((_, no) => setTimeout(no, 1500))]).then(() => { ways[name] = "reached"; }, () => { ways[name] = "closed"; });
+Promise.all([
+	tried("fetch", () => fetch(OUT + "/w-fetch")),
+	tried("xhr", () => new Promise((yes, no) => { const x = new XMLHttpRequest(); x.open("GET", OUT + "/w-xhr"); x.onload = yes; x.onerror = no; x.send(); })),
+	tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/w-ws"); w.onopen = yes; w.onerror = no; })),
+	tried("eventsource", () => new Promise((yes, no) => { const e = new EventSource(OUT + "/w-es"); e.onopen = yes; e.onerror = () => { e.close(); no(); }; })),
+	tried("importScripts", async () => importScripts(OUT + "/w-script.js")),
+	tried("worker", () => new Promise((yes, no) => { try { const w = new Worker(OUT + "/w-worker.js"); w.onerror = (event) => { event.preventDefault(); no(); }; w.onmessage = yes; } catch (error) { no(error); } })),
+]).then(async () => {
+	const rtc = (scope) => Object.getOwnPropertyNames(scope).filter((name) => /RTC/.test(name) && scope[name] !== undefined).sort();
+	const inner = new Worker(URL.createObjectURL(new Blob(["postMessage(Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name) && self[name] !== undefined))"])));
+	const nested = await new Promise((done) => { inner.onmessage = (event) => done(event.data); inner.onerror = () => done("failed"); });
+	postMessage({ ways, rtc: rtc(self), nested });
+});
+`;
+const SHARED_PROBE = `const OUT = "OUTSIDE";
+const ways = {};
+const tried = (name, attempt) =>
+	Promise.race([attempt(), new Promise((_, no) => setTimeout(no, 1500))]).then(() => { ways[name] = "reached"; }, () => { ways[name] = "closed"; });
+const ready = Promise.all([
+	tried("fetch", () => fetch(OUT + "/s-fetch")),
+	tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/s-ws"); w.onopen = yes; w.onerror = no; })),
+	tried("importScripts", async () => importScripts(OUT + "/s-script.js")),
+]);
+onconnect = (event) => ready.then(() => event.ports[0].postMessage({ ways, rtc: Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name) && self[name] !== undefined) }));
+`;
+const WORKLET_PROBE = `registerProcessor("probe", class extends AudioWorkletProcessor {
+	constructor() {
+		super();
+		this.port.postMessage({
+			reaches: ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "importScripts", "Worker", "navigator"].filter((name) => typeof globalThis[name] !== "undefined"),
+			rtc: Object.getOwnPropertyNames(globalThis).filter((name) => /RTC/.test(name)),
+		});
+	}
+	process() { return false; }
+});
+`;
+const PAST_GUARD = `const blob = (text) => URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+const REPORT = "postMessage(Object.getOwnPropertyNames(self).filter((name) => /RTC/.test(name) && self[name] !== undefined))";
+const ask = (make) => new Promise((done) => {
+	try {
+		const worker = make(blob(REPORT));
+		worker.onmessage = (event) => done(event.data);
+		worker.onerror = (event) => { event.preventDefault(); done("failed"); };
+	} catch (error) {
+		done("refused: " + error.name);
+	}
+});
+const tryAll = async () => {
+	const first = new Worker(blob("postMessage(1)"));
+	return {
+		viaPrototype: await ask((address) => new Worker.prototype.constructor(address)),
+		viaInstance: await ask((address) => new (Object.getPrototypeOf(first).constructor)(address)),
+		viaReflect: await ask((address) => Reflect.construct(Worker, [address], function Other() {})),
+		viaApply: await ask((address) => Reflect.construct(first.constructor, [address])),
+	};
+};
+`;
+const sorted = (value) =>
+	value && typeof value === "object" && !Array.isArray(value)
+		? Object.fromEntries(
+				Object.keys(value)
+					.sort()
+					.map((key) => [key, sorted(value[key])]),
+			)
+		: value;
 const variants = {
 	"the links a page writes": {
 		page: `<!doctype html>${style}<a id="app" href="app:sales">Sales</a><a id="file" href="folder:strategy/plan%202027.md">Plan</a>
@@ -224,7 +312,7 @@ on("seen", (event) => qorpera.read("the next handler sees taken: " + event.defau
 			"read a handler sees taken: true",
 			"read a handler sees taken: true",
 			"read a handler sees taken: true",
-			"read open is undefined, and the page has addRow,agents,answer,list,onChange,query,questions,read,reading,setRow,table,tell,todos,watch",
+			"read open is undefined, and the page has addRow,agents,answer,bytes,file,list,onChange,query,questions,read,reading,setRow,table,tell,todos,watch",
 			"read still here",
 		],
 	},
@@ -293,7 +381,259 @@ document.getElementById("slot-closed").attachShadow({ mode: "closed" }).innerHTM
 		clicks: ["#bar", "#old", "img"],
 		calls: ["open app:chart", "open app:older", "open folder:maps/route.md"],
 	},
+	"the network stays closed, in the page and in its worker": {
+		page: `<!doctype html><p>Closed</p><script>
+const OUT = "OUTSIDE";
+const ways = {};
+const tried = (name, attempt) =>
+	Promise.race([attempt(), new Promise((_, no) => setTimeout(no, 1500))]).then(() => { ways[name] = "reached"; }, () => { ways[name] = "closed"; });
+const loads = (tag, attributes) => () => new Promise((yes, no) => {
+	const element = document.createElement(tag);
+	Object.assign(element, attributes);
+	element.onload = yes;
+	element.onerror = no;
+	document.body.append(element);
+});
+const WORKER = ${JSON.stringify(WORKER_SOURCE)};
+(async () => {
+	await Promise.all([
+	tried("fetch", () => fetch(OUT + "/fetch")),
+	tried("fetch of the frame's own site", () => fetch("/page-preview/").then((answer) => answer.text())),
+	tried("xhr", () => new Promise((yes, no) => { const x = new XMLHttpRequest(); x.open("GET", OUT + "/xhr"); x.onload = yes; x.onerror = no; x.send(); })),
+	tried("websocket", () => new Promise((yes, no) => { const w = new WebSocket(OUT.replace("http", "ws") + "/ws"); w.onopen = yes; w.onerror = no; })),
+	tried("eventsource", () => new Promise((yes, no) => { const e = new EventSource(OUT + "/es"); e.onopen = yes; e.onerror = () => { e.close(); no(); }; })),
+	tried("img", loads("img", { src: OUT + "/img.png" })),
+	tried("img https", loads("img", { src: "https://example.com/img.png" })),
+	tried("link", loads("link", { rel: "stylesheet", href: OUT + "/style.css" })),
+	tried("script", loads("script", { src: OUT + "/script.js" })),
+	tried("script https", loads("script", { src: "https://example.com/script.js" })),
+	tried("iframe", loads("iframe", { src: OUT + "/frame.html" })),
+	tried("worker from the network", () => new Promise((yes, no) => { try { const w = new Worker(OUT + "/worker.js"); w.onerror = no; w.onmessage = yes; } catch (error) { no(error); } })),
+	]);
+	navigator.sendBeacon(OUT + "/beacon", "x");
+	ways.rtc = Object.getOwnPropertyNames(window).filter((name) => /RTC/.test(name) && window[name] !== undefined).sort();
+	const worker = new Worker(URL.createObjectURL(new Blob([WORKER], { type: "text/javascript" })));
+	ways.inWorker = await new Promise((done) => { worker.onmessage = (event) => done(event.data); worker.onerror = (event) => done("worker failed: " + event.message); setTimeout(() => done("worker silent"), 8000); });
+	const sorted = (value) => value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sorted(value[key])])) : value;
+	qorpera.read("network " + JSON.stringify(sorted(ways)));
+})();
+</script>`,
+		clicks: [],
+		wait: 6000,
+		calls: [
+			`read network ${JSON.stringify(sorted({
+				fetch: "closed",
+				"fetch of the frame's own site": "closed",
+				xhr: "closed",
+				websocket: "closed",
+				eventsource: "closed",
+				img: "closed",
+				"img https": "closed",
+				link: "closed",
+				script: "closed",
+				"script https": "closed",
+				iframe: "closed",
+				"worker from the network": "closed",
+				rtc: [],
+				inWorker: {
+					ways: {
+						fetch: "closed",
+						xhr: "closed",
+						websocket: "closed",
+						eventsource: "closed",
+						importScripts: "closed",
+						worker: "closed",
+					},
+					rtc: [],
+					nested: [],
+				},
+			}))}`,
+		],
+	},
+	"other workers: a shared worker, a service worker and an audio worklet": {
+		page: `<!doctype html><p>Workers</p><script>
+const OUT = "OUTSIDE";
+const seen = {};
+const blob = (text) => URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+const PROBE = ${JSON.stringify(SHARED_PROBE)};
+(async () => {
+	seen.sharedWorker = await new Promise((done) => {
+		try {
+			const shared = new SharedWorker(blob(PROBE));
+			shared.onerror = (event) => done("failed: " + (event.message || "error"));
+			shared.port.onmessage = (event) => done(event.data);
+			shared.port.start();
+			setTimeout(() => done("silent"), 8000);
+		} catch (error) {
+			done("refused: " + error.name);
+		}
+	});
+	seen.sharedWorkerName = typeof SharedWorker;
+	seen.serviceWorker = await (async () => {
+		try {
+			if (!navigator.serviceWorker) return "absent";
+			await navigator.serviceWorker.register(blob("self.onfetch = () => {};"));
+			return "registered";
+		} catch (error) {
+			return "refused: " + error.name;
+		}
+	})();
+	seen.audioWorklet = await (async () => {
+		try {
+			const context = new OfflineAudioContext(1, 128, 8000);
+			await context.audioWorklet.addModule(blob(${JSON.stringify(WORKLET_PROBE)}));
+			const node = new AudioWorkletNode(context, "probe");
+			const said = new Promise((done) => (node.port.onmessage = (event) => done(event.data)));
+			node.connect(context.destination);
+			context.startRendering();
+			return await Promise.race([said, new Promise((done) => setTimeout(() => done("silent"), 5000))]);
+		} catch (error) {
+			return "refused: " + error.name;
+		}
+	})();
+	qorpera.read("other workers " + JSON.stringify(seen));
+})();
+</script>`,
+		clicks: [],
+		wait: 3000,
+		calls: [
+			`read other workers ${JSON.stringify({
+				sharedWorker: "refused: TypeError",
+				sharedWorkerName: "undefined",
+				serviceWorker: "refused: SecurityError",
+				audioWorklet: { reaches: [], rtc: [] },
+			})}`,
+		],
+	},
+	"a worker started past the guard, in the page and in a worker": {
+		page: `<!doctype html><p>Past</p><script>
+const PAST = ${JSON.stringify(PAST_GUARD)};
+(async () => {
+	const seen = await new Function(PAST + "return tryAll;")()();
+	const outer = new Worker(URL.createObjectURL(new Blob([PAST + "tryAll().then(postMessage);"], { type: "text/javascript" })));
+	seen.inWorker = await new Promise((done) => { outer.onmessage = (event) => done(event.data); outer.onerror = (event) => done("failed: " + event.message); });
+	qorpera.read("past the guard " + JSON.stringify(seen));
+})();
+</script>`,
+		clicks: [],
+		wait: 2000,
+		calls: [
+			`read past the guard ${JSON.stringify({
+				viaPrototype: [],
+				viaInstance: [],
+				viaReflect: [],
+				viaApply: [],
+				inWorker: { viaPrototype: [], viaInstance: [], viaReflect: [], viaApply: [] },
+			})}`,
+		],
+	},
+	"a page's own files: a font, a sound, a model, a worker and wasm": {
+		page: `<!doctype html><style>@font-face { font-family: Brand; src: url("qorpera-file-${"a".repeat(32)}-ttf"); }</style>
+<p style="font-family: Brand">Brand</p><img id="later" data-qorpera-src="dot.png" alt="">
+<script>
+const seen = {};
+(async () => {
+	seen.font = (await document.fonts.load("20px Brand")).length;
+	const sound = new Audio("click.wav");
+	seen.sound = await new Promise((done) => { sound.addEventListener("loadedmetadata", () => done(sound.duration > 0)); sound.addEventListener("error", () => done("failed")); });
+	const decoded = await new OfflineAudioContext(1, 8000, 8000).decodeAudioData(await (await fetch("click.wav")).arrayBuffer());
+	seen.decoded = decoded.duration > 0;
+	const read = await (await fetch(new Request("model.glb", { headers: {} }))).arrayBuffer();
+	seen.fetched = new TextDecoder().decode(new Uint8Array(read, 0, 4));
+	seen.loaded = await new Promise((done) => {
+		const request = new XMLHttpRequest();
+		request.open("GET", "./model.glb", true);
+		request.responseType = "arraybuffer";
+		request.setRequestHeader("Accept", "*/*");
+		request.onload = () => done(request.status + " " + new TextDecoder().decode(new Uint8Array(request.response, 0, 4)));
+		request.onerror = () => done("failed");
+		request.send(null);
+	});
+	seen.bytes = (await qorpera.bytes("model.glb")).byteLength;
+	seen.address = (await qorpera.file("model.glb")).startsWith("blob:");
+	const worker = new Worker(await qorpera.file("worker.js"));
+	seen.worker = await new Promise((done) => { worker.onmessage = (event) => done(event.data); worker.onerror = () => done("failed"); });
+	const { instance } = await WebAssembly.instantiateStreaming(fetch("add.wasm"));
+	seen.wasm = instance.exports.add(2, 3);
+	seen.missing = (await fetch("missing.bin")).status;
+	seen.fresh = [await (await fetch("counter.txt")).text(), await (await fetch("counter.txt")).text()].join(",");
+	seen.retried = await qorpera.file("flaky.txt").then(() => "first", () => qorpera.file("flaky.txt").then(() => "second", () => "never"));
+	const later = document.getElementById("later");
+	seen.later = await new Promise((done) => {
+		if (later.complete && later.naturalWidth) done(later.naturalWidth);
+		later.onload = () => done(later.naturalWidth);
+		later.onerror = () => done("failed");
+	});
+	qorpera.read("files " + JSON.stringify(seen));
+})();
+</script>`,
+		handed: { [`qorpera-file-${"a".repeat(32)}-ttf`]: "brand.ttf" },
+		clicks: [],
+		wait: 3000,
+		calls: [
+			`read files ${JSON.stringify({ font: 1, sound: true, decoded: true, fetched: "glTF", loaded: "200 glTF", bytes: 24, address: true, worker: "from a worker", wasm: 5, missing: 404, fresh: "1,2", retried: "second", later: 1 })}`,
+		],
+		console: ["Qorpera: missing.bin could not be loaded: missing.bin is not in the page's folder"],
+	},
 };
+
+async function systemFont() {
+	for (const folder of ["/usr/share/fonts", "/usr/local/share/fonts", "/System/Library/Fonts/Supplemental"]) {
+		const found = await readdir(folder, { recursive: true }).catch(() => []);
+		const font = found.find((name) => /\.ttf$/i.test(name));
+		if (font) return readFile(join(folder, font));
+	}
+	throw new Error("No .ttf font found on this machine");
+}
+const wav = (() => {
+	const samples = 1600;
+	const bytes = Buffer.alloc(44 + samples * 2);
+	bytes.write("RIFF", 0);
+	bytes.writeUInt32LE(36 + samples * 2, 4);
+	bytes.write("WAVEfmt ", 8);
+	bytes.writeUInt32LE(16, 16);
+	bytes.writeUInt16LE(1, 20);
+	bytes.writeUInt16LE(1, 22);
+	bytes.writeUInt32LE(8000, 24);
+	bytes.writeUInt32LE(16000, 28);
+	bytes.writeUInt16LE(2, 32);
+	bytes.writeUInt16LE(16, 34);
+	bytes.write("data", 36);
+	bytes.writeUInt32LE(samples * 2, 40);
+	for (let index = 0; index < samples; index++) bytes.writeInt16LE(Math.round(Math.sin(index / 4) * 8000), 44 + index * 2);
+	return bytes;
+})();
+const glb = Buffer.concat([Buffer.from("glTF"), Buffer.from([2, 0, 0, 0, 28, 0, 0, 0, 8, 0, 0, 0]), Buffer.from("JSON{}  ")]);
+const FILES = {
+	"brand.ttf": ["font/ttf", await systemFont()],
+	"click.wav": ["audio/wav", wav],
+	"model.glb": ["model/gltf-binary", glb],
+	"worker.js": ["text/javascript", Buffer.from('postMessage("from a worker");')],
+	"add.wasm": [
+		"application/wasm",
+		Buffer.from("0061736d0100000001070160027f7f017f030201000707010361646400000a09010700200020016a0b", "hex"),
+	],
+	"dot.png": [
+		"image/png",
+		Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+			"base64",
+		),
+	],
+};
+
+const outsideHits = [];
+const outside = createServer((request, response) => {
+	outsideHits.push(request.url);
+	response.writeHead(200, { "content-type": "text/plain", "access-control-allow-origin": "*" });
+	response.end("reached");
+});
+outside.on("upgrade", (request, socket) => {
+	outsideHits.push(`upgrade ${request.url}`);
+	socket.destroy();
+});
+await new Promise((done) => outside.listen(0, "127.0.0.1", done));
+const OUTSIDE = `http://127.0.0.1:${outside.address().port}`;
 
 let origin;
 const server = createServer((request, response) => {
@@ -304,7 +644,10 @@ const server = createServer((request, response) => {
 	};
 	if (path === "/") send("text/html", '<!doctype html><meta charset="utf-8"><title>App</title><script type="module" src="/parent.js"></script>');
 	else if (path === "/parent.js") send("text/javascript", parent.outputFiles[0].contents);
-	else if (path.startsWith("/variant/")) send("application/json", JSON.stringify({ page: variants[decodeURIComponent(path.slice(9))].page }));
+	else if (path.startsWith("/variant/")) {
+		const variant = variants[decodeURIComponent(path.slice(9))];
+		send("application/json", JSON.stringify({ page: variant.page.replaceAll("OUTSIDE", OUTSIDE), handed: variant.handed }));
+	} else if (path.startsWith("/file/") && FILES[path.slice(6)]) send(...FILES[path.slice(6)]);
 	else if (path === "/page-preview/") send("text/html", frameDocument);
 	else {
 		response.writeHead(404);
@@ -324,8 +667,15 @@ try {
 	// A tab the page opened, or a place the frame went, would show here.
 	let tabs = 0;
 	context.on("page", () => tabs++);
+	const elsewhere = [];
+	context.on("requestfinished", (request) => {
+		if (!request.url().startsWith(`${origin}/`)) elsewhere.push(request.url());
+	});
+	const said = [];
+	page.on("console", (message) => said.push(message.text()));
 	for (const [name, variant] of Object.entries(variants)) {
 		if (process.env.ONLY && process.env.ONLY !== name) continue;
+		elsewhere.length = 0;
 		const loads = [];
 		const loaded = (frame) => {
 			if (frame !== page.mainFrame()) loads.push(frame.url());
@@ -350,7 +700,8 @@ try {
 			// The page is gone from the frame: what was to be clicked is not there.
 			lost = error.message.split("\n")[0];
 		}
-		await sleep(700);
+		await sleep(variant.wait ?? 700);
+		if (variant.wait) await page.waitForFunction(() => window.calls.length > 0, null, { timeout: 30_000 }).catch(() => {});
 		const seen = {
 			lost,
 			calls: await page.evaluate(() => window.calls),
@@ -358,11 +709,23 @@ try {
 			// The frame document and nowhere else: the page is written into it, and a jump inside the page stays in it.
 			places: [...new Set(loads.map((url) => new URL(url).pathname))],
 			tabs,
+			outside: [...outsideHits],
+			elsewhere: elsewhere.filter((url) => !/^(?:blob|data):/.test(url)),
+			told: (variant.console ?? []).filter((line) => !said.includes(line)),
 		};
 		page.off("framenavigated", loaded);
 		console.log(`${name}: ${JSON.stringify(seen)}`);
 		try {
-			assert.deepEqual(seen, { lost: null, calls: variant.calls, left: 0, places: ["/page-preview/"], tabs: 0 });
+			assert.deepEqual(seen, {
+				lost: null,
+				calls: variant.calls,
+				left: 0,
+				places: ["/page-preview/"],
+				tabs: 0,
+				outside: [],
+				elsewhere: [],
+				told: [],
+			});
 		} catch (error) {
 			failures.push(`${name}: ${error.message.split("\n")[0]} ${JSON.stringify(seen)}`);
 		}
@@ -370,6 +733,7 @@ try {
 } finally {
 	await browser?.close();
 	server.close();
+	outside.close();
 }
 if (failures.length) {
 	console.log(`FAILED:\n${failures.join("\n")}`);

@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025499_runtime_bundle_activation_v254.sql";
-const activationVersion = 254;
-const previousActivationVersion = 253;
-const previousActivationSha256 = "ec5969910e64e58b11d03e8ac777ee44121384317988b071ea9660ed2d023646";
+const activation = "supabase/migrations/20260929025599_runtime_bundle_activation_v255.sql";
+const activationVersion = 255;
+const previousActivationVersion = 254;
+const previousActivationSha256 = "73401553e00450485082a7b3af00ada3b4aad05b26b37b42fdf47a4fe324ba1e";
 const activationRequires = Object.freeze([
 	[
-		"20260930796000_company_mail_handles_and_unnamed",
-		"#1915 (company mail handles, 'No name yet'): bundle 254 (#1921) asks for the address on an ask_member card with input kind mail_address, which only 796000's kernel validator takes, and manage_hook names <box>.<handle> under a handle the company owns",
-		"to_regclass('public.qorpera_company_mail_handles') is not null",
+		"20260930799000_hire_team",
+		"#1922 (hire_team): bundle 255's hire_team is recorded by the action review, the folder review and the observation recorder, which name it only once 799000 applied; without it every team is refused (42501) and nothing is saved",
+		"position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_record_review(jsonb,jsonb)')), '')) > 0 and position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_action_review(jsonb,jsonb)')), '')) > 0 and position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)')), '')) > 0",
 	],
 ]);
 const activationRequiresSql = activationRequires

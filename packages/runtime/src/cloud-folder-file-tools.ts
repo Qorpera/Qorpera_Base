@@ -83,13 +83,8 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  *   core takes the source path away.
  */
 
-/** A read asks for a window of at most one result's bound, and is shown as much of it as fits one tool result: the
- * result fence (MAX_CLOUD_TOOL_RESULT_BYTES, which the patched Codex pins at 32 KiB) is the real cap, so a window of
- * plain text shows up to about 31 KiB, less where characters need escaping, and the model reads on from nextOffset. A
- * write or an edit's file is at most 512 KiB of text (21 October 2026): the folder stores it in chunks, and the call's
- * arguments, escaped, may take up to MAX_TOOL_ARGUMENT_BYTES. */
 const MAX_READ_BYTES = MAX_CLOUD_TOOL_RESULT_BYTES;
-const MAX_WRITE_BYTES = 512 * 1024;
+const MAX_WRITE_BYTES = MAX_TOOL_ARGUMENT_BYTES;
 /** A listing (keyholes S2, 12 November 2026) shows at most this many entries a call, one short line each: about as
  * many as fit one result when paths are about 50 bytes, as they are in companies today. Fewer when they do not fit. */
 const MAX_LIST = 500;
@@ -1306,9 +1301,8 @@ export function cloudFolderFileTools(options: {
 		{
 			name: "company_write" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
-			// Up to 512 KiB of text, escaped (21 October 2026).
 			maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-			description: `Write UTF-8 text (up to ${MAX_WRITE_BYTES / 1024} KiB) to one file of the company folder, such as a page, a document or a self-contained HTML prototype; to change part of a long file, use company_edit. Read it first and give its version as expectedVersion, or null to create a file that does not exist. The folder it goes in must exist (make it with company_mkdir). The result's state is applied only when it was written.`,
+			description: `Write UTF-8 text (up to ${MAX_WRITE_BYTES / 1024} KiB, as much as one call carries; less where characters need escaping) to one file of the company folder, such as a page, a document or a self-contained HTML prototype; to change part of a long file, use company_edit. Read it first and give its version as expectedVersion, or null to create a file that does not exist. The folder it goes in must exist (make it with company_mkdir). The result's state is applied only when it was written.`,
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,

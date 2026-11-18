@@ -295,6 +295,7 @@ export const CONVERSATION: Record<string, string> = {
 	"This app's app.toml has problems: {problems}": "Appens app.toml har fejl: {problems}",
 	"This can't be opened right now.": "Det kan ikke åbnes lige nu.",
 	"This page can't be shown here.": "Siden kan ikke vises her.",
+	"Opening… {percent}%": "Åbner… {percent}%",
 	"This page can't be shown live.": "Siden kan ikke vises direkte.",
 	"App: {name}": "App: {name}",
 	"This app reloaded itself. Press Reload to start it again.":
