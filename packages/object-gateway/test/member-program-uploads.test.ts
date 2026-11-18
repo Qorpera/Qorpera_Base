@@ -33,6 +33,7 @@ async function gateway(
 		commitHold?: Promise<unknown>;
 	} = {},
 ) {
+	forgetMemberProgramUploads();
 	const folder = options.folder ?? new Map<string, Entry>();
 	const calls: { side: "member" | "publisher"; method: string; args: Record<string, unknown>; token?: string }[] = [];
 	const stored = new Map<string, Uint8Array>();
