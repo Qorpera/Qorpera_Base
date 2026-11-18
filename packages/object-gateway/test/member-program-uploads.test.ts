@@ -286,7 +286,7 @@ describe("a member's program file put into the company's place for programs", ()
 		const file = program(10);
 		const finished = async (entry: Entry | undefined, write?: () => Record<string, unknown>) => {
 			const g = await gateway({
-				folder: new Map(entry ? [[path, entry]] : []),
+				folder: new Map<string, Entry>(entry ? [[path, entry]] : []),
 				...(write ? { write } : {}),
 			});
 			const upload = await uploadOf(await g.open(file));
