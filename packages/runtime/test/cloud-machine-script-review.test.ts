@@ -161,7 +161,13 @@ describe("a file is named only for the first command after leading cds, in the f
 				"cd d1 && nohup @ 2> /dev/null",
 				"cd d1 && time @",
 				"cd d1 && env A=1 nice -n 5 timeout 60 nohup @ 2> /dev/null",
+				"cd d1 && nice -n 5 timeout 60 nohup @ 2> /dev/null",
 				"env A=1 nice timeout 5 @",
+				"nice timeout 5 @",
+				"cd d1 && @ | tee",
+				"cd d1 && @ > /dev/null | cat",
+				"cd d1 && @ > out",
+				"cd d1 2> err && @",
 				"test -e s1 && X=1 @",
 				"cd d1 && env -C d2 @",
 				"cd d1 && env -Cd2 @",
@@ -227,17 +233,24 @@ describe("a file is named only for the first command after leading cds, in the f
 			expect(at("cd d1 && @")).toBe(join(full, "d1"));
 			expect(at("cd d1 && cd d2 && @")).toBe(join(full, "d1", "d2"));
 			expect(at("cd d1 && cd d2 && cd d3 && @")).toBe(join(full, "d1", "d2", "d3"));
-			expect(at("cd d1 && @ | tee log")).toBe(join(full, "d1"));
+			expect(at("cd d1 && @ | tee")).toBe(join(full, "d1"));
+			expect(at("cd d1 && @ 2>&1 | tail -40")).toBe(join(full, "d1"));
 			expect(at("cd d1 && @ ; cd d2")).toBe(join(full, "d1"));
 			expect(at("cd d1 && cd d2 && @ && cd d3")).toBe(join(full, "d1", "d2"));
-			expect(at("cd d1 && env A=1 nice -n 5 timeout 60 nohup @ 2> /dev/null")).toBe(join(full, "d1"));
-			expect(at("env A=1 nice timeout 5 @")).toBe(full);
+			expect(at("cd d1 && nice -n 5 timeout 60 nohup @ 2> /dev/null")).toBe(join(full, "d1"));
+			expect(at("nice timeout 5 @")).toBe(full);
 			for (const shape of [
 				"cd d1 ; @",
 				"cd d1\n@",
 				"cd d1 | @",
 				"cd d1 ; @ | tee log",
 				"cd d1 && cd d2 ; @",
+				"cd d1 && @ | tee log",
+				"cd d1 && @ > out",
+				"cd d1 2> err && @",
+				"cd d1 && env A=1 @",
+				"cd d1 && env A=1 nice -n 5 timeout 60 nohup @ 2> /dev/null",
+				"env A=1 nice timeout 5 @",
 				"test -e s1 ; @",
 				"test -e s1 | @",
 				"test -e s1 && X=1 @",
@@ -278,19 +291,17 @@ describe("the files a machine command runs", () => {
 			files: [{ path: "/tmp/eeg/fetch.py" }],
 			notShown: [],
 		});
-		expect(paths("cd /tmp/eeg && FOO=1 timeout 60 nice -n 10 python3 -u fetch.py --all")).toEqual([
-			"/tmp/eeg/fetch.py",
-		]);
-		expect(paths("python3 /tmp/sensing-prices/fetch.py 'https://www.axonprofil.dk' > /tmp/batch9.log")).toEqual([
+		expect(paths("cd /tmp/eeg && timeout 60 nice -n 10 python3 -u fetch.py --all")).toEqual(["/tmp/eeg/fetch.py"]);
+		expect(paths("python3 /tmp/sensing-prices/fetch.py 'https://www.axonprofil.dk' > /dev/null 2>&1")).toEqual([
 			"/tmp/sensing-prices/fetch.py",
 		]);
-		expect(cloudCommandScripts("cd /a && python3 x.py | tee log; echo done")).toEqual({
+		expect(cloudCommandScripts("cd /a && python3 x.py 2>&1 | tail -40; echo done")).toEqual({
 			files: [{ path: "/a/x.py" }],
 			notShown: [],
 		});
 		expect(paths("./run.sh --all")).toEqual(["/root/run.sh"]);
 		expect(paths("cd /a && scripts/build.sh")).toEqual(["/a/scripts/build.sh"]);
-		expect(paths("/usr/bin/env python3 /tmp/a.py")).toEqual(["/tmp/a.py"]);
+		expect(paths("/usr/bin/python3 /tmp/a.py")).toEqual(["/tmp/a.py"]);
 		expect(paths("deno run z.ts")).toEqual(["/root/z.ts"]);
 		expect(paths("python3 'my script.py'")).toEqual(["/root/my script.py"]);
 		for (const [command, file] of [
@@ -308,7 +319,7 @@ describe("the files a machine command runs", () => {
 			files: [{ path: "/a/x.py" }],
 			notShown: [later("/a/y.py")],
 		});
-		expect(cloudCommandScripts("cd /a && cd b && python3 x.py | tee log && python3 y.py; ./run.sh | sh")).toEqual({
+		expect(cloudCommandScripts("cd /a && cd b && python3 x.py | tail -5 && python3 y.py; ./run.sh | sh")).toEqual({
 			files: [{ path: "/a/b/x.py" }],
 			notShown: [
 				later("y.py"),
@@ -355,6 +366,86 @@ describe("the files a machine command runs", () => {
 		expect(cloudCommandScripts("printf -v CDPATH /safe && cd sub && python3 x.py")).toEqual({
 			files: [],
 			notShown: [later("x.py")],
+		});
+	});
+
+	it("names no file of a command that sets a variable, writes its output to a file or runs beside anything but a reader (review r9 of #1924)", () => {
+		const sets = (word: string) => `${word}: it sets a variable for the command, which can change what runs`;
+		for (const [command, word] of [
+			["PYTHONUSERBASE=/tmp/e python3 /a/x.py", "PYTHONUSERBASE=/tmp/e"],
+			["LD_AUDIT=/tmp/e.so python3 /a/x.py", "LD_AUDIT=/tmp/e.so"],
+			["RUBYGEMS_GEMDEPS=/tmp/g ruby /a/x.rb", "RUBYGEMS_GEMDEPS=/tmp/g"],
+			["PERLLIB=/tmp/e perl /a/x.pl", "PERLLIB=/tmp/e"],
+			["PHP_INI_SCAN_DIR=/tmp/e php /a/x.php", "PHP_INI_SCAN_DIR=/tmp/e"],
+			["GCONV_PATH=/tmp/e python3 /a/x.py", "GCONV_PATH=/tmp/e"],
+			["PYTHONUNBUFFERED=1 python3 /a/x.py", "PYTHONUNBUFFERED=1"],
+			["timeout 60 PYTHONUSERBASE=/tmp/e python3 /a/x.py", "PYTHONUSERBASE=/tmp/e"],
+		])
+			expect(cloudCommandScripts(command as string), command).toEqual({
+				files: [],
+				notShown: [sets(word as string)],
+			});
+		for (const command of [
+			"env PYTHONUSERBASE=/tmp/e python3 /a/x.py",
+			"env LD_AUDIT=/tmp/e.so python3 /a/x.py",
+			"env RUBYGEMS_GEMDEPS=/tmp/g ruby /a/x.rb",
+			"env PERLLIB=/tmp/e perl /a/x.pl",
+			"env PHP_INI_SCAN_DIR=/tmp/e php /a/x.php",
+			"env GCONV_PATH=/tmp/e python3 /a/x.py",
+			"/usr/bin/env python3 /a/x.py",
+		])
+			expect(cloudCommandScripts(command), command).toEqual({
+				files: [],
+				notShown: ["env: the review does not follow what it runs"],
+			});
+		const writes = (redirect: string) =>
+			`${redirect}: the command writes its output to a file, which can change the script as it runs`;
+		for (const [command, redirect] of [
+			["bash /a/x.sh >> /a/x.sh", ">> /a/x.sh"],
+			["bash /a/x.sh > /a/x.sh", "> /a/x.sh"],
+			["python3 /a/x.py 2> /a/x.py", "2> /a/x.py"],
+			["python3 /a/x.py &> /a/x.py", "&> /a/x.py"],
+			["python3 /a/x.py 2>> /a/x.py", "2>> /a/x.py"],
+			["python3 /a/x.py > /tmp/log 2>&1", "> /tmp/log"],
+		])
+			expect(cloudCommandScripts(command as string), command).toEqual({
+				files: [],
+				notShown: [writes(redirect as string)],
+			});
+		const beside = (peer: string) => `${peer}: it runs beside the script, and the review does not follow it`;
+		for (const [command, peer] of [
+			["bash /a/x.sh | tee -a /a/x.sh", "tee -a /a/x.sh"],
+			["bash /a/x.sh | tee /a/x.sh", "tee /a/x.sh"],
+			["python3 /a/x.py | cp /tmp/e.py /a/x.py", "cp /tmp/e.py /a/x.py"],
+			["python3 /a/x.py | sort -o /a/x.py", "sort -o /a/x.py"],
+			["python3 /a/x.py | sort -no /a/x.py", "sort -no /a/x.py"],
+			["python3 /a/x.py | sort --output=/a/x.py", "sort --output=/a/x.py"],
+			["python3 /a/x.py | sort --compress-program=/tmp/e", "sort --compress-program=/tmp/e"],
+			["python3 /a/x.py | uniq - /a/x.py", "uniq - /a/x.py"],
+			["python3 /a/x.py | tail -40 > /a/x.py", "tail -40 > /a/x.py"],
+			["python3 /a/x.py | /usr/bin/tail -40", "/usr/bin/tail -40"],
+		])
+			expect(cloudCommandScripts(command as string), command).toEqual({
+				files: [],
+				notShown: [beside(peer as string)],
+			});
+		expect(cloudCommandScripts("python3 /a/x.py | tail -40 | sh")).toEqual({
+			files: [],
+			notShown: [beside("sh"), "sh runs what another program prints into it, which the review cannot see"],
+		});
+		for (const command of [
+			"python3 /a/x.py",
+			"timeout 60 python3 /a/x.py",
+			"python3 /a/x.py 2>&1 | tail -40",
+			"python3 /a/x.py > /dev/null 2>&1",
+			"python3 /a/x.py 2> /dev/null",
+			"python3 /a/x.py &> /dev/null",
+			"python3 /a/x.py 2>&1 | grep -v DEBUG | sort -n | uniq -c | wc -l | head -5 | cat | tee -a",
+		])
+			expect(cloudCommandScripts(command), command).toEqual({ files: [{ path: "/a/x.py" }], notShown: [] });
+		expect(cloudCommandScripts("python3 /a/x.py; cp /tmp/e.py /a/x.py")).toEqual({
+			files: [{ path: "/a/x.py" }],
+			notShown: [],
 		});
 	});
 
@@ -412,8 +503,6 @@ describe("the files a machine command runs", () => {
 	it("names a script only when every word before its path is on the allow-list (review r5 of #1924)", () => {
 		for (const command of [
 			"python3 x.py",
-			"X=1 python3 x.py",
-			"env A=1 B=2 python3 x.py",
 			"time python3 x.py",
 			"nohup python3 x.py",
 			"nice python3 x.py",
@@ -423,8 +512,7 @@ describe("the files a machine command runs", () => {
 			"timeout 1.5m python3 x.py",
 			"xvfb-run python3 x.py",
 			"xvfb-run -a python3 x.py",
-			"env A=1 nice -n 5 timeout 60 nohup time xvfb-run -a python3 -u -B -O -q x.py --its-own -C /arg",
-			"/usr/bin/env python3 x.py",
+			"nice -n 5 timeout 60 nohup time xvfb-run -a python3 -u -B -O -q x.py --its-own -C /arg A=1",
 			"/usr/bin/python3 x.py",
 			"python3.12 x.py",
 		])
@@ -437,6 +525,9 @@ describe("the files a machine command runs", () => {
 		])
 			expect(paths(command), command).toEqual(["/root/x.sh"]);
 		for (const command of [
+			"X=1 python3 evil.py",
+			"env A=1 B=2 python3 evil.py",
+			"/usr/bin/env python3 evil.py",
 			"env -C/safe python3 evil.py",
 			"env -iC/safe python3 evil.py",
 			"env --chd=/safe python3 evil.py",

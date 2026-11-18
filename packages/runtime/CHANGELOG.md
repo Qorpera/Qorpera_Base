@@ -1,20 +1,22 @@
 # Changelog
 
 ## [Unreleased]
-- The review reads the script a machine command starts with (2026-11-17 amendment, brief A of the mywave review). Only a
-  plain command is looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing
-  bash would expand). It names at most one file, by grammar: after zero or more leading `cd <path> &&` (literal, no
-  `..`, no options), the first command must be an allow-listed runner form (allowed assignments and prefixes, an
-  interpreter with its allowed options and the script path, the path as the command word, or `source f`), and its file
-  is named when its path has no `..` segment. A later script is listed as not shown, and a command that starts with
-  anything else names no file. The file is read on the machine before the review and shown whole (64 KiB); a card's
-  approval covers its digest; the machine runs the model's command byte for byte. The file is evidence, not proof of
-  what runs: the agent's own login shell and profile decide what a program name runs, and the reviewer is told so. A
-  file not shown is never on its own a reason to deny or ask. A denial names the next step (a card asking for what the
-  work needs, or a worker's blocked report). Known limits: a script after another command, a second script and a script
-  after `source` are not shown; the agent's home reads no files; a file changed between the read and the start is not
-  detected. Runtime bundle only: no migration, host call, executor or image moves; it rolls with the next runtime
-  release.
+- The review reads the script a machine command starts with (2026-11-17 amendment "the review reads the script it
+  judges", brief A of the mywave review; its refusal and retry parts came first in #1942). Only a plain command is
+  looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing bash would
+  expand). It names at most one file, by grammar: after zero or more leading `cd <path> &&` (literal, no `..`, no
+  options, no redirection), the first command must be an allow-listed runner form (the prefixes `time`, `nohup`, `nice`,
+  `timeout`, `xvfb-run`, an interpreter with its allowed options and the script path, the path as the command word, or
+  `source f`), with no variable set before it, no redirection but `2>&1` or to `/dev/null`, and, in a pipeline, only
+  `head`, `tail`, `grep`, `cat`, `wc`, `tee` with options only, `sort` or `uniq` beside it; its file is named when its
+  path has no `..` segment. A later script is listed as not shown, and a command that starts with anything else names no
+  file. The file is read on the machine before the review and shown whole (64 KiB); a card's approval covers its digest;
+  the machine runs the model's command byte for byte. The file is evidence, not proof of what runs: the agent's own
+  login shell and profile decide what a program name runs, and the reviewer is told so. A file not shown is never on its
+  own a reason to deny or ask. Known limits: a script after another command, a second script, a script after `source`,
+  one with a variable set before it and one whose output goes to a file are not shown; the agent's home reads no files;
+  a file changed between the read and the start is not detected. Runtime bundle only: no migration, host call, executor
+  or image moves.
 - A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
   a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
   other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a

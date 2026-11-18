@@ -16,9 +16,10 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const PLAIN = /^[A-Za-z0-9_./\-+=:,@%]$/;
 const QUOTED = /^[A-Za-z0-9_./\-+=:,@% ]*$/;
 const REDIRECTS = ["2>&1", "2>>", "2>", "&>", ">>", ">"];
-const STEERING =
-	/^(PATH|CDPATH|ENV|BASH_ENV|IFS|HOME|PWD|OLDPWD|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|NODE_OPTIONS|NODE_PATH|RUBYOPT|RUBYLIB|PERL5OPT|PERL5LIB|LD_PRELOAD|LD_LIBRARY_PATH|BASH_FUNC_[^=]*)\+?=/;
-const PREFIXES = new Set(["env", "time", "nohup", "nice", "timeout", "xvfb-run"]);
+const PREFIXES = new Set(["time", "nohup", "nice", "timeout", "xvfb-run"]);
+const QUIET = new Set(["2>&1", "> /dev/null", "2> /dev/null", "&> /dev/null"]);
+const READERS = new Set(["head", "tail", "grep", "cat", "wc"]);
+const OPTIONS = /^--?[A-Za-z0-9][A-Za-z0-9-]*$/;
 const DURATION = /^[0-9]{1,6}(\.[0-9]{1,3})?[smhd]?$/;
 const NICENESS = /^-?[0-9]{1,2}$/;
 
@@ -56,10 +57,11 @@ interface Word {
 
 type Join = "start" | "&&" | "|";
 
-type Token = { readonly word: Word } | { readonly join: Join };
+type Token = { readonly word: Word } | { readonly join: Join } | { readonly redirect: string };
 
 interface Simple {
 	readonly words: Word[];
+	readonly redirects: string[];
 	readonly joined: Join;
 	alone: boolean;
 }
@@ -121,10 +123,13 @@ export function cloudCommandTokens(command: string): Token[] | undefined {
 			at += redirect.length;
 			if (redirect === "2>&1") {
 				if (!edge(at)) return undefined;
+				tokens.push({ redirect });
 				continue;
 			}
 			while (command[at] === " " || command[at] === "\t") at += 1;
-			if (!word()) return undefined;
+			const target = word();
+			if (!target) return undefined;
+			tokens.push({ redirect: `${redirect} ${target.text}` });
 			continue;
 		}
 		const next = word();
@@ -136,15 +141,19 @@ export function cloudCommandTokens(command: string): Token[] | undefined {
 
 function simplesOf(tokens: readonly Token[]): Simple[] {
 	const simples: Simple[] = [];
-	let current: Simple = { words: [], joined: "start", alone: false };
+	let current: Simple = { words: [], redirects: [], joined: "start", alone: false };
 	for (const token of tokens) {
 		if ("word" in token) {
 			current.words.push(token.word);
 			continue;
 		}
+		if ("redirect" in token) {
+			current.redirects.push(token.redirect);
+			continue;
+		}
 		if (token.join === "|") current.alone = true;
 		if (current.words.length > 0) simples.push(current);
-		current = { words: [], joined: token.join, alone: token.join === "|" };
+		current = { words: [], redirects: [], joined: token.join, alone: token.join === "|" };
 	}
 	if (current.words.length > 0) simples.push(current);
 	return simples;
@@ -198,25 +207,15 @@ type Start = { readonly at: number; readonly prefixed: boolean } | { readonly wh
 function commandStart(words: readonly Word[]): Start {
 	let at = 0;
 	let prefixed = false;
-	const assignments = (): string | undefined => {
-		while (words[at] && ASSIGNMENT.test((words[at] as Word).text)) {
-			const word = words[at] as Word;
-			if (STEERING.test(word.text)) return `${line(word.text)}: it changes which code the command runs`;
-			at += 1;
-		}
-		return undefined;
-	};
-	const first = assignments();
-	if (first) return { why: first };
 	for (;;) {
-		const name = programName(words[at]);
+		const word = words[at];
+		if (word && ASSIGNMENT.test(word.text))
+			return { why: `${line(word.text)}: it sets a variable for the command, which can change what runs` };
+		const name = programName(word);
 		if (name === undefined || !PREFIXES.has(name)) return { at, prefixed };
 		prefixed = true;
 		at += 1;
-		if (name === "env") {
-			const why = assignments();
-			if (why) return { why };
-		} else if (name === "nice") {
+		if (name === "nice") {
 			if (words[at]?.text === "-n" && NICENESS.test(words[at + 1]?.text ?? "")) at += 2;
 		} else if (name === "timeout") {
 			if (!DURATION.test(words[at]?.text ?? ""))
@@ -306,6 +305,28 @@ function runnerOf(simple: Simple): Runner {
 	return other;
 }
 
+function reads(simple: Simple): boolean {
+	const [program, ...rest] = simple.words.map((word) => word.text);
+	if (simple.redirects.length > 0 || program === undefined) return false;
+	if (READERS.has(program)) return true;
+	if (program === "tee") return rest.every((word) => OPTIONS.test(word));
+	if (program === "sort") return rest.every((word) => !word.startsWith("--") && !/^-[A-Za-z]*o/.test(word));
+	if (program === "uniq") return rest.every((word) => word.startsWith("-") || /^[0-9]+$/.test(word));
+	return false;
+}
+
+function besideOf(simples: readonly Simple[], at: number): string | undefined {
+	const first = simples[at] as Simple;
+	const loud = first.redirects.find((redirect) => !QUIET.has(redirect));
+	if (loud) return `${line(loud)}: the command writes its output to a file, which can change the script as it runs`;
+	for (const peer of simples.slice(at + 1)) {
+		if (peer.joined !== "|") break;
+		if (!reads(peer))
+			return `${line([textOf(peer), ...peer.redirects].join(" "))}: it runs beside the script, and the review does not follow it`;
+	}
+	return undefined;
+}
+
 function textOf(simple: Simple): string {
 	return simple.words.map((word) => word.text).join(" ");
 }
@@ -322,6 +343,7 @@ export function cloudCommandScripts(command: string, start = HOME): CloudCommand
 		const simple = simples[at] as Simple;
 		const target = simple.words[1];
 		if (simple.words[0]?.text !== "cd" || simple.alone || simple.words.length !== 2 || !target) break;
+		if (simple.redirects.length > 0) break;
 		if (target.text.startsWith("-") || simples[at + 1]?.joined !== "&&") break;
 		const located = locate(target, folder);
 		if ("why" in located) {
@@ -333,7 +355,9 @@ export function cloudCommandScripts(command: string, start = HOME): CloudCommand
 	const first = simples[at];
 	if (first) {
 		const found = runnerOf(first);
-		if ("script" in found) {
+		const beside = besideOf(simples, at);
+		if ("script" in found && beside) notShown.add(beside);
+		else if ("script" in found) {
 			const located = locate(found.script, folder);
 			if ("why" in located) notShown.add(located.why);
 			else files.push({ path: located.path });
