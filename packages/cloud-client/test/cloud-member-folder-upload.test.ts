@@ -42,6 +42,7 @@ function gateway(
 ) {
 	const requests: { method: string; path: string; body: Uint8Array | null; type: string | null }[] = [];
 	let opens = 0;
+	let stopped = false;
 	const pieces = new Map<number, number>();
 	const folder = new CloudMemberFolderClient({
 		environmentId: env,
@@ -73,7 +74,10 @@ function gateway(
 				if (scripted) return scripted;
 				return Response.json({ schema: "qorpera.member-program-upload/v1", uploadId, have: options.have ?? [] });
 			}
-			if (step[2] === "stop") return new Response(null, { status: 204 });
+			if (step[2] === "stop") {
+				stopped = true;
+				return new Response(null, { status: 204 });
+			}
 			if (step.length === 3) {
 				const index = Number(step[2]);
 				const call = (pieces.get(index) ?? 0) + 1;
@@ -83,6 +87,7 @@ function gateway(
 				return Response.json({ schema: "qorpera.member-program-piece/v1", piece: index, bytes: bytes?.length });
 			}
 			await options.finishHold;
+			if (stopped) return new Response(null, { status: 404 });
 			return Response.json(
 				options.finish ?? { schema: "qorpera.member-program-finish/v1", outcome: "saved", version: commitId },
 			);
@@ -265,8 +270,10 @@ describe("a member's program file going up", () => {
 		const going = g.folder.uploadFile(path, blob, prepared, { operationKey: "web:k", signal: stop.signal });
 		await until(() => g.requests.some((request) => request.path === `/v1/member-program-uploads/${env}/${uploadId}`));
 		stop.abort(new Error("left the page"));
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		answer();
 		expect(await going).toEqual({ outcome: "saved", version: commitId, reason: null });
+		expect(g.requests.some((request) => request.path.endsWith("/stop"))).toBe(false);
 	});
 
 	it("refuses a file past 256 MiB before any request, and gives a refusal its status without trying again", async () => {
