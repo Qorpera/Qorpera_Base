@@ -393,7 +393,7 @@ in every app of the kit.
 | `model` | does it make money, and what moves it? | sliders for the numbers, one large figure, a waterfall from what a customer pays to what is left, and a curve against volume with its break-even; a number nobody knows yet is a hatched slider a member drags, or sets with "Try an example" |
 | `board` | what is out there, and which one? | `scale`: real things as pictures standing on one true scale, each opening a sheet of facts; `choose`: two to four directions as worlds to step into, with a button that answers the agent's open question; `wall`: reference pictures with a note each |
 | `path` | how does it go, and where is the hole? | one to three lanes through the same steps, the evidence as marks under the step it supports, a step nobody has shown as fog with a question mark, and a flag for what will fill it; with numbers on the steps it is a funnel |
-| `object` | what is the thing? | a turntable of the thing a member turns by hand, its parts pointed out on it with a leader to each name, and its figures under it |
+| `object` | what is the thing? | the thing as a live 3D model (17 November 2026) or a turntable, turned by hand, its parts pointed out on it with a leader to each name, and its figures under it |
 | `curve` | where is it going? | one value over time, big: the past as a filled area, what is expected as a dotted line inside a band as wide as it is unsure, a "now" line, a dashed safe level, up to three marked points, and the value that matters large at the top, which follows a finger, the pointer or the arrow keys along the curve; a future nobody has said anything about is fog (14 November 2026) |
 | `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
 | `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
@@ -486,6 +486,57 @@ app's screenshot by someone other than its maker. Pictures an agent generates ar
 
 A model whose groups hold no input is refused as one without groups is (`APP_DATA_INVALID`): the engine would draw
 one line that says there is nothing to show.
+
+### The object kit's live 3D (17 November 2026)
+
+Jonas, 17 November 2026, "Yes, all three" on the app-files design page, whose second pick was "both": agents may bring
+their own 3D library into an app (the files of §2 carry it), and the object kit gets a ready live mode, so an agent
+writes no 3D code. Our servers have no graphics cards; a member's computer has one, and draws the model itself.
+
+- **Data.** `object.json`'s `model` (and a variant's) is the path of a `.glb` in the app's folder; `turntable` or
+  `picture` beside it is the fallback and the poster while the model arrives. `environment` (an `.hdr` in the folder)
+  replaces the default light; `view` `{"yaw", "pitch"}` in degrees replaces the opening view (yaw 30, pitch 14). A
+  part's `node` names an object of the model (its node name as Blender exported it, or a mesh name); `track` stays
+  for pictures. `parseKitData` refuses a model that is not a plain `.glb` path in the folder, an `environment` that is
+  no `.hdr` path, a `view` that is no object of numbers; `kitNotes` names a model or light the folder lacks and a thing
+  with a model and no picture. Data without `model` writes and draws exactly what it did: the same three files, the
+  same page, the same pixels (proof: lanes/app-files-uncapped-20261117, `shots3d/`).
+- **The library is the kit's.** three.js 0.186.1 (MIT) with its `GLTFLoader`, `HDRLoader`, `RoomEnvironment` and the
+  two blur shaders, bundled into one minified script by `scripts/build-object-kit-three.mjs` from the npm package
+  (`packages/runtime/kits/object/vendor/three.js`, 627 KB, with `three.LICENSE.txt` as shipped; held as
+  `cloud-app-kit-three.generated.ts`). `save_app` writes it into the app as `three.js` and `three.license.txt` only
+  when the data names a model (`kitLibrary`), and on a later save only where the folder holds other text; an agent may
+  not write either (`APP_KIT_FILE`). The page does not name it: the engine reads it when it needs it, through
+  `qorpera.file` (outside Qorpera, the relative path), so a turntable-only page is unchanged and the first paint does
+  not wait for it. No Draco, meshopt or KTX2 decoder: a compressed model is refused by the loader, and the page's
+  console says to export without compression.
+- **Light and look.** The thing stands on its lowest point, its upright axis through the middle of its bounds, fitted
+  to the stage so the circle it sweeps when it turns fills 90 % of the stage's height or width, as a turntable's
+  frames do; a perspective camera at about 3.4 times its size. Image-based light from three's `RoomEnvironment`
+  through PMREM (or the data's `.hdr`), AgX tone mapping (Blender's default view since 4.0), sRGB output, a transparent
+  canvas over the page's own background. A soft contact shadow rendered once from below (the parts nearest the ground
+  darkest, blurred twice: a tight one and a wider one at half strength), tinted from the page's background, so it
+  reads in light and dark. The stage, the labels, the strip, the facts and the bare form are the turntable's; the
+  canvas covers the stage's whole width and height and, while zoomed in, fades out over its top and bottom 28 px.
+- **Handling.** Drag turns it round the upright axis and tilts it between -6 and 52 degrees (a vertical swipe on a
+  touch screen still scrolls the page); pinch or wheel zooms between 0.8 and 2.2 times, about the stage's middle, and
+  past 1.2 the names beside it fade so only the dots stay; no panning; a double tap, Home or End go back to the opening
+  view (or its far side); the arrow keys turn by 15 degrees, `+` and `-` zoom. It turns once in 42 s by itself until
+  touched, again 20 s after the last touch, never with reduced motion. It draws only while something moves: at rest
+  the page asks for no frames. Pixel ratio at most 2, 1.5 on a touch screen or under 700 px.
+- **Parts.** A part's dot sits on its node's centre, projected. Whether it shows is read from an id picture (each
+  part's meshes in their own colour, 320 px wide at most, the part's own glass included and other glass left out),
+  around the dot, at most every 140 ms while it moves and once when it stops: that is the ray test, done on the
+  graphics card. A tap on a part or its name turns the thing the short way to the turn where the part shows most
+  (24 turns measured from the id pictures at the first tap). A `node` the model lacks is said in the page's console
+  with the model's node names, and the part is listed without a dot.
+- **When 3D cannot run** (no WebGL 2, a context the browser takes away, a library or model that does not load or
+  parse) the page shows the turntable or picture as before, else one quiet line in the page's language
+  (`words.nomodel`, else Danish, Swedish, Norwegian, German, Dutch, French, Spanish or English). While the model
+  arrives the poster stands still; with no picture a thin quiet line moves under the stage after 0.45 s.
+
+Not built: animations inside a model, exploded views, materials switching, AR, measuring. Not measured: a real phone,
+Safari, Firefox; the timings in the guide are a test machine's software renderer.
 
 ## 3c. Pictures: make_picture (13 November 2026)
 

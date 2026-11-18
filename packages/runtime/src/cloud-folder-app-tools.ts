@@ -78,8 +78,11 @@ import {
 	KIT_ENGINE,
 	KIT_ENGINE_JS,
 	KIT_PAGE,
+	KIT_THREE,
+	KIT_THREE_LICENSE,
 	kitBindings,
 	kitDataFile,
+	kitLibrary,
 	kitNotes,
 	kitPage,
 	parseKitData,
@@ -368,7 +371,7 @@ const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly strin
 	model: [KIT_ENGINE, KIT_PAGE],
 	board: [KIT_ENGINE, KIT_PAGE],
 	path: [KIT_ENGINE, KIT_PAGE],
-	object: [KIT_ENGINE, KIT_PAGE],
+	object: [KIT_ENGINE, KIT_PAGE, KIT_THREE, KIT_THREE_LICENSE],
 	curve: [KIT_ENGINE, KIT_PAGE],
 	stack: [KIT_ENGINE, KIT_PAGE],
 	shelf: [KIT_ENGINE, KIT_PAGE],
@@ -937,6 +940,7 @@ export function cloudAppTools(options: {
 						...files,
 						{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
 						{ path: KIT_PAGE, text: kitPage(request.name, kit, manifest.name, data, holds, manifest.concept) },
+						...kitLibrary(kit, data),
 					];
 				}
 				if (!files.some((file) => file.path.toLowerCase() === manifest.entry.toLowerCase()))
@@ -1122,6 +1126,7 @@ export function cloudAppTools(options: {
 				for (const file of [
 					{ path: KIT_ENGINE, text: KIT_ENGINE_JS[kit] },
 					{ path: KIT_PAGE, text: kitPage(request.name, kit, title, data, holds, concept) },
+					...kitLibrary(kit, data),
 				]) {
 					const found = byKey.get(file.path);
 					if (found?.kind !== "file" || found.file.fileSha256 !== sha256hex(file.text)) files = [...files, file];

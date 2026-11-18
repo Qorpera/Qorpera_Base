@@ -125,6 +125,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Interface apps hold any file",
 		text: "An interface app no longer has a cap on its files: any number, any size the company folder stores, any kind. Fonts, sound, 3D models, wasm and large scripts such as a 3D library are files in the app's folder, written from a company machine and named by their path. The page opens first and reads each file when it uses it: by a relative path in its markup and styles, and in a script by fetch(path), qorpera.file(path) or qorpera.bytes(path); a page opened by itself loads the files beside it the same way. company_write takes as much text as one call carries. A product can now be shown live in 3D, with its own type and sound.",
 	},
+	{
+		id: "object-kit-live-3d",
+		kind: "capability",
+		date: "2026-11-17",
+		title: "The object kit draws a real 3D model",
+		text: "The object kit's page can show a product as a real 3D model, drawn live in the member's own browser in real light: they turn and tilt it by hand, zoom in, and tap its parts. Build the model in Blender on a machine, export it into the app's folder as one glb file and name it as the data's model; each part names its object in the model as node, so no tracks are written. Keep the turntable or picture beside it: the page shows it while the model arrives and where a browser cannot draw 3D. app_guide about object says how.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
