@@ -1,6 +1,6 @@
 # Pinned native result fence, governed tools, images and composition
 
-This is a narrow downstream change to the official Codex 0.155.1 source, not
+This is a narrow downstream change to the official Codex 0.170.0 source, not
 an official upstream release. The user explicitly authorized this exception
 to the unmodified-harness requirement on 2026-08-28. Native GPT sign-in,
 refresh, credential storage, provider transport, model metadata and provider
@@ -77,6 +77,35 @@ so a SHA-256 in hex, 72 characters, is refused). Codex refuses any other form
 and keeps its own key when the answer sets none. The key travels on the
 composition's answer, so it needs that marker as well.
 
+## 0.170.0 (18 Nov 2026)
+
+OpenAI offers `gpt-6.2-sol` only to Codex `client_version` 0.166.0 or newer (the model list read on 18 Nov:
+0.155.1 is offered neither GPT-6.1 Sol nor GPT-6.2 Sol). 0.170.0 is the newest stable tag, and its own catalog
+lists `gpt-6.2-sol` (added in 0.169.1), so a login that gets no remote list (an API key) still has its metadata.
+The patch was rebased, not redesigned: the request builder is still the one seam for HTTP, WebSocket and remote-v2
+compaction. What moved with it:
+- The builder now takes `include_internal` and drops or merges `configuration_update` items itself; the fenced
+  builder composes and fences `prompt.input` first and leaves those steps, and tool-result metadata, to upstream.
+- A picture is `{image: Inline | File}`; the fence admits an inline PNG only, so an uploaded file reference is refused.
+- A message may carry provider-encrypted content: the fence refuses it on any role but the model's own.
+- The plan-limit code moved to `sse/responses_error.rs`.
+- `apply_patch` is offered with no environment upstream; a governed run without a home keeps 0.155.1's rule and is
+  never offered it (the exact inventory check found `functions.apply_patch`).
+- The helper tools are gated as before; 0.170.0's catalog adds `request_user_input_async`,
+  `send_message_to_user_async`, `literature_search_query` and `multi_agent_v2_in_code_mode` for GPT-6.2 Sol (web
+  search is disabled and Code Mode is off in a governed run, so the last two never register).
+- Provider-default is GPT-6.2 Sol (it was GPT-6 Astra). Every GPT-6 and GPT-5.6 model uses Responses Lite.
+- A governed run turns `unified_image_budget` off (on since 0.170.0): it re-prepares a tool-output picture at
+  original detail for a Responses Lite model, which the capture fence refuses.
+
+Built in a Rust 1.95.0 container on the node02 test VM (run `20261118T162849-2060-10d4a060`, 32 min warm):
+`9d6a86ec…`, 398,449,416 bytes. On it: the patch's Rust tests (codex-core 29, codex-api 2, app-server-protocol 1;
+run `20261118T171325-48868-ac05e543`); the ten real-binary test files, 362 of 362 (`20261118T173506-4277-bf3703a8`),
+the exact inventory on provider-default, `gpt-6.2-sol`, `gpt-6-astra` and `gpt-6-luna`; the three standalone
+entrypoints (`20261118T171157-33799-aeb0f905`); and the company-run proofs on a migrated database (first requests,
+tools on demand, run log, read token, S2, S3, answer first, home channel, home folder, S4; runs
+`20261118T172451-79284-bbeb32f6` and `20261118T173109-98897-e9a5b17e`). All with a scripted loopback provider: no login, no real model.
+
 ## Build
 
 Provision Rust 1.95.0, its `llvm-tools` component and the upstream platform
@@ -106,7 +135,7 @@ checks the source/patch/lock and records the final executable independently.
 The cache is trusted build input, never an acceptance result.
 
 The upstream tag updates workspace package versions without updating the
-135 path-package versions in Cargo.lock. The script normalizes only those
+174 path-package versions in Cargo.lock (152 at 0.155.1). The script normalizes only those
 release metadata fields, verifying both full-file hashes before compiling
 with `--locked`. No external dependency is changed. Upstream's Bazel lock
 refresh was run and produced no lock diff.

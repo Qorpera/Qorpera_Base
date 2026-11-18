@@ -20,6 +20,8 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { nativeCodexFixtureCommand } from "./native-codex-fixture-command.ts";
 
+const RESPONSES_LITE_MODELS = new Set(["gpt-6.2-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol"]);
+
 export interface CodexBoundaryProof {
 	platform: string;
 	codexVersion: string;
@@ -118,14 +120,14 @@ export async function runOfficialCodexBoundaryProbe(
 				input: Array<Record<string, unknown>>;
 				reasoning?: { effort?: string };
 			};
-			// Codex 0.155.1 defaults to GPT-6 Astra; provider-default sends no model name.
-			assert.equal(parsed.model, model === "provider-default" ? "gpt-6-astra" : model);
+			// Codex 0.170.0 defaults to GPT-6.2 Sol; provider-default sends no model name.
+			assert.equal(parsed.model, model === "provider-default" ? "gpt-6.2-sol" : model);
 			if (providerModel) assert.equal(parsed.model, providerModel);
 			providerModel = parsed.model;
 			assert.equal(parsed.reasoning?.effort, "low");
 			const additionalTools = parsed.input.filter((item) => item.type === "additional_tools");
-			// The 0.155.1 catalog enables Responses Lite for Sol and for Astra (the pinned binary's own default).
-			const responsesLite = parsed.model === "gpt-5.6-sol" || parsed.model === "gpt-6-astra";
+			// The 0.170.0 catalog enables Responses Lite for every GPT-6 and GPT-5.6 model; an unknown model has none.
+			const responsesLite = RESPONSES_LITE_MODELS.has(parsed.model);
 			assert.equal(additionalTools.length, responsesLite ? 1 : 0);
 			if (responsesLite) assert.equal(parsed.tools, undefined);
 			else assert(Array.isArray(parsed.tools));

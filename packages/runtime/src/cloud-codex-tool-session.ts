@@ -105,7 +105,7 @@ import {
 	type MemoryCompactUsage,
 } from "./memory-tree/compact.ts";
 
-export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
+export const CLOUD_CODEX_BOUNDARY_VERSION = "0.170.0";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
 const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
@@ -201,7 +201,7 @@ const PICTURE_THREAD_CONFIG = Object.freeze({
 	"features.image_generation": true,
 	"features.omit_app_server_notification_media": true,
 });
-/** Where Codex 0.155.1 keeps a picture it made: `<codex home>/generated_images/<thread>/<call>.png`, each id with
+/** Where Codex 0.170.0 keeps a picture it made: `<codex home>/generated_images/<thread>/<call>.png`, each id with
  * every character but letters, digits, `-` and `_` made `_` (ext/image-generation/src/artifact.rs). */
 const PICTURE_FOLDER = "generated_images";
 const pictureName = (value: string): string => value.replace(/[^A-Za-z0-9_-]/gu, "_") || "generated_image";
@@ -336,6 +336,8 @@ const DISABLED_FEATURES = [
 	"guardian_approval",
 	"current_time_reminder",
 	"sleep_tool",
+	// On since Codex 0.170.0: it re-prepares a capture at original detail, which the capture fence refuses.
+	"unified_image_budget",
 ] as const;
 
 /** Digests started ahead of a session, by artifact path. */

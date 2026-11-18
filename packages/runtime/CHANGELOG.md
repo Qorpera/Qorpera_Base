@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+- The patched native Codex moves from 0.155.1 to 0.170.0 (18 Nov 2026; the founder: "Yes, upgrade Codex"): OpenAI offers
+  GPT-6.2 Sol only to Codex 0.166.0 or newer. `0001-cloud-result-fence.patch` is rebased onto `rust-v0.170.0`
+  (`29eb79e9`); the native binary is `9d6a86ec`, 398,449,416 bytes (deploy/first-node/native-codex/README.md, "0.170.0").
+  The session needs `qorpera_cloud_boundary/0.170.0`; a governed run turns `unified_image_budget` off (on since 0.170.0,
+  it re-prepares a capture at original detail, which the capture fence refuses) and, without a home, is not offered
+  `apply_patch`. Provider-default is GPT-6.2 Sol. The machine image's Codex (`CLOUD_MACHINE_HOME.codexSha256`) moves with it.
 - A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
   a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
   other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a
