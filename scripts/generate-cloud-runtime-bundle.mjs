@@ -7,11 +7,17 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025799_runtime_bundle_activation_v257.sql";
-const activationVersion = 257;
-const previousActivationVersion = 256;
-const previousActivationSha256 = "f5554c77635269caa6cd788b0e956367d6a625293af1a385c2a32a9f143e860a";
-const activationRequires = Object.freeze([]);
+const activation = "supabase/migrations/20260929025899_runtime_bundle_activation_v258.sql";
+const activationVersion = 258;
+const previousActivationVersion = 257;
+const previousActivationSha256 = "eab37cd3f22752dc574f7e9b08d33d86e16c17ba19e001298d69a60daed47128";
+const activationRequires = Object.freeze([
+	[
+		"20260930793000_claude_login_usage",
+		"#1909 (Claude login usage): bundle 258's run host records a Claude Code worker's last rate_limit_event through the host call qorpera_record_claude_run_usage, whose SQL row and function 793000 adds; without it the call is refused at the path gateway",
+		"to_regprocedure('public.qorpera_record_claude_run_usage(jsonb,jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_record_claude_run_usage' and scope = 'binding')",
+	],
+]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);

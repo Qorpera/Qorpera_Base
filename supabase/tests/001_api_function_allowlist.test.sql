@@ -49,6 +49,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_authorize_member_company_proposal_object(uuid,text,text)', false, true, 'internal: self-scoped or pure helper'),
 	('public.qorpera_authorize_member_company_snapshot_object(uuid,text,uuid,text)', false, true, 'internal: self-scoped or pure helper'),
 	('public.qorpera_begin_chatgpt_plan_sign_in(uuid,uuid,uuid,uuid,text,integer)', false, true, 'member: auth.uid() + own member compute identity; refused while ChatGPT plan logins are switched off'),
+	('public.qorpera_begin_claude_login_read(uuid,uuid,text,boolean,text)', false, true, 'member: auth.uid() + own member compute identity and own active Claude login kept by the company''s vault; reads usage and resets, or uses a reset the last read showed (20260930793000)'),
 	('public.qorpera_begin_cloud_secret_capture(uuid,uuid,text,uuid,text,text,text,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_begin_coding_mcp_sign_in(uuid,uuid,text,text,text,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_begin_member_company_file_upload(uuid,jsonb,text,jsonb)', false, true, 'internal: auth.uid() + membership/ownership'),

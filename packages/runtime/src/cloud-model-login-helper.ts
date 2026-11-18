@@ -2,6 +2,14 @@ import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
+import type { ClaudeLoginRead, ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
+import {
+	CLAUDE_RESET_KINDS,
+	type ClaudeLoginResets,
+	type ClaudeLoginUsage,
+	type ClaudeResetKind,
+	type ClaudeResetOutcome,
+} from "./cloud-claude-login-usage.ts";
 import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-budget.ts";
 import type {
 	ModelLoginSignInBinding,
@@ -40,6 +48,96 @@ const SIGN_IN_CODE_CLIENT_WAIT_MS = SIGN_IN_CODE_ANSWER_MS + 2_000;
 const SIGN_IN_CODE = /^[\x21-\x7e]{8,512}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CLAUDE_READ_ANSWER_MS = 22_000;
+const CLAUDE_READ_CLIENT_WAIT_MS = CLAUDE_READ_ANSWER_MS + 3_000;
+const CLAUDE_RESET_ANSWER_MS = 70_000;
+const CLAUDE_RESET_CLIENT_WAIT_MS = CLAUDE_RESET_ANSWER_MS + 5_000;
+const CLAUDE_READ_LIMIT = 2;
+const CREDENTIALS = /^[A-Za-z0-9+/]{4,21848}={0,2}$/;
+
+function claudeRequest(value: unknown, reset: boolean): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Login helper request is invalid");
+	const input = value as Record<string, unknown>;
+	const keys = reset ? "credentials,kind,schema" : "credentials,resets,schema,usage";
+	if (
+		Object.keys(input).sort().join() !== keys ||
+		input.schema !== (reset ? "qorpera.claude-login-reset-request/v1" : "qorpera.claude-login-read-request/v1") ||
+		typeof input.credentials !== "string" ||
+		!CREDENTIALS.test(input.credentials) ||
+		(reset
+			? !CLAUDE_RESET_KINDS.includes(input.kind as ClaudeResetKind)
+			: typeof input.usage !== "boolean" || typeof input.resets !== "boolean")
+	)
+		throw new Error("Login helper request is invalid");
+	return input;
+}
+
+function claudeUsage(value: unknown): ClaudeLoginUsage | null {
+	if (value === null) return null;
+	const input = value as Record<string, unknown> | undefined;
+	if (
+		!input ||
+		typeof input !== "object" ||
+		typeof input.observedAt !== "string" ||
+		!Array.isArray(input.windows) ||
+		input.windows.length < 1 ||
+		input.windows.length > 4 ||
+		input.windows.some((item: unknown) => {
+			const window = item as Record<string, unknown> | null;
+			return (
+				!window ||
+				!["five_hour", "seven_day", "seven_day_model"].includes(window.id as string) ||
+				typeof window.label !== "string" ||
+				window.label.length > 64 ||
+				typeof window.usedPercent !== "number" ||
+				!(window.usedPercent >= 0 && window.usedPercent <= 100) ||
+				(window.resetAt !== undefined && typeof window.resetAt !== "string")
+			);
+		})
+	)
+		throw new Error("Login helper answer is invalid");
+	return value as ClaudeLoginUsage;
+}
+
+function claudeResets(value: unknown): ClaudeLoginResets | null {
+	if (value === null) return null;
+	const input = value as Record<string, unknown> | undefined;
+	if (
+		!input ||
+		typeof input !== "object" ||
+		typeof input.observedAt !== "string" ||
+		!Array.isArray(input.entries) ||
+		input.entries.length > 4 ||
+		input.entries.some((item: unknown) => {
+			const entry = item as Record<string, unknown> | null;
+			return (
+				!entry ||
+				(entry.kind !== null && !CLAUDE_RESET_KINDS.includes(entry.kind as ClaudeResetKind)) ||
+				!Number.isSafeInteger(entry.left) ||
+				(entry.left as number) < 0 ||
+				(entry.left as number) > 999 ||
+				!["now", "at_limit"].includes(entry.usable as string) ||
+				[entry.refills, entry.weekStays, entry.useBy].some(
+					(text) => text !== null && (typeof text !== "string" || text.length > 120),
+				)
+			);
+		})
+	)
+		throw new Error("Login helper answer is invalid");
+	return value as ClaudeLoginResets;
+}
+
+function claudeReset(value: unknown): ClaudeResetOutcome {
+	const input = value as Record<string, unknown> | undefined;
+	if (input?.schema !== "qorpera.claude-login-reset/v1") throw new Error("Login helper answer is invalid");
+	if (
+		input.outcome === "reset" &&
+		(input.left === null || (Number.isSafeInteger(input.left) && (input.left as number) >= 0))
+	)
+		return { outcome: "reset", left: input.left as number | null };
+	if (input.outcome === "failed" || input.outcome === "unconfirmed") return { outcome: input.outcome };
+	throw new Error("Login helper answer is invalid");
+}
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
 	if (!authorization?.startsWith("Bearer ")) return false;
@@ -177,6 +275,8 @@ export class ModelLoginHelperService {
 	readonly #vaultToken: string | undefined;
 	readonly #renewer: ModelLoginRenewer;
 	readonly #signIns: ModelLoginSignInHelper | undefined;
+	readonly #claudeReads: ClaudeLoginReads | undefined;
+	#claudeRunning = 0;
 	readonly #concurrency: number;
 	/** Who began each sign-in, and until when that is remembered: a sign-in (and the login it ends with)
 	 * is answered only to the client that began it. */
@@ -193,6 +293,7 @@ export class ModelLoginHelperService {
 		vaultToken?: string;
 		renewer: ModelLoginRenewer;
 		signIns?: ModelLoginSignInHelper;
+		claudeReads?: ClaudeLoginReads;
 		concurrency?: number;
 	}) {
 		if (!isAbsolute(options.socketPath) || resolve(options.socketPath) !== options.socketPath)
@@ -205,6 +306,7 @@ export class ModelLoginHelperService {
 		this.#vaultToken = options.vaultToken;
 		this.#renewer = options.renewer;
 		this.#signIns = options.signIns;
+		this.#claudeReads = options.claudeReads;
 		this.#concurrency = options.concurrency ?? 4;
 	}
 
@@ -274,6 +376,14 @@ export class ModelLoginHelperService {
 			"/v1/sign-in/code",
 		];
 		const client = this.#client(request.headers.authorization);
+		if (
+			request.method === "POST" &&
+			(request.url === "/v1/claude/read" || request.url === "/v1/claude/reset") &&
+			this.#claudeReads &&
+			client === "vault" &&
+			request.headers["content-type"] === "application/json"
+		)
+			return this.#claude(request, this.#claudeReads);
 		if (
 			request.method !== "POST" ||
 			!(request.url === "/v1/renew" || (signIns && signInRoutes.includes(request.url ?? ""))) ||
@@ -402,11 +512,61 @@ export class ModelLoginHelperService {
 			this.#running -= 1;
 		}
 	}
+
+	async #claude(
+		request: IncomingMessage,
+		reads: ClaudeLoginReads,
+	): Promise<{ status: number; body: Record<string, unknown> }> {
+		const reset = request.url === "/v1/claude/reset";
+		let input: Record<string, unknown>;
+		try {
+			input = claudeRequest(await readBody(request), reset);
+		} catch {
+			return { status: 400, body: { schema: "qorpera.model-login-helper-error/v1", error: "invalid" } };
+		}
+		if (this.#claudeRunning >= CLAUDE_READ_LIMIT || this.#running >= this.#concurrency)
+			return reset
+				? { status: 200, body: { schema: "qorpera.claude-login-reset/v1", outcome: "failed" } }
+				: { status: 200, body: { schema: "qorpera.claude-login-read/v1", usage: null, resets: null } };
+		this.#claudeRunning += 1;
+		this.#running += 1;
+		try {
+			if (reset) {
+				const outcome = await reads.useClaudeReset(
+					{ credentials: input.credentials as string, kind: input.kind as ClaudeResetKind },
+					AbortSignal.timeout(CLAUDE_RESET_ANSWER_MS),
+				);
+				return { status: 200, body: { schema: "qorpera.claude-login-reset/v1", ...outcome } };
+			}
+			const read = await reads.readClaudeLogin(
+				{
+					credentials: input.credentials as string,
+					usage: input.usage as boolean,
+					resets: input.resets as boolean,
+				},
+				AbortSignal.timeout(CLAUDE_READ_ANSWER_MS),
+			);
+			return {
+				status: 200,
+				body: { schema: "qorpera.claude-login-read/v1", usage: read.usage, resets: read.resets } as Record<
+					string,
+					unknown
+				>,
+			};
+		} catch {
+			return reset
+				? { status: 200, body: { schema: "qorpera.claude-login-reset/v1", outcome: "unconfirmed" } }
+				: { status: 200, body: { schema: "qorpera.claude-login-read/v1", usage: null, resets: null } };
+		} finally {
+			this.#claudeRunning -= 1;
+			this.#running -= 1;
+		}
+	}
 }
 
 /** The broker's side: asks the helper to renew a login, or to run a member's sign-in, over the
  * helper's Unix socket. */
-export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSignInHelper {
+export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSignInHelper, ClaudeLoginReads {
 	readonly #socketPath: string;
 	readonly #token: string;
 
@@ -416,6 +576,38 @@ export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSign
 		if (!TOKEN.test(options.token)) throw new Error("Login helper token is invalid");
 		this.#socketPath = options.socketPath;
 		this.#token = options.token;
+	}
+
+	readClaudeLogin(
+		request: { readonly credentials: string; readonly usage: boolean; readonly resets: boolean },
+		signal: AbortSignal,
+	): Promise<ClaudeLoginRead> {
+		return this.#post(
+			"/v1/claude/read",
+			{ schema: "qorpera.claude-login-read-request/v1", ...request },
+			(value) => {
+				const input = value as Record<string, unknown> | null;
+				if (
+					input?.schema !== "qorpera.claude-login-read/v1" ||
+					Object.keys(input).sort().join() !== "resets,schema,usage"
+				)
+					throw new Error("Login helper answer is invalid");
+				return { usage: claudeUsage(input.usage), resets: claudeResets(input.resets) };
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(CLAUDE_READ_CLIENT_WAIT_MS)]),
+		);
+	}
+
+	useClaudeReset(
+		request: { readonly credentials: string; readonly kind: ClaudeResetKind },
+		signal: AbortSignal,
+	): Promise<ClaudeResetOutcome> {
+		return this.#post(
+			"/v1/claude/reset",
+			{ schema: "qorpera.claude-login-reset-request/v1", ...request },
+			claudeReset,
+			AbortSignal.any([signal, AbortSignal.timeout(CLAUDE_RESET_CLIENT_WAIT_MS)]),
+		);
 	}
 
 	renew(authJson: string, signal: AbortSignal): Promise<ModelLoginRenewal> {
