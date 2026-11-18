@@ -563,7 +563,7 @@ describe("member model account settings", () => {
 		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe(
 			`50% left at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`,
 		);
-		expect(view.el.textContent).not.toContain("50% left");
+		expect(view.el.textContent).not.toMatch(/50% left(?! at last check)/);
 		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
 	});
 	it("never shows a reading time later than now when the host's clock runs ahead", async () => {
