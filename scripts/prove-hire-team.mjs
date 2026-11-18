@@ -171,9 +171,9 @@ const team = () =>
 
 const HOLDS = "name, role, jobDescription, firstAssignment and figure (figure is optional)";
 const TOLD = [
-	`INVALID_ARGUMENTS: hire 1 (Kundeindsigt): operationKey is not a field of a hire: give operationKey once for the whole call, never inside a hire. A hire holds ${HOLDS}`,
-	"INVALID_ARGUMENTS: team is not a field of hire_team: hire_team takes operationKey, once for the whole call, and hires, a list of 2 to 12 hires",
-	"INVALID_ARGUMENTS: hire 2 (Strategi): role must be one line, with no line breaks",
+	`INVALID_ARGUMENTS: hire 1: operationKey is given once for the whole call, never inside a hire. A hire holds ${HOLDS}`,
+	"INVALID_ARGUMENTS: hire_team takes operationKey, once for the whole call, and hires, a list of 2 to 12 hires; it was given a key that is neither",
+	"INVALID_ARGUMENTS: hire 2: role must be one line, with no line breaks",
 	"INVALID_ARGUMENTS: hires must be a list of hire objects, not text holding one: send the list itself",
 ];
 const SHAPES = [
@@ -183,11 +183,12 @@ const SHAPES = [
 	["the hires as one JSON text", { operationKey: "shape-4", hires: JSON.stringify(TEAM.hires.slice(0, 3)) }],
 ];
 const corrected = (refused) => {
-	const unknown = /: ([A-Za-z]+) is not a field of a hire/.exec(refused)?.[1] ?? "";
+	const inside = /: (operationKey) is given once for the whole call, never inside a hire/.exec(refused)?.[1] ?? "";
 	return {
 		operationKey: "shape-1-again",
-		hires: SHAPES[0][1].hires.map(({ [unknown]: _, ...rest }) => rest),
+		hires: SHAPES[0][1].hires.map(({ [inside]: _, ...rest }) => rest),
 	};
+};
 };
 
 const refusals = () =>

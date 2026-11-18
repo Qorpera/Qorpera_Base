@@ -103,13 +103,8 @@ function sameName(name: string): string {
 	return name.trim().normalize("NFC").toLocaleLowerCase("en");
 }
 
-export function plainText(text: string, chars: number): string {
-	return [...text.replace(/[^\u0020-\u007e\u00c0-\u00ff]/g, "?")].slice(0, chars).join("");
-}
-
-export function hireLabel(index: number, name: unknown): string {
-	const named = typeof name === "string" && name.trim() ? ` (${plainText(name.trim(), 60)})` : "";
-	return `hire ${index + 1}${named}`;
+function plainMessage(message: string): string {
+	return message.replace(/[^\u0020-\u007e\u00c0-\u00ff]/g, "-");
 }
 
 /** One id per (namespace, run, operation key), formatted as the legacy hire's agent id (cloud-hiring-tools.ts), in a
@@ -440,7 +435,7 @@ export class CloudFolderHiring {
 			const earlier = seen.get(sameName(hire.name));
 			if (earlier !== undefined)
 				throw new CloudToolArgumentRefusal(
-					`${hireLabel(index, hire.name)}: name is the same as hire ${earlier + 1}'s: name each by its own work, and never a name a coworker already has`,
+					`hire ${index + 1}: name is the same as hire ${earlier + 1}'s: name each by its own work, and never a name a coworker already has`,
 				);
 			seen.set(sameName(hire.name), index);
 		}
@@ -448,11 +443,11 @@ export class CloudFolderHiring {
 			problemsOf(
 				osPath("agents/agent"),
 				hireFiles(hire, PLACEHOLDER_ID, PLACEHOLDER_ID, this.#identity.requesterUserId),
-			).map((problem) => ({ message: `${hireLabel(index, hire.name)}: ${problem.message}` })),
+			).map((problem) => ({ message: `hire ${index + 1}: ${problem.message}` })),
 		);
 		if (problems.length)
 			throw new CloudToolArgumentRefusal(
-				plainText(invalidMessage(problems, "This team cannot be saved as the company's files"), 900),
+				plainMessage(invalidMessage(problems, "This team cannot be saved as the company's files")),
 			);
 	}
 

@@ -6,8 +6,6 @@ import {
 	type CloudFolderHiring,
 	type CloudFolderRoleEnd,
 	type CloudFolderTeamHire,
-	hireLabel,
-	plainText,
 	TEAM_HIRES_MAX,
 	TEAM_HIRES_MIN,
 } from "./cloud-folder-hiring.ts";
@@ -40,11 +38,8 @@ function text(value: unknown, field: string, maxBytes: number, singleLine: boole
 	return value.trim();
 }
 
-function unknownKeys(value: object, allowed: readonly string[]): string[] {
-	return Object.keys(value)
-		.filter((key) => !allowed.includes(key))
-		.slice(0, 5)
-		.map((key) => plainText(key, 40));
+function holdsOther(value: object, allowed: readonly string[]): boolean {
+	return Object.keys(value).some((key) => !allowed.includes(key));
 }
 
 function operationKeyOf(value: unknown): string {
@@ -214,10 +209,9 @@ export function cloudHiringTools(
 		parseArguments(value) {
 			if (!value || typeof value !== "object" || Array.isArray(value))
 				throw new CloudToolArgumentRefusal(`hire_agent takes one object with operationKey, ${HIRE_HOLDS}`);
-			const unknown = unknownKeys(value, FIELDS);
-			if (unknown.length)
+			if (holdsOther(value, FIELDS))
 				throw new CloudToolArgumentRefusal(
-					`${unknown.join(", ")} ${unknown.length === 1 ? "is not a field" : "are not fields"} of hire_agent: it takes operationKey, ${HIRE_HOLDS}`,
+					`hire_agent takes operationKey, ${HIRE_HOLDS}; it was given a key that is none of these`,
 				);
 			const a = value as Record<string, unknown>;
 			const hire = { operationKey: operationKeyOf(a.operationKey), ...hireFields(a, "") };
@@ -392,11 +386,8 @@ export function cloudHiringTools(
 			const takes = `hire_team takes operationKey, once for the whole call, and hires, a list of ${TEAM_HIRES_MIN} to ${TEAM_HIRES_MAX} hires`;
 			if (!value || typeof value !== "object" || Array.isArray(value))
 				throw new CloudToolArgumentRefusal(`${takes}, as one object`);
-			const unknown = unknownKeys(value, TEAM_FIELDS);
-			if (unknown.length)
-				throw new CloudToolArgumentRefusal(
-					`${unknown.join(", ")} ${unknown.length === 1 ? "is not a field" : "are not fields"} of hire_team: ${takes}`,
-				);
+			if (holdsOther(value, TEAM_FIELDS))
+				throw new CloudToolArgumentRefusal(`${takes}; it was given a key that is neither`);
 			const a = value as Record<string, unknown>;
 			const operationKey = operationKeyOf(a.operationKey);
 			if (a.hires === undefined)
@@ -412,19 +403,16 @@ export function cloudHiringTools(
 			const team = {
 				operationKey,
 				hires: a.hires.map((hire: unknown, index: number) => {
+					const where = `hire ${index + 1}: `;
 					if (!hire || typeof hire !== "object" || Array.isArray(hire))
+						throw new CloudToolArgumentRefusal(`hire ${index + 1} must be an object holding ${HIRE_HOLDS}`);
+					if ("operationKey" in hire)
 						throw new CloudToolArgumentRefusal(
-							`${hireLabel(index, null)} must be an object holding ${HIRE_HOLDS}`,
+							`${where}operationKey is given once for the whole call, never inside a hire. A hire holds ${HIRE_HOLDS}`,
 						);
-					const where = `${hireLabel(index, (hire as Record<string, unknown>).name)}: `;
-					const extra = unknownKeys(hire, MEMBER_FIELDS);
-					if (extra.includes("operationKey"))
+					if (holdsOther(hire, MEMBER_FIELDS))
 						throw new CloudToolArgumentRefusal(
-							`${where}operationKey is not a field of a hire: give operationKey once for the whole call, never inside a hire. A hire holds ${HIRE_HOLDS}`,
-						);
-					if (extra.length)
-						throw new CloudToolArgumentRefusal(
-							`${where}${extra.join(", ")} ${extra.length === 1 ? "is not a field" : "are not fields"} of a hire. A hire holds ${HIRE_HOLDS}`,
+							`${where}holds a key that is not a field of a hire. A hire holds ${HIRE_HOLDS}`,
 						);
 					return hireFields(hire as Record<string, unknown>, where);
 				}),

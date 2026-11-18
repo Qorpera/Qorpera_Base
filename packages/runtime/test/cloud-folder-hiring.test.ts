@@ -581,11 +581,11 @@ it("refuses before the review a team whose files cannot be saved or whose names 
 	const hiring = f.hiring();
 	expect(() => hiring.checkTeam({ ...TEAM, hires: [member("Market"), member(" market ")] })).toThrow(
 		new CloudToolArgumentRefusal(
-			"hire 2 (market): name is the same as hire 1's: name each by its own work, and never a name a coworker already has",
+			"hire 2: name is the same as hire 1's: name each by its own work, and never a name a coworker already has",
 		),
 	);
 	expect(() => hiring.checkTeam({ ...TEAM, hires: [member("Market"), member("Bad\tName")] })).toThrow(
-		/^This team cannot be saved as the company's files: hire 2 \(Bad\?Name\): /,
+		/^This team cannot be saved as the company's files: hire 2: /,
 	);
 	expect(() => hiring.checkTeam(TEAM)).not.toThrow();
 	const { actionReviewId: _, ...unreviewed } = f.context;
@@ -626,9 +626,7 @@ it("is the hire_team tool: two to twelve hires with hire_agent's fields, bound t
 			hires: [member("Market"), { ...member("Brand"), firstAssignment: "Å".repeat(2001) }],
 		}),
 	).toThrow(
-		new CloudToolArgumentRefusal(
-			"hire 2 (Brand): firstAssignment holds at most 4000 bytes in this company: shorten it",
-		),
+		new CloudToolArgumentRefusal("hire 2: firstAssignment holds at most 4000 bytes in this company: shorten it"),
 	);
 	expect(() => tool.parseArguments({ ...args, hires: [member("Market"), { ...member("Brand"), extra: 1 }] })).toThrow(
 		CloudToolArgumentRefusal,
@@ -683,12 +681,12 @@ it("tells the model which hire, which field and what is wrong for every refused 
 	const cases: [unknown, string][] = [
 		[
 			{ operationKey: "t", hires: two.map((hire, n) => ({ operationKey: `h-${n}`, ...hire })) },
-			`hire 1 (Market): operationKey is not a field of a hire: give operationKey once for the whole call, never inside a hire. A hire holds ${holds}`,
+			`hire 1: operationKey is given once for the whole call, never inside a hire. A hire holds ${holds}`,
 		],
-		[{ operationKey: "t", team: two }, `team is not a field of hire_team: ${takes}`],
+		[{ operationKey: "t", team: two }, `${takes}; it was given a key that is neither`],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], role: "Brand\nand naming" }] },
-			"hire 2 (Brand): role must be one line, with no line breaks",
+			"hire 2: role must be one line, with no line breaks",
 		],
 		[
 			{ operationKey: "t", hires: JSON.stringify(two) },
@@ -708,37 +706,34 @@ it("tells the model which hire, which field and what is wrong for every refused 
 		[{ operationKey: "t", hires: [two[0], "Brand"] }, `hire 2 must be an object holding ${holds}`],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], title: "x", owner: "y" }] },
-			`hire 2 (Brand): title, owner are not fields of a hire. A hire holds ${holds}`,
+			`hire 2: holds a key that is not a field of a hire. A hire holds ${holds}`,
 		],
 		[{ operationKey: "t", hires: [two[0], { ...two[1], name: undefined }] }, "hire 2: name is missing"],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], name: "Brand\nTeam" }] },
-			"hire 2 (Brand?Team): name must be one line, with no line breaks",
+			"hire 2: name must be one line, with no line breaks",
 		],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], name: "x".repeat(161) }] },
-			`hire 2 (${"x".repeat(60)}): name holds at most 160 bytes: shorten it`,
+			"hire 2: name holds at most 160 bytes: shorten it",
 		],
-		[{ operationKey: "t", hires: [two[0], { ...two[1], role: 7 }] }, "hire 2 (Brand): role must be text"],
-		[
-			{ operationKey: "t", hires: [two[0], { ...two[1], jobDescription: "  " }] },
-			"hire 2 (Brand): jobDescription is empty",
-		],
+		[{ operationKey: "t", hires: [two[0], { ...two[1], role: 7 }] }, "hire 2: role must be text"],
+		[{ operationKey: "t", hires: [two[0], { ...two[1], jobDescription: "  " }] }, "hire 2: jobDescription is empty"],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], jobDescription: "y".repeat(16385) }] },
-			"hire 2 (Brand): jobDescription holds at most 16384 bytes: shorten it",
+			"hire 2: jobDescription holds at most 16384 bytes: shorten it",
 		],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], firstAssignment: "a\u0000b" }] },
-			"hire 2 (Brand): firstAssignment holds a NUL character: remove it",
+			"hire 2: firstAssignment holds a NUL character: remove it",
 		],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], figure: "dragon" }] },
-			"hire 2 (Brand): figure must be one of planet, acorn, flame, rocket",
+			"hire 2: figure must be one of planet, acorn, flame, rocket",
 		],
 		[
 			{ operationKey: "t", hires: [two[0], { ...two[1], name: "Märket–Ø", role: "One\ntwo" }] },
-			"hire 2 (Märket?Ø): role must be one line, with no line breaks",
+			"hire 2: role must be one line, with no line breaks",
 		],
 		[[two], `${takes}, as one object`],
 	];
@@ -748,11 +743,11 @@ it("tells the model which hire, which field and what is wrong for every refused 
 		else expect(message).toBe(expected);
 	}
 	expect(refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], name: "Market" }] })).toBe(
-		"hire 2 (Market): name is the same as hire 1's: name each by its own work, and never a name a coworker already has",
+		"hire 2: name is the same as hire 1's: name each by its own work, and never a name a coworker already has",
 	);
 	const single = { operationKey: "one", ...member("Market") };
 	const agentCases: [unknown, string][] = [
-		[{ ...single, hires: [] }, `hires is not a field of hire_agent: it takes operationKey, ${holds}`],
+		[{ ...single, hires: [] }, `hire_agent takes operationKey, ${holds}; it was given a key that is none of these`],
 		[{ ...single, operationKey: undefined }, `operationKey is missing: ${key}`],
 		[{ ...single, role: "Market\nresearch" }, "role must be one line, with no line breaks"],
 		[
@@ -763,6 +758,23 @@ it("tells the model which hire, which field and what is wrong for every refused 
 	];
 	for (const [args, expected] of agentCases) expect(refusal(hireAgent!, args)).toBe(expected);
 	expect(hireAgent!.parseArguments(single)).toEqual(single);
+	const secret = `sk-live-${"A".repeat(40)}`;
+	const leaks = [
+		refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], [secret]: "x" }] }),
+		refusal(team, { operationKey: "t", [secret]: two }),
+		refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], name: secret, role: "One\ntwo" }] }),
+		refusal(team, {
+			operationKey: "t",
+			hires: [
+				{ ...two[0], name: secret },
+				{ ...two[1], name: secret },
+			],
+		}),
+		refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], name: `${secret}\tx` }] }),
+		refusal(hireAgent!, { ...single, [secret]: "x" }),
+		refusal(hireAgent!, { ...single, name: secret, role: "One\ntwo" }),
+	];
+	for (const text of leaks) expect(text).not.toContain("sk-live");
 	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toContain(
 		"operationKey is given once, for the whole call, never inside a hire. hires holds 2 to 12 hires, and each hire holds only name (one line of at most 160 bytes, a name no other hire or coworker has), role (one line of at most 320 bytes), jobDescription (at most 16,384 bytes), firstAssignment (at most 4,000 bytes) and figure (optional).",
 	);
