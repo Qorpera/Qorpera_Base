@@ -2096,7 +2096,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "792d97afab4a8dd356eb09a9a4de178098e2a294895641e65905be7480fb1fc4",
+			instructions: "d7de80e9dfb31e773d87f475c8fa8e3e56e6a9817ad4343e1eb5170cfefce50a",
 			prompt: "d0d165dd3ec02d42be86627b746db78dec12f84ea9b074a535a20ae17077a10f",
 		},
 	],
@@ -2104,7 +2104,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "09ff6942a3b6feb0cfd748c49d6af01dd7858431506e8774bb262a49fde0c62a",
+			instructions: "2be17d453add426385768c27d9907c5d69398f2d07fb6696487b05a38757b196",
 			prompt: "fa5484d70ef2438b94e068f615ed012ae5a7843a12be83985a904ad93a5f1706",
 		},
 	],
@@ -2112,7 +2112,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "792d97afab4a8dd356eb09a9a4de178098e2a294895641e65905be7480fb1fc4",
+			instructions: "d7de80e9dfb31e773d87f475c8fa8e3e56e6a9817ad4343e1eb5170cfefce50a",
 			prompt: "27106a9a7f751dbbb76094cf196c71056eb84e687dd6f76a531068d602b26f35",
 		},
 	],
@@ -2590,7 +2590,7 @@ it("tells every agent the seeded folders, how to make files and how to link them
 		`Link, never paste: a file as ${CLOUD_FOLDER_LINK_EXAMPLE}, an app as [Title](app:<name>). Link every file you made or changed that matters to the reader`,
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"Other pages, prototypes and mockups are ordinary files, self-contained (inline CSS and JavaScript), which members open live from a folder: link.",
+		"Other pages, prototypes and mockups are ordinary files, which members open live from a folder: link; a page loads the files beside it (styles, scripts, pictures, fonts, sound, video, models) by relative paths, as an app's page does.",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Do what they asked, at the size they asked: a file they ask for is the work.",
