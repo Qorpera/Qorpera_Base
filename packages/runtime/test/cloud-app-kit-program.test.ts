@@ -144,6 +144,41 @@ it("adds a new version first and keeps the earlier ones and their files", async 
 	expect(units.some((unit) => unit.op === "delete")).toBe(false);
 });
 
+it("keeps who added a member's version through an agent's save, and never marks the agent's own", async () => {
+	const member = "35000000-0000-4000-8000-000000000001";
+	const kept = JSON.stringify({
+		version: "1",
+		forms: [{ for: "windows", file: "Lagerliste.exe" }],
+		versions: [
+			{
+				version: "1",
+				date: "2026-11-18T12:00:00.000Z",
+				forms: [{ for: "windows", file: "Lagerliste.exe", bytes: 3, sha256: sha("exe") }],
+				userId: member,
+			},
+		],
+	});
+	const f = await fixture({
+		folders: [...built.folders, "apps/fokusur/versions/1"],
+		files: {
+			...built.files,
+			"apps/fokusur/app.toml": 'name = "Fokusur"\nkit = "program"\n',
+			"apps/fokusur/program.json": kept,
+			"apps/fokusur/versions/1/Lagerliste.exe": "exe",
+		},
+	});
+	expect(read(await f.call("save_app", save("agent", first, null))).state).toBe("applied");
+	const program = parseProgram(f.text("apps/fokusur/program.json") ?? "");
+	expect(program?.versions.map((each) => [each.version, each.userId])).toEqual([
+		["0.1", undefined],
+		["1", member],
+	]);
+	await refuses(
+		f.call("save_app", save("marked", JSON.stringify({ ...JSON.parse(first), userId: member }), null)),
+		"userId is not a field of program.json",
+	);
+});
+
 it("saves the newest version again with the same files under its first date, and takes new screens", async () => {
 	const f = await fixture(built);
 	await f.call("save_app", save("first", first));

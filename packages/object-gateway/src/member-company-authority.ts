@@ -13,7 +13,8 @@ export type MemberCompanyRpc =
 	| "qorpera_room_image_begin"
 	| "qorpera_room_image_download"
 	// The member commit route's writer check (folder core C4, P34a): the member's own actor, from their token.
-	| "qorpera_member_folder_writer";
+	| "qorpera_member_folder_writer"
+	| "qorpera_member_folder_read";
 
 export type MemberCompanyPublisherRpc =
 	| "qorpera_native_presence_subject"
@@ -39,6 +40,7 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_folder_authorize_object_upload"
 	| "qorpera_folder_confirm_object"
 	| "qorpera_folder_seal_upload"
+	| "qorpera_folder_renew_upload"
 	| "qorpera_folder_commit"
 	// The member commit route's follow-up after a saved commit (F2's P15): a hire's or an archive's work at once.
 	| "qorpera_folder_follow_up_commit"

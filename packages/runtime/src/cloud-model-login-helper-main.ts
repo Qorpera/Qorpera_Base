@@ -3,6 +3,7 @@ import { constants, createReadStream, realpathSync } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ClaudeLoginReader } from "./cloud-claude-login-reader.ts";
 import { ModelLoginHelperService } from "./cloud-model-login-helper.ts";
 import { CodexLoginRenewer, codexSelfCheck } from "./cloud-model-login-renewal.ts";
 import { CodexSignIns } from "./cloud-model-login-sign-in.ts";
@@ -209,6 +210,9 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 		...(vaultToken === undefined ? {} : { vaultToken }),
 		renewer: new CodexLoginRenewer({ codexPath, temporaryRoot, isolation, beforeLaunch }),
 		signIns,
+		...(claudePath
+			? { claudeReads: new ClaudeLoginReader({ claudePath, temporaryRoot, isolation, beforeLaunch }) }
+			: {}),
 	});
 	const shutdown = (): void => stop.abort();
 	process.once("SIGINT", shutdown);

@@ -7195,6 +7195,22 @@ bundle; no migration, host call or image moves.
 4. **Order.** An older web reads the kit as a manifest with problems and hides the app: the web goes live first, then
    the runtime bundle that carries the kit.
 
+### 2026-11-18 amendment: a member adds a program of their own
+
+> The founder, 18 November 2026, after seeing step 1's page: "then build step 2, add your own". The detail is
+> RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7 and RUNTIME-INTERFACE-APPS.md §3f and §7 step 16.
+
+1. **One way in for a browser's bytes.** The object gateway's member program route takes a file of at most 256 MiB in
+   4 MiB pieces, each its own request through the member company gateway, staged under the member's own upload intent,
+   the whole checked against the SHA-256 the member named, and committed as the member at
+   `apps/<name>/versions/<version>/<file>`, only where no file is (the same file again is answered as saved). No other folder path takes bytes from a browser. One upload in flight per
+   member; an upload not finished leaves nothing in the folder. No migration.
+2. **The text** (`app.toml`, `program.json`) goes through the member commit route after the bytes, `program.json` with
+   its version, so two members adding at once never lose a version.
+3. **Who.** A member who may write the folder makes a program or adds a version to a program a member made, never to
+   an agent's. A kept version may name the member who added it (`userId`); an agent's never does.
+4. **Order.** The object gateway and the member company gateway function, then the web.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

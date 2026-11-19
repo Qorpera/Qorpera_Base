@@ -9,6 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
 import { type CodeDownloadCalls, codeDownloadCalls } from "./code-downloads.ts";
 import { memberRouteTarget } from "./deployment-config.ts";
+import { forgetKeptObjects, KeptObjects } from "./kept-objects.ts";
 import { createWebMessageErases, type WebMessageErases } from "./message-erases.ts";
 import type { HostedProfile, HostedProfileRole } from "./types.ts";
 
@@ -21,26 +22,32 @@ interface MemberFolderOptions {
 	readonly accessToken: (signal: AbortSignal) => Promise<string>;
 	readonly fetch: typeof fetch;
 	readonly files: CloudMemberFolderFileCache;
+	readonly kept: KeptObjects;
 }
 
 /** The bytes of files this tab's member has read, for every company they open: an app or a page opened again, and
  * the files it reads, are not fetched again (cloud-member-folder.ts `CloudMemberFolderFileCache`). Each read still asks
  * the folder for the file's entry as the member, so what they may read is decided live. Another member signed in here
  * starts from an empty one. */
-let memberFiles: { readonly memberId: string; readonly files: CloudMemberFolderFileCache } | undefined;
+let memberFiles:
+	| { readonly memberId: string; readonly files: CloudMemberFolderFileCache; readonly kept: KeptObjects }
+	| undefined;
 
-function memberFileCache(memberId: string): CloudMemberFolderFileCache {
+function memberFileCache(memberId: string): { readonly files: CloudMemberFolderFileCache; readonly kept: KeptObjects } {
 	if (memberFiles?.memberId !== memberId) {
 		memberFiles?.files.clear();
-		memberFiles = { memberId, files: new CloudMemberFolderFileCache() };
+		void memberFiles?.kept.close();
+		memberFiles = { memberId, files: new CloudMemberFolderFileCache(), kept: new KeptObjects(memberId) };
 	}
-	return memberFiles.files;
+	return memberFiles;
 }
 
 /** Forgets every file read in this tab: at sign-out. */
 export function forgetMemberFiles(): void {
 	memberFiles?.files.clear();
+	const kept = memberFiles?.kept;
 	memberFiles = undefined;
+	void (kept ? kept.forget() : forgetKeptObjects());
 }
 
 /** The product owns member lifetime; the shared SDK owns the company folder's calls. Every company is folder-v2
@@ -87,7 +94,8 @@ export class WebCompanyFiles {
 					throw new Error("Sign in again to open Company File.");
 				return data.session.access_token;
 			},
-			files: memberFileCache(memberId),
+			files: memberFileCache(memberId).files,
+			kept: memberFileCache(memberId).kept,
 			fetch: async (input, init) => {
 				this.current();
 				// Enable the public bridge only after its deployment has been accepted.
@@ -127,6 +135,7 @@ export class WebCompanyFiles {
 			accessToken: this.#options.accessToken,
 			fetch: this.#options.fetch,
 			files: this.#options.files,
+			kept: this.#options.kept,
 		});
 	}
 	/** The company's databases, asked as the member through the member gateway (RUNTIME-COMPANY-DATABASES.md §3);
