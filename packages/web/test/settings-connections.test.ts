@@ -1949,6 +1949,69 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(2);
 	});
 
+	it("refreshes ChatGPT first, then each Claude login, one at a time", async () => {
+		const chatgpt = deferred<void>();
+		const first = deferred<string>();
+		const order: string[] = [];
+		const refreshAccountMetadata = vi.fn(async () => {
+			order.push("chatgpt");
+			await chatgpt.promise;
+		});
+		const readClaude = vi.fn(async (options: { loginId: string }) => {
+			order.push(options.loginId);
+			if (options.loginId === id(97)) await first.promise;
+			return id(99);
+		});
+		const logins = { signInOpen: true, readable: true, logins: [login(), login({ loginId: id(96) })] };
+		view = new ConnectionsView(
+			{
+				listConnections: vi.fn(async () => structuredClone(observed(connected))),
+				revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+				createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+				listClaudeLogins: vi.fn(async () => structuredClone(logins)),
+				refreshAccountMetadata,
+				readClaude,
+			},
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		expect(order).toEqual(["chatgpt"]);
+		chatgpt.resolve();
+		await settle();
+		expect(order).toEqual(["chatgpt", id(97)]);
+		first.resolve(id(99));
+		await settle();
+		expect(order).toEqual(["chatgpt", id(97), id(96)]);
+		expect(view.el.textContent).not.toContain("Usage could not be refreshed");
+	});
+
+	it("says what brings Claude's usage back when the last reading is old or missing", async () => {
+		const hint = "Usage updates the next time Claude works on a task.";
+		await claudeView(
+			login({
+				usage: {
+					observedAt: hours(-9),
+					windows: [{ id: "five_hour", label: "5 hours", usedPercent: 40, resetAt: hours(-4) }],
+				},
+			}),
+		);
+		expect(claudeCard().querySelector(".connection-usage")!.textContent).toContain(hint);
+		view.dispose();
+		document.body.replaceChildren();
+		await claudeView({
+			loginId: id(97),
+			clientConnectionId: id(98),
+			createdAt: timestamp,
+			providerAccountEmail: "member@example.com",
+		});
+		expect(claudeCard().querySelector(".connection-usage")!.textContent).toBe(`Usage unavailable${hint}`);
+		view.dispose();
+		document.body.replaceChildren();
+		await claudeView(login());
+		expect(claudeCard().textContent).not.toContain(hint);
+	});
+
 	it("says nothing was used and offers another try when the reset never began", async () => {
 		const readClaude = vi.fn(async (options: { reset?: string }) => {
 			if (options.reset) throw new ClaudeReadNotStarted();

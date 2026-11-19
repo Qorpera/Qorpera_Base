@@ -440,30 +440,26 @@ export class ConnectionsView {
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
 			if (this.#lifetime.signal.aborted) return;
-			const codex =
-				this.#shown().some(live) && this.#claudeReset?.phase !== "using" && this.#client.refreshAccountMetadata;
-			const claude = this.#claudeReadable() ? this.#client.readClaude : undefined;
+			const resetting = this.#claudeReset?.phase === "using";
+			const codex = !resetting && this.#shown().some(live) && this.#client.refreshAccountMetadata;
+			const claude = !resetting && this.#claudeReadable() ? this.#client.readClaude : undefined;
 			if (!codex && !claude) return;
 			const forced = this.#metadataForced;
 			const logins = this.#claude?.logins ?? [];
-			const reads = await Promise.allSettled([
-				codex ? this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced) : undefined,
-				claude
-					? (async () => {
-							const each = [];
-							for (const login of logins)
-								each.push(
-									await claude({ loginId: login.loginId, force: forced }, this.#lifetime.signal).then(
-										() => true,
-										() => false,
-									),
-								);
-							if (each.includes(false)) throw new Error("A Claude login's usage could not be read");
-						})()
-					: undefined,
-			]);
+			let failed = false;
+			// WHY: the ChatGPT refresh and every Claude read share the member's one pending refresh; asked together, all but one answer busy.
+			if (codex)
+				await this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced).catch(() => {
+					failed = true;
+				});
+			for (const login of claude ? logins : []) {
+				if (this.#lifetime.signal.aborted) return;
+				await claude!({ loginId: login.loginId, force: forced }, this.#lifetime.signal).catch(() => {
+					failed = true;
+				});
+			}
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
-			if (reads.some((read) => read.status === "rejected")) throw new Error("Usage could not be refreshed");
+			if (failed) throw new Error("Usage could not be refreshed");
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = t("Usage could not be refreshed. Try again.");
 		} finally {
@@ -960,8 +956,12 @@ export class ConnectionsView {
 	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
 		const limitResetAt = claudeLimitResetAt(login.usage, Date.now());
 		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
+		const bars = this.#bars(login.usage, true, using ? undefined : limitResetAt, refilling, false);
+		// WHY: an idle sign-in's key lapses after hours and only a Claude task renews it; till then a read finds nothing new.
+		if (!using && !this.#usageUpdating && !(login.usage && Date.now() - Date.parse(login.usage.observedAt) <= USAGE_FRESH_MS))
+			bars.append(h("span", { class: "muted" }, t("Usage updates the next time Claude works on a task.")));
 		return [
-			this.#bars(login.usage, true, using ? undefined : limitResetAt, refilling, false),
+			bars,
 			...this.#claudeResets(login, limitResetAt !== undefined),
 		];
 	}
