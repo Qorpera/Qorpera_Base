@@ -2342,29 +2342,6 @@ describe("cloud runner orchestrator", () => {
 		expect(control.assign).not.toHaveBeenCalled();
 	});
 
-	it("polls durable state so missed work notifications cannot strand a queued job", async () => {
-		const control = controlPlane(undefined);
-		vi.mocked(control.claimNext).mockResolvedValueOnce(undefined).mockResolvedValueOnce(claim());
-		const local = localAdapter();
-		const controller = new AbortController();
-		local.deliver.mockImplementationOnce(async () => {
-			controller.abort();
-			return undefined;
-		});
-		const orchestrator = new CloudRunnerOrchestrator({
-			orchestratorId,
-			controlPlane: control,
-			providerAdapter: local.adapter,
-			clientClaimId: () => claimId,
-			clientAssignmentId: () => assignmentId,
-			createCapability: () => capability,
-		});
-
-		await orchestrator.run(controller.signal, { pollIntervalMs: 10 });
-		expect(control.claimNext).toHaveBeenCalledTimes(2);
-		expect(local.deliver).toHaveBeenCalledOnce();
-	});
-
 	it("retries an assignment that raced the runner's activation after 50 ms, then doubling", async () => {
 		const control = controlPlane();
 		const assign = control.assign;

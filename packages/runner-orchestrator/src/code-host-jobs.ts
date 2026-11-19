@@ -785,20 +785,6 @@ export async function moveBase(
 	if (state === "partial") run.restored.push(run.relative(run.main));
 }
 
-/** The code area's base commit, or null before the first seed or while main/ is not at it (a seed stopped between
- * the two): lets the broker skip an unchanged bundle only when nothing is left to do. */
-export async function readCodeAreaBase(job: CodeHostJob, value: CloudCodingRepository): Promise<string | null> {
-	const repository = repositoryOf(value);
-	return withJob(job, repository, async (run) => {
-		const area = await run.prepare();
-		if (!area.seeded || area.main !== "present") return null;
-		const base = await run.ref(`refs/heads/${repository.baseBranch}`);
-		return base && (await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${base}\n`))
-			? base
-			: null;
-	});
-}
-
 export interface CodeAreaState {
 	/** The base ref's commit, or null before the first seed. */
 	base: string | null;
@@ -2532,24 +2518,6 @@ export interface CodeCommitFile {
 	entry: CodeCommitEntry;
 	blob: string | null;
 }
-export interface CodeCommitSource {
-	/** `path` is repository-relative, without `.` or `..` parts. A file over maxBytes comes back cut after maxBytes + 1
-	 * bytes. A failed read throws; it is never `missing`. */
-	read(path: string, maxBytes: number): Promise<CodeCommitEntry>;
-}
-
-function repositoryPath(value: unknown): string {
-	if (
-		typeof value !== "string" ||
-		!value ||
-		value.length > 4096 ||
-		/[\0\n\r]/.test(value) ||
-		value.split("/").some((part) => !part || part === "." || part === "..")
-	)
-		throw new Error("INVALID_CODE_HOST_PATH");
-	return value;
-}
-
 /** One path of a commit of the code area, read by git (`ls-tree`, then `cat-file`) and never from a worktree. `path`
  * and `maxBytes` are the caller's to check. */
 async function commitFile(run: Run, commit: string, path: string, maxBytes: number): Promise<CodeCommitFile> {
@@ -2586,33 +2554,4 @@ async function commitFile(run: Run, commit: string, path: string, maxBytes: numb
 	if (result.status !== 0 || result.stdout.length !== wanted)
 		throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(result.stderr));
 	return { entry: { kind: "file", bytes: new Uint8Array(result.stdout) }, blob: name };
-}
-
-/** Files of one commit, read by git from the code area's objects and never from a worktree, for the setup file and
- * what it names (5h). The source reads only while `use` runs. */
-export async function withCodeCommit<T>(
-	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; commit: string },
-	use: (source: CodeCommitSource) => Promise<T>,
-): Promise<T> {
-	const input = closed(value, ["repository", "commit"]);
-	const repository = repositoryOf(input.repository),
-		commit = sha(input.commit);
-	return withJob(job, repository, async (run) => {
-		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		if (!(await run.isCommit(run.repo, commit))) throw new CodeHostRefusal("CODE_HOST_COMMIT_UNKNOWN", [commit]);
-		let open = true;
-		const read = async (pathValue: string, maxBytes: number): Promise<CodeCommitEntry> => {
-			if (!open) throw new Error("CODE_HOST_SOURCE_CLOSED");
-			const path = repositoryPath(pathValue);
-			if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes >= MAX_READ)
-				throw new Error("INVALID_CODE_HOST_JOB");
-			return (await commitFile(run, commit, path, maxBytes)).entry;
-		};
-		try {
-			return await use({ read });
-		} finally {
-			open = false;
-		}
-	});
 }

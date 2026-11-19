@@ -550,10 +550,6 @@ async function hosted(report) {
 		});
 
 		await report.check(3, async () => {
-			if (db.query("select to_regclass('public.qorpera_folder_conflict_copies') is null") === "t") {
-				report.notRun(3, "conflict copies (P17, #783) are not on this database yet");
-				return;
-			}
 			const first = saved(await commit(env, "plan-1", [await writeUnit(env, "notes/plan.md", "Plan one.\n")]), "plan one");
 			const stale = first.units[0].version;
 			saved(await commit(env, "plan-2", [await writeUnit(env, "notes/plan.md", "Plan two.\n", stale)]), "plan two");

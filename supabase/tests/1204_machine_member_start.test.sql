@@ -456,17 +456,25 @@ begin
 		'5: malformed, unknown, and the member''s own call');
 end $$;
 
--- 6. Never refused for an agent's run ---------------------------------------------------------------------------------------
-
--- The start reads no run at all: neither body names a run, a run's receipt or the agent's wake; the starts above went with
--- Alice's run live, and nothing in them could change without one.
+savepoint dc_no_run;
+select set_config('session_replication_role', 'replica', true);
+update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp(),
+	lease_token_sha256 = null, lease_expires_at = null
+where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
+select set_config('session_replication_role', 'origin', true);
 do $$
+declare v_start uuid := pg_temp.dc_start_id('contributor', 'a1'); v text;
 begin
-	perform pg_temp.base_assert(strpos(prosrc, 'qorpera_execution_runs') = 0 and strpos(prosrc, 'receipt') = 0
-			and strpos(prosrc, 'wake') = 0, '6: ' || proname || ' reads no run')
-	from pg_proc where oid in ('public.qorpera_member_machine_desktop_start_begin(uuid,uuid)'::regprocedure,
-		'public.qorpera_member_machine_desktop_start_authority(uuid,text,text)'::regprocedure);
+	perform pg_temp.base_assert((select status = 'completed' from public.qorpera_runner_jobs
+			where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid)
+			and pg_temp.dc_starts('a1') -> -1 = jsonb_build_array(pg_temp.dc_user('contributor'), false),
+		'6: with the agent''s run ended, the start is begun and recorded');
+	v := pg_temp.dc_auth(v_start);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'authorized' and (pg_temp.dc_answer(v) ->> 'served')::boolean
+			and pg_temp.dc_answer(v) ->> 'startId' = v_start::text,
+		'6: and the executor serves it: ' || v);
 end $$;
+rollback to savepoint dc_no_run;
 
 -- 7. The machine stays awake under a member who watches or holds it -------------------------------------------------------------
 
@@ -532,10 +540,4 @@ begin
 	perform pg_temp.base_assert((select relrowsecurity from pg_class
 			where oid = 'public.qorpera_company_machine_desktop_starts'::regclass),
 		'8: row level security on the starts');
-	perform pg_temp.base_assert((select array_agg(proname::text order by proname) from pg_proc
-			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930714000') > 0)
-		= array['qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_start_authority',
-			'qorpera_member_machine_desktop_start_begin', 'qorpera_member_machine_screen_authority'],
-		'8: the bodies that name 20260930714000: ' || (select array_agg(proname::text order by proname)::text from pg_proc
-			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930714000') > 0));
 end $$;

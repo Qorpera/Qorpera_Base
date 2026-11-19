@@ -24,11 +24,7 @@ end $$;
 -- 1. The rule, key by key -------------------------------------------------------------------------------------------
 do $$
 declare w uuid := '63200000-0000-4000-8000-0000000000c1'; g text := 'code/acme/app/repo.git/'; v_wrong text;
-	v_def text := pg_get_functiondef('public.qorpera_folder_git_refusal(text,text,text,uuid)'::regprocedure);
 begin
-	if strpos(v_def, '20260930707000') = 0 or strpos(pg_get_functiondef(
-			'public.qorpera_folder_git_lease_take(uuid,jsonb,text)'::regprocedure), '20260930707000') = 0 then
-		raise exception 'A rule lost its marker'; end if;
 	select string_agg(format('%s %s %s: %s', t.k, t.op, t.cls, coalesce(public.qorpera_folder_git_refusal(t.k, t.op, t.cls,
 			case when t.own then w end), 'null')), '; ') into v_wrong
 	from (values

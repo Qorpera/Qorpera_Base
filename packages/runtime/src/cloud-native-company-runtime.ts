@@ -25,6 +25,7 @@ import {
 	launchClaudeCodeBox,
 } from "./cloud-claude-box.ts";
 import type { CloudClaudeHomeChannel } from "./cloud-claude-home-shell.ts";
+import type { ClaudeLoginUsage } from "./cloud-claude-login-usage.ts";
 import {
 	CLAUDE_WORKER_CATALOG,
 	CLAUDE_WORKER_SYSTEM_NOTE,
@@ -197,6 +198,9 @@ import { memoryCacheKeyComposer, memoryCommitView, memoryComposeView } from "./m
 import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/conversation-lines.ts";
 import { memoryPromptCacheKey } from "./memory-tree/view.ts";
 import { memoryZoomTool } from "./memory-tree/zoom.ts";
+
+const CLOUD_CLAUDE_USAGE_MS = 10_000;
+const CLOUD_CLAUDE_USAGE_EVERY_MS = 60_000;
 
 /** A plain worker Claude Code does (20260930770000) on a node without its composition (no vault route for Claude
  * sign-ins, or no home channel): refused, never run on Codex. */
@@ -1791,6 +1795,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const earlier = typeof facts?.earlier === "string" && facts.earlier ? facts.earlier : null;
 			const home = await input.home;
 			const sessionId = randomUUID();
+			const usageMark: { at: number; owed: ClaudeLoginUsage | null } = { at: 0, owed: null };
+			const recordUsage = (usage: ClaudeLoginUsage) =>
+				this.#paths
+					.call(
+						"qorpera_record_claude_run_usage",
+						{ p_binding: binding, p_usage: usage },
+						AbortSignal.timeout(CLOUD_CLAUDE_USAGE_MS),
+					)
+					.catch(() => undefined);
 			let outcome: ClaudeWorkerOutcome;
 			if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
 			else
@@ -1824,6 +1837,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							},
 						}),
 					root: identityRoot,
+					usage: (usage) => {
+						usageMark.owed = usage;
+						if (Date.now() - usageMark.at < CLOUD_CLAUDE_USAGE_EVERY_MS) return;
+						usageMark.at = Date.now();
+						usageMark.owed = null;
+						void recordUsage(usage);
+					},
 					step: (step) => {
 						if (!log) return;
 						try {
@@ -1855,6 +1875,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					},
 					signal: runSignal,
 				});
+			if (usageMark.owed) await recordUsage(usageMark.owed);
 			runSignal.throwIfAborted();
 			await log?.close(AbortSignal.timeout(10_000)).catch(() => undefined);
 			// What the run changed on the machine's folder, as its home's window credited it (at most four in the report), once

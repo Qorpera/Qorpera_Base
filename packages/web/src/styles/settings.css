@@ -274,6 +274,14 @@
 .connection-usage-meter > span { display: block; height: 100%; background: #608878; }
 .connection-usage-meter.is-low > span { background: #ff6b21; }
 .connection-usage-meter.is-stale > span { opacity: .55; }
+.connection-usage-meter.refilling > span { width: 0; animation: connection-refill 1.6s cubic-bezier(.34, 1.56, .64, 1) infinite; }
+@keyframes connection-refill { 0% { width: 0; } 70% { width: 100%; } 100% { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .connection-usage-meter.refilling > span { animation: none; width: 60%; } }
+.connection-resets { grid-column: 2 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; min-width: 0; padding-top: 12px; border-top: 1px solid #dededb; font-size: 11.5px; }
+.connection-resets .settings-copy { min-width: 0; }
+.connection-resets .settings-copy strong { font-size: 12px; }
+.connection-resets.is-ready { padding: 12px 14px; border-top-color: transparent; border-radius: 12px; background: #fff; }
+.reset-done { display: inline-flex; align-items: center; gap: 6px; color: #3d7a5f; font-weight: 600; }
 .settings-content .connection-actions .btn, .settings-content :is(.connection-add, .hook-add) { border-radius: 999px; }
 .connection-add-area { display: grid; justify-items: start; gap: 10px; padding-top: 20px; }
 .connection-empty { margin: 16px 0 0; font-size: 12px; }
@@ -329,6 +337,7 @@
  .connection-card > .btn { grid-column: 2; justify-self: start; }
  .connection-actions { grid-column: 2; justify-content: start; }
  .connection-usage { grid-column: 1 / -1; }
+ .connection-resets { grid-column: 1 / -1; }
  .connection-away { grid-column: 1 / -1; }
  .connection-account { flex-wrap: wrap; }
  .person-meta { display: none; }
@@ -356,7 +365,6 @@
 .service-outcome { grid-column: 2 / -1; margin: 0; font-size: 12px; }
 .service-outcome.is-ok { color: #3d6b5c; }
 .service-outcome.is-error { color: #af4b16; }
-.service-alternative { grid-column: 2 / -1; }
 .service-token-form { grid-column: 2 / -1; display: grid; gap: 8px; }
 .service-token-form small { color: #73736f; }
 .service-token-row { display: flex; gap: 8px; }
@@ -369,10 +377,6 @@
 .digital-post-steps ol { display: grid; gap: 6px; margin: 0; padding-left: 20px; }
 .digital-post-steps code { overflow-wrap: anywhere; }
 .digital-post-note { color: #73736f; }
-/* A coding environment value is a textarea, so a multiline key keeps its line breaks; the buttons beside it keep
-   their height. */
-.coding-environment .service-token-row { align-items: flex-start; }
-.coding-environment textarea { resize: vertical; font-family: var(--font-mono); font-size: 12.5px; }
 .service-error { margin: 0 0 8px; }
 /* Webhooks and mailboxes (settings-hooks.ts) share the services' cards. */
 .hook-icon { display: grid; place-items: center; width: 32px; height: 32px; justify-self: center; border-radius: 9px; background: #e4e4e1; color: #5f5f5b; }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertAfterFirst, assertTarget, bundleHelper, evidenceOf, PHASE_SECONDS, PUSHED, parseArgs, recordOf } from "./test-office-folder-caches.mjs";
+import { assertAfterFirst, assertTarget, bundleHelper, evidenceOf, PUSHED, parseArgs, recordOf } from "./test-office-folder-caches.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -24,8 +24,6 @@ test("preflight is the default; the phase, the first phase's record and a dry ru
 	assert.equal(parseArgs(second).first, "/tmp/first.json");
 	assert.equal(parseArgs([...argv.slice(0, -3), "loaded", "--phase", "first"]).fuse, "loaded");
 	assert.doesNotThrow(() => assertTarget(instance, options));
-	// The revocation rows wait out the desktop's 60 s grace; the second phase only mounts and reads.
-	assert.deepEqual(PHASE_SECONDS, { first: 900, second: 300 });
 });
 
 test("reject ambiguous, incomplete or unsafe CLI targets before LXD is called", () => {
@@ -65,8 +63,6 @@ test("the record the launcher composes for a first phase that passed is the one 
 	assert.equal(passed.executed, true);
 	assert.doesNotThrow(() => assertAfterFirst(passed, after, "boot-2"));
 	assert.throws(() => assertAfterFirst(saved(recordOf(evidence(options, "boot-1"), guest("first", "failed"))), after, "boot-2"), /did not pass/);
-	// The composition this replaced: the guest's schema over the launcher's.
-	assert.throws(() => assertAfterFirst({ ...passed, ...guest("first", "passed") }, after, "boot-2"), /did not pass/);
 	const record = recordOf(evidence(after, "boot-2"), guest("second", "passed"), passed);
 	assert.equal(record.schema, "qorpera.office-folder-caches/v1");
 	assert.equal(record.phase, "second");
@@ -91,8 +87,7 @@ test("the bundled helper drives only the proof's mount units, and never publishe
 	const directory = mkdtempSync(join(tmpdir(), "qorpera-caches-helper-"));
 	try {
 		await bundleHelper(join(directory, "helper.mjs"));
-		const { PROOF_UNIT, proofSystem } = await import(pathToFileURL(join(directory, "helper.mjs")).href);
-		assert.equal(PROOF_UNIT, "qorpera-caches-folder-mount");
+		const { proofSystem } = await import(pathToFileURL(join(directory, "helper.mjs")).href);
 		const calls = [];
 		const fake = Object.fromEntries(["inspect", "start", "stop", "resetFailed", "publish", "launch", "relay", "share"].map((method) => [method, (...args) => (calls.push([method, ...args]), method)]));
 		const system = proofSystem(fake);

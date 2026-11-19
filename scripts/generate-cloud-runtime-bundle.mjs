@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025599_runtime_bundle_activation_v255.sql";
-const activationVersion = 255;
-const previousActivationVersion = 254;
-const previousActivationSha256 = "73401553e00450485082a7b3af00ada3b4aad05b26b37b42fdf47a4fe324ba1e";
+const activation = "supabase/migrations/20260929025999_runtime_bundle_activation_v259.sql";
+const activationVersion = 259;
+const previousActivationVersion = 258;
+const previousActivationSha256 = "f2741acd0a00d6faf6fa9b9911675088e146fb566dcb99247c7de97187efe321";
 const activationRequires = Object.freeze([
 	[
-		"20260930799000_hire_team",
-		"#1922 (hire_team): bundle 255's hire_team is recorded by the action review, the folder review and the observation recorder, which name it only once 799000 applied; without it every team is refused (42501) and nothing is saved",
-		"position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_record_review(jsonb,jsonb)')), '')) > 0 and position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_action_review(jsonb,jsonb)')), '')) > 0 and position('20260930799000' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_record_runtime_observation(uuid,jsonb)')), '')) > 0",
+		"20260930804000_several_claude_logins",
+		"#1947 (several Claude logins): bundle 259's run host records which limit refused a Claude Code run (limitType, Claude Code's rateLimitType) next to limitResetAt; qorpera_claude_usage_valid accepts that key only once 804000 applied, and without it the run's usage is refused and not recorded",
+		"position('limitType' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_claude_usage_valid(jsonb)')), '')) > 0 and to_regprocedure('public.qorpera_use_claude_login(uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

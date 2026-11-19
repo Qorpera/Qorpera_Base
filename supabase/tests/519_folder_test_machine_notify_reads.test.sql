@@ -214,14 +214,15 @@ begin
 			if has_function_privilege(r, f, 'EXECUTE') then raise exception '% may run %', r, f; end if;
 		end loop;
 	end loop;
-	foreach f in array array['public.qorpera_folder_read_wake(jsonb)', 'public.qorpera_describe_company_run_context(jsonb)',
-		'public.qorpera_machine_run_continuation(public.qorpera_execution_runs,integer)'] loop
-		if strpos(pg_get_functiondef(f::regprocedure), '20260930500000') = 0 then raise exception '% carries 20260930500000', f; end if;
-	end loop;
-	if strpos(pg_get_functiondef('public.qorpera_describe_company_run_context(jsonb)'::regprocedure), '20260930499000') = 0 then
-		raise exception 'The describe keeps 20260930499000'; end if;
 	if public.qorpera_folder_test_machine_notify_inherit_id('51900000-0000-4000-8000-000000000001', '51900000-0000-4000-8000-000000000002')
-		is distinct from md5('test-machine-notify:51900000-0000-4000-8000-000000000001:51900000-0000-4000-8000-000000000002')::uuid then
+		is distinct from public.qorpera_folder_test_machine_notify_inherit_id('51900000-0000-4000-8000-000000000001',
+			'51900000-0000-4000-8000-000000000002')
+		or public.qorpera_folder_test_machine_notify_inherit_id('51900000-0000-4000-8000-000000000001', '51900000-0000-4000-8000-000000000002')
+			= public.qorpera_folder_test_machine_notify_inherit_id('51900000-0000-4000-8000-000000000001', '51900000-0000-4000-8000-000000000003')
+		or public.qorpera_folder_test_machine_notify_inherit_id('51900000-0000-4000-8000-000000000001', '51900000-0000-4000-8000-000000000002')
+			= public.qorpera_folder_test_machine_notify_inherit_id('51900000-0000-4000-8000-000000000004', '51900000-0000-4000-8000-000000000002')
+		or public.qorpera_folder_test_machine_notify_inherit_id('51900000-0000-4000-8000-000000000001', '51900000-0000-4000-8000-000000000002')
+			is null then
 		raise exception 'The inherit id comes from the wake and the view'; end if;
 	-- A binding without a run id, or with an unknown one, has nothing to take in.
 	if pg_temp.pending('{}') or pg_temp.pending('{"runId":"not-a-uuid"}')

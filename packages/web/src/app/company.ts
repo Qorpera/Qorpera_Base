@@ -84,7 +84,6 @@ import type { MailState } from "./company-mail.ts";
 import { memberTimeZone, rememberTimeZoneRefused, timeZoneRefused } from "./company-time-zone.ts";
 import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
-import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
 import { MemberChats } from "./member-chats.ts";
 import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
@@ -275,10 +274,6 @@ export interface CompanyState {
 	/** The tables and files the shown pages read, as the company's folder holds them (Interfaces step I7;
 	 * app/interface-folder.ts). Unset until the first read lands. */
 	interfaceFolder?: InterfaceFolderState;
-	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts), with its live
-	 * supervision consents (I9b). Unset until the first read lands, and on a cloud without them: no page draws an offer
-	 * then. */
-	interfaceOffers?: InterfaceOffersState;
 	/** The agents' interface apps in the company's folder (apps/, app/interface-apps.ts), as last read. Unset until the
 	 * first read lands. */
 	apps?: readonly CompanyApp[];
@@ -2049,16 +2044,6 @@ export class CompanyController {
 			.get()
 			.staff.filter((agent) => agent.employmentStatus === "active" && this.waitingFor(agent.id) !== undefined)
 			.length;
-	}
-
-	/** When a working agent's running run last made progress, if that is the cloud's stall minutes ago or more
-	 * (gap 4). The minutes come with it: the web has no number of its own. */
-	noProgress(staffAgentId: string | undefined): { since: string; minutes: number } | undefined {
-		const row = this.activityFor(staffAgentId);
-		if (row?.activity !== "working" || row.jobStatus !== "leased") return undefined;
-		return row.noProgressSince && row.noProgressMinutes
-			? { since: row.noProgressSince, minutes: row.noProgressMinutes }
-			: undefined;
 	}
 
 	/** The agent's run waiting at its login's usage limit, while the pause holds (20260930703000). */

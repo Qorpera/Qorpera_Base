@@ -262,6 +262,11 @@ export const SETTINGS: Record<string, string> = {
 	"Resets in {time}": "Nulstilles om {time}",
 	"Reset passed · awaiting updated usage": "Nulstillet · venter på opdateret forbrug",
 	"Reset time unavailable": "Tidspunkt for nulstilling ikke tilgængeligt",
+	"Starts when you next use Claude": "Starter, når du bruger Claude næste gang",
+	"Usage updates the next time Claude works on a task.":
+		"Forbruget opdateres, næste gang Claude arbejder på en opgave.",
+	"Usage updates once this login is in use and Claude works on a task.":
+		"Forbruget opdateres, når dette login er i brug, og Claude arbejder på en opgave.",
 	"{label} remaining usage": "{label}: resterende forbrug",
 	"Preparing sign-in. The first time can take a minute or two.":
 		"Gør login klar. Første gang kan tage et minut eller to.",
@@ -272,22 +277,66 @@ export const SETTINGS: Record<string, string> = {
 	"Your code:": "Din kode:",
 	"Open {provider} sign-in": "Åbn login hos {provider}",
 	"This page updates by itself when you are done.": "Siden opdaterer sig selv, når du er færdig.",
-	// Claude sign-in (coding only, 20260930564000)
 	"Open Claude sign-in": "Åbn login hos Claude",
 	"Sign in on Claude's page, then paste the code it shows you here.":
 		"Log ind på Claudes side, og sæt så den kode, du får vist, ind her.",
 	"Paste the code from Claude": "Sæt koden fra Claude ind",
 	"Paste the code from Claude first.": "Sæt koden fra Claude ind først.",
 	"Connecting Claude…": "Forbinder Claude…",
-	"Used only for coding sessions you start. Agents never use it for chats or routines.":
-		"Bruges kun til kodesessioner, du starter. Agenter bruger det aldrig til chat eller rutiner.",
-	"Used only for coding sessions you start, in all your companies. Agents never use it for chats or routines.":
-		"Bruges kun til kodesessioner, du starter, i alle dine virksomheder. Agenter bruger det aldrig til chat eller rutiner.",
-	"Claude is connected. It is used only for coding sessions you start.":
-		"Claude er forbundet. Det bruges kun til kodesessioner, du starter.",
+	"Claude chats and Claude Code work. Never routines.": "Claude-chats og Claude Code-arbejde. Aldrig rutiner.",
+	"Claude chats and Claude Code work, in all your companies. Never routines.":
+		"Claude-chats og Claude Code-arbejde i alle dine virksomheder. Aldrig rutiner.",
+	"Claude is connected. New Claude work in all your companies uses it.":
+		"Claude er forbundet. Nyt Claude-arbejde i alle dine virksomheder bruger det.",
+	"Claude login added. {email} stays in use until you pick another.":
+		"Claude-login tilføjet. {email} forbliver i brug, til du vælger et andet.",
+	"Sign in on Claude's page with the other account, then paste the code here. {email} stays in use until you pick the new one.":
+		"Log ind på Claudes side med den anden konto, og sæt så koden ind her. {email} forbliver i brug, til du vælger det nye.",
+	"Another Claude login": "Endnu et Claude-login",
+	"Your Claude login": "Dit Claude-login",
+	"Your other Claude login": "Dit andet Claude-login",
+	"your other Claude login": "dit andet Claude-login",
 	"That code did not work. Start the sign-in again.": "Koden virkede ikke. Start login forfra.",
 	"The Claude sign-in could not be finished. Try again.": "Login hos Claude kunne ikke afsluttes. Prøv igen.",
-	"Claude · coding only": "Claude · kun kode",
+	Claude: "Claude",
+	"In use": "I brug",
+	"Use this": "Brug denne",
+	"Switching…": "Skifter…",
+	"Not in use. New Claude work goes to the login marked In use.":
+		"Ikke i brug. Nyt Claude-arbejde går til det login, der er markeret I brug.",
+	"Sign out of this Claude login?": "Log ud af dette Claude-login?",
+	"New Claude work moves to {email}. Work already running keeps this login until it ends.":
+		"Nyt Claude-arbejde flytter til {email}. Arbejde, der allerede kører, beholder dette login, til det er færdigt.",
+	"Pick the login new Claude work uses. Work already running keeps this one until it ends.":
+		"Vælg det login, nyt Claude-arbejde skal bruge. Arbejde, der allerede kører, beholder dette, til det er færdigt.",
+	"Use {email}": "Brug {email}",
+	"The Claude login could not be switched. Try again.": "Claude-login kunne ikke skiftes. Prøv igen.",
+	"1 reset": "1 nulstilling",
+	"{count} resets": "{count} nulstillinger",
+	"1 five-hour reset": "1 nulstilling af 5 timer",
+	"{count} five-hour resets": "{count} nulstillinger af 5 timer",
+	"1 weekly reset": "1 ugentlig nulstilling",
+	"{count} weekly resets": "{count} ugentlige nulstillinger",
+	"1 Fable reset": "1 Fable-nulstilling",
+	"{count} Fable resets": "{count} Fable-nulstillinger",
+	"1 full reset": "1 fuld nulstilling",
+	"{count} full resets": "{count} fulde nulstillinger",
+	"Using a reset…": "Bruger en nulstilling…",
+	"Reset used · no resets left": "Nulstilling brugt · ingen nulstillinger tilbage",
+	"Reset used": "Nulstilling brugt",
+	"Reset used · {resets} left": "Nulstilling brugt · {resets} tilbage",
+	"Couldn't reset your limits": "Dine grænser kunne ikke nulstilles",
+	"Nothing was used · {resets} · try again in a moment": "Intet blev brugt · {resets} · prøv igen om lidt",
+	"Couldn't confirm the reset went through": "Det kunne ikke bekræftes, at nulstillingen gik igennem",
+	"Check the bars above in a moment before you use another reset.":
+		"Se på bjælkerne ovenfor om lidt, før du bruger en ny nulstilling.",
+	"use by {date}": "brug senest {date}",
+	"Usable once you reach a limit": "Kan bruges, når du når en grænse",
+	"refills your {limits}": "fylder din {limits} op",
+	"Refills your {limits}": "Fylder din {limits} op",
+	"your weekly reset day stays {day}": "din ugentlige nulstillingsdag er stadig {day}",
+	"Use a reset": "Brug en nulstilling",
+	"Keep going now with a reset": "Fortsæt nu med en nulstilling",
 
 	// Connect, Disconnect, Working… and Connected (several pages)
 	Connect: "Forbind",
@@ -543,66 +592,6 @@ export const SETTINGS: Record<string, string> = {
 	"Only founders and admins can look at a version before it goes live.":
 		"Kun stiftere og administratorer kan se en version, før den går live.",
 	"Qorpera took this site down": "Qorpera har taget hjemmesiden ned",
-
-	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
-	"Environment variables for coding": "Miljøvariabler til kodning",
-	"Your coding sessions get these in every repository. They leave with you.":
-		"Dine kodesessioner får dem i alle repositories. De følger med dig, når du går.",
-	"A coding session gets one of these only in a repository it's given to. They stay when someone leaves.":
-		"En kodesession får kun en af dem i et repository, den er givet til. De bliver, når nogen går.",
-	"Only founders and admins can add, change or remove them.":
-		"Kun stiftere og administratorer kan tilføje, ændre eller fjerne dem.",
-	"Viewers can see them, but not add or change them.": "Læsere kan se dem, men ikke tilføje eller ændre dem.",
-	"Add a variable": "Tilføj en variabel",
-	"No variables yet.": "Ingen variabler endnu.",
-	"The environment variables could not be read.": "Miljøvariablerne kunne ikke hentes.",
-	"Coding sessions in {repositories} get it.": "Kodesessioner i {repositories} får den.",
-	"No coding session gets it yet.": "Ingen kodesession får den endnu.",
-	"Your coding sessions get it.": "Dine kodesessioner får den.",
-	"In {repositories}, the company's {name} is used instead.": "I {repositories} bruges virksomhedens {name} i stedet.",
-	"Replace value": "Erstat værdien",
-	"Give to a repository": "Giv den til et repository",
-	"Once saved, a value is never shown again.": "Når en værdi er gemt, bliver den aldrig vist igen.",
-	"Paste the new value": "Indsæt den nye værdi",
-	"New value for {name}": "Ny værdi for {name}",
-	"Save value": "Gem værdien",
-	"Coding sessions in that repository get {name} from their next start.":
-		"Kodesessioner i det repository får {name} fra deres næste start.",
-	"owner/name": "ejer/navn",
-	"Repository for {name}": "Repository til {name}",
-	"Remove {repository}": "Fjern {repository}",
-	"e.g. NPM_TOKEN": "f.eks. NPM_TOKEN",
-	"Variable name": "Variablens navn",
-	"Capital letters, digits and underscores, starting with a letter.":
-		"Store bogstaver, tal og understregninger, og navnet starter med et bogstav.",
-	"What it is for, e.g. installs private packages": "Hvad den er til, f.eks. installerer private pakker",
-	"Paste the value": "Indsæt værdien",
-	Value: "Værdi",
-	"A variable name is capital letters, digits and underscores, and starts with a letter.":
-		"Et variabelnavn består af store bogstaver, tal og understregninger og starter med et bogstav.",
-	"The value must be at least 8 characters.": "Værdien skal være mindst 8 tegn.",
-	"The value can be at most 32 KB.": "Værdien må højst fylde 32 KB.",
-	"The value can't contain a null character.": "Værdien må ikke indeholde et nul-tegn.",
-	"That name is taken by the coding machine or an AI provider's sign-in. Choose another.":
-		"Det navn bruges af kodemaskinen eller af et login hos en AI-udbyder. Vælg et andet.",
-	"An earlier try to save this value is still open. Try again in a few minutes.":
-		"Et tidligere forsøg på at gemme værdien er stadig åbent. Prøv igen om et par minutter.",
-	"Write the repository as owner/name, for example acme/web.": "Skriv repositoriet som ejer/navn, f.eks. acme/web.",
-	"{name} is saved. Your coding sessions get it from their next start.":
-		"{name} er gemt. Dine kodesessioner får den fra deres næste start.",
-	"{name} is saved. Give it to a repository so coding sessions there get it.":
-		"{name} er gemt. Giv den til et repository, så kodesessioner der får den.",
-	"The value of {name} is replaced. Your coding sessions get the new one from their next start.":
-		"Værdien af {name} er erstattet. Dine kodesessioner får den nye fra deres næste start.",
-	"The value of {name} is replaced. Coding sessions in {repositories} get the new one from their next start.":
-		"Værdien af {name} er erstattet. Kodesessioner i {repositories} får den nye fra deres næste start.",
-	"The value of {name} is replaced. No coding session gets it yet.":
-		"Værdien af {name} er erstattet. Ingen kodesession får den endnu.",
-	"Coding sessions in {repository} get {name} from their next start.":
-		"Kodesessioner i {repository} får {name} fra deres næste start.",
-	"Remove {name}? New coding sessions won't get it.": "Fjern {name}? Nye kodesessioner får den ikke.",
-	"Coding sessions in {repository} will stop getting {name}.":
-		"Kodesessioner i {repository} holder op med at få {name}.",
 
 	// Agent rules, auto-review (Settings → Company, settings-rules.ts)
 	"Agent rules": "Agentregler",

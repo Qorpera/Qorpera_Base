@@ -17,10 +17,10 @@ import { bytes, oneLine, shown } from "./code-words.ts";
  * that its blobs, trees and new object folders stay well within the 1,000 units of one save of the company folder). */
 export const CODE_SITE_MAX_FILES = 500;
 export const CODE_SITE_MAX_BYTES = 25 * 1024 * 1024;
-export const CODE_SITE_MAX_FILE_BYTES = 10 * 1024 * 1024;
+const CODE_SITE_MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const CODE_SITE_MAX_FOLDERS = 100;
 /** A site path's most bytes, beside the path rule (`qorpera_site_path_valid`). */
-export const CODE_SITE_MAX_PATH_BYTES = 512;
+const CODE_SITE_MAX_PATH_BYTES = 512;
 const PART = "[A-Za-z0-9_][A-Za-z0-9._-]{0,199}";
 /** A site path, as the database stores it (`qorpera_site_path_valid`): at most 16 parts, none hidden, none `..`, no
  * character a link would escape. */

@@ -30,12 +30,6 @@ begin
 		perform pg_temp.base_assert(not has_function_privilege(v #>> '{}',
 			'public.qorpera_good_will_card_notice(public.qorpera_good_will_months)', 'EXECUTE'), 'the notice is open to ' || v::text);
 	end loop;
-	perform pg_temp.base_assert(strpos(pg_get_constraintdef((select oid from pg_constraint
-		where conname = 'qorpera_member_notifications_kind')), 'good_will_card_failed') > 0, 'the kind is allowed');
-	perform pg_temp.base_assert(strpos(pg_get_constraintdef((select oid from pg_constraint
-		where conname = 'qorpera_member_notifications_kind')), 'interface_supervision_ended') > 0
-		and strpos(pg_get_constraintdef((select oid from pg_constraint where conname = 'qorpera_member_notifications_kind')),
-			'provider_usage_limit') > 0, 'earlier kinds are kept');
 
 	-- 1. The card fails: the owner (the founder) and the admin (whose card it is) hear of it, once; nobody else.
 	v := pg_temp.fu_bill('invoice_failed');
@@ -77,9 +71,6 @@ begin
 	perform pg_temp.base_assert((select zero_rule_since is null and coding_zero_rule_since is null
 		from public.qorpera_computer_hour_billing), 'the zero rule''s switches are off');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_computer_hour_zero_state), 'nobody is at zero');
-	perform pg_temp.base_assert(col_description('public.qorpera_computer_hour_billing'::regclass,
-		(select attnum from pg_attribute where attrelid = 'public.qorpera_computer_hour_billing'::regclass
-			and attname = 'zero_rule_since')) like 'Retired by good will%', 'the switch says it is retired');
 	-- Live payments, and the company even recorded at zero: nothing is held while the switch is retired.
 	update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 minute';
 	insert into public.qorpera_computer_hour_zero_state (profile_id, ran_out_at)

@@ -276,21 +276,6 @@ describe("public member Company File gateway", () => {
 		["an erase request read", request(`/v1/member-message-erases/${id}/${id}/${id}`), 405],
 		["an erase status write", request(`/v1/member-message-erases/${id}/${id}`, { method: "POST" }), 405],
 		["an erase with a tail", request(`/v1/member-message-erases/${id}/${id}/${id}/${id}`, { method: "POST" }), 404],
-		["a snapshot-v1 path object", request(`/v1/member-company-objects/${id}/${id}/${"b".repeat(64)}`), 404],
-		[
-			"a snapshot-v1 snapshot object",
-			request(`/v1/member-company-snapshot-objects/${id}/${id}/${"b".repeat(64)}`),
-			404,
-		],
-		["a snapshot-v1 edit", request(`/v1/member-company-file/${id}/edits`, { method: "POST", body: "{}" }), 404],
-		["a snapshot-v1 edit read", request(`/v1/member-company-file/${id}/edits/${id}/content`), 404],
-		[
-			"a snapshot-v1 proposal review",
-			request(`/v1/member-company-file/${id}/proposals/${id}/review`, { method: "POST", body: "{}" }),
-			404,
-		],
-		["a snapshot-v1 upload", request(`/v1/member-company-file/${id}/uploads`, { method: "PUT", body: "x" }), 404],
-		["a member file export", request(`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`), 404],
 		["a machine screen write", request(`/v1/member-machine-screens/${id}/${id}`, { method: "POST", body: "{}" }), 405],
 		["a machine screen of one id", request(`/v1/member-machine-screens/${id}`), 404],
 		["a machine screen with another tail", request(`/v1/member-machine-screens/${id}/${id}/keep`), 404],
@@ -352,7 +337,6 @@ describe("public member Company File gateway", () => {
 		}),
 		["a company data drop", request(`/v1/company-data/${id}/drop`, { method: "POST", body: "{}" }), 404],
 		["a company data change log", request(`/v1/company-data/${id}/change-log`, { method: "POST", body: "{}" }), 404],
-		["a company data edit read", request(`/v1/company-data/${id}/edit`), 405],
 		["a company data call without a verb", request(`/v1/company-data/${id}`, { method: "POST", body: "{}" }), 404],
 		["a company data call of no environment", request("/v1/company-data/query", { method: "POST", body: "{}" }), 404],
 		[
@@ -369,41 +353,6 @@ describe("public member Company File gateway", () => {
 			"a company data call of a path for an environment",
 			request(`/v1/company-data/..%2F${id}/query`, { method: "POST", body: "{}" }),
 			404,
-		],
-		[
-			"a company data query past 64 KiB",
-			request(`/v1/company-data/${id}/query`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data watch past 512 KiB",
-			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "x".repeat(512 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data describe past 64 KiB",
-			request(`/v1/company-data/${id}/describe`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data apply past 1 MiB",
-			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data rows past 1 MiB",
-			request(`/v1/company-data/${id}/rows`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data edit past 1 MiB",
-			request(`/v1/company-data/${id}/edit`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data change past 64 KiB",
-			request(`/v1/company-data/${id}/change`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
 		],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {

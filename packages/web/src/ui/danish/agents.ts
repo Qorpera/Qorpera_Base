@@ -46,7 +46,6 @@ export const AGENTS: Record<string, string> = {
 	"Weekdays at {time}": "Hverdage kl. {time}",
 	"Weekends at {time}": "Weekender kl. {time}",
 	"{days} at {time}": "{days} kl. {time}",
-	"Next run": "Næste kørsel",
 	"Pause routine": "Sæt rutinen på pause",
 	"Resume routine": "Genoptag rutinen",
 	"Only owners and admins can pause or resume routines.":

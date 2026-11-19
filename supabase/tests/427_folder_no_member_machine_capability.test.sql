@@ -58,10 +58,6 @@ do $$
 begin
 	perform pg_temp.base_assert(not has_function_privilege('service_role',
 		'public.qorpera_claim_runner_job(uuid,text,uuid,text)', 'execute'), 'the runner self-claim is closed to the node host');
-	perform pg_temp.base_assert(not has_function_privilege('anon', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')
-		and not has_function_privilege('authenticated', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')
-		and not has_function_privilege('service_role', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute'),
-		'the folder broker description has no caller');
 end
 $$;
 

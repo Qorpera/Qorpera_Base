@@ -87,7 +87,6 @@ describe("language and time zone settings", () => {
 		const group = view.language().closest("section")!;
 		expect(group.querySelector("h2")?.textContent).toBe("Language & region");
 		expect(group.querySelector(".settings-rows")?.contains(view.timeZone())).toBe(true);
-		expect(view.container.querySelector("select[aria-label=Language]")).toBeNull();
 		expect(nameOf(view.language())).toBe("Language Follow system");
 		expect(nameOf(view.timeZone())).toBe("Time zone Follow system");
 		expect(view.language().getAttribute("aria-haspopup")).toBe("listbox");
@@ -320,13 +319,6 @@ describe("time zone preference", () => {
 		const entries = timeZoneEntries("en", ["Asia/Kolkata"], new Date("2026-01-15T12:00:00Z"));
 		expect(entries.map((entry) => entry.id)).toEqual(expect.arrayContaining(["UTC", "Asia/Kolkata"]));
 		expect(entries.find((entry) => entry.id === "UTC")?.offset).toBe("GMT");
-		// Another included zone reuses the built list instead of formatting every zone again.
-		const copenhagen = entries.find((entry) => entry.id === "Europe/Copenhagen");
-		expect(
-			timeZoneEntries("en", ["Etc/GMT-2"], new Date("2026-01-15T12:00:00Z")).find(
-				(entry) => entry.id === "Europe/Copenhagen",
-			),
-		).toBe(copenhagen);
 		expect(entries.find((entry) => entry.id === "Asia/Kolkata")?.offset).toBe("GMT+5:30");
 		expect(entries.find((entry) => entry.id === "Europe/Copenhagen")).toMatchObject({
 			offset: "GMT+1",

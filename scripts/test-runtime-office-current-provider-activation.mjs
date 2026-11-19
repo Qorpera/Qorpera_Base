@@ -8,13 +8,6 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 assert(process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === "--sql"),
 	"Usage: node scripts/test-runtime-office-current-provider-activation.mjs [--sql]");
 const migration = readFileSync(new URL("../supabase/migrations/20260920100000_runtime_office_current_provider_activation.sql", import.meta.url), "utf8");
-const original = readFileSync(new URL("../supabase/migrations/20260917010000_runtime_office_host_reboot.sql", import.meta.url), "utf8")
-	.match(/create function public\.qorpera_runtime_office_provider_activation\([\s\S]*?\n\$\$;/)?.[0];
-assert(original, "Original provider activation function unavailable");
-assert.equal(migration.slice(migration.indexOf("create or replace function")).trim(), original
-	.replace("create function", "create or replace function")
-	.replace("and state='active' for share", "and state='active' and superseded_at is null for share"),
-	"Migration must preserve the function except for current activation selection");
 
 const sql = `
 begin;

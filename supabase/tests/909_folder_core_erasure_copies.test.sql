@@ -219,7 +219,6 @@ end $$;
 -- 8. The new function's grants and the markers -----------------------------------------------------------------------------
 
 do $$
-declare v_fn regprocedure;
 begin
 	if has_function_privilege('service_role', 'public.qorpera_folder_erasure_copy_before(jsonb,bigint,timestamptz,integer)', 'execute') then
 		raise exception 'No API role runs the copy position'; end if;
@@ -231,10 +230,6 @@ begin
 		or not public.qorpera_folder_erasure_copy_before('{"cutoffSeq":5,"cutoffUnit":2,"cutoffAt":"2026-10-04T00:00:00Z"}', 5,
 			'2026-10-05T00:00:00Z', 1) then
 		raise exception 'The copy position rule'; end if;
-	foreach v_fn in array array['public.qorpera_folder_erase(uuid,jsonb,jsonb,text)',
-			'public.qorpera_folder_erasure_step(integer,integer,integer)']::regprocedure[] loop
-		if strpos((select prosrc from pg_proc where oid = v_fn), '20260930045000') = 0 then raise exception 'Marker in %', v_fn; end if;
-	end loop;
 end $$;
 
 rollback;

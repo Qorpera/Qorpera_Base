@@ -1,6 +1,65 @@
 # Changelog
 
 ## [Unreleased]
+- `save_app` keeps a program version's `userId` (the member who added it from the web, RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026) on the versions it does not touch, through the shared `parseProgram`; an agent's own version never has it, and a hand-in naming it is refused. No migration.
+- Release v259 (several Claude logins per member, one In use, backend, #1947, with migration `20260930804000` and SQL
+  test 1300; a held draft merged in the release branch at its approved head): runtime bundle 259
+  `43df5e96327e5489c95be5357208fb0fe1999c0aaf56bb09d9255f63328e53fc` (activation `20260929025999`, previous 258
+  `f2741acd0a00`). The activation requires `20260930804000` (a run's usage now names the limit that refused it, which
+  only 804000's usage check accepts). The guest moves: the native provider host (`88324b1f`, 5,499,852 bytes); the rest
+  of the guest, the native Codex (`9c299f88`), the shared vault, the login helper and the coding executor stay.
+- Several Claude logins per member, one In use (the founder, 18 Nov 2026: "Yes, allow several", then "Picks stand"; migration `20260930804000`, SQL test 1300). A member may hold several active Claude logins; exactly one is In use, and new Claude work takes it: a Claude Code worker's dispatch, a Claude-first worker, and a follow-up to a running worker. A run already started keeps its login. Only the member moves it (`qorpera_use_claude_login`, or a sign-out of the login In use that names the next one; without it that sign-out is refused). A sign-in of the same account replaces its row and keeps its state; another account joins Not in use. The list says per login whether it is In use and until when it is used up (`usedUpUntil`, from the usage #1909 records); a run's usage now also records which limit refused it (`limitType`, Claude Code's `rateLimitType`), so a run refused by one model's weekly limit does not count the login used up. Usage reads name their login (`qorpera_begin_claude_login_read` with `p_claude_login_id`; the old call reads the login In use). Roll the migration before the runtime bundle that sends `limitType`.
+- Release v258 (Claude plan usage and limit resets read by the unmodified Claude Code, backend, #1909, with migration
+  `20260930793000` and SQL test 1290; the Claude Code box's relay holds 32 connections, #1933; both held drafts merged in
+  the release branch at their approved heads): runtime bundle 258
+  `f2741acd0a00d6faf6fa9b9911675088e146fb566dcb99247c7de97187efe321` (activation `20260929025899`, previous 257
+  `eab37cd3f227`). The activation requires `20260930793000`. The guest moves: the native provider host (`6b674095`,
+  5,499,664 bytes), the native isolation child and the two LXD bootstraps (the relay's Claude cap); the ephemeral runner
+  and the native Codex (`9c299f88`) stay. The shared vault and the model login helper (with its isolation child) move on
+  both vault hosts, node 2 first.
+- A Claude Code worker's subagents are no longer refused by the box's egress relay (17 Nov 2026; no SQL). The relay let 8 connections through at once and Claude Code opens one per call in flight: a worker run that started 10 parallel subagents held the relay at 8, met 6 API retries and took about 40 s for 4 s of work (`deploy/claude-box/test/connections-proof.sh`, the driver and the pinned 2.1.325 against a stub). With 32 the same run takes 5 s with no retry; Claude Code runs at most 20 subagents a turn, 21 connections at once. Every relay with a Claude host list (the box with a token or a login folder, the Claude login reads, Claude's sign-in) now holds `NATIVE_CLAUDE_CODE_CONNECTIONS` (32) at once, taken from the host list rather than a caller's option (`connections` is gone); Codex and ChatGPT plan relays keep 8. The namespace entry holds 64 sockets (two a connection). Start-up alone stays at one or two connections in the box, which turns non-essential traffic off.
+- Claude plan usage and limit resets for the Claude login card (the founder, 16-17 Nov 2026: "could we add that? I would also like to add the resets here", then "Yes, build it"; migration `20260930793000`, SQL test 1290). Only the unmodified, pinned Claude Code talks to Anthropic with the member's sign-in: a Claude Code worker's run keeps Claude Code's last `rate_limit_event` and its host records it (at most once a minute and at the end) through the new native host call `qorpera_record_claude_run_usage` (path control, `NATIVE_HOST_CALLS` and its SQL row); the account refresh's vault route also reads the member's Claude login when the member's read asks (`qorpera_begin_claude_login_read`): the vault opens it under the member's key and hands the login helper its `.credentials.json` only, and the helper runs Claude Code in its isolation with Anthropic's API host alone (it cannot renew; nothing is sealed back; the folder is wiped): `-p` with the `get_usage` control request (no model call) for the 5-hour, weekly and per-model weekly windows, and Claude Code's own `/limit-reset` screen in a terminal (`script`), read with a small terminal emulator, for the resets the account holds. A member's click uses one reset: the vault claims the request once (`qorpera_claim_claude_login_reset`), the helper opens `/limit-reset <kind>`, presses Enter only on the confirm screen naming that kind with "Yes" under the cursor, and records Claude Code's answer (reset, nothing used, or not confirmed). Any screen it cannot read shows no reset and presses nothing. Proof on the test VMs against a stub of api.anthropic.com: `deploy/claude-box/test/usage-probe.sh`. On a machine set up as a vault host (the helper's package, unit and pinned binaries; `deploy/claude-box/test/vault-proof.sh`) three things stopped every read in the helper's sandbox, now fixed: the relay's socket path was too long under `/run/qorpera-model-login-helper` (each launch's folder is now a short `mkdtemp`); Ubuntu 26.04's `stty` is a symlink into the uutils binary (`script` and `stty` are now checked and run as the root-owned files their names lead to); and the relay and the namespace's entry let 8 connections through at once, while Claude Code opens about a dozen as it starts, so its own reset check was refused about half the time (a Claude read's relay now holds 32, the entry 32). A `/limit-reset` that still answers "Couldn't check for a reset right now" starts Claude Code again, three times at most, pressing no key. A `get_usage` answer whose `five_hour` is null (no Claude use in the last 5 hours, seen on a real account) reads as the 5-hour window at 0 % used with no reset time, so the card keeps its 5-hour bar.
+- Release v257 (master since v256's release merge: the automatic review reads the script a machine command runs,
+  #1924; program pages step 1, the kit `program` with kept versions and a Download page, #1941, whose web part is live
+  on its merge; tests that guard no behaviour pruned, with the runner-orchestrator code only they kept alive, #1949,
+  #1950, #1951, #1953): runtime bundle 257 `eab37cd3f22752dc574f7e9b08d33d86e16c17ba19e001298d69a60daed47128`
+  (activation `20260929025799`, previous 256 `f5554c776352`). No migration: the activation requires nothing new. The
+  guest moves: the native provider host (`4d236ee9`, 5,494,226 bytes); the ephemeral runner, the two LXD bootstraps and
+  the native Codex (`9c299f88`) stay.
+- The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
+- The review reads the script a machine command starts with (2026-11-17 amendment "the review reads the script it
+  judges", brief A of the mywave review; its refusal and retry parts came first in #1942). Only a plain command is
+  looked at (plain words, plain quoted strings, `;`, newline, `&&`, `|`, output redirections; nothing bash would
+  expand). It names at most one file, by grammar: after zero or more leading `cd <path> &&` (literal, no `..`, no
+  options, no redirection), the first command must be an allow-listed runner form (the prefixes `time`, `nohup`, `nice`,
+  `timeout`, `xvfb-run`, an interpreter with its allowed options and the script path, the path as the command word, or
+  `source f`), with no variable set before it, no redirection but `2>&1` or to `/dev/null`, and, in a pipeline, only
+  `head`, `tail`, `grep` (one pattern), `cat`, `wc`, `sort` or `uniq` beside it, with no operand and only options from
+  an exact list each; its file is named when its path has no `..` segment. A later script is listed as not shown, and a
+  command that starts with anything else names no file. The file is read on the machine before the review and shown
+  whole (64 KiB); a card's approval covers its digest; the machine runs the model's command byte for byte. The file is
+  evidence, not proof of what runs: the agent's own login shell and profile decide what a program name runs, and the
+  reviewer is told so. A file not shown is never on its own a reason to deny or ask. Known limits: a script after
+  another command, a second script, a script after `source`, one with a variable set before it and one whose output goes
+  to a file are not shown; the agent's home reads no files; a file changed between the read and the start is not
+  detected. Runtime bundle only: no migration, host call, executor or image moves.
+- Release v256 (master since v255's release merge: agents learn the `data` command on a company machine, #1881;
+  hire_team and hire_agent say what is wrong with refused arguments, #1938; the first concept really comes first, hire
+  overlay v20, #1939; the action review asks again when its reviewer is busy and its refusals name the next step, #1942;
+  module scripts of an app's page, #1937, is web and live already): runtime bundle 256
+  `f5554c77635269caa6cd788b0e956367d6a625293af1a385c2a32a9f143e860a` (activation `20260929025699`, previous 255
+  `edc4809a810b`). No migration: the activation requires nothing new. The guest moves: the native provider host
+  (`2271544c`, 5,452,429 bytes); the ephemeral runner, the two LXD bootstraps and the native Codex (`9c299f88`) stay.
+- A refused action names the next step, and a busy review waits (2026-11-17 amendment "a refusal names the next step;
+  a busy review waits", the mywave review; split out of #1924). REVIEW_DENIED keeps the refusal (no retry, rewording or
+  other way; only a member's new message lets the agent make it once more, a card answer does not count) and adds: a
+  worker reports its work blocked with the reason, any other agent asks a member on a card (`ask_member`), or in its
+  reply where it has no cards, for the one thing the work needs; the card's answer never lets it repeat the action. A
+  review whose model turn met the provider's rate limit, usage limit or an overload (`CloudActionReviewBusy`) is asked
+  again after 5, 10, 20, 30 and 30 seconds within two minutes before the call is refused; verdicts, invalid verdicts,
+  timeouts and other failures are never asked again. REVIEW_UNAVAILABLE tells the agent to say the step could not be
+  checked just now, never that a safety review was unavailable. Runtime bundle only: no migration, host call, executor
+  or image moves.
 - hire_team's first call no longer fails blind (the founder, 18 Nov 2026: "fix the hire_team first-call refusal"; in both
   companies started on v255 the Co-Founder's first hire_team was refused as bare `INVALID_ARGUMENTS` and its second call
   succeeded). Every refusal of hire_team's and hire_agent's arguments is now a `CloudToolArgumentRefusal` the model
@@ -38,8 +97,6 @@
   `migrate` runs before the switch; #1928's web part is live before it. The guest moves: the native provider host
   (`03ae4570`, 5,443,322 bytes with three.js); the ephemeral runner, the two LXD bootstraps and the native Codex
   (`9c299f88`) stay.
-- The program kit (RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026; Jonas: "Yes, build step 1"): `save_app` with `kit: "program"` takes `program.json`, refuses a file not in the app's folder (`PROGRAM_FILE_MISSING`), a kept version with other files (`PROGRAM_VERSION_KEPT`) and an earlier one (`PROGRAM_VERSION_EARLIER`), writes no page and keeps every version newest first (`cloud-app-kit-program.ts`); `app_guide program`; the code projects' sentence on programs for a computer or a phone; the platform update `program-kit`. No migration.
-- `save_app` keeps a program version's `userId` (the member who added it from the web, RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026) on the versions it does not touch, through the shared `parseProgram`; an agent's own version never has it, and a hand-in naming it is refused. No migration.
 - The object kit draws a real 3D model, live in the member's browser (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3b,
   17 Nov 2026; Jonas: "Yes, all three" on the app-files design page): `object.json`'s `model` (and a variant's) names a
   `.glb` in the app's folder, drawn with three.js 0.186.1 (MIT) and its GLTF loader, which `save_app` writes into the app

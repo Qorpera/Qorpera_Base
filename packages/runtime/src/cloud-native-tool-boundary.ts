@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CLOUD_TOOL_RESULT_MAX_BYTES } from "@qorpera/cloud-client/cloud-tool-result";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudActionGateResult } from "./cloud-action-review.ts";
+import { CLOUD_REVIEW_UNAVAILABLE, type CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
 	CloudCompanyPathParentMissing,
@@ -268,7 +268,8 @@ export interface CloudNativeTool {
 	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
 	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
 	 * never reviewed on a part. */
-	reviewContents?(parsed: JsonValue): JsonValue;
+	reviewContents?(parsed: JsonValue): JsonValue | undefined;
+	reviewIdentity?(parsed: JsonValue): string | undefined;
 	/** What the call would change, read from the company's current state before the automatic review (I8b's interface
 	 * save took its card and effect from the files it replaced; since the scope reset, C6b, no tool has one). Its value
 	 * takes the parsed arguments' place for the review, the work log and the effect; it changes nothing. A
@@ -304,7 +305,7 @@ export interface CloudNativeActionReview {
 		call: {
 			/** What the review needs of the tool: a full one satisfies it, and so does one of the home's own actions,
 			 * which is not a tool call of the model's at all (cloud-codex-home.ts, slice 4). */
-			tool: Pick<CloudNativeTool, "name" | "source" | "reviewContents">;
+			tool: Pick<CloudNativeTool, "name" | "source" | "reviewContents" | "reviewIdentity">;
 			parsed: JsonValue;
 			/** The exact canonical arguments the digest covers: repeating them repeats the call. */
 			argumentsText: string;
@@ -1245,7 +1246,7 @@ export class CloudNativeToolBoundary {
 			} catch {
 				return reported("denied", {
 					kind: "text",
-					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
+					value: CLOUD_REVIEW_UNAVAILABLE,
 				});
 			}
 			if (!gate.run) {

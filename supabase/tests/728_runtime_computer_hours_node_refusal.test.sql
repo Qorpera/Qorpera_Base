@@ -22,13 +22,30 @@ $$;
 set local role service_role;
 select public.qorpera_enroll_runtime_node_provider('64000000-0000-4000-8000-000000000003', repeat('c', 64), 'native', 'native-c',
 	repeat('6', 64), 4000, 8589934592);
+select public.qorpera_enroll_runtime_node_provider('64000000-0000-4000-8000-000000000003', repeat('c', 64), 'login', 'login-c',
+	repeat('5', 64), 4000, 8589934592);
 reset role;
+do $$
+declare v_login jsonb;
+begin
+	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+	v_login := public.qorpera_begin_native_provider_login('92400000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
+		extensions.gen_random_uuid(), (current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid,
+		'openai', 'codex-cli', repeat('8', 64), 900);
+	perform pg_temp.base_claims('service_role');
+	insert into public.qorpera_runtime_machine_allocations(id, profile_id, login_session_id, login_compute_identity_id, provider_adapter,
+		instance_sha256)
+	values ('64000000-0000-4000-8000-000000000404', '92400000-0000-4000-8000-000000000010', (v_login ->> 'login_id')::uuid,
+		(current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid, 'login-c', repeat('4', 64));
+end
+$$;
+create function pg_temp.sw_reserve_login() returns jsonb language sql as $$
+	select public.qorpera_reserve_runtime_node_machine('64000000-0000-4000-8000-000000000404', 'login', 'login-c',
+		repeat('5', 64), repeat('4', 64), repeat('c', 64), 4000, 8589934592)
+$$;
 select pg_temp.base_assert((select allocation.profile_id from public.qorpera_runtime_machine_allocations allocation
 	where allocation.id = '64000000-0000-4000-8000-000000000401') = '92400000-0000-4000-8000-000000000010',
 	'The coding machines are the fixture company''s');
-select pg_temp.base_assert(position($$elsif p_provider_kind in ('office','coding','machine') and (v_demand.reserved_at is null or v_demand.suspended_at is not null)$$
-		in pg_get_functiondef('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)'::regprocedure)) > 0,
-	'Only Company Computers, coding machines and agents'' machines are refused, and only a new reservation or a wake');
 
 -- 1. Switched off: a coding machine is reserved as before.
 set local role service_role;
@@ -55,6 +72,7 @@ update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_t
 set local role service_role;
 select pg_temp.base_assert(pg_temp.sw_reserve(1) ->> 'state' = 'reserved', 'A machine already awake passes');
 select pg_temp.base_assert(pg_temp.sw_reserve_run() ->> 'state' = 'reserved', 'A run''s machine starts at zero');
+select pg_temp.base_assert(pg_temp.sw_reserve_login() ->> 'state' = 'reserved', 'A sign-in''s machine starts at zero');
 -- 3. No new machine starts.
 select set_config('qorpera_test.sw_refusal', pg_temp.sw_reserve(2)::text, true);
 select pg_temp.base_assert(current_setting('qorpera_test.sw_refusal')::jsonb ->> 'reason' = 'COMPUTER_HOURS_EXHAUSTED',

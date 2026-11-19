@@ -128,7 +128,8 @@ describe("profile invitation email delivery", () => {
 		assert.doesNotMatch(email.html, /<Core>/);
 		assert.match(email.text, /sign in as friend@example\.com/i);
 		assert.match(email.text, /before you choose whether to accept/i);
-		assert.equal(invitationIdempotencyKey(invitationId), `qorpera-profile-invitation/${invitationId}`);
+		assert.equal(invitationIdempotencyKey(invitationId), "qorpera-profile-invitation/a8450f9d-c912-43ea-81f6-62c7247d752a");
+		assert.notEqual(invitationIdempotencyKey(invitationId), invitationIdempotencyKey(profileId));
 		assert.throws(() => buildProfileInvitationEmail(job(), "http://qorpera.com/invitation"), /HTTPS/);
 	});
 

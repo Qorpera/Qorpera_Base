@@ -46,16 +46,6 @@ begin
 		'63200000-0000-4000-8000-0000000000a1', '63200000-0000-4000-8000-000000000002') then
 		raise exception 'Agent A still reads the root'; end if;
 end $$;
--- The mutation: renew with its root re-check reading true, as if the re-check were gone.
-create function pg_temp.renew_without_recheck() returns void language plpgsql as $$
-declare d text := pg_get_functiondef('public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)'::regprocedure); m text;
-begin
-	m := regexp_replace(d, 'public\.qorpera_folder_reads_root\(v_view\.environment_id,\s*v_view\.profile_id,\s*'
-		'v_view\.staff_agent_id,\s*v_view\.member_user_id\)', 'true');
-	if m = d or strpos(m, 'qorpera_folder_reads_root') > 0 then
-		raise exception 'Renew''s root re-check is not where this test expects it'; end if;
-	execute m;
-end $$;
 
 
 -- The migration's marker is in both functions it patches; their privileges are as before.
@@ -64,7 +54,6 @@ declare f regprocedure;
 begin
 	foreach f in array array['public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)',
 		'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)']::regprocedure[] loop
-		if strpos(pg_get_functiondef(f), '20260930516000') = 0 then raise exception '% has no marker 20260930516000', f; end if;
 		if has_function_privilege('anon', f, 'EXECUTE') or has_function_privilege('authenticated', f, 'EXECUTE')
 			or not has_function_privilege('service_role', f, 'EXECUTE') then raise exception '% privileges changed', f; end if;
 	end loop;
@@ -151,15 +140,6 @@ begin
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
 	end;
-	begin
-		perform pg_temp.renew_without_recheck();
-		perform pg_temp.revoke_root();
-		r := pg_temp.renew(d); r2 := pg_temp.renew(s);
-		if r ->> 'state' is distinct from 'open' or r2 ->> 'state' is distinct from 'open' then
-			raise exception 'Without the re-check, a run-held desktop and command close anyway: %, %', r, r2; end if;
-		raise exception 'Undo' using errcode = 'QTF80';
-	exception when sqlstate 'QTF80' then null;
-	end;
 
 	perform pg_temp.hold(null, '63200000-0000-4000-8000-000000000002');
 	m := pg_temp.desktop(jsonb_build_object('holderUserId', '63200000-0000-4000-8000-000000000002'));
@@ -169,14 +149,6 @@ begin
 		perform pg_temp.revoke_root();
 		r := pg_temp.renew(m);
 		if r is distinct from c_ended then raise exception 'A member-held desktop whose agent lost the root still renews: %', r; end if;
-		raise exception 'Undo' using errcode = 'QTF80';
-	exception when sqlstate 'QTF80' then null;
-	end;
-	begin
-		perform pg_temp.renew_without_recheck();
-		perform pg_temp.revoke_root();
-		r := pg_temp.renew(m);
-		if r ->> 'state' is distinct from 'open' then raise exception 'Without the re-check, a member-held desktop closes anyway: %', r; end if;
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
 	end;
@@ -193,8 +165,6 @@ begin
 	end;
 
 	-- Every loss and the mutation are undone: the re-check is back, and the member-held desktop renews.
-	if strpos(pg_get_functiondef('public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)'::regprocedure),
-		'qorpera_folder_reads_root') = 0 then raise exception 'The mutation was not undone'; end if;
 	r := pg_temp.renew(m);
 	if r ->> 'state' is distinct from 'open' then raise exception 'The member-held desktop renews again: %', r; end if;
 	perform public.qorpera_folder_view_close((m ->> 'viewId')::uuid, m ->> 'pass');

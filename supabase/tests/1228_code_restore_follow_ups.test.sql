@@ -111,9 +111,8 @@ begin
 			= (v_role = 'authenticated'), 'the list is a member''s only: ' || v_role);
 	end loop;
 	perform pg_temp.base_assert((select prosecdef and proconfig = array['search_path=""'] from pg_proc
-			where oid = 'public.qorpera_code_restore_strand(text,text,uuid,uuid[])'::regprocedure)
-		and position('20260930735000' in pg_get_functiondef('public.qorpera_list_code_repositories(uuid)'::regprocedure)) > 0,
-		'a definer with an empty search path, and the list carries the marker');
+			where oid = 'public.qorpera_code_restore_strand(text,text,uuid,uuid[])'::regprocedure),
+		'a definer with an empty search path');
 end $$;
 
 -- 2. The strand -------------------------------------------------------------------------------------------------------

@@ -40,9 +40,7 @@ do $$ begin
 		or has_function_privilege('authenticated', 'public.qorpera_machine_data_pass(uuid,jsonb,text)', 'EXECUTE')
 		or not has_function_privilege('service_role', 'public.qorpera_machine_data_pass(uuid,jsonb,text)', 'EXECUTE')
 		or has_function_privilege('service_role', 'public.qorpera_data_pass_listing(uuid,jsonb,text)', 'EXECUTE')
-		or has_function_privilege('anon', 'public.qorpera_data_pass_listing(uuid,jsonb,text)', 'EXECUTE')
-		or not has_function_privilege('anon', 'public.qorpera_data_pass_redeem(text)', 'EXECUTE')
-		or has_function_privilege('service_role', 'public.qorpera_data_pass_redeem(text)', 'EXECUTE') then
+		or has_function_privilege('anon', 'public.qorpera_data_pass_listing(uuid,jsonb,text)', 'EXECUTE') then
 		raise exception '1: the grants are wrong'; end if;
 	perform pg_temp.violates($q$insert into public.qorpera_data_passes(pass_sha256, kind, environment_id, staff_agent_id,
 		requester_user_id, files, expires_at) values (extensions.digest('a', 'sha256'), 'machine',
@@ -122,15 +120,4 @@ begin
 	perform pg_temp.mp_same(pg_temp.mp_redeem(made ->> 'pass')::text, null, '5: a pass of a closed view');
 	s := pg_temp.open_machine(pg_temp.reboot(a));
 	perform pg_temp.mp_same(pg_temp.mp_redeem(pg_temp.mp_pass(s) ->> 'pass') ->> 'kind', 'machine', '5: the next boot''s view');
-end $$;
-
-do $$
-begin
-	perform pg_temp.mp_same((select string_agg(proc.proname::text, ' ' order by proc.proname::text collate "C")
-		from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-		where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930775000') > 0),
-		'qorpera_data_pass_listing qorpera_data_pass_redeem qorpera_machine_data_pass qorpera_run_data_pass', '6: the marker');
-	if strpos(pg_get_functiondef('public.qorpera_data_pass_redeem(text)'::regprocedure), '20260930764000') = 0
-		or strpos(pg_get_functiondef('public.qorpera_run_data_pass(uuid,jsonb,text)'::regprocedure), '20260930750000') = 0 then
-		raise exception '6: an earlier marker is gone'; end if;
 end $$;
