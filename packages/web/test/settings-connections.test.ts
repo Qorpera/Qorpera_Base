@@ -322,7 +322,7 @@ describe("member model account settings", () => {
 			);
 			expect(card.querySelector(".connection-identity")!.getAttribute("title")).toBe(`Forbindelse ${id(81)}`);
 			expect(card.querySelector(`[title="Sidst tjekket ${time}"]`)!.textContent).toBe(
-				`92% ved sidste tjek · ${time}`,
+				`92% tilbage ved sidste tjek · ${time}`,
 			);
 			view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
 			await settle();
@@ -490,7 +490,7 @@ describe("member model account settings", () => {
 		action(OPENAI).focus();
 		await vi.advanceTimersByTimeAsync(6 * 60_000);
 		// An old reading says when it was taken; one bar needs no name.
-		expect(view.el.textContent).toContain(`0% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`);
+		expect(view.el.textContent).toContain(`0% left at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`);
 		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
 		expect(view.el.querySelector(".connection-usage-label")).toBeNull();
 		expect(view.el.textContent).not.toContain("5-hour limit");
@@ -560,9 +560,9 @@ describe("member model account settings", () => {
 		);
 		expect(view.el.textContent).toContain("Usage limit reached · resets in 1h 0m");
 		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe(
-			`50% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`,
+			`50% left at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`,
 		);
-		expect(view.el.textContent).not.toContain("50% left");
+		expect(view.el.textContent).not.toMatch(/50% left(?! at last check)/);
 		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
 	});
 	it("never shows a reading time later than now when the host's clock runs ahead", async () => {
@@ -578,7 +578,7 @@ describe("member model account settings", () => {
 				},
 			}),
 		);
-		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe("92% at last check");
+		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe("92% left at last check");
 	});
 	it("refreshes usage from the account projection without losing keyboard focus", async () => {
 		const { client } = await setup(true, observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
@@ -600,6 +600,129 @@ describe("member model account settings", () => {
 		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuenow")).toBe("100");
 		expect(view.el.textContent).toContain("Reset time unavailable");
 		expect(document.activeElement).toBe(view.el.querySelector('[data-focus-key="refresh"]'));
+	});
+	it("says ChatGPT did not answer for a login the member's own Refresh found no new reading for", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-11-18T18:43:00Z"));
+		const weekly = (usedPercent: number, observedAt: string) => ({
+			observedAt,
+			windows: [
+				{
+					id: "primary" as const,
+					label: "Weekly",
+					usedPercent,
+					resetAt: "2026-11-24T13:22:01Z",
+					windowSeconds: 604800,
+				},
+			],
+		});
+		const answering = {
+			...connected,
+			sponsorBindingId: id(82),
+			sponsorVersion: 1,
+			providerAccountUsage: weekly(100, "2026-11-18T15:26:56.000Z"),
+		};
+		const silent = {
+			...answering,
+			connectionId: id(83),
+			providerAccountEmail: "silent@example.com",
+			providerAccountUsage: weekly(78, "2026-11-18T13:59:24.000Z"),
+		};
+		const { client, lifetime } = await setup(true, observed(answering, silent));
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, force?: boolean) => {
+			if (!force) return;
+			vi.mocked(client.listConnections).mockResolvedValue(
+				observed({ ...answering, providerAccountUsage: weekly(100, new Date().toISOString()) }, silent),
+			);
+		});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		const notice =
+			"ChatGPT did not answer for this account just now. If this stays, sign out and add this account again.";
+		const cardOf = (email: string) =>
+			[...view.el.querySelectorAll<HTMLElement>(".connection-card")].find((item) =>
+				item.textContent?.includes(email),
+			)!;
+		expect(view.el.textContent).not.toContain(notice);
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenLastCalledWith(expect.any(AbortSignal), true);
+		expect(cardOf("silent@example.com").textContent).toContain(notice);
+		expect(cardOf("silent@example.com").textContent).toContain(
+			`22% left at last check · ${fmtTime("2026-11-18T13:59:24.000Z")}`,
+		);
+		expect(cardOf("member@example.com").textContent).not.toContain(notice);
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed(
+				{ ...answering, providerAccountUsage: weekly(100, new Date().toISOString()) },
+				{ ...silent, providerAccountUsage: weekly(0, new Date().toISOString()) },
+			),
+		);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(view.el.textContent).not.toContain(notice);
+		expect(cardOf("silent@example.com").textContent).toContain("100% left");
+	});
+	it("says ChatGPT did not answer only for a login the refresh reads", async () => {
+		const silent = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const claude = {
+			...silent,
+			connectionId: id(83),
+			clientConnectionId: id(183),
+			provider: "anthropic",
+			nativeHarness: "claude-code" as const,
+			providerAccountEmail: "claude@example.com",
+		};
+		const { client, lifetime } = await setup(true, observed(silent, claude));
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await settle();
+		const notices = [...view.el.querySelectorAll(".connection-card")].filter((item) =>
+			item.textContent?.includes("ChatGPT did not answer"),
+		);
+		expect(notices.map((item) => item.textContent?.includes("member@example.com"))).toEqual([true]);
+		expect(view.el.textContent).toContain("claude@example.com");
+	});
+	it("says ChatGPT did not answer for nobody when the refresh had no identity to read with", async () => {
+		const silent = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const { client, lifetime } = await setup(true, { connections: [silent] });
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenLastCalledWith(expect.any(AbortSignal), true);
+		expect(view.el.textContent).toContain("member@example.com");
+		expect(view.el.textContent).not.toContain("ChatGPT did not answer");
+	});
+	it("never says ChatGPT did not answer after a read the member did not ask for", async () => {
+		const stuck = {
+			...connected,
+			sponsorBindingId: id(82),
+			sponsorVersion: 1,
+			providerAccountUsage: {
+				observedAt: "2026-11-18T13:59:24.000Z",
+				windows: [{ id: "primary" as const, label: "Weekly", usedPercent: 78 }],
+			},
+		};
+		const { client, lifetime } = await setup(true, observed(stuck));
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(refreshAccountMetadata.mock.calls.every((call) => call[1] === false)).toBe(true);
+		expect(view.el.textContent).not.toContain("ChatGPT did not answer");
 	});
 	it.each([false, true])(
 		"shows only the latest version of an account regardless of response order: %s",
@@ -1818,6 +1941,62 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(claudeCard().querySelector(".connection-resets")).toBeNull();
 	});
 
+	it("says ChatGPT did not answer once the ChatGPT refresh is done, whatever a Claude read after it answers", async () => {
+		const chatgpt = {
+			...connected,
+			sponsorBindingId: id(82),
+			sponsorVersion: 1,
+			providerAccountUsage: {
+				observedAt: "2026-11-18T13:59:24.000Z",
+				windows: [{ id: "primary" as const, label: "Weekly", usedPercent: 78 }],
+			},
+		};
+		const logins = { signInOpen: true, readable: true, logins: [login()] };
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		const readClaude = vi.fn<ReadClaude>(async () => id(99));
+		const client = {
+			listConnections: vi.fn(async () => structuredClone(observed(chatgpt))),
+			revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+			createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+			listClaudeLogins: vi.fn(async () => structuredClone(logins)),
+			signOutClaude: vi.fn(async () => undefined),
+			readClaude,
+			refreshAccountMetadata,
+		};
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		const notice =
+			"ChatGPT did not answer for this account just now. If this stays, sign out and add this account again.";
+		const refresh = () => view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		readClaude.mockRejectedValueOnce(new Error("offline"));
+		refresh().click();
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenLastCalledWith(expect.any(AbortSignal), true);
+		expect(readClaude).toHaveBeenLastCalledWith({ loginId: id(97), force: true }, expect.any(AbortSignal));
+		expect(refreshAccountMetadata.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+			readClaude.mock.invocationCallOrder.at(-1)!,
+		);
+		expect(card(OPENAI).textContent).toContain(notice);
+		expect(claudeCard().textContent).not.toContain(notice);
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+		refreshAccountMetadata.mockImplementationOnce(async () => {
+			vi.mocked(client.listConnections).mockResolvedValue(
+				observed({
+					...chatgpt,
+					providerAccountUsage: { ...chatgpt.providerAccountUsage, observedAt: new Date().toISOString() },
+				}),
+			);
+		});
+		refresh().click();
+		await settle();
+		expect(view.el.textContent).not.toContain(notice);
+		vi.mocked(client.listConnections).mockResolvedValue(observed(chatgpt));
+		refreshAccountMetadata.mockRejectedValueOnce(new Error("offline"));
+		refresh().click();
+		await settle();
+		expect(view.el.textContent).not.toContain(notice);
+	});
 	it("offers a reset the account holds, with what it refills, and uses it on one click", async () => {
 		const finish = deferred<string>();
 		const readClaude = vi.fn(async (options: { reset?: string }) => (options.reset ? finish.promise : id(99)));

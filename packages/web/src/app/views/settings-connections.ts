@@ -8,6 +8,7 @@ import {
 	ChatGptPlanSignInError,
 	ClaudeCodeError,
 	ClaudeReadNotStarted,
+	loginsAUsageRefreshReads,
 	PlanSwitchBusyError,
 	planLogin,
 	type WebAccountLogin,
@@ -268,6 +269,7 @@ export class ConnectionsView {
 	#metadataForced = false;
 	#usageUpdating = false;
 	#usageError: string | undefined;
+	#unansweredByOwnRefresh: ReadonlyMap<string, string | undefined> = new Map();
 	/** "Continue with ChatGPT": offered while the company may use plan logins, asked when the
 	 * member opens Add account (nobody else makes the request). */
 	#planChecked = false;
@@ -447,11 +449,22 @@ export class ConnectionsView {
 			const forced = this.#metadataForced;
 			const logins = this.#claude?.logins ?? [];
 			let failed = false;
+			let codexAnswered = false;
+			const before = new Map(
+				this.#refreshReads().map((connection) => [
+					connection.connectionId,
+					connection.providerAccountUsage?.observedAt,
+				]),
+			);
 			// WHY: the ChatGPT refresh and every Claude read share the member's one pending refresh; asked together, all but one answer busy.
 			if (codex)
-				await this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced).catch(() => {
-					failed = true;
-				});
+				codexAnswered = await this.#client.refreshAccountMetadata!(this.#lifetime.signal, forced).then(
+					() => true,
+					() => {
+						failed = true;
+						return false;
+					},
+				);
 			for (const login of claude ? logins : []) {
 				if (this.#lifetime.signal.aborted) return;
 				await claude!({ loginId: login.loginId, force: forced }, this.#lifetime.signal).catch(() => {
@@ -459,6 +472,16 @@ export class ConnectionsView {
 				});
 			}
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
+			if (forced && codexAnswered && !this.#lifetime.signal.aborted)
+				this.#unansweredByOwnRefresh = new Map(
+					this.#refreshReads()
+						.filter(
+							(connection) =>
+								before.has(connection.connectionId) &&
+								before.get(connection.connectionId) === connection.providerAccountUsage?.observedAt,
+						)
+						.map((connection) => [connection.connectionId, connection.providerAccountUsage?.observedAt]),
+				);
 			if (failed) throw new Error("Usage could not be refreshed");
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = t("Usage could not be refreshed. Try again.");
@@ -1178,8 +1201,33 @@ export class ConnectionsView {
 			? connections.filter((connection) => this.#accountLogins.has(connection.connectionId))
 			: connections;
 	}
+	#refreshReads(): WebMemberConnection[] {
+		const shown = new Set(this.#shown().map((connection) => connection.connectionId));
+		return loginsAUsageRefreshReads(this.#connections ?? { connections: [] }).filter((connection) =>
+			shown.has(connection.connectionId),
+		);
+	}
 	#usage(connection: NativeMemberConnection): HTMLElement {
-		return this.#bars(connection.providerAccountUsage, live(connection), connection.usageLimitResetAt);
+		const unanswered =
+			live(connection) &&
+			this.#unansweredByOwnRefresh.has(connection.connectionId) &&
+			this.#unansweredByOwnRefresh.get(connection.connectionId) === connection.providerAccountUsage?.observedAt
+				? h(
+						"span",
+						{ class: "connection-usage-limit", role: "status" },
+						t(
+							"ChatGPT did not answer for this account just now. If this stays, sign out and add this account again.",
+						),
+					)
+				: null;
+		return this.#bars(
+			connection.providerAccountUsage,
+			live(connection),
+			connection.usageLimitResetAt,
+			new Set(),
+			true,
+			unanswered,
+		);
 	}
 	#bars(
 		usage: UsageReading | undefined,
@@ -1187,6 +1235,7 @@ export class ConnectionsView {
 		limitResetAt: string | undefined,
 		refilling: ReadonlySet<string> = new Set(),
 		limitDatesReading = true,
+		unanswered: HTMLElement | null = null,
 	): HTMLElement {
 		const now = Date.now();
 		const limitResetIn = limitResetAt ? Date.parse(limitResetAt) - now : 0;
@@ -1199,14 +1248,12 @@ export class ConnectionsView {
 				)
 			: null;
 		if (!usage || !usable)
-			return h("div", { class: "connection-usage muted" }, limitNotice ?? t("Usage unavailable"));
+			return h("div", { class: "connection-usage muted" }, limitNotice ?? t("Usage unavailable"), unanswered);
 		const stale =
 			(limitDatesReading && limitReached) ||
 			now - Date.parse(usage.observedAt) > USAGE_FRESH_MS ||
 			Date.parse(usage.observedAt) > now;
 		const checked = fmtTime(usage.observedAt);
-		// An old reading never says "left" (the limit may be reached since) but says
-		// when it was taken, unless the host's clock ran ahead of this one.
 		const dated = Date.parse(usage.observedAt) <= now;
 		// One bar needs no name; two (5 hours and Weekly) would look alike without one.
 		const named = usage.windows.length > 1;
@@ -1214,6 +1261,7 @@ export class ConnectionsView {
 			"div",
 			{ class: "connection-usage" },
 			limitNotice,
+			unanswered,
 			...usage.windows.map((window) => {
 				if (refilling.has(window.id))
 					return h(
@@ -1246,8 +1294,8 @@ export class ConnectionsView {
 					? t("Usage unavailable")
 					: stale
 						? dated
-							? t("{percent}% at last check · {time}", { percent: remaining, time: checked })
-							: t("{percent}% at last check", { percent: remaining })
+							? t("{percent}% left at last check · {time}", { percent: remaining, time: checked })
+							: t("{percent}% left at last check", { percent: remaining })
 						: t("{percent}% left", { percent: remaining });
 				const fill = h("span");
 				// CSSOM property updates work with the release CSP; style attributes do not.

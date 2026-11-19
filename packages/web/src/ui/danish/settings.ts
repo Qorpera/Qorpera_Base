@@ -256,8 +256,10 @@ export const SETTINGS: Record<string, string> = {
 	"Usage limit reached · resets in {time}": "Forbrugsgrænsen er nået · nulstilles om {time}",
 	"Usage unavailable": "Forbrug ikke tilgængeligt",
 	"{percent}% left": "{percent}% tilbage",
-	"{percent}% at last check": "{percent}% ved sidste tjek",
-	"{percent}% at last check · {time}": "{percent}% ved sidste tjek · {time}",
+	"{percent}% left at last check": "{percent}% tilbage ved sidste tjek",
+	"{percent}% left at last check · {time}": "{percent}% tilbage ved sidste tjek · {time}",
+	"ChatGPT did not answer for this account just now. If this stays, sign out and add this account again.":
+		"ChatGPT svarede ikke for denne konto lige nu. Bliver det ved, så log ud og tilføj kontoen igen.",
 	"Last checked {time}": "Sidst tjekket {time}",
 	"Resets in {time}": "Nulstilles om {time}",
 	"Reset passed · awaiting updated usage": "Nulstillet · venter på opdateret forbrug",

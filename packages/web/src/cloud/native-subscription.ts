@@ -355,6 +355,19 @@ export interface WebNativeSubscription {
 	signOutEverywhere?(loginId: string, signal?: AbortSignal): Promise<void>;
 }
 
+export function loginsAUsageRefreshReads<T extends NativeMemberConnection>(accounts: {
+	computeIdentity?: NativeExecutionConnections["computeIdentity"];
+	connections: readonly T[];
+}): T[] {
+	if (!accounts.computeIdentity) return [];
+	return accounts.connections.filter(
+		(account) =>
+			account.provider === "openai" &&
+			account.nativeHarness === "codex-cli" &&
+			account.connectionStatus === "active" &&
+			account.authorizationState === "active",
+	);
+}
 /** The same rule as the server's admission: usage observed within the last
  * minute whose windows have not reset needs no new observation. Requesting one
  * anyway records an attempt, and a stale one boots a login guest. Inside the
@@ -808,13 +821,7 @@ export function createWebNativeSubscription(
 				const work = withCloudDeadline(
 					async (deadline) => {
 						const accounts = known ?? (await client(deadline).listConnections(profileId));
-						const eligible = accounts.connections.filter(
-							(account) =>
-								account.provider === "openai" &&
-								account.nativeHarness === "codex-cli" &&
-								account.connectionStatus === "active" &&
-								account.authorizationState === "active",
-						);
+						const eligible = loginsAUsageRefreshReads(accounts);
 						if (!accounts.computeIdentity || !eligible.length) return;
 						// A completed attempt keeps its authority until it expires: at most one
 						// attempt per expiry window, however often views ask, unless a reset
