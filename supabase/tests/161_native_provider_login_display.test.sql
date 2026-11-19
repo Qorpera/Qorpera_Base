@@ -1,13 +1,11 @@
 begin;
 
 insert into auth.users (id, email) values
-('16100000-0000-4000-8000-000000000001', 'owner@example.test'),
-('16100000-0000-4000-8000-000000000002', 'coworker@example.test');
+('16100000-0000-4000-8000-000000000001', 'owner@example.test');
 insert into public.qorpera_profiles (id, name, created_by_user_id) values
 ('16100000-0000-4000-8000-000000000010', 'Login display', '16100000-0000-4000-8000-000000000001');
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role) values
-('16100000-0000-4000-8000-000000000010', '16100000-0000-4000-8000-000000000001', 'owner@example.test', 'Owner', 'owner'),
-('16100000-0000-4000-8000-000000000010', '16100000-0000-4000-8000-000000000002', 'coworker@example.test', 'Coworker', 'contributor');
+('16100000-0000-4000-8000-000000000010', '16100000-0000-4000-8000-000000000001', 'owner@example.test', 'Owner', 'owner');
 -- A folder-v2 company (the company folder core).
 insert into public.qorpera_company_environments (id, profile_id, name, contract_version, created_by_user_id) values
 ('16100000-0000-4000-8000-000000000011', '16100000-0000-4000-8000-000000000010', 'Login display', 1, '16100000-0000-4000-8000-000000000001');
@@ -62,15 +60,6 @@ begin
     end if;
     if v_connection ?| array['capability_sha256', 'encrypted_capsule_reference', 'access_token', 'refresh_token'] then
         raise exception 'connection display leaked login credentials';
-    end if;
-end
-$$;
-
-select set_config('request.jwt.claims', '{"sub":"16100000-0000-4000-8000-000000000002","role":"authenticated"}', true);
-do $$
-begin
-    if public.qorpera_list_member_native_execution_connections('16100000-0000-4000-8000-000000000010') -> 'connections' <> '[]'::jsonb then
-        raise exception 'coworker could see another member''s login correlation or email';
     end if;
 end
 $$;

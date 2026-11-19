@@ -9,6 +9,7 @@ import {
 const id = "11111111-1111-4111-8111-111111111111";
 const object = `/v1/member-folder-objects/${id}/${"a".repeat(64)}`;
 const commit = `/v1/member-folder-commits/${id}`;
+const screen = `/v1/member-machine-screens/${id}/${id}`;
 const upstreamUrl = "https://node.tailnet.ts.net:10000";
 const base = "https://project.supabase.co/functions/v1/member-company-gateway";
 /** The issuer as a stack states it: the pinned self-hosted configuration issues with `API_EXTERNAL_URL` unchanged, so
@@ -60,7 +61,7 @@ describe("public member Company File gateway", () => {
 	it("keeps concurrent tiny replies small while assembling their streamed bytes", async () => {
 		const original = globalThis.Uint8Array;
 		const allocations: number[] = [];
-		const requests = Array.from({ length: 8 }, () => request());
+		const requests = Array.from({ length: 8 }, () => request(screen));
 		globalThis.Uint8Array = new Proxy(original, {
 			construct(target, args, newTarget) {
 				if (typeof args[0] === "number") allocations.push(args[0]);
@@ -275,21 +276,6 @@ describe("public member Company File gateway", () => {
 		["an erase request read", request(`/v1/member-message-erases/${id}/${id}/${id}`), 405],
 		["an erase status write", request(`/v1/member-message-erases/${id}/${id}`, { method: "POST" }), 405],
 		["an erase with a tail", request(`/v1/member-message-erases/${id}/${id}/${id}/${id}`, { method: "POST" }), 404],
-		["a snapshot-v1 path object", request(`/v1/member-company-objects/${id}/${id}/${"b".repeat(64)}`), 404],
-		[
-			"a snapshot-v1 snapshot object",
-			request(`/v1/member-company-snapshot-objects/${id}/${id}/${"b".repeat(64)}`),
-			404,
-		],
-		["a snapshot-v1 edit", request(`/v1/member-company-file/${id}/edits`, { method: "POST", body: "{}" }), 404],
-		["a snapshot-v1 edit read", request(`/v1/member-company-file/${id}/edits/${id}/content`), 404],
-		[
-			"a snapshot-v1 proposal review",
-			request(`/v1/member-company-file/${id}/proposals/${id}/review`, { method: "POST", body: "{}" }),
-			404,
-		],
-		["a snapshot-v1 upload", request(`/v1/member-company-file/${id}/uploads`, { method: "PUT", body: "x" }), 404],
-		["a member file export", request(`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`), 404],
 		["a machine screen write", request(`/v1/member-machine-screens/${id}/${id}`, { method: "POST", body: "{}" }), 405],
 		["a machine screen of one id", request(`/v1/member-machine-screens/${id}`), 404],
 		["a machine screen with another tail", request(`/v1/member-machine-screens/${id}/${id}/keep`), 404],
@@ -316,7 +302,7 @@ describe("public member Company File gateway", () => {
 		],
 		["a pointer of one id", request(`/v1/member-machine-screens/${id}/pointer`, { method: "POST", body: "{}" }), 404],
 		["a pointer with a tail", request(`/v1/member-machine-screens/${id}/${id}/pointer/1`, { method: "POST", body: "{}" }), 404],
-		...(["query", "watch", "apply", "describe"] as const).flatMap((verb) => {
+		...(["query", "watch", "apply", "describe", "rows", "edit", "change", "changes"] as const).flatMap((verb) => {
 			const path = `/v1/company-data/${id}/${verb}`;
 			return [
 				[`a company data ${verb} read`, request(path), 405],
@@ -350,6 +336,7 @@ describe("public member Company File gateway", () => {
 			] as const;
 		}),
 		["a company data drop", request(`/v1/company-data/${id}/drop`, { method: "POST", body: "{}" }), 404],
+		["a company data change log", request(`/v1/company-data/${id}/change-log`, { method: "POST", body: "{}" }), 404],
 		["a company data call without a verb", request(`/v1/company-data/${id}`, { method: "POST", body: "{}" }), 404],
 		["a company data call of no environment", request("/v1/company-data/query", { method: "POST", body: "{}" }), 404],
 		[
@@ -366,26 +353,6 @@ describe("public member Company File gateway", () => {
 			"a company data call of a path for an environment",
 			request(`/v1/company-data/..%2F${id}/query`, { method: "POST", body: "{}" }),
 			404,
-		],
-		[
-			"a company data query past 64 KiB",
-			request(`/v1/company-data/${id}/query`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data watch past 512 KiB",
-			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "x".repeat(512 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data describe past 64 KiB",
-			request(`/v1/company-data/${id}/describe`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data apply past 1 MiB",
-			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
-			413,
 		],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
@@ -428,7 +395,7 @@ describe("public member Company File gateway", () => {
 	});
 	it("bounds response streaming and cancels a stalled body at the deadline", async () => {
 		let cancelled = false;
-		const pending = forward(request(), {
+		const pending = forward(request(screen), {
 			upstreamUrl,
 			timeoutMs: 10,
 			fetchImplementation: async () =>
@@ -475,7 +442,7 @@ describe("public member Company File gateway", () => {
 	it("cancels upstream response streaming when the caller leaves", async () => {
 		const abort = new AbortController();
 		let cancelled = false;
-		const pending = forward(request(object, { signal: abort.signal }), {
+		const pending = forward(request(screen, { signal: abort.signal }), {
 			upstreamUrl,
 			fetchImplementation: async (_url, init) => {
 				queueMicrotask(() => abort.abort());
@@ -494,7 +461,7 @@ describe("public member Company File gateway", () => {
 	});
 	it("bounds response bytes even without a content length", async () => {
 		let cancelled = false;
-		const response = await forward(request(), {
+		const response = await forward(request(screen), {
 			upstreamUrl,
 			fetchImplementation: async () =>
 				new Response(
@@ -510,6 +477,159 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(response.status, 502);
 		assert.equal(cancelled, true);
+	});
+	it("passes a folder object's bytes through as they arrive, holding no buffer of its own", async () => {
+		const original = globalThis.Uint8Array;
+		const pieces = [new Uint8Array([1, 2]), new Uint8Array([3]), new Uint8Array([4, 5, 6])];
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let next = 0;
+		const allocations: number[] = [];
+		globalThis.Uint8Array = new Proxy(original, {
+			construct(target, args, newTarget) {
+				if (typeof args[0] === "number") allocations.push(args[0]);
+				return Reflect.construct(target, args, newTarget);
+			},
+		});
+		try {
+			const response = await forward(request(), {
+				upstreamUrl,
+				fetchImplementation: async () =>
+					new Response(
+						new ReadableStream<Uint8Array>({
+							async pull(controller) {
+								if (next === 1) await held;
+								if (next === pieces.length) controller.close();
+								else controller.enqueue(pieces[next++] as Uint8Array<ArrayBuffer>);
+							},
+						}),
+						{ headers: { "content-type": "application/octet-stream", etag: '"sha256-a"' } },
+					),
+			});
+			assert.equal(response.status, 200);
+			assert.equal(response.headers.get("etag"), '"sha256-a"');
+			assert.equal(response.headers.get("cache-control"), "no-store");
+			const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+			assert.deepEqual([...((await reader.read()).value as Uint8Array)], [1, 2]);
+			release();
+			assert.deepEqual([...((await reader.read()).value as Uint8Array)], [3]);
+			assert.deepEqual([...((await reader.read()).value as Uint8Array)], [4, 5, 6]);
+			assert.equal((await reader.read()).done, true);
+			assert.deepEqual(allocations, []);
+		} finally {
+			globalThis.Uint8Array = original;
+		}
+	});
+	it("ends a folder object whose upstream goes quiet, and gives a slow reader all the time it takes", async () => {
+		let cancelled = false;
+		const quiet = await forward(request(), {
+			upstreamUrl,
+			timeoutMs: 10,
+			fetchImplementation: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(new Uint8Array([7]));
+						},
+						cancel() {
+							cancelled = true;
+						},
+					}),
+				),
+		});
+		assert.equal(quiet.status, 200);
+		await assert.rejects(quiet.arrayBuffer());
+		assert.equal(cancelled, true);
+		let next = 0;
+		const slow = await forward(request(), {
+			upstreamUrl,
+			timeoutMs: 10,
+			fetchImplementation: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							if (next === 3) controller.close();
+							else controller.enqueue(new Uint8Array([next++]));
+						},
+					}),
+				),
+		});
+		const reader = (slow.body as ReadableStream<Uint8Array>).getReader();
+		const read: number[] = [];
+		for (;;) {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			const chunk = await reader.read();
+			if (chunk.done) break;
+			read.push(...chunk.value);
+		}
+		assert.deepEqual(read, [0, 1, 2]);
+	});
+	it("ends a folder object and its upstream when the caller leaves or the bytes pass 8 MiB", async () => {
+		const abort = new AbortController();
+		let cancelled = false;
+		const left = await forward(request(object, { signal: abort.signal }), {
+			upstreamUrl,
+			fetchImplementation: async (_url, init) => {
+				assert.ok(init?.signal);
+				return new Response(
+					new ReadableStream({
+						cancel() {
+							cancelled = true;
+						},
+					}),
+				);
+			},
+		});
+		assert.equal(left.status, 200);
+		const reading = left.arrayBuffer();
+		abort.abort();
+		await assert.rejects(reading);
+		assert.equal(cancelled, true);
+		let stopped = false;
+		const large = await forward(request(), {
+			upstreamUrl,
+			fetchImplementation: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							controller.enqueue(new Uint8Array(1024 * 1024));
+						},
+						cancel() {
+							stopped = true;
+						},
+					}),
+				),
+		});
+		assert.equal(large.status, 200);
+		await assert.rejects(large.arrayBuffer());
+		assert.equal(stopped, true);
+	});
+	it("answers a folder object's refusal and its upstream failure before any byte as before", async () => {
+		const refused = await forward(request(), {
+			upstreamUrl,
+			fetchImplementation: async () => Response.json({ error: "Forbidden" }, { status: 403 }),
+		});
+		assert.equal(refused.status, 403);
+		assert.deepEqual(await refused.json(), { error: "Forbidden" });
+		const down = await forward(request(), {
+			upstreamUrl,
+			fetchImplementation: async () => {
+				throw new Error("connection refused");
+			},
+		});
+		assert.equal(down.status, 503);
+		assert.equal(down.headers.get("content-type"), "application/json");
+		const late = forward(request(), {
+			upstreamUrl,
+			timeoutMs: 10,
+			fetchImplementation: (_url, init) =>
+				new Promise((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+				}),
+		});
+		assert.equal((await late).status, 503);
 	});
 	it("forwards a member's folder commit exactly", async () => {
 		const body = JSON.stringify({
@@ -925,6 +1045,77 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(wrongMethod.status, 405);
 	});
+	it("forwards a member's program upload: its open, finish and stop up to 16 KiB, each piece up to 4 MiB", async () => {
+		const open = `/v1/member-program-uploads/${id}`;
+		const finish = `${open}/${id}`;
+		const stop = `${finish}/stop`;
+		const piece = `${finish}/63`;
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${headers.get("content-type")}`);
+			assert.equal(headers.get("authorization"), "Bearer member.jwt.token");
+			return Response.json({ ok: true });
+		};
+		const step = new Uint8Array(16 * 1024).fill(32);
+		for (const path of [open, finish, stop]) {
+			const response = await forward(
+				request(path, { method: "POST", body: step, headers: { "content-type": "application/json" } }),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(response.status, 200);
+			const over = await forward(
+				request(path, {
+					method: "POST",
+					body: new Uint8Array(16 * 1024 + 1),
+					headers: { "content-type": "application/json" },
+				}),
+				{ upstreamUrl, fetchImplementation: async () => assert.fail("oversized step forwarded") },
+			);
+			assert.equal(over.status, 413);
+		}
+		const bytes = new Uint8Array(4 * 1024 * 1024).fill(7);
+		const put = await forward(
+			request(piece, { method: "PUT", body: bytes, headers: { "content-type": "application/octet-stream" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(put.status, 200);
+		const oversized = await forward(request(piece, { method: "PUT", body: new Uint8Array(4 * 1024 * 1024 + 1) }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("oversized piece forwarded"),
+		});
+		assert.equal(oversized.status, 413);
+		assert.deepEqual(seen, [
+			`POST ${open} application/json`,
+			`POST ${finish} application/json`,
+			`POST ${stop} application/json`,
+			`PUT ${piece} application/octet-stream`,
+		]);
+		for (const path of [`${finish}/64`, `${finish}/07`, `${open}/x`, `${stop}/1`]) {
+			const response = await forward(request(path, { method: "POST", body: "{}" }), {
+				upstreamUrl,
+				fetchImplementation: async () => assert.fail("unknown program route forwarded"),
+			});
+			assert.equal(response.status, 404);
+		}
+		const preflight = await forward(
+			request(piece, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "PUT",
+					"access-control-request-headers": "authorization, content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("preflight forwarded") },
+		);
+		assert.equal(preflight.status, 204);
+		assert.equal(preflight.headers.get("access-control-allow-methods"), "PUT");
+		const wrongMethod = await forward(request(finish, { method: "PUT", body: "x" }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("wrong method forwarded"),
+		});
+		assert.equal(wrongMethod.status, 405);
+	});
 	it("reads an upload only for a signed-in member, into one buffer of its stated size", async () => {
 		const upload = `/v1/member-session-attachments/upload/${id}/${id}/${"c".repeat(64)}`;
 		const size = 8 * 1024 * 1024;
@@ -1072,7 +1263,8 @@ describe("public member Company File gateway", () => {
 		};
 		const body = JSON.stringify({ name: "shop/sales-this-month", params: { since: "2026-11-01" } });
 		const length = new TextEncoder().encode(body).byteLength;
-		for (const verb of ["query", "watch", "apply", "describe"]) {
+		const verbs = ["query", "watch", "apply", "describe", "rows", "edit", "change", "changes"];
+		for (const verb of verbs) {
 			const path = `/v1/company-data/${id}/${verb}`;
 			const done = await forward(
 				request(path, {
@@ -1090,12 +1282,12 @@ describe("public member Company File gateway", () => {
 		}
 		assert.deepEqual(
 			seen,
-			["query", "watch", "apply", "describe"].map(
+			verbs.map(
 				(verb) =>
 					`POST ${upstreamUrl}/v1/company-data/${id}/${verb} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
 			),
 		);
-		assert.deepEqual(bodies, [body, body, body, body]);
+		assert.deepEqual(bodies, verbs.map(() => body));
 		// A refusal passes back as the data gateway gave it, a held step with what it would destroy.
 		answer = () =>
 			Response.json(
@@ -1133,9 +1325,25 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(watchDown.status, 503);
 		assert.match(await watchDown.text(), /Company data is unavailable just now/);
-		assert.equal(seen.length, 7);
+		for (const verb of ["edit", "change"]) {
+			const editDown = await forward(request(`/v1/company-data/${id}/${verb}`, { method: "POST", body: "{}" }), {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(editDown.status, 503);
+			assert.match(await editDown.text(), /A change sent may still apply/);
+		}
+		for (const verb of ["rows", "changes"]) {
+			const readDown = await forward(request(`/v1/company-data/${id}/${verb}`, { method: "POST", body: "{}" }), {
+				upstreamUrl,
+				fetchImplementation,
+			});
+			assert.equal(readDown.status, 503);
+			assert.doesNotMatch(await readDown.text(), /may still apply/);
+		}
+		assert.equal(seen.length, verbs.length + 7);
 	});
-	it("bounds a company data call's body: 64 KiB for a question or a look, 512 KiB for a watch, 1 MiB for steps", async () => {
+	it("bounds a company data call's body: 64 KiB for a question, a look or a change, 512 KiB for a watch, 1 MiB for steps, rows, an edit and what changed", async () => {
 		const sizes: number[] = [];
 		const fetchImplementation: typeof fetch = async (_url, init) => {
 			sizes.push((init?.body as Uint8Array).byteLength);
@@ -1146,6 +1354,10 @@ describe("public member Company File gateway", () => {
 			["watch", 512 * 1024],
 			["describe", 64 * 1024],
 			["apply", 1024 * 1024],
+			["rows", 1024 * 1024],
+			["edit", 1024 * 1024],
+			["change", 64 * 1024],
+			["changes", 1024 * 1024],
 		] as const) {
 			const path = `/v1/company-data/${id}/${verb}`;
 			const full = await forward(request(path, { method: "POST", body: "x".repeat(limit) }), {
@@ -1159,11 +1371,11 @@ describe("public member Company File gateway", () => {
 			});
 			assert.equal(over.status, 413, verb);
 		}
-		assert.deepEqual(sizes, [64 * 1024, 512 * 1024, 64 * 1024, 1024 * 1024]);
+		assert.deepEqual(sizes, [64 * 1024, 512 * 1024, 64 * 1024, 1024 * 1024, 1024 * 1024, 1024 * 1024, 64 * 1024, 1024 * 1024]);
 	});
 	it("reads a company data call's body only for a signed-in member, a watch too", async () => {
 		const fetchImplementation = async () => assert.fail("unchecked company data call forwarded");
-		for (const verb of ["query", "watch", "apply", "describe"])
+		for (const verb of ["query", "watch", "apply", "describe", "rows", "edit", "change", "changes"])
 			for (const [memberSignedIn, status] of [
 				[async () => false, 401],
 				[
@@ -1203,7 +1415,7 @@ describe("public member Company File gateway", () => {
 	});
 	it("answers a company data call's preflight for POST with the token and the content type alone", async () => {
 		const fetchImplementation = async () => assert.fail("preflight forwarded");
-		for (const verb of ["query", "watch", "apply", "describe"]) {
+		for (const verb of ["query", "watch", "apply", "describe", "rows", "edit", "change", "changes"]) {
 			const preflight = (method: string, headers: string, origin = "https://app.qorpera.com") =>
 				forward(
 					request(`/v1/company-data/${id}/${verb}`, {
@@ -1239,7 +1451,7 @@ describe("public member Company File gateway", () => {
 			return original.call(AbortSignal, ms);
 		};
 		try {
-			for (const verb of ["watch", "query", "apply", "describe"]) {
+			for (const verb of ["watch", "query", "apply", "describe", "rows", "edit", "change", "changes"]) {
 				const response = await forward(
 					request(`/v1/company-data/${id}/${verb}`, { method: "POST", body: "{}" }),
 					{ upstreamUrl, fetchImplementation: async () => Response.json({ same: true }) },
@@ -1249,7 +1461,7 @@ describe("public member Company File gateway", () => {
 		} finally {
 			AbortSignal.timeout = original;
 		}
-		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000]);
+		assert.deepEqual(deadlines, [30_000, 25_000, 25_000, 25_000, 25_000, 25_000, 25_000, 25_000]);
 	});
 	it("supports the governed folder object read route", async () => {
 		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;

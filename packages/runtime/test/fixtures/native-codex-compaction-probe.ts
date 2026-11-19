@@ -154,7 +154,13 @@ export async function runNativeCodexCompactionProbe(
 			];
 			for (const tool of toolBlocks) {
 				assert(tool && typeof tool === "object" && "name" in tool);
-				assert.equal(tool.name, "qorpera", "Compaction must not restore native execution tools");
+				// WHY: a provider named OpenAI gives the agent's thread Codex's own web.run, which runs no command.
+				if (tool.name === "web" && "tools" in tool && Array.isArray(tool.tools))
+					assert.deepEqual(
+						tool.tools.map((nested: { name?: unknown }) => nested.name),
+						["run"],
+					);
+				else assert.equal(tool.name, "qorpera", "Compaction must not restore native execution tools");
 			}
 			const compact =
 				request.url === "/v1/responses/compact" ||

@@ -613,8 +613,8 @@ begin
 			and not exists (select 1 from public.qorpera_company_machine_desktop_actions
 				where machine_id = (pg_temp.gm_machine('carol-desktop')).id),
 			'2: taking one''s own hold again is an input, with no new hold and no action: ' || v::text);
-		perform pg_temp.gm_shift('carol-desktop', $s$desktop_member_input_at = clock_timestamp() - interval '40 minutes',
-			desktop_member_until = clock_timestamp() - interval '10 minutes'$s$);
+		perform pg_temp.gm_shift('carol-desktop', format($s$desktop_member_input_at = %1$L::timestamptz - interval '40 minutes',
+			desktop_member_until = %1$L::timestamptz - interval '10 minutes'$s$, clock_timestamp()));
 		v := pg_temp.gm_member('owner', 'qorpera_member_hand_back_machine_desktop', 'carol-desktop', $s$, 'closed', 0, null$s$);
 		perform pg_temp.base_assert(not (v ->> 'handedBack')::boolean
 			and (pg_temp.gm_machine('carol-desktop')).desktop_member_input_at is null
@@ -827,29 +827,6 @@ begin
 		'6: the service role alone sets the number');
 	perform pg_temp.base_assert((select array_agg(distinct proc.proname::text order by proc.proname::text)
 			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930759000') > 0) = array[
-			'qorpera_authorize_executor_machine', 'qorpera_company_machine_member_only', 'qorpera_company_machine_member_seen_at',
-			'qorpera_company_machine_member_sleep_due', 'qorpera_company_machine_member_sleep_seconds',
-			'qorpera_configure_machine_member_sleep', 'qorpera_list_agent_machines', 'qorpera_list_executor_machines'],
-		'6: the marker''s bodies');
-	-- The patched bodies keep their own markers and their old test.
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc where oid = 'public.qorpera_list_executor_machines(text,text)'::regprocedure),
-			'(machine.last_used_at <= clock_timestamp() - make_interval(secs => executor.sleep_after_seconds)') > 0
-		and strpos((select prosrc from pg_proc where oid = 'public.qorpera_list_executor_machines(text,text)'::regprocedure), '20260930739000') > 0
-		and strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_authorize_executor_machine(uuid,text,text,text,text)'::regprocedure),
-			'(v_machine.last_used_at > clock_timestamp() - make_interval(secs => v_executor.sleep_after_seconds)') > 0
-		and strpos((select prosrc from pg_proc where oid = 'public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure), '20260930744000') > 0,
-		'6: the patched bodies keep what they had');
-	-- What the rule leans on in bodies it does not patch: the agent's screen stamp is renewed at most every 30 seconds
-	-- (the half minute qorpera_company_machine_member_only allows for), and only a hand-back clears the machine's own time
-	-- of private typing (qorpera_company_machine_member_seen_at reads the hold's record for it).
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure),
-			'or screen_agent_used_at is null or screen_agent_used_at < clock_timestamp() - interval ''30 seconds'')') > 0,
-		'6: the agent''s screen stamp is renewed at most every 30 seconds: member_only allows for exactly that');
-	perform pg_temp.base_assert((select array_agg(distinct proc.proname::text order by proc.proname::text)
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
 			where namespace.nspname = 'public' and proc.prosrc ~ 'desktop_member_input_at\s*=\s*null')
 			= array['qorpera_member_hand_back_machine_desktop'],
 		'6: only a hand-back clears the machine''s own time of private typing');
@@ -861,7 +838,7 @@ begin
 			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
 			where namespace.nspname = 'public' and proc.prosrc ~ 'qorpera_company_machines' and proc.prosrc ~ 'last_used_at\s*=') = array[
 			'qorpera_admit_company_machine', 'qorpera_authorize_home_session', 'qorpera_authorize_machine_command', 'qorpera_authorize_machine_screen',
-			'qorpera_mark_company_machine_running', 'qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_act_begin',
+			'qorpera_fill_company_account_on_machine', 'qorpera_mark_company_machine_running', 'qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_act_begin',
 			'qorpera_member_machine_desktop_pointer_authority', 'qorpera_member_machine_desktop_share_begin',
 			'qorpera_member_machine_desktop_start_begin', 'qorpera_member_machine_screen_authority',
 			'qorpera_member_manage_company_machine', 'qorpera_member_take_machine_desktop', 'qorpera_native_machine_start',

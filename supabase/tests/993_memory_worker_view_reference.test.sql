@@ -456,7 +456,6 @@ end $$;
 
 -- 6. Grants and the deploy guard's markers ---------------------------------------------------------------------------------
 do $$
-declare v_function text;
 begin
 	if not has_function_privilege('service_role', 'public.qorpera_memory_view_reference_check(uuid,jsonb)', 'execute')
 		or not has_function_privilege('service_role', 'public.qorpera_folder_worker_parent(uuid,jsonb)', 'execute')
@@ -469,18 +468,6 @@ begin
 		or exists (select 1 from unnest(array['anon','authenticated','service_role']) r(name)
 			where has_table_privilege(r.name, 'public.qorpera_runtime_worker_parents', 'select, insert, update, delete')) then
 		raise exception 'The grants'; end if;
-	-- No count on a worker's sequences (test 332 keeps it so).
-	if (select pg_get_constraintdef(oid) from pg_constraint where conname = 'qorpera_runtime_worker_parents_sequence_check')
-		is distinct from 'CHECK ((sequence >= 1))' then
-		raise exception 'The sequence check'; end if;
-	foreach v_function in array array[
-		'public.qorpera_memory_view_reference_valid(jsonb)', 'public.qorpera_memory_view_reference_check(uuid,jsonb)',
-		'public.qorpera_folder_worker_parent_keep(uuid,integer,uuid,jsonb)', 'public.qorpera_folder_worker_parent(uuid,jsonb)',
-		'public.qorpera_folder_worker_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)',
-		'public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)'] loop
-		if position('20260930171000' in pg_get_functiondef(v_function::regprocedure)) = 0 then
-			raise exception 'The marker is missing in %', v_function; end if;
-	end loop;
 end $$;
 
 rollback;

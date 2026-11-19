@@ -1106,7 +1106,6 @@ begin
 	perform pg_temp.base_assert(jsonb_array_length(v -> 'githubCopies') = 100 and jsonb_array_length(v -> 'repositories') >= 10,
 		'the list at its bounds');
 	perform pg_temp.base_assert(v_ms < 2000, format('the list took %s ms', round(v_ms)));
-	raise notice 'imp bounds: the list of 200 sessions and 10 repositories took % ms', round(v_ms, 1);
 	-- The claim: a running import, and 49 queued downloads of the same company behind it.
 	perform pg_temp.base_claims('service_role');
 	v_import := (pg_temp.imp_ask('imp-bounds', 'company', 'bounds', pg_temp.imp_gh('Acme/Bounds')) ->> 'requestId')::uuid;
@@ -1122,7 +1121,6 @@ begin
 	v_ms := extract(epoch from clock_timestamp() - v_at) * 1000;
 	perform pg_temp.base_assert(v = '[]'::jsonb, 'nothing of the company is claimed while its import runs: ' || v::text);
 	perform pg_temp.base_assert(v_ms < 2000, format('the claim took %s ms', round(v_ms)));
-	raise notice 'imp bounds: the claim of 50 queued requests took % ms', round(v_ms, 1);
 	perform pg_temp.imp_end(v_import);
 end $$;
 

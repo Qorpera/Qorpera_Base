@@ -1,26 +1,49 @@
+import { osPath, writeVisionFile } from "@qorpera/cloud-client/company-state-files";
 import { describeError } from "../../cloud/client.ts";
-import type { WebMemberFolder } from "../../cloud/company-folder-writes.ts";
+import {
+	rewriteStateFile,
+	WebCompanyFolderRejectedError,
+	type WebMemberFolder,
+	withProblems,
+} from "../../cloud/company-folder-writes.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
-import { companyLogo, h, icon, notice, replace } from "../../ui/dom.ts";
+import { companyNameText, isUnnamed } from "../../ui/company-name.ts";
+import { button, companyLogo, h, icon, notice, replace } from "../../ui/dom.ts";
 import { choosePictureCrop } from "../../ui/picture-cropper.ts";
 import { PictureFileError } from "../../ui/picture-file.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 
-/* Settings → Company → Brand (Jonas, 9 Nov 2026): the company's official name and logo. The logo is the company folder's
- * QorperaOS/brand/logo.svg, which the company's Branding & Identity agent draws and keeps up to date; an owner or admin
- * chooses another the way they choose their own picture (fitted to a rounded square), or removes it. The name is the
- * first line of the company's vision and is shown, not changed here: renaming is deferred (Jonas, 9 Nov 2026), since a
- * new name also has to reach the business registry, mail and the rest. Colours, fonts and the brand guide live beside
- * the logo in the brand folder; this section shows only the official name and logo. */
+export const VISION_PATH = osPath("vision/vision.md");
+export const COMPANY_NAME_LIMIT = 120;
+
+export function renamedVision(text: string, name: string): string {
+	const lines = text.split("\n");
+	const bare = (line: string) => line.replace(/^\uFEFF/, "").replace(/\r$/, "");
+	const heading = writeVisionFile(name, "").split("\n")[0]!;
+	const first = lines.findIndex((line) => bare(line).trim() !== "");
+	if (first >= 0 && /^# +/.test(bare(lines[first]!))) {
+		const bom = lines[first]!.startsWith("\uFEFF") ? "\uFEFF" : "";
+		lines[first] = `${bom}${heading}${lines[first]!.endsWith("\r") ? "\r" : ""}`;
+	} else lines.unshift(heading, "");
+	return lines.join("\n");
+}
+
+export function renameFailure(error: unknown): string {
+	if (!(error instanceof WebCompanyFolderRejectedError)) return describeError(error);
+	if (error.outcome === "denied") return t("Only someone who may change the company's files can rename it.");
+	if (error.problems.length) return withProblems(t("The name was not accepted."), error.problems);
+	if (error.outcome === "conflict") return t("The vision kept changing while it was saved. Try again.");
+	return t("Try again.");
+}
 
 export interface CompanyBrandOptions {
 	readonly profileId: string;
 	readonly name: () => string;
-	/** Owners and admins change the logo; everyone sees it. */
 	readonly canManage: () => boolean;
 	/** The company folder as the member, for each change (it re-checks the member's authority). */
 	readonly folder: () => WebMemberFolder;
 	readonly signal: AbortSignal;
+	readonly renamed: (name: string) => void;
 }
 
 export class CompanyBrandView {
@@ -33,6 +56,9 @@ export class CompanyBrandView {
 	readonly #error = h("div", { class: "settings-brand-error" });
 	readonly #menu: HTMLElement;
 	#busy = false;
+	#editing = false;
+	#holdRename: ((held: boolean) => void) | undefined;
+	#savedName: string | undefined;
 
 	constructor(options: CompanyBrandOptions) {
 		this.#options = options;
@@ -103,8 +129,11 @@ export class CompanyBrandView {
 	update(): void {
 		if (this.#options.signal.aborted) return;
 		const manage = this.#options.canManage();
-		if (!this.#logoSlot.firstChild)
-			replace(this.#logoSlot, companyLogo(this.#options.profileId, "settings-brand-figure"));
+		const unnamed = isUnnamed(this.#options.name());
+		if (!this.#logoSlot.firstChild || this.#logoSlot.dataset.unnamed !== String(unnamed)) {
+			this.#logoSlot.dataset.unnamed = String(unnamed);
+			replace(this.#logoSlot, companyLogo(this.#options.profileId, "settings-brand-figure", unnamed));
+		}
 		this.#logoButton.disabled = !manage || this.#busy;
 		this.#logoButton.classList.toggle("is-changeable", manage);
 		this.#logoButton.toggleAttribute("aria-busy", this.#busy);
@@ -116,7 +145,30 @@ export class CompanyBrandView {
 		this.#logoButton.setAttribute("aria-label", label);
 		this.#logoButton.title = manage ? label : "";
 		if (!manage) this.#setMenu(false);
-		replace(this.#nameSlot, h("strong", null, this.#options.name()));
+		if (this.#editing) {
+			this.#holdRename?.(this.#busy);
+			return;
+		}
+		const current = this.#options.name();
+		if (this.#savedName === current) this.#savedName = undefined;
+		replace(
+			this.#nameSlot,
+			h("strong", null, companyNameText(this.#savedName ?? current)),
+			manage
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "icon-button settings-brand-rename",
+							"aria-label": t("Rename the company"),
+							title: t("Rename the company"),
+							disabled: this.#busy,
+							onclick: () => this.#startRename(),
+						},
+						icon("edit"),
+					)
+				: null,
+		);
 	}
 
 	#hasLogo(): boolean {
@@ -154,6 +206,83 @@ export class CompanyBrandView {
 			() => store.remove(this.#options.profileId, this.#options.folder, this.#options.signal),
 			phrase("The logo could not be removed."),
 		);
+	}
+
+	#startRename(): void {
+		this.#editing = true;
+		const input = h("input", {
+			type: "text",
+			class: "settings-brand-name-input",
+			value: this.#savedName ?? (isUnnamed(this.#options.name()) ? "" : this.#options.name()),
+			placeholder: t("Company name"),
+			maxlength: String(COMPANY_NAME_LIMIT),
+			autocomplete: "off",
+			"aria-label": t("Company name"),
+		});
+		const controls: (HTMLInputElement | HTMLButtonElement)[] = [input];
+		this.#holdRename = (held) => {
+			for (const control of controls) control.disabled = held;
+		};
+		const save = () => void this.#rename(input.value, () => input.focus());
+		const cancel = () => {
+			if (this.#busy) return;
+			this.#editing = false;
+			this.update();
+			this.#nameSlot.querySelector<HTMLElement>(".settings-brand-rename")?.focus();
+		};
+		input.onkeydown = (event: KeyboardEvent) => {
+			if (event.isComposing) return;
+			if (event.key === "Enter") {
+				event.preventDefault();
+				save();
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				event.stopPropagation();
+				cancel();
+			}
+		};
+		controls.push(
+			button(t("Save"), save, { small: true, primary: true }),
+			button(t("Cancel"), cancel, { small: true }),
+		);
+		replace(this.#nameSlot, ...controls);
+		this.#holdRename(this.#busy);
+		input.focus();
+		input.select();
+	}
+
+	async #rename(raw: string, retry: () => void): Promise<void> {
+		if (this.#busy) return;
+		const name = raw.replace(/\s+/g, " ").trim();
+		if (!name || name === (this.#savedName ?? this.#options.name())) {
+			this.#editing = false;
+			this.update();
+			return;
+		}
+		const signal = this.#options.signal;
+		await this.#run(async () => {
+			try {
+				await rewriteStateFile(
+					this.#options.folder(),
+					{
+						locate: async () => VISION_PATH,
+						rewrite: (text) => renamedVision(text, name),
+						key: () => `web:company-rename:${crypto.randomUUID()}`,
+						gone: t("The company's vision could not be read."),
+						failure: t("The name could not be saved."),
+					},
+					signal,
+					() => signal.throwIfAborted(),
+				);
+			} catch (error) {
+				if (signal.aborted) throw error;
+				throw new Error(renameFailure(error));
+			}
+			this.#savedName = name;
+			this.#editing = false;
+			this.#options.renamed(name);
+		}, phrase("The name could not be saved."));
+		if (this.#editing && !signal.aborted) retry();
 	}
 
 	async #run(action: () => Promise<void>, failure: string): Promise<void> {

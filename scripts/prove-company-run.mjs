@@ -63,6 +63,10 @@ async function bundle(scratch) {
 				'export {MEMORY_RUN_STEP_FIELD_BYTES, MEMORY_RUN_STEP_READS_BYTES, MEMORY_RUN_STEP_RESULT_BYTES, parseMemoryRunFile} from "./packages/cloud-client/src/memory-run-files.ts";',
 				'export {nativeCodexFixtureCommand} from "./packages/runtime/test/fixtures/native-codex-fixture-command.ts";',
 				'export {cloudToolsOnDemand} from "./packages/runtime/src/cloud-native-tools-on-demand.ts";',
+				'export {cloudHiringTools} from "./packages/runtime/src/cloud-hiring-tools.ts";',
+				'export {CloudFolderHiring} from "./packages/runtime/src/cloud-folder-hiring.ts";',
+				'export {CloudFolderGroupChats} from "./packages/runtime/src/cloud-folder-group-chats.ts";',
+				'export {CloudActionReviewGate} from "./packages/runtime/src/cloud-action-review.ts";',
 			].join("\n"),
 		},
 		platform: "node",
@@ -347,7 +351,7 @@ function provider(state, calls, roundMs = 0) {
 			const outputs = body.input
 				.filter((item) => item.type === "function_call_output")
 				.map((item) => ({ callId: item.call_id, output: String(item.output) }));
-			const call = turn < calls.length ? calls[turn](outputs) : null;
+			const call = turn < calls.length ? calls[turn](outputs, state.db) : null;
 			if (!call) {
 				stream(response, body.model, message("DONE"));
 				return;
@@ -495,7 +499,9 @@ async function attempt(code, context) {
 		compactor,
 		command: command.command,
 		binarySha256: command.binarySha256,
-		...(review ? { actionReview: () => review } : {}),
+		...(review
+			? { actionReview: () => (typeof review === "function" ? review(code, { db, binding, paths }) : review) }
+			: {}),
 		signal: AbortSignal.timeout(240_000),
 		timeoutMs: 200_000,
 	});
@@ -577,6 +583,7 @@ export async function proveCompanyRun({
 	const state = { agent: [], calls: [], compactor: [], abandoned: [], failure: null, trace, lane: { ms: 15, gets: 0, inFlight: 0, most: 0, busy: 0, objects: new Set() } };
 	const server = provider(state, calls, roundMs);
 	const db = new Database((sql) => database.cluster.psql(name, sql, ["-qAt"]));
+	state.db = db;
 	try {
 		const code = await bundle(scratch);
 		assert.equal(code.MAX_CLOUD_TOOL_RESULT_BYTES, 32 * 1024);

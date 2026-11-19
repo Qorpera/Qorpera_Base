@@ -54,7 +54,7 @@ import type {
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
-import { LINE_PIPE_BYTES, LinePipe } from "./machine-exec-server.ts";
+import { LINE_PIPE_BYTES, LinePipe, sftpBytes, sftpLines } from "./machine-exec-server.ts";
 import { type HomeFolderSession, HomeOutputGate, parseHomeFolderAnswer } from "./machine-home-folder.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -74,6 +74,16 @@ const WINDOWS_MS = 30000;
 /** A home's output (slice 3, 20260930754000): the least time between two releases of what its channel sends back, how
  * often a release that did not answer is tried before the channel ends, and what may wait for one. */
 const HOME_RELEASE_SPACING_MS = 200;
+/** How many of those releases an exec channel may start without waiting (HomeOutputGateOptions.burst): a shell command's
+ * start answer, output and exit pass at once; a stream is still held to one release per 200 ms. */
+const HOME_RELEASE_BURST = 4;
+/** The file channel's (slice C1): none. SFTP is a request and its answer, one after another for most of what Claude
+ * Code's file tools do (a Read is a stat, an open, a read and a close), and a release may come at most once per spacing,
+ * so 200 ms there made each of those round trips 200 ms (C1's proof: 200 small files read one after another took 105 s
+ * through the gate against 1.8 s without it). Every answer still leaves only after a release that began after it came:
+ * one release at a time, each as soon as the one before it ended, so the round trip costs one release, and answers that
+ * come while one is out leave together after the next. */
+const HOME_SFTP_RELEASE_SPACING_MS = 0;
 const HOME_RELEASE_TRIES = 3;
 const HOME_OUTPUT_WAIT_BYTES = 16 * 1024 * 1024;
 /** A boot's final boundary: what an unanswered final held is not applied, and the stop goes on. */
@@ -99,6 +109,10 @@ const HOME_CODEX_ON_BOOT =
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$1" ] || exit 98; exec /usr/bin/sha256sum -- "$1"';
 /** How long the hash of the machine's Codex (319 MB) may take, once per boot. */
 const HOME_CODEX_HASH_MS = 60000;
+/** The file channel (slice C1): whether the machine has sftp-server, as root on the boot SQL named (`$0`; else exit 97);
+ * exit 98 where the image has none (an earlier image's disk), 0 where it has it. */
+const HOME_SFTP_ON_BOOT =
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -x "$1" ] || exit 98';
 
 /**
  * The agent's home (lanes/agent-box-20261113): one channel's `codex exec-server --listen stdio`, started as root on the
@@ -110,9 +124,24 @@ const HOME_CODEX_HASH_MS = 60000;
  * (KillMode=control-group), a process the agent detached included. `--pipe` hands the exec's stdin and stdout to the
  * service itself; the environment is the service's, never expanded by systemd. Proven on a real machine of the live
  * image (home-lxd, 14 Nov 2026).
+ *
+ * A channel of kind `sftp` (Claude Code on the home, slice C1) runs OpenSSH's `sftp-server` in the same shape, its unit
+ * named `…-sftp-<channel>`: P4's file channel (lanes/agent-box-20261113/p4-claude-home), so what Claude Code's file
+ * tools write is the agent's, in the company folder through the machine's own `/company` mount, as the exec-server's.
+ * No shell is around either program: systemd starts it with the environment below and the channel's pipe as stdio.
  */
-export function companyMachineHomeCommand(bootId: string, sessionId: string, channel: string): string[] {
-	if (!UUID.test(bootId) || !UUID.test(sessionId) || !/^[0-9a-f]{8,32}$/.test(channel))
+export function companyMachineHomeCommand(
+	bootId: string,
+	sessionId: string,
+	channel: string,
+	kind: "exec" | "sftp" = "exec",
+): string[] {
+	if (
+		!UUID.test(bootId) ||
+		!UUID.test(sessionId) ||
+		!/^[0-9a-f]{8,32}$/.test(channel) ||
+		(kind !== "exec" && kind !== "sftp")
+	)
 		throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 	const environment = {
 		HOME: CLOUD_MACHINE_HOME.home,
@@ -136,7 +165,7 @@ export function companyMachineHomeCommand(bootId: string, sessionId: string, cha
 		"--collect",
 		"--service-type=exec",
 		"--expand-environment=no",
-		`--unit=${CLOUD_MACHINE_HOME.unitPrefix}${sessionId}-${channel}`,
+		`--unit=${CLOUD_MACHINE_HOME.unitPrefix}${sessionId}-${kind === "sftp" ? "sftp-" : ""}${channel}`,
 		`--slice=${PATHS.slice}`,
 		`--uid=${CLOUD_MACHINE_HOME.uid}`,
 		`--gid=${CLOUD_MACHINE_HOME.gid}`,
@@ -144,10 +173,9 @@ export function companyMachineHomeCommand(bootId: string, sessionId: string, cha
 		"--property=KillMode=control-group",
 		"--property=TimeoutStopSec=10",
 		...Object.entries(environment).map(([key, value]) => `--setenv=${key}=${value}`),
-		CLOUD_MACHINE_HOME.codex,
-		"exec-server",
-		"--listen",
-		"stdio",
+		...(kind === "sftp"
+			? [CLOUD_MACHINE_HOME.sftpServer]
+			: [CLOUD_MACHINE_HOME.codex, "exec-server", "--listen", "stdio"]),
 	];
 }
 /** save_coding_value's clipboard helper (20260930705000), packaged beside the guest helper and installed by the image
@@ -172,6 +200,12 @@ const CODING_VALUE_WAIT_MS = 6000;
  * one after another, 2 s each at most inside the machine, so 8 s) runs under it and the request's signal (round 25 P2 of
  * #1661): a request that ends cuts it off, and a cut-off clear failed, records nothing and stays owed. */
 const CODING_VALUE_CLEAR_MS = 10000;
+export const COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "/opt/qorpera-machine/cloud-machine-account-fill.mjs";
+/** Two JSON lines at most: the key's public half, then a code. */
+const ACCOUNT_FILL_OUTPUT_BYTES = 4096;
+/** The helper gives itself 20 s (cloud-machine-account-fill.ts, MACHINE_ACCOUNT_FILL_MS); the exec ends 4 s later at
+ * most, inside the command service's 30 s for the whole request. */
+const ACCOUNT_FILL_MS = 24000;
 /** The owed clear at an agent's screen call (F35 of #1661, round 24 N2): the fence, the host's own clear script and the
  * record together, at most this long. The caller gives the call 30 s; the helper takes 22 s at most (SCREEN_MS) and the
  * folder's boundary 4 s (SCREEN_BOUNDARY_MS): 3 s is what is left with a second for the way back. The script bounds
@@ -947,6 +981,8 @@ export interface CompanyMachineHostOptions {
 	 * tests' own shorter ones. */
 	codingValueTimeoutMs?: number;
 	codingValueClearTimeoutMs?: number;
+	/** How long fill_company_account's helper may run, in all (default 24 s): the tests' own shorter one. */
+	accountFillTimeoutMs?: number;
 	/** How long the owed clipboard clear at a screen call may take (default 3 s, SCREEN_CLEAR_MS): the tests' own. */
 	screenClearTimeoutMs?: number;
 	/** How long machine_screen's helper may run (default 22 s): the tests' own shorter one. */
@@ -1175,6 +1211,27 @@ export type CompanyMachineMemberStartOutcome =
 /** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
 type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
 
+export interface CompanyMachineAccountFill {
+	placementId: string;
+	bootId: string;
+	receiptId: string;
+	desktopGeneration: number;
+	target: Record<string, unknown>;
+}
+/** The vault's side of one fill: the value sealed to the helper's public key for this call, or the vault's refusal in
+ * the database's own words. */
+export type CompanyMachineAccountFillSeal = (
+	publicKey: string,
+	signal: AbortSignal,
+) => Promise<
+	{ readonly box: Readonly<Record<string, string>> } | { readonly refused: { code: string; message: string } }
+>;
+/** The helper typed the value, or why not: its code, or the vault's refusal. */
+export type CompanyMachineAccountFillOutcome =
+	| { readonly filled: true }
+	| { readonly refused: string }
+	| { readonly vaultRefused: { readonly code: string; readonly message: string } };
+
 /** A boot's company folder (F3 6d), in this process's memory only (the pass is never written anywhere). */
 interface BootFolder {
 	bootId: string;
@@ -1210,6 +1267,8 @@ interface BootFolder {
 	/** The windows this process opened for the boot's home sessions (slice 3, 20260930754000), until their channel
 	 * ends: opened again each pass as the commands' are (#reopen). */
 	homes: Map<string, FolderCommandWindow>;
+	/** How many channels each of those sessions has open (slice C1): its window closes with the last one. */
+	homeChannels: Map<string, number>;
 	/** The paths the boot's boundaries said the company folder let go unsaved, for its next receipt whose output leaves
 	 * (6e-2a, #noted), and how many more there were. */
 	notSaved: CloudMachineFolderNotSaved[];
@@ -1559,6 +1618,9 @@ export class LxdCompanyMachineHost {
 	readonly #closing = new Map<string, Promise<MachineBoundary | undefined>>();
 	/** Per placement: the boot whose Codex was hashed, and its sha-256 (#homeCodex). */
 	readonly #homeCodexes = new Map<string, { bootId: string; sha: Promise<string> }>();
+	/** The boot of each placement whose machine was found to have sftp-server (#homeSftp); a missing one is asked again,
+	 * since the agent, root on its home, may install it. */
+	readonly #homeSftps = new Map<string, string>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
 		if (
@@ -1956,6 +2018,7 @@ export class LxdCompanyMachineHost {
 				held: false,
 				windows: new Map(),
 				homes: new Map(),
+				homeChannels: new Map(),
 				notSaved: [],
 				moreNotSaved: 0,
 				stillNotSaved: new Map(),
@@ -1988,6 +2051,7 @@ export class LxdCompanyMachineHost {
 					held: false,
 					windows: new Map(),
 					homes: new Map(),
+					homeChannels: new Map(),
 					notSaved: [],
 					moreNotSaved: 0,
 					stillNotSaved: new Map(),
@@ -4104,6 +4168,177 @@ export class LxdCompanyMachineHost {
 		return Object.freeze({ png, etag: createHash("sha256").update(png).digest("hex") });
 	}
 
+	async accountFill(
+		run: CompanyMachineAccountFill,
+		seal: CompanyMachineAccountFillSeal,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAccountFillOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_UNAVAILABLE");
+		if (
+			![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(run.desktopGeneration) ||
+			run.desktopGeneration < 0
+		)
+			throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		const memberHolds = async () =>
+			!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal));
+		if (!this.#holdDesktop(run.placementId)) {
+			if (await memberHolds()) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			if (!(await this.#holdDesktopWithin(run.placementId, CODING_VALUE_WAIT_MS, signal)))
+				throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_BUSY");
+		}
+		let ended = true;
+		try {
+			if (await memberHolds()) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			ended = false;
+			const outcome = await this.#runAccountFill(pipe, run, seal, memberHolds, signal);
+			ended = true;
+			return outcome;
+		} finally {
+			this.#releaseDesktop(run.placementId, ended);
+		}
+	}
+	async #runAccountFill(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		run: CompanyMachineAccountFill,
+		seal: CompanyMachineAccountFillSeal,
+		memberHolds: () => Promise<boolean>,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAccountFillOutcome> {
+		const deadline = AbortSignal.any([
+			signal,
+			AbortSignal.timeout(this.#options.accountFillTimeoutMs ?? ACCOUNT_FILL_MS),
+		]);
+		// The helper's second line on stdin: the box, or nothing (stdin ends).
+		let send: (line: Buffer | null) => void = () => undefined;
+		const second = new Promise<Buffer | null>((resolve) => {
+			send = resolve;
+		});
+		deadline.addEventListener("abort", () => send(null), { once: true });
+		const target = Buffer.from(
+			`${JSON.stringify(run.target)}
+`,
+			"utf8",
+		);
+		async function* stdin(): AsyncGenerator<Uint8Array> {
+			yield target;
+			const line = await second;
+			if (line) yield line;
+		}
+		let held = Buffer.alloc(0);
+		let ready: string | undefined;
+		let code: string | undefined;
+		let vaultRefused: { code: string; message: string } | undefined;
+		let sealFailure: unknown;
+		let memberTookOver = false;
+		let sealing: Promise<void> | undefined;
+		// A line that is not the helper's fails the call, whatever came before it.
+		let invalid = false;
+		const line = (text: string) => {
+			let output: Record<string, unknown>;
+			try {
+				output = record(JSON.parse(text), "COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			} catch {
+				invalid = true;
+				throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			}
+			const keys = Object.keys(output).sort().join();
+			if (
+				ready === undefined &&
+				code === undefined &&
+				output.schema === "qorpera.machine-account-fill-ready/v1" &&
+				keys === "publicKey,schema" &&
+				typeof output.publicKey === "string" &&
+				/^[A-Za-z0-9_-]{43}$/.test(output.publicKey)
+			) {
+				const publicKey = output.publicKey;
+				ready = publicKey;
+				const sealFailed = (error: unknown) => {
+					sealFailure = error ?? new Error("COMPANY_MACHINE_ACCOUNT_FILL_SEAL_FAILED");
+					send(null);
+				};
+				sealing = seal(publicKey, deadline)
+					.then(async (answer) => {
+						if (!("box" in answer)) {
+							vaultRefused = answer.refused;
+							send(null);
+						} else if (await memberHolds()) {
+							memberTookOver = true;
+							send(null);
+						} else send(Buffer.from(`${JSON.stringify(answer.box)}\n`, "utf8"));
+					})
+					.catch(sealFailed);
+				return;
+			}
+			if (
+				code === undefined &&
+				output.schema === "qorpera.machine-account-fill-result/v1" &&
+				keys === "code,schema" &&
+				typeof output.code === "string" &&
+				/^[A-Z][A-Z0-9_]{2,60}$/.test(output.code)
+			) {
+				code = output.code;
+				send(null);
+				return;
+			}
+			invalid = true;
+			throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		};
+		const onStdout = (chunk: Buffer) => {
+			held = Buffer.concat([held, chunk]);
+			for (let end = held.indexOf(10); end >= 0; end = held.indexOf(10)) {
+				const text = held.subarray(0, end).toString("utf8");
+				held = Buffer.from(held.subarray(end + 1));
+				line(text);
+			}
+		};
+		let exitCode: number | undefined;
+		try {
+			exitCode = (
+				await pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(run.placementId),
+					{
+						command: [
+							"/bin/sh",
+							"-c",
+							CODING_VALUE_ON_BOOT,
+							run.bootId,
+							"/usr/bin/node",
+							COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
+						],
+						environment: {},
+						cwd: "/",
+						stdin: stdin(),
+						maxStdoutBytes: ACCOUNT_FILL_OUTPUT_BYTES,
+						stderrTailBytes: 0,
+						onStdout,
+					},
+					deadline,
+				)
+			).exitCode;
+		} catch (error) {
+			// The helper said how it ended before the exec ended badly (its stdin closed under it after its answer): that
+			// answer stands. Anything else is the call's failure.
+			if (code === undefined || invalid) throw error;
+		} finally {
+			send(null);
+		}
+		await sealing;
+		if (invalid) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		if (exitCode === 97) return { refused: "MACHINE_BOOT_CHANGED" };
+		if (exitCode === 98) return { refused: "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS" };
+		if (exitCode !== undefined && exitCode !== 0) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_FAILED");
+		if (vaultRefused) return { vaultRefused };
+		if (sealFailure !== undefined) throw sealFailure;
+		if (memberTookOver) return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+		if (code === "FILLED") return { filled: true };
+		// FILL_NO_BOX only follows the vault's refusal or failure, both answered above.
+		if (code === undefined || code === "FILL_NO_BOX") throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		return { refused: code };
+	}
+
 	/**
 	 * The agent's home (lanes/agent-box-20261113, slice 1): `codex exec-server --listen stdio` inside the machine, as
 	 * the machine's agent account (`qorpera-agent`, which reaches root through sudo, as a coding session's user does),
@@ -4120,12 +4355,28 @@ export class LxdCompanyMachineHost {
 	 * On a machine with a folder (slice 3, 20260930754000) the session first gets its own folder window, so those
 	 * changes are credited to its run, and what the machine sends back leaves only once the folder released the
 	 * machine's reads and the run took them in (#homeFolder).
+	 *
+	 * Kind `sftp` (Claude Code on the home, slice C1): the same session, ask, boot check, unit, window and release, but
+	 * the program is OpenSSH's `sftp-server` (refused HOME_SFTP_MISSING on a machine whose image has none, #homeSftp) and
+	 * its byte stream travels as lines of base64 (sftpLines, sftpBytes): a line that is not base64 ends the channel. Every
+	 * channel of one session shares the session's one window, which closes with the last of them.
 	 */
 	async execServer(
-		input: { readonly placementId: string; readonly sessionId: string; readonly bootId: string },
+		input: {
+			readonly placementId: string;
+			readonly sessionId: string;
+			readonly bootId: string;
+			readonly kind?: "exec" | "sftp";
+		},
 		signal: AbortSignal,
 	): Promise<{ write(line: string): void; lines: AsyncIterable<string>; close(): Promise<void> }> {
-		if (!UUID.test(input.placementId) || !UUID.test(input.sessionId) || !UUID.test(input.bootId))
+		const kind = input.kind ?? "exec";
+		if (
+			!UUID.test(input.placementId) ||
+			!UUID.test(input.sessionId) ||
+			!UUID.test(input.bootId) ||
+			(kind !== "exec" && kind !== "sftp")
+		)
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
 		const exec = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!exec) throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
@@ -4137,7 +4388,12 @@ export class LxdCompanyMachineHost {
 		);
 		if (answer.state === "refused") throw new Error(answer.reason);
 		if (answer.session.bootId !== input.bootId) throw new Error("HOME_SESSION_ENDED");
-		if ((await this.#homeCodex(input.placementId, input.bootId, exec, signal)) !== CLOUD_MACHINE_HOME.codexSha256)
+		if (kind === "sftp") {
+			if (!(await this.#homeSftp(input.placementId, input.bootId, exec, signal)))
+				throw new Error("HOME_SFTP_MISSING");
+		} else if (
+			(await this.#homeCodex(input.placementId, input.bootId, exec, signal)) !== CLOUD_MACHINE_HOME.codexSha256
+		)
 			throw new Error("HOME_CODEX_NOT_PINNED");
 		const home = this.#options.folder ? await this.#homeFolder(answer.session, signal) : undefined;
 		const toMachine = new LinePipe();
@@ -4151,13 +4407,16 @@ export class LxdCompanyMachineHost {
 				run.abort();
 				fromMachine.end();
 			},
+			kind === "sftp"
+				? { spacingMs: HOME_SFTP_RELEASE_SPACING_MS, burst: 1 }
+				: { spacingMs: HOME_RELEASE_SPACING_MS, burst: HOME_RELEASE_BURST },
 		);
 		const pipe = exec(
 			this.#policy.project,
 			lxdCompanyMachineName(input.placementId),
 			{
-				// Root only to hand the exec-server to systemd; the unit runs it as the agent's account.
-				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex")),
+				// Root only to hand the program to systemd; the unit runs it as the agent's account.
+				command: companyMachineHomeCommand(input.bootId, input.sessionId, randomBytes(8).toString("hex"), kind),
 				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
 				cwd: "/",
 				stdin: toMachine.read(),
@@ -4179,13 +4438,24 @@ export class LxdCompanyMachineHost {
 				toMachine.end();
 				await home?.close();
 			});
+		const ended = (): void => {
+			toMachine.end();
+			gate?.close();
+			run.abort();
+		};
 		return {
-			write: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
-			lines: fromMachine.lines(),
+			write:
+				kind === "sftp"
+					? (line) => {
+							// Not the stream: nothing of it reaches sftp-server, and the channel ends.
+							const bytes = sftpBytes(line);
+							if (bytes) toMachine.push(bytes);
+							else ended();
+						}
+					: (line) => toMachine.push(Buffer.from(`${line}\n`, "utf8")),
+			lines: kind === "sftp" ? sftpLines(fromMachine.read()) : fromMachine.lines(),
 			close: async () => {
-				toMachine.end();
-				gate?.close();
-				run.abort();
+				ended();
 				await pipe;
 			},
 		};
@@ -4228,6 +4498,34 @@ export class LxdCompanyMachineHost {
 			throw error;
 		}
 	}
+	/** Whether the machine has sftp-server on this boot (the file channel, slice C1), asked as root on the boot SQL named.
+	 * Kept once found for the boot; a machine without it is asked again at its next channel. A boot that is not the
+	 * machine's is HOME_SESSION_ENDED. */
+	async #homeSftp(
+		placementId: string,
+		bootId: string,
+		exec: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		if (this.#homeSftps.get(placementId) === bootId) return true;
+		const result = await exec(
+			this.#policy.project,
+			lxdCompanyMachineName(placementId),
+			{
+				command: ["/bin/sh", "-c", HOME_SFTP_ON_BOOT, bootId, CLOUD_MACHINE_HOME.sftpServer],
+				environment: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" },
+				cwd: "/",
+				maxStdoutBytes: 1024,
+				stderrTailBytes: 512,
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(HOME_CODEX_HASH_MS)]),
+		);
+		if (result.exitCode === 97) throw new Error("HOME_SESSION_ENDED");
+		if (result.exitCode === 98) return false;
+		if (result.exitCode !== 0) throw new Error("HOME_SFTP_UNREADABLE");
+		this.#homeSftps.set(placementId, bootId);
+		return true;
+	}
 	/** A home session's own place in the company folder (slice 3, 20260930754000), before its channel starts, once SQL
 	 * said the session stands and may share its machine (its agent's, for the same member and worker access, and only
 	 * while they read the whole folder) and named the ids its window carries (execServer). Once the boot's folder
@@ -4241,12 +4539,28 @@ export class LxdCompanyMachineHost {
 		session: HomeFolderSession,
 		signal: AbortSignal,
 	): Promise<{
-		gate(pass: (chunk: Buffer) => void, fail: (why: string) => void): HomeOutputGate;
+		gate(
+			pass: (chunk: Buffer) => void,
+			fail: (why: string) => void,
+			pace: { readonly spacingMs: number; readonly burst: number },
+		): HomeOutputGate;
 		close(): Promise<void>;
 	}> {
 		const folder = this.#options.folder as FolderControl;
 		const boot = await this.#settled(session, signal);
 		const at: FolderRelease = { placementId: session.placementId, bootId: session.bootId, runId: session.runId };
+		// One window per session, however many channels it has open (slice C1: Claude Code's shell and files are two
+		// channels of one session; a reconnect may overlap the channel it replaces): opened by each (said again, it
+		// changes nothing), closed only with the last, so a change made over one channel is credited while another ends.
+		let counted = false;
+		const leave = (): boolean => {
+			if (!counted) return false;
+			counted = false;
+			const left = (boot.homeChannels.get(session.sessionId) ?? 1) - 1;
+			if (left > 0) boot.homeChannels.set(session.sessionId, left);
+			else boot.homeChannels.delete(session.sessionId);
+			return left === 0;
+		};
 		if (boot.state === "open") {
 			const window: FolderCommandWindow = {
 				commandId: session.sessionId,
@@ -4254,15 +4568,21 @@ export class LxdCompanyMachineHost {
 				staffAgentId: session.staffAgentId,
 				requestedByUserId: session.requestedByUserId,
 			};
+			boot.homeChannels.set(session.sessionId, (boot.homeChannels.get(session.sessionId) ?? 0) + 1);
+			counted = true;
 			try {
 				await folder.openWindow(session.placementId, window, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
 			} catch (error) {
 				// The service may have taken the open although it did not answer in time: no channel starts, so the
-				// window is closed again, at best, as a window whose channel ended (review r11 F1).
-				const answered = await folder
-					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
-					.catch(() => undefined);
-				noted(boot, answered);
+				// window is closed again, at best, as a window whose channel ended (review r11 F1), unless another channel
+				// of the session still has it open.
+				if (leave()) {
+					boot.homes.delete(session.sessionId);
+					const answered = await folder
+						.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
+						.catch(() => undefined);
+					noted(boot, answered);
+				}
 				throw error;
 			}
 			boot.homes.set(session.sessionId, window);
@@ -4270,7 +4590,7 @@ export class LxdCompanyMachineHost {
 		let closing: Promise<void> | undefined;
 		const close = (): Promise<void> => {
 			closing ??= (async () => {
-				if (!boot.homes.delete(session.sessionId)) return;
+				if (!leave() || !boot.homes.delete(session.sessionId)) return;
 				const answered = await folder
 					.closeWindow(session.placementId, session.sessionId, AbortSignal.timeout(WINDOWS_MS))
 					.catch(() => undefined);
@@ -4294,12 +4614,13 @@ export class LxdCompanyMachineHost {
 			throw new Error("HOME_FOLDER_HELD");
 		}
 		return {
-			gate: (pass, fail) =>
+			gate: (pass, fail, pace) =>
 				new HomeOutputGate({
 					release,
 					pass,
 					fail,
-					spacingMs: HOME_RELEASE_SPACING_MS,
+					spacingMs: pace.spacingMs,
+					burst: pace.burst,
 					limitBytes: HOME_OUTPUT_WAIT_BYTES,
 				}),
 			close,

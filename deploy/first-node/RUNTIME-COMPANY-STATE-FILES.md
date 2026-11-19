@@ -749,7 +749,7 @@ Not reviewed. Dispatching a worker is reviewed.
 | `id` | the worker's id |
 | `title` | 1–200 bytes |
 | `species` | `in-house` or `coding` |
-| `harness` | a coding session's: `codex` or `claude-code` (only in a coding brief, C3a) |
+| `harness` | a coding session's: `codex` or `claude-code` (C3a); an in-house brief names it only when a member asked for one: `claude-code` (20260930770000) or `codex` (20260930787000). An in-house brief that names none is resolved by the dispatch, and again by each follow-up (20260930787000, Claude first): Claude Code (`harness_default`) when it has access write and its member can use Claude Code now (`qorpera_claude_worker_problem` answers nothing, and the follow-up's asker is the worker's member) or only the agent's machine is missing (20260930811000: the drain wakes it), else Codex |
 | `repository` | a coding session's: `github.com/<owner>/<name>` (only in a coding brief) |
 | `base_branch` | a coding session's base branch (only in a coding brief) |
 | `access` | `read` or `write` |
@@ -1127,11 +1127,17 @@ characters, handle and time, at most 10 each, since the reading was saved or els
 `questions {count, truncated, oldest}`
 (question cards nobody has answered, by `qorpera_list_member_open_questions`' rule for any member, the
 oldest ten with `agent`, `member` and `askedAt`); `members` (at most 20: `userId`, `role`, `login` as
-`qorpera_works_for_login_state` gives it), `membersTruncated`; `reading {savedAt, attention}` or null.
+`qorpera_works_for_login_state` gives it), `membersTruncated`; `reading {savedAt, attention}` or null;
+`views` (20260930773000): the views the company is owed now, each `{name, app, made}`, in this order:
+`products` (`apps/products`) while `QorperaOS/vision/vision.md` is there, `money` (`apps/money`) while a
+bank is connected with a live consent (the company's bank sync follows an active bank secret of this
+environment, its status `waiting`, `current` or `failed`, and its `consent_until` unknown or ahead);
+`made` is whether the folder entry `apps/<name>/app.toml` (by its lowercase key) is a file. `ads`
+joins with the ads door (step 6). The website's view is the platform's and never listed.
 The answer is at most 8,192 bytes. While it would pass that, it leaves out the last entry of
 `questions.oldest`, then of `team.ended`, then of `team.hired` (each setting its `truncated`), and only then
 agents from the end (`agentsTruncated`), never the Co-Founder's row, which comes first. What no cut reaches
-(that row, at most 20 members and the fixed keys) stays near 5 KiB at most.
+(that row, at most 20 members, the views and the fixed keys) stays near 5 KiB at most.
 
 **Built (F2-1b, migration 20260928269440):**
 - Part A. `qorpera_company_state_run_folder(env, agent, coworkers)` gives the folder names of a
@@ -2533,7 +2539,17 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      the locked rows; a lock it waits on past 2 seconds answers `busy`;
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
-  4. one block per worker: the dispatch wake of a row with none; a dispatch wake that is refused,
+  4. one block per worker: the dispatch wake of a row with none (a worker with `harness: claude-code` first takes its
+     member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: up to
+     `qorpera_claude_parallel_runs.cap` Claude Code runs per member at once, across all of the member's Claude logins
+     (20260930810000: one slot row per live run, the first free slot up to the cap, under a per-member advisory lock; the
+     row records the worker's Claude login at the take, which the run keeps to its end; the cap is 1 until the release
+     sets 4); a take
+     lost to another drain is `skipped`, and the worker starts on a later pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries, and, when the worker recorded
+     its conversation's Claude pick, `claude: {model, effort}`, 20260930784000; a defaulted worker that a Claude Code run
+     handed back with `qorpera_claude_worker_fall_back` (a Claude-side block: signed out, not open, plan limit, could not
+     start; 20260930787000) has no harness and `claude_fallback_sequence` equal to its sequence, and its wake takes the
+     key `worker-dispatch:<id>:<sequence>:codex`, since that sequence's Claude Code wake holds the plain one); a dispatch wake that is refused,
      cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
      (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
      without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
@@ -2543,7 +2559,31 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      55000), or whose wake is cancelled at insert, marks its workers undeliverable. An erased worker's waiting
      results are suppressed (their text is gone). Coding workers are started by their coding turns and only
      revived here. The drain never touches a todo row. A pass handles at most 32 due workers, within core §3's 64
-     subtransactions.
+     subtransactions. A Claude Code worker whose member's lease another run holds is not due to start
+     (`qorpera_claude_worker_waits` in `qorpera_folder_worker_due`, 20260930770000) until that lease ends (its wake or
+     its run's job ends), so waiting workers never fill a pass.
+     A defaulted Claude Code worker whose only problem is that its agent has no machine running for its member's work
+     (20260930811000) is still resolved to Claude Code (`qorpera_claude_worker_machine_wakeable`: the member's checks
+     pass, the home is on for the company, machines are available, the company has computer hours, the agent and the
+     member read the root). Before its lease, the drain wakes that machine (`qorpera_claude_worker_machine_wait`, under
+     the company's machine lock, after the drain's fence and member rows): the newest of the agent's machines the worker's
+     run would share (`qorpera_claude_worker_on_home`: started for that member by the agent's own run, by a write worker
+     or by this wake) that is not being deleted and not made from an image without the home
+     (`qorpera_home_outdated_images`: the five images before `93ef50b7`), running ones first; or, when there is none, ONE
+     new task machine of 2 CPUs, 4 GiB and 40 GiB named `<agent>-home`, started by the agent (no run) for that member.
+     Each worker waiting for a machine records it (`claude_machine_id`, `claude_machine_since`, event `machine_woken`),
+     so a second worker of the same agent and member finds the same machine. A waiting worker is not due
+     (`qorpera_claude_worker_machine_waits`) until the machine runs as its home, the machine is stopped, gone, failed to
+     start (`start:` error since the wake), the company ran out of hours, or 5 minutes passed; then the drain starts it on
+     Claude Code, or hands it to Codex at once (`claude_fallback_sequence`, event `fell_back` with reason `no_machine`,
+     the `:codex` key); once 5 minutes passed the reason is the 5 minutes, whatever else happened. Every worker that
+     waits on a machine not yet running records its wanted time; the last of them still waiting stops the machine when
+     it is still not running, its wanted time is unchanged, no run waits to be told of it and no going run took it (all
+     read under the company's machine lock, the machine row `FOR UPDATE`). A refusal at the wake (a member problem
+     since the dispatch, in that problem's words; no machines; the home off; too large; no hours) hands it to Codex in
+     the same pass. Each resolve starts the wait over. While a Claude Code worker's run is going with an open home session on the machine's
+     boot, the machine is at work: not due to sleep, and its stop is refused (`qorpera_company_machine_claude_at_work`);
+     once that run's job ended it keeps nothing awake, and the idle rule decides as before.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
   - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used (legacy sweep
@@ -2597,7 +2637,9 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
 `qorpera_folder_worker_commit`, and the worker row is the brief's index.
 - **C3a (migration 20260930077000, SQL test 928; the parser):**
   - **The brief.** A coding brief names `harness`, `repository` and `base_branch`; an in-house brief names none of
-    them. The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
+    them (since 20260930770000 an in-house brief may name `harness: claude-code`, for a worker Claude Code does on a
+    member's own Claude sign-in, and since 20260930787000 `harness: codex`, when a member asked for Codex; never a
+    repository or a base branch). The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
     for a coding brief only, and the database's parse check holds both to their rules.
   - **The request.** A dispatch may carry `species`, `harness`, `repository` and `owner`. The worker rules check a
     coding dispatch as `qorpera_manage_agent_worker` did, in its order and with its words, as rule refusals that write

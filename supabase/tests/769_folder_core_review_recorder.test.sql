@@ -94,8 +94,8 @@ begin
 	u := jsonb_build_array(pg_temp.deletes('rr1.txt'), jsonb_build_object('op', 'mkdir', 'path', 'rr-plain'));
 	r := pg_temp.record(b, v_action, u);
 	select * into v_row from public.qorpera_folder_reviews where id = (r ->> 'reviewId')::uuid;
-	if r <> jsonb_build_object('schema', 'qorpera.folder-review/v1', 'reviewId', md5('qorpera.folder-review:' || v_action::text)::uuid,
-			'approvedBy', null, 'units', 2)
+	if r - 'reviewId' <> jsonb_build_object('schema', 'qorpera.folder-review/v1', 'approvedBy', null, 'units', 2)
+		or v_row.id is null
 		or v_row.environment_id <> '63400000-0000-4000-8000-000000000020' or v_row.run_id::text <> p ->> 'runId'
 		or v_row.change_set_sha256 <> public.qorpera_folder_change_set_sha256(u) or v_row.units <> '{1,2}'
 		or v_row.decision <> 'allow' or v_row.answer is not null or v_row.answered_by_user_id is not null then
@@ -119,6 +119,7 @@ begin
 	x := pg_temp.agent_run();
 	u := jsonb_build_array(pg_temp.deletes('rr3.txt'));
 	r := pg_temp.record(x -> 'binding', pg_temp.action(x -> 'binding', 'call-allow-2'), u);
+	if (r ->> 'reviewId')::uuid = v_row.id then raise exception 'Another approval has another record id'; end if;
 	perform pg_temp.expect(pg_temp.commit(p, 'recorder-other-run', u, (r ->> 'reviewId')::uuid), 1, 'denied', 'review_required');
 	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-own-run', u, (r ->> 'reviewId')::uuid), 1, 'saved');
 end $$;
@@ -178,7 +179,7 @@ end $$;
 -- 3. What is never an approval here: a denial, an answered denial, another run's allow, another agent's, another
 -- company's, an approved external action, and an id that names nothing.
 do $$
-declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; y jsonb; v_action uuid; u jsonb;
+declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; y jsonb; v_action uuid; u jsonb; v_first jsonb; v_second jsonb;
 	c_refused constant text := 'This change has no approval in this run';
 begin
 	u := jsonb_build_array(pg_temp.deletes('rr6.txt'));
@@ -220,11 +221,11 @@ begin
 		raise exception 'A refused recording writes nothing'; end if;
 	-- Two approvals of one change set are two records, and either serves the commit.
 	u := jsonb_build_array(pg_temp.deletes('rr8.txt'));
-	if (pg_temp.record(b, pg_temp.action(b, 'call-twice-1'), u) ->> 'reviewId')
-		= (pg_temp.record(b, pg_temp.action(b, 'call-twice-2'), u) ->> 'reviewId') then
+	v_first := pg_temp.record(b, pg_temp.action(b, 'call-twice-1'), u);
+	v_second := pg_temp.record(b, pg_temp.action(b, 'call-twice-2'), u);
+	if v_first ->> 'reviewId' = v_second ->> 'reviewId' then
 		raise exception 'Each approval has its own record'; end if;
-	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-twice', u, md5('qorpera.folder-review:'
-		|| (select id from public.qorpera_action_reviews where call_id = 'call-twice-2')::text)::uuid), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(x -> 'actor', 'recorder-twice', u, (v_second ->> 'reviewId')::uuid), 1, 'saved');
 end $$;
 
 -- 4. The request: exactly its four keys, a review id, a tool name, an argument digest, and 1 to 1000 units (the commit's
@@ -282,10 +283,6 @@ begin
 		perform pg_temp.fx(format('delete from public.qorpera_company_execution_pauses where profile_id = %L', c_profile));
 		perform pg_temp.fx(format('delete from public.qorpera_company_deletions where profile_id = %L', c_profile));
 	end loop;
-	-- The body enters through the run check, before any read of the approval.
-	if pg_get_functiondef('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure)
-			not like '%Folder review request is invalid%v_tool := public.qorpera_folder_tool_run(p_binding, ''[]''::jsonb);%from public.qorpera_action_reviews%for share;%insert into public.qorpera_folder_reviews%' then
-		raise exception 'The recorder checks the request, enters through the run check, shares the approval, then inserts'; end if;
 end $$;
 
 -- 6. Grants: only the runtime's role, through the Company File control list.

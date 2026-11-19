@@ -12,14 +12,24 @@ export const NATIVE_CHATGPT_PLAN_EGRESS_HOSTS = Object.freeze(["api.openai.com"]
 /** A member's Claude sign-in in the vault's helper: the official Claude Code exchanges Anthropic's code there and reads
  * the account it signed in. */
 export const NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS = Object.freeze(["platform.claude.com", "api.anthropic.com"]);
+export const NATIVE_CLAUDE_CODE_EGRESS_HOSTS = Object.freeze(["api.anthropic.com"]);
 /** A voice call's control connection: Codex makes the call at chatgpt.com, then joins it over a websocket at OpenAI's
  * API (`OPENAI_REALTIME_API_BASE_URL`, Codex 0.155.1). A Codex login's relay passes it only while a call is open
  * (`allowRealtime`); the call's sound never passes the relay. */
 export const NATIVE_CODEX_REALTIME_EGRESS_HOSTS = Object.freeze(["api.openai.com"]);
+export const NATIVE_EGRESS_SOCKET_NAME = "egress.sock";
+export const NATIVE_SOCKET_PATH_BYTES = 100;
+
+export function assertNativeSocketPath(path: string, what: string): void {
+	if (Buffer.byteLength(path) > NATIVE_SOCKET_PATH_BYTES) throw new Error(`${what} socket path too long`);
+}
 const MAX_HELLO_BYTES = 65_536;
 // Bounds per connection only: 8 at once, 5 s to connect and 30 s idle. A run's relay counts no bytes and no connections
 // over its life (no caps on runs, 5 Oct 2026; it stopped a run after 64 MiB or 128 connections until then).
 const MAX_CONNECTIONS = 8;
+// WHY: Claude Code opens a connection per call in flight (2.1.325): about a dozen as an interactive read starts, 21 for
+// a turn's 20 parallel subagents, its own ceiling; at eight they were refused and retried.
+export const NATIVE_CLAUDE_CODE_CONNECTIONS = 32;
 const IDLE_MS = 30_000;
 /** How long a connection may be silent while a picture is being made (`allowLongWaits`): Codex's images request sends
  * nothing back until the picture exists, which takes up to a few minutes, and keeps no ping on the connection (Codex
@@ -162,10 +172,15 @@ export async function startNativeCodexEgress(options: {
 	hosts?: readonly string[];
 }): Promise<NativeEgressRelay> {
 	const hosts = options.hosts ?? NATIVE_CODEX_EGRESS_HOSTS;
+	const maxConnections =
+		hosts === NATIVE_CLAUDE_CODE_EGRESS_HOSTS || hosts === NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS
+			? NATIVE_CLAUDE_CODE_CONNECTIONS
+			: MAX_CONNECTIONS;
 	if (
 		hosts !== NATIVE_CODEX_EGRESS_HOSTS &&
 		hosts !== NATIVE_CHATGPT_PLAN_EGRESS_HOSTS &&
-		hosts !== NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS
+		hosts !== NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS &&
+		hosts !== NATIVE_CLAUDE_CODE_EGRESS_HOSTS
 	)
 		throw new Error("Unsupported native egress hosts");
 	const metadata = await lstat(options.root);
@@ -176,8 +191,8 @@ export async function startNativeCodexEgress(options: {
 		(metadata.mode & 0o077) !== 0
 	)
 		throw new Error("Unsafe native egress root");
-	const path = join(options.root, "egress.sock");
-	if (Buffer.byteLength(path) > 100) throw new Error("Native egress socket path too long");
+	const path = join(options.root, NATIVE_EGRESS_SOCKET_NAME);
+	assertNativeSocketPath(path, "Native egress");
 	const transport = options.transport ?? {
 		resolve: resolveNativeHost,
 		connect: (address: string) => createConnection({ host: address, port: 443, family: 4 }),
@@ -198,7 +213,7 @@ export async function startNativeCodexEgress(options: {
 	const controller = new AbortController();
 	const signal = AbortSignal.any([options.signal, controller.signal]);
 	const server = createServer((peer) => {
-		if (signal.aborted || peers.size >= MAX_CONNECTIONS) {
+		if (signal.aborted || peers.size >= maxConnections) {
 			peer.destroy();
 			return;
 		}

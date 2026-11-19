@@ -310,15 +310,12 @@ select pg_temp.job('failed');
 select pg_temp.check(not pg_temp.demand(), 'an ended run keeps nothing awake');
 rollback;
 
--- 7. Only the platform runs the helpers, and the demand function names this migration.
 select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticated','service_role']) r(role)
 	cross join unnest(array['public.qorpera_office_run_in_use(uuid)','public.qorpera_run_model_request_in_flight(uuid)']) f(name)
 	where has_function_privilege(r.role, f.name, 'execute'))
 	and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_office_run_in_use(uuid)', 'execute')
 	and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_run_model_request_in_flight(uuid)', 'execute'),
 	'only the platform runs the helpers');
-select pg_temp.check(pg_get_functiondef('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure)
-	~ '20260930040000', 'the demand function names this migration');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 

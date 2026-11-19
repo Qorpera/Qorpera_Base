@@ -214,6 +214,7 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"ring",
 		"flow",
 		"explainer",
+		"program",
 		"style",
 		"reads",
 		"writes",
@@ -362,7 +363,8 @@ it("refuses arguments it cannot save before anything is read", async () => {
 	refusesArguments(tool, save("sales", "k", null, []), "give a manifest, files, or both");
 	refusesArguments(tool, save("sales", "k", null, [{ path: "../x.html", text: "" }]), "relative to the app's folder");
 	refusesArguments(tool, save("sales", "k", null, [{ path: "app.toml", text: "" }]), "written from manifest");
-	refusesArguments(tool, save("sales", "k", null, [{ path: "run.sh", text: "" }]), "an app's text files are");
+	refusesArguments(tool, save("sales", "k", null, [{ path: "pictures/a.png", text: "" }]), "a .png file is not text");
+	refusesArguments(tool, save("sales", "k", null, [{ path: "font.woff2", text: "" }]), "from a company machine");
 	refusesArguments(
 		tool,
 		save("sales", "k", null, [
@@ -802,55 +804,34 @@ it("posts its own app without review, and reviews posting or changing another's 
 	);
 });
 
-it("counts a video as a file of its app, but not toward the bytes of the rest", async () => {
+it("saves an app of any number, size and kind of files, reading the whole folder and releasing what it drew on", async () => {
 	const app = 'name = "Ideas"\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\nposted = false\n';
-	const big = await fixture({
+	const notes = Object.fromEntries(Array.from({ length: 300 }, (_, n) => [`apps/ideas/n${n}.txt`, "note"]));
+	const f = await fixture({
 		folders: ["apps"],
 		files: {
 			"apps/ideas/app.toml": app,
 			"apps/ideas/index.html": PAGE,
-			"apps/ideas/a.mp4": "x".repeat(5 * 1024 * 1024),
+			"apps/ideas/studio.html": "x".repeat(600 * 1024),
+			"apps/ideas/film.mp4": "x".repeat(13 * 1024 * 1024),
+			"apps/ideas/model.glb": "x",
+			"apps/ideas/type.woff2": "x",
+			...notes,
 		},
 	});
-	// Refused, this would throw.
-	await big.call("save_app", save("ideas", "video-1", null, [{ path: "more.txt", text: "more" }]));
-	const notes = Object.fromEntries(Array.from({ length: 62 }, (_, n) => [`apps/ideas/n${n}.txt`, "note"]));
-	const full = await fixture({
-		folders: ["apps"],
-		files: { "apps/ideas/app.toml": app, "apps/ideas/index.html": PAGE, "apps/ideas/a.mp4": "x", ...notes },
-	});
-	await refuses(
-		full.call("save_app", save("ideas", "video-2", null, [{ path: "one-more.txt", text: "more" }])),
-		"APP_TOO_LARGE",
+	const answer = read(
+		await f.call(
+			"save_app",
+			save("ideas", "big-1", null, [
+				{ path: "n299.txt", text: "changed" },
+				{ path: "scene.gltf", text: "{}" },
+				{ path: "shaders/sky.glsl", text: "void main() {}" },
+			]),
+		),
 	);
-});
-
-it("counts pictures with videos, and refuses a change to an app holding a file too big to open", async () => {
-	// 7 November 2026: Rumlig's demo app held 10 MB pages and 0.5-0.8 MB renders; it saved, and never opened.
-	const app = 'name = "Demos"\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\nposted = false\n';
-	const renders = await fixture({
-		folders: ["apps"],
-		files: {
-			"apps/demos/app.toml": app,
-			"apps/demos/index.html": PAGE,
-			"apps/demos/room.jpg": "x".repeat(5 * 1024 * 1024),
-			"apps/demos/walk.mp4": "x".repeat(3 * 1024 * 1024),
-		},
-	});
-	// A 5 MiB render (past the 4 MiB of pages and code) and a 3 MiB video are within the pictures' and videos' bounds.
-	await renders.call("save_app", save("demos", "media-1", null, [{ path: "notes.txt", text: "notes" }]));
-	const page = await fixture({
-		folders: ["apps"],
-		files: {
-			"apps/demos/app.toml": app,
-			"apps/demos/index.html": PAGE,
-			"apps/demos/studio.html": "x".repeat(600 * 1024),
-		},
-	});
-	await refuses(
-		page.call("save_app", save("demos", "media-2", null, [{ path: "notes.txt", text: "notes" }])),
-		"APP_FILE_TOO_LARGE",
-	);
+	expect(answer).toMatchObject({ state: "applied" });
+	expect(f.text("apps/ideas/n299.txt")).toBe("changed");
+	expect(f.text("apps/ideas/shaders/sky.glsl")).toBe("void main() {}");
 });
 
 it("posts only the manifest it checked: an app made or changed in between is refused, never posted unreviewed", async () => {

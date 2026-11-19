@@ -5,6 +5,7 @@ import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { JsonValue } from "@qorpera/contracts";
 import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
 import { KIT_FIGURES } from "@qorpera/runtime/cloud-app-kit-figures.generated";
+import { OBJECT_THREE_JS, OBJECT_THREE_LICENSE } from "@qorpera/runtime/cloud-app-kit-three.generated";
 import {
 	DATA_KITS,
 	KIT_DATA_MAX_BYTES,
@@ -12,10 +13,15 @@ import {
 	KIT_FALLBACK_STYLE,
 	KIT_GUIDE,
 	KIT_LIVE_QUESTIONS,
+	KIT_THREE,
+	KIT_THREE_LICENSE,
 	kitBindings,
 	kitDataFile,
 	kitFigures,
+	kitHeavyPictures,
+	kitLibrary,
 	kitMedia,
+	kitModels,
 	kitNotes,
 	kitPage,
 	parseKitData,
@@ -94,7 +100,7 @@ const BOARD = {
 };
 
 it("names the data kits as the kits an app can be made from", () => {
-	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS]);
+	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS, "program"]);
 	expect([...DATA_KITS]).toEqual([
 		"model",
 		"board",
@@ -178,6 +184,7 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 		"map",
 		"ring",
 		"flow",
+		"program",
 		null,
 	]);
 	for (const said of [
@@ -944,12 +951,143 @@ it("reads a kit's data, or says in words why it does not read", () => {
 	expect(problem("board", '{"mode": "scale"}')).toBe("board.json has no items: the board kit draws nothing without");
 	expect(problem("path", "{}")).toBe("path.json has no steps and no lanes: the path kit draws nothing without");
 	expect(problem("object", "{}")).toBe(
-		"object.json has no turntable, picture or variants: the object kit has no thing to show",
+		"object.json has no model, turntable, picture or variants: the object kit has no thing to show",
 	);
 	expect(problem("object", '{"picture": "pictures/box.webp"}')).toBeNull();
 	expect(problem("model", JSON.stringify({ ...MODEL, pad: "x".repeat(KIT_DATA_MAX_BYTES) }))).toBe(
 		"model.json is larger than 256 KiB: it holds the facts and the names of the pictures, never the pictures or the long text",
 	);
+});
+
+const OBJECT = {
+	lang: "en",
+	title: "The box",
+	model: "model/box.glb",
+	turntable: { picture: "pictures/box.webp", frames: 4, columns: 4, frameWidth: 560, frameHeight: 560 },
+	parts: [{ id: "lid", name: "Lid", state: "known", node: "Lid" }],
+};
+
+it("holds the object kit's 3D library and its licence exactly as the vendored files have them", () => {
+	expect(OBJECT_THREE_JS).toBe(kitFile("object", "vendor/three.js"));
+	expect(OBJECT_THREE_LICENSE).toBe(kitFile("object", "vendor/three.LICENSE.txt"));
+	expect(OBJECT_THREE_LICENSE).toMatch(/^The MIT License\n\nCopyright © 2010-2026 three\.js authors/);
+	expect(OBJECT_THREE_JS).toContain("@license");
+	expect(OBJECT_THREE_JS).toContain('"186"');
+	expect(OBJECT_THREE_JS.startsWith("var QORPERA_THREE=")).toBe(true);
+	expect(() => new Script(OBJECT_THREE_JS)).not.toThrow();
+	expect(Buffer.byteLength(OBJECT_THREE_JS)).toBeLessThan(700 * 1024);
+});
+
+it("reads an object's model, and refuses one that is not a .glb in the app's folder", () => {
+	const problem = (text: string) => {
+		const parsed = parseKitData("object", text);
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	const notGlb = `object.json has a model that is not the path of a .glb file in the app's folder, such as "model/box.glb"`;
+	expect(problem('{"model": "box.glb"}')).toBeNull();
+	expect(problem(JSON.stringify(OBJECT))).toBeNull();
+	for (const model of ["box.gltf", "https://example.com/box.glb", "../box.glb", "/company/apps/box/box.glb", 3])
+		expect(problem(JSON.stringify({ model })), String(model)).toBe(notGlb);
+	expect(problem('{"picture": "a.webp", "variants": [{"id": "b", "model": "b.obj"}]}')).toBe(
+		`object.json has a model in variant 1 that is not the path of a .glb file in the app's folder, such as "model/box.glb"`,
+	);
+	expect(problem('{"model": "box.glb", "environment": "light.exr"}')).toBe(
+		"object.json has an environment that is not the path of an .hdr file in the app's folder",
+	);
+	expect(
+		problem('{"model": "box.glb", "environment": "light/studio.hdr", "view": {"yaw": 40, "pitch": 10}}'),
+	).toBeNull();
+	for (const view of ['{"yaw": "left"}', "[30, 10]", "30", "null"])
+		expect(problem(`{"model": "box.glb", "view": ${view}}`), view).toBe(
+			'object.json has a view that is not {"yaw", "pitch"} in degrees',
+		);
+	expect(
+		kitModels("object", {
+			model: "a.glb",
+			variants: [{ model: "b.glb" }, { model: "a.glb" }, { picture: "c.webp" }],
+		}),
+	).toEqual(["a.glb", "b.glb"]);
+	expect(kitModels("object", { picture: "c.webp" })).toEqual([]);
+	expect(kitModels("board", { model: "a.glb" })).toEqual([]);
+	expect(kitLibrary("object", { picture: "c.webp" })).toEqual([]);
+	expect(kitLibrary("object", OBJECT)).toEqual([
+		{ path: KIT_THREE, text: OBJECT_THREE_JS },
+		{ path: KIT_THREE_LICENSE, text: OBJECT_THREE_LICENSE },
+	]);
+	expect(kitMedia(OBJECT)).toEqual(["pictures/box.webp"]);
+});
+
+it("tells an object's maker which model or light the folder lacks, and of a model with no picture beside it", () => {
+	expect(kitNotes("object", OBJECT, () => true)).toEqual([]);
+	expect(
+		kitNotes("object", { ...OBJECT, environment: "light/studio.hdr" }, (path) => path.startsWith("pictures/")),
+	).toEqual([
+		"model/box.glb, light/studio.hdr are named in object.json but not in the app's folder: the page shows the picture or turntable in their place, or a line that the model could not be shown. Write them into the app's folder from a machine.",
+	]);
+	expect(kitNotes("object", { model: "box.glb", node: "x".repeat(120) }, () => true)).toEqual([
+		"1 thing has a model and no turntable or picture: give one beside the model, which the page shows while the model arrives and where a browser cannot draw 3D.",
+	]);
+	expect(kitNotes("object", { picture: "pictures/box.webp" }, () => true)).toEqual([]);
+});
+
+it("writes the 3D library into an object's app only when its data names a model, and never as the agent's", async () => {
+	const f = await fixture();
+	const { model: _model, ...still } = OBJECT;
+	const list = (made: { files: { path: string }[] }) => made.files.map((file) => file.path).sort();
+	const made = read(
+		await f.call(
+			"save_app",
+			save("kasse", "make-1", { title: "The box", kit: "object" }, [
+				{ path: "object.json", text: JSON.stringify(still) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect([...f.files.keys()].filter((path) => path.startsWith("apps/kasse/")).sort()).toEqual([
+		"apps/kasse/app.toml",
+		"apps/kasse/engine.js",
+		"apps/kasse/index.html",
+		"apps/kasse/object.json",
+	]);
+	expect(f.text("apps/kasse/index.html")).toBe(kitPage("kasse", "object", "The box", still, () => false));
+	expect(f.text("apps/kasse/index.html")).not.toContain("three");
+	const live = read(
+		await f.call(
+			"save_app",
+			save("kasse", "change-1", null, [{ path: "object.json", text: JSON.stringify(OBJECT) }]),
+		),
+	);
+	expect(list(live)).toEqual([
+		"apps/kasse/index.html",
+		"apps/kasse/object.json",
+		"apps/kasse/three.js",
+		"apps/kasse/three.license.txt",
+	]);
+	expect(f.text("apps/kasse/three.js")).toBe(OBJECT_THREE_JS);
+	expect(f.text("apps/kasse/three.license.txt")).toBe(OBJECT_THREE_LICENSE);
+	expect(f.text("apps/kasse/index.html")).toBe(kitPage("kasse", "object", "The box", OBJECT, () => false));
+	const again = read(
+		await f.call(
+			"save_app",
+			save("kasse", "change-2", null, [{ path: "object.json", text: JSON.stringify({ ...OBJECT, line: "A box" }) }]),
+		),
+	);
+	expect(list(again)).toEqual(["apps/kasse/index.html", "apps/kasse/object.json"]);
+	const fresh = read(
+		await f.call(
+			"save_app",
+			save("skab", "make-2", { title: "Skab", kit: "object" }, [
+				{ path: "object.json", text: JSON.stringify(OBJECT) },
+			]),
+		),
+	);
+	expect(fresh.state).toBe("applied");
+	expect(f.text("apps/skab/three.js")).toBe(OBJECT_THREE_JS);
+	for (const path of ["three.js", "three.license.txt"])
+		await refuses(
+			f.call("save_app", save("kasse", `own-${path}`, null, [{ path, text: "x" }])),
+			`APP_KIT_FILE: ${path} is the object kit's own file, which save_app writes; leave it out and give object.json`,
+		);
 });
 
 it("tells the maker which pictures the folder lacks and which texts the page cuts", () => {
@@ -1131,6 +1269,69 @@ it("names in the page the pictures the folder holds, and says which it lacks", a
 	const page = f.text("apps/marked/index.html");
 	expect(page).toContain('data-kit-src="pictures/halo.webp"');
 	expect(page).not.toContain('data-kit-src="pictures/arc-one.webp"');
+});
+
+it("tells the maker of an app to save its pictures as WebP, in every data kit's guide and the hand-written page's", () => {
+	for (const said of [
+		"Save a photo, a render or a screenshot for an app as .webp, not .png: on a machine, cwebp -q 90 shot.png -o shot.webp, or Pillow's save with quality=90.",
+		"Every member downloads each picture the app shows, and a 1600 px render of about 1 MB as a PNG is about a tenth of that as WebP.",
+		"Keep .png for a small flat graphic that must stay exact to the pixel, and .svg for what you draw.",
+	])
+		for (const each of [...DATA_KITS, "style"] as const) expect(appGuide(each), each).toContain(said);
+	for (const each of ["look", "reads", "writes", "icons", "explainer", "program"] as const)
+		expect(appGuide(each), each).not.toContain(".webp, not .png");
+});
+
+it("names the heavy PNGs a kit's data shows, by what the folder holds of them", () => {
+	const KIB = 1024;
+	const sizes: Record<string, number> = {
+		"pictures/a.png": 2103 * KIB,
+		"pictures/b.PNG": 1126 * KIB,
+		"pictures/small.png": 400 * KIB,
+		"pictures/c.webp": 900 * KIB,
+		"film/d.mp4": 3000 * KIB,
+	};
+	const bytesOf = (path: string) => sizes[path];
+	const board = (...pictures: string[]) => ({ items: pictures.map((picture, at) => ({ id: `i${at}`, picture })) });
+	expect(kitHeavyPictures("board", board("pictures/small.png", "pictures/c.webp", "film/d.mp4"), bytesOf)).toEqual([]);
+	expect(kitHeavyPictures("board", board("pictures/gone.png"), bytesOf)).toEqual([]);
+	expect(kitHeavyPictures("board", board("pictures/a.png", "pictures/small.png"), bytesOf)).toEqual([
+		"1 picture is a PNG of 2.1 MB (pictures/a.png): every member downloads it when the app shows it. As .webp it is about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in board.json and save again.",
+	]);
+	expect(kitHeavyPictures("shelf", board("pictures/a.png", "pictures/b.PNG", "pictures/a.png"), bytesOf)).toEqual([
+		"2 pictures are PNGs of 3.2 MB in all (pictures/a.png, pictures/b.PNG): every member downloads them when the app shows them. As .webp they are about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in shelf.json and save again.",
+	]);
+	const many = ["p/1.png", "p/2.png", "p/3.png", "p/4.png"];
+	expect(kitHeavyPictures("board", board(...many), () => 500 * KIB)[0]).toContain(
+		"4 pictures are PNGs of 2.0 MB in all (p/1.png, p/2.png, p/3.png, …):",
+	);
+});
+
+it("says on a save which pictures in the app's folder are heavy PNGs", async () => {
+	const f = await fixture({
+		folders: ["apps", "apps/marked", "apps/marked/pictures", "apps/marked/film"],
+		files: {
+			"apps/marked/pictures/arc-one.webp": "RIFF",
+			"apps/marked/pictures/halo.png": "x".repeat(600 * 1024),
+			"apps/marked/film/halo.mp4": "x".repeat(900 * 1024),
+		},
+	});
+	const data = {
+		...BOARD,
+		items: BOARD.items.map((item) => ({ ...item, picture: item.picture.replace("halo.webp", "halo.png") })),
+	};
+	const made = read(
+		await f.call(
+			"save_app",
+			save("marked", "make-1", { title: "Marked", kit: "board" }, [
+				{ path: "board.json", text: JSON.stringify(data) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(made.look).toEqual([
+		"1 picture is a PNG of 0.6 MB (pictures/halo.png): every member downloads it when the app shows it. As .webp it is about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in board.json and save again.",
+	]);
 });
 
 it("finds the questions a kit's data names exactly as the page's script does", async () => {

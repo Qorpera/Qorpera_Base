@@ -53,6 +53,7 @@ import {
 	STACK_KIT_GUIDE,
 } from "./cloud-app-kit-engines.generated.ts";
 import { KIT_FIGURES } from "./cloud-app-kit-figures.generated.ts";
+import { OBJECT_THREE_JS, OBJECT_THREE_LICENSE } from "./cloud-app-kit-three.generated.ts";
 
 /** The kits whose agent writes one data file. */
 export const DATA_KITS = Object.freeze([
@@ -77,6 +78,8 @@ export const KIT_ENGINE = "engine.js";
 export const KIT_PAGE = "index.html";
 /** The agent's data file: the kit's name with `.json`. */
 export const kitDataFile = (kit: DataKit): string => `${kit}.json`;
+export const KIT_THREE = "three.js";
+export const KIT_THREE_LICENSE = "three.license.txt";
 /** A data file is read up to this size; a longer one holds what belongs in pictures or in the folder. */
 export const KIT_DATA_MAX_BYTES = 256 * 1024;
 
@@ -126,7 +129,18 @@ const KIT_NEEDS: Readonly<Record<DataKit, readonly string[]>> = Object.freeze({
 /** A text a member reads on a kit's page is a label or a short note: past this many characters an engine cuts it. */
 const KIT_TEXT_MAX = 90;
 /** The fields whose text is an address or a formula, not something a member reads. */
-const KIT_UNREAD_FIELDS: ReadonlySet<string> = new Set(["source", "formula", "link", "hex", "id", "value", "track"]);
+const KIT_UNREAD_FIELDS: ReadonlySet<string> = new Set([
+	"source",
+	"formula",
+	"link",
+	"hex",
+	"id",
+	"value",
+	"track",
+	"node",
+	"model",
+	"environment",
+]);
 
 const MEDIA = /\.(?:png|jpe?g|webp|gif|svg|mp4|webm)$/i;
 const VIDEO = /\.(?:mp4|webm)$/i;
@@ -305,8 +319,18 @@ export function parseKitData(
 		)
 	)
 		return { problem: `${file} has no input in its groups: the model kit draws nothing without one` };
-	if (kit === "object" && data.turntable === undefined && data.picture === undefined && data.variants === undefined)
-		return { problem: `${file} has no turntable, picture or variants: the object kit has no thing to show` };
+	if (
+		kit === "object" &&
+		data.turntable === undefined &&
+		data.picture === undefined &&
+		data.model === undefined &&
+		data.variants === undefined
+	)
+		return { problem: `${file} has no model, turntable, picture or variants: the object kit has no thing to show` };
+	if (kit === "object") {
+		const problem = objectProblem(data);
+		if (problem) return { problem: `${file} ${problem}` };
+	}
 	// A curve is a line between two points at least; a shelf holds one thing at least. A stack of no cards is a stack
 	// with nothing waiting, which its page shows as done.
 	if (kit === "curve" && !(Array.isArray(data.points) && data.points.length >= 2))
@@ -327,6 +351,63 @@ export function parseKitData(
 		if (problem) return { problem: `${file} ${problem}` };
 	}
 	return { data };
+}
+
+function isOwnFile(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length <= 200 &&
+		!/^[a-z][a-z0-9+.-]*:/i.test(value) &&
+		!value.startsWith("/") &&
+		!value.split("/").includes("..") &&
+		!/[\0-\x1f"<>\\]/.test(value)
+	);
+}
+
+const GLB = /\.glb$/i;
+const HDR = /\.hdr$/i;
+
+function objectProblem(data: Readonly<Record<string, unknown>>): string | null {
+	const things = [data, ...(Array.isArray(data.variants) ? data.variants : [])];
+	for (const [index, thing] of things.entries()) {
+		const model = typeof thing === "object" && thing !== null ? (thing as { model?: unknown }).model : undefined;
+		if (model !== undefined && !(isOwnFile(model) && GLB.test(model)))
+			return `has a model${index ? ` in variant ${index}` : ""} that is not the path of a .glb file in the app's folder, such as "model/box.glb"`;
+	}
+	if (data.environment !== undefined && !(isOwnFile(data.environment) && HDR.test(data.environment)))
+		return `has an environment that is not the path of an .hdr file in the app's folder`;
+	if (data.view !== undefined) {
+		const view = data.view as { yaw?: unknown; pitch?: unknown } | null;
+		if (
+			typeof view !== "object" ||
+			view === null ||
+			Array.isArray(view) ||
+			(view.yaw !== undefined && typeof view.yaw !== "number") ||
+			(view.pitch !== undefined && typeof view.pitch !== "number")
+		)
+			return 'has a view that is not {"yaw", "pitch"} in degrees';
+	}
+	return null;
+}
+
+export function kitModels(kit: DataKit, data: unknown): string[] {
+	if (kit !== "object" || typeof data !== "object" || data === null) return [];
+	const object = data as { model?: unknown; variants?: unknown };
+	const found: string[] = [];
+	for (const thing of [object, ...(Array.isArray(object.variants) ? object.variants : [])]) {
+		const model = typeof thing === "object" && thing !== null ? (thing as { model?: unknown }).model : undefined;
+		if (isOwnFile(model) && GLB.test(model) && !found.includes(model)) found.push(model);
+	}
+	return found;
+}
+
+export function kitLibrary(kit: DataKit, data: unknown): { readonly path: string; readonly text: string }[] {
+	return kitModels(kit, data).length > 0
+		? [
+				{ path: KIT_THREE, text: OBJECT_THREE_JS },
+				{ path: KIT_THREE_LICENSE, text: OBJECT_THREE_LICENSE },
+			]
+		: [];
 }
 
 /** The map kit's bounds: things in a layer, layers deep and things in all (packages/runtime/kits/map/KIT.md). */
@@ -542,16 +623,7 @@ export function kitMedia(data: unknown): string[] {
 	const walk = (value: unknown, depth: number): void => {
 		if (depth > 12) return;
 		if (typeof value === "string") {
-			if (
-				value.length <= 200 &&
-				MEDIA.test(value) &&
-				!/^[a-z][a-z0-9+.-]*:/i.test(value) &&
-				!value.startsWith("/") &&
-				!value.split("/").includes("..") &&
-				!/[\0-\x1f"<>\\]/.test(value) &&
-				!found.includes(value)
-			)
-				found.push(value);
+			if (isOwnFile(value) && MEDIA.test(value) && !found.includes(value)) found.push(value);
 		} else if (Array.isArray(value)) for (const item of value) walk(item, depth + 1);
 		else if (typeof value === "object" && value !== null)
 			for (const item of Object.values(value)) walk(item, depth + 1);
@@ -639,6 +711,25 @@ export function kitPage(
 	].join("\n");
 }
 
+const HEAVY_PNG_BYTES = 400 * 1024;
+
+export function kitHeavyPictures(kit: DataKit, data: unknown, bytesOf: (path: string) => number | undefined): string[] {
+	const heavy = kitMedia(data)
+		.filter((path) => /\.png$/i.test(path))
+		.map((path) => ({ path, bytes: bytesOf(path) ?? 0 }))
+		.filter((picture) => picture.bytes > HEAVY_PNG_BYTES);
+	if (heavy.length === 0) return [];
+	const megabytes = (heavy.reduce((sum, picture) => sum + picture.bytes, 0) / (1024 * 1024)).toFixed(1);
+	const names = `${heavy
+		.slice(0, 3)
+		.map((picture) => picture.path)
+		.join(", ")}${heavy.length > 3 ? ", …" : ""}`;
+	const one = heavy.length === 1;
+	return [
+		`${one ? "1 picture is a PNG" : `${heavy.length} pictures are PNGs`} of ${megabytes} MB${one ? "" : " in all"} (${names}): every member downloads ${one ? "it" : "them"} when the app shows ${one ? "it" : "them"}. As .webp ${one ? "it is" : "they are"} about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in ${kitDataFile(kit)} and save again.`,
+	];
+}
+
 /**
  * What a read of a kit's data tells its maker after a save: advice, never a refusal.
  * - Pictures and videos the data names that the app's folder does not hold: the page shows a placeholder until they are
@@ -661,6 +752,23 @@ export function kitNotes(
 		notes.push(
 			`${missing.length === 1 ? "1 picture or video is" : `${missing.length} pictures or videos are`} named in ${kitDataFile(kit)} but not in the app's folder (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}): the page shows a placeholder there. Write ${missing.length === 1 ? "it" : "them"} into the app's folder from a machine, then save the app again so the page names ${missing.length === 1 ? "it" : "them"}.`,
 		);
+	if (kit === "object") {
+		const models = kitModels(kit, data);
+		const environment = isOwnFile(data.environment) && HDR.test(data.environment) ? [data.environment] : [];
+		const absent = [...models, ...environment].filter((path) => !holds(path));
+		if (absent.length > 0)
+			notes.push(
+				`${absent.join(", ")} ${absent.length === 1 ? "is" : "are"} named in ${kitDataFile(kit)} but not in the app's folder: the page shows the picture or turntable in ${absent.length === 1 ? "its" : "their"} place, or a line that the model could not be shown. Write ${absent.length === 1 ? "it" : "them"} into the app's folder from a machine.`,
+			);
+		const bare = [data, ...(Array.isArray(data.variants) ? data.variants : [])].filter((thing) => {
+			const each = (typeof thing === "object" && thing !== null ? thing : {}) as Record<string, unknown>;
+			return each.model !== undefined && each.turntable === undefined && each.picture === undefined;
+		}).length;
+		if (bare > 0)
+			notes.push(
+				`${bare === 1 ? "1 thing has" : `${bare} things have`} a model and no turntable or picture: give one beside the model, which the page shows while the model arrives and where a browser cannot draw 3D.`,
+			);
+	}
 	const long: string[] = [];
 	const walk = (value: unknown, key: string, depth: number): void => {
 		if (depth > 12) return;

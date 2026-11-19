@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import type { HostedAccountMatch, HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
+import { companyDisplayName, companyNameText, isUnnamed } from "../../ui/company-name.ts";
 import { button, companyLogo, fmtDate, h, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { presentationLocale, presentationTimeZone, t, uiText } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
@@ -280,29 +281,43 @@ function friendMeta(friend: HostedFriend, now: number): RowMeta {
 	return seen ? { text: seen.text, title: t("Friends {since}", { since }), online: seen.online } : since;
 }
 
-function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvitation, busy: boolean): HTMLElement {
+function invitationRow(
+	hub: HubController,
+	invitation: HostedIncomingProfileInvitation,
+	busy: boolean,
+	friends: readonly HostedFriend[],
+): HTMLElement {
+	const inviter = friends.find((friend) => friend.userId === invitation.invitedByUserId);
+	const name = inviter ? inviter.displayName || inviter.email : undefined;
+	const spectator = invitation.role === "viewer";
 	return h(
 		"div",
-		{ class: "person-row" },
-		companyLogo(invitation.profileId, "person-company"),
+		{ class: "person-row person-invitation" },
+		inviter
+			? personAvatar(name ?? "", invitation.invitedByUserId)
+			: companyLogo(invitation.profileId, "person-company", isUnnamed(invitation.profileName)),
 		h(
 			"div",
 			{ class: "person-copy" },
-			h("strong", null, invitation.profileName),
+			h("strong", null, companyNameText(invitation.profileName)),
 			h(
 				"span",
 				{ class: "muted small" },
-				t("Invited as {role} · expires {date}", {
-					role: roleLabel(invitation.role),
-					date: fmtDate(invitation.expiresAt),
-				}),
+				spectator
+					? name
+						? t("{name} invited you as a spectator · no subscription needed", { name })
+						: t("Invited as a spectator · no subscription needed")
+					: t("Invited as {role} · expires {date}", {
+							role: roleLabel(invitation.role),
+							date: fmtDate(invitation.expiresAt),
+						}),
 			),
 		),
 		h(
 			"div",
 			{ class: "person-actions" },
 			button(t("Decline"), () => void hub.respondInvitation(invitation, false), { disabled: busy }),
-			button(t("Accept"), () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
+			button(t("Join"), () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
 		),
 	);
 }
@@ -427,7 +442,9 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 	const incoming = matching.filter((friend) => friend.status === "pending" && friend.direction === "incoming");
 	const outgoing = matching.filter((friend) => friend.status === "pending" && friend.direction === "outgoing");
 	const accepted = matching.filter((friend) => friend.status === "accepted");
-	const invitations = companies.invitations.filter((invitation) => matches(invitation.profileName));
+	const invitations = companies.invitations.filter((invitation) =>
+		matches(companyDisplayName(invitation.profileName)),
+	);
 	parts.submit.disabled = !invitable || state.sending === true;
 	const label = state.sending ? t("Sending…") : t("Send request");
 	if (parts.submit.textContent !== label) parts.submit.textContent = label;
@@ -497,7 +514,9 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 		outcome ? h("p", { class: "panel-empty muted" }, outcome) : null,
 		group(
 			t("Company invitations"),
-			invitations.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
+			invitations.map((invitation) =>
+				invitationRow(hub, invitation, companies.busyInvitation === invitation.id, state.friends),
+			),
 		),
 		group(
 			t("Requests for you"),

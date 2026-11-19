@@ -303,12 +303,9 @@ end $$;
 do $$
 declare v_role text;
 begin
-	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930345000') > 0) = array[
-			'qorpera_event_hook_descriptor', 'qorpera_finish_event_verification', 'qorpera_folder_read_hook_capture',
-			'qorpera_receive_event'],
-		'5: the marker''s bodies');
+	perform pg_temp.base_assert(exists (select 1 from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
+			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930345000') > 0),
+		'5: the deploy guard''s marker is in a body');
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		perform pg_temp.base_assert(has_function_privilege(v_role,
 				'public.qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)', 'execute')

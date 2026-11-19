@@ -188,6 +188,7 @@ export class CloudFolderWorkers {
 				species === "coding" && request.harness !== undefined && request.repository !== undefined
 					? { harness: request.harness, repository: request.repository }
 					: undefined;
+			const plainHarness = species === "in-house" ? request.harness : undefined;
 			const id = hashedId("qorpera.folder-worker/v1", this.#identity.runId, request.operationKey);
 			const access = request.access ?? "read";
 			const revival = request.revival ?? "batch";
@@ -201,6 +202,7 @@ export class CloudFolderWorkers {
 					title: request.title ?? "",
 					species,
 					...coding,
+					...(plainHarness ? { harness: plainHarness } : {}),
 					access,
 					revival,
 					dispatchedAt: now,

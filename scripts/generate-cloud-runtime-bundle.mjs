@@ -7,45 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929024999_runtime_bundle_activation_v249.sql";
-const activationVersion = 249;
-const previousActivationVersion = 248;
-const previousActivationSha256 = "cc7b46c6bab430a45b4f9830b4f0963163348ddb5bb2ab05270e1055fd81aacf";
-// This release's own migrations, which its activation requires before it registers the bundle (v248): one entry per
-// migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v249 replaces these entries with the migrations v249 brings (or an empty list).
-// v249's activation already requires v248 active with its exact digest, which on a database past 20260930534000 only
-// this activation sets. v248's release (a member opens an app or a file on an agent's computer, a member-woken machine's
-// sleep, and master's company databases, reading, numbers and bank days) runs its migrations, in number order, BEFORE the
-// executors and this switch. 758000 and 759000 sort before 760000-762000, which v247 recorded: the roll's migrate reads
-// production's record and runs each one only when it is not recorded. An entry sorting before the activation file is
-// checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
-// order reaches it only after the activation (as with the guards in the activation's text below).
+const activation = "supabase/migrations/20260929026199_runtime_bundle_activation_v261.sql";
+const activationVersion = 261;
+const previousActivationVersion = 260;
+const previousActivationSha256 = "a6aa04f164e14df6c7550510c923919d3173cdb7a5ddcebc51d9a18b6ca3769f";
 const activationRequires = Object.freeze([
 	[
-		"20260930752000_home_exec_sessions",
-		"the agent's home (#1761): every company run of this bundle asks qorpera_company_home_available through the native host's entry point, which answers only a listed call; without this migration every such run fails",
-		"to_regprocedure('public.qorpera_company_home_available(jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_company_home_available')",
-	],
-	[
-		"20260930754000_folder_home_sessions",
-		"the home's read rights (#1760): the offer is narrowed to runs that share the machine and read the folder's root, and the executor this release moves asks the session's folder window before every channel",
-		"to_regprocedure('public.qorpera_folder_home_session_window(uuid)') is not null",
-	],
-	[
-		"20260930776000_company_numbers_orders",
-		"the door orders (#1855, on master): counts-only orders from verified Stripe deliveries and the orders questions; no code in this bundle calls them yet",
-		"to_regclass('public.qorpera_orders') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930776000') > 0)",
-	],
-	[
-		"20260930777000_company_numbers_order_changes",
-		"the company's word on its orders (#1857, on master): order-state and order-add through the change dispatcher; no code in this bundle calls them yet",
-		"to_regprocedure('public.qorpera_run_company_numbers_change(uuid,jsonb,text,jsonb)') is not null and exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)') and strpos(prosrc, '20260930777000') > 0)",
-	],
-	[
-		"20260930778000_home_session_keeps_member_machine_awake",
-		"a member-woken machine is not put to sleep under a run's open home session (#1761): the member-only rule counts the home's sessions from this migration on",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_company_machine_member_only(public.qorpera_company_machines)') and strpos(prosrc, 'qorpera_company_home_sessions') > 0 and strpos(prosrc, '20260930759000') > 0)",
+		"20260930810000_claude_parallel_runs",
+		"#1906 (Claude parallel runs): bundle 261's Claude Code runs cannot renew (their box reaches the API host alone) and ask the vault for their login's newer version every 60 s; the renewal is the shared vault's, through 810000's lock, lease login and compare-and-swap, so bundle 261 must never run on a database without it",
+		"to_regprocedure('public.qorpera_claude_worker_run_cap()') is not null and to_regprocedure('public.qorpera_take_idle_claude_login_renewal(uuid,text)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires
@@ -69,6 +39,8 @@ export const CLOUD_RUNTIME_ENTRY_POINTS = Object.freeze({
 	"qorpera-sandbox-probe": "packages/runtime/src/cloud-runner-container-main.ts",
 	"qorpera-lxd-runner-bootstrap": "packages/runtime/src/lxd-runner-bootstrap-main.ts",
 	"qorpera-lxd-native-login-bootstrap": "packages/runtime/src/lxd-native-login-bootstrap-main.ts",
+	// The Claude Code box's shell prefix and `rg` bridge (cloud-claude-box.ts runs it inside the box by its path).
+	"qorpera-claude-home-shell": "packages/runtime/src/cloud-claude-home-shell-client.ts",
 });
 
 /** PostgreSQL jsonb::text for this generated ASCII-key/string/integer manifest.
@@ -153,6 +125,8 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const path of [
 		"deploy/first-node/native-codex/source.json", "deploy/first-node/native-codex/0001-cloud-result-fence.patch",
 		"deploy/first-node/native-codex/linux-x64-artifact.json",
+		"deploy/first-node/native-claude/linux-x64-artifact.json", "deploy/claude-box/qorpera-claude-box-stage.sh",
+		"deploy/claude-box/qorpera-claude-box-ns.apparmor",
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
 		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
 		"scripts/package-lxd-runner-guest.mjs", "scripts/package-company-computer.mjs",

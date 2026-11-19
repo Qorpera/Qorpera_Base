@@ -13,9 +13,6 @@
  *   reaches its receipt (it makes a picture it then throws away).
  * - Under `apps/<name>/` the owner check is save_app's: a picture in another agent's or a member's app is reviewed as
  *   delegation (`prepare` says so); an app's `icons/` hold save_app's SVGs and take no picture.
- * - Every picture is held to an app's bound for one picture (12 MiB), must decode as a PNG, and goes in as one binary
- *   unit, `image/png`, under the call's receipt. The picture is made before the receipt: a failure is a refusal that
- *   began nothing (a receipt left executing would stop every later change of the run).
  * - The answer is company_write's with the picture's facts, and the picture itself follows it, fitted as company_read
  *   fits an image (cloud-folder-images.ts), when it was saved or parked for review and is the one just made.
  */
@@ -25,11 +22,7 @@ import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-
 import {
 	APP_MANIFEST,
 	APP_MANIFEST_MAX_BYTES,
-	APP_MAX_FILES,
-	APP_MEDIA_KINDS,
-	APP_VIDEOS_MAX_BYTES,
 	APPS_FOLDER,
-	appFileKind,
 	appPath,
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
@@ -42,7 +35,6 @@ import {
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import { refuseRetiredPath } from "./cloud-folder-app-retired.ts";
-import { APP_LIST_LIMIT, appFileSizes } from "./cloud-folder-app-tools.ts";
 import {
 	cloudFolderRefusal,
 	mutationText,
@@ -83,10 +75,6 @@ const MIB = 1024 * 1024;
  * made, since the ledger has no read of a completed operation by key that starts nothing. */
 const REMEMBERED_CALLS = 256;
 const REMEMBERED_PICTURES = 4;
-/** The room an app's pictures and videos must have left before a picture for it is made: what one picture takes in
- * practice (gpt-image's 1536x1024 PNG was 1.87 MB on the Mac trial of 13 November 2026), with some to spare. A picture
- * that comes back larger than the room left is refused before it is saved. */
-const APP_PICTURE_ROOM_BYTES = 4 * MIB;
 
 /** What make_picture tells the agent (at most 4096 bytes, as every tool's description). */
 export const CLOUD_MAKE_PICTURE_DESCRIPTION = [
@@ -133,6 +121,25 @@ function pictureRefusal(error: unknown): never {
 	throw new CloudToolRefusal(words[error.reason]);
 }
 
+export async function cloudPictureForeignOwner(
+	folder: CloudCompanyFolderClient,
+	path: string,
+	owner: string,
+	signal: AbortSignal,
+): Promise<boolean> {
+	const app = appPath(path);
+	if (!app) return false;
+	await refuseRetiredPath(folder, path, signal, "saved");
+	let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
+	try {
+		stored = await folder.readText(`${APPS_FOLDER}/${app.name}/${APP_MANIFEST}`, APP_MANIFEST_MAX_BYTES, signal);
+	} catch (error) {
+		if (!(error instanceof CloudCompanyPathNotText)) unavailable(error, "saved");
+	}
+	const parsed = stored ? parseAppManifest(stored.text) : null;
+	return parsed?.ok === true && parsed.manifest.owner !== owner.toLowerCase();
+}
+
 interface PictureRequest {
 	readonly operationKey: string;
 	readonly path: string;
@@ -174,28 +181,6 @@ export function cloudPictureTool(options: {
 		} catch (error) {
 			return unavailable(error, "saved");
 		}
-	};
-	/** An app's room for a picture at `app.inner`, as save_app counts the app from a listing of it: whether one more
-	 * file fits beside its files (the one at that path, which the picture replaces, not counted), and the bytes its
-	 * pictures and videos have left. Listed before the picture is made, and again before it is saved. */
-	const appRoom = async (
-		app: NonNullable<ReturnType<typeof appPath>>,
-		signal: AbortSignal,
-	): Promise<{ oneMoreFile: boolean; mediaLeft: number }> => {
-		const root = `${APPS_FOLDER}/${app.name}`;
-		const listed = await folder
-			.list(root, { recursive: true, limit: APP_LIST_LIMIT }, signal)
-			.catch((error) => unavailable(error, "saved"));
-		const sizes = appFileSizes(listed.entries, root);
-		sizes.delete(app.inner.toLowerCase());
-		const media = [...sizes].reduce(
-			(sum, [inner, bytes]) => (APP_MEDIA_KINDS.has(appFileKind(inner)) ? sum + bytes : sum),
-			0,
-		);
-		return {
-			oneMoreFile: listed.next === null && sizes.size + 1 <= APP_MAX_FILES,
-			mediaLeft: APP_VIDEOS_MAX_BYTES - media,
-		};
 	};
 	return {
 		name: "make_picture" satisfies CloudRuntimeToolOperation,
@@ -263,22 +248,7 @@ export function cloudPictureTool(options: {
 		// Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as PictureRequest;
-			const app = appPath(request.path);
-			if (!app) return value;
-			// A retired interface is the members' alone: refused before the review, and before a picture is paid for.
-			await refuseRetiredPath(folder, request.path, context.signal, "saved");
-			let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
-			try {
-				stored = await folder.readText(
-					`${APPS_FOLDER}/${app.name}/${APP_MANIFEST}`,
-					APP_MANIFEST_MAX_BYTES,
-					context.signal,
-				);
-			} catch (error) {
-				if (!(error instanceof CloudCompanyPathNotText)) unavailable(error, "saved");
-			}
-			const parsed = stored ? parseAppManifest(stored.text) : null;
-			return parsed?.ok === true && parsed.manifest.owner !== owner
+			return (await cloudPictureForeignOwner(folder, request.path, owner, context.signal))
 				? ({ ...request, foreignOwner: true } as unknown as JsonValue)
 				: value;
 		},
@@ -328,16 +298,6 @@ export function cloudPictureTool(options: {
 						"COMPANY_FILE_PARENT_MISSING: nothing was made; what this path goes in is a file or a link, not a folder. Save the picture in a folder.",
 					);
 			}
-			// A picture for an app goes in only while the app has room for it, as save_app counts the app's files: one
-			// more file, and a picture's room among its pictures and videos.
-			const app = appPath(request.path);
-			if (app) {
-				const room = await appRoom(app, context.signal);
-				if (!room.oneMoreFile || room.mediaLeft < APP_PICTURE_ROOM_BYTES)
-					throw new CloudToolRefusal(
-						`APP_TOO_LARGE: nothing was made; the app ${app.name} has no room for another picture (an app holds at most ${APP_MAX_FILES} files and ${APP_VIDEOS_MAX_BYTES / MIB} MiB of pictures and videos). Remove pictures it no longer shows with company_delete first, or save this one outside the app.`,
-					);
-			}
 			const at = await read(request.path, context.signal);
 			if (at?.kind === "folder")
 				throw new CloudToolRefusal(
@@ -372,20 +332,6 @@ export function cloudPictureTool(options: {
 						? { revisedPrompt: made.revisedPrompt }
 						: { revisedPromptCut: true as const }
 					: {};
-			// The app is listed again once the picture is made, as late as a refusal can still begin nothing: another run may
-			// have filled it during the generation. The commit checks the target's version only, so the moment between this
-			// listing and the commit stays open, as it does between save_app's own listing and commit.
-			if (app) {
-				const room = await appRoom(app, context.signal);
-				if (!room.oneMoreFile || made.png.byteLength > room.mediaLeft) {
-					const full = room.oneMoreFile
-						? `at ${made.png.byteLength} bytes it is more than the ${Math.max(0, room.mediaLeft)} bytes left for pictures and videos`
-						: `one more file would pass the ${APP_MAX_FILES} an app holds`;
-					throw new CloudToolRefusal(
-						`APP_TOO_LARGE: the picture was made but not saved; the app ${app.name} has no room for it now, as it changed while the picture was made or was full already: ${full}. Remove pictures it no longer shows with company_delete first, or save it outside the app.`,
-					);
-				}
-			}
 			let content: CloudToolContent;
 			try {
 				content = await operations.execute({

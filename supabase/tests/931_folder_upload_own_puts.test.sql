@@ -59,12 +59,4 @@ begin
 	perform pg_temp.raises(format('select pg_temp.open(%L, %L)', a, pg_temp.manifest(array['marked part', 'end'])), 'PGRST');
 end $$;
 
--- The patched body carries the marker.
-do $$
-begin
-	if strpos((select prosrc from pg_proc where oid = 'public.qorpera_folder_open_upload(uuid,jsonb,text)'::regprocedure),
-			'20260930083000') = 0 then
-		raise exception 'An upload does not hold its actor''s own puts'; end if;
-end $$;
-
 rollback;

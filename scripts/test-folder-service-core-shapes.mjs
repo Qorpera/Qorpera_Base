@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseFeedPage, parseListPage, parseViewRenewal } from "../packages/object-gateway/src/folder-service/core.ts";
+import {
+	parseFeedPage,
+	parseListPage,
+	parseMachineDataPass,
+	parseViewRenewal,
+} from "../packages/object-gateway/src/folder-service/core.ts";
 import { ViewTree } from "../packages/object-gateway/src/folder-service/view-tree.ts";
 import { expandTestFixture } from "./test-hosted-db.mjs";
 import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
@@ -71,6 +76,26 @@ function boxSql() {
 		call("box-close", `public.qorpera_folder_view_close(${id}, ${pass})`) +
 		call("box-renew-closed", `public.qorpera_folder_view_renew(${id}, ${pass})`) +
 		`select '@@shape-box-after-close "' || pg_temp.box_list_refused() || '"';\n` +
+		"rollback;\n"
+	);
+}
+
+function machineSql() {
+	const read = (name) => readFileSync(join(root, "supabase/tests", name), "utf8");
+	const fixture = expandTestFixture("1273_machine_data_pass.test.sql", read);
+	const end = fixture.lastIndexOf(
+		"do $$",
+		fixture.indexOf("if has_function_privilege('anon', 'public.qorpera_machine_data_pass(uuid,jsonb,text)', 'EXECUTE')"),
+	);
+	if (end < 0) throw new Error("The machine data pass test's databases section moved: update this script");
+	const call = (label, sql) => `select '@@shape-${label} ' || (${sql})::text;\n`;
+	const view = "(select s from shape_machine)";
+	return (
+		`\\pset format unaligned\n\\pset tuples_only on\n${fixture.slice(0, end)}\n` +
+		`create temp table shape_machine as select pg_temp.open_machine(pg_temp.place(pg_temp.machine(r, 'data'))) as s
+			from (select pg_temp.run('human', '63200000-0000-4000-8000-000000000002') as r) x;\n` +
+		call("machine-pass", `pg_temp.mp_pass(${view})`) +
+		call("machine-pass-all", `pg_temp.mp_pass(${view}, null)`) +
 		"rollback;\n"
 	);
 }
@@ -170,8 +195,23 @@ async function main() {
 		assert.deepEqual(boxed.get("box-close"), { schema: "qorpera.folder-view-close/v1", state: "closed", reason: "closed" });
 		assert.equal(parseViewRenewal(boxed.get("box-renew-closed")).state, "closed");
 		assert.equal(boxed.get("box-after-close"), "refused");
+
+		const machine = answers(database.cluster.psql(databaseName, machineSql()));
+		const pass = parseMachineDataPass(machine.get("machine-pass"));
+		assert.match(pass.pass, /^[A-Za-z0-9_-]{43}$/);
+		assert.deepEqual(
+			pass.entries.map((entry) => entry.path),
+			["data/shop/database.toml", "data/shop/tables/001-orders.sql", "data/shop/queries/count.sql", "data/shop/actions/add.sql"],
+		);
+		for (const entry of pass.entries) {
+			assert.match(entry.version, /^[0-9a-f-]{36}$/, `${entry.path} has a uuid version`);
+			assert.match(entry.authority?.resourceId ?? "", /^[0-9a-f-]{36}$/, `${entry.path} has a receipt`);
+		}
+		const every = parseMachineDataPass(machine.get("machine-pass-all"));
+		assert.equal(every.entries.length, 5);
+		assert.notEqual(every.pass, pass.pass);
 		process.stdout.write(
-			`Folder service core shapes passed (${list.entries.length} paths, ${feed.events.length} feed events; list, member list, paging, feed, cursor, resync; a run box view: list, feed, renew, close)\n`,
+			`Folder service core shapes passed (${list.entries.length} paths, ${feed.events.length} feed events; list, member list, paging, feed, cursor, resync; a run box view: list, feed, renew, close; a machine's data pass: ${pass.entries.length} and ${every.entries.length} entries)\n`,
 		);
 	} finally {
 		database.close();

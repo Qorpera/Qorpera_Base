@@ -138,10 +138,6 @@ begin
 			'public.qorpera_site_member_pass_redeem(text,text)'::regprocedure)),
 		'qorpera_site_member_pass:true:search_path="",lock_timeout=3s '
 		'qorpera_site_member_pass_redeem:true:search_path=""', 'security definer, empty search path');
-	perform pg_temp.p_same((select (strpos(prosrc, '20260930768000') > 0 and strpos(prosrc, '20260930774000') > 0
-			and strpos(prosrc, 'session.member_user_id is null') > 0)::text || ' ' || array_to_string(proconfig, ',')
-		from pg_proc where oid = 'public.qorpera_site_count_view_at(text,text,text,timestamptz)'::regprocedure),
-		'true search_path="",lock_timeout=100ms', 'the count''s patch');
 	perform pg_temp.p_same(pg_temp.p_refused('92400000-0000-4000-8000-000000000001', null), '22023 A site is needed',
 		'no site named');
 end $$;

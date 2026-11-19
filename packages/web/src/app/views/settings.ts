@@ -6,7 +6,9 @@ import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
+import { showCompanyName } from "../../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
+import { friendsCount } from "../../ui/friends-count.ts";
 import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
@@ -80,6 +82,7 @@ function connectionsPage(title: string, rule: string, ...content: HTMLElement[])
 export class SettingsView {
 	readonly el: HTMLElement;
 	readonly #api: CloudApi;
+	readonly #hub: HubController;
 	readonly #auth: AuthController;
 	/** The account's friends, for the Company tab's invitation picker; the list itself is the Friends window's. */
 	readonly #friends: FriendsController;
@@ -139,7 +142,7 @@ export class SettingsView {
 	#folderPath: string | undefined;
 	#folderStop = new AbortController();
 	#folderAuthority: string | undefined;
-	#account: AccountViewState = { loading: true };
+	#account: AccountViewState = {};
 	#company: CompanyController | undefined;
 	#ownsCompany = false;
 	#unsubscribe: (() => void) | undefined;
@@ -173,6 +176,7 @@ export class SettingsView {
 		openFriends: () => void = () => {},
 	) {
 		this.#api = api;
+		this.#hub = hub;
 		this.#auth = auth;
 		this.#friends = new FriendsController(api);
 		this.#close = close;
@@ -239,16 +243,17 @@ export class SettingsView {
 			uiText("Back to companies"),
 		);
 		nav.append(tablist, empty, back);
-		// Friends, a window of its own, beside Settings | Storage (Jonas, 9 Nov 2026): inside a company the friends
-		// button lives here rather than in the rail. Plain, with no fill or dot; its label says when invitations wait.
+		const friendsCountSlot = h("span", { class: "settings-friends-count" });
 		const friendsButton = h(
 			"button",
 			{ type: "button", class: "settings-friends", onclick: () => this.#openFriends() },
 			icon("friends"),
 			uiText(phrase("Friends")),
+			friendsCountSlot,
 		);
 		const countInvitations = () => {
 			const waiting = hub.store.get().invitations.length;
+			friendsCountSlot.replaceChildren(...(waiting > 0 ? [friendsCount(waiting)] : []));
 			const label =
 				waiting > 0 ? t("Friends: {count} company invitations waiting", { count: waiting }) : t("Friends");
 			friendsButton.setAttribute("aria-label", label);
@@ -354,10 +359,6 @@ export class SettingsView {
 		this.#storageSection = tab === "recents" ? "recents" : "documents";
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
-		void api
-			.getAccountEntitlement()
-			.then((entitlement) => this.#loadedAccount({ loaded: true, entitlement }))
-			.catch((error) => this.#loadedAccount({ loaded: true, error: describeError(error) }));
 		// The friends list feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
 			if (this.#tab === "company") this.#drawCompany();
@@ -565,7 +566,8 @@ export class SettingsView {
 			replace(this.#storageContent);
 		}
 		if (this.#mode !== "storage") return;
-		this.#storageCompany.textContent = company?.profile.profileName ?? t("Storage");
+		if (company) showCompanyName(this.#storageCompany, company.profile.profileName);
+		else this.#storageCompany.textContent = t("Storage");
 		this.#drawStorageUsage();
 		// Shown again after a failed read, Storage reads its usage again.
 		if (shown && this.#fileError && !this.#fileLoading) this.#fileError = undefined;
@@ -578,16 +580,18 @@ export class SettingsView {
 		if (!authority || !team) {
 			replace(
 				this.#storageContent,
-				state?.loading
-					? notice("neutral", t("Opening Company File"))
-					: h(
-							"div",
-							null,
-							notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
-							button(t("Retry company"), () => {
-								if (!company.store.get().loading) void company.refreshAll();
-							}),
-						),
+				state?.connectionLost
+					? notice("neutral", t("Can't reach Qorpera. Trying again…"))
+					: state?.loading
+						? notice("neutral", t("Opening Company File"))
+						: h(
+								"div",
+								null,
+								notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
+								button(t("Retry company"), () => {
+									if (!company.store.get().loading) void company.refreshAll();
+								}),
+							),
 			);
 			return;
 		}
@@ -797,14 +801,6 @@ export class SettingsView {
 		);
 	}
 
-	/** General shows only the account's error and message, so it is redrawn only
-	 * when those change: a control in use keeps focus when the entitlement arrives. */
-	#loadedAccount(next: AccountViewState): void {
-		const redraw = next.error !== this.#account.error || next.message !== this.#account.message;
-		this.#account = next;
-		if (redraw) this.#general();
-	}
-
 	#general(): void {
 		if (this.#lifetime.signal.aborted) return;
 		if (!this.#panels.has("general"))
@@ -926,6 +922,10 @@ export class SettingsView {
 				},
 				folder,
 				signal: lifetime,
+				renamed: (name) => {
+					company.store.set(({ profile }) => ({ profile: { ...profile, profileName: name } }));
+					this.#hub.renamed(company.profile.profileId, name);
+				},
 			});
 			if (company.store.get().team?.capabilities.write)
 				void companyLogos()

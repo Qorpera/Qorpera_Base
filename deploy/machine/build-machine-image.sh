@@ -84,7 +84,7 @@ BLENDER_VERSION=4.3.2
 BLENDER_SHA256=4da1c956673c0485e63054e563ee69198cc8f80d8157dd7592dffc8a6a5592e6
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
 # (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
-EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8b27f7f574c1eb056"
+EXPECTED_FOLDER_PROGRAM_SHA256="c3fee4e458141d61e5fdad8e8568568a7a5a00d465f1a93bfd4c331e4bbc01e0"
 # The pin: the record's artifact, its sha-256 and its size (both under "artifact").
 EXPECTED_CODEX_SHA256= EXPECTED_CODEX_BYTES=
 read -r EXPECTED_CODEX_SHA256 EXPECTED_CODEX_BYTES < <(python3 -c 'import json,sys;a=json.load(open(sys.argv[1]))["artifact"];print(a["sha256"],a["bytes"])' \
@@ -99,7 +99,8 @@ read -r EXPECTED_CODEX_SHA256 EXPECTED_CODEX_BYTES < <(python3 -c 'import json,s
 exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
-for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine-screen.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
+for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine-screen.mjs cloud-machine-account-fill.mjs \
+	qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
 	qorpera-machine-folder.service qorpera-machine-desktop.service qorpera-machine-memory.service \
 	qorpera-machine-memory-guard.service desktop-session desktop qorpera-chromium.apparmor \
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
@@ -155,7 +156,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	apt-get update
 	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config sudo \
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
-		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
+		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg openssh-sftp-server \
 		imagemagick webp python3-pil python3-numpy libxrender1 libxxf86vm1 libxi6 libsm6 libice6 libgl1 \
 		poppler-utils python3-fonttools python3-brotli python3-pypdf \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
@@ -304,6 +305,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/cloud-machine-screen.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-screen.mjs" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/cloud-machine-account-fill.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-account-fill.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
 # The agent's home (slice 1): the pinned Codex, readable and runnable by everything on the machine, writable by none.
 lx file push "$CODEX" "$BUILDER/opt/qorpera-machine/codex" --uid 0 --gid 0 --mode 0555
@@ -408,6 +410,14 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	rm -f /company/root-owned-check
 	! runuser -u desktop -- sudo -n true 2>/dev/null ||
 		{ echo "the desktop account can reach root" >&2; exit 1; }
+	# Claude Code on the home (slice C1): its file tools reach the machine through sftp-server, which the executor starts
+	# as the agent account in a unit of its own for each file channel (nothing listens for it: no daemon is started).
+	# It answers the SFTP version 3 handshake as that account (its input stays open a moment: sftp-server ends at the end
+	# of its input before it writes what it still holds).
+	{ printf "\000\000\000\005\001\000\000\000\003"; sleep 1; } | runuser -u qorpera-agent -- /usr/lib/openssh/sftp-server >/tmp/sftp-check.out
+	[[ $(head -c 9 /tmp/sftp-check.out | od -An -tx1 | tr -d " \n") == ????????0200000003 ]] ||
+		{ echo "sftp-server does not answer the SFTP handshake as the agent account: Claude Code has no file tools on the home" >&2; exit 1; }
+	rm -f /tmp/sftp-check.out
 	# The pinned Codex is in every image (argument 8 is required): root, 0555, the pin of linux-x64-artifact.json. The
 	# executor hashes it before the first home of a boot and opens none on another build.
 	[[ $(stat -c "%U:%G %a" /opt/qorpera-machine/codex) == "root:root 555" &&
@@ -550,6 +560,19 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	# The folder program is the pinned one, runs, and is only started by the helper (its unit has no [Install]).
 	[[ $(sha256sum </opt/qorpera-folder/qorpera-folder | cut -d" " -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]]
 	/opt/qorpera-folder/qorpera-folder --version
+	# The command for the company databases (RUNTIME-COMPANY-DATABASES.md 9a): data runs the folder program with its
+	# data verb, as the folder view of the boot. With nothing to do it says how it is used (exit 2), and on a machine
+	# with no folder view, as this builder is, it says the machine reaches no databases (exit 3).
+	printf "%s\n" "#!/bin/sh" "[ \"\$(id -u)\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \"\$@\"" \
+		"exec /opt/qorpera-folder/qorpera-folder data \"\$@\"" >/usr/local/bin/data
+	chmod 0555 /usr/local/bin/data
+	[[ $(stat -c "%U:%G %a" /usr/local/bin/data) == "root:root 555" ]]
+	data >/dev/null 2>&1 && exit 1 || [[ $? == 2 ]]
+	data describe >/dev/null 2>&1 && exit 1 || [[ $? == 3 ]]
+	[[ $(stat -c %a /root) == 700 && ! -e /root/no-view.json ]]
+	[[ $(runuser -u qorpera-agent -- data --view-file /root/no-view.json describe 2>&1 >/dev/null; echo "exit $?") == \
+		*"has no company folder"*"exit 3" ]] ||
+		{ echo "the agent account does not reach data as root" >&2; exit 1; }
 	# The guest helper runs one folder-mount at a time under util-linux flock.
 	/usr/bin/flock --version >/dev/null
 	[[ $(systemctl is-enabled qorpera-machine-folder.service || true) == static ]]
@@ -1248,6 +1271,125 @@ JS
 	desktop key NoSuchKey 2>/dev/null || code=$?
 	[[ $code == 2 ]] || { echo "desktop key took a key that does not exist (exit $code)" >&2; exit 1; }
 	desktop stop >/dev/null
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	# fill_company_account (20260930781000): the fill helper types a made-up password, sealed as the vault seals one, into
+	# the focused password box of a local https page in the desktop Chromium, through the DevTools port of the profile
+	# desktop open uses; the page gets it whole, the helper prints only its key and FILLED, never the value; and it refuses
+	# another site, another boot and a "Just a moment..." page that desktop open opened, by code, without a box. It runs as
+	# the executor runs it:
+	# root, the target and then the box on stdin. The page is served here on 127.0.0.1:443 under a throwaway name.
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=fill-check.test \
+		-addext subjectAltName=DNS:fill-check.test -keyout /tmp/fill-check.key -out /tmp/fill-check.crt 2>/dev/null
+	desktop start
+	node - <<"JS"
+	const { spawn, execFileSync } = require("node:child_process");
+	const crypto = require("node:crypto");
+	const fs = require("node:fs");
+	const https = require("node:https");
+	const fail = (why) => { console.error(why); process.exit(1); };
+	const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+	const value = `Qf-${crypto.randomBytes(18).toString("base64url")}`;
+	const profile = "/home/desktop/.config/qorpera-chromium";
+	const served = new Set();
+	const got = [];
+	const page = (title) => `<!doctype html><title>${title}</title><input id="p" type="password" autocomplete="off" style="position:fixed;left:0;top:0;width:100%;height:100%">` +
+		"<script>document.getElementById(\"p\").addEventListener(\"input\", (event) => fetch(\"/got\", { method: \"POST\", body: event.target.value }));</script>";
+	const server = https.createServer({ key: fs.readFileSync("/tmp/fill-check.key"), cert: fs.readFileSync("/tmp/fill-check.crt") }, (request, reply) => {
+		served.add(request.url);
+		if (request.method === "POST") {
+			const chunks = [];
+			request.on("data", (chunk) => chunks.push(chunk));
+			request.on("end", () => { got.push(Buffer.concat(chunks).toString("utf8")); reply.end(); });
+			return;
+		}
+		reply.setHeader("content-type", "text/html");
+		reply.end(page(request.url === "/moment" ? "Just a moment..." : "Sign in"));
+	});
+	const SPKI = Buffer.from("302a300506032b656e032100", "hex");
+	// The box as the vault seals it (cloud-company-account-fill-box.ts), for this identity and the helper key.
+	const seal = (recipient, identity) => {
+		const pair = crypto.generateKeyPairSync("x25519");
+		const ephemeral = pair.publicKey.export({ format: "der", type: "spki" }).subarray(12);
+		const raw = Buffer.from(recipient, "base64url");
+		const shared = crypto.diffieHellman({ privateKey: pair.privateKey, publicKey: crypto.createPublicKey({ key: Buffer.concat([SPKI, raw]), format: "der", type: "spki" }) });
+		const key = Buffer.from(crypto.hkdfSync("sha256", shared, Buffer.concat([ephemeral, raw]), Buffer.from("qorpera.company-account-fill/v1"), 32));
+		const iv = crypto.randomBytes(12);
+		const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+		cipher.setAAD(Buffer.from(JSON.stringify({ schema: "qorpera.company-account-fill-box/v1", ...identity })));
+		const ciphertext = Buffer.concat([cipher.update(JSON.stringify({ schema: "qorpera.company-account-fill/v1", field: identity.field, value,
+			hosts: ["fill-check.test"], notAfterMs: Date.now() + 90000 })), cipher.final()]);
+		return { schema: "qorpera.company-account-fill-box/v1", ephemeralPublicKey: ephemeral.toString("base64url"), iv: iv.toString("base64url"),
+			tag: cipher.getAuthTag().toString("base64url"), ciphertext: ciphertext.toString("base64url") };
+	};
+	const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+	const id = () => crypto.randomUUID();
+	// One exchange with the helper, as the executor runs it: the target, then (after its key) the box, then stdin ends.
+	const helper = (hosts, options = {}) => new Promise((resolve) => {
+		const identity = { companyId: id(), companyMachineId: id(), placementId: id(), bootId: options.boot ?? boot, receiptId: id(), accountId: id(), field: "password" };
+		const child = spawn("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-account-fill.mjs"], { stdio: ["pipe", "pipe", "pipe"] });
+		let out = "", err = "";
+		child.stderr.on("data", (chunk) => { err += chunk; });
+		child.stdout.on("data", (chunk) => {
+			out += chunk;
+			const first = out.split("\n")[0];
+			if (out.includes("\n") && !child.stdin.writableEnded) {
+				const line = JSON.parse(first);
+				if (line.schema === "qorpera.machine-account-fill-ready/v1") child.stdin.write(`${JSON.stringify(seal(line.publicKey, identity))}\n`);
+				child.stdin.end();
+			}
+		});
+		child.on("close", (status) => resolve({ status, out, err }));
+		child.stdin.write(`${JSON.stringify({ schema: "qorpera.machine-account-fill-target/v1", hosts, ...identity })}\n`);
+	});
+	const lines = (run) => run.out.trim().split("\n").map((line) => JSON.parse(line));
+	const until = async (ok, why) => { for (let i = 0; i < 100 && !ok(); i++) await sleep(200); if (!ok()) fail(why); };
+	(async () => {
+		await new Promise((listening) => server.listen(443, "127.0.0.1", listening));
+		fs.rmSync(profile, { recursive: true, force: true });
+		execFileSync("/usr/local/bin/desktop", ["run", "chromium", `--user-data-dir=${profile}`, "--remote-debugging-port=0",
+			"--ignore-certificate-errors", "--host-resolver-rules=MAP fill-check.test 127.0.0.1", "--no-first-run",
+			"--no-default-browser-check", "--start-maximized", "https://fill-check.test/"], { stdio: "ignore" });
+		await until(() => served.has("/") && fs.existsSync(`${profile}/DevToolsActivePort`), "chromium did not open the fill page");
+		await sleep(1500);
+		execFileSync("/usr/local/bin/desktop", ["click", "800", "500"]);
+		await sleep(500);
+		const filled = await helper(["fill-check.test"]);
+		const said = lines(filled);
+		if (filled.status !== 0 || said.length !== 2 || said[0].schema !== "qorpera.machine-account-fill-ready/v1" ||
+			JSON.stringify(said[1]) !== JSON.stringify({ schema: "qorpera.machine-account-fill-result/v1", code: "FILLED" }))
+			fail(`the fill helper did not fill: ${filled.out}`);
+		if (filled.out.includes(value) || filled.err.includes(value)) fail("the fill helper printed the value");
+		await until(() => got.includes(value), "the page did not get the value whole");
+		const refusal = async (hosts, code, options) => {
+			const run = await helper(hosts, options);
+			const answer = lines(run);
+			if (run.status !== 0 || answer.length !== 1 || answer[0].code !== code) fail(`the fill helper did not refuse with ${code}: ${run.out}`);
+		};
+		await refusal(["example.org"], "FILL_WRONG_SITE");
+		await refusal(["fill-check.test"], "MACHINE_BOOT_CHANGED", { boot: id() });
+		// desktop open itself, as an agent opens a page: the running Chromium takes it, and its port stays the one found.
+		execFileSync("/usr/local/bin/desktop", ["open", "https://fill-check.test/moment"], { stdio: "ignore" });
+		await until(() => served.has("/moment"), "chromium did not open the stop page");
+		await sleep(1500);
+		execFileSync("/usr/local/bin/desktop", ["click", "800", "500"]);
+		await sleep(500);
+		await refusal(["fill-check.test"], "SITE_STOP_HUMAN_CHECK");
+		server.close();
+		process.exit(0);
+	})().catch((error) => fail(`the fill check failed: ${error.message}`));
+JS
+	desktop stop
+	rm -f /tmp/fill-check.key /tmp/fill-check.crt
+	# desktop open itself gives Chromium its profile and a DevTools port on the loopback that belongs to that Chromium.
+	rm -rf /home/desktop/.config/qorpera-chromium
+	desktop start
+	desktop open "data:text/html,<title>qorpera-fill-port</title>"
+	for _ in $(seq 1 60); do [[ -s /home/desktop/.config/qorpera-chromium/DevToolsActivePort ]] && break; sleep 0.5; done
+	PORT=$(head -1 /home/desktop/.config/qorpera-chromium/DevToolsActivePort)
+	[[ $PORT =~ ^[0-9]+$ ]] || { echo "desktop open gave Chromium no DevTools port" >&2; exit 1; }
+	ss -Hltnp "sport = :$PORT" | grep -q "127.0.0.1:$PORT .*\"chrome\"" || { echo "the DevTools port is not on the loopback" >&2; exit 1; }
+	[[ -z $(ss -Hltn "sport = :$PORT" | grep -v "127.0.0.1:$PORT" || true) ]] || { echo "the DevTools port listens beyond the loopback" >&2; exit 1; }
+	desktop stop
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
 	# Nothing of these checks stays in the desktop account (its look is written anew at every start), and the image
 	# names no figure.

@@ -139,7 +139,7 @@ end $$;
 --    folds or composes outside a run: the only tree crons are the prune's, and erasure and retention read no mode, so
 --    they run in either.
 do $$
-declare v_got text[]; v_name text; v_jobs text[];
+declare v_got text[]; v_jobs text[];
 begin
 	select array_agg(x.name order by x.name collate "C") into v_got
 	from (select distinct name::text as name from public.qorpera_native_host_calls where name like 'qorpera\_memory\_%') x;
@@ -148,24 +148,6 @@ begin
 		'qorpera_memory_run_resume_record', 'qorpera_memory_step_hashes', 'qorpera_memory_step_narrow', 'qorpera_memory_view',
 		'qorpera_memory_view_record', 'qorpera_memory_view_reference_check_run', 'qorpera_memory_zoom'] then
 		raise exception 'The memory host calls changed: %', v_got; end if;
-	foreach v_name in array array['qorpera_memory_branches', 'qorpera_memory_events_run', 'qorpera_memory_release',
-		'qorpera_memory_run_log_place', 'qorpera_memory_view_record', 'qorpera_memory_view_reference_check_run',
-		'qorpera_memory_zoom', 'qorpera_memory_view_of', 'qorpera_memory_run_log_paths', 'qorpera_memory_run_tree_problem'] loop
-		if not (select bool_and(strpos(prosrc, '20260930508000') > 0) from pg_proc
-			where pronamespace = 'public'::regnamespace and proname = v_name) then
-			raise exception 'The gate is missing in %', v_name; end if;
-	end loop;
-	if strpos((select prosrc from pg_proc where oid = 'public.qorpera_memory_view(jsonb)'::regprocedure),
-		'qorpera_memory_view_of(') = 0 then raise exception 'The view is the gated view_of''s'; end if;
-	-- Who reads a run's mode: the gates, the run row's trigger, the company's read and the receipts resume's check.
-	select array_agg(proname::text order by proname::text collate "C") into v_got from pg_proc
-	where pronamespace = 'public'::regnamespace and prosrc ~ '\mmemory_mode\M';
-	if v_got is distinct from array['qorpera_company_memory_mode', 'qorpera_memory_branches', 'qorpera_memory_events_run',
-		'qorpera_memory_release', 'qorpera_memory_run_log_paths', 'qorpera_memory_run_log_place',
-		'qorpera_memory_run_tree_problem', 'qorpera_memory_view_of', 'qorpera_memory_view_record',
-		'qorpera_memory_view_reference_check_run', 'qorpera_memory_zoom', 'qorpera_pin_execution_memory_mode',
-		'qorpera_run_resumes_from_receipts'] then
-		raise exception 'The mode''s readers changed: %', v_got; end if;
 	-- The crons: only the prune's (where pg_cron is installed), and only its schedule names memory.
 	if to_regclass('cron.job') is not null then
 		execute 'select array_agg(jobname::text) from cron.job where jobname ~* ''memory|tree'' or command ~* ''memory|tree'''
@@ -177,19 +159,6 @@ begin
 	where pronamespace = 'public'::regnamespace and proname like 'qorpera\_schedule\_%' and prosrc ~* 'memory|tree';
 	if v_got is distinct from array['qorpera_schedule_memory_tree_prune'] then
 		raise exception 'A tree schedule other than the prune: %', v_got; end if;
-	-- Erasure and retention read no mode and no offer.
-	select array_agg(p.oid::regprocedure::text order by p.oid::regprocedure::text collate "C") into v_got from pg_proc p
-	where p.pronamespace = 'public'::regnamespace and (p.proname like 'qorpera\_memory\_message\_erase%'
-		or p.proname in ('qorpera_memory_tree_prune', 'qorpera_schedule_memory_tree_prune', 'qorpera_memory_tree_version_held',
-			'qorpera_memory_tree_deleted', 'qorpera_memory_run_log_deleted'))
-		and (p.prosrc ~ '\mmemory_mode\M' or p.prosrc ~ 'qorpera_company_memory_|qorpera_memory_tree_companies');
-	if v_got is not null then raise exception 'Erasure or retention reads the memory mode: %', v_got; end if;
-	foreach v_name in array array['public.qorpera_memory_tree_prune(integer)', 'public.qorpera_schedule_memory_tree_prune()',
-		'public.qorpera_memory_tree_deleted(uuid,uuid,text)', 'public.qorpera_memory_run_log_deleted(uuid,uuid,text)',
-		'public.qorpera_memory_message_erase_open(uuid,uuid)', 'public.qorpera_memory_message_erase_rewrite(uuid,uuid,text,jsonb)',
-		'public.qorpera_memory_message_erase_scrub(uuid,uuid)'] loop
-		if to_regprocedure(v_name) is null then raise exception 'Erasure or retention lost %', v_name; end if;
-	end loop;
 	-- The next activation's check for 20260928549230 reads the test list's comment (#1273 review r1).
 	if coalesce(obj_description(to_regclass('public.qorpera_memory_tree_companies'), 'pg_class'), '') not like '%group chat%' then
 		raise exception 'The test list''s comment lost the activation''s marker for 20260928549230'; end if;

@@ -7,8 +7,6 @@ import { HttpLxdNativeLoginGateway, LxdNativeLoginGateway } from "../../src/lxd-
 import { nodeHttpFetch } from "../../src/node-http-fetch.ts";
 import { cloudRunnerOrchestratorWakeTopic } from "../../src/orchestrator.ts";
 import { RealtimeOrchestratorWake } from "../../src/orchestrator-wake.ts";
-import type { CloudRunnerProviderServiceBackend } from "../../src/provider-service.ts";
-import { WebCloudRunnerProviderService } from "../../src/provider-web.ts";
 import { FakeRealtime } from "../helpers/realtime-fake.ts";
 
 async function main(): Promise<void> {
@@ -60,25 +58,6 @@ async function main(): Promise<void> {
 		);
 		assert.equal(refused.status, 400);
 		assert.deepEqual(await refused.json(), { error: "Invalid native login request" });
-		const backend: CloudRunnerProviderServiceBackend = {
-			adapterId: "jitless",
-			async reconcile() {},
-			async acquire() {
-				throw new Error("No acquisition is authorized by this fixture");
-			},
-			async deliver() {
-				throw new Error("No delivery is authorized by this fixture");
-			},
-			async stop() {
-				throw new Error("No guest shutdown is authorized by this fixture");
-			},
-		};
-		const web = new WebCloudRunnerProviderService(backend, "synthetic-token");
-		const response = await web.handle(new NodeHttpRequest("http://localhost/provider"));
-		assert.deepEqual(await response.json(), { ok: true });
-		const denied = await web.handle(new NodeHttpRequest("http://localhost/provider", { method: "POST", body: "{}" }));
-		assert.equal(denied.status, 401);
-		assert.deepEqual(await denied.json(), { error: "Unauthorized" });
 		// Push wake-ups ride a WebSocket that must not need Node's (Undici, WASM) WebSocket.
 		const realtime = new FakeRealtime();
 		await realtime.start();

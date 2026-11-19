@@ -761,6 +761,47 @@ describe("the board kit's engine", () => {
 		expect(document.querySelector(".bk-pick")).toBeNull();
 	});
 
+	it("draws the pictures as the page, grows the one under the pointer and marks the chosen one on its picture", async () => {
+		resize(1700, 700);
+		const media = document.createElement("div");
+		media.id = "kit-media";
+		media.hidden = true;
+		media.innerHTML = ["lys", "ro"]
+			.map((id) => `<img data-kit-src="pictures/${id}.webp" src="data:image/webp;base64,AA==" alt="">`)
+			.join("");
+		document.body.append(media);
+		const pictures = JSON.stringify({
+			...JSON.parse(board),
+			line: "Two names",
+			items: [
+				{ id: "lys", name: "Lys", poster: "pictures/lys.webp" },
+				{ id: "ro", name: "Ro", poster: "pictures/ro.webp" },
+			],
+		});
+		const { qorpera } = await open("board", pictures, (bridge) => {
+			bridge.questions = [question];
+		});
+		const row = document.querySelector(".bk-panels") as HTMLElement;
+		expect(row.classList.contains("is-pics")).toBe(true);
+		expect(document.querySelector("h1")?.textContent).toBe("Names");
+		expect(getComputedStyle(document.querySelector(".bk-head") as Element).position).toBe("absolute");
+		expect(document.querySelector('.bk-panel[data-id="lys"] .bk-stage > .bk-win > .bk-ptop')).not.toBeNull();
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1fr)");
+		const enter = Object.assign(new Event("pointerenter"), { pointerType: "mouse" });
+		document.querySelector('.bk-panel[data-id="ro"]')?.dispatchEvent(enter);
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1.4fr)");
+		document.querySelector('.bk-panel[data-id="ro"]')?.dispatchEvent(new Event("pointerleave"));
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1fr)");
+		document.querySelector<HTMLButtonElement>('.bk-panel[data-id="lys"]')?.click();
+		document.querySelector<HTMLButtonElement>(".bk-world .bk-pick")?.click();
+		await settle();
+		expect(qorpera.answer).toHaveBeenCalledWith("q-1", "lys");
+		const chip = (id: string) =>
+			getComputedStyle(document.querySelector(`.bk-panel[data-id="${id}"] .bk-chosen`) as Element).display;
+		expect(chip("lys")).toBe("inline-flex");
+		expect(chip("ro")).toBe("none");
+	});
+
 	it("asks nothing more for a board it has drawn again", async () => {
 		const { now, change, qorpera } = await open("board", board, (bridge) => {
 			bridge.questions = new Error("Too many calls");
@@ -813,6 +854,127 @@ describe("the object kit's engine", () => {
 		change();
 		await settle(10000);
 		expect(document.querySelector(".ok-head h1")?.textContent).toBe("The new box");
+	});
+});
+
+describe("the object kit's engine with a model", () => {
+	const turntable = { picture: "pictures/box.webp", frames: 4, columns: 4, frameWidth: 560, frameHeight: 560 };
+	const parts = [
+		{
+			id: "lid",
+			name: "Lid",
+			state: "known",
+			node: "Lid",
+			track: [
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+			],
+		},
+	];
+	const box = (more: Record<string, unknown>) => ({ lang: "en", title: "The box", parts, ...more });
+	async function openObject(data: object, more: Record<string, unknown> = {}) {
+		const bridge = standIn(JSON.stringify(data));
+		page.QORPERA_KIT = { app: "demo", kit: "object", data: "object.json" };
+		page.qorpera = { ...bridge.qorpera, ...more };
+		new Function(kitFile("object", "engine.js"))();
+		await settle();
+		return bridge;
+	}
+	const said = () => vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const object = () => document.querySelector(".ok-object") as HTMLElement;
+
+	it("draws a turntable-only page as before: no 3D library asked for, nothing of the live mode in it", async () => {
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		const warn = said();
+		await openObject(box({ turntable }), { file });
+		drawFrames(3);
+		expect(file).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
+		expect(document.querySelector("main.ok")?.classList.contains("live")).toBe(false);
+		expect(document.querySelectorAll(".ok-gl, .ok-wait, .ok-none, script[src]")).toHaveLength(0);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-hint")?.classList.contains("show")).toBe(true);
+	});
+
+	it("shows the turntable as today where the browser has no WebGL, and says why in the console", async () => {
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		const warn = said();
+		await openObject(box({ model: "box.glb", turntable }), { file });
+		drawFrames(3);
+		expect(file).not.toHaveBeenCalled();
+		expect(document.querySelector("main.ok")?.classList.contains("live")).toBe(false);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-none")).toBeNull();
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(warn).toHaveBeenCalledWith(
+			"Object kit: this browser cannot draw live 3D (it has no WebGL 2), so the page shows the thing's picture instead.",
+		);
+	});
+
+	it("says in one quiet line, in the page's language, that the model could not be shown when it has no picture", async () => {
+		said();
+		await openObject({ ...box({ model: "box.glb" }), lang: "da" });
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("Modellen kunne ikke vises.");
+		document.body.replaceChildren();
+		await openObject(box({ model: "box.glb", words: { nomodel: "No model here." } }));
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("No model here.");
+		expect(document.querySelectorAll(".ok-label")).toHaveLength(1);
+		expect(document.querySelectorAll(".ok-fact")).toHaveLength(0);
+	});
+
+	it("shows the poster still while the library and the model arrive, and a quiet mark where there is no picture", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		await openObject(box({ model: "box.glb", turntable }), { file });
+		drawFrames(3);
+		expect(file).toHaveBeenCalledWith("three.js");
+		expect(file).not.toHaveBeenCalledWith("box.glb");
+		expect(document.head.querySelector("script[src]")?.getAttribute("src")).toBe("blob:null/three.js");
+		expect(object().getAttribute("role")).toBe("img");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(document.querySelector(".ok-none")).toBeNull();
+		document.body.replaceChildren();
+		document.head.replaceChildren();
+		await openObject(box({ model: "box.glb" }), { file });
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(true);
+		expect(document.querySelector(".ok-none")).toBeNull();
+	});
+
+	it("falls back to the turntable, or the line, when the 3D library cannot be read", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const warn = said();
+		const file = vi.fn(async (path: string) => {
+			throw new Error(`${path} is not in the page's folder`);
+		});
+		await openObject(box({ model: "model/box.glb", turntable }), { file });
+		await settle();
+		drawFrames(3);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(document.querySelector(".ok-none")).toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			"Object kit: model/box.glb could not be shown (three.js is not in the page's folder). The page shows the thing's picture instead.",
+		);
+		document.body.replaceChildren();
+		await openObject(box({ model: "model/box.glb" }), { file });
+		await settle();
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("The model could not be shown.");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+	});
+
+	it("reads a model, a light and a view only as paths of the app's own folder", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		said();
+		await openObject(box({ model: "https://example.com/box.glb", turntable }), { file });
+		expect(file).not.toHaveBeenCalled();
+		expect(object().getAttribute("role")).toBe("slider");
+		document.body.replaceChildren();
+		await openObject(box({ model: "../box.glb" }), { file });
+		expect(file).not.toHaveBeenCalled();
+		expect(document.querySelector(".ok-empty, .ok-none, .ok-wait")).toBeNull();
 	});
 });
 
@@ -1171,13 +1333,18 @@ describe("a kit's page as a concept", () => {
 		return found !== null && getComputedStyle(found).display !== "none";
 	};
 
-	it.each(KITS)("of %s draws its title block and its own padding when the page is no concept", async (kit) => {
+	it.each(KITS)("of %s keeps its title for screen readers only when the page is no concept", async (kit) => {
 		await open(kit, example(kit));
 		drawFrames(3);
 		const root = document.querySelector("main") as HTMLElement;
 		expect(root.className).not.toContain("--bare");
-		expect(shows(BARE[kit].header)).toBe(true);
+		const header = document.querySelector(kit === "object" ? ".ok-head h1" : BARE[kit].header) as Element;
+		expect(getComputedStyle(header).position).toBe("absolute");
+		expect(getComputedStyle(header).width).toBe("1px");
+		if (kit === "object")
+			expect(getComputedStyle(document.querySelector(".ok-head p") as Element).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toBe(titleOf(example(kit)));
+		expect(document.querySelector(BARE[kit].kept)).not.toBeNull();
 	});
 
 	it.each(KITS)("of %s draws no title block when the page is a concept, and keeps what a member does", async (kit) => {
@@ -1760,6 +1927,7 @@ describe("the map kit's engine", () => {
 			}),
 		);
 		expect(document.querySelector("main")?.classList.contains("is-still")).toBe(true);
+		expect(getComputedStyle(document.querySelector(".mp-head") as Element).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toMatch(/^We have stood still since .+\.$/);
 		expect(document.querySelector(".mp-line")?.textContent).toBe(
 			"Sofie's ChatGPT is full, so none of us can work. It opens again on November 20.",
@@ -1772,11 +1940,14 @@ describe("the map kit's engine", () => {
 
 	it("opens a thing into its layer, names the way back, and goes up with Escape to the thing it came from", async () => {
 		await openMap(company(parts), reading());
+		const head = document.querySelector(".mp-head") as Element;
+		expect(getComputedStyle(head).position).toBe("absolute");
 		const dive = thing("tracker")?.querySelector<HTMLButtonElement>("button.mp-hit");
 		expect(dive?.getAttribute("aria-label")).toBe("The repair tracker, On paper, opens");
 		// a thing with no layer does not open
 		expect(thing("needs")?.querySelector("button")).toBeNull();
 		dive?.click();
+		expect(getComputedStyle(head).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toBe("The repair tracker");
 		expect(document.querySelector(".mp-line")?.textContent).toBe("Its parts");
 		expect(document.querySelector(".mp-trail")?.textContent).toBe(

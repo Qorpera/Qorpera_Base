@@ -16,6 +16,7 @@ import {
 	type MemberRequestObservationSpan,
 	parseMemberObservationQuery,
 } from "./member-observability.ts";
+import { serveMemberProgramUpload } from "./member-program-uploads.ts";
 import { serveMemberSessionAttachment } from "./member-session-attachments.ts";
 import type { NativeCompanyObjectOptions } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -27,6 +28,7 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const OBJECT_PATH_PATTERN = /^\/v1\/profile-objects\/([^/]+)\/([^/]+)$/;
 const FOLDER_GC_PATH_PATTERN = /^\/v1\/folder-gc\/([^/]+)\/([^/]+)$/;
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
+const PROGRAM_FINISH_PATH_PATTERN = /^\/v1\/member-program-uploads\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/;
 
 export interface ObjectGatewayServiceOptions {
 	store: FileSystemObjectStore;
@@ -131,7 +133,10 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		try {
 			if (request.url?.startsWith("/v1/member-folder-objects/"))
 				observation = options.memberObservations?.start("object_read");
-			else if (request.url?.startsWith("/v1/member-folder-commits/"))
+			else if (
+				request.url?.startsWith("/v1/member-folder-commits/") ||
+				PROGRAM_FINISH_PATH_PATTERN.test(request.url ?? "")
+			)
 				observation = options.memberObservations?.start("command_submit");
 		} catch {
 			/* Optional diagnostics cannot prevent a human request. */
@@ -241,6 +246,15 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						store: options.store,
 						replication: options.replication,
 						readFallback: (profileId, sha256) => options.authority.readLegacyObject(profileId, sha256),
+						...(observation ? { observation } : {}),
+					});
+					return;
+				}
+				if (request.url?.startsWith("/v1/member-program-uploads/")) {
+					if (!options.memberFolderCommits || !options.replication) throw new HttpError(404, "Not found");
+					await serveMemberProgramUpload(request, response, {
+						authority: options.memberFolderCommits,
+						replication: options.replication,
 						...(observation ? { observation } : {}),
 					});
 					return;
