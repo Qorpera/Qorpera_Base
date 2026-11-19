@@ -37,13 +37,29 @@ export const WORKSPACE: Record<string, string> = {
 	"Company File access changed.": "Adgangen til Virksomhedsfilen er ændret.",
 
 	// app/auth.ts
-	"Sign-in could not be completed. Request a new email code in this browser.":
-		"Du kunne ikke logges ind. Bed om en ny kode på e-mail i denne browser.",
+	"Sign-in could not be completed. Try again.": "Du kunne ikke logges ind. Prøv igen.",
 	"Enter a valid email address.": "Skriv en gyldig e-mailadresse.",
-	"Check your email. Enter the code below, or open the sign-in link on this device.":
-		"Tjek din e-mail. Skriv koden herunder, eller åbn login-linket på denne enhed.",
-	"This sign-in provider is unavailable. Continue with email.":
-		"Denne loginmetode er ikke tilgængelig. Fortsæt med e-mail.",
+	"Enter your password.": "Skriv din adgangskode.",
+	"Confirm your email first. We sent you a new code.": "Bekræft din e-mail først. Vi har sendt dig en ny kode.",
+	"Use at least 8 characters for your password.": "Brug mindst 8 tegn til din adgangskode.",
+	"There's already an account with this email.": "Der findes allerede en konto med denne e-mail.",
+	"Type your email first, then choose Forgot password.": "Skriv din e-mail først, og vælg så Glemt adgangskode.",
+	"Enter the 6-digit code from the email.": "Skriv den 6-cifrede kode fra e-mailen.",
+	"We sent a new code.": "Vi har sendt en ny kode.",
+	"Sign in to change your password.": "Log ind for at ændre din adgangskode.",
+	"That email and password don't match an account.": "Den e-mail og adgangskode passer ikke til en konto.",
+	"That code is wrong or too old. Check it, or send a new one.":
+		"Koden er forkert eller for gammel. Tjek den, eller send en ny.",
+	"Choose a stronger password: at least 8 characters, and not a common one.":
+		"Vælg en stærkere adgangskode: mindst 8 tegn, og ikke en almindelig en.",
+	"That's your current password. Choose a new one.": "Det er din nuværende adgangskode. Vælg en ny.",
+	"We couldn't send a code to that email. Check it, or create an account.":
+		"Vi kunne ikke sende en kode til den e-mail. Tjek den, eller opret en konto.",
+	"Too many tries. Wait a minute, then try again.": "For mange forsøg. Vent et minut, og prøv så igen.",
+	"Sign in again, then change your password.": "Log ind igen, og skift så din adgangskode.",
+	"Something went wrong. Try again.": "Noget gik galt. Prøv igen.",
+	"This sign-in method is unavailable. Use your email instead.":
+		"Denne loginmetode er ikke tilgængelig. Brug din e-mail i stedet.",
 	"You were signed out. Sign in again.": "Du er blevet logget ud. Log ind igen.",
 	Member: "Medlem",
 
@@ -360,19 +376,57 @@ export const WORKSPACE: Record<string, string> = {
 	// app/views/signin.ts
 	"Continue with {provider}": "Fortsæt med {provider}",
 	"you@company.com": "dig@firma.dk",
-	"Code from your email": "Kode fra din e-mail",
-	"Verification code": "Bekræftelseskode",
 	Email: "E-mail",
-	"We sent a code to {email}. Enter it here; the link in the same email works only in this browser.":
-		"Vi har sendt en kode til {email}. Skriv den her; linket i samme e-mail virker kun i denne browser.",
-	"Verify and sign in": "Bekræft og log ind",
-	"Continue with email": "Fortsæt med e-mail",
-	"Use a different email": "Brug en anden e-mail",
-	"One moment…": "Et øjeblik…",
+	Password: "Adgangskode",
+	"New password": "Ny adgangskode",
+	Show: "Vis",
+	Hide: "Skjul",
+	"{count}-digit code": "{count}-cifret kode",
+	"send a new code": "send en ny kode",
+	"send a new code in {time}": "send en ny kode om {time}",
+	"Check for a typo, ": "Tjek for stavefejl, ",
+	"reset your password": "nulstil din adgangskode",
+	", or ": " eller ",
+	"create an account": "opret en konto",
+	"Sign in instead": "Log ind i stedet",
+	"Forgot password?": "Glemt adgangskode?",
+	"Welcome back": "Velkommen tilbage",
+	"Sign in to your companies.": "Log ind til dine virksomheder.",
 	"Sign in": "Log ind",
-	"Your companies and agents, in one place.": "Dine virksomheder og agenter samlet ét sted.",
-	"Only your own session lives in this browser; agents run in the cloud.":
-		"Kun din egen session ligger i denne browser; agenter kører i skyen.",
+	"Email me a code instead": "Send mig en kode på e-mail i stedet",
+	"New to Qorpera?": "Ny på Qorpera?",
+	"Create an account": "Opret en konto",
+	"Your name": "Dit navn",
+	"First and last name": "Fornavn og efternavn",
+	"Create your account": "Opret din konto",
+	"Start a company and meet your Co-Founder.": "Start en virksomhed, og mød din Co-Founder.",
+	"At least 8 characters.": "Mindst 8 tegn.",
+	"Create account": "Opret konto",
+	"Already have an account?": "Har du allerede en konto?",
+	"Check your email": "Tjek din e-mail",
+	"We sent a 6-digit code to {email}. Type it here to finish your account.":
+		"Vi har sendt en 6-cifret kode til {email}. Skriv den her for at gøre din konto færdig.",
+	"We sent a 6-digit code to {email}. Type it here to sign in.":
+		"Vi har sendt en 6-cifret kode til {email}. Skriv den her for at logge ind.",
+	"Didn't get it? Look in spam, or ": "Fik du den ikke? Kig i spam, eller ",
+	"Wrong email? Go back": "Forkert e-mail? Gå tilbage",
+	"Choose a new password": "Vælg en ny adgangskode",
+	"We sent a 6-digit code to {email}. Type it, then pick a new password.":
+		"Vi har sendt en 6-cifret kode til {email}. Skriv den, og vælg så en ny adgangskode.",
+	"Save and sign in": "Gem og log ind",
+	"Pick a new password for {email}.": "Vælg en ny adgangskode til {email}.",
+	"Back to sign in": "Tilbage til log ind",
+	"One moment…": "Et øjeblik…",
+	"What should we call you?": "Hvad skal vi kalde dig?",
+	"Choose a password": "Vælg en adgangskode",
+	"From now on you sign in to {email} with a password. A code by email still works if you forget it.":
+		"Fra nu af logger du ind på {email} med en adgangskode. En kode på e-mail virker stadig, hvis du glemmer den.",
+	"Your agents and teammates see this name. You can change it later in Settings.":
+		"Dine agenter og kolleger ser dette navn. Du kan ændre det senere under Indstillinger.",
+
+	"Password saved. Sign in with it next time.": "Adgangskoden er gemt. Log ind med den næste gang.",
+	"Sign in with your email and a password, or with a code by email.":
+		"Log ind med din e-mail og en adgangskode, eller med en kode på e-mail.",
 
 	// app/views/approvals.ts
 

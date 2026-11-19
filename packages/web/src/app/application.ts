@@ -35,7 +35,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
-import { AuthController, displayName } from "./auth.ts";
+import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
 import { agentWorks, CompanyController } from "./company.ts";
 import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
@@ -92,7 +92,7 @@ import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
 import { SitesView } from "./views/settings-sites.ts";
 import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
-import { renderSignIn } from "./views/signin.ts";
+import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
@@ -974,11 +974,30 @@ export function mountApplication(
 			else if (!root!.querySelector(":scope > .boot")) replace(root!, blankSkeleton(t("Connecting to the cloud")));
 			return;
 		}
-		if (!authState.session) {
+		if (!authState.session || (authState.step.name === "reset" && authState.step.verified)) {
 			teardownCompany();
+			let container = root!.querySelector<HTMLElement>(':scope > .auth:not([data-step="name"])');
+			if (!container) {
+				container = h("div", { class: "brand-field" });
+				replace(root!, container);
+			}
+			renderSignIn(auth, container);
+			return;
+		}
+		if (!accountName(authState.user)) {
+			teardownCompany();
+			if (root!.querySelector(':scope > .auth[data-step="name"]')) return;
 			const container = h("div", { class: "brand-field" });
 			replace(root!, container);
-			renderSignIn(auth, container);
+			renderNameAsk(auth, container, () => render());
+			return;
+		}
+		if (needsPassword(authState.user)) {
+			teardownCompany();
+			if (root!.querySelector(':scope > .auth[data-step="password"]')) return;
+			const container = h("div", { class: "brand-field" });
+			replace(root!, container);
+			renderPasswordAsk(auth, container, () => render());
 			return;
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
@@ -2485,6 +2504,7 @@ export function mountApplication(
 		}
 	}
 
+	if (hasWebsiteIdea()) auth.showStep("create");
 	void auth.start().then(
 		() => render(),
 		(error) => {

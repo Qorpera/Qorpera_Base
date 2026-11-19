@@ -7,6 +7,15 @@
   The session needs `qorpera_cloud_boundary/0.170.0`; a governed run turns `unified_image_budget` off (on since 0.170.0,
   it re-prepares a capture at original detail, which the capture fence refuses) and, without a home, is not offered
   `apply_patch`. Provider-default is GPT-6.2 Sol. The machine image's Codex (`CLOUD_MACHINE_HOME.codexSha256`) moves with it.
+- Release v262 (master since v261's release merge: the action review reads the company's own work as inside work and a
+  denial names the way forward, #1970, runtime text only; a member's waiting thread post moves with their pick of another
+  login, #1968 with migration `20260930813000` and SQL test 1306, SQL only; one clock value for a scheduling pass's stamps,
+  #1971 with migration `20260930814000` and a check in SQL test 1295, SQL only): runtime bundle 262
+  `0b6230d998f01d3f7de0e8cbf6ec3b327c40ea17ed61a9c5759ed1cd91d58b77` (activation `20260929026299`, previous 261
+  `0a7910b42fa1`). The activation requires no migration of its own (both are SQL only; bundle 262 changes the review's
+  words). The guest moves: the native provider host (`3ceeb63f`, 5,560,771 bytes); the rest of the guest and the native
+  Codex (`9c299f88`) stay. The shared vault (`9da8db4d`), the model login helper (`c0c183fa`) and the coding executor
+  stay.
 - Messages that waited together for a busy agent keep their arrival order (founder, 19 Nov 2026: "Yes, build it";
   contract, the 2026-11-19 amendment; migration `20260930814000`, SQL test 1295): a scheduling pass stamps the turn
   requests and wakes it looked at with one time, not one clock read per row, so two wakes scanned together no longer

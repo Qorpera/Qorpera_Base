@@ -52,18 +52,15 @@
 /* ---- sign-in ----------------------------------------------------------------- */
 :root[data-theme="dark"] .auth {
 	--auth-line: rgba(255, 255, 255, 0.1); --auth-line-strong: rgba(255, 255, 255, 0.2); --auth-cobalt: #4f8cf6; --auth-ink: #edece9;
+	--auth-soft: #a4a8b0; --auth-faint: #8d9199; --auth-field: #242423; --auth-alert: rgba(255, 112, 99, 0.12); --auth-alert-ink: #ffb4ab;
 	background: var(--bg);
 }
-:root[data-theme="dark"] :is(.auth-lead, .auth-hint, .auth-link, .auth-status) { color: #a4a8b0; }
-:root[data-theme="dark"] .auth-link:hover { color: var(--auth-ink); }
-:root[data-theme="dark"] :is(.auth-divider, .auth-foot) { color: #8d9199; }
-:root[data-theme="dark"] :is(.auth-provider, .auth-form input) { background: #242423; }
 :root[data-theme="dark"] .auth-provider:hover:not(:disabled) { background: #2c2c2b; border-color: rgba(255, 255, 255, 0.34); }
 :root[data-theme="dark"] .auth-form input::placeholder { color: #7d818a; }
 :root[data-theme="dark"] .auth-primary { color: var(--on-primary); }
 :root[data-theme="dark"] .auth-primary:hover:not(:disabled) { background: var(--primary-hover); }
 :root[data-theme="dark"] .auth-status.is-error { color: #ff9084; }
-:root[data-theme="dark"] .auth-art { background: #212120; }
+:root[data-theme="dark"] .auth-code-box.is-next { box-shadow: 0 0 0 3px rgba(237, 236, 233, 0.14); }
 :root[data-theme="dark"] .crown-shadow { background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0) 70%); }
 /* The lockup comes in an ink and a paper version; signin.ts renders both. */
 .auth-brand .lockup-on-dark, :root[data-theme="dark"] .auth-brand .lockup-on-light { display: none; }
