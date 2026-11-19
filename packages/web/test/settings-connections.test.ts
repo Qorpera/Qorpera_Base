@@ -1923,15 +1923,11 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(readClaude.mock.calls.filter(([options]) => options.reset)).toHaveLength(2);
 	});
 
-	it("reads the bars again after a reset, also when another read was running meanwhile", async () => {
+	it("reads nothing while a reset holds the refresh, and reads the bars once it ends", async () => {
 		const reset = deferred<string>();
-		const meanwhile = deferred<string>();
-		let forced = 0;
-		const readClaude = vi.fn(async (options: { reset?: string; force?: boolean }) => {
-			if (options.reset) return reset.promise;
-			if (options.force && ++forced === 1) return meanwhile.promise;
-			return id(99);
-		});
+		const readClaude = vi.fn(async (options: { reset?: string; force?: boolean }) =>
+			options.reset ? reset.promise : id(99),
+		);
 		const { logins } = await claudeView(
 			login({ resets: { observedAt: new Date().toISOString(), entries: [fullReset] } }),
 			readClaude,
@@ -1940,13 +1936,13 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		await settle();
 		view.el.querySelector<HTMLButtonElement>(".connection-section-heading button")!.click();
 		await settle();
+		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(0);
 		logins.logins[0]!.lastReset = { requestId: id(92), kind: "full", outcome: "reset", left: 2, at: timestamp };
 		reset.resolve(id(92));
 		await settle();
-		meanwhile.resolve(id(99));
 		await settle();
-		await settle();
-		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(2);
+		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(1);
+		expect(view.el.textContent).not.toContain("Usage could not be refreshed");
 	});
 
 	it("refreshes ChatGPT first, then each Claude login, one at a time", async () => {

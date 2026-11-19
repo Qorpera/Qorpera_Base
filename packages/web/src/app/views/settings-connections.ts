@@ -958,12 +958,13 @@ export class ConnectionsView {
 		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
 		const bars = this.#bars(login.usage, true, using ? undefined : limitResetAt, refilling, false);
 		// WHY: an idle sign-in's key lapses after hours and only a Claude task renews it; till then a read finds nothing new.
-		if (!using && !this.#usageUpdating && !(login.usage && Date.now() - Date.parse(login.usage.observedAt) <= USAGE_FRESH_MS))
+		if (
+			!using &&
+			!this.#usageUpdating &&
+			!(login.usage && Date.now() - Date.parse(login.usage.observedAt) <= USAGE_FRESH_MS)
+		)
 			bars.append(h("span", { class: "muted" }, t("Usage updates the next time Claude works on a task.")));
-		return [
-			bars,
-			...this.#claudeResets(login, limitResetAt !== undefined),
-		];
+		return [bars, ...this.#claudeResets(login, limitResetAt !== undefined)];
 	}
 	async #disconnect(connection: NativeMemberConnection): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted) return;
