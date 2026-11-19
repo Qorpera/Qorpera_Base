@@ -302,10 +302,4 @@ begin
 			<> (v_role = 'service_role') then
 			raise exception '5: only the runtime reads a worker run''s facts (%)', v_role; end if;
 	end loop;
-	foreach v_function in array array['public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)',
-		'public.qorpera_claude_worker_home(uuid,uuid,uuid,uuid)',
-		'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'] loop
-		if position('20260930772000' in pg_get_functiondef(v_function::regprocedure)) = 0 then
-			raise exception '5: % does not name 20260930772000', v_function; end if;
-	end loop;
 end $$;

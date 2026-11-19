@@ -211,14 +211,11 @@ describe("the questions dock", () => {
 		dock.dispose();
 	});
 
-	it("is headed once: who asks, and no label row, time or way to the chat under it", async () => {
+	it("is headed once: who asks, its label row for a screen reader only", async () => {
 		const { host } = company({ questions: [question(CARD_A, directions)] });
 		const dock = new QuestionDock(host, (apps) => apps.has("shop-calm"));
 		document.body.append(dock.el);
 		await settle();
-		// Jonas, 13 November 2026: "remove 'Open the chat, QUESTION, Co-Founder · 02:45 PM, Waiting for you'".
-		expect(dock.el.querySelector(".question-dock-note")).toBeNull();
-		expect(dock.el.querySelector("a")).toBeNull();
 		const heading = dock.el.querySelector(".interaction-heading");
 		// Kept for a screen reader, shown to nobody: the dock's own head says who asks.
 		expect(heading?.classList.contains("visually-hidden")).toBe(true);

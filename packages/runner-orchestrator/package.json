@@ -24,10 +24,6 @@
 			"types": "./dist/provider-service.d.ts",
 			"import": "./dist/provider-service.js"
 		},
-		"./provider-web": {
-			"types": "./dist/provider-web.d.ts",
-			"import": "./dist/provider-web.js"
-		},
 		"./process-provider": {
 			"types": "./dist/process-provider.d.ts",
 			"import": "./dist/process-provider.js"

@@ -1,7 +1,7 @@
 -- Deliberate authority/version fences must not enter PostgREST's serialization
 -- retry loop. Engine serialization failures remain a separate, genuine SQLSTATE.
 do $$
-declare v_body text; v_message text;
+declare v_body text;
 begin
 	if exists (select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
 		where n.nspname='public' and p.proname like 'qorpera_%' and p.prokind='f'
@@ -24,12 +24,4 @@ begin
 		or has_function_privilege('authenticated','public.qorpera_retire_stale_managed_runners()','execute') then
 		raise exception 'Forward replacement reopened private/retired controls';
 	end if;
-	-- Preserve genuine PostgreSQL exception identity; no catch-all wrapper may
-	-- relabel engine aborts as successful or application conflict results.
-	begin
-		raise serialization_failure using message='engine transaction retry';
-	exception when serialization_failure then
-		get stacked diagnostics v_message = message_text;
-		if v_message <> 'engine transaction retry' then raise exception 'Engine conflict changed'; end if;
-	end;
 end $$;

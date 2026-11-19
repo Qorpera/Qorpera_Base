@@ -55,6 +55,7 @@ async function setup(groupChat = false) {
 				reasoningEffort: selection.reasoningEffort ?? previous?.reasoningEffort ?? "low",
 				...(serviceTier ? { serviceTier } : {}),
 				models: previous?.models ?? GPT_OFFERED,
+				...(previous?.efforts ? { efforts: previous.efforts } : {}),
 				version: version + 1,
 			};
 			models.set(sessionId, value);
@@ -453,6 +454,69 @@ describe("composer model selector", () => {
 			expect.any(AbortSignal),
 		);
 		expect(button(f.view.el, "Model: GPT-6 Astra, High effort, Fast")).toBeTruthy();
+	});
+	it("offers Extra high on GPT where the cloud names it, and steps Claude's Max down to it", async () => {
+		const f = await setup();
+		const gpt = ["low", "medium", "high", "xhigh"];
+		const claude = ["low", "medium", "high", "xhigh", "max"];
+		f.models.set(session.sessionId, {
+			sessionId: session.sessionId,
+			modelId: "gpt-6-astra",
+			reasoningEffort: "high",
+			models: ALL_OFFERED,
+			efforts: { "gpt-6-astra": gpt, "gpt-6.1-sol": gpt, "claude-fable-5-2": claude, "claude-opus-5-5": claude },
+			version: 0,
+		});
+		const panel = await open(f.view);
+		expect(slider(panel).getAttribute("aria-valuemax")).toBe("3");
+		expect(panel.querySelectorAll(".composer-effort-stops i").length).toBe(4);
+		slider(panel).focus();
+		await slide(panel, "End");
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ reasoningEffort: "xhigh" },
+			0,
+			expect.any(AbortSignal),
+		);
+		expect(part(panel, "title").textContent).toBe("Extra high");
+		expect(button(f.view.el, "Model: GPT-6 Astra, Extra high effort").textContent).toContain(
+			"GPT-6 Astra · Extra high",
+		);
+		await choose(panel, "GPT-6.1 Sol");
+		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { modelId: "gpt-6.1-sol" }, 1, expect.any(AbortSignal));
+		const provider = part(panel, "provider") as HTMLButtonElement;
+		provider.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ modelId: "claude-fable-5-2" },
+			2,
+			expect.any(AbortSignal),
+		);
+		slider(panel).focus();
+		await slide(panel, "End");
+		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { reasoningEffort: "max" }, 3, expect.any(AbortSignal));
+		provider.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ modelId: "gpt-6-astra", reasoningEffort: "xhigh" },
+			4,
+			expect.any(AbortSignal),
+		);
+	});
+	it("keeps GPT at three stops where the cloud names no efforts", async () => {
+		const f = await setup();
+		const panel = await open(f.view);
+		expect(slider(panel).getAttribute("aria-valuemax")).toBe("2");
+		slider(panel).focus();
+		await slide(panel, "End");
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ reasoningEffort: "high" },
+			0,
+			expect.any(AbortSignal),
+		);
 	});
 	it("names a conversation's earlier model and offers only the current ones", async () => {
 		const f = await setup();

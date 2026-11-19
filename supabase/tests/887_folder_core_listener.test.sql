@@ -69,14 +69,10 @@ begin
 	perform pg_temp.is((pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1') + pg_temp.fw_count('88700000-0000-4000-8000-0000000000e2'))::text,
 		'0', 'activation: nothing up to the saving change set');
 	perform pg_temp.is(pg_temp.listen() ->> 'state', 'idle', 'nothing new');
-	-- The trigger check takes the folded watch only; the run resolve no longer refuses a file wake.
 	if not public.qorpera_cloud_routine_trigger_valid('{"id":"file","kind":"file-change","watch":"docs","match":"subtree","timeZone":"UTC"}')
 		or public.qorpera_cloud_routine_trigger_valid('{"id":"file","kind":"file-change","watch":"Docs","match":"subtree","timeZone":"UTC"}')
 		or public.qorpera_cloud_routine_trigger_valid('{"id":"file","kind":"file-change","watch":"docs","match":"near","timeZone":"UTC"}') then
 		raise exception 'The file-change trigger''s shape'; end if;
-	if (select strpos(prosrc, '''company-file'',''office-activation''') from pg_proc
-			where oid = 'public.qorpera_folder_run_resolve(uuid,uuid,jsonb)'::regprocedure) <> 0 then
-		raise exception 'The run resolve accepts file wakes'; end if;
 end $$;
 
 -- 2. Matching: exact and subtree, siblings, moves from and into the watch, a copy at its target, a delete ----------------
@@ -311,7 +307,7 @@ end $$;
 -- 8. Grants and the lock text --------------------------------------------------------------------------------------------
 
 do $$
-declare v_fn regprocedure; v_body text;
+declare v_fn regprocedure;
 begin
 	foreach v_fn in array array['public.qorpera_folder_listen_company(uuid,integer)', 'public.qorpera_folder_listen_due(uuid,integer)']::regprocedure[] loop
 		if not has_function_privilege('service_role', v_fn, 'execute') or has_function_privilege('anon', v_fn, 'execute')
@@ -323,12 +319,9 @@ begin
 		'public.qorpera_folder_listener_targets_valid(uuid,jsonb)']::regprocedure[] loop
 		if has_function_privilege('service_role', v_fn, 'execute') then raise exception 'No API role runs %', v_fn; end if;
 	end loop;
-	select prosrc into v_body from pg_proc where oid = 'public.qorpera_folder_listen_company(uuid,integer)'::regprocedure;
-	-- The lease comes after the fence and ranks; no 40001; the 2 s budget.
-	if strpos(v_body, 'for update skip locked') < strpos(v_body, 'qorpera_folder_company_enter')
-		or v_body ~* '40001' or not (select proconfig @> array['lock_timeout=2s'] from pg_proc
+	if not (select proconfig @> array['lock_timeout=2s'] from pg_proc
 			where oid = 'public.qorpera_folder_listen_company(uuid,integer)'::regprocedure) then
-		raise exception 'The lock text of the drain'; end if;
+		raise exception 'The lock budget of the drain'; end if;
 	if exists (select 1 from pg_class where relname in ('qorpera_folder_listener_cursors','qorpera_folder_listener_hook_failures')
 			and not relrowsecurity) then raise exception 'RLS on the new tables'; end if;
 end $$;

@@ -133,21 +133,19 @@ function pill(view: ConversationView, label: string) {
 }
 
 describe("an agent's take-over card", () => {
-	it("opens the agent's computer from Open computer, asked (a sleeping one wakes), and its large view once shown; it takes nothing over (review r1 F1 of #1812)", async () => {
+	it("opens the agent's computer from Open computer, asked (a sleeping one wakes), and its large view once shown (review r1 F1 of #1812)", async () => {
 		const f = setup();
 		await settle();
 		const labels = [...f.view.el.querySelectorAll<HTMLButtonElement>(".interaction-card button")].map(
 			(button) => button.textContent,
 		);
 		expect(labels).toEqual(expect.arrayContaining(["Open computer", "I'm done", "Skip"]));
-		expect(labels).not.toContain("Take over");
 		pill(f.view, "Open computer")!.click();
 		// The member's own click: a sleeping computer wakes for it (COMPUTER-OPEN-BRIEF).
 		expect(f.panels.open).toHaveBeenCalledWith(expect.objectContaining({ id: staff.id }), { asked: true });
 		expect(f.panel.attach).toHaveBeenCalled();
 		expect(f.panel.focus).toHaveBeenCalled();
 		expect(f.panel.enterWhenShown).toHaveBeenCalledOnce();
-		expect(f.panel.takeOver).not.toHaveBeenCalled();
 		expect(f.answer).not.toHaveBeenCalled();
 	});
 

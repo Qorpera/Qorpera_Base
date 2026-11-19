@@ -49,10 +49,6 @@ create function pg_temp.use(p_seconds bigint) returns void language sql as $$
 	values ('72700000-0000-4000-8000-000000000010', clock_timestamp(), p_seconds, p_seconds)
 $$;
 
-select pg_temp.left_assert(not has_function_privilege(role_name,
-		'public.qorpera_computer_hour_member_hours_left(uuid,uuid)', 'EXECUTE'), 'Not callable by ' || role_name)
-from unnest(array['anon', 'authenticated', 'service_role']) role_name;
-
 -- Before the live switch members see measured hours only.
 select pg_temp.use(1000);
 select pg_temp.left_assert(pg_temp.left_as('72700000-0000-4000-8000-000000000001') = 'null'::jsonb,

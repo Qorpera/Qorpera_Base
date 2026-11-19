@@ -20,6 +20,7 @@ import {
 	claudeWorkerBlocked,
 	claudeWorkerBrief,
 	claudeWorkerPrompt,
+	claudeWorkerReportedOutputs,
 	claudeWorkerReportText,
 	claudeWorkerScratchPrefix,
 	claudeWorkerSessionId,
@@ -174,17 +175,12 @@ describe("what Claude Code is told", () => {
 		]);
 	});
 
-	it("admits Claude Code's own eight tools as the run's catalog, and no tool of Qorpera's", () => {
-		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual([
-			"claude_code_bash",
-			"claude_code_read",
-			"claude_code_edit",
-			"claude_code_write",
-			"claude_code_notebookedit",
-			"claude_code_grep",
-			"claude_code_glob",
-			"claude_code_taskstop",
-		]);
+	it("admits Claude Code's own tools as the run's catalog, and no tool of Qorpera's", () => {
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toEqual(
+			CLAUDE_BOX_TOOLS.map((name) => `claude_code_${name.toLowerCase()}`),
+		);
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).toContain("claude_code_task");
+		expect(CLAUDE_WORKER_CATALOG.tools.map((tool) => tool.name)).not.toContain("claude_code_webfetch");
 		for (const tool of CLAUDE_WORKER_CATALOG.tools)
 			expect(tool.inputSchema).toEqual({ type: "object", additionalProperties: false });
 		expect(claudeWorkerSessionId({ model: "claude-sonnet-5-5", sessionId: "abc-1" })).toBe(
@@ -241,7 +237,32 @@ describe("the stream", () => {
 		expect(stream.limit).toBeNull();
 	});
 
-	it("names other tools than the eight, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
+	it("says what each of the box's other tools was asked, in the run's steps", () => {
+		const stream = new ClaudeWorkerStream(() => 0);
+		stream.push(init());
+		const calls: [string, unknown][] = [
+			["Monitor", { command: "tail -f /var/log/app.log\nmore", description: "watch" }],
+			["Monitor", { ws: { url: "wss://example.com/feed" }, description: "feed" }],
+			["Task", { subagent_type: "general-purpose", description: "sort the notes", prompt: "long" }],
+			["WebSearch", { query: "danish vat rules" }],
+			["Skill", { skill: "pdf" }],
+			["TaskCreate", { subject: "s", description: "d" }],
+		];
+		calls.forEach(([name, input], index) => {
+			stream.push(use(`w${index}`, name, input));
+			stream.push(answer(`w${index}`));
+		});
+		expect(stream.steps.map((step) => step.what)).toEqual([
+			"tail -f /var/log/app.log",
+			"wss://example.com/feed",
+			"general-purpose: sort the notes",
+			"danish vat rules",
+			"pdf",
+			"",
+		]);
+	});
+
+	it("names other tools than the box's, a plan's limit in Claude Code's own words, and a sign-in that failed", () => {
 		const other = new ClaudeWorkerStream();
 		other.push(init([...CLAUDE_BOX_TOOLS, "WebFetch"]));
 		expect(other.toolsAsAllowed()).toBe(false);
@@ -261,6 +282,31 @@ describe("the stream", () => {
 		const out = new ClaudeWorkerStream();
 		out.push(said("OAuth token has expired. Please run /login", "authentication_failed"));
 		expect(out.signedOut).toBe(true);
+	});
+
+	it("keeps the plan's last usage from Claude Code's rate-limit lines, and nothing from a line out of shape", () => {
+		const stream = new ClaudeWorkerStream();
+		stream.push(init());
+		stream.push(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } }));
+		expect(stream.usage).toBeNull();
+		stream.push(
+			JSON.stringify({
+				type: "rate_limit_event",
+				rate_limit_info: {
+					status: "allowed",
+					unifiedWindows: {
+						five_hour: { utilization: 0.28, resetsAt: 1794921898, status: "allowed" },
+						seven_day: { utilization: 0.5, resetsAt: 1795272238, status: "allowed" },
+					},
+				},
+			}),
+		);
+		expect(stream.usage?.windows.map((window) => [window.id, window.usedPercent])).toEqual([
+			["five_hour", 28],
+			["seven_day", 50],
+		]);
+		stream.push(JSON.stringify({ type: "rate_limit_event", rate_limit_info: "nonsense" }));
+		expect(stream.usage?.windows).toHaveLength(2);
 	});
 
 	it("bounds what a step keeps", () => {
@@ -380,6 +426,35 @@ async function root(): Promise<string> {
 const OK = [init(), use("t1", "Bash", { command: "make pdf" }), answer("t1"), result("Made it. Changed: a.pdf")];
 
 describe("a Claude Code worker's run", () => {
+	it("hands on each new usage reading Claude Code reports during the run", async () => {
+		const reading = (used: number) =>
+			JSON.stringify({
+				type: "rate_limit_event",
+				rate_limit_info: { unifiedWindows: { five_hour: { utilization: used, resetsAt: 1794921898 } } },
+			});
+		const box = standInBox([
+			init(),
+			reading(0.2),
+			use("t1", "Bash", { command: "make pdf" }),
+			answer("t1"),
+			reading(0.3),
+			result("Made it."),
+		]);
+		const runRoot = await root();
+		const usage: number[] = [];
+		await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins: vault().logins,
+			launch: box.launch,
+			root: runRoot,
+			usage: (reading) => usage.push(reading.windows[0]!.usedPercent),
+			signal: new AbortController().signal,
+		});
+		expect(usage).toEqual([20, 30]);
+		await rm(runRoot, { recursive: true });
+	});
+
 	it("puts the sign-in in a private folder for the box, reads nothing back, and removes the folder", async () => {
 		const v = vault();
 		const box = standInBox(OK);
@@ -499,6 +574,52 @@ describe("a Claude Code worker's run", () => {
 		await rm(runRoot, { recursive: true });
 	});
 
+	it("never puts another Claude login's files in place of the one the run started on", async () => {
+		const v = vault();
+		const other = "22222222-2222-4222-8222-222222222222";
+		const opened = v.logins.open;
+		let asked = 0;
+		const logins: ClaudeWorkerLogins = {
+			open: async (signal, knownVersion) => {
+				const answer = await opened(signal, knownVersion);
+				if (knownVersion === undefined || !("files" in answer)) return answer;
+				asked += 1;
+				return { ...answer, claudeLoginId: other };
+			},
+		};
+		let seen: string | undefined;
+		const box = standInBox([init(), use("t1", "Bash", { command: "long" })], async (folder) => {
+			v.renew("other-login-2");
+			for (let i = 0; i < 400 && asked < 3; i++) await new Promise((r) => setTimeout(r, 5));
+			seen = sha(await readFile(join(folder, ".credentials.json")));
+		});
+		const runRoot = await root();
+		const outcome = await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins,
+			launch: async (options) => {
+				const started = await box.launch(options);
+				return {
+					...started,
+					lines: (async function* () {
+						for await (const line of started.lines) yield line;
+						yield answer("t1");
+						yield result("Done.");
+					})(),
+				};
+			},
+			root: runRoot,
+			signal: new AbortController().signal,
+			refreshMs: 5,
+		});
+		expect(asked).toBeGreaterThanOrEqual(3);
+		expect(seen).toBe(sha(credentials("v1")));
+		expect(outcome).toMatchObject({ outcome: "succeeded", login: { refreshed: 0 } });
+		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
+		await rm(runRoot, { recursive: true });
+	});
+
 	it("keeps the copy it has when the vault cannot be asked, and stops asking once the login is refused", async () => {
 		const v = vault();
 		const open = v.logins.open;
@@ -608,11 +729,15 @@ describe("a Claude Code worker's run", () => {
 		}
 		expect(named).toEqual(["cloud-native-egress.ts", "cloud-native-isolation.ts"]);
 		expect(launchers).toEqual([
+			"cloud-claude-login-reader.ts",
 			"cloud-codex-tool-session.ts",
 			"cloud-model-login-renewal.ts",
 			"cloud-native-isolation.ts",
 			"cloud-native-provider-host.ts",
 		]);
+		expect(await readFile(join(source, "cloud-claude-login-reader.ts"), "utf8")).toContain(
+			'harness: "claude-code",\n\t\t\t\tclaudeRead: read,',
+		);
 	});
 
 	it("removes the folder when the run is stopped in the middle", async () => {
@@ -950,6 +1075,70 @@ describe("review round 1 of #1835", () => {
 		const stopped = new AbortController();
 		stopped.abort();
 		await expect(claudeWorkerSettledOutputs(async () => [], stopped.signal, { sleep })).rejects.toThrow();
+	});
+});
+
+describe("the report's file list", () => {
+	it("leaves out Claude Code's own temporary file of a file the run wrote (run 7a174bc9, 16 Nov)", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["product/backup-review.md.tmp.9.58b93b9e96db", "product/backup-review.md", "product/results.md"],
+				"product/results.md",
+			),
+		).toEqual(["product/backup-review.md"]);
+		expect(
+			claudeWorkerReportedOutputs(
+				["a/b.md", "a/b.md.tmp.123456.0123456789ab", "a/c.tmp.77.abcdefabcdef", "a/c"],
+				"w/results.md",
+			),
+		).toEqual(["a/b.md", "a/c"]);
+	});
+
+	it("leaves out Claude Code's temporary file of the results file too, and the results file", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["product/results.md", "product/results.md.tmp.9.58b93b9e96db", "product/plan.pdf"],
+				"product/results.md",
+			),
+		).toEqual(["product/plan.pdf"]);
+	});
+
+	it("pairs a temporary file with its file as the folder does, whatever the case", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["Product/Backup-Review.md", "product/backup-review.md.tmp.9.58b93b9e96db"],
+				"w/results.md",
+			),
+		).toEqual(["Product/Backup-Review.md"]);
+	});
+
+	it("keeps every other name, a member's own included", () => {
+		const kept = [
+			"notes/plan.md.tmp.9.58b93b9e96db",
+			"notes/report.md.tmp.9.58B93B9E96DB",
+			"notes/report.md.tmp.0.58b93b9e96db",
+			"notes/report.md.tmp.9.58b93b9e96d",
+			"notes/report.md.tmp.9.58b93b9e96dbe",
+			"notes/report.md.tmp.x.58b93b9e96db",
+			"notes/report.md.tmp",
+			"notes/report.md.tmp.9",
+			"notes/other.md",
+		];
+		expect(claudeWorkerReportedOutputs([...kept, "notes/report.md"], "w/results.md")).toEqual([
+			...kept,
+			"notes/report.md",
+		]);
+	});
+
+	it("keeps only well-formed names and never the results file", () => {
+		expect(
+			claudeWorkerReportedOutputs(
+				["ok.md", 7, null, " lead.md", "trail.md ", "a\nb.md", "x".repeat(257), "w/results.md"],
+				"w/results.md",
+			),
+		).toEqual(["ok.md"]);
+		expect(claudeWorkerReportedOutputs(undefined, "w/results.md")).toEqual([]);
+		expect(claudeWorkerReportedOutputs({ outputs: ["a.md"] }, "w/results.md")).toEqual([]);
 	});
 });
 

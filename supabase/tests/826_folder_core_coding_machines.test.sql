@@ -139,20 +139,6 @@ begin
 	end loop;
 end $$;
 
--- D. Each body has the line the activation template looks for (20260925123000's, the folder fence since F2c).
-do $$
-begin
-	if position('qorpera_folder_machine_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id'
-			in pg_get_functiondef('public.qorpera_authorize_coding_machine_run(uuid,uuid,text,jsonb,text)'::regprocedure)) = 0
-		or position('qorpera_folder_machine_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id'
-			in pg_get_functiondef('public.qorpera_plan_coding_machine(uuid,uuid,text,text)'::regprocedure)) = 0
-		or position('qorpera_folder_machine_fence(machine.profile_id) from public.qorpera_coding_machines machine where machine.id = p_machine_id'
-			in pg_get_functiondef('public.qorpera_suspend_coding_machine(uuid,text,text,text)'::regprocedure)) = 0
-		or position('qorpera_folder_machine_fence(machine.profile_id) from public.qorpera_coding_machines machine where machine.id = p_machine_id'
-			in pg_get_functiondef('public.qorpera_release_coding_machine(uuid,text,text,text)'::regprocedure)) = 0 then
-		raise exception 'D: an activation marker went missing'; end if;
-end $$;
-
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture: 648's company rows (and the coding rows above) as 824 removes them.

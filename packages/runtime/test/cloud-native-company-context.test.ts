@@ -935,15 +935,38 @@ it("says only what fits the run's tools, and leaves the founding work once the v
 	const noMachines = compile(without("machine_start", "machine_run"));
 	expect(noMachines).not.toContain("- Commands (");
 	expect(noMachines).not.toContain("Playwright's addInitScript");
+	expect(noMachines).not.toContain("A look on a machine sees the files");
+	expect(full).toContain(
+		"A program on a company machine reaches these databases with the command data, as the machine's own company folder: the databases its /company shows (never one in a member's private folder), and :viewer is the member the machine was started for unless a call gives viewer=<member id>.",
+	);
+	expect(full).toContain("data change <database> <change> name=value and data apply <database> print JSON");
+	expect(full).toContain(
+		"a start with the same cpus and memory and no larger disk takes such a machine again (its answer says reused): start one with other cpus or memory or a larger disk, or delete each old one the answer names when nothing on its disk is needed.",
+	);
+	expect(noMachines).not.toContain("the command data");
+	expect(noMachines).toContain("\n# Company databases\n");
+	const reading = compile(without("data_apply", "data_change"));
+	expect(reading).toContain("data describe [<database>] and data query <database> <question> name=value");
+	expect(reading).toContain("Changing rows is for the agent that sent you.");
+	expect(reading).not.toContain("data change");
+	expect(reading).not.toContain("data apply");
+	expect(reading).not.toContain("data_apply");
 	expect(noMachines).toContain(
-		"Before you link an app, look at it as a demanding designer, fix the weakest thing, and look again. Then cover the words",
+		"Before you link an app, look at it as a demanding designer, fix the weakest thing, look once more, then link it. Hold it against the founders' own words",
 	);
 	expect(compile(without("manage_worker"))).not.toContain("# Code projects");
 	expect(compile(without("manage_worker"))).not.toContain("- Bigger work or many files");
 	expect(compile(without("manage_worker"))).not.toContain("- Work a member asks Claude Code to do");
 	expect(compile(without("manage_code"))).not.toContain("manage_code");
 	expect(compile(without("hire_agent"))).not.toContain("hire one when no agent fits");
-	expect(compile(without("manage_hook"))).not.toContain("open the company's email");
+	expect(full).not.toContain("hire_team");
+	expect(full).toContain("1. First concept: one take on the product, not several");
+	expect(compile(without("save_app"))).not.toContain("1. First concept:");
+	expect(compile(new Set([...all, "hire_team"]))).toContain(
+		"add the product's builders once it is clear, with first assignments that make the first concept within the hour or work out the solution beside it. Hire the first team in one hire_team call, so each starts knowing the others; hire later ones whenever the company needs them, several at once with hire_team and one with hire_agent. Set up your daily plan routine.",
+	);
+	expect(compile(new Set([...all, "hire_team"]), true)).not.toContain("hire_team");
+	expect(compile(without("manage_hook"))).not.toContain("Never open the company's first email address");
 	expect(compile(without("manage_hook"))).toContain("Say in a few lines who you hired and what each finds out first.");
 	expect(compile(without("offer_agents_to_member"))).not.toContain("offer_agents_to_member");
 	// The reading and its senses are the Co-Founder's in the company runs that keep it (update_reading); end_role is named
@@ -1116,10 +1139,10 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		"The company starts with the first conversation, and the vision grows out of the work.",
 		"Your first job is to build it with the founders until every founder agrees",
 		"You hire and manage, and domain work (research, money, sales, product, building) belongs to the agents you hire for it",
-		"As soon as you know what the company is about, hire the team that builds the vision with you, each with a first assignment due within a day or two: a researcher for the customers and their problem, a market watcher, a strategist who weighs the options, and a Brand owner for the logo and the look",
+		"As soon as you know what the company is about, hire the team that builds the vision with you: a researcher for the customers and their problem, a market watcher and a strategist who weighs the options, each with a first assignment due within a day or two, and a Brand owner for the logo and the look",
 		// v11 (Jonas, 9 November 2026): the brand owner makes a first identity at once, with the official logo where the
 		// app shows it, and keeps the brand current; renaming the company is deferred.
-		"the official logo at QorperaOS/brand/logo.svg",
+		"the official logo, QorperaOS/brand/logo.svg",
 		"leave the company's name alone, because a new name must also reach the registry, the mail and the bank",
 		"brand, suppliers and stock",
 		"Set up your daily plan routine.",
@@ -2091,24 +2114,24 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "defab1692084cfa7f44d397c57393a341a58a5dfa030988ed88854fd29357fa6",
-			prompt: "d03e5ff3f97dc43add39ef5535d6cf5984e0db61459531ce4a182267c3e3173f",
+			instructions: "b2a4cebaa9c4610e79652da7d31a5bf3d922e7235cf55dd5c8e0225f78bb5e12",
+			prompt: "8d4de0aa97c4fd1b1e41b05fc0f4eaa49296049c3d0c7c476a955d015db99df0",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "4ecdde26333cfc305d263663ad41c07578885ea56214b993c8c1b9d9e1b1989b",
-			prompt: "747356213c9292296f5c0c2c7e8faa07fc0fab6af4e3553750778e5a0adc0556",
+			instructions: "33b7fa81adbffcbafdc44b99d6deffc391d0ba54dc9033f001908fb32dcd2b3e",
+			prompt: "44a41b632be600e8f1070908278c1a70e1b044e95c40f957a5b2d5b81d682bf1",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "defab1692084cfa7f44d397c57393a341a58a5dfa030988ed88854fd29357fa6",
-			prompt: "388258c3f203411a8b740dd5df4d4a9984eff51bd11b6f0c2bf23f8b525d24d7",
+			instructions: "b2a4cebaa9c4610e79652da7d31a5bf3d922e7235cf55dd5c8e0225f78bb5e12",
+			prompt: "9cb69c8a1cdf1d2bca1865206e55fb2efb05db9fa5333ad636bb07c78861cfb0",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -2197,7 +2220,7 @@ it("tells every agent to write to members briefly, plainly and in the founders' 
 		"answer a member who writes in another language in theirs, and write for outsiders in theirs",
 		"Apart from that acknowledgement, never send only to say that work started, goes on or has not changed",
 		"Say each thing once: a correction goes in one line of your next message",
-		"To a coworker, write what you need, what you hand over or what changed for them",
+		"Write to a coworker when you need something from them, when they wait for something from you, or when what you found changes their work",
 		"pass a member's request on in their own words",
 	])
 		expect(instructions).toContain(rule);
@@ -2237,7 +2260,7 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"As soon as the vision names a product, hire its builders as a strong company in that field would",
 		"add the product's builders once it is clear",
 		"The vision holds the product as the founders describe it, at their ambition",
-		"You see that the solution comes first, write the concept brief with the founders and see the concepts through (see Concepts).",
+		"You write the concept brief with the founders, see that the first concept reaches them the same hour the builders are hired, and see the concepts through (see Concepts).",
 	])
 		expect(cofounder).toContain(rule);
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
@@ -2316,7 +2339,7 @@ it("works out the solution before the brief, whatever example the founders showe
 	// get a product that works at scale; the platform derives it, without the founder knowing software.
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"The solution comes first.",
+		"The first concept comes at once, from what the founders described; the solution is worked out beside it and corrects it.",
 		"treat it as the need, never the method, and never ask them how to build it",
 		"in plain words in strategy/solution.md",
 		"how the strongest companies build it and why the quick ways fail",
@@ -2344,14 +2367,14 @@ it("makes concepts in four steps, looks at pictures, and writes to coworkers in 
 	// and their threads read as test reports.
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"Then four steps, none skipped, because building before the idea is shaped gives a guess dressed up as a product:",
-		"1. Brief: strategy/concept-brief.md, for the team: the product in one sentence",
-		"2. Look: screenshots of the best products and other references in research/moodboard/",
+		"Concepts go in this order, each shaped by the founders' answer to the one before, and none is skipped, because building before the idea is shaped gives a guess dressed up as a product:",
+		"Its brief is strategy/concept-brief.md, for the team: the product in one sentence",
+		"2. Look, from their answer: screenshots of the best products and other references in research/moodboard/",
 		"Research that is only text is not looking.",
-		"3. Directions: several clearly different, quick directions of the key moments",
+		"3. Directions, from their answer: several clearly different, quick directions of the key moments",
 		"judge as a demanding designer against the brief, the moodboard and the best reference",
 		"Passing tests is not done",
-		"Each step is an app of its own with concept = true and a cover",
+		"The first concept, the directions and the build are each an app of its own with concept = true and a cover",
 		"For a concept's directions the workers make quick directions instead (step 3 of Concepts).",
 		"(never logs, check counts or file lists)",
 	])
@@ -2370,7 +2393,7 @@ it("shows the company's work in interface apps from the first day, as fun quick 
 		"A picture of a screen is not a screen.",
 		"Make following the work a pleasure",
 		"on a question card whose options preview the app, and as the same choice in the app",
-		"so it opens in the Concepts viewer",
+		"so they open in the Concepts viewer",
 		"shown with the board kit's wall",
 		"picked by the founders on a card that previews them",
 	])
@@ -2408,9 +2431,9 @@ it("has an interface app show a thing to see and handle, never a document or a s
 		"Before you link an app, look at it as a demanding designer: open it from /company/apps/<name>/ in a browser on a machine at 1280 and 390 px wide",
 		"Then cover the words in your mind: when what is left does not show the thing and how it stands, it is a document, and you remake it with a kit.",
 		// The concepts app showed the brief as six boxes of text: "The concepts interface carries no concept of anything".
-		"opening on the key moments, never on the brief's text",
-		"1. Brief: strategy/concept-brief.md, for the team",
-		"show it as a storyboard in the concepts app",
+		"the first opens on the key moments, never on the brief's text",
+		"Its brief is strategy/concept-brief.md, for the team",
+		"It shows those moments as a customer will meet them",
 		"Build nothing further until it shows what they said.",
 	])
 		expect(instructions).toContain(rule);
@@ -2494,15 +2517,34 @@ it("holds changes until a member says yes, and puts a repository's website live 
 		expect(instructions).not.toContain(gone);
 });
 
-it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
-	// Jonas, 10 November: a company should have its email from the start; no company had a mailbox.
+it("has a founder choose the company's email address on a card once it has a name (17 November 2026)", () => {
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
-	expect(cofounder).toContain(
-		"Before your hello, open the company's email: manage_hook, action create, kind mailbox, localPart the company's name in lowercase",
-	);
-	expect(cofounder).toContain(
-		"Give the email address and, in a few lines, who you hired and what each finds out first.",
-	);
+	for (const words of [
+		"Never open the company's first email address yourself: a founder chooses it.",
+		'Once the company has a name and owns no address (list_hooks shows its mailboxes), ask the founder who opened it, in that run, on an address card: a question card with a title such as "Your company\'s email address", allowCustom: true, input {kind: mail_address}',
+		"lowercase, æ as ae, ø as oe, å as aa, other accents dropped, without a leading A, The, En or Et or a trailing ApS, A/S, Inc or Ltd, words joined by hyphens, at most 24 characters cut at a word's end; the whole name first, then shorter (nordlys-studio, then nordlys, for Nordlys Studio ApS).",
+		"While the company has no name, do not ask.",
+		"Say in a few lines who you hired and what each finds out first; when the address card goes out in the same run, raise it last, with your hello as its text.",
+		"While the vision's first line is # No name yet, the company has no name.",
+		"On Not yet carry on without one, and ask again only when something waits for the name: the email address, a logo with lettering, a website's address.",
+		"with no name yet, the directions and that identity carry a mark without lettering",
+		"The founding can be agreed with no name: the first line then stays # No name yet.",
+	])
+		expect(cofounder).toContain(words);
+	expect(cofounder).not.toContain("localPart the company's name in lowercase");
+	const role = (visionAgreed: boolean, has: (tool: string) => boolean = () => true) =>
+		cloudRuntimeHireBehavior("cofounder", { has, visionAgreed });
+	const later =
+		"When the company has a name and owns no email address (list_hooks shows its mailboxes), never open one yourself: raise the address card, a question card with";
+	const names = "While the vision's first line is # No name yet, offer names only when something waits for one";
+	expect(role(true)).toContain(later);
+	expect(role(true)).toContain("Raise it in your next run with the founders.");
+	expect(role(true)).toContain(names);
+	expect(role(true)).not.toContain("# Founding the company");
+	expect(role(false)).not.toContain(later);
+	expect(role(false)).not.toContain(names);
+	expect(role(true, (tool) => tool !== "manage_hook")).not.toContain(later);
+	expect(role(true, (tool) => tool !== "manage_hook")).toContain(names);
 });
 
 it("has the finance owner set up the CVR and bank account and keep the Bank page's progress file (10 November 2026)", () => {
@@ -2566,7 +2608,7 @@ it("tells every agent the seeded folders, how to make files and how to link them
 		`Link, never paste: a file as ${CLOUD_FOLDER_LINK_EXAMPLE}, an app as [Title](app:<name>). Link every file you made or changed that matters to the reader`,
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"Other pages, prototypes and mockups are ordinary files, self-contained (inline CSS and JavaScript), which members open live from a folder: link.",
+		"Other pages, prototypes and mockups are ordinary files, which members open live from a folder: link; a page loads the files beside it (styles, scripts, pictures, fonts, sound, video, models) by relative paths, as an app's page does.",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"Do what they asked, at the size they asked: a file they ask for is the work.",

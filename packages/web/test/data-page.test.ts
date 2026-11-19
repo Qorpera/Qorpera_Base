@@ -12,6 +12,7 @@ import { CompanyDatabases, type CompanyDataCalls } from "../src/app/company-data
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces, hiddenInterfaces } from "../src/app/interfaces.ts";
 import { columnKind, humanName, refusalWords, renderData, shownValue } from "../src/app/views/data.ts";
+import { renderInterface } from "../src/app/views/interface.ts";
 import { fileKey, parseMemberAppLayout } from "../src/cloud/app-groups.ts";
 import { parseInterfacePages } from "../src/cloud/interface-pages.ts";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
@@ -206,6 +207,15 @@ describe("the Data page in the apps row", () => {
 		const drawers = interfaceEmblem("drawers", 34);
 		expect(drawers.querySelectorAll('g [data-fill="ink"]')).toHaveLength(1);
 		expect(drawers.querySelectorAll('mask [data-stroke="cut"]')).toHaveLength(2);
+	});
+
+	it("draws its header and text until the databases are there to read", () => {
+		const container = document.createElement("main");
+		document.body.append(container);
+		renderInterface(container, company(describedWith()), "data");
+		expect(container.querySelector(".interface-title h1")?.textContent).toBe("Data");
+		expect(texts(container, ".interface-text")).toEqual([expect.stringContaining("The company's databases.")]);
+		container.remove();
 	});
 
 	it("knows the page by name in the cloud's list and in the member's own drawer", () => {

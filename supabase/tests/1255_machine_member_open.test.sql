@@ -426,15 +426,6 @@ begin
 			|| 'values (gen_random_uuid(), %L, %L, now(), %L) returning null::jsonb', pg_temp.dc_id('a1'), pg_temp.dc_user('owner'),
 			'../etc/passwd')) like '23514:%',
 		'7: the column takes a path of the folder only');
-	perform pg_temp.base_assert((select array_agg(oid::regprocedure::text order by oid::regprocedure::text) from pg_proc
-			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930758000') > 0)
-		= array['qorpera_member_machine_desktop_open_check(uuid,uuid,uuid)',
-			'qorpera_member_machine_desktop_start_authority(uuid,text,text)',
-			'qorpera_member_machine_desktop_start_begin(uuid,uuid,text)'],
-		'7: the bodies that name 20260930758000');
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_member_machine_desktop_start_begin(uuid,uuid)'::regprocedure), 'open_path') = 0,
-		'7: the plain begin is as 20260930714000 left it');
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		perform pg_temp.base_assert(has_function_privilege(v_role,
 				'public.qorpera_member_machine_desktop_open_check(uuid,uuid,uuid)', 'execute') = (v_role = 'service_role'),

@@ -47,12 +47,11 @@ function setup() {
 	const controller = new CompanyController(f.api, profileA, userA.id, write);
 	controller.store.set({ team, sessions: [roomSession] });
 	controller.conversation(session.sessionId, false).set({ executionSponsor: sponsor });
-	const append = vi.spyOn(f.api, "appendPrompt");
 	cleanup.push(() => {
 		controller.stop();
 		company.abort();
 	});
-	return { ...f, company, view, current, fetch, write, controller, append };
+	return { ...f, company, view, current, fetch, write, controller };
 }
 
 describe("room session input routing", () => {
@@ -73,7 +72,6 @@ describe("room session input routing", () => {
 			p_sponsor_binding_id: sponsor.sponsorBindingId,
 			p_sponsor_version: sponsor.sponsorVersion,
 		});
-		expect(f.append).not.toHaveBeenCalled();
 	});
 	it("replays the exact uncertain room input and sponsor despite a newer selected binding", async () => {
 		const f = setup();
@@ -96,7 +94,6 @@ describe("room session input routing", () => {
 		expect(state.get()).toMatchObject({ draft: "", attachments: [] });
 		expect(state.get().retrySend).toBeUndefined();
 		expect(f.fetch).toHaveBeenCalledTimes(4);
-		expect(f.append).not.toHaveBeenCalled();
 	});
 	it("requires explicit abandonment before posting an edited uncertain room message", async () => {
 		const f = setup();
@@ -155,7 +152,6 @@ describe("room session input routing", () => {
 		expect(read).not.toHaveBeenCalled();
 		expect(f.fetch).not.toHaveBeenCalled();
 		expect(f.cloud.supabase.auth.getSession).not.toHaveBeenCalled();
-		expect(f.append).not.toHaveBeenCalled();
 	});
 	it("sends a group chat's images once the cloud takes them", async () => {
 		const f = setup();

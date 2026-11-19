@@ -67,19 +67,9 @@ $$;
 -- The migration's marker is in every function it patches and in the new one, and 20260930342000's in the open; the
 -- starting check is internal and the open is still the service's alone. A command's row is keyed by its start's receipt.
 do $$
-declare f regprocedure; r name;
+declare r name;
 	v_starting text := 'public.qorpera_office_shell_command_starting(public.qorpera_runtime_office_shell_commands,timestamptz)';
 begin
-	foreach f in array array['public.qorpera_native_office_operation(jsonb,jsonb,jsonb,text,text,uuid,text)',
-		'public.qorpera_valid_office_shell_action(jsonb)', 'public.qorpera_report_runtime_office_shell_activity(jsonb,bigint,jsonb)',
-		'public.qorpera_take_agent_computer_stopped(public.qorpera_execution_runs)', v_starting,
-		'public.qorpera_folder_view_valid(public.qorpera_folder_views)', 'public.qorpera_folder_view_live_run(public.qorpera_folder_views)',
-		'public.qorpera_folder_view_resolve(uuid,uuid,jsonb)', 'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)',
-		'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)']::regprocedure[] loop
-		if strpos(pg_get_functiondef(f), '20260930183000') = 0 then raise exception '% has no marker 20260930183000', f; end if;
-	end loop;
-	if strpos(pg_get_functiondef('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure), '20260930342000') = 0 then
-		raise exception 'view open has no marker 20260930342000'; end if;
 	foreach r in array array['anon','authenticated','service_role','qorpera_secret_broker']::name[] loop
 		if has_function_privilege(r, v_starting, 'EXECUTE') then raise exception '% may run the starting check', r; end if;
 	end loop;

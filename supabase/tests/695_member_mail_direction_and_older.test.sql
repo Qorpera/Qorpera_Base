@@ -18,7 +18,7 @@ $$;
 create function pg_temp.mt_sent(p_call text, p_extra jsonb default '{}') returns uuid language plpgsql as $$
 begin
 	perform public.qorpera_send_agent_mail(current_setting('qorpera_test.base_binding')::jsonb, p_call,
-		jsonb_build_object('from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+		jsonb_build_object('from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 			'subject', 'Re: Order 7', 'text', 'Reply ' || p_call) || p_extra);
 	return (select mail.id from public.qorpera_company_mail_outbox as mail where mail.call_id = p_call);
 end $$;
@@ -57,14 +57,14 @@ update public.qorpera_mail_settings set domain = 'mail.example.test', enabled = 
 update public.qorpera_event_intake_settings set enabled = true, public_url = 'https://intake.example.test';
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'support', 'Customer support') \g /dev/null
+	'support.base', 'Customer support') \g /dev/null
 select pg_temp.base_claims('service_role');
 -- An account an agent used, on a tagged address of the support mailbox (as 815 writes it).
 select set_config('session_replication_role', 'replica', true) \g /dev/null
 insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, login, status,
 	opened_by_user_id, created_at, closed_at, last_used_at, last_used_by_staff_agent_id, connected_at)
 values ('69500000-0000-4000-8000-0000000000a1', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'acme.example', 'support+acme@mail.example.test', 'connected', '92400000-0000-4000-8000-000000000001',
+	'acme.example', 'support.base+acme@mail.example.test', 'connected', '92400000-0000-4000-8000-000000000001',
 	'2026-10-01T00:00:00Z', null, '2026-10-02T09:00:00Z', '92400000-0000-4000-8000-000000000030', '2026-10-01T00:00:00Z');
 select set_config('session_replication_role', 'origin', true) \g /dev/null
 
@@ -72,7 +72,7 @@ select set_config('session_replication_role', 'origin', true) \g /dev/null
 -- customer's, one of them (4) account mail. Its newest message is a reply.
 do $$
 declare
-	v_first uuid := pg_temp.mt_received(0, 'support@mail.example.test', '{"messageId":"<a0@acme.test>","subject":"Order 7"}');
+	v_first uuid := pg_temp.mt_received(0, 'support.base@mail.example.test', '{"messageId":"<a0@acme.test>","subject":"Order 7"}');
 	v_n integer;
 begin
 	perform set_config('qorpera_test.mt_thread', (select received.thread_id from public.qorpera_mail_received as received
@@ -81,11 +81,11 @@ begin
 		if v_n % 3 = 2 then
 			perform pg_temp.mt_sent('mt-a-' || v_n, jsonb_build_object('inReplyTo', v_first));
 		elsif v_n = 4 then
-			perform set_config('qorpera_test.mt_code', pg_temp.mt_received(v_n, 'support+acme@mail.example.test',
+			perform set_config('qorpera_test.mt_code', pg_temp.mt_received(v_n, 'support.base+acme@mail.example.test',
 				'{"messageId":"<a4@acme.test>","references":"<a0@acme.test>","subject":"Your code is 424242","text":"Code 424242","cc":["boss@acme.example"],"attachments":[{"id":"att_code","filename":"code.pdf","size":3}]}')::text,
 				true);
 		else
-			perform pg_temp.mt_received(v_n, 'support@mail.example.test',
+			perform pg_temp.mt_received(v_n, 'support.base@mail.example.test',
 				jsonb_build_object('messageId', '<a' || v_n || '@acme.test>', 'references', '<a0@acme.test>'));
 		end if;
 	end loop;
@@ -93,11 +93,11 @@ end
 $$;
 -- Thread B: one received email. Thread C: one received and its reply. Thread D: an email the agent started.
 -- (Two statements: a statement does not see the rows a function it calls has written.)
-select set_config('qorpera_test.mt_b', pg_temp.mt_received(200, 'support@mail.example.test',
+select set_config('qorpera_test.mt_b', pg_temp.mt_received(200, 'support.base@mail.example.test',
 	'{"messageId":"<b@other.test>","subject":"Question"}')::text, true) \g /dev/null
 select set_config('qorpera_test.mt_b', (select received.thread_id from public.qorpera_mail_received as received
 	where received.delivery_id = current_setting('qorpera_test.mt_b')::uuid), true) \g /dev/null
-select set_config('qorpera_test.mt_c_first', pg_temp.mt_received(201, 'support@mail.example.test',
+select set_config('qorpera_test.mt_c_first', pg_temp.mt_received(201, 'support.base@mail.example.test',
 	'{"messageId":"<c@other.test>","subject":"Invoice"}')::text, true) \g /dev/null
 select pg_temp.mt_sent('mt-c', jsonb_build_object('inReplyTo', current_setting('qorpera_test.mt_c_first'))) \g /dev/null
 select pg_temp.mt_sent('mt-d', '{"subject":"Hello"}') \g /dev/null
@@ -136,7 +136,7 @@ select pg_temp.base_assert(pg_temp.mt_listed('{"direction":"received","state":"n
 		and pg_temp.mt_listed('{"direction":"sent","state":"new"}') = '{}'
 		and pg_temp.mt_listed('{"direction":"received","state":"handled"}') = '{}'
 		and pg_temp.mt_listed('{"direction":"sent","state":"handled"}') = pg_temp.mt_threads('sent')
-		and pg_temp.mt_listed('{"direction":"sent","address":"support@mail.example.test"}') = pg_temp.mt_threads('sent')
+		and pg_temp.mt_listed('{"direction":"sent","address":"support.base@mail.example.test"}') = pg_temp.mt_threads('sent')
 		and pg_temp.mt_listed('{"direction":"sent","address":"sales@mail.example.test"}') = '{}',
 	'A direction narrows a state''s list and a mailbox''s list');
 select pg_temp.base_error(format('select public.qorpera_member_mail_threads(%L, %L)', '92400000-0000-4000-8000-000000000020',
@@ -179,7 +179,7 @@ from (select current_setting('qorpera_test.mt_p1')::jsonb as p1, current_setting
 -- Every page answers for the same thread, with its address and waiting sends; no cursor is the newest page.
 select pg_temp.base_assert(p1 - array['messages', 'more', 'nextBefore'] = p2 - array['messages', 'more', 'nextBefore']
 		and p1 - array['messages', 'more', 'nextBefore'] = p3 - array['messages', 'more', 'nextBefore']
-		and p1 ->> 'thread' = current_setting('qorpera_test.mt_thread') and p1 ->> 'address' = 'support@mail.example.test'
+		and p1 ->> 'thread' = current_setting('qorpera_test.mt_thread') and p1 ->> 'address' = 'support.base@mail.example.test'
 		and pg_temp.mt_page(current_setting('qorpera_test.mt_thread'), null) = p1,
 	'Every page answers for the same thread; without a cursor it is the newest page')
 from (select current_setting('qorpera_test.mt_p1')::jsonb as p1, current_setting('qorpera_test.mt_p2')::jsonb as p2,
@@ -226,8 +226,7 @@ select pg_temp.base_claims('anon');
 select pg_temp.base_error(format('select pg_temp.mt_page(%L, %L)', current_setting('qorpera_test.mt_thread'),
 		current_setting('qorpera_test.mt_p1')::jsonb -> 'nextBefore'), '42501', 'Company mail is unavailable');
 -- One thread read, with its cursor; only members call it.
-select pg_temp.base_assert(to_regprocedure('public.qorpera_member_mail_thread(uuid,text)') is null
-		and has_function_privilege('authenticated', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE')
+select pg_temp.base_assert(has_function_privilege('authenticated', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE')
 		and not has_function_privilege('anon', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE')
 		and not has_function_privilege('service_role', 'public.qorpera_member_mail_thread(uuid,text,jsonb)', 'EXECUTE'),
-	'The thread read has one form, with the cursor, for members only');
+	'The thread read is for members only');

@@ -75,8 +75,8 @@ begin
 		or v_named ->> 'proof' <> 'address' or v_named ->> 'address' is null then
 		raise exception 'An owner opens address hooks as before: % %', v_hook, v_named; end if;
 	v_box := public.qorpera_create_company_mailbox('70400000-0000-4000-8000-000000000010',
-		'70400000-0000-4000-8000-000000000020', 'support', 'Customer support.');
-	if v_box ->> 'email' is distinct from 'support@inbox.example.test' then
+		'70400000-0000-4000-8000-000000000020', 'support.base', 'Customer support.');
+	if v_box ->> 'email' is distinct from 'support.base@inbox.example.test' then
 		raise exception 'An owner opens a mailbox as before: %', v_box; end if;
 	if pg_temp.hook_marks('hook', (v_hook ->> 'id')::uuid) <> 1 or pg_temp.hook_marks('hook', (v_named ->> 'id')::uuid) <> 1
 		or pg_temp.hook_marks('mailbox', (v_box ->> 'id')::uuid) <> 1 then

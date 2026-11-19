@@ -39,6 +39,7 @@ body{margin:0}
 .sh-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .sh--bare{padding:clamp(12px,1vw,16px)}
 .sh--bare .sh-head{display:none}
+.sh .sh-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .sh-shelf{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;gap:clamp(28px,5vh,56px);padding:clamp(12px,3vh,36px) 0 clamp(8px,2vh,20px)}
 .sh-row{position:relative;display:grid;grid-template-columns:repeat(var(--sh-cols),minmax(0,var(--sh-w)));justify-content:center;column-gap:clamp(12px,2.4vw,40px)}
 .sh-row.planked::before{content:"";position:absolute;left:max(-16px,calc(var(--sh-pad) * -1));right:max(-16px,calc(var(--sh-pad) * -1));top:var(--sh-scene);height:12px;border-radius:6px;background:color-mix(in srgb,var(--q-text) 11%,var(--q-bg));box-shadow:0 7px 0 -2px color-mix(in srgb,var(--q-text) 6%,var(--q-bg))}

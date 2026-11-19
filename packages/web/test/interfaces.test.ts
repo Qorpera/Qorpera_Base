@@ -1,15 +1,14 @@
 // @vitest-environment jsdom
 
 import { parseAppIcon } from "@qorpera/cloud-client/app-icons";
-import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { CompanyAppIcon } from "../src/app/interface-apps.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
-import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
+import { companyInterfaces } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
-import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
+import { messageText, renderInterface } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import {
 	EMPTY_APP_LAYOUT,
@@ -23,7 +22,6 @@ import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
 import { nameDialog } from "../src/ui/name-dialog.ts";
-import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
 	fixture,
@@ -46,19 +44,6 @@ const agent = (n: number, name: string): HostedStaffAgent => ({
 });
 const cofounder: HostedStaffAgent = { ...agent(40, "Co-Founder"), templateId: "co-founder" };
 const [ada, bo, cy] = [agent(41, "Ada"), agent(42, "Bo"), agent(43, "Cy")];
-const run = (
-	staffAgentId: string,
-	n: number,
-	extra: Partial<HostedStaffExecutionActivity>,
-): HostedStaffExecutionActivity => ({
-	staffAgentId,
-	runId: id(80 + n),
-	sourceKind: "session_turn",
-	activity: "working",
-	jobStatus: "leased",
-	updatedAt: "2026-10-02T09:44:00Z",
-	...extra,
-});
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -133,60 +118,6 @@ describe("which interfaces a company lists", () => {
 		expect(names({ members: 1, pages: pages(true, true) })).toEqual([]);
 		expect(names({ members: 3, pages: pages(true, false) })).toEqual([]);
 	});
-
-	it("says a working run has made no progress, since its last progress (gap 4)", () => {
-		const { controller } = company([
-			run(ada.id, 1, { noProgressSince: "2026-10-02T09:20:00Z", noProgressMinutes: 15 }),
-			run(bo.id, 2, {}),
-		]);
-		expect(interfaceRows(controller, "working")?.map(({ row }) => row)).toEqual([
-			{ agent: ada.id, what: "No progress", since: "2026-10-02T09:20:00Z" },
-			{ agent: bo.id, what: "Working", since: "2026-10-02T09:44:00Z" },
-		]);
-	});
-
-	it("gives a run's time to the second, as every row's time is, though the live state's carry milliseconds", () => {
-		const { controller } = company([
-			run(ada.id, 1, { noProgressSince: "2026-10-02T09:20:00.250Z", noProgressMinutes: 15 }),
-			run(bo.id, 2, { updatedAt: "2026-10-02T09:44:10.999Z" }),
-			run(cy.id, 3, { activity: "needs_attention", jobStatus: "failed", updatedAt: "2026-10-02T09:50:00.5Z" }),
-		]);
-		expect(interfaceRows(controller, "working")?.map(({ row }) => row.since)).toEqual([
-			"2026-10-02T09:20:00Z",
-			"2026-10-02T09:44:10Z",
-		]);
-		expect(interfaceRows(controller, "waiting")?.map(({ row }) => row.due)).toEqual(["2026-10-02T09:50:00Z"]);
-	});
-
-	it("reads who is working and what waits for the member from the company's live state", () => {
-		const { controller } = company(
-			[
-				run(ada.id, 1, { phase: "writing" }),
-				run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }),
-				run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }),
-			],
-			{ mentions: { [session.sessionId]: 2 } },
-		);
-		expect(interfaceRows(controller, "working")?.map(({ row }) => row)).toEqual([
-			{ agent: ada.id, what: "Writing", since: "2026-10-02T09:44:00Z" },
-		]);
-		const waiting = interfaceRows(controller, "waiting") ?? [];
-		expect(waiting.map(({ row }) => row.title)).toEqual([
-			"Bo has a run that did not finish",
-			"Cy needs you",
-			`You were mentioned in ${session.title}`,
-		]);
-		expect(waiting.map(({ href }) => href)).toEqual([
-			`#/c/${profileA.profileId}/staff/${bo.id}`,
-			`#/c/${profileA.profileId}/staff/${cy.id}`,
-			`#/c/${profileA.profileId}/chat/${session.sessionId}`,
-		]);
-		// The live state has each agent's current run only, not what happened: `activity` waits for a read of past runs.
-		expect(interfaceRows(controller, "activity")).toBeUndefined();
-		expect(interfaceRows(controller, "table:numbers")).toBeUndefined();
-		// The folder's own files are read only once the folder is: a company without it has none of them.
-		expect(interfaceRows(controller, "todos")).toBeUndefined();
-	});
 });
 
 describe("the shipped pages (C6a)", () => {
@@ -219,6 +150,18 @@ describe("the shipped pages (C6a)", () => {
 		controller.store.set({ interfacePages: pages(false, false) });
 		renderInterface(main, controller, "members");
 		missing(main);
+	});
+
+	it("waits while the company cannot be reached, and never calls a page missing for it", () => {
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
+		controller.store.set({ connectionLost: true, team: undefined, staff: [] });
+		const main = h("main");
+		document.body.append(main);
+		renderInterface(main, controller, "members");
+		expect(main.textContent).toBe("Can't reach Qorpera. Trying again…");
+		controller.store.set({ staff: [cofounder, ada], team: { ...team, members: [] } });
+		renderInterface(main, controller, "members");
+		expect(main.textContent).not.toContain("Can't reach Qorpera");
 	});
 
 	it("never shows Pulse, a page that is off, or one whose needs aren't met", () => {
@@ -562,8 +505,6 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			["Members", `#/c/${profileA.profileId}/i/members`],
 			["Sales board", `#/c/${profileA.profileId}/a/sales-board`],
 		]);
-		// A link, as the pages' icons are: no button the chat answers beside itself.
-		expect(element.querySelector(".rail-apps-drawer [data-app-name], .rail-apps-drawer button.rail-app")).toBeNull();
 		const app = () => element.querySelector<HTMLAnchorElement>(`.rail-app[data-href$="/a/sales-board"]`)!;
 		expect(app().hasAttribute("title")).toBe(false);
 		expect(app().hasAttribute("aria-current")).toBe(false);
@@ -706,28 +647,6 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 });
 
 describe("review round 1 (web)", () => {
-	/** A page an agent built: one list of who is working. */
-	const work = () => {
-		const parsed = parseInterfaceFile(`format = "qorpera.interface/v0"
-
-[interface]
-id = "11111111-2222-4333-8444-555555555555"
-name = "Work"
-
-[[view]]
-name = "Now"
-
-[[view.block]]
-kind = "list"
-title = "Working now"
-from = "working"
-line = "{what}"
-figure = "agent"
-`);
-		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
-		return parsed.file;
-	};
-
 	it("draws Members again after another page took the area, and follows the company", () => {
 		const { controller } = company([], { members: 3, pages: pages(false, true) });
 		const main = h("main");
@@ -740,21 +659,8 @@ figure = "agent"
 		expect(main.querySelector("section.members > h1.visually-hidden")?.textContent).toBe("Members");
 	});
 
-	it("shows rows in the block's order", () => {
-		const { controller } = company([
-			run(ada.id, 1, { updatedAt: "2026-10-02T09:00:00Z" }),
-			run(bo.id, 2, { updatedAt: "2026-10-02T10:00:00Z" }),
-		]);
-		const rows = interfaceRows(controller, "working") ?? [];
-		expect(rows.map(({ row }) => row.agent)).toEqual([ada.id, bo.id]);
-		// A list without an order keeps its source's order.
-		const main = h("main");
-		renderInterfaceFile(main, controller, `order-${Math.random()}`, work());
-		expect([...main.querySelectorAll(".interface-block strong")].map((el) => el.textContent)).toEqual(["Ada", "Bo"]);
-	});
-
-	it("waits while the company loads and says when live updates are not connected", () => {
-		const { controller } = company([run(ada.id, 1, {})], { members: 3, pages: pages(false, true) });
+	it("waits while the company loads, and draws Members with no live note", () => {
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
 		controller.store.set({ loading: true, staff: [] });
 		const main = h("main");
 		renderInterface(main, controller, "members");
@@ -765,23 +671,6 @@ figure = "agent"
 		// Members is pictures only: it has no header, so no live note either (as the Mailbox and the Bank page).
 		expect(main.querySelector(".members-page")).not.toBeNull();
 		expect(main.querySelector(".interface-live")).toBeNull();
-		// A page with a header says it there.
-		const name = `live-${Math.random()}`;
-		renderInterfaceFile(main, controller, name, work());
-		expect(main.querySelector(".interface-live")?.textContent).toBe("connecting");
-		controller.store.set({ realtime: "connected" });
-		renderInterfaceFile(main, controller, name, work());
-		expect(main.querySelector(".interface-live")?.textContent).toBe("Live");
-	});
-
-	it("calls a waiting decision a review, and skips mentions the rail doesn't offer", () => {
-		const closed = { ...session, sessionId: id(301), status: "closed" as const, title: "Closed" };
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })], {
-			mentions: { [session.sessionId]: 1, [closed.sessionId]: 1 },
-		});
-		controller.store.set({ sessions: [session, closed] });
-		const waiting = interfaceRows(controller, "waiting") ?? [];
-		expect(waiting.map(({ row }) => row.kind)).toEqual(["review", "mention"]);
 	});
 
 	it("labels the search and names each page's icon with what it is for", () => {
@@ -806,208 +695,12 @@ figure = "agent"
 		expect(element.querySelector(".rail-search input")?.getAttribute("aria-label")).toBe("Search agents");
 		expect(element.querySelector(".rail-search input")?.getAttribute("placeholder")).toBe("Search agents");
 		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search agents");
-		expect(element.querySelector("[role=tablist], [role=tab]")).toBeNull();
 		// The icon's name is under it; no hover popup repeats it (Jonas, 9 Nov 2026).
 		expect(element.querySelector(".rail-app")?.hasAttribute("title")).toBe(false);
 	});
 });
 
 describe("blocks, views and buttons (I3a)", () => {
-	const DESK = `format = "qorpera.interface/v0"
-
-[interface]
-id = "11111111-2222-4333-8444-555555555555"
-name = "Desk"
-status = "active"
-
-[access]
-members = "all"
-agents = "all"
-edit = "anyone"
-
-[[view]]
-name = "All"
-
-[[view.block]]
-id = "waiting"
-kind = "list"
-from = "waiting"
-line = "{title}"
-opens = "one"
-buttons = ["answer", "ask", "see", "board", "agents-only"]
-width = "third"
-
-[[view.block]]
-id = "one"
-kind = "detail"
-from = "waiting"
-fields = ["title", "kind"]
-width = "two-thirds"
-
-[[view]]
-name = "Runs"
-from_view = "All"
-where = { kind = "run" }
-
-[[view]]
-name = "Table"
-
-[[view.block]]
-kind = "table"
-title = "Everything"
-from = "waiting"
-columns = ["title", "kind"]
-
-[[button]]
-id = "ask"
-verb = "message"
-label = "Ask {from}"
-to = "{from}"
-text = "About {title}: "
-
-[[button]]
-id = "see"
-verb = "open"
-label = "See"
-target = "agent:{from}"
-
-[[button]]
-id = "board"
-verb = "open"
-label = "Board"
-target = "interface:members"
-
-[[button]]
-id = "pulse"
-verb = "open"
-label = "Pulse"
-target = "interface:pulse"
-
-[[button]]
-id = "agents-only"
-verb = "message"
-label = "Agents only"
-who = "agents"
-to = "co-founder"
-text = "Hi"
-`;
-	function desk(extra: Parameters<typeof company>[1] = {}) {
-		const parsed = parseInterfaceFile(DESK);
-		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
-		const { controller } = company(
-			[
-				run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }),
-				run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }),
-			],
-			extra,
-		);
-		const main = h("main");
-		document.body.append(main);
-		// Each test draws its own page, so no view, row or filter carries over between tests.
-		const name = `desk-${Math.random()}`;
-		const redraw = () => renderInterfaceFile(main, controller, name, parsed.file);
-		redraw();
-		return { main, controller, redraw };
-	}
-	const titles = (main: HTMLElement, selector: string) =>
-		[...main.querySelectorAll(selector)].map((element) => element.textContent);
-
-	it("draws views as tabs; a view built from another adds its where", () => {
-		const { main } = desk();
-		expect(titles(main, "[role=tab]")).toEqual(["All", "Runs", "Table"]);
-		expect(main.querySelector("[role=tab][aria-selected=true]")?.textContent).toBe("All");
-		expect(titles(main, ".interface-list .interface-item strong")).toEqual([
-			"Bo has a run that did not finish",
-			"Cy needs you",
-		]);
-		main.querySelectorAll<HTMLButtonElement>("[role=tab]")[1]!.click();
-		expect(main.querySelector("[role=tab][aria-selected=true]")?.textContent).toBe("Runs");
-		expect(titles(main, ".interface-list .interface-item strong")).toEqual(["Bo has a run that did not finish"]);
-		// The arrow keys move between views and keep focus on the tab.
-		const runs = main.querySelector<HTMLElement>("[role=tab][aria-selected=true]")!;
-		runs.focus();
-		runs.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-		expect(main.querySelector("[role=tab][aria-selected=true]")?.textContent).toBe("Table");
-		expect(document.activeElement?.textContent).toBe("Table");
-	});
-
-	it("opens a row in its detail beside the list, and closes it with Back", () => {
-		const { main } = desk();
-		expect(main.querySelector(".interface-detail")?.textContent).toContain("Choose one to see it here.");
-		expect(main.querySelector(".interface-page")?.classList.contains("has-open")).toBe(false);
-		main.querySelectorAll<HTMLButtonElement>("button.interface-item")[1]!.click();
-		expect(main.querySelector(".interface-page")?.classList.contains("has-open")).toBe(true);
-		expect(main.querySelectorAll("button.interface-item")[1]?.getAttribute("aria-current")).toBe("true");
-		expect(titles(main, ".interface-fields dt")).toEqual(["Title", "Kind"]);
-		expect(titles(main, ".interface-fields dd")).toEqual(["Cy needs you", "Approval"]);
-		main.querySelector<HTMLButtonElement>(".interface-back")!.click();
-		expect(main.querySelector(".interface-detail")?.textContent).toContain("Choose one to see it here.");
-	});
-
-	it("never draws a detail block that nothing opens", () => {
-		const parsed = parseInterfaceFile(DESK.replace('opens = "one"\n', ""));
-		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-		const main = h("main");
-		renderInterfaceFile(main, controller, "no-opener", parsed.file);
-		expect(main.querySelector(".interface-detail")).toBeNull();
-	});
-
-	it("sorts a table by its headings and filters it, keeping the filter's focus and caret", () => {
-		const { main } = desk();
-		main.querySelectorAll<HTMLButtonElement>("[role=tab]")[2]!.click();
-		expect(titles(main, ".interface-table thead th")).toEqual(["Title", "Kind"]);
-		const sortBy = (column: number) => main.querySelectorAll<HTMLButtonElement>(".interface-sort")[column]!.click();
-		sortBy(1);
-		expect(main.querySelectorAll("th")[1]?.getAttribute("aria-sort")).toBe("ascending");
-		expect(titles(main, ".interface-table tbody td:nth-child(2)")).toEqual(["Approval", "Unfinished run"]);
-		sortBy(1);
-		expect(titles(main, ".interface-table tbody td:nth-child(2)")).toEqual(["Unfinished run", "Approval"]);
-		const filter = main.querySelector<HTMLInputElement>(".interface-filter")!;
-		expect(filter.getAttribute("aria-label")).toBe("Filter Everything");
-		filter.focus();
-		filter.value = "cy";
-		filter.setSelectionRange(2, 2);
-		filter.dispatchEvent(new Event("input"));
-		const again = main.querySelector<HTMLInputElement>(".interface-filter")!;
-		expect(document.activeElement).toBe(again);
-		expect(again.selectionStart).toBe(2);
-		expect(titles(main, ".interface-table tbody td:first-child")).toEqual(["Cy needs you"]);
-		again.value = "nothing like it";
-		again.dispatchEvent(new Event("input"));
-		expect(main.textContent).toContain("No rows match.");
-	});
-
-	it("draws answer, message and open buttons; never one for agents only, or to a page that isn't there", () => {
-		// Members is on, so Board opens it; Pulse is never a page (C6a), so no button leads to it.
-		const { main } = desk({ members: 2, pages: pages(false, true) });
-		const first = main.querySelector(".interface-item-row")!;
-		expect(titles(first as HTMLElement, ".interface-actions > *")).toEqual(["Answer", "Ask Bo", "See", "Board"]);
-		expect(first.querySelector("a.interface-button")?.getAttribute("data-href")).toBe(
-			`#/c/${profileA.profileId}/staff/${bo.id}`,
-		);
-		const links = [...first.querySelectorAll<HTMLAnchorElement>("a.interface-button")].map((link) =>
-			link.getAttribute("data-href"),
-		);
-		expect(links).toEqual([
-			`#/c/${profileA.profileId}/staff/${bo.id}`,
-			`#/c/${profileA.profileId}/staff/${bo.id}`,
-			`#/c/${profileA.profileId}/i/members`,
-		]);
-	});
-
-	it("puts a message button's text in the agent's composer and opens the thread; nothing is sent", async () => {
-		const { main, controller } = desk();
-		const open = vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
-		const ask = [...main.querySelectorAll<HTMLButtonElement>(".interface-actions button")].find(
-			(button) => button.textContent === "Ask Bo",
-		)!;
-		ask.click();
-		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${bo.id}`));
-		expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: bo.id }));
-		expect(controller.conversation(session.sessionId).get().draft).toBe("About Bo has a run that did not finish: ");
-	});
-
 	it("fills values from outside content in as quotes of their mail thread, never as the member's own words", () => {
 		const nameOf = (column: string, value: unknown) => (column === "handled_by" ? "Ada" : String(value));
 		const thread = "Thread_0123456789-abcdefghijklmnopqrstuvwxy";
@@ -1033,50 +726,6 @@ text = "Hi"
 });
 
 describe("I3a review round 1", () => {
-	const HEAD = `format = "qorpera.interface/v0"
-
-[interface]
-id = "11111111-2222-4333-8444-555555555555"
-name = "Probe"
-`;
-	const parse = (text: string) => {
-		const parsed = parseInterfaceFile(HEAD + text);
-		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
-		return parsed.file;
-	};
-	const texts = (root: ParentNode, selector: string) =>
-		[...root.querySelectorAll(selector)].map((element) => element.textContent);
-	const mount = () => {
-		const main = h("main");
-		document.body.append(main);
-		return main;
-	};
-	const ASK = `
-[[view]]
-name = "All"
-
-[[view.block]]
-id = "waiting"
-kind = "list"
-from = "waiting"
-line = "{title}"
-opens = "one"
-buttons = ["ask"]
-
-[[view.block]]
-id = "one"
-kind = "detail"
-from = "waiting"
-fields = ["title", "kind"]
-
-[[button]]
-id = "ask"
-verb = "message"
-label = "Ask {from}"
-to = "{from}"
-text = "About {title}: "
-`;
-
 	it("keeps an outside value inside its marks, on one line, cut to the longest a quote may be", () => {
 		const nameOf = (_column: string, value: unknown) => String(value);
 		const thread = "Thread_0123456789-abcdefghijklmnopqrstuvwxy";
@@ -1100,328 +749,6 @@ text = "About {title}: "
 		expect(long?.quotes).toEqual([{ start: 1, end: 2001, source: "mail", ref: thread }]);
 	});
 
-	it("narrows a block by its view's where without dropping the block's own", () => {
-		const file = parse(`
-[[view]]
-name = "All"
-
-[[view.block]]
-kind = "list"
-title = "Reviews only"
-from = "waiting"
-where = { kind = "review" }
-
-[[view]]
-name = "Runs"
-from_view = "All"
-where = { kind = "run" }
-`);
-		const { controller } = company([
-			run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }),
-			run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }),
-		]);
-		const main = mount();
-		renderInterfaceFile(main, controller, `narrow-${Math.random()}`, file);
-		expect(texts(main, ".interface-item strong")).toEqual(["Cy needs you"]);
-		main.querySelectorAll<HTMLButtonElement>("[role=tab]")[1]!.click();
-		expect(main.querySelector(".interface-item")).toBeNull();
-		expect(main.querySelector(".interface-empty")?.textContent).toBe("Nothing here right now.");
-	});
-
-	it("leaves out a block its view narrows by a column the source lacks, and a view left empty", () => {
-		const file = parse(`
-[[view]]
-name = "Now"
-
-[[view.block]]
-kind = "list"
-title = "Working now"
-from = "working"
-line = "{what}"
-figure = "agent"
-
-[[view]]
-name = "Reviews"
-from_view = "Now"
-where = { kind = "review" }
-`);
-		const { controller } = company([run(ada.id, 1, {})]);
-		const main = mount();
-		renderInterfaceFile(main, controller, `lacks-${Math.random()}`, file);
-		expect(main.querySelector("[role=tab]")).toBeNull();
-		expect(main.querySelectorAll(".interface-item")).toHaveLength(1);
-	});
-
-	it("keeps a row's own link when its opens names a block that isn't drawn", () => {
-		const file = parse(`
-[[view]]
-name = "Inbox"
-
-[[view.block]]
-kind = "list"
-from = "waiting"
-line = "{title}"
-opens = "thread"
-
-[[view.block]]
-id = "thread"
-kind = "mail"
-from = "mail"
-`);
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-		const main = mount();
-		renderInterfaceFile(main, controller, `dead-${Math.random()}`, file);
-		expect(main.querySelector("button.interface-item")).toBeNull();
-		expect(main.querySelector("a.interface-item")?.getAttribute("data-href")).toBe(
-			`#/c/${profileA.profileId}/staff/${cy.id}`,
-		);
-	});
-
-	it("draws a mail block only from mail: from another source it would have no thread to read", () => {
-		const file = parse(`
-[[view]]
-name = "Inbox"
-
-[[view.block]]
-kind = "list"
-from = "waiting"
-line = "{title}"
-opens = "thread"
-
-[[view.block]]
-id = "thread"
-kind = "mail"
-from = "waiting"
-`);
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-		const main = mount();
-		renderInterfaceFile(main, controller, `mail-from-${Math.random()}`, file);
-		expect(main.querySelector(".interface-mail")).toBeNull();
-		expect(main.querySelector("button.interface-item")).toBeNull();
-		expect(main.querySelector("a.interface-item")?.getAttribute("data-href")).toBe(
-			`#/c/${profileA.profileId}/staff/${cy.id}`,
-		);
-	});
-
-	it("draws Answer only where a card waits: never on working rows or mentions", () => {
-		const file = parse(`
-[[view]]
-name = "Now"
-
-[[view.block]]
-kind = "list"
-from = "working"
-line = "{what}"
-buttons = ["answer"]
-
-[[view.block]]
-kind = "list"
-from = "waiting"
-line = "{title}"
-buttons = ["answer"]
-`);
-		const { controller } = company(
-			[run(ada.id, 1, {}), run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })],
-			{ mentions: { [session.sessionId]: 1 } },
-		);
-		const main = mount();
-		renderInterfaceFile(main, controller, `answer-${Math.random()}`, file);
-		const [working, waiting] = main.querySelectorAll(".interface-block");
-		expect(working?.querySelector(".interface-actions")).toBeNull();
-		expect(texts(waiting!, ".interface-item-row strong")).toEqual(["Cy needs you"]);
-		expect(waiting?.querySelector(".interface-actions a")?.getAttribute("aria-describedby")).toBe(
-			waiting?.querySelector(".interface-item-row strong")?.id,
-		);
-	});
-
-	it("never draws over another page or moves the route when a message finishes after the member left", async () => {
-		const { controller } = company([run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" })]);
-		let fail!: (error: Error) => void;
-		vi.spyOn(controller, "openStaffConversation").mockReturnValue(
-			new Promise<string>((_resolve, reject) => {
-				fail = reject;
-			}),
-		);
-		const main = mount();
-		renderInterfaceFile(main, controller, `left-${Math.random()}`, parse(ASK));
-		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
-		main.replaceChildren(h("div", { id: "other-page" }, "Settings"));
-		fail(new Error("agent threads unavailable"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(main.querySelector("#other-page")).not.toBeNull();
-
-		const second = company([run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" })]).controller;
-		let ready!: (sessionId: string) => void;
-		vi.spyOn(second, "openStaffConversation").mockReturnValue(
-			new Promise<string>((resolve) => {
-				ready = resolve;
-			}),
-		);
-		const page = mount();
-		renderInterfaceFile(page, second, `moved-${Math.random()}`, parse(ASK));
-		page.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
-		location.hash = `#/c/${profileA.profileId}/team`;
-		ready(session.sessionId);
-		await vi.waitFor(() => expect(second.conversation(session.sessionId).get().draft).toContain("About Bo"));
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/team`);
-	});
-
-	it("follows an opened waiting item, never another one of the same agent", () => {
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-		const main = mount();
-		const name = `follow-${Math.random()}`;
-		const file = parse(ASK);
-		renderInterfaceFile(main, controller, name, file);
-		main.querySelector<HTMLButtonElement>("button.interface-item")!.click();
-		expect(texts(main, ".interface-fields dd")).toEqual(["Cy needs you", "Approval"]);
-		controller.store.set({ activity: [run(cy.id, 4, { activity: "needs_attention", jobStatus: "failed" })] });
-		renderInterfaceFile(main, controller, name, file);
-		expect(main.querySelector(".interface-detail")?.textContent).toContain("Choose one to see it here.");
-	});
-
-	it("keeps focus on an Answer link through a live redraw", () => {
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-		const main = mount();
-		const name = `focus-${Math.random()}`;
-		const file = parse(`
-[[view]]
-name = "Now"
-
-[[view.block]]
-kind = "list"
-from = "waiting"
-line = "{title}"
-buttons = ["answer"]
-
-[[view.block]]
-kind = "list"
-from = "working"
-line = "{what}"
-figure = "agent"
-`);
-		renderInterfaceFile(main, controller, name, file);
-		main.querySelector<HTMLAnchorElement>(".interface-actions a")!.focus();
-		controller.store.set({
-			activity: [run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }), run(ada.id, 1, {})],
-		});
-		renderInterfaceFile(main, controller, name, file);
-		expect(document.activeElement).toBe(main.querySelector(".interface-actions a"));
-		expect(document.activeElement?.textContent).toBe("Answer");
-	});
-
-	it("moves focus to Back when a row opens on a phone, and back to the row when it closes", () => {
-		vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-		const main = mount();
-		renderInterfaceFile(main, controller, `phone-${Math.random()}`, parse(ASK));
-		main.querySelector<HTMLButtonElement>("button.interface-item")!.click();
-		expect(document.activeElement).toBe(main.querySelector(".interface-back"));
-		main.querySelector<HTMLButtonElement>(".interface-back")!.click();
-		expect(document.activeElement).toBe(main.querySelector("button.interface-item"));
-	});
-
-	it("draws no answer or message for a member who can't write, nor a message to no agent", () => {
-		const viewer = company([run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" })]).controller;
-		viewer.store.set({ team: { ...team, role: "viewer", capabilities: { ...team.capabilities, write: false } } });
-		const main = mount();
-		renderInterfaceFile(
-			main,
-			viewer,
-			`viewer-${Math.random()}`,
-			parse(ASK.replace('buttons = ["ask"]', 'buttons = ["ask", "answer"]')),
-		);
-		expect(main.querySelector(".interface-actions")).toBeNull();
-		const member = company([], { mentions: { [session.sessionId]: 1 } }).controller;
-		const page = mount();
-		renderInterfaceFile(page, member, `noagent-${Math.random()}`, parse(ASK));
-		expect(texts(page, ".interface-item strong")).toEqual(["You were mentioned in Fixture conversation"]);
-		expect(page.querySelector(".interface-actions")).toBeNull();
-	});
-
-	it("sorts an agent column by the name shown", () => {
-		const zed = { ...staff, id: id(51), displayName: "Zed", role: "Zed" };
-		const amy = { ...staff, id: id(52), displayName: "Amy", role: "Amy" };
-		const { controller } = company([
-			run(zed.id, 5, { activity: "needs_attention", jobStatus: "leased" }),
-			run(amy.id, 6, { activity: "needs_attention", jobStatus: "leased" }),
-		]);
-		controller.store.set({ staff: [cofounder, zed, amy] });
-		const main = mount();
-		renderInterfaceFile(
-			main,
-			controller,
-			`sort-${Math.random()}`,
-			parse(`
-[[view]]
-name = "T"
-
-[[view.block]]
-kind = "table"
-from = "waiting"
-columns = ["from", "title"]
-`),
-		);
-		main.querySelectorAll<HTMLButtonElement>(".interface-sort")[0]!.click();
-		expect(texts(main, ".interface-table tbody td:first-child")).toEqual(["Amy", "Zed"]);
-	});
-
-	it("draws a late message error only on the same company's page", async () => {
-		const { controller } = company([run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" })]);
-		let fail!: (error: Error) => void;
-		vi.spyOn(controller, "openStaffConversation").mockReturnValue(
-			new Promise<string>((_resolve, reject) => {
-				fail = reject;
-			}),
-		);
-		const main = mount();
-		renderInterfaceFile(main, controller, "same-name", parse(ASK));
-		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
-		// Another company's page of the same name takes the area.
-		const other = h("section", { class: "interface", "data-interface": "same-name", "data-profile": "other" });
-		main.replaceChildren(other);
-		fail(new Error("agent threads unavailable"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(main.firstElementChild).toBe(other);
-	});
-
-	it("announces the same error again when it happens again, and puts the text in once per click", async () => {
-		const { controller } = company([run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" })]);
-		let attempts = 0;
-		vi.spyOn(controller, "openStaffConversation").mockImplementation(() => {
-			attempts += 1;
-			return Promise.reject(new Error("agent threads unavailable"));
-		});
-		const main = mount();
-		const name = `again-${Math.random()}`;
-		renderInterfaceFile(main, controller, name, parse(ASK));
-		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
-		await vi.waitFor(() => expect(main.querySelector(".notice[role=alert]")?.textContent).toContain("unavailable"));
-		const first = main.querySelector(".notice");
-		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
-		await vi.waitFor(() => expect(main.querySelector(".notice")).not.toBe(first));
-		expect(main.querySelector(".notice")?.getAttribute("role")).toBe("alert");
-		expect(attempts).toBe(2);
-
-		// While the thread opens, a redraw keeps the button disabled, so a second click adds nothing.
-		let ready!: (sessionId: string) => void;
-		vi.spyOn(controller, "openStaffConversation").mockReturnValue(
-			new Promise<string>((resolve) => {
-				ready = resolve;
-			}),
-		);
-		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
-		controller.store.set({
-			activity: [run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }), run(ada.id, 1, {})],
-		});
-		renderInterfaceFile(main, controller, name, parse(ASK));
-		const again = main.querySelector<HTMLButtonElement>(".interface-actions button")!;
-		expect(again.disabled).toBe(true);
-		again.click();
-		ready(session.sessionId);
-		await vi.waitFor(() => expect(controller.conversation(session.sessionId).get().draft).toBeDefined());
-		expect(controller.conversation(session.sessionId).get().draft).toBe("About Bo has a run that did not finish: ");
-	});
-
 	it("cuts a long outside value between characters, never inside one, and counts the quote in characters", () => {
 		const nameOf = (_column: string, value: unknown) => String(value);
 		const thread = "Thread_0123456789-abcdefghijklmnopqrstuvwxy";
@@ -1429,84 +756,6 @@ columns = ["from", "title"]
 		expect(filled?.text).toBe(`😀 «${"a".repeat(1998)}😀…»`);
 		// The emoji before the quote is one character, as the cloud counts them.
 		expect(filled?.quotes).toEqual([{ start: 3, end: 2003, source: "mail", ref: thread }]);
-	});
-
-	it("sorts what waits by its label, with empty cells last", () => {
-		const { controller } = company([
-			run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }),
-			run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }),
-		]);
-		setLanguagePreference("da");
-		try {
-			const main = mount();
-			renderInterfaceFile(
-				main,
-				controller,
-				`kind-${Math.random()}`,
-				parse(`
-[[view]]
-name = "T"
-
-[[view.block]]
-kind = "table"
-from = "waiting"
-columns = ["kind", "title"]
-`),
-			);
-			main.querySelectorAll<HTMLButtonElement>(".interface-sort")[0]!.click();
-			// "Godkendelse" (a review) before "Ufærdig kørsel" (a run), by the words shown.
-			expect(texts(main, ".interface-table tbody td:first-child")).toEqual(["Godkendelse", "Ufærdig kørsel"]);
-		} finally {
-			setLanguagePreference("system");
-		}
-	});
-
-	it("drops a button that names an agent by id once that agent leaves", () => {
-		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-		const file = parse(
-			ASK.replace('buttons = ["ask"]', 'buttons = ["to-ada"]') +
-				`
-[[button]]
-id = "to-ada"
-verb = "message"
-label = "Ask Ada"
-to = "${ada.id}"
-text = "Hi"
-`,
-		);
-		const main = mount();
-		const name = `leaves-${Math.random()}`;
-		renderInterfaceFile(main, controller, name, file);
-		expect(texts(main, ".interface-actions button")).toEqual(["Ask Ada"]);
-		controller.store.set({ staff: [cofounder, { ...ada, employmentStatus: "archived" }, bo, cy] });
-		renderInterfaceFile(main, controller, name, file);
-		expect(main.querySelector(".interface-actions")).toBeNull();
-	});
-
-	it("names the platform's columns and kinds in Danish", () => {
-		setLanguagePreference("da");
-		try {
-			const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
-			const main = mount();
-			renderInterfaceFile(
-				main,
-				controller,
-				`da-${Math.random()}`,
-				parse(`
-[[view]]
-name = "T"
-
-[[view.block]]
-kind = "table"
-from = "waiting"
-columns = ["title", "kind", "due"]
-`),
-			);
-			expect(texts(main, ".interface-table thead th")).toEqual(["Titel", "Slags", "Frist"]);
-			expect(texts(main, ".interface-table tbody td")[1]).toBe("Godkendelse");
-		} finally {
-			setLanguagePreference("system");
-		}
 	});
 });
 

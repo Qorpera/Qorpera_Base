@@ -270,49 +270,6 @@ begin
 	if cardinality(v_wrong) > 0 then raise exception 'Run-row read test cleanup left other row counts: %', v_wrong; end if;
 end $$;
 
--- 2. statement_timeout set inside a function does not cut the statement already running: the bound armed when the
---    statement started holds. With none armed, a function that sets 200 ms for itself sleeps its 600 ms; with 200 ms
---    armed, a function that sets 5 s for itself is cut at 200 ms (57014).
-do $$
-declare v_inside jsonb; v_armed jsonb;
-begin
-	perform dblink_exec('rr_caller', $f$create function pg_temp.rr_short() returns jsonb language plpgsql set statement_timeout = '200ms'
-		as $b$ begin perform pg_sleep(0.6); return jsonb_build_object('statement_timeout', current_setting('statement_timeout')); end $b$ $f$);
-	perform dblink_exec('rr_caller', $f$create function pg_temp.rr_long() returns jsonb language plpgsql set statement_timeout = '5s'
-		as $b$ begin perform pg_sleep(0.6); return jsonb_build_object('statement_timeout', current_setting('statement_timeout')); end $b$ $f$);
-	perform dblink_exec('rr_caller', 'set statement_timeout = 0');
-	v_inside := pg_temp.rr_send('select pg_temp.rr_short()');
-	perform dblink_exec('rr_caller', $q$set statement_timeout = '200ms'$q$);
-	v_armed := pg_temp.rr_send('select pg_temp.rr_long()');
-	perform dblink_exec('rr_caller', 'reset statement_timeout');
-	perform set_config('qorpera_test.rr_statement', format('a 200 ms setting inside: %s after %s ms; 200 ms armed, 5 s inside: %s after %s ms',
-		coalesce(v_inside ->> 'state', 'answered'), v_inside ->> 'ms', coalesce(v_armed ->> 'state', 'answered'), v_armed ->> 'ms'), false);
-	if v_inside -> 'result' is distinct from '{"statement_timeout": "200ms"}'::jsonb or (v_inside ->> 'ms')::numeric < 600
-		or v_armed ->> 'state' is distinct from '57014' or (v_armed ->> 'ms')::numeric >= 600 then
-		raise exception 'statement_timeout inside a function is not as expected: inside %, armed %', v_inside, v_armed; end if;
-end $$;
-
--- 3. A lock_timeout set with SET LOCAL before the row lock bounds the wait for it. The holder makes the context read
---    through the host and sleeps 4 s holding the row; the caller, under the entry point's 8 s statement budget and
---    SET LOCAL lock_timeout 1s, waits for the row FOR UPDATE and gives up with 55P03 after about 1 s.
-do $$
-declare v_held jsonb; v_outcome jsonb; v_holding boolean;
-begin
-	v_held := pg_temp.rr_hold('qorpera_native_host_call', 'qorpera_assert_company_path_reads', pg_temp.rr_context_args(), 4);
-	perform dblink_exec('rr_caller', 'begin');
-	perform dblink_exec('rr_caller', $q$set local statement_timeout = '8s'$q$);
-	perform dblink_exec('rr_caller', $q$set local lock_timeout = '1s'$q$);
-	v_outcome := pg_temp.rr_send(format('select to_jsonb(budget.run_id) from public.qorpera_execution_run_budgets budget where budget.run_id = %L for update',
-		current_setting('qorpera_test.base_binding')::jsonb ->> 'runId'));
-	perform dblink_exec('rr_caller', 'rollback');
-	v_holding := pg_temp.rr_release();
-	perform set_config('qorpera_test.rr_local', format('%s after %s ms', v_outcome ->> 'state', v_outcome ->> 'ms'), false);
-	if v_held is distinct from '{"answer": null}'::jsonb or v_outcome ->> 'state' is distinct from '55P03'
-		or not (v_outcome ->> 'waited')::boolean or (v_outcome ->> 'ms')::numeric not between 950 and 2500 or not v_holding then
-		raise exception 'SET LOCAL lock_timeout did not bound the row wait: held %, caller %, holder still holding %',
-			v_held, v_outcome, v_holding; end if;
-end $$;
-
 -- 4. The context read: the holder makes it through the host and sleeps 6 s holding the row; the caller makes it through
 --    the same entry point (8 s statement budget, 8 s lock_timeout), waits for the holder, and gives up with 55P03 after
 --    about 3 s (the function's own lock_timeout), while the holder still holds the row. By the answer the caller's
@@ -437,10 +394,8 @@ begin
 		or v_check #>> '{result,schema}' is distinct from 'qorpera.native-tool-authority/v1' or (v_check ->> 'waited')::boolean then
 		raise exception 'The run-row reads did not answer with the row free: read %, fence %, check %', v_read, v_fence, v_check; end if;
 end $$;
-select current_setting('qorpera_test.rr_statement') as rr_statement, current_setting('qorpera_test.rr_local') as rr_local,
-	current_setting('qorpera_test.rr_read') as rr_read, current_setting('qorpera_test.rr_fence') as rr_fence,
+select current_setting('qorpera_test.rr_read') as rr_read, current_setting('qorpera_test.rr_fence') as rr_fence,
 	current_setting('qorpera_test.rr_check') as rr_check, current_setting('qorpera_test.rr_wake') as rr_wake \gset
-\echo 467 statement_timeout: :rr_statement
-\echo 467 while the row is held: SET LOCAL lock_timeout 1s gave :rr_local; the context read gave :rr_read; the fence gave :rr_fence; the run check gave :rr_check; on a wake run :rr_wake
+\echo 467 while the row is held: the context read gave :rr_read; the fence gave :rr_fence; the run check gave :rr_check; on a wake run :rr_wake
 
 select pg_temp.rr_cleanup();

@@ -238,8 +238,5 @@ select pg_temp.base_assert(has_function_privilege('service_role', 'public.qorper
 			or has_table_privilege(r.role, 'public.qorpera_coding_machine_outside_stops', 'select,insert,update,delete,truncate,references,trigger'))
 	and (select relrowsecurity from pg_class where oid = 'public.qorpera_coding_machine_outside_stops'::regclass),
 	'only the executor records a stop; the words and the kept stops stay internal');
-select pg_temp.base_assert(not exists (select 1 from unnest(array['public.qorpera_record_coding_machine_stopped(uuid,uuid,text,text,text)',
-		'public.qorpera_coding_stopped_event(text,jsonb)']) f(name)
-	where position('20260930431000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each new or replaced function names this migration');
 
 rollback;

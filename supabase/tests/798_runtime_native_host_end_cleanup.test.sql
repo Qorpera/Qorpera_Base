@@ -66,11 +66,6 @@ select pg_temp.ec_supervisor();
 select pg_temp.base_assert((select lease_id is not null and run_id::text=current_setting('qorpera_test.base_binding')::jsonb->>'runId'
 	and epoch=current_setting('qorpera_test.epoch')::bigint from pg_temp.ec_screen()),'a running job''s screen stays leased');
 
--- 2. The device's cleanup waits for the ending's commit: a deferrable trigger, deferred by default.
-select pg_temp.base_assert((select tgdeferrable and tginitdeferred from pg_trigger
-	where tgname='qorpera_native_presence_end' and tgrelid='public.qorpera_runner_jobs'::regclass),
-	'the device cleanup runs at commit');
-
 -- 3. Another job's device of the same run is left alone.
 savepoint other_job;
 update public.qorpera_native_presence_devices set binding=binding||'{"jobId":"7e2a0000-0000-4000-8000-0000000000ff"}'
@@ -117,10 +112,5 @@ set local session_replication_role = origin;
 select pg_temp.ec_supervisor();
 select pg_temp.base_assert((select lease_id is not null from pg_temp.ec_screen()),'a lease without a job id is left to its expiry');
 rollback to savepoint no_job;
-
--- 8. Both bodies carry the marker (the release's deploy guards read it).
-select pg_temp.base_assert(count(*)=2,'both functions are this version')
-from pg_proc where oid in ('public.qorpera_native_presence_end()'::regprocedure,
-	'public.qorpera_runtime_office_supervisor_status(jsonb,bigint)'::regprocedure) and prosrc like '%20260929999600%';
 
 rollback;

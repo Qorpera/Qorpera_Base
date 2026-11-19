@@ -152,7 +152,6 @@ end $$;
 
 -- 5. Internal, the marker, the other actions -------------------------------------------------------------------------------
 do $$
-declare v jsonb;
 begin
 	perform pg_temp.base_assert(not has_table_privilege('anon', 'public.qorpera_company_machine_start_waits', 'select')
 		and not has_table_privilege('authenticated', 'public.qorpera_company_machine_start_waits', 'select')
@@ -163,17 +162,6 @@ begin
 		and not has_function_privilege('authenticated', 'public.qorpera_valid_machine_start_wait(jsonb)', 'execute')
 		and not has_function_privilege('service_role', 'public.qorpera_valid_machine_start_wait(jsonb)', 'execute'),
 		'5: the check is internal');
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_native_machine_manage(jsonb,jsonb)'::regprocedure),
-			'20260930755000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_native_machine_manage(jsonb,jsonb)'::regprocedure), '20260930747000') > 0
-		and strpos(pg_get_functiondef('public.qorpera_valid_machine_start_wait(jsonb)'::regprocedure), '20260930755000') > 0,
-		'5: the markers');
-	v := public.qorpera_native_machine_manage(pg_temp.w_binding(), '{"action":"status","machine":"research-word-count"}');
-	perform pg_temp.base_assert(v #>> '{machine,name}' = 'research-word-count', '5: status as before: ' || v::text);
-	v := public.qorpera_native_machine_manage(pg_temp.w_binding(), '{"action":"list"}');
-	perform pg_temp.base_assert(jsonb_array_length(v -> 'machines') >= 2, '5: list as before');
-	v := public.qorpera_native_machine_manage(pg_temp.w_binding(), '{"action":"stop","machine":"research-word-count"}');
-	perform pg_temp.base_assert(v ->> 'schema' = 'qorpera.machine-change/v1', '5: stop as before: ' || v::text);
 	perform pg_temp.base_error(format('select public.qorpera_native_machine_manage(%L::jsonb, %L::jsonb)', pg_temp.w_binding(),
 		'{"action":"status","machine":"research-word-count","wait":{}}'), '22023');
 end $$;

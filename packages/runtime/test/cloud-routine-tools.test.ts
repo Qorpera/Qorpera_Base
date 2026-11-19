@@ -97,6 +97,11 @@ describe("agent routine tool", () => {
 			expect(f.saved().map((request) => request.effort)).toEqual(["high", undefined]);
 			const bad = await f.boundary.invoke("routine_e3", "qorpera", "manage_routine", { ...weekly, effort: "max" });
 			expect(bad.success).toBe(false);
+			const threadOnly = await f.boundary.invoke("routine_e4", "qorpera", "manage_routine", {
+				...weekly,
+				effort: "xhigh",
+			});
+			expect(threadOnly.success).toBe(false);
 			expect(f.writer.change).toHaveBeenCalledTimes(2);
 		} finally {
 			f.run.close();

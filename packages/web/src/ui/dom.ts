@@ -192,6 +192,15 @@ export function personAvatar(name: string, identity: string): HTMLElement {
 	return avatar;
 }
 
+export function growToText(field: HTMLTextAreaElement): void {
+	const scrolled: [HTMLElement, number][] = [];
+	for (let at = field.parentElement; at; at = at.parentElement)
+		if (at.scrollTop > 0) scrolled.push([at, at.scrollTop]);
+	field.style.height = "auto";
+	if (field.scrollHeight > 0) field.style.height = `${field.scrollHeight}px`;
+	for (const [at, top] of scrolled) at.scrollTop = top;
+}
+
 export function shortId(id: string): string {
 	return id.slice(0, 8);
 }
@@ -263,15 +272,6 @@ const ICON_PATHS: Record<string, string[]> = {
 		"M3 12h18",
 		"M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z",
 	],
-	// qorpera.com's kinds of company (landing/src/site/site.js), so the app's chips match the website's.
-	shop: ["M5 8h14l-1.2 11.2a1 1 0 0 1-1 .8H7.2a1 1 0 0 1-1-.8z", "M9 8V6.5a3 3 0 0 1 6 0V8"],
-	megaphone: ["M4 10v4h3l6 4V6L7 10z", "M17 9.5a3.5 3.5 0 0 1 0 5"],
-	cup: ["M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z", "M16 10h1.5a2.5 2.5 0 0 1 0 5H16", "M9 3.5v2M12 3.5v2"],
-	briefcase: [
-		"M6 8h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z",
-		"M9 8V6a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 6v2M4 13h16",
-	],
-	brush: ["M14.5 5.5l4 4-2 2-4-4z", "M12.5 7.5L5 15l4 4 7.5-7.5"],
 	// Two sparks: Generate icon, which asks an agent to draw.
 	sparkle: [
 		"M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z",
@@ -515,8 +515,14 @@ export function companyColor(seed: string): string {
 
 /** A company's logo: its own, laid over its figure once the logo store has it (ui/company-logos.ts), else the figure
  * derived from its id. `seed` is the company's id. */
-export function companyLogo(seed: string, className = ""): HTMLElement {
-	const logo = figureElement(companyFigure(seed), companyColor(seed), { still: true });
+export function companyLogo(seed: string, className = "", unnamed = false): HTMLElement {
+	const logo = unnamed
+		? h(
+				"span",
+				{ class: "figure is-unnamed", "aria-hidden": "true" },
+				h("span", { class: "company-logo-unknown" }, "?"),
+			)
+		: figureElement(companyFigure(seed), companyColor(seed), { still: true });
 	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
 	attachCompanyLogo(logo, seed);
 	return logo;

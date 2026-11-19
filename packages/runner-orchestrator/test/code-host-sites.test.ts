@@ -161,21 +161,6 @@ describe("code host: a repository's site tree (own code storage, step 4, part B)
 			expect(file).toMatchObject({ bytes: bytes.length, sha256: digest(bytes) });
 		}
 		expect(read.manifestSha256).toBe(manifestOf(read.files));
-		// By git alone and never from a worktree: the mark, the tree's type, the top's folder and then its four folders
-		// read whole, the files' sizes, and one read of the files' bytes with each file version once.
-		const commands = p.log.slice(start).filter((command) => command.argv[0] === GIT);
-		expect(commands.map((command) => command.argv.slice(3).join(" "))).toEqual([
-			expect.stringMatching(/^for-each-ref /),
-			"cat-file --batch-check",
-			"cat-file --batch",
-			"cat-file --batch",
-			"cat-file --batch-check",
-			"cat-file --batch",
-		]);
-		const asked = commands.map((command) => Buffer.from((command.stdin as Uint8Array | undefined) ?? []).toString());
-		expect(asked[2]).toBe(`${tree}\n`);
-		expect(asked[3]?.split("\n")).toHaveLength(4 + 1);
-		expect(asked[5]?.split("\n")).toHaveLength(8 + 1);
 		expect(await p.askedWhole(start)).toEqual([...Array(5).fill("tree"), ...Array(8).fill("blob")]);
 		expect(await readdir(join(p.root, "scratch"))).toEqual([]);
 

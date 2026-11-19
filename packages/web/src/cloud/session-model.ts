@@ -28,13 +28,30 @@ export const SESSION_MODEL_BEFORE_EFFORT = "gpt-6-astra";
 
 export const SESSION_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-export const PROVIDER_EFFORTS: Record<SessionProvider, readonly (typeof SESSION_EFFORTS)[number][]> = {
+export type SessionEffort = (typeof SESSION_EFFORTS)[number];
+
+export const PROVIDER_EFFORTS: Record<SessionProvider, readonly SessionEffort[]> = {
+	openai: ["low", "medium", "high", "xhigh"],
+	anthropic: ["low", "medium", "high", "xhigh", "max"],
+};
+
+export const EFFORTS_BEFORE_LIST: Record<SessionProvider, readonly SessionEffort[]> = {
 	openai: ["low", "medium", "high"],
 	anthropic: ["low", "medium", "high", "xhigh", "max"],
 };
 
 export function modelProvider(modelId: string | undefined): SessionProvider {
 	return SESSION_MODELS.find((model) => model.id === modelId)?.provider ?? "openai";
+}
+
+export function modelEfforts(
+	observed: SessionModel | undefined,
+	modelId: string | undefined,
+): readonly SessionEffort[] {
+	const provider = modelProvider(modelId);
+	const listed = modelId !== undefined && observed?.efforts ? observed.efforts[modelId] : undefined;
+	const offered = listed ? PROVIDER_EFFORTS[provider].filter((effort) => listed.includes(effort)) : [];
+	return offered.length > 0 ? offered : EFFORTS_BEFORE_LIST[provider];
 }
 
 /** Fast is the provider's priority tier; standard turns it off. */
@@ -49,6 +66,7 @@ export interface SessionModel {
 	/** Absent while the cloud does not run conversations on the Fast tier. */
 	serviceTier?: string;
 	models?: readonly string[];
+	efforts?: Readonly<Record<string, readonly string[]>>;
 	version: number;
 }
 
@@ -183,6 +201,7 @@ export function createWebSessionModel(
 					const effort = result.reasoning_effort;
 					const tier = result.service_tier;
 					const models = result.models;
+					const efforts = result.efforts;
 					if (response.status !== 200)
 						throw new CloudRpcError(
 							method,
@@ -220,6 +239,22 @@ export function createWebSessionModel(
 								models.some(
 									(item) => typeof item !== "string" || !item || new TextEncoder().encode(item).length > 256,
 								))) ||
+						(efforts !== undefined &&
+							(!efforts ||
+								typeof efforts !== "object" ||
+								Array.isArray(efforts) ||
+								Object.keys(efforts).length > 32 ||
+								Object.entries(efforts).some(
+									([key, list]) =>
+										!key ||
+										new TextEncoder().encode(key).length > 256 ||
+										!Array.isArray(list) ||
+										list.length > 16 ||
+										list.some(
+											(item) =>
+												typeof item !== "string" || !item || new TextEncoder().encode(item).length > 64,
+										),
+								))) ||
 						typeof result.version !== "number" ||
 						!Number.isSafeInteger(result.version) ||
 						result.version < 0 ||
@@ -236,6 +271,16 @@ export function createWebSessionModel(
 						...(typeof effort === "string" ? { reasoningEffort: effort } : {}),
 						...(typeof tier === "string" ? { serviceTier: tier } : {}),
 						...(Array.isArray(models) ? { models: [...new Set(models as string[])] } : {}),
+						...(efforts && typeof efforts === "object"
+							? {
+									efforts: Object.fromEntries(
+										Object.entries(efforts as Record<string, string[]>).map(([key, list]) => [
+											key,
+											[...new Set(list)],
+										]),
+									),
+								}
+							: {}),
 						version: result.version,
 					};
 				} finally {
