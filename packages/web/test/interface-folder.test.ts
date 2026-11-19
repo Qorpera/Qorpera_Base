@@ -193,7 +193,7 @@ describe("the pages and the folder (I7, C6a)", () => {
 		// Mailbox needs mail: only Members is listed, as the web ships it.
 		expect(names(controller)).toEqual(["members"]);
 		expect(companyInterfaces(controller)[0]?.file.name).toBe("Members");
-		expect(texts(rail(controller, f), ".rail-apps-drawer .rail-app-name")).toEqual(["Members"]);
+		expect(texts(rail(controller, f), ".rail-apps-drawer [data-app-key] .rail-app-name")).toEqual(["Members"]);
 		for (const name of ["pulse", "alpha", "mailbox"]) {
 			const main = h("main");
 			renderInterface(main, controller, name);
@@ -222,7 +222,10 @@ describe("the pages and the folder (I7, C6a)", () => {
 		expect(fake.folder.list).not.toHaveBeenCalled();
 		expect(names(controller)).toEqual(["mailbox", "members"]);
 		expect(companyInterfaces(controller).map((entry) => entry.file.name)).toEqual(["Mailbox", "Members"]);
-		expect(texts(rail(controller, f), ".rail-apps-drawer .rail-app-name")).toEqual(["Mailbox", "Members"]);
+		expect(texts(rail(controller, f), ".rail-apps-drawer [data-app-key] .rail-app-name")).toEqual([
+			"Mailbox",
+			"Members",
+		]);
 		const main = h("main");
 		renderInterface(main, controller, "mailbox");
 		expect(main.querySelector<HTMLElement>(".mailbox")?.dataset.interface).toBe("mailbox");
