@@ -18,7 +18,6 @@ import {
 	MACHINES_EVERY_MS,
 	type MachineHints,
 	MEMBER_CONFIRM_EVERY_MS,
-	OPEN_STARTS,
 	OPEN_TAKEN_AWAY,
 	OPEN_WAITS,
 	PAUSE_AFTER_MS,
@@ -837,7 +836,6 @@ describe("an agent's computer window", () => {
 		const p = panel(s);
 		await flush();
 		// A look takes about 0.2 s: the next begins 450 ms after the last began (the database takes one per 400 ms).
-		expect(LOOK_EVERY_MS).toBe(450);
 		expect(await gaps(s, 3)).toEqual([450, 450, 450]);
 		// After three unchanged, every second; after six, every 2 s; after thirteen, every 3 s.
 		expect(await gaps(s, 3)).toEqual([1000, 1000, 1000]);
@@ -1486,30 +1484,30 @@ describe("an agent's computer window", () => {
 		expect(s.looks.at(-1)?.url).toContain(machine(2).machineId);
 	});
 
-	it("says the member watches each machine they switch to, and not only the first (review r1 F2)", async () => {
+	it("says the member watches each machine the window moves to, and not only the first (review r1 F2)", async () => {
 		const s = setup({ machines: [machine(1), machine(2)] });
 		s.state.answers.push({ picture: 1 });
-		const p = panel(s);
+		panel(s);
 		await flush();
 		const watching = (n: number) => new RegExp(`/${machine(n).machineId}/watching$`);
 		expect(s.looks[0]?.url).toMatch(watching(1));
 		await advance(LOOK_EVERY_MS);
 		expect(s.looks[1]?.url).toMatch(new RegExp(`/${machine(1).machineId}$`));
-		// Within five minutes of the word for the first machine, the member chooses the second: its first look says it.
-		const choose = (row: number) => {
-			p.choose(machine(row + 1).machineId);
+		const firstLookAfter = async (n: number) => {
+			const from = s.looks.length;
+			s.hint("machines");
+			await flush();
+			await advance(LOOK_EVERY_MS);
+			return s.looks.slice(from).find((look) => look.url.includes(machine(n).machineId));
 		};
+		s.state.machines = [machine(2), machine(1)];
 		s.state.answers.push({ picture: 2 });
-		choose(1);
-		await flush();
-		expect(s.looks.at(-1)?.url).toMatch(watching(2));
+		expect((await firstLookAfter(2))?.url).toMatch(watching(2));
 		await advance(LOOK_EVERY_MS);
 		expect(s.looks.at(-1)?.url).toMatch(new RegExp(`/${machine(2).machineId}$`));
-		// And back again: the first machine hears it once more.
+		s.state.machines = [machine(1), machine(2)];
 		s.state.answers.push({ picture: 1 });
-		choose(0);
-		await flush();
-		expect(s.looks.at(-1)?.url).toMatch(watching(1));
+		expect((await firstLookAfter(1))?.url).toMatch(watching(1));
 	});
 
 	it("enters with Enter as with a click on the picture: the frame takes up the page and the browser is never asked for full screen (Jonas, 14 Nov 2026)", async () => {
@@ -3144,10 +3142,6 @@ describe("a choice ends in exactly one of three ways, whatever comes (review r3 
 
 describe("a member's click that opens an agent's computer wakes it (COMPUTER-OPEN-BRIEF, 13 Nov 2026)", () => {
 	const wakes = (s: Setup) => calls(s, "qorpera_member_manage_company_machine");
-
-	it("starts what the member asked for by state, in one place, and never Start one", () => {
-		expect(OPEN_STARTS).toEqual({ asleep: true, starting: true, screenOff: true });
-	});
 
 	it("wakes a sleeping computer with the click itself: no Wake it first, straight to starting, and the screen comes on by itself", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });

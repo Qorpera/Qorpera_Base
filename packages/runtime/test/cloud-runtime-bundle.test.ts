@@ -9,6 +9,11 @@ describe("compiled runtime bundle admission", () => {
 		const { authority } = nativeToolAuthorityFixture();
 		expect(() => assertCloudRuntimeBundle(authority.identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256)).not.toThrow();
 	});
+	it("accepts extra high, the effort a member's turn may take on a GPT model", () => {
+		const { authority } = nativeToolAuthorityFixture();
+		const identity = { ...authority.identity, reasoningEffort: "xhigh" } as const;
+		expect(() => assertCloudRuntimeBundle(identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256)).not.toThrow();
+	});
 	it.each(["runtimeBundleSha256", "reasoningPolicySha256", "reasoningEffort"] as const)(
 		"rejects changed %s before native execution",
 		(field) => {

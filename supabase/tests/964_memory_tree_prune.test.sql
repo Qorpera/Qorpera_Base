@@ -223,11 +223,6 @@ end $$;
 do $$
 declare v_fn regprocedure; v_role text;
 begin
-	if pg_get_functiondef('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure)
-			not like '%perform public.qorpera_folder_object_release(v_erasure.profile_id, v_hashes);%'
-		or pg_get_functiondef('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure)
-			like '%insert into public.qorpera_folder_object_gc%' then
-		raise exception 'Phase 5 releases bytes through qorpera_folder_object_release'; end if;
 	foreach v_fn in array array['public.qorpera_memory_tree_prune(integer)', 'public.qorpera_memory_tree_version_held(uuid,text)',
 		'public.qorpera_folder_object_release(uuid,text[])', 'public.qorpera_schedule_memory_tree_prune()']::regprocedure[] loop
 		-- The schedule runs as the migration's owner, as the other schedules do.

@@ -788,12 +788,12 @@ describe("agent event tools", () => {
 				const mailbox = await f.boundary.invoke("k2", "qorpera", "manage_hook", {
 					action: "create",
 					kind: "mailbox",
-					localPart: "sales",
+					localPart: "sales.acme",
 					purpose: "Sales mail.",
 					operationKey: "box-1",
 				});
 				expect(mailbox.success, JSON.stringify(mailbox)).toBe(true);
-				expect(mailbox.contentItems[0].text).toContain("sales@mail.example.test");
+				expect(mailbox.contentItems[0].text).toContain("sales.acme@mail.example.test");
 				const paused = await f.boundary.invoke("k3", "qorpera", "manage_hook", {
 					action: "pause",
 					hook: "site-form",
@@ -810,7 +810,7 @@ describe("agent event tools", () => {
 							p_request: {
 								action: "create",
 								kind: "mailbox",
-								localPart: "sales",
+								localPart: "sales.acme",
 								purpose: "Sales mail.",
 								operationKey: "box-1",
 							},
@@ -992,10 +992,12 @@ describe("agent event tools", () => {
 			const mailbox = {
 				action: "create",
 				kind: "mailbox",
-				localPart: "sales",
+				localPart: "sales.acme",
 				purpose: "Sales mail.",
 				operationKey: "k",
 			};
+			const localPart =
+				"localPart is a box, a dot and a handle the company already owns, such as sales.acme: the box 1 to 39 lowercase letters, digits, hyphens and underscores, the handle 2 to 24 lowercase letters, digits and hyphens, each starting and ending with a letter or digit";
 			const purpose = "purpose is one line of 1 to 512 characters saying what it is for";
 			const name =
 				"name uses lowercase letters, digits and hyphens, starts with a letter, has at most 64 characters and does not start with mail-";
@@ -1042,11 +1044,14 @@ describe("agent event tools", () => {
 					["h15", { ...CREATE, proof: "basic" }, "proof is address, github, hmac-sha256 or stripe"],
 					["h16", { ...CREATE, maxBodyBytes: 512 }, "maxBodyBytes is a whole number from 1024 to 262144"],
 					["h17", { ...CREATE, perMinute: 1.5 }, "perMinute is a whole number from 1 to 120"],
-					[
-						"h18",
-						{ ...mailbox, localPart: "sales..team" },
-						"localPart is 1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row",
-					],
+					["h18", { ...mailbox, localPart: "sales..acme" }, localPart],
+					["h18a", { ...mailbox, localPart: "sales" }, localPart],
+					["h18b", { ...mailbox, localPart: "sales.a" }, localPart],
+					["h18c", { ...mailbox, localPart: "sales.acme.dk" }, localPart],
+					["h18d", { ...mailbox, localPart: "sales.acme-" }, localPart],
+					["h18e", { ...mailbox, localPart: `${"s".repeat(40)}.acme` }, localPart],
+					["h18f", { ...mailbox, localPart: `sales.${"a".repeat(25)}` }, localPart],
+					["h18g", { ...mailbox, localPart: "sales.ac_me" }, localPart],
 					["h19", { ...CREATE, site: "github.com" }, "Only a signed hook names the site its secret is typed into"],
 					[
 						"h20",

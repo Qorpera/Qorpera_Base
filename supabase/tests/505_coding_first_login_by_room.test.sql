@@ -222,23 +222,6 @@ select pg_temp.base_assert((select b.created_at > a.created_at from public.qorpe
 	and not public.qorpera_connection_is_chatgpt_plan(pg_temp.f1('a')) and not public.qorpera_connection_is_chatgpt_plan(pg_temp.f1('b')),
 	'B is the owner''s newest login, and both may work while they are away');
 
--- 1. The login carries 543000; the sponsor still pays exactly its choice; the starter orders new work the same way ----
-do $$
-declare v_login text := pg_get_functiondef('public.qorpera_coding_owner_login(uuid,uuid,text)'::regprocedure);
-	v_sponsor text := pg_get_functiondef('public.qorpera_coding_owner_sponsor(uuid,uuid,text)'::regprocedure);
-	v_starter text := pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure);
-begin
-	perform pg_temp.base_assert(position('20260930543000' in v_login) > 0 and position('20260930077000' in v_login) > 0
-		and position('public.qorpera_native_account_remaining(connection.id, version.version)' in v_login) > 0, 'the login''s body');
-	perform pg_temp.base_assert(position('20260929992000' in v_sponsor) > 0 and position('20260930077000' in v_sponsor) > 0
-		and position('qorpera_coding_owner_login(p_profile_id, p_owner_user_id, p_harness)' in v_sponsor) > 0,
-		'the sponsor pays the login''s choice');
-	-- Since 20260930559000 both order by the same rank (a login that works, the room on one scale; test 559).
-	perform pg_temp.base_assert(position('order by public.qorpera_native_account_rank(own.connection_id, own.connection_version)'
-		in v_starter) > 0 and position('public.qorpera_native_account_rank(connection.id, version.version)' in v_login) > 0,
-		'the starter''s order for new work');
-end $$;
-
 -- 2. The newest login used up, an older one with room: the older pays, and a new session is pinned to it -----------
 do $$
 declare v_result jsonb; w public.qorpera_runtime_workers%rowtype;

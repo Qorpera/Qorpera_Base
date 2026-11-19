@@ -1,6 +1,21 @@
 import { CloudRpcError } from "../../cloud/client.ts";
-import type { EventHook, EventHookStatus, WebEventHooks } from "../../cloud/event-hooks.ts";
+import {
+	type EventHook,
+	type EventHookStatus,
+	MAIL_BOX,
+	MAIL_HANDLE,
+	type MailHandles,
+	type WebEventHooks,
+} from "../../cloud/event-hooks.ts";
 import { button, confirmDialog, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import {
+	cleanHandle,
+	HANDLE_MAX_CHARACTERS,
+	HandleCheck,
+	handleUsable,
+	handleWords,
+	mailboxRefusal,
+} from "../../ui/mail-address.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 
 /**
@@ -12,9 +27,13 @@ import { phrase, t } from "../../ui/preferences.ts";
  * adds, pauses, resumes or removes them; the kernel refuses anyone else.
  * It adds address-proven webhooks only: a signed one needs its sender's
  * signing secret in the vault, and members never paste one.
+
  */
 
-export type HooksClient = Pick<WebEventHooks, "list" | "createHook" | "createMailbox" | "setStatus">;
+export type HooksClient = Pick<
+	WebEventHooks,
+	"list" | "createHook" | "createMailbox" | "setStatus" | "mailHandles" | "handleStatus"
+>;
 export type HookKind = "webhook" | "mailbox";
 type Kind = HookKind;
 
@@ -69,9 +88,9 @@ const KIND_TEXT: Record<Kind, KindText> = {
 		add: phrase("Add mailbox"),
 		name: phrase("Mailbox name"),
 		example: phrase("e.g. invoices"),
-		hint: phrase("The part before the @: lowercase letters, digits, dots, hyphens and underscores."),
+		hint: phrase("The first part of the address: lowercase letters, digits, hyphens and underscores."),
 		nameRule: phrase(
-			"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.",
+			"A mailbox name is lowercase letters, digits, hyphens and underscores, and starts and ends with a letter or digit.",
 		),
 		taken: phrase("This address is taken."),
 		failed: phrase("The mailbox could not be added. Try again."),
@@ -91,7 +110,6 @@ const SIGNERS: Readonly<Record<string, string>> = {
 
 /** The kernel's name rules (CLIENT-CONTRACT.md §2), checked here first to say what is wrong. */
 const WEBHOOK_NAME = /^[a-z][a-z0-9-]{0,63}$/;
-const MAILBOX_NAME = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$/;
 
 function kindOf(hook: EventHook): Kind {
 	return hook.proof === "mail" ? "mailbox" : "webhook";
@@ -106,11 +124,9 @@ function title(hook: EventHook): string {
 function addError(kind: Kind, error: unknown): string {
 	const code = error instanceof CloudRpcError ? error.code : undefined;
 	if (code === "23505") return t(KIND_TEXT[kind].taken);
-	if (code === "54000") return t("The company has as many webhooks and mailboxes as it can have. Remove one first.");
-	if (code === "0A000" && kind === "mailbox") return t("Company mail is not set up yet.");
-	if (code === "22023" && kind === "mailbox" && error instanceof Error && error.message.includes("reserved"))
-		return t("This mailbox name is reserved. Choose another.");
 	if (code === "42501") return t("Only founders and admins can add, pause or remove them.");
+	if (kind === "mailbox" && (code === "0A000" || code === "22023" || code === "54000")) return mailboxRefusal(error);
+	if (code === "54000") return t("The company has as many webhooks and mailboxes as it can have. Remove one first.");
 	return t(KIND_TEXT[kind].failed);
 }
 
@@ -134,16 +150,21 @@ export class HooksView {
 	readonly #top: HooksTop | undefined;
 	readonly #formExtra: ((kind: HookKind) => HTMLElement | null) | undefined;
 	readonly #added: ((hook: EventHook) => void) | undefined;
+	readonly #unnamed: () => boolean;
 	#drawnManage: boolean | undefined;
 	#hooks: EventHook[] | undefined;
+	#mail: MailHandles | undefined;
+	#mailRead: "loading" | "failed" | "loaded" = "loading";
+	readonly #handleCheck: HandleCheck;
+	#handleLine: HTMLElement | undefined;
 	#loading = true;
 	#error: string | undefined;
 	/** A hook's id while it changes, or the kind being added. */
 	#working: string | undefined;
 	#adding: Kind | undefined;
-	readonly #drafts: Record<Kind, { name: string; purpose: string }> = {
-		webhook: { name: "", purpose: "" },
-		mailbox: { name: "", purpose: "" },
+	readonly #drafts: Record<Kind, { name: string; purpose: string; handle: string }> = {
+		webhook: { name: "", purpose: "", handle: "" },
+		mailbox: { name: "", purpose: "", handle: "" },
 	};
 	/** The last action's outcome, under its hook's card or its kind's form. */
 	#outcome: { key: string; tone: "ok" | "error"; text: string } | undefined;
@@ -171,6 +192,7 @@ export class HooksView {
 			form?: (kind: HookKind) => HTMLElement | null;
 			/** Told the hook the form made. */
 			added?: (hook: EventHook) => void;
+			unnamed?: () => boolean;
 		} = {},
 	) {
 		this.#client = client;
@@ -181,7 +203,12 @@ export class HooksView {
 		this.#top = options.top;
 		this.#formExtra = options.form;
 		this.#added = options.added;
+		this.#unnamed = options.unnamed ?? (() => false);
 		this.#kinds = options.kinds ?? ["webhook", "mailbox"];
+		this.#handleCheck = new HandleCheck(
+			(handle, signal) => this.#client.handleStatus(handle, signal),
+			() => this.#drawHandleCheck(),
+		);
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -206,6 +233,7 @@ export class HooksView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#handleCheck.stop();
 		this.el.replaceChildren();
 		this.el.remove();
 	}
@@ -236,18 +264,35 @@ export class HooksView {
 	}
 
 	async #read(focusKey?: string): Promise<void> {
+		const signal = this.#lifetime.signal;
+		const mail = this.#kinds.includes("mailbox") ? this.#readHandles() : undefined;
 		try {
-			const hooks = await this.#client.list(this.#lifetime.signal);
-			if (this.#lifetime.signal.aborted) return;
+			const hooks = await this.#client.list(signal);
+			if (signal.aborted) return;
 			this.#hooks = hooks;
 			this.#error = undefined;
 		} catch {
-			if (this.#lifetime.signal.aborted) return;
+			if (signal.aborted) return;
 			this.#error = t("The company's webhooks and mailboxes could not be read.");
 		} finally {
 			this.#loading = false;
-			if (!this.#lifetime.signal.aborted) this.#draw(focusKey);
+			if (!signal.aborted) this.#draw(focusKey);
 		}
+		await mail;
+	}
+
+	async #readHandles(): Promise<void> {
+		const signal = this.#lifetime.signal;
+		try {
+			const read = await this.#client.mailHandles(signal);
+			if (signal.aborted) return;
+			this.#mail = read;
+			this.#mailRead = "loaded";
+		} catch {
+			if (signal.aborted) return;
+			if (this.#mailRead !== "loaded") this.#mailRead = "failed";
+		}
+		if (!this.#loading) this.#draw();
 	}
 
 	async #setStatus(hook: EventHook, status: EventHookStatus | "removed"): Promise<void> {
@@ -294,22 +339,34 @@ export class HooksView {
 		const text = KIND_TEXT[kind];
 		const draft = this.#drafts[kind];
 		const name = draft.name.trim().toLowerCase();
-		// A mailbox's form asks for its name alone: the name says what it is for, and is the purpose the kernel wants.
-		const purpose = kind === "mailbox" ? name : draft.purpose.trim();
+		if (kind === "mailbox" && this.#mailRead !== "loaded") return;
+		const owned = this.#handle();
+		const handle = owned ?? draft.handle;
+		const localPart = `${name}.${handle}`;
+		const purpose = kind === "mailbox" ? localPart : draft.purpose.trim();
 		const nameProblem =
 			kind === "webhook" && name.startsWith("mail-")
 				? t("Names beginning with mail- belong to mailboxes.")
-				: !(kind === "webhook" ? WEBHOOK_NAME : MAILBOX_NAME).test(name) || name.includes("..")
+				: !(kind === "webhook" ? WEBHOOK_NAME : MAIL_BOX).test(name)
 					? t(text.nameRule)
 					: undefined;
+		const handleProblem =
+			kind !== "mailbox" || owned !== undefined
+				? undefined
+				: !MAIL_HANDLE.test(handle)
+					? t("Use a–z, 0–9 and hyphens")
+					: handleUsable(this.#handleCheck.state) || this.#handleCheck.state === "checking"
+						? undefined
+						: handleWords(this.#handleCheck.state);
 		const problem =
 			nameProblem ??
+			handleProblem ??
 			(!purpose || [...purpose].length > 512 || /\p{Cc}/u.test(purpose)
 				? t("Say what it is for, in one line.")
 				: undefined);
 		if (problem) {
 			this.#outcome = { key: kind, tone: "error", text: problem };
-			this.#draw(nameProblem ? `hook-name:${kind}` : `hook-purpose:${kind}`);
+			this.#draw(nameProblem ? `hook-name:${kind}` : handleProblem ? `hook-handle:${kind}` : `hook-purpose:${kind}`);
 			return;
 		}
 		this.#working = kind;
@@ -319,11 +376,13 @@ export class HooksView {
 			const hook =
 				kind === "webhook"
 					? await this.#client.createHook(name, purpose, this.#lifetime.signal)
-					: await this.#client.createMailbox(name, purpose, this.#lifetime.signal);
+					: await this.#client.createMailbox(localPart, purpose, this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#working = undefined;
 			this.#adding = undefined;
-			this.#drafts[kind] = { name: "", purpose: "" };
+			this.#drafts[kind] = { name: "", purpose: "", handle: "" };
+			if (kind === "mailbox" && owned === undefined && this.#mail)
+				this.#mail = { ...this.#mail, handles: [...this.#mail.handles, handle] };
 			this.#outcome = { key: hook.id, tone: "ok", text: t(text.ready) };
 			// The new one shows at once, with its address to copy; the next read sorts it in.
 			this.#hooks = [...(this.#hooks ?? []).filter((item) => item.id !== hook.id), hook];
@@ -338,6 +397,23 @@ export class HooksView {
 			this.#outcome = { key: kind, tone: "error", text: addError(kind, error) };
 			this.#draw(`hook-name:${kind}`);
 		}
+	}
+
+	#handle(): string | undefined {
+		return this.#mail?.handles.at(-1);
+	}
+
+	#domain(): string | undefined {
+		return this.#mail?.domain ?? this.#hooks?.find((hook) => hook.email)?.email?.split("@")[1];
+	}
+
+	#drawHandleCheck(): void {
+		const line = this.#handleLine;
+		if (!line) return;
+		const state = this.#handleCheck.state;
+		line.textContent = handleWords(state);
+		line.classList.toggle("is-ok", state === "free" || state === "ours");
+		line.classList.toggle("is-error", state === "taken" || state === "invalid");
 	}
 
 	async #copy(hook: EventHook): Promise<void> {
@@ -457,7 +533,7 @@ export class HooksView {
 		const name = h("input", {
 			type: "text",
 			value: draft.name,
-			maxlength: "64",
+			maxlength: kind === "mailbox" ? "39" : "64",
 			autocomplete: "off",
 			autocapitalize: "none",
 			spellcheck: "false",
@@ -485,8 +561,43 @@ export class HooksView {
 			field.dataset.focusKey = "hook-purpose:webhook";
 			purpose = field;
 		}
-		// A mailbox's domain is the company mail's, known once the company has one mailbox.
-		const domain = kind === "mailbox" ? this.#hooks?.find((hook) => hook.email)?.email?.split("@")[1] : undefined;
+		const domain = kind === "mailbox" ? this.#domain() : undefined;
+		const handle = kind === "mailbox" ? this.#handle() : undefined;
+		let handleField: HTMLInputElement | null = null;
+		this.#handleLine = undefined;
+		if (kind === "mailbox" && handle === undefined) {
+			const field = h("input", {
+				type: "text",
+				value: draft.handle,
+				maxlength: String(HANDLE_MAX_CHARACTERS),
+				autocomplete: "off",
+				autocapitalize: "none",
+				spellcheck: "false",
+				placeholder: t("e.g. acme"),
+				"aria-label": t("The company's part of the address"),
+				oninput: () => {
+					const cleaned = cleanHandle(field.value);
+					if (cleaned !== field.value) field.value = cleaned;
+					draft.handle = cleaned;
+					this.#handleCheck.set(cleaned);
+				},
+			});
+			field.dataset.focusKey = `hook-handle:${kind}`;
+			handleField = field;
+			this.#handleLine = h("p", { class: "service-outcome hook-handle-check", role: "status" });
+			if (draft.handle) {
+				this.#handleCheck.set(draft.handle);
+				this.#drawHandleCheck();
+			}
+		}
+		const tail =
+			kind !== "mailbox"
+				? null
+				: handle !== undefined
+					? h("span", { class: "hook-domain" }, `.${handle}${domain ? `@${domain}` : ""}`)
+					: domain
+						? h("span", { class: "hook-domain" }, `@${domain}`)
+						: null;
 		const add = h(
 			"button",
 			{ type: "submit", class: "btn btn-primary", disabled: Boolean(this.#working) },
@@ -508,8 +619,22 @@ export class HooksView {
 					void this.#add(kind);
 				},
 			},
-			h("div", { class: "hook-form-row" }, name, domain ? h("span", { class: "hook-domain" }, `@${domain}`) : null),
-			h("small", null, t(text.hint)),
+			h(
+				"div",
+				{ class: `hook-form-row${handleField ? " is-address" : ""}` },
+				name,
+				handleField ? h("span", { class: "hook-domain" }, ".") : null,
+				handleField,
+				tail,
+			),
+			this.#handleLine ?? null,
+			h(
+				"small",
+				null,
+				handleField
+					? t("The first part, then the company's part, which every address of the company ends with.")
+					: t(text.hint),
+			),
 			purpose,
 			this.#formExtra?.(kind) ?? null,
 			this.#outcomeLine(kind),
@@ -522,7 +647,48 @@ export class HooksView {
 		const manage = this.#access.canManage();
 		const hooks = (this.#hooks ?? []).filter((hook) => kindOf(hook) === kind);
 		let addArea: HTMLElement | null = null;
-		if (manage && !this.#loading) {
+		const mailbox = kind === "mailbox";
+		const waiting = mailbox && this.#mailRead !== "loaded";
+		if (manage && !this.#loading && waiting) {
+			let line: HTMLElement;
+			if (this.#mailRead === "failed") {
+				const retry = button(
+					t("Try again"),
+					() => {
+						this.#mailRead = "loading";
+						this.#draw("hook-handles-retry");
+						void this.#readHandles();
+					},
+					{ small: true },
+				);
+				retry.dataset.focusKey = "hook-handles-retry";
+				line = h(
+					"p",
+					{ class: "connection-empty service-error hook-handles-error", role: "alert" },
+					t("The company's part of its addresses could not be read."),
+					" ",
+					retry,
+				);
+			} else line = h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"));
+			addArea = this.#top
+				? h(
+						"div",
+						{ class: "connection-add-area is-top" },
+						h("div", { class: "connection-add-row" }, line, this.#top.beside?.() ?? null),
+						this.#top.below?.() ?? null,
+					)
+				: h("div", { class: "connection-add-area" }, line);
+		} else if (manage && !this.#loading && mailbox && this.#unnamed() && this.#handle() === undefined) {
+			const waits = h("p", { class: "connection-empty muted hook-waits" }, t("Your email address waits for a name"));
+			addArea = this.#top
+				? h(
+						"div",
+						{ class: "connection-add-area is-top" },
+						h("div", { class: "connection-add-row" }, waits, this.#top.beside?.() ?? null),
+						this.#top.below?.() ?? null,
+					)
+				: h("div", { class: "connection-add-area" }, waits);
+		} else if (manage && !this.#loading) {
 			const open = this.#adding === kind;
 			const add = button(
 				t(text.add),

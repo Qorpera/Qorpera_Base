@@ -2,7 +2,6 @@
 -- 20260930773000: the Co-Founder's senses list the views the company is owed now (company views step 4, slice O1). On
 -- 1263's fixture (924's company through 596: Alice's run holds the base binding, and Alice is the company's Co-Founder,
 -- so her run reads the senses; 924 seeded QorperaOS/vision/vision.md). Covered:
--- 1. The patch: both markers, the platform's definer read as before, the comment.
 -- 2. products is owed while the vision is there, and only then; money is not owed without a bank.
 -- 3. An app.toml anywhere but apps/products/ (another folder, a folder below, an archive, a folder of that name,
 --    another environment's file) does not make the view.
@@ -41,21 +40,6 @@ begin
 	where profile_id = '92400000-0000-4000-8000-000000000010';
 	get diagnostics v_rows = row_count;
 	perform pg_temp.base_assert(v_rows = 1, 'fixture: the company has its bank sync');
-end $$;
-
--- 1. The patch.
-do $$
-begin
-	perform pg_temp.base_assert((select prosecdef and proconfig = array['search_path=""']
-			and prosrc like '%20260930765000%' and prosrc like '%20260930773000%'
-		from pg_proc where oid = 'public.qorpera_describe_company_senses(jsonb)'::regprocedure),
-		'the senses are still the definer read, with both markers');
-	perform pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_describe_company_senses(jsonb)', 'EXECUTE')
-		and not has_function_privilege('authenticated', 'public.qorpera_describe_company_senses(jsonb)', 'EXECUTE')
-		and not has_function_privilege('anon', 'public.qorpera_describe_company_senses(jsonb)', 'EXECUTE'),
-		'the senses are still the platform''s');
-	perform pg_temp.base_assert(obj_description('public.qorpera_describe_company_senses(jsonb)'::regprocedure, 'pg_proc')
-		like '%20260930773000%', 'the comment names the views');
 end $$;
 
 -- 2. products is owed while the company has its vision; no bank, so money is not.

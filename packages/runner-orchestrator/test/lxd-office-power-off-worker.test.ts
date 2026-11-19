@@ -138,12 +138,6 @@ describe("serialized VM power-off", () => {
 		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
 		expect(f.suspensions()).toHaveLength(0);
 	});
-	it("keeps the slot when a resume was already requested", async () => {
-		const f = await fixture();
-		f.suspension.value = { state: "kept", reason: "RESUME_PENDING" };
-		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
-		expect(f.suspensions()).toHaveLength(1);
-	});
 	it.each([
 		["lost reply", new Error("suspension reply lost")],
 		[

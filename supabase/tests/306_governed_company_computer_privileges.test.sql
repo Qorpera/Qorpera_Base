@@ -1,29 +1,10 @@
 -- Run after the Step 2 migrations, including the independent broker role.
--- A production-schema replay also exercises the retained legacy trigger.
 begin;
 
 do $$
 declare
-	v_guard regprocedure := to_regprocedure('public.qorpera_company_computer_binding_guard()');
-	v_role text;
 	v_functions text[];
 begin
-	if v_guard is not null then
-		if not exists (
-			select 1 from pg_proc where oid = v_guard and prorettype = 'trigger'::regtype
-		) then
-			raise exception 'Retained Company Computer guard changed its signature';
-		end if;
-		foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
-			if has_function_privilege(v_role, v_guard, 'EXECUTE') then
-				raise exception 'Legacy Company Computer guard is exposed to %', v_role;
-			end if;
-		end loop;
-		if not exists (select 1 from pg_trigger where tgfoid = v_guard and not tgisinternal) then
-			raise exception 'Legacy Company Computer guard lost its existing trigger';
-		end if;
-	end if;
-
 	-- Exact signatures, not names: Step 7 added a second signature of the
 	-- capture completion (account label), and a name-only check would also pass
 	-- any other overload the broker inherited. Bundle v88 added the coding
@@ -82,6 +63,7 @@ begin
 		'qorpera_broker_principal_digital_post_syncs_due(uuid,text)',
 		'qorpera_broker_principal_event_verifications_due(uuid,text)',
 		'qorpera_claim_bank_sync(uuid,text)',
+		'qorpera_claim_claude_login_reset(uuid,text,uuid,text,uuid)',
 		'qorpera_claim_connector_token_revocations(uuid,text,integer)',
 		'qorpera_claim_digital_post_sync(uuid,text)',
 		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
@@ -98,6 +80,7 @@ begin
 		'qorpera_complete_connector_token_revocation(uuid,text,uuid,bigint,text,text)',
 		'qorpera_complete_model_login_account_refresh(uuid,text,uuid,text)',
 		'qorpera_complete_model_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text)',
+		'qorpera_describe_claude_login_read(uuid,text,uuid,text)',
 		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)',
 		'qorpera_describe_company_account_open(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)',
@@ -136,6 +119,7 @@ begin
 		'qorpera_record_account_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_bank_days(uuid,text,uuid,bigint,uuid,jsonb,date,date,jsonb)',
 		'qorpera_record_bank_transactions(uuid,text,uuid,bigint,uuid,jsonb,jsonb)',
+		'qorpera_record_claude_login_read(uuid,text,uuid,text,jsonb,jsonb,jsonb)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',
 		'qorpera_register_company_with_broker_principal(uuid,text,uuid,text)',

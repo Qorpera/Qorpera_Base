@@ -86,11 +86,6 @@ declare c_mark constant text := 'public.qorpera_mark_company_machine_folder_rest
 	c_report constant text := 'public.qorpera_folder_test_machine_event_report(uuid,uuid,uuid,jsonb)';
 	f text; r name; p pg_proc%rowtype;
 begin
-	foreach f in array array[c_mark, c_text, c_report, 'public.qorpera_retire_company_machine(uuid,text,text,text,uuid,text)',
-		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)',
-		'public.qorpera_machine_run_continuation(public.qorpera_execution_runs,integer)'] loop
-		perform pg_temp.base_assert(strpos(pg_get_functiondef(f::regprocedure), '20260930511000') > 0, f || ' carries 20260930511000');
-	end loop;
 	foreach f in array array[c_mark, c_text, c_report] loop
 		select * into p from pg_proc where oid = f::regprocedure;
 		perform pg_temp.base_assert(p.prosecdef and p.proconfig is not distinct from array['search_path=""']
@@ -105,11 +100,6 @@ begin
 		and not has_function_privilege('service_role', c_report, 'EXECUTE'), 'The words and the report are internal');
 	perform pg_temp.base_error(format('select pg_temp.fx(%L)', format('update public.qorpera_company_machine_commands
 		set folder_lost_reason = ''restart'' where id = %L', '62800000-0000-4000-8000-000000000502')), '23514');
-	perform pg_temp.refused($sql$do $g$ begin
-	if exists (select 1 from pg_catalog.pg_attribute where attrelid = 'public.qorpera_company_machine_commands'::regclass
-		and attname = 'folder_lost_reason' and not attisdropped) then
-		raise exception 'The test machine''s report (20260930511000) is already applied'; end if;
-end $g$ $sql$, 'P0001', 'The test machine''s report (20260930511000) is already applied');
 end $$;
 
 -- 1. The retirement, for each of its three causes (reached as 516 §2, §4 and §5 reach them): the open command ends

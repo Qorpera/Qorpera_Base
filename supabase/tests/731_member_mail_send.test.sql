@@ -12,7 +12,7 @@ select pg_temp.base_claims('service_role');
 -- A member's request: send n, from the support mailbox to one customer.
 create function pg_temp.ms_request(p_n integer, p_extra jsonb default '{}') returns jsonb language sql as $$
 	select jsonb_build_object('sendId', '73100000-0000-4000-8000-' || lpad(p_n::text, 12, '0'),
-		'from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+		'from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 		'subject', 'Your order', 'text', 'Hello ' || p_n) || p_extra
 $$;
 -- The calling member sends it: the answer.
@@ -42,7 +42,7 @@ $$;
 create function pg_temp.ms_agent(p_call text) returns uuid language plpgsql as $$
 begin
 	perform public.qorpera_send_agent_mail(current_setting('qorpera_test.base_binding')::jsonb, p_call,
-		jsonb_build_object('from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+		jsonb_build_object('from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 			'subject', 'From the agent', 'text', 'Reply ' || p_call));
 	return (select mail.id from public.qorpera_company_mail_outbox as mail where mail.call_id = p_call);
 end $$;
@@ -70,13 +70,13 @@ where id in ('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-00
 -- Three mailboxes: support, orders, and one that was removed.
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'support', 'Customer support') \g /dev/null
+	'support.base', 'Customer support') \g /dev/null
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'orders', 'Orders') \g /dev/null
+	'orders.base', 'Orders') \g /dev/null
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'old', 'An old mailbox') \g /dev/null
+	'old.base', 'An old mailbox') \g /dev/null
 select public.qorpera_set_event_hook_status((select hook_id from public.qorpera_company_mailboxes
-	where local_part = 'old' and removed_at is null), 'removed') \g /dev/null
+	where local_part = 'old.base' and removed_at is null), 'removed') \g /dev/null
 -- Another company, with a mailbox of its own.
 select pg_temp.base_claims('service_role');
 insert into auth.users(id, email) values ('73100000-0000-4000-8000-0000000000c1', 'other-owner@example.test');
@@ -91,7 +91,7 @@ values ('73100000-0000-4000-8000-0000000000c3', '73100000-0000-4000-8000-0000000
 select public.qorpera_folder_enable('73100000-0000-4000-8000-0000000000c3') \g /dev/null
 select pg_temp.base_claims('authenticated', '73100000-0000-4000-8000-0000000000c1');
 select public.qorpera_create_company_mailbox('73100000-0000-4000-8000-0000000000c2', '73100000-0000-4000-8000-0000000000c3',
-	'theirs', 'Their mailbox') \g /dev/null
+	'theirs.other', 'Their mailbox') \g /dev/null
 
 -- 1. A member sends an email as themself -------------------------------------------------------------------------------
 
@@ -109,7 +109,7 @@ from (select current_setting('qorpera_test.ms_first')::jsonb as answer) as sent;
 select pg_temp.base_assert((select mail.member_user_id = '92400000-0000-4000-8000-000000000001'
 			and mail.run_id is null and mail.call_id is null and mail.staff_agent_id is null
 			and mail.mailbox_id = (select box.id from public.qorpera_company_mailboxes as box
-				where box.local_part = 'support' and box.removed_at is null)
+				where box.local_part = 'support.base' and box.removed_at is null)
 			and mail.from_name = 'Olivia Owner at Folder runtime base' and mail.from_address is null
 			and mail.recipients_to = array['customer@example.org', 'second@example.org']
 			and mail.recipients_cc = array['boss@example.org'] and mail.subject = 'Your order'
@@ -127,7 +127,7 @@ select pg_temp.base_assert((select thread.last_direction = 'sent' and thread.las
 -- Sent lists the thread as the member's, and the thread shows who sent the email.
 select pg_temp.base_assert(line ->> 'direction' = 'sent' and line ->> 'state' = 'handled' and not line ? 'handledBy'
 		and line -> 'sentBy' = '{"userId":"92400000-0000-4000-8000-000000000001","name":"Olivia Owner"}'
-		and line ->> 'address' = 'support@mail.example.test' and line ->> 'fromAddress' = 'customer@example.org'
+		and line ->> 'address' = 'support.base@mail.example.test' and line ->> 'fromAddress' = 'customer@example.org'
 		and line ->> 'subject' = 'Your order' and line ->> 'snippet' like 'Hello there,%'
 		and line ->> 'messages' = '1' and line ->> 'unread' = 'false',
 	'Sent lists the thread as the member''s: ' || coalesce(line::text, 'no line'))
@@ -136,7 +136,7 @@ select pg_temp.base_assert(jsonb_array_length(messages) = 1 and messages #>> '{0
 		and messages #>> '{0,mailId}' = (pg_temp.ms_mail(1)).id::text
 		and messages #> '{0,member}' = '{"userId":"92400000-0000-4000-8000-000000000001","name":"Olivia Owner"}'
 		and not messages -> 0 ? 'staffAgent' and messages #>> '{0,fromName}' = 'Olivia Owner at Folder runtime base'
-		and messages #>> '{0,fromAddress}' = 'support@mail.example.test'
+		and messages #>> '{0,fromAddress}' = 'support.base@mail.example.test'
 		and messages #> '{0,to}' = '["customer@example.org","second@example.org"]'
 		and messages #> '{0,cc}' = '["boss@example.org"]' and messages #>> '{0,subject}' = 'Your order'
 		and messages #>> '{0,text}' = E'Hello there,\n\nYour order is on its way.' and messages #>> '{0,status}' = 'queued',
@@ -155,12 +155,12 @@ select pg_temp.base_claims('service_role');
 select set_config('qorpera_test.ms_claim',
 	public.qorpera_claim_company_mail(10, '73100000-0000-4000-8000-0000000000a1')::text, true) \g /dev/null
 select pg_temp.base_assert(jsonb_array_length(claim) = 1 and claim #>> '{0,mailId}' = (pg_temp.ms_mail(1)).id::text
-		and claim #>> '{0,from}' = '"Olivia Owner at Folder runtime base" <support@mail.example.test>'
+		and claim #>> '{0,from}' = '"Olivia Owner at Folder runtime base" <support.base@mail.example.test>'
 		and claim #> '{0,to}' = '["customer@example.org","second@example.org"]'
 		and claim #> '{0,cc}' = '["boss@example.org"]' and claim #>> '{0,subject}' = 'Your order'
 		and claim #>> '{0,text}' = E'Hello there,\n\nYour order is on its way.'
 		and coalesce(claim #> '{0,headers}', '{}') = '{}'::jsonb and not claim -> 0 ? 'attachments'
-		and (pg_temp.ms_mail(1)).status = 'delivering' and (pg_temp.ms_mail(1)).from_address = 'support@mail.example.test',
+		and (pg_temp.ms_mail(1)).status = 'delivering' and (pg_temp.ms_mail(1)).from_address = 'support.base@mail.example.test',
 	'The sender claims the member''s email, with no AI line and no Auto-Submitted header: ' || claim::text)
 from (select current_setting('qorpera_test.ms_claim')::jsonb as claim) as claimed;
 
@@ -168,7 +168,7 @@ from (select current_setting('qorpera_test.ms_claim')::jsonb as claim) as claime
 
 -- A contributor and an admin send as themselves; a mailbox by its name alone is the same mailbox.
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
-select pg_temp.ms_send(pg_temp.ms_request(2, '{"from":" SUPPORT "}')) \g /dev/null
+select pg_temp.ms_send(pg_temp.ms_request(2, '{"from":" SUPPORT.BASE "}')) \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000004');
 select pg_temp.ms_send(pg_temp.ms_request(3)) \g /dev/null
 select pg_temp.base_assert(
@@ -189,11 +189,11 @@ select pg_temp.ms_refused(pg_temp.ms_request(4), '42501', 'Company mail is unava
 select pg_temp.base_claims('service_role');
 select pg_temp.ms_refused(pg_temp.ms_request(4), '42501', 'Company mail is unavailable');
 select pg_temp.base_claims('authenticated', '73100000-0000-4000-8000-0000000000c1');
-select pg_temp.ms_refused(pg_temp.ms_request(4, '{"from":"theirs@mail.example.test"}'), '42501',
+select pg_temp.ms_refused(pg_temp.ms_request(4, '{"from":"theirs.other@mail.example.test"}'), '42501',
 	'Company mail is unavailable');
 -- That owner sends from their own company's mailbox, and not from this company's.
 select pg_temp.base_assert(public.qorpera_send_member_mail('73100000-0000-4000-8000-0000000000c3',
-		pg_temp.ms_request(4, '{"from":"theirs@mail.example.test"}')) ->> 'status' = 'queued',
+		pg_temp.ms_request(4, '{"from":"theirs.other@mail.example.test"}')) ->> 'status' = 'queued',
 	'Another company''s owner sends from their own mailbox');
 select pg_temp.base_error(format('select public.qorpera_send_member_mail(%L, %L::jsonb)',
 	'73100000-0000-4000-8000-0000000000c3', pg_temp.ms_request(5)), '42501', 'No mailbox of this company has that address');
@@ -234,21 +234,21 @@ select pg_temp.base_assert(pg_temp.ms_send(pg_temp.ms_request(11, jsonb_build_ob
 -- Another company's mailbox, an unknown one, a removed one, a tagged one and one of another domain are not this
 -- company's to send from.
 select pg_temp.ms_refused(pg_temp.ms_request(12, bad.extra), '42501', 'No mailbox of this company has that address')
-from (values ('{"from":"theirs@mail.example.test"}'::jsonb), ('{"from":"theirs"}'), ('{"from":"nobody@mail.example.test"}'),
-	('{"from":"old@mail.example.test"}'), ('{"from":"support@other.example"}'),
-	('{"from":"support+tag@mail.example.test"}')) as bad(extra);
+from (values ('{"from":"theirs.other@mail.example.test"}'::jsonb), ('{"from":"theirs"}'), ('{"from":"nobody@mail.example.test"}'),
+	('{"from":"old.base@mail.example.test"}'), ('{"from":"support@other.example"}'),
+	('{"from":"support.base+tag@mail.example.test"}')) as bad(extra);
 -- A company never emails its own mailboxes, tagged or not, in to or in cc.
 select pg_temp.ms_refused(pg_temp.ms_request(13, bad.extra), '42501', 'Email to your own company''s mailboxes is refused')
-from (values ('{"to":["orders@mail.example.test"]}'::jsonb), ('{"to":["support@mail.example.test"]}'),
-	('{"cc":["Support+tag@mail.example.test"]}')) as bad(extra);
+from (values ('{"to":["orders.base@mail.example.test"]}'::jsonb), ('{"to":["support.base@mail.example.test"]}'),
+	('{"cc":["Support.base+tag@mail.example.test"]}')) as bad(extra);
 -- A paused mailbox sends nothing until it is resumed.
 select public.qorpera_set_event_hook_status((select hook_id from public.qorpera_company_mailboxes
-	where local_part = 'orders' and removed_at is null), 'paused') \g /dev/null
-select pg_temp.ms_refused(pg_temp.ms_request(14, '{"from":"orders@mail.example.test"}'), '0A000',
+	where local_part = 'orders.base' and removed_at is null), 'paused') \g /dev/null
+select pg_temp.ms_refused(pg_temp.ms_request(14, '{"from":"orders.base@mail.example.test"}'), '0A000',
 	'The mailbox is paused; resume it to send from it');
 select public.qorpera_set_event_hook_status((select hook_id from public.qorpera_company_mailboxes
-	where local_part = 'orders' and removed_at is null), 'active') \g /dev/null
-select pg_temp.base_assert(pg_temp.ms_send(pg_temp.ms_request(14, '{"from":"orders@mail.example.test"}')) ->> 'status'
+	where local_part = 'orders.base' and removed_at is null), 'active') \g /dev/null
+select pg_temp.base_assert(pg_temp.ms_send(pg_temp.ms_request(14, '{"from":"orders.base@mail.example.test"}')) ->> 'status'
 	= 'queued', 'A resumed mailbox sends again');
 -- Nothing goes out as if from Qorpera: a member named like it sends nothing, whatever letters spell the name.
 select pg_temp.base_claims('service_role');
@@ -314,10 +314,10 @@ select pg_temp.base_assert((pg_temp.ms_mail(1)).status = 'sent'
 	'A sent email reads as sent, in its thread and to the same send again');
 -- The customer answers: the answer joins the member's thread, which now waits as any received email does.
 select pg_temp.base_claims('service_role');
-select public.qorpera_receive_mail('73100000-0000-4000-8000-0000000000b1', array['support@mail.example.test'],
+select public.qorpera_receive_mail('73100000-0000-4000-8000-0000000000b1', array['support.base@mail.example.test'],
 	jsonb_build_object('schema', 'qorpera.mail/v1', 'emailId', '73100000-0000-4000-8000-0000000000b1',
 		'subject', 'Re: Your order', 'from', 'Customer <customer@example.org>',
-		'to', jsonb_build_array('support@mail.example.test'), 'text', 'Thank you!',
+		'to', jsonb_build_array('support.base@mail.example.test'), 'text', 'Thank you!',
 		'messageId', '<answer-1@example.org>', 'references', '<ms-1@mail.example.test>')::text) \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000003');
 select pg_temp.base_assert((select thread.last_direction = 'received' and thread.message_count = 2

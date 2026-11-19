@@ -46,7 +46,6 @@ export const AGENTS: Record<string, string> = {
 	"Weekdays at {time}": "Hverdage kl. {time}",
 	"Weekends at {time}": "Weekender kl. {time}",
 	"{days} at {time}": "{days} kl. {time}",
-	"Next run": "Næste kørsel",
 	"Pause routine": "Sæt rutinen på pause",
 	"Resume routine": "Genoptag rutinen",
 	"Only owners and admins can pause or resume routines.":
@@ -271,6 +270,8 @@ export const AGENTS: Record<string, string> = {
 		"Virksomheden løb tør for computertimer. Arbejdsområdet er gemt; en opfølgning fortsætter, når der er tilføjet timer.",
 	"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.":
 		"Sessionens sidste tur sluttede uden at gemme sit arbejde eller stille et spørgsmål. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"ChatGPT turned the session's request away because too many requests came at once. The login is fine. The workspace is kept; a follow-up continues it.":
+		"ChatGPT afviste sessionens forespørgsel, fordi der kom for mange forespørgsler på én gang. Loginnet er i orden. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.":
 		"Modelkontoen, der betaler for sessionen, har nået sin forbrugsgrænse. Arbejdsområdet er gemt; en opfølgning venter og fortsætter af sig selv, når grænsen er nulstillet.",
 	"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":

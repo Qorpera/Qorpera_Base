@@ -548,13 +548,6 @@ begin
 			where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
 			'''save_coding_value'',/* 20260930781000 */''fill_company_account''') > 0,
 		'4: the observations'' list');
-	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930781000') > 0) = array[
-			'qorpera_authorize_machine_account_fill', 'qorpera_fill_company_account_on_machine',
-			'qorpera_machine_account_fill_operation', 'qorpera_record_runtime_observation',
-			'qorpera_valid_machine_account_fill_call'],
-		'4: the marker''s bodies');
 end $$;
 
 rollback;

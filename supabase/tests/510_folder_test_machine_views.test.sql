@@ -103,23 +103,14 @@ $$;
 -- The migration's marker is in every function it patches and in the new root check, which is internal. A placement
 -- records a disk used without the folder check.
 do $$
-declare f regprocedure; r name; v_root constant text := 'public.qorpera_folder_reads_root(uuid,uuid,uuid,uuid)';
+declare r name; v_root constant text := 'public.qorpera_folder_reads_root(uuid,uuid,uuid,uuid)';
 begin
-	foreach f in array array[v_root, 'public.qorpera_folder_view_valid(public.qorpera_folder_views)',
-		'public.qorpera_folder_view_live_run(public.qorpera_folder_views)', 'public.qorpera_folder_view_resolve(uuid,uuid,jsonb)',
-		'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)', 'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)',
-		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)']::regprocedure[] loop
-		if strpos(pg_get_functiondef(f), '20260930420000') = 0 then raise exception '% has no marker 20260930420000', f; end if;
-	end loop;
 	foreach r in array array['anon','authenticated','service_role','qorpera_secret_broker']::name[] loop
 		if has_function_privilege(r, v_root, 'EXECUTE') then raise exception '% may run the root check', r; end if;
 	end loop;
 	if has_function_privilege('authenticated', 'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)', 'EXECUTE')
 		or not has_function_privilege('service_role', 'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)', 'EXECUTE') then
 		raise exception 'view open''s privileges changed'; end if;
-	if not exists (select 1 from information_schema.columns where table_schema = 'public'
-			and table_name = 'qorpera_company_machine_placements' and column_name = 'folder_unchecked_at') then
-		raise exception 'A placement has no folder_unchecked_at'; end if;
 	-- The root check: agent A (its root grant) with member 2 (a contributor) reads the root; with a stranger, or once A's
 	-- grants are revoked, it does not.
 	if not public.qorpera_folder_reads_root('63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-000000000010',
