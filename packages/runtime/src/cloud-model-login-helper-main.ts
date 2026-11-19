@@ -4,6 +4,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ClaudeLoginReader } from "./cloud-claude-login-reader.ts";
+import { checkClaudeLogin } from "./cloud-claude-login-renewal.ts";
 import { ModelLoginHelperService } from "./cloud-model-login-helper.ts";
 import { CodexLoginRenewer, codexSelfCheck } from "./cloud-model-login-renewal.ts";
 import { CodexSignIns } from "./cloud-model-login-sign-in.ts";
@@ -193,17 +194,19 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	if (signInCompanyLimit > signInLimit) throw new Error("Login helper configuration is invalid");
 	// A member's Claude sign-in runs the official `claude auth login --claudeai` in the same isolation (Anthropic's
 	// sign-in hosts only), with the pinned Claude Code checked the same way.
+	const driver = new OfficialCliNativeHarnessDriver(codexPath, claudePath ?? "/nonexistent/claude", isolation, {
+		scratchParent: temporaryRoot,
+		beforeLaunch,
+	});
 	const signIns = new CodexSignIns({
-		driver: new OfficialCliNativeHarnessDriver(codexPath, claudePath ?? "/nonexistent/claude", isolation, {
-			scratchParent: temporaryRoot,
-			beforeLaunch,
-		}),
+		driver,
 		temporaryRoot,
 		limit: signInLimit,
 		companyLimit: signInCompanyLimit,
 		claude: claudePath !== undefined,
 	});
-	if (claudePath) console.error("Model login helper: Claude sign-ins on (pinned Claude Code).");
+	if (claudePath)
+		console.error("Model login helper: Claude sign-ins and Claude login checks on (pinned Claude Code).");
 	const service = new ModelLoginHelperService({
 		socketPath: absolute(config.socketPath, "Login helper socket"),
 		token,
@@ -211,7 +214,12 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 		renewer: new CodexLoginRenewer({ codexPath, temporaryRoot, isolation, beforeLaunch }),
 		signIns,
 		...(claudePath
-			? { claudeReads: new ClaudeLoginReader({ claudePath, temporaryRoot, isolation, beforeLaunch }) }
+			? {
+					claude: {
+						checkClaudeLogin: (files, signal) => checkClaudeLogin({ driver, temporaryRoot }, files, signal),
+					},
+					claudeReads: new ClaudeLoginReader({ claudePath, temporaryRoot, isolation, beforeLaunch }),
+				}
 			: {}),
 	});
 	const shutdown = (): void => stop.abort();
