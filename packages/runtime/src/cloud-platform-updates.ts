@@ -154,6 +154,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "A program for a computer or a phone now has a home: an interface app of the kit program. Build the real thing on a machine, copy one file for each kind (Android, Linux, Windows, Mac, iPhone) into the app's versions/<version>/ folder, with real screenshots beside them, and save it with save_app. Its page shows the program and a Download for the member's own computer or phone, and every version stays. Link the app when you tell a member, never a machine or a folder. If your company makes such a product, keep its builds there; app_guide about program says how.",
 	},
 	{
+		id: "app-pictures-webp",
+		kind: "behaviour",
+		date: "2026-11-19",
+		title: "App pictures as WebP",
+		text: "Pictures in an interface app open faster as WebP. A render, a photo or a screenshot saved as a PNG is about ten times larger than the same picture as .webp, and every member downloads each picture an app shows. When your agents make pictures for an app on a machine, have them save .webp (cwebp -q 90 shot.png -o shot.webp, or Pillow's save with quality=90) and name that file in the app's data. save_app now names the heavy PNGs an app shows, so the agent who saves an app sees which pictures to convert. PNG stays right for a small flat graphic that must be exact to the pixel, and SVG for what is drawn.",
+	},
+	{
 		id: "refusal-way-forward",
 		kind: "behaviour",
 		date: "2026-11-19",
