@@ -87,7 +87,7 @@ describe("creating an account", () => {
 		expect(calls.signUp).toHaveBeenCalledWith({
 			email: "mette@lerhave.dk",
 			password: "hemmeligt1",
-			options: { data: { display_name: "Mette Hansen" }, emailRedirectTo: expect.any(String) },
+			options: { data: { display_name: "Mette Hansen", password_set: true }, emailRedirectTo: expect.any(String) },
 		});
 		expect(auth.store.get().step).toEqual({ name: "confirm", email: "mette@lerhave.dk" });
 		expect(root.querySelector("h1")!.textContent).toBe("Check your email");
@@ -204,7 +204,7 @@ describe("a new password", () => {
 		submit();
 		await settle();
 		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "482071", type: "recovery" });
-		expect(calls.updateUser).toHaveBeenCalledWith({ password: "nytkodeord1" });
+		expect(calls.updateUser).toHaveBeenCalledWith({ password: "nytkodeord1", data: { password_set: true } });
 		expect(auth.store.get().step.name).toBe("signin");
 	});
 
@@ -244,7 +244,7 @@ describe("a new password that is refused after the code signed in", () => {
 		submit();
 		await settle();
 		expect(calls.verifyOtp).toHaveBeenCalledOnce();
-		expect(calls.updateUser).toHaveBeenLastCalledWith({ password: "nytkodeord1" });
+		expect(calls.updateUser).toHaveBeenLastCalledWith({ password: "nytkodeord1", data: { password_set: true } });
 		expect(auth.store.get().step.name).toBe("signin");
 	});
 

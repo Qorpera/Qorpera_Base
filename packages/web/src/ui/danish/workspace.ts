@@ -418,6 +418,9 @@ export const WORKSPACE: Record<string, string> = {
 	"Back to sign in": "Tilbage til log ind",
 	"One moment…": "Et øjeblik…",
 	"What should we call you?": "Hvad skal vi kalde dig?",
+	"Choose a password": "Vælg en adgangskode",
+	"From now on you sign in to {email} with a password. A code by email still works if you forget it.":
+		"Fra nu af logger du ind på {email} med en adgangskode. En kode på e-mail virker stadig, hvis du glemmer den.",
 	"Your agents and teammates see this name. You can change it later in Settings.":
 		"Dine agenter og kolleger ser dette navn. Du kan ændre det senere under Indstillinger.",
 

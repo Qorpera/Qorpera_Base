@@ -271,7 +271,7 @@ export class AuthController {
 			const { data, error } = await this.#cloud.supabase.auth.signUp({
 				email: address,
 				password,
-				options: { data: { display_name: displayName }, emailRedirectTo: this.#redirectTo() },
+				options: { data: { display_name: displayName, password_set: true }, emailRedirectTo: this.#redirectTo() },
 			});
 			if (error) throw error;
 			// WHY: Auth answers an address that already has a proven account with a user without identities, and sends nothing.
@@ -342,7 +342,7 @@ export class AuthController {
 				}
 				this.store.set({ step: { name: "reset", email: step.email, verified: true } });
 			}
-			const { error } = await this.#cloud.supabase.auth.updateUser({ password });
+			const { error } = await this.#cloud.supabase.auth.updateUser({ password, data: { password_set: true } });
 			if (error) throw error;
 			this.store.set({ step: { name: "signin" }, resendAt: undefined, message: undefined });
 		});
@@ -370,8 +370,11 @@ export class AuthController {
 		if (password.length < PASSWORD_MIN) throw new Error(t("Use at least 8 characters for your password."));
 		const userId = this.userId;
 		if (!userId) throw new Error(t("Sign in to change your password."));
-		const { error } = await this.#cloud.supabase.auth.updateUser({ password });
+		const { data, error } = await this.#cloud.supabase.auth.updateUser({ password, data: { password_set: true } });
 		if (error) throw new Error(authErrorText(error).text);
+		if (this.#disposed || this.userId !== userId || !data.user || data.user.id !== userId) return;
+		const user = data.user;
+		this.store.set((current) => ({ user, session: current.session ? { ...current.session, user } : null }));
 	}
 
 	#waitForCode(step: AuthStep, message?: string): void {
@@ -496,6 +499,13 @@ export function displayName(user: User | null): string {
 }
 
 /** The editable name excludes the email fallback used by authentication. */
+export function needsPassword(user: User | null): boolean {
+	if (!user) return false;
+	const providers = user.app_metadata?.providers;
+	const usesEmail = Array.isArray(providers) ? providers.includes("email") : user.app_metadata?.provider === "email";
+	return usesEmail && user.user_metadata?.password_set !== true;
+}
+
 export function accountName(user: User | null): string {
 	if (!user) return "";
 	const meta = user.user_metadata as Record<string, unknown> | undefined;
