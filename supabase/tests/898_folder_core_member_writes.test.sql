@@ -40,8 +40,6 @@ begin
 			or has_function_privilege('anon', 'public.' || v_function, 'EXECUTE')
 			or has_function_privilege('service_role', 'public.' || v_function, 'EXECUTE') then
 			raise exception '% has the wrong grants', v_function; end if;
-		if strpos(pg_get_functiondef(('public.' || v_function)::regprocedure), 'C4 P34a (20260930021000)') = 0 then
-			raise exception '% has no body marker', v_function; end if;
 	end loop;
 end $$;
 

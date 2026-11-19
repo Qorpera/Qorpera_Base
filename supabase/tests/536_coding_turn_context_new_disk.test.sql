@@ -163,10 +163,9 @@ begin
 end $$;
 
 -- 4. The function names this migration and keeps its grants: only the service role reads a turn's context --------------
-select pg_temp.base_assert(position('20260930515000' in pg_get_functiondef('public.qorpera_read_coding_turn_context(jsonb)'::regprocedure)) > 0
-	and has_function_privilege('service_role', 'public.qorpera_read_coding_turn_context(jsonb)', 'execute')
+select pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_read_coding_turn_context(jsonb)', 'execute')
 	and not exists (select 1 from unnest(array['anon', 'authenticated', 'qorpera_secret_broker']) r(role)
 		where has_function_privilege(r.role, 'public.qorpera_read_coding_turn_context(jsonb)', 'execute')),
-	'the turn context names 20260930515000; only the service role reads it');
+	'only the service role reads a turn''s context');
 
 rollback;

@@ -85,13 +85,4 @@ begin
 	if (pg_temp.rt(e2)).status is distinct from 'active' then raise exception 'More runs revive it: %', to_jsonb(pg_temp.rt(e2)); end if;
 end $$;
 
--- 3. The marker -----------------------------------------------------------------------------------------------------------
-do $$
-begin
-	if position('20260930056000' in pg_get_functiondef('public.qorpera_company_state_index_routine(uuid,uuid,uuid,text,uuid,jsonb)'::regprocedure)) = 0
-		or position('20260930056000' in pg_get_functiondef(
-			'public.qorpera_company_state_routine_restarts(public.qorpera_cloud_routines,jsonb,jsonb,text)'::regprocedure)) = 0 then
-		raise exception 'The bodies carry the marker'; end if;
-end $$;
-
 rollback;

@@ -1,11 +1,8 @@
 import type { CloudSessionRunState } from "@qorpera/cloud-client";
 import type { WebSessionRunControl } from "../../cloud/session-run-control.ts";
-import { h, replace } from "../../ui/dom.ts";
-import { t } from "../../ui/preferences.ts";
 
 /** Observes cloud-owned work. Local lifetime cancellation never stops a run. */
 export class SessionRunView {
-	readonly el = h("div", { class: "session-run surface-status", "aria-label": t("Cloud run") });
 	readonly #control: WebSessionRunControl;
 	readonly #sessionId: string;
 	readonly #lifetime = new AbortController();
@@ -16,7 +13,6 @@ export class SessionRunView {
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#busy = false;
 	#uncertain = false;
-	#message = t("Cloud run status is unavailable.");
 	#renderKey = "";
 
 	readonly #changed: () => void;
@@ -42,7 +38,6 @@ export class SessionRunView {
 			this.#busy = false;
 			this.#uncertain = false;
 			this.#staffAgentId = staffAgentId;
-			this.#message = t("Cloud run status is unavailable.");
 			if (staffAgentId) void this.refresh();
 		}
 		this.#render();
@@ -55,24 +50,15 @@ export class SessionRunView {
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
 		this.#busy = true;
-		this.#message = t("Checking cloud run…");
 		this.#render();
 		try {
 			const state = await this.#control.read(this.#sessionId, this.#staffAgentId, signal);
 			if (signal.aborted) return;
 			this.#state = state;
 			this.#uncertain = false;
-			this.#message = state.run
-				? state.run.status === "queued"
-					? t("Cloud run queued.")
-					: t("Cloud run in progress.")
-				: t("No active cloud run.");
 			if (reads > 1) this.#poll = setTimeout(() => void this.refresh(reads - 1), 1_000);
 		} catch {
 			if (signal.aborted) return;
-			this.#message = this.#uncertain
-				? t("Stop could not be confirmed. Refresh run status before trying again.")
-				: t("Cloud run status is unavailable. Refresh to try again.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
@@ -125,7 +111,6 @@ export class SessionRunView {
 		this.#busy = true;
 		this.#uncertain = true;
 		this.#state = undefined;
-		this.#message = t("Stopping selected cloud run…");
 		this.#render();
 		let confirmed = false;
 		try {
@@ -134,7 +119,6 @@ export class SessionRunView {
 			confirmed = true;
 		} catch {
 			if (signal.aborted) return;
-			this.#message = t("Stop could not be confirmed. Refresh run status before trying again.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
@@ -147,40 +131,11 @@ export class SessionRunView {
 
 	#render(): void {
 		const run = this.#state?.run;
-		// Quiet unless there is a run to watch or a stop to confirm.
-		this.el.hidden = !this.#staffAgentId || this.#lifetime.signal.aborted || (!run && !this.#uncertain);
-		const key = JSON.stringify([run, this.#message, this.#busy, this.#uncertain, this.#canCancel, this.el.hidden]);
+		const hidden = !this.#staffAgentId || this.#lifetime.signal.aborted || (!run && !this.#uncertain);
+		const key = JSON.stringify([run, this.#busy, this.#uncertain, this.#canCancel, hidden]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
 		this.#changed();
-		replace(
-			this.el,
-			h("span", { role: "status" }, this.#message),
-			h(
-				"button",
-				{
-					type: "button",
-					class: "btn btn-small",
-					"aria-label": t("Refresh run status"),
-					disabled: this.#busy || !this.#staffAgentId,
-					onclick: () => void this.refresh(),
-				},
-				t("Refresh"),
-			),
-			run?.canCancel && this.#canCancel
-				? h(
-						"button",
-						{
-							type: "button",
-							class: "btn btn-small",
-							"aria-label": t("Stop cloud run"),
-							disabled: this.#busy || this.#uncertain,
-							onclick: () => void this.#cancel(run.runId),
-						},
-						t("Stop run"),
-					)
-				: null,
-		);
 	}
 
 	dispose(): void {
@@ -188,7 +143,5 @@ export class SessionRunView {
 		this.#request?.abort();
 		clearTimeout(this.#poll);
 		this.#state = undefined;
-		this.el.replaceChildren();
-		this.el.hidden = true;
 	}
 }

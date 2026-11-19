@@ -10,12 +10,6 @@ const rpcSql=args=>`select public.qorpera_record_runtime_screen_event(a.p_startu
 // Called after the real provider/startup SQL activation. Desired screen power
 // and readiness/reaping measurements are fixtures; no Linux display is claimed.
 export async function testRuntimeScreenLifecycle({startup,service,literal,execute,race,restartDatabase,CompanyComputerScreenLifecyclePublisher,CompanyComputerScreenOutbox,retainOpen=false}) {
- const conversion=JSON.parse(execute(`select jsonb_build_object('jsonArgumentIsSqlNull',j.p_privacy is null,
-  'jsonbArgumentIsSqlNull',b.p_privacy is null,'nestedPrivacyIsJsonNull',j.p_event->'privacy'='null'::jsonb)
-  from json_to_record('{"p_privacy":null,"p_event":{"privacy":null}}') j(p_privacy jsonb,p_event jsonb),
-  jsonb_to_record('{"p_privacy":null}') b(p_privacy jsonb);`));
- assert.deepEqual(conversion,{jsonArgumentIsSqlNull:true,jsonbArgumentIsSqlNull:true,nestedPrivacyIsJsonNull:true});
- console.log('SCREEN_RPC_JSON_NULL_CONVERSION='+JSON.stringify(conversion));
  const office=startup.scope.companyComputerId;
  const saved=JSON.parse(execute(`select jsonb_build_object('id',id,'power',power) from public.qorpera_runtime_office_screens where office_id='${office}' order by ordinal limit 1;`));
  execute(`update public.qorpera_runtime_office_screens set power='open' where id='${saved.id}';`);

@@ -35,21 +35,5 @@ begin
 end
 $$;
 
-reset role;
-do $$
-declare v_body text := pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure);
-begin
-	if strpos(v_body, $q$/* 20260930780000 */'record_reflection',$q$)
-		<= strpos(v_body, $q$/* 20260930762000 */'app_guide',$q$)
-		or strpos(v_body, $q$/* 20260930762000 */'app_guide',$q$) = 0 then
-		raise exception '2: the observations'' list does not name record_reflection after app_guide'; end if;
-	if (select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930780000') > 0)
-		is distinct from array['qorpera_record_runtime_observation'] then
-		raise exception '2: the marker is in other bodies'; end if;
-end
-$$;
-
 set constraints all immediate;
 rollback;

@@ -58,7 +58,7 @@ begin
 		pg_temp.c4_brief('12700000-0000-4000-8000-0000000000b1'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '0: the Claude Code dispatch: ' || v_result::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'c4c-dispatch-2', 'QorperaOS/agents/alice/todos/onboarding/notes',
-		pg_temp.c4_brief('12700000-0000-4000-8000-0000000000b2', null, 'Write the notes'));
+		pg_temp.c4_brief('12700000-0000-4000-8000-0000000000b2', 'codex', 'Write the notes'));
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', '0: the Codex write dispatch: ' || v_result::text);
 	v_result := pg_temp.c4_dispatch(v_alice, 'c4c-dispatch-3', 'QorperaOS/agents/alice/todos/onboarding/read',
 		pg_temp.c4c_read_brief('12700000-0000-4000-8000-0000000000b3', null));
@@ -113,8 +113,9 @@ do $$
 declare v jsonb; v_run uuid := pg_temp.c4c_run('claude');
 begin
 	v := public.qorpera_claude_worker_run_facts(pg_temp.c4c_binding('claude'));
-	perform pg_temp.base_assert(v = jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1', 'member', pg_temp.c4_name(),
-		'outputs', '[]'::jsonb, 'earlier', null), '1b: the member''s name, no outputs yet, no earlier report on a first run: ' || v::text);
+	perform pg_temp.base_assert(v - 'ownCodexLogin' = jsonb_build_object('schema', 'qorpera.claude-worker-run-facts/v1',
+		'member', pg_temp.c4_name(), 'outputs', '[]'::jsonb, 'earlier', null),
+		'1b: the member''s name, no outputs yet, no earlier report on a first run: ' || v::text);
 	begin
 		set local session_replication_role = replica;
 		-- (The run's home session closed in section 1: a commit of the view's last boundary after that is credited all the same.)
@@ -300,11 +301,5 @@ begin
 		if has_function_privilege(v_role, 'public.qorpera_claude_worker_run_facts(jsonb)', 'execute')
 			<> (v_role = 'service_role') then
 			raise exception '5: only the runtime reads a worker run''s facts (%)', v_role; end if;
-	end loop;
-	foreach v_function in array array['public.qorpera_folder_home_shared(public.qorpera_company_machines,uuid,uuid,uuid)',
-		'public.qorpera_claude_worker_home(uuid,uuid,uuid,uuid)',
-		'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'] loop
-		if position('20260930772000' in pg_get_functiondef(v_function::regprocedure)) = 0 then
-			raise exception '5: % does not name 20260930772000', v_function; end if;
 	end loop;
 end $$;

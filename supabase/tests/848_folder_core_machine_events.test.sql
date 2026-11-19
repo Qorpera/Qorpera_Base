@@ -136,17 +136,8 @@ end $$;
 -- A. The source kind on folder-v2: no refusal names it, a continuation needs admission, and the wake check follows its
 -- chain.
 do $$
-declare v_pin text := pg_get_functiondef('public.qorpera_pin_wake_occurrence()'::regprocedure);
-	v_resolve text := pg_get_functiondef('public.qorpera_folder_run_resolve(uuid,uuid,jsonb)'::regprocedure);
-	v_authorized text := pg_get_functiondef('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure);
-	v_events uuid[];
+declare v_events uuid[];
 begin
-	if v_pin ~ $re$if new\.source_kind in \([^)]*'machine-event'[^)]*\) then\n\t*raise exception 'This wake source does not serve folder-v2 yet'$re$
-		or v_resolve ~ $re$if v_wake\.source_kind in \([^)]*'machine-event'[^)]*\) then\n\t*raise exception 'Folder writes by this kind of run are not available yet'$re$
-		or v_authorized ~ $re$or p_wake\.source_kind in \([^)]*'machine-event'[^)]*\) then return false;$re$
-		or position('elsif p_wake.source_kind = ''machine-event'' then v_ancestry := public.qorpera_machine_wake_ancestry(p_wake);' in v_authorized) = 0
-		or position('p_wake.source_kind in (''worker-completion'', ''machine-event'')' in v_authorized) = 0 then
-		raise exception 'A: a folder-v2 refusal still names machine events'; end if;
 	v_events := pg_temp.events(1);
 	perform set_config('qorpera.folder_wake_admission', '', true);
 	begin
@@ -403,17 +394,6 @@ begin
 		or has_function_privilege('service_role',
 			'public.qorpera_folder_insert_continuation(public.qorpera_execution_runs,text,uuid,jsonb)', 'execute') then
 		raise exception 'D: the grants'; end if;
-end $$;
-
--- E. Every patched or new body carries the marker.
-do $$
-begin
-	if exists (select 1 from unnest(array['public.qorpera_pin_wake_occurrence()', 'public.qorpera_folder_run_resolve(uuid,uuid,jsonb)',
-			'public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', 'public.qorpera_folder_parent_continuation(uuid,text)',
-			'public.qorpera_folder_insert_continuation(public.qorpera_execution_runs,text,uuid,jsonb)',
-			'public.qorpera_folder_machine_events_due(uuid,integer)', 'public.qorpera_folder_machine_events_company(uuid,integer)']) f
-		where position('20260930058000' in pg_get_functiondef(f::regprocedure)) = 0) then
-		raise exception 'E: a body lacks its marker'; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

@@ -51,7 +51,6 @@ export const COMPANY: Record<string, string> = {
 		"{name} er nu en mappe, så denne version kan ikke gendannes.",
 	"You may not change {name}.": "Du må ikke ændre {name}.",
 
-	// The live Company File (app/views/live-company-file.ts)
 	"Retry opening Company File": "Prøv at åbne Virksomhedsfilen igen",
 
 	// Organization (app/views/organization.ts)
@@ -96,4 +95,7 @@ export const COMPANY: Record<string, string> = {
 	"Select an active model account before sending.": "Vælg en aktiv modelkonto, før du sender.",
 	"Agents are paused for a moment while Qorpera updates. Try again shortly.":
 		"Agenterne holder en kort pause, mens Qorpera opdateres. Prøv igen om lidt.",
+	"No name yet": "Intet navn endnu",
+	"the company": "virksomheden",
+	"The company": "Virksomheden",
 };

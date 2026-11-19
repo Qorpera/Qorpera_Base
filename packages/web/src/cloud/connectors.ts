@@ -43,12 +43,10 @@ export const HOSTED_CONNECTORS: ReadonlyArray<{
 	id: HostedConnectorId;
 	label: string;
 	logo: string;
-	/** Whether a typed token is an alternative to signing in with the provider. */
-	token?: true;
 }> = [
 	{ id: "gmail", label: "Gmail", logo: "provider-gmail.svg" },
 	{ id: "google_drive", label: "Google Drive", logo: "provider-drive.svg" },
-	{ id: "github", label: "GitHub", logo: "provider-github.svg", token: true },
+	{ id: "github", label: "GitHub", logo: "provider-github.svg" },
 ];
 
 export interface HostedConnectorConnection {
@@ -416,14 +414,6 @@ export interface WebConnectors {
 	/** Finishes a sign-in this tab started: the broker seals the account only
 	 * for the browser that holds the proof. Resolves to the account label. */
 	finishSignIn(outcome: HostedConnectorReturn, signal?: AbortSignal): Promise<string | null>;
-	/** Captures a typed token for a company connection directly at the broker;
-	 * the token never reaches Supabase. */
-	captureToken(
-		connectorId: HostedConnectorId,
-		token: string,
-		existingSecretId: string | undefined,
-		signal?: AbortSignal,
-	): Promise<void>;
 	/** Grants every operation of the connection to all active agents, including
 	 * future hires. A company connection is always shared; there is no unshare. */
 	grantAllAgents(secretId: string, signal?: AbortSignal): Promise<void>;
@@ -527,15 +517,6 @@ export function createWebConnectors(
 				throw Object.assign(new Error("The sign-in could not be finished."), { reason });
 			}
 			return typeof value.accountLabel === "string" ? value.accountLabel : null;
-		},
-		async captureToken(connectorId, token, existingSecretId, signal) {
-			const trimmed = token.trim();
-			if (!trimmed || trimmed.length > 4096 || /\s/.test(trimmed))
-				throw new Error("That does not look like a token.");
-			const issued = await ticket(connectorId, existingSecretId);
-			const connector = HOSTED_CONNECTORS.find((item) => item.id === connectorId);
-			if (!connector?.token) throw new Error("This service only connects by signing in.");
-			await capture.send(issued, { access_token: trimmed }, signal);
 		},
 		async grantAllAgents(secretId, signal) {
 			signal?.throwIfAborted();

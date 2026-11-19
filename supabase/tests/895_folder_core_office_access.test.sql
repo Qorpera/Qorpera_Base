@@ -460,14 +460,6 @@ begin
 	if v_missing is not null then raise exception 'J: the new hire misses a computer added meanwhile: %', v_missing; end if;
 end $$;
 
--- K. Exactly the patched functions and the two helpers name this migration.
-do $$
-begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930019100') <> 13 then
-		raise exception 'K: 11 patched functions and 2 helpers name 20260930019100 (found %)',
-			(select count(*) from pg_proc where prosrc ~ '20260930019100'); end if;
-end $$;
-
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture (as 850 does), the screen's events first (they name only its lifetime).

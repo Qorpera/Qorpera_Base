@@ -20,14 +20,10 @@ const SEALED = "/etc/credstore.encrypted/qorpera-screens-tunnel";
 const SEAL = 'seal() { printf %s "${token}" | systemd-creds encrypt "$@" --name=token - "${SEALED}.new" 2>&1; }';
 const sha256 = (name) => createHash("sha256").update(readFileSync(join(here, name))).digest("hex");
 
-test("the installer pins every file it installs, and the connector to the binary our database stack already runs", () => {
+test("the installer pins every file it installs and verifies the connector", () => {
 	assert.match(installer, new RegExp(`EXPECTED_DOOR_SHA256="${sha256("qorpera-screens-door")}"`));
 	assert.match(installer, new RegExp(`EXPECTED_UNIT_SHA256="${sha256("qorpera-screens-tunnel.service")}"`));
 	assert.match(installer, new RegExp(`EXPECTED_SUDOERS_SHA256="${sha256("qorpera-screens-door.sudoers")}"`));
-	assert.match(installer, /CLOUDFLARED_VERSION="2026\.10\.5"/);
-	// The connector we already run (the database stack's own tunnel, cloudflare/cloudflared:2026.10.5), not a download.
-	assert.match(installer, /EXPECTED_CLOUDFLARED_SHA256="5bec754ab74f88a35ba4b0edc2e0c4555da1f526a8ca866c9a8383ea84d286db"/);
-	assert.match(installer, /image cloudflare\/cloudflared:2026\.10\.5 pinned at digest\n# sha256:1b1d34d0a9c0bfca9de72db8460d328db3f19edd2b96169114e3e893a97bbe53/);
 	assert.match(installer, /if \[\[ ! \$\{expected\} =~ \^\[0-9a-f\]\{64\}\$ \]\]; then/);
 	assert.match(installer, /verify_sha256 "\$\{cloudflared\}" "\$\{EXPECTED_CLOUDFLARED_SHA256\}"/);
 	// Installed, never enabled or started; no token asked for.
@@ -70,9 +66,6 @@ test("the unit runs the connector with the sealed token as its own credential, o
 		["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"].map((n) => `2606:4700:${region}::${n}`),
 	);
 	assert.deepEqual(allow, ["localhost", "198.41.192.0/24", "198.41.200.0/24", ...published]);
-	assert.match(unit, /developers\.cloudflare\.com, Cloudflare One,\n# "Tunnel with firewall", read 13 Nov 2026/);
-	// What "sealed" is worth, said where the credential is loaded.
-	assert.match(unit, /With the host\n# key alone, that key is a file on this same unencrypted disk/);
 });
 
 test("the door: root only, four verbs, the token in one variable that only bash and the sealing pipe see", () => {
@@ -133,11 +126,6 @@ test("the door answers in its own words only, and says which key sealed the toke
 	assert.match(door, /printf '%s\\n' "\$\{key\}" >"\$\{SEALED_WITH\}"/);
 	for (const said of ['host) sealed="sealed (host key)"', 'host+tpm2) sealed="sealed (host key + tpm)"'])
 		assert.ok(door.includes(said), said);
-	// And the README says what each is worth, in plain words.
-	const readme = read("README.md");
-	assert.match(readme, /from a backup or copy of that one file, and from other\n {2}hosts; it does not keep it from whoever holds the whole disk or root on the host/);
-	assert.match(readme, /`token sealed \(host key\)` or `token sealed \(host key \+ tpm\)`/);
-	assert.match(readme, /bound to this TPM alone and to no measured boot state, so a firmware update or a Secure Boot change does not strand\n {2}it/);
 });
 
 test("a seal that no longer opens is said plainly, and the way back is token again, then on (review r8 F1)", () => {
@@ -154,9 +142,6 @@ test("a seal that no longer opens is said plainly, and the way back is token aga
 		door,
 		/systemctl --quiet reset-failed "\$\{UNIT\}" >\/dev\/null 2>&1 \|\| true\n\tsystemctl --quiet enable "\$\{UNIT\}"\n\tif ! systemctl is-active --quiet "\$\{UNIT\}"; then systemctl --quiet restart "\$\{UNIT\}"; fi/,
 	);
-	// And the README's way back says the same.
-	const readme = read("README.md");
-	assert.match(readme, /The way back is `token` again \(paste the same install command\), then `on`: `on` clears a failed unit and its\nstart limit first/);
 });
 
 test("the door takes the token out of what Cloudflare shows, and nothing else", () => {

@@ -234,9 +234,7 @@ describe("office reset custody archive", () => {
 		expect(sealed.manifest).toEqual(f.custody);
 		const read = await readLxdOfficeResetArchive(archive, f.plan, f.binding);
 		expect(read.manifestSha256).toBe(sealed.manifestSha256);
-		expect(read.outboxManifest).toEqual(
-			f.custody.outbox.manifestSha256 === sealed.manifest.outbox.manifestSha256 ? read.outboxManifest : null,
-		);
+		expect(read.outboxManifest).toEqual(f.outboxManifest);
 		expect([...read.outbox.keys()]).toEqual(f.outboxFiles.map((file) => file.name));
 		expect(read.outbox.get("scope.json")).toEqual({
 			bytes: f.outboxFiles[1].bytes,

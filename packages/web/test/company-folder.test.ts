@@ -20,10 +20,8 @@ import {
 	type CompanyFolderSource,
 } from "../src/app/views/company-folder.ts";
 import { chooseInCompanyFolder } from "../src/app/views/company-folder-choose.ts";
-import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
-import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
-import { deferred, fixture, id, profileA, settle, team, visibleText } from "./fixtures.ts";
+import { deferred, id, settle, visibleText } from "./fixtures.ts";
 
 const me = id(1);
 const other = id(2);
@@ -1017,10 +1015,16 @@ describe("a folder-v2 company's Company File", () => {
 			["Page", "true"],
 			["Source", "false"],
 		]);
-		// The frame asks for its page once it is ready, and gets this one.
 		const send = vi.spyOn(frame.contentWindow!, "postMessage");
 		ready(frame);
-		expect(send).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		frame.dispatchEvent(new Event("load"));
+		await settle();
+		const handed = `<!doctype html><html><head></head><body>${html}</body></html>`;
+		expect(send).toHaveBeenCalledExactlyOnceWith(
+			{ type: "qorpera-page", html: handed, files: [], missing: [], base: "" },
+			"*",
+			[expect.any(MessagePort)],
+		);
 		// Its source, and back to the same frame, which keeps the page's state.
 		views[1]!.click();
 		const source = host.querySelector<HTMLElement>(".files-page-source")!;
@@ -1041,7 +1045,13 @@ describe("a folder-v2 company's Company File", () => {
 		expect(large.getAttribute("sandbox")).toBe("allow-scripts");
 		const sendLarge = vi.spyOn(large.contentWindow!, "postMessage");
 		ready(large);
-		expect(sendLarge).toHaveBeenCalledExactlyOnceWith({ type: "qorpera-page", html }, "*");
+		large.dispatchEvent(new Event("load"));
+		await settle();
+		expect(sendLarge).toHaveBeenCalledExactlyOnceWith(
+			{ type: "qorpera-page", html: handed, files: [], missing: [], base: "" },
+			"*",
+			[expect.any(MessagePort)],
+		);
 		dialog.querySelector<HTMLButtonElement>(".surface-close")!.click();
 		expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
 		// Another file shows as it did; the page's view starts as the page again for the next page.
@@ -1831,81 +1841,6 @@ describe("a folder-v2 company's Company File", () => {
 		expect(visibleText(host.querySelector(".files-status"))).toContain("could not be read just now");
 		await click(host.querySelector(".files-status button"));
 		expect(visibleText(host.querySelector(".files-status"))).toBe("");
-	});
-});
-
-describe("the Company File page", () => {
-	it("offers to try again when the folder can't be opened, and opens it then", async () => {
-		const fake = folderFake();
-		fake.client.list.mockRejectedValueOnce(new Error("offline"));
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
-		const f = fixture(),
-			stop = new AbortController();
-		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
-		const view = new LiveCompanyFileView(company, stop, "key", people);
-		disposers.push(() => view.dispose());
-		document.body.append(view.el);
-		await settle();
-		await settle();
-		const retry = [...view.el.querySelectorAll("button")].find((button) =>
-			button.textContent?.includes("Retry opening Company File"),
-		);
-		expect(retry).toBeDefined();
-		expect(view.el.classList.contains("folder-page")).toBe(false);
-		expect(view.el.classList.contains("files-page")).toBe(false);
-		retry!.click();
-		await settle();
-		await settle();
-		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
-	});
-
-	it("clears what it shows the moment its company ends, and reads nothing after", async () => {
-		vi.useFakeTimers();
-		const fake = folderFake();
-		let hint: ((seq: number) => void) | undefined;
-		const close = vi.fn(async () => {});
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockImplementation((onHint) => {
-			hint = onHint;
-			return { close } as never;
-		});
-		const f = fixture(),
-			stop = new AbortController();
-		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
-		const view = new LiveCompanyFileView(company, stop, "key", people);
-		disposers.push(() => view.dispose());
-		document.body.append(view.el);
-		await settle();
-		await settle();
-		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
-		const lists = fake.client.list.mock.calls.length;
-		stop.abort();
-		expect(view.el.childElementCount).toBe(0);
-		expect(view.el.isConnected).toBe(false);
-		expect(view.el.classList.contains("folder-page")).toBe(false);
-		expect(close).toHaveBeenCalledTimes(1);
-		hint?.(9);
-		await vi.advanceTimersByTimeAsync(120_000);
-		await settle();
-		expect(fake.client.list.mock.calls.length).toBe(lists);
-		expect(fake.client.changes).not.toHaveBeenCalled();
-	});
-
-	it("is the company's folder, with no other File page to choose", async () => {
-		const fake = folderFake();
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
-		const f = fixture(),
-			stop = new AbortController();
-		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
-		const view = new LiveCompanyFileView(company, stop, "key", people);
-		disposers.push(() => view.dispose());
-		document.body.append(view.el);
-		await settle();
-		await settle();
-		expect(view.el.classList.contains("folder-page")).toBe(true);
-		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 	});
 });
 

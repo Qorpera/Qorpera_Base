@@ -52,6 +52,14 @@ describe("parsers", () => {
 		expect(recovery({}, { usage_limit: true }).usageLimit).toBe(true);
 		expect(recovery({}, { usage_limit: false }).usageLimit).toBe(false);
 		expect(recovery({})).not.toHaveProperty("usageLimit");
+		expect(recovery({}, { rate_limited: true }).rateLimited).toBe(true);
+		expect(recovery({}, { rate_limited: false }).rateLimited).toBe(false);
+		expect(recovery({}, { rate_limited: "yes" })).not.toHaveProperty("rateLimited");
+		expect(recovery({})).not.toHaveProperty("rateLimited");
+		expect(recovery({}, { sign_in_refused: true }).signInRefused).toBe(true);
+		expect(recovery({}, { sign_in_refused: false }).signInRefused).toBe(false);
+		expect(recovery({}, { sign_in_refused: "yes" })).not.toHaveProperty("signInRefused");
+		expect(recovery({})).not.toHaveProperty("signInRefused");
 		// Whether a ChatGPT plan pays (20260928379930), and whom the run is for; absent or odd reads as absent.
 		expect(recovery({}, { paid_by_chatgpt_plan: true }).paidByChatgptPlan).toBe(true);
 		expect(recovery({}, { paid_by_chatgpt_plan: "yes" })).not.toHaveProperty("paidByChatgptPlan");

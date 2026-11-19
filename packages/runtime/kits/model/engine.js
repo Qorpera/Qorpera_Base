@@ -716,6 +716,9 @@ box-sizing:border-box;position:relative;display:grid;grid-template-columns:minma
 .mk--bare{padding:clamp(12px,1vw,16px)}
 .mk--bare .mk-title,.mk--bare .mk-line{display:none}
 .mk--bare .mk-head{padding-bottom:0}
+.mk .mk-title,.mk .mk-line{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.mk .mk-head{padding-bottom:0}
+.mk .mk-line .mk-src{display:none}
 .mk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .mk-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .mk-err{margin:4px 0 0;font-size:13px;color:var(--q-muted)}

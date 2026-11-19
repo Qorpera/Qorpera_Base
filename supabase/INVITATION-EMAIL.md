@@ -50,6 +50,8 @@ Creating or rotating the worker key and entering it into Vault are production cr
 - The HTTPS website handoff reads the invitation UUID from the fragment, removes it from browser history, and invokes the registered `qorpera://profile-invitation/<invitation UUID>` desktop route only after an explicit click. Its install link carries no invitation data.
 - Network errors, rate limits, concurrent idempotency conflicts, and provider 5xx responses retry with database-persisted exponential backoff.
 - Invalid sender, recipient, or request errors fail after the current attempt. Retryable deliveries stop automatically after eight attempts; a profile owner or admin can queue them again from profile settings.
+- Each claimed row is read on its own. A row whose content is invalid (recipient, role, expiry) is marked `failed` without a send, and the rest of the batch is still sent; queuing it again fails it again. A row whose invitation or lease id cannot be read is left until its lease expires.
+- Company and inviter names are shortened for the email to 80 graphemes, at a word end, with "…". Names are never refused for length, and emoji or combined letters are never split. The subject is shortened the same way to 200 graphemes.
 - A provider success followed by a lost database response leaves the lease unresolved. The next worker retries with the same idempotency key and reconciles the provider result.
 - Accepting, declining, cancelling, or expiring an invitation cascades to its outbox row.
 

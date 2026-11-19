@@ -192,6 +192,15 @@ export function personAvatar(name: string, identity: string): HTMLElement {
 	return avatar;
 }
 
+export function growToText(field: HTMLTextAreaElement): void {
+	const scrolled: [HTMLElement, number][] = [];
+	for (let at = field.parentElement; at; at = at.parentElement)
+		if (at.scrollTop > 0) scrolled.push([at, at.scrollTop]);
+	field.style.height = "auto";
+	if (field.scrollHeight > 0) field.style.height = `${field.scrollHeight}px`;
+	for (const [at, top] of scrolled) at.scrollTop = top;
+}
+
 export function shortId(id: string): string {
 	return id.slice(0, 8);
 }
@@ -506,8 +515,14 @@ export function companyColor(seed: string): string {
 
 /** A company's logo: its own, laid over its figure once the logo store has it (ui/company-logos.ts), else the figure
  * derived from its id. `seed` is the company's id. */
-export function companyLogo(seed: string, className = ""): HTMLElement {
-	const logo = figureElement(companyFigure(seed), companyColor(seed), { still: true });
+export function companyLogo(seed: string, className = "", unnamed = false): HTMLElement {
+	const logo = unnamed
+		? h(
+				"span",
+				{ class: "figure is-unnamed", "aria-hidden": "true" },
+				h("span", { class: "company-logo-unknown" }, "?"),
+			)
+		: figureElement(companyFigure(seed), companyColor(seed), { still: true });
 	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
 	attachCompanyLogo(logo, seed);
 	return logo;

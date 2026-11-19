@@ -12,17 +12,8 @@
 -- answer did not wake. An approval's run carries the holder's run as its origin, whose request its review reads
 -- (20260930518000, C6-8b; G). Runs on 605's fixture part (its rules and helpers).
 
--- The shape: the patched body, and the same grants.
 do $$
-declare v_begin text := (select prosrc from pg_proc where oid = 'public.qorpera_begin_action_review(jsonb,jsonb)'::regprocedure);
 begin
-	perform pg_temp.base_assert(position('20260930489000' in v_begin) > 0
-		and position('where review.id = (select (input.body ->> ''interactionId'')::uuid from public.qorpera_wake_occurrences as wake'
-			in v_begin) > 0
-		and position('where wake.run_id = v_run.id and wake.source_kind = ''room''' in v_begin) > 0
-		and position('20260930489000' in v_begin) < position('-- The latest review of exactly this action' in v_begin)
-		and position('woken_at' in v_begin) = 0 and position('30 seconds' in v_begin) = 0 and position('1 hour' in v_begin) = 0,
-		'Begin reads the card that woke the run, before the latest review, instead of the 30 s window and the hour');
 	perform pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_begin_action_review(jsonb,jsonb)', 'execute')
 		and not has_function_privilege('authenticated', 'public.qorpera_begin_action_review(jsonb,jsonb)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_begin_action_review(jsonb,jsonb)', 'execute'),

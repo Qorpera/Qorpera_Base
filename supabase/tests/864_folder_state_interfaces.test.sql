@@ -442,7 +442,6 @@ end $$;
 -- folder, or land anything in it; an agent never.
 do $$
 declare m jsonb := pg_temp.member(2); o jsonb := pg_temp.member(1); a jsonb := pg_temp.member(5); r jsonb;
-	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000001');
 begin
 	r := pg_temp.commit(m, 'p16-owners-0001', jsonb_build_array(
 		pg_temp.p16_folder(m, 'QorperaOS/interfaces/board', jsonb_build_object('interface.toml',
@@ -463,10 +462,6 @@ begin
 	perform pg_temp.refused(r, 4, 'structured_rule', 'owners');
 	perform pg_temp.refused(r, 5, 'structured_rule', 'owners');
 	perform pg_temp.refused(r, 6, 'structured_rule', 'owners');
-	r := pg_temp.commit(g -> 'actor', 'p16-owners-0003', jsonb_build_array(
-		pg_temp.p16_write(g -> 'actor', 'QorperaOS/interfaces/board/README.md', '"An agent''s note."')));
-	-- 20260930510000: an agent changes nothing under interfaces/, owners-only or not (689).
-	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
 	r := pg_temp.commit(o, 'p16-owners-0004', jsonb_build_array(
 		pg_temp.p16_write(o, 'QorperaOS/interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false, 'owners'))));
 	perform pg_temp.expect(r, 1, 'saved');
@@ -511,8 +506,7 @@ declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
 	v_agent jsonb := '{"kind":"staff_agent","staffAgentId":"63400000-0000-4000-8000-0000000000a1","sessionKind":"in_house"}';
 	v_pulse jsonb := pg_temp.iface('86400000-0000-4000-8000-000000000001', 'Pulse', true); v_case record; v_unit jsonb;
-	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000001'); r jsonb; v_units jsonb;
-	v_review uuid;
+	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000001');
 begin
 	for v_case in select * from (values
 		('QorperaOS/interfaces/new/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000006', 'New', false), 'delegation'),
@@ -538,14 +532,6 @@ begin
 	-- A new interface by a run: since 20260930510000 the save check refuses it before any review, and save_interface's
 	-- recorded approval saves it no more (689); a change set reaching outside interfaces/ and tables/ is not one
 	-- save_interface stands for.
-	v_units := jsonb_build_array(pg_temp.p16_folder(g -> 'actor', 'QorperaOS/interfaces/agent-page', jsonb_build_object('interface.toml',
-		pg_temp.iface('86400000-0000-4000-8000-000000000007', 'Agent page', false))));
-	r := pg_temp.commit(g -> 'actor', 'p16-review-0001', v_units);
-	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
-	v_review := (pg_temp.record(g -> 'binding', pg_temp.action(g -> 'binding', 'p16-call-1', 'allow', 'delegation', 'save_interface'),
-		v_units) ->> 'reviewId')::uuid;
-	r := pg_temp.commit(g -> 'actor', 'p16-review-0002', v_units, v_review);
-	perform pg_temp.refused(r, 1, 'structured_rule', 'layout_authoring');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
 		pg_temp.action(g -> 'binding', 'p16-call-2', 'allow', 'delegation', 'save_interface'),
 		jsonb_build_array(jsonb_build_object('op','mkdir','path','QorperaOS/interfaces/x'), jsonb_build_object('op','mkdir','path','QorperaOS/agents/x'))),

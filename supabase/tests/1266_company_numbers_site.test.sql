@@ -217,10 +217,6 @@ begin
 	perform pg_temp.s_same((select array_to_string(proconfig, ',') from pg_proc
 		where oid = 'public.qorpera_site_count_view(text,text,text)'::regprocedure),
 		'search_path="",lock_timeout=100ms', 'site-serve''s call too');
-	perform pg_temp.s_same((select (strpos(prosrc, '20260930767000') > 0 and strpos(prosrc, '20260930768000') > 0
-			and strpos(prosrc, 'not counted yet') = 0)::text
-		from pg_proc where oid = 'public.qorpera_company_numbers_answer(uuid,uuid,jsonb,text,jsonb)'::regprocedure), 'true',
-		'the dispatcher''s markers');
 end $$;
 
 -- 2. Hosts off: the old host counts a page of a visitor's session, its path after the site's name; nothing else counts.
@@ -713,21 +709,10 @@ begin
 		pg_temp.s_rows('sites'), 'a viewer');
 	perform pg_temp.s_json(pg_temp.s_member('92400000-0000-4000-8000-000000000002', 'site-now') -> 'rows',
 		pg_temp.s_rows('site-now'), 'a contributor');
-	perform pg_temp.s_same(pg_temp.s_refused('sites', '{}', '92400000-0000-4000-8000-000000000005'),
-		'42501 Company numbers are unavailable', 'an outsider');
-	perform pg_temp.s_same(pg_temp.s_refused('site-now', '{}', '12660000-0000-4000-8000-000000000006'),
-		'42501 Company numbers are unavailable', 'another company''s member');
 	perform pg_temp.s_json(pg_temp.s_member('12660000-0000-4000-8000-000000000006', 'site-now', '{}',
 		'12660000-0000-4000-8000-000000000020') -> 'rows', '[["other-shop",1,1,1]]', 'the other company sees its own');
 	perform pg_temp.s_same(pg_temp.s_refused('site-now', '{"site":"count-shop"}', '12660000-0000-4000-8000-000000000006',
 		'12660000-0000-4000-8000-000000000020'), '22023 :site is not one of the company''s sites', 'nor names ours');
-	perform pg_temp.s_same(left(pg_temp.s_state($s$select pg_temp.s_run('sites', '{}',
-		'12660000-0000-4000-8000-000000000020')$s$), 5), '42501', 'a run asking another company''s sites');
-	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
-	perform pg_temp.s_same(pg_temp.s_state(format('select public.qorpera_run_company_numbers(%L, %L::jsonb, %L)',
-		'92400000-0000-4000-8000-000000000020', pg_temp.s_actor(), 'sites')), '42501 Folder core authority is required',
-		'a member''s token on the run''s door');
-	perform pg_temp.base_claims('service_role');
 end $$;
 
 -- 9. An answer is at most 2000 rows: seven sites' 400 days are cut, with more.

@@ -6,7 +6,7 @@ app folder and are named by their path, such as `pictures/a.webp`. Text over its
 ## Top level
 
 - `lang`: language code, such as `"da"`. `mode`: `"scale"`, `"choose"` or `"wall"`.
-- `title` (40) and `line` (60): the page's name and one quiet line. No other text on the page.
+- `title` (40) and `line` (60): read only by screen readers; the page draws no title block. No other text on the page.
 - `words`: the page's own words in your language. Keys: `assumed`, `unknown`, `notKnown`, `all`, `close`, `source`,
   `choose`, `recommended`, `chosen`, `saving`, `back`, `colours`, `type`, `film`, `previous`, `next`, `keep`, `drop`, `empty`,
   `tell`, `told`.
@@ -30,8 +30,10 @@ app folder and are named by their path, such as `pictures/a.webp`. Text over its
 - One panel per item, in its own colours. The page draws no title block: `title` and `line` are read only by screen
   readers, so put nothing there a member must see.
 - When every item has a `poster` or a `video`, the pictures are the page: each as large as the screen allows, side by
-  side or stacked, with the logo, name and line small under it. Give every item one, in the same shape, and make it
-  show the direction itself. Without them, the panel shows the logo and name large.
+  side or stacked, with the logo, name and line small under it. Give every item one, in the same shape: the company's
+  product in its world in that look, rendered or generated, with the feeling the founders' own words name. The poster
+  carries the direction; the fields below fill the page in and are not the list of what to design. Without them, the
+  panel shows the logo and name large.
 - Item: `line` (60), `logo`, `background` (hex), `palette` (up to 5
   `{"name" (16), "hex"}`), `poster` (a 16:10 still), `video` (mp4, plays muted on hover), `gallery` (up to 8
   `{"src", "caption" (18)}`), `type` (`{"name", "family": a CSS font stack of fonts the device has, "sample" (44)}`),

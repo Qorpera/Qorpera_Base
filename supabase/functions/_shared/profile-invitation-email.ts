@@ -31,9 +31,21 @@ export interface InvitationEmailProvider {
 	): Promise<{ messageId: string }>;
 }
 
+export type InvitationDeliveryLease = Pick<ProfileInvitationDeliveryJob, "invitationId" | "leaseId">;
+
+export interface UnusableInvitationDeliveryJob extends InvitationDeliveryLease {
+	message: string;
+}
+
+export interface ClaimedInvitationDeliveries {
+	jobs: ProfileInvitationDeliveryJob[];
+	unusable: UnusableInvitationDeliveryJob[];
+	unreadable: number;
+}
+
 export interface InvitationDeliveryStore {
 	complete(job: ProfileInvitationDeliveryJob, providerMessageId: string): Promise<void>;
-	fail(job: ProfileInvitationDeliveryJob, message: string, retryable: boolean): Promise<void>;
+	fail(lease: InvitationDeliveryLease, message: string, retryable: boolean): Promise<void>;
 }
 
 export interface InvitationDeliveryBatchResult {
@@ -42,7 +54,12 @@ export interface InvitationDeliveryBatchResult {
 	retrying: number;
 	failed: number;
 	completionPending: number;
+	unreadable: number;
 }
+
+export const SHOWN_NAME_LENGTH = 80;
+export const SUBJECT_LENGTH = 200;
+const CLAIMED_NAME_LIMIT = 4096;
 
 export class InvitationEmailSendError extends Error {
 	readonly retryable: boolean;
@@ -90,24 +107,61 @@ function role(value: unknown): InvitationDeliveryRole {
 	return value as InvitationDeliveryRole;
 }
 
-export function parseProfileInvitationDeliveryJobs(value: unknown): ProfileInvitationDeliveryJob[] {
-	if (!Array.isArray(value) || value.length > 50) throw new Error("Invalid invitation delivery job list");
-	return value.map((entry) => {
+export function shownName(value: string, maximum = SHOWN_NAME_LENGTH): string {
+	const segments = Array.from(
+		new Intl.Segmenter("en", { granularity: "grapheme" }).segment(value.replace(/\s+/g, " ").trim()),
+		(part) => part.segment,
+	);
+	if (segments.length <= maximum) return segments.join("");
+	const cut = segments.slice(0, maximum - 1).join("");
+	const lastSpace = cut.lastIndexOf(" ");
+	const wordEnd = lastSpace >= cut.length / 2 ? cut.slice(0, lastSpace) : cut;
+	return `${wordEnd.replace(/[\s\p{P}]+$/u, "") || cut}…`;
+}
+
+function name(value: unknown, label: string): string {
+	return shownName(text(value, label, CLAIMED_NAME_LIMIT));
+}
+
+function deliveryJob(entry: unknown): ProfileInvitationDeliveryJob {
+	const input = record(entry, "invitation delivery job");
+	const recipientEmail = text(input.recipient_email, "recipient email", 320).toLowerCase();
+	if (!EMAIL_PATTERN.test(recipientEmail)) throw new Error("Invalid recipient email");
+	return {
+		invitationId: uuid(input.invitation_id, "invitation id"),
+		profileId: uuid(input.profile_id, "profile id"),
+		profileName: name(input.profile_name, "profile name"),
+		recipientEmail,
+		role: role(input.role),
+		invitedByDisplayName: name(input.invited_by_display_name, "inviter display name"),
+		expiresAt: timestamp(input.expires_at, "invitation expiry"),
+		attemptCount: integer(input.attempt_count, "attempt count"),
+		leaseId: uuid(input.lease_id, "lease id"),
+	};
+}
+
+function deliveryLease(entry: unknown): InvitationDeliveryLease | undefined {
+	try {
 		const input = record(entry, "invitation delivery job");
-		const recipientEmail = text(input.recipient_email, "recipient email", 320).toLowerCase();
-		if (!EMAIL_PATTERN.test(recipientEmail)) throw new Error("Invalid recipient email");
-		return {
-			invitationId: uuid(input.invitation_id, "invitation id"),
-			profileId: uuid(input.profile_id, "profile id"),
-			profileName: text(input.profile_name, "profile name", 120),
-			recipientEmail,
-			role: role(input.role),
-			invitedByDisplayName: text(input.invited_by_display_name, "inviter display name", 256),
-			expiresAt: timestamp(input.expires_at, "invitation expiry"),
-			attemptCount: integer(input.attempt_count, "attempt count"),
-			leaseId: uuid(input.lease_id, "lease id"),
-		};
-	});
+		return { invitationId: uuid(input.invitation_id, "invitation id"), leaseId: uuid(input.lease_id, "lease id") };
+	} catch {
+		return undefined;
+	}
+}
+
+export function parseProfileInvitationDeliveryJobs(value: unknown): ClaimedInvitationDeliveries {
+	if (!Array.isArray(value) || value.length > 50) throw new Error("Invalid invitation delivery job list");
+	const claimed: ClaimedInvitationDeliveries = { jobs: [], unusable: [], unreadable: 0 };
+	for (const entry of value) {
+		try {
+			claimed.jobs.push(deliveryJob(entry));
+		} catch (error) {
+			const lease = deliveryLease(entry);
+			if (!lease) claimed.unreadable += 1;
+			else claimed.unusable.push({ ...lease, message: error instanceof Error ? error.message : String(error) });
+		}
+	}
+	return claimed;
 }
 
 function escapeHtml(value: string): string {
@@ -151,9 +205,11 @@ export function buildProfileInvitationEmail(
 		dateStyle: "long",
 		timeZone: "UTC",
 	}).format(new Date(job.expiresAt));
-	const subject = `${job.invitedByDisplayName} invited you to ${job.profileName} on Qorpera`.replace(/[\r\n]/g, " ");
+	const unnamed = job.profileName === "No name yet";
+	const company = unnamed ? "their new company" : job.profileName;
+	const subject = shownName(`${job.invitedByDisplayName} invited you to ${company} on Qorpera`, SUBJECT_LENGTH);
 	const textBody = [
-		`${job.invitedByDisplayName} invited you to ${job.profileName} on Qorpera.`,
+		`${job.invitedByDisplayName} invited you to ${company} on Qorpera.`,
 		role,
 		`Sign in or create your account as ${job.recipientEmail}. Qorpera shows the invitation before you choose whether to accept it.`,
 		`See the invitation: ${invitationUrl.href}`,
@@ -161,13 +217,13 @@ export function buildProfileInvitationEmail(
 	].join("\n\n");
 	const html = invitationHtml(
 		escapeHtml(job.invitedByDisplayName),
-		escapeHtml(job.profileName),
+		escapeHtml(company),
 		escapeHtml(job.recipientEmail),
 		escapeHtml(role),
 		escapeHtml(expiry),
 		escapeHtml(invitationUrl.href),
 	);
-	return { subject: subject.slice(0, 240), text: textBody, html, invitationUrl: invitationUrl.href };
+	return { subject, text: textBody, html, invitationUrl: invitationUrl.href };
 }
 
 function deliveryError(error: unknown): { message: string; retryable: boolean } {
@@ -179,18 +235,23 @@ function deliveryError(error: unknown): { message: string; retryable: boolean } 
 }
 
 export async function deliverProfileInvitationBatch(
-	jobs: readonly ProfileInvitationDeliveryJob[],
+	{ jobs, unusable, unreadable }: ClaimedInvitationDeliveries,
 	invitationUrlBase: string,
 	provider: InvitationEmailProvider,
 	store: InvitationDeliveryStore,
 ): Promise<InvitationDeliveryBatchResult> {
 	const result: InvitationDeliveryBatchResult = {
-		claimed: jobs.length,
+		claimed: jobs.length + unusable.length + unreadable,
 		delivered: 0,
 		retrying: 0,
 		failed: 0,
 		completionPending: 0,
+		unreadable,
 	};
+	for (const lease of unusable) {
+		await store.fail(lease, lease.message.slice(0, 1000), false);
+		result.failed += 1;
+	}
 	for (const job of jobs) {
 		let providerMessageId: string;
 		try {

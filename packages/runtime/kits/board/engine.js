@@ -60,6 +60,7 @@ body{margin:0}
 .bk--bare{--pad:clamp(12px,1vw,16px)}
 .bk--bare .bk-titles{display:none}
 .bk--bare .bk-head:not(:has(.bk-chips)){display:none}
+.bk .bk-titles,.bk .bk-head:not(:has(.bk-chips)){position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .bk--bare.bk-choose{padding-top:0}
 .bk-title{margin:0;font-size:17px;font-weight:650;line-height:1.3;letter-spacing:-.005em}
 .bk-line{margin:3px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
@@ -181,7 +182,6 @@ body{margin:0}
 
 /* choose */
 .bk-choose{padding-top:0;padding-bottom:0;gap:clamp(14px,2.2vh,22px)}
-.bk-choose>.bk-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .bk-panels{flex:1 1 auto;display:flex;min-height:480px;margin:0 calc(-1 * var(--pad))}
 .bk-panel,.bk-world{--bg:var(--q-surface);--ink:var(--q-text);--soft:color-mix(in srgb,var(--ink) 66%,var(--bg));--faint:color-mix(in srgb,var(--ink) 12%,transparent)}
 .bk-panel{flex:1 1 0;min-width:0;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:16px;padding:clamp(18px,2.3vw,30px) clamp(18px,2.3vw,30px) 0;background:var(--bg);color:var(--ink);text-align:center;overflow:hidden;transition:flex-grow .65s var(--ease),opacity .45s,filter .45s}

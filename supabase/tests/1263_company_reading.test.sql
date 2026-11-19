@@ -91,9 +91,9 @@ begin
 		and not has_function_privilege('anon', 'public.qorpera_read_company_standing(uuid)', 'EXECUTE')
 		and not has_function_privilege('service_role', 'public.qorpera_read_company_standing(uuid)', 'EXECUTE'),
 		'the standing is a member''s read');
-	perform pg_temp.base_assert((select bool_and(prosecdef and proconfig = array['search_path=""'] and prosrc like '%20260930765000%')
+	perform pg_temp.base_assert((select bool_and(prosecdef and proconfig = array['search_path=""'])
 		from pg_proc where oid in ('public.qorpera_describe_company_senses(jsonb)'::regprocedure,
-			'public.qorpera_read_company_standing(uuid)'::regprocedure)), 'definer reads with the marker');
+			'public.qorpera_read_company_standing(uuid)'::regprocedure)), 'definer reads');
 end $$;
 
 -- 2. Nothing waits: the company runs.

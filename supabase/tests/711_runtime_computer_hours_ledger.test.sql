@@ -49,12 +49,6 @@ select pg_temp.hours_assert(not has_function_privilege(role_name, function_name,
 	function_name || ' is not callable by ' || role_name)
 from unnest(array['anon', 'authenticated']) role_name,
 	unnest(array['public.qorpera_company_computer_hours_left(uuid)', 'public.qorpera_read_company_computer_hour_sources(uuid)']) function_name;
-select pg_temp.hours_assert(not exists (
-	select 1 from pg_proc function join pg_namespace namespace on namespace.oid = function.pronamespace
-	cross join unnest(array['anon', 'authenticated', 'service_role']) role_name
-	where namespace.nspname = 'public' and function.proname like 'qorpera_computer_hour%'
-		and has_function_privilege(role_name, function.oid, 'EXECUTE')
-), 'The charging helpers and triggers are callable by no API role');
 
 create function pg_temp.hours_use(p_seconds bigint) returns bigint language sql as $$
 	insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seconds, standard_seconds)

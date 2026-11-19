@@ -9,18 +9,18 @@ import {
 import { bytes, cut, halfCharacter, shown, unseen } from "./code-words.ts";
 import { CodingJsonSyntaxError, parseCodingJson } from "./coding-setup.ts";
 
-export { CODE_CHECKS_FILE, type CodeCommitFile };
+export type { CodeCommitFile };
 
 /** A repository's checks (own code storage, step 3): the commands Qorpera runs on a clean copy of what would go into
  * its default branch, before it goes in. This file holds what is pure of them: the checks file's rules, the gate, the
  * row's value for a run that passed, and the words a failed turn reports. From step 4 the file may also say where the
  * checks leave the repository's website (`site`; its rules and commands are `code-site.ts`'). */
 
-export const MAX_CODE_CHECKS_FILE_BYTES = 16 * 1024;
-export const MAX_CODE_CHECKS = 20;
-export const CODE_CHECK_DEFAULT_SECONDS = 600;
-export const CODE_CHECK_MAX_SECONDS = 1800;
-export const CODE_CHECKS_TOTAL_SECONDS = 3600;
+const MAX_CODE_CHECKS_FILE_BYTES = 16 * 1024;
+const MAX_CODE_CHECKS = 20;
+const CODE_CHECK_DEFAULT_SECONDS = 600;
+const CODE_CHECK_MAX_SECONDS = 1800;
+const CODE_CHECKS_TOTAL_SECONDS = 3600;
 const CODE_CHECK_MIN_SECONDS = 10;
 const MAX_RUN_BYTES = 4096;
 const MAX_CWD_BYTES = 300;
