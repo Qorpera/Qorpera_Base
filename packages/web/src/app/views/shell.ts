@@ -1,4 +1,4 @@
-import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
+import { type AppManifest, OWED_APPS } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
 import {
 	APP_GROUP_NAME_LIMIT,
@@ -1903,10 +1903,6 @@ function setAppsOpen(parts: RailParts, profileId: string, open: boolean): void {
 	}
 }
 
-/** The apps that are owed views, at their fixed folders (company views step 4, DESIGN-4.md: `apps/products`,
- * `apps/money`, `apps/ads`), in this order. The folder name is never shown; the app's own name is. */
-export const OWED_APPS = ["products", "money", "ads"] as const;
-
 /** What the owed row shows: each live website Qorpera did not take down, then each owed app that is made (its app.toml
  * read), whether or not it is posted: a view that is not made yet shows nothing. A concept is never one. */
 export function owedViews(
@@ -1918,7 +1914,7 @@ export function owedViews(
 		websites: sites.filter((site) => site.kind === "files" && site.state === "live" && !takenDown.has(site.id)),
 		apps: OWED_APPS.flatMap((name) => {
 			const app = apps.find((entry) => entry.name === name);
-			return app?.manifest && !app.manifest.concept ? [app] : [];
+			return app?.manifest && !app.manifest.concept && app.manifest.kit !== "program" ? [app] : [];
 		}),
 	};
 }

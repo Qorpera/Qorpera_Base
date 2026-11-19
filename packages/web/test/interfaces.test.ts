@@ -496,6 +496,9 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			controller.store.set({ apps: [app("products", "Shoes", { concept: true })], siteList: [] });
 			draw();
 			expect(owedRow(element).hidden).toBe(true);
+			controller.store.set({ apps: [app("money", "Money", { kit: "program" })] });
+			draw();
+			expect(owedRow(element).hidden).toBe(true);
 		});
 
 		it("shows the four windows for an owed view alone", () => {

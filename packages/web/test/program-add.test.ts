@@ -177,6 +177,10 @@ describe("what a dropped file is", () => {
 		expect(programFolderName("Lagerliste", new Set(["lagerliste", "lagerliste-2"]))).toBe("lagerliste-3");
 		expect(programFolderName("Kø på Ærø", new Set())).toBe("koe-paa-aeroe");
 		expect(programFolderName("!!!", new Set())).toBe("program");
+		expect(programFolderName("Money", new Set())).toBe("money-2");
+		expect(programFolderName("Products", new Set(["products-2"]))).toBe("products-3");
+		expect(programFolderName("Ads", new Set())).toBe("ads-2");
+		expect(programFolderName("Moneybox", new Set())).toBe("moneybox");
 	});
 
 	it("numbers a member's versions 1, 2 and on: the next whole number not kept", () => {
