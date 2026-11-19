@@ -132,10 +132,12 @@ select pg_temp.file_wake_replace('public.qorpera_folder_file_wake_readable(publi
 select pg_temp.file_wake_replace('public.qorpera_folder_erasure_step(integer,integer,integer)', array[
 	E'join public.qorpera_wake_occurrences w on w.source_kind = \'company-file\' and w.source_id = (b ->> \'commitId\')::uuid\n',
 	E'join public.qorpera_wake_occurrences w on w.source_kind = \'company-file\' and (w.source_id = (b ->> \'commitId\')::uuid\n'
-	|| E'\t\t\t\tor w.payload -> \'folded\' @> jsonb_build_array(jsonb_build_object(\'commitId\', (b ->> \'commitId\')::uuid)))\n',
+	|| E'\t\t\t\tor (w.payload ? \'folded\'\n'
+	|| E'\t\t\t\t\tand w.payload -> \'folded\' @> jsonb_build_array(jsonb_build_object(\'commitId\', (b ->> \'commitId\')::uuid))))\n',
 	E'where w.source_kind = \'company-file\' and w.source_id = v_commit.id and w.run_id is not null\n',
 	E'where w.source_kind = \'company-file\' and w.run_id is not null and (w.source_id = v_commit.id\n'
-	|| E'\t\t\t\t\t\t\tor w.payload -> \'folded\' @> jsonb_build_array(jsonb_build_object(\'commitId\', v_commit.id)))\n']);
+	|| E'\t\t\t\t\t\t\tor (w.payload ? \'folded\'\n'
+	|| E'\t\t\t\t\t\t\t\tand w.payload -> \'folded\' @> jsonb_build_array(jsonb_build_object(\'commitId\', v_commit.id))))\n']);
 
 select pg_temp.file_wake_replace('public.qorpera_folder_listen_company(uuid,integer)', array[
 	E'or (v_routine.max_occurrences is not null and public.qorpera_routine_occurrence_count(v_routine.id)',
