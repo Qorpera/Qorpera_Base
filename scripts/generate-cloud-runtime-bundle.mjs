@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025899_runtime_bundle_activation_v258.sql";
-const activationVersion = 258;
-const previousActivationVersion = 257;
-const previousActivationSha256 = "eab37cd3f22752dc574f7e9b08d33d86e16c17ba19e001298d69a60daed47128";
+const activation = "supabase/migrations/20260929025999_runtime_bundle_activation_v259.sql";
+const activationVersion = 259;
+const previousActivationVersion = 258;
+const previousActivationSha256 = "f2741acd0a00d6faf6fa9b9911675088e146fb566dcb99247c7de97187efe321";
 const activationRequires = Object.freeze([
 	[
-		"20260930793000_claude_login_usage",
-		"#1909 (Claude login usage): bundle 258's run host records a Claude Code worker's last rate_limit_event through the host call qorpera_record_claude_run_usage, whose SQL row and function 793000 adds; without it the call is refused at the path gateway",
-		"to_regprocedure('public.qorpera_record_claude_run_usage(jsonb,jsonb)') is not null and exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_record_claude_run_usage' and scope = 'binding')",
+		"20260930804000_several_claude_logins",
+		"#1947 (several Claude logins): bundle 259's run host records which limit refused a Claude Code run (limitType, Claude Code's rateLimitType) next to limitResetAt; qorpera_claude_usage_valid accepts that key only once 804000 applied, and without it the run's usage is refused and not recorded",
+		"position('limitType' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_claude_usage_valid(jsonb)')), '')) > 0 and to_regprocedure('public.qorpera_use_claude_login(uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

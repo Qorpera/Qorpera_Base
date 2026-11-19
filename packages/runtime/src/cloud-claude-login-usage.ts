@@ -11,6 +11,7 @@ export interface ClaudeLoginUsage {
 	readonly observedAt: string;
 	readonly windows: readonly ClaudeUsageWindow[];
 	readonly limitResetAt?: string;
+	readonly limitType?: string;
 }
 
 export type ClaudeResetKind = "session" | "weekly" | "fable" | "full";
@@ -92,7 +93,15 @@ export function claudeUsageFromRateLimitInfo(value: unknown, now = new Date()): 
 	];
 	if (!read.length) return undefined;
 	const limitResetAt = info?.status === "rejected" ? instant(info.resetsAt) : undefined;
-	return { observedAt: now.toISOString(), windows: read, ...(limitResetAt ? { limitResetAt } : {}) };
+	const limitType =
+		typeof info?.rateLimitType === "string" && /^[a-z0-9_]{1,40}$/.test(info.rateLimitType)
+			? info.rateLimitType
+			: undefined;
+	return {
+		observedAt: now.toISOString(),
+		windows: read,
+		...(limitResetAt ? { limitResetAt, ...(limitType ? { limitType } : {}) } : {}),
+	};
 }
 
 function modelName(value: unknown): string | undefined {
