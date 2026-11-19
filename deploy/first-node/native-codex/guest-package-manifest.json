@@ -92,8 +92,8 @@
     },
     {
       "file": "qorpera-claude-home-shell.mjs",
-      "bytes": 3187,
-      "sha256": "03d1827bc96682269d71842eba8321b71af3d84dbea22364eec570f5afdf9180"
+      "bytes": 4949,
+      "sha256": "10fdda8a69a8c54c66c1e00b883f9248e6f182966cd72c511634be9c0cf60b16"
     },
     {
       "file": "qorpera-company-runner.service",
@@ -152,8 +152,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 5500517,
-      "sha256": "7616128c95443d059993db758951da7dea03d698964cc258634bd601322d72b4"
+      "bytes": 5556188,
+      "sha256": "0e8e88aafd363701649de7def56275db09df0b738bc372b60d7f5247a18d7afe"
     },
     {
       "file": "qorpera-native-provider-host.service",
