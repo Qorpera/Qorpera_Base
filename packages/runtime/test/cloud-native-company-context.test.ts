@@ -2114,7 +2114,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "83618e1bb2375654fa9f61bfa66f3dda71840193ddca4683948e3de4da4e7000",
+			instructions: "6abeeac66e1b42b32dd65327628ad3d6a92401931e4c34c99e7b5895364a09ad",
 			prompt: "8d4de0aa97c4fd1b1e41b05fc0f4eaa49296049c3d0c7c476a955d015db99df0",
 		},
 	],
@@ -2122,7 +2122,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "33b7fa81adbffcbafdc44b99d6deffc391d0ba54dc9033f001908fb32dcd2b3e",
+			instructions: "06795ee23938070425160ed3a509ec0870c540a9c405e2ead51a338938a232e4",
 			prompt: "44a41b632be600e8f1070908278c1a70e1b044e95c40f957a5b2d5b81d682bf1",
 		},
 	],
@@ -2130,7 +2130,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "83618e1bb2375654fa9f61bfa66f3dda71840193ddca4683948e3de4da4e7000",
+			instructions: "6abeeac66e1b42b32dd65327628ad3d6a92401931e4c34c99e7b5895364a09ad",
 			prompt: "9cb69c8a1cdf1d2bca1865206e55fb2efb05db9fa5333ad636bb07c78861cfb0",
 		},
 	],
