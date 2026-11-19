@@ -43,17 +43,144 @@ export interface WebNativeProviderLogin {
 	submitCode?: (code: string, signal?: AbortSignal) => Promise<"completed" | "saving">;
 }
 
-/** A member's Claude login (20260930564000): their own, used only for coding sessions they start. */
 export interface WebClaudeLogin {
 	loginId: string;
 	providerAccountEmail?: string;
 	createdAt: string;
 	clientConnectionId: string;
+	inUse?: boolean;
+	usedUpUntil?: string;
+	usage?: WebClaudeUsage;
+	resets?: WebClaudeResets;
+	lastReset?: WebClaudeLastReset;
 }
 export interface WebClaudeLogins {
 	/** Whether this member may sign in with Claude in this company now. */
 	signInOpen: boolean;
+	readable?: boolean;
 	logins: readonly WebClaudeLogin[];
+}
+
+export type WebClaudeResetKind = "session" | "weekly" | "fable" | "full";
+export interface WebClaudeUsage {
+	observedAt: string;
+	windows: readonly {
+		id: "five_hour" | "seven_day" | "seven_day_model";
+		label: string;
+		usedPercent: number;
+		resetAt?: string;
+	}[];
+	limitResetAt?: string;
+}
+export interface WebClaudeResetEntry {
+	kind: WebClaudeResetKind | null;
+	left: number;
+	refills: string | null;
+	weekStays: string | null;
+	useBy: string | null;
+	usable: "now" | "at_limit";
+}
+export interface WebClaudeResets {
+	observedAt: string;
+	entries: readonly WebClaudeResetEntry[];
+}
+export interface WebClaudeLastReset {
+	requestId: string;
+	kind: WebClaudeResetKind;
+	outcome: "reset" | "failed" | "unconfirmed";
+	left: number | null;
+	at: string;
+}
+
+const CLAUDE_RESET_KINDS: readonly WebClaudeResetKind[] = ["session", "weekly", "fable", "full"];
+const instant = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
+const shortText = (value: unknown): value is string =>
+	typeof value === "string" && value.length > 0 && value.length <= 120;
+
+function parseClaudeUsage(value: unknown): WebClaudeUsage | undefined {
+	const input = value as Record<string, unknown> | null;
+	if (!input || typeof input !== "object" || !instant(input.observedAt) || !Array.isArray(input.windows))
+		return undefined;
+	const windows: WebClaudeUsage["windows"][number][] = [];
+	for (const item of input.windows.slice(0, 4)) {
+		const window = item as Record<string, unknown> | null;
+		if (
+			!window ||
+			!["five_hour", "seven_day", "seven_day_model"].includes(window.id as string) ||
+			!shortText(window.label) ||
+			typeof window.usedPercent !== "number" ||
+			!(window.usedPercent >= 0 && window.usedPercent <= 100)
+		)
+			return undefined;
+		windows.push({
+			id: window.id as WebClaudeUsage["windows"][number]["id"],
+			label: window.label,
+			usedPercent: window.usedPercent,
+			...(instant(window.resetAt) ? { resetAt: window.resetAt } : {}),
+		});
+	}
+	return windows.length
+		? {
+				observedAt: input.observedAt,
+				windows,
+				...(instant(input.limitResetAt) ? { limitResetAt: input.limitResetAt } : {}),
+			}
+		: undefined;
+}
+
+function parseClaudeResets(value: unknown): WebClaudeResets | undefined {
+	const input = value as Record<string, unknown> | null;
+	if (!input || typeof input !== "object" || !instant(input.observedAt) || !Array.isArray(input.entries))
+		return undefined;
+	const entries: WebClaudeResetEntry[] = [];
+	for (const item of input.entries.slice(0, 4)) {
+		const entry = item as Record<string, unknown> | null;
+		if (
+			!entry ||
+			(entry.kind !== null && !CLAUDE_RESET_KINDS.includes(entry.kind as WebClaudeResetKind)) ||
+			!Number.isSafeInteger(entry.left) ||
+			(entry.left as number) < 0 ||
+			(entry.usable !== "now" && entry.usable !== "at_limit")
+		)
+			return undefined;
+		entries.push({
+			kind: entry.kind as WebClaudeResetKind | null,
+			left: entry.left as number,
+			refills: shortText(entry.refills) ? entry.refills : null,
+			weekStays: instant(entry.weekStays) ? entry.weekStays : null,
+			useBy: instant(entry.useBy) ? entry.useBy : null,
+			usable: entry.usable,
+		});
+	}
+	return { observedAt: input.observedAt, entries };
+}
+
+function parseClaudeLastReset(value: unknown): WebClaudeLastReset | undefined {
+	const input = value as Record<string, unknown> | null;
+	if (
+		!input ||
+		typeof input !== "object" ||
+		typeof input.requestId !== "string" ||
+		!UUID_PATTERN.test(input.requestId) ||
+		!CLAUDE_RESET_KINDS.includes(input.kind as WebClaudeResetKind) ||
+		!["reset", "failed", "unconfirmed"].includes(input.outcome as string) ||
+		!(input.left === null || (Number.isSafeInteger(input.left) && (input.left as number) >= 0)) ||
+		!instant(input.at)
+	)
+		return undefined;
+	return {
+		requestId: input.requestId,
+		kind: input.kind as WebClaudeResetKind,
+		outcome: input.outcome as WebClaudeLastReset["outcome"],
+		left: input.left as number | null,
+		at: input.at,
+	};
+}
+
+export class ClaudeReadNotStarted extends Error {
+	constructor() {
+		super("The Claude read was not started.");
+	}
 }
 
 /** Claude Code did not take the code (or it was not one): the member signs in again. */
@@ -80,9 +207,15 @@ function parseClaudeLogins(value: unknown): WebClaudeLogins {
 			typeof entry.clientConnectionId !== "string" ||
 			!UUID_PATTERN.test(entry.clientConnectionId) ||
 			typeof entry.createdAt !== "string" ||
-			(entry.providerAccountEmail !== null && typeof entry.providerAccountEmail !== "string")
+			(entry.providerAccountEmail !== null && typeof entry.providerAccountEmail !== "string") ||
+			(entry.usedUpUntil !== undefined &&
+				entry.usedUpUntil !== null &&
+				(typeof entry.usedUpUntil !== "string" || !Number.isFinite(Date.parse(entry.usedUpUntil))))
 		)
 			throw new Error("Invalid cloud response");
+		const usage = parseClaudeUsage(entry.usage);
+		const resets = parseClaudeResets(entry.resets);
+		const lastReset = parseClaudeLastReset(entry.lastReset);
 		logins.push({
 			loginId: entry.loginId,
 			clientConnectionId: entry.clientConnectionId,
@@ -90,9 +223,14 @@ function parseClaudeLogins(value: unknown): WebClaudeLogins {
 			...(typeof entry.providerAccountEmail === "string"
 				? { providerAccountEmail: entry.providerAccountEmail }
 				: {}),
+			...(usage ? { usage } : {}),
+			...(resets ? { resets } : {}),
+			...(lastReset ? { lastReset } : {}),
+			...(entry.inUse === true ? { inUse: true } : {}),
+			...(typeof entry.usedUpUntil === "string" ? { usedUpUntil: entry.usedUpUntil } : {}),
 		});
 	}
-	return { signInOpen: input.signInOpen === true, logins };
+	return { signInOpen: input.signInOpen === true, readable: input.readable === true, logins };
 }
 
 /** A member's connection with what the web reads beside the SDK's fields (migration
@@ -194,7 +332,12 @@ export interface WebNativeSubscription {
 	/** The member's Claude login and whether they may sign in with Claude here (20260930564000). */
 	listClaudeLogins?(signal?: AbortSignal): Promise<WebClaudeLogins>;
 	/** Ends the member's Claude login; its sealed files are wiped. */
-	signOutClaude?(loginId: string, signal?: AbortSignal): Promise<void>;
+	signOutClaude?(loginId: string, signal?: AbortSignal, nextLoginId?: string): Promise<void>;
+	useClaude?(loginId: string, signal?: AbortSignal): Promise<void>;
+	readClaude?(
+		options: { loginId: string; force?: boolean; reset?: WebClaudeResetKind },
+		signal?: AbortSignal,
+	): Promise<string>;
 	/** Begins "Continue with ChatGPT": OpenAI's address to send the browser to, and what this tab keeps. */
 	beginChatGptPlanSignIn?(
 		displayName: string,
@@ -356,6 +499,20 @@ export function createWebNativeSubscription(
 									response.status,
 								);
 						}
+						if (method === "qorpera_begin_claude_login_read") {
+							const failure = JSON.parse(
+								new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, deadline)),
+							) as { code?: unknown; message?: unknown } | null;
+							if (typeof failure?.code === "string" && /^[0-9A-Z]{5}$/.test(failure.code))
+								throw new CloudRpcError(
+									method,
+									{
+										message: typeof failure.message === "string" ? failure.message.slice(0, 200) : "",
+										code: failure.code,
+									},
+									response.status,
+								);
+						}
 						throw new Error("Cloud execution response was unavailable.");
 					}
 					const value: unknown = JSON.parse(
@@ -374,7 +531,9 @@ export function createWebNativeSubscription(
 		).catch((error: unknown) => {
 			if (
 				error instanceof CloudRpcError &&
-				(error.denied || (method === "qorpera_begin_native_account_refresh" && error.code === "55000"))
+				(error.denied ||
+					(method === "qorpera_begin_native_account_refresh" && error.code === "55000") ||
+					method === "qorpera_begin_claude_login_read")
 			)
 				throw error;
 			throw new Error("Cloud execution could not be confirmed. Refresh its status before trying again.");
@@ -1077,9 +1236,105 @@ export function createWebNativeSubscription(
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 		listClaudeLogins: async (signal) =>
 			parseClaudeLogins(await rpc("qorpera_list_claude_logins", { p_profile_id: profileId }, signal)),
-		signOutClaude: async (loginId, signal) => {
+		readClaude: async ({ loginId, force = false, reset }, signal) =>
+			withCloudDeadline(
+				async (deadline) => {
+					current();
+					if (!loginBase) throw new Error("Account refresh is not configured");
+					if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid Claude login.");
+					const capability = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+						.replaceAll("+", "-")
+						.replaceAll("/", "_")
+						.replace(/=+$/, "");
+					const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(capability));
+					const args = {
+						p_profile_id: profileId,
+						p_claude_login_id: loginId,
+						p_client_request_id: crypto.randomUUID(),
+						p_capability_sha256: Array.from(new Uint8Array(digest), (byte) =>
+							byte.toString(16).padStart(2, "0"),
+						).join(""),
+						p_force: force,
+						p_reset_kind: reset ?? null,
+					};
+					const pause = (milliseconds: number) =>
+						new Promise<void>((resolve, reject) => {
+							const stop = () => {
+								clearTimeout(timer);
+								reject(new Error("Claude read interrupted"));
+							};
+							const timer = setTimeout(() => {
+								deadline.removeEventListener("abort", stop);
+								resolve();
+							}, milliseconds);
+							deadline.addEventListener("abort", stop, { once: true });
+						});
+					let authority: NativeAccountRefreshDescription | undefined;
+					for (let wait = 1500; !authority; wait = Math.min(Math.round(wait * 1.5), 8000)) {
+						try {
+							authority = parseNativeAccountRefreshDescription(
+								await rpc("qorpera_begin_claude_login_read", args, deadline),
+							);
+						} catch (error) {
+							const busy =
+								error instanceof CloudRpcError &&
+								error.code === "55000" &&
+								(!reset || error.message === "Account refresh already in progress");
+							if (!busy) throw reset ? new ClaudeReadNotStarted() : error;
+							await pause(wait).catch(() => {
+								throw reset ? new ClaudeReadNotStarted() : new Error("Claude read interrupted");
+							});
+						}
+					}
+					if (authority.profileId !== profileId || authority.requestedByUserId !== memberId)
+						throw new Error("Account refresh authority changed");
+					if (authority.status === "completed") return authority.requestId;
+					const body = JSON.stringify(nativeAccountRefreshBody({ ...authority, capability }));
+					for (let poll = 1000; ; poll = Math.min(Math.round(poll * 1.5), 4000)) {
+						current();
+						const response = await fetch(new URL("account-refresh", loginBase).href, {
+							method: "POST",
+							headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
+							body,
+							signal: deadline,
+							redirect: "error",
+							cache: "no-store",
+							credentials: "omit",
+						});
+						try {
+							if (response.ok) {
+								const value: unknown = JSON.parse(
+									new TextDecoder("utf-8", { fatal: true }).decode(
+										await readBoundedCloudResponse(response, 64 * 1024, deadline),
+									),
+								);
+								if (parseNativeAccountRefreshResult(value, authority.requestId) === "completed")
+									return authority.requestId;
+							}
+						} finally {
+							if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
+						}
+						await pause(poll);
+					}
+				},
+				reset ? 120_000 : 60_000,
+				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
+			),
+		useClaude: async (loginId, signal) => {
 			if (!UUID_PATTERN.test(loginId)) throw new Error("Invalid Claude login.");
-			const value = (await rpc("qorpera_sign_out_claude_login", { p_login_id: loginId }, signal)) as {
+			const value = (await rpc("qorpera_use_claude_login", { p_login_id: loginId }, signal)) as {
+				loginId?: unknown;
+			} | null;
+			if (value?.loginId !== loginId) throw new Error("Invalid cloud response");
+		},
+		signOutClaude: async (loginId, signal, nextLoginId) => {
+			if (!UUID_PATTERN.test(loginId) || (nextLoginId !== undefined && !UUID_PATTERN.test(nextLoginId)))
+				throw new Error("Invalid Claude login.");
+			const value = (await rpc(
+				"qorpera_sign_out_claude_login",
+				{ p_login_id: loginId, ...(nextLoginId ? { p_next_login_id: nextLoginId } : {}) },
+				signal,
+			)) as {
 				loginId?: unknown;
 				status?: unknown;
 			} | null;

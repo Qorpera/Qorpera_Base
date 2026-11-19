@@ -2,6 +2,7 @@ import { withAbortScope } from "./abort-scope.ts";
 import { CloudBankSyncs, logBankSyncPass } from "./cloud-bank-sync.ts";
 import type { ChatGptPlanOAuth } from "./cloud-chatgpt-plan.ts";
 import { ChatGptPlanSignIns } from "./cloud-chatgpt-plan-sign-in.ts";
+import type { ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import { CloudClaudeLoginVault } from "./cloud-claude-login-vault.ts";
 import type { DigitalPostClient } from "./cloud-connector-digital-post.ts";
 import type { EnableBankingClient } from "./cloud-connector-enable-banking.ts";
@@ -150,7 +151,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #accountUpkeep: CloudModelLoginUpkeep | undefined;
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
-	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
+	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer & Partial<ClaudeLoginReads>) | undefined;
 	readonly #chatGptPlan: ChatGptPlanOAuth | undefined;
 	readonly #revoker: Pick<CloudConnectorTokenRevoker, "revoke">;
 	readonly #bank: Pick<EnableBankingClient, "balances" | "transactions"> | undefined;
@@ -183,7 +184,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		keyring: CloudSecretKeyring;
 		adapters: readonly CloudSecretConnectorAdapter[];
 		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
-		helper?: ModelLoginSignInHelper & ModelLoginRenewer;
+		helper?: ModelLoginSignInHelper & ModelLoginRenewer & Partial<ClaudeLoginReads>;
 		/** OpenAI's side of ChatGPT plan logins (built switched off). Absent, no plan sign-in starts and no
 		 * plan login is renewed or ended. */
 		chatGptPlan?: ChatGptPlanOAuth;
@@ -356,7 +357,18 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			...(helper ? { renewer: helper } : {}),
 			...(plan ? { chatGptPlan: plan } : {}),
 		});
-		const usage = new CloudModelLoginUsage({ authority, keyring: this.#keyring });
+		const usage = new CloudModelLoginUsage({
+			authority,
+			keyring: this.#keyring,
+			...(helper?.readClaudeLogin && helper.useClaudeReset
+				? {
+						claude: {
+							readClaudeLogin: helper.readClaudeLogin.bind(helper),
+							useClaudeReset: helper.useClaudeReset.bind(helper),
+						},
+					}
+				: {}),
+		});
 		return {
 			authorityId: entry.authorityId,
 			keyId: entry.keyId,

@@ -392,9 +392,14 @@ class AppFiles {
 		this.planned += file.bytes;
 		this.onProgress?.();
 		await this.#turn(() =>
-			folder.readFilePieces!(file, this.#signal, (piece) => {
-				parts.push(decoder.decode(piece, { stream: true }));
-			}),
+			folder.readFilePieces!(
+				file,
+				this.#signal,
+				(piece) => {
+					parts.push(decoder.decode(piece, { stream: true }));
+				},
+				LIVE,
+			),
 		);
 		parts.push(decoder.decode());
 		this.bytes += file.bytes;
@@ -444,9 +449,14 @@ class AppFiles {
 		const folder = this.#folder;
 		let blob = new Blob([], { type });
 		await this.#turn(() =>
-			folder.readFilePieces!(file, this.#signal, (piece) => {
-				blob = new Blob([blob, piece as BlobPart], { type });
-			}),
+			folder.readFilePieces!(
+				file,
+				this.#signal,
+				(piece) => {
+					blob = new Blob([blob, piece as BlobPart], { type });
+				},
+				LIVE,
+			),
 		);
 		return blob;
 	}

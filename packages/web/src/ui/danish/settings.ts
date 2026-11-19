@@ -262,6 +262,11 @@ export const SETTINGS: Record<string, string> = {
 	"Resets in {time}": "Nulstilles om {time}",
 	"Reset passed · awaiting updated usage": "Nulstillet · venter på opdateret forbrug",
 	"Reset time unavailable": "Tidspunkt for nulstilling ikke tilgængeligt",
+	"Starts when you next use Claude": "Starter, når du bruger Claude næste gang",
+	"Usage updates the next time Claude works on a task.":
+		"Forbruget opdateres, næste gang Claude arbejder på en opgave.",
+	"Usage updates once this login is in use and Claude works on a task.":
+		"Forbruget opdateres, når dette login er i brug, og Claude arbejder på en opgave.",
 	"{label} remaining usage": "{label}: resterende forbrug",
 	"Preparing sign-in. The first time can take a minute or two.":
 		"Gør login klar. Første gang kan tage et minut eller to.",
@@ -272,22 +277,66 @@ export const SETTINGS: Record<string, string> = {
 	"Your code:": "Din kode:",
 	"Open {provider} sign-in": "Åbn login hos {provider}",
 	"This page updates by itself when you are done.": "Siden opdaterer sig selv, når du er færdig.",
-	// Claude sign-in (coding only, 20260930564000)
 	"Open Claude sign-in": "Åbn login hos Claude",
 	"Sign in on Claude's page, then paste the code it shows you here.":
 		"Log ind på Claudes side, og sæt så den kode, du får vist, ind her.",
 	"Paste the code from Claude": "Sæt koden fra Claude ind",
 	"Paste the code from Claude first.": "Sæt koden fra Claude ind først.",
 	"Connecting Claude…": "Forbinder Claude…",
-	"Used only for coding sessions you start. Agents never use it for chats or routines.":
-		"Bruges kun til kodesessioner, du starter. Agenter bruger det aldrig til chat eller rutiner.",
-	"Used only for coding sessions you start, in all your companies. Agents never use it for chats or routines.":
-		"Bruges kun til kodesessioner, du starter, i alle dine virksomheder. Agenter bruger det aldrig til chat eller rutiner.",
-	"Claude is connected. It is used only for coding sessions you start.":
-		"Claude er forbundet. Det bruges kun til kodesessioner, du starter.",
+	"Claude chats and Claude Code work. Never routines.": "Claude-chats og Claude Code-arbejde. Aldrig rutiner.",
+	"Claude chats and Claude Code work, in all your companies. Never routines.":
+		"Claude-chats og Claude Code-arbejde i alle dine virksomheder. Aldrig rutiner.",
+	"Claude is connected. New Claude work in all your companies uses it.":
+		"Claude er forbundet. Nyt Claude-arbejde i alle dine virksomheder bruger det.",
+	"Claude login added. {email} stays in use until you pick another.":
+		"Claude-login tilføjet. {email} forbliver i brug, til du vælger et andet.",
+	"Sign in on Claude's page with the other account, then paste the code here. {email} stays in use until you pick the new one.":
+		"Log ind på Claudes side med den anden konto, og sæt så koden ind her. {email} forbliver i brug, til du vælger det nye.",
+	"Another Claude login": "Endnu et Claude-login",
+	"Your Claude login": "Dit Claude-login",
+	"Your other Claude login": "Dit andet Claude-login",
+	"your other Claude login": "dit andet Claude-login",
 	"That code did not work. Start the sign-in again.": "Koden virkede ikke. Start login forfra.",
 	"The Claude sign-in could not be finished. Try again.": "Login hos Claude kunne ikke afsluttes. Prøv igen.",
-	"Claude · coding only": "Claude · kun kode",
+	Claude: "Claude",
+	"In use": "I brug",
+	"Use this": "Brug denne",
+	"Switching…": "Skifter…",
+	"Not in use. New Claude work goes to the login marked In use.":
+		"Ikke i brug. Nyt Claude-arbejde går til det login, der er markeret I brug.",
+	"Sign out of this Claude login?": "Log ud af dette Claude-login?",
+	"New Claude work moves to {email}. Work already running keeps this login until it ends.":
+		"Nyt Claude-arbejde flytter til {email}. Arbejde, der allerede kører, beholder dette login, til det er færdigt.",
+	"Pick the login new Claude work uses. Work already running keeps this one until it ends.":
+		"Vælg det login, nyt Claude-arbejde skal bruge. Arbejde, der allerede kører, beholder dette, til det er færdigt.",
+	"Use {email}": "Brug {email}",
+	"The Claude login could not be switched. Try again.": "Claude-login kunne ikke skiftes. Prøv igen.",
+	"1 reset": "1 nulstilling",
+	"{count} resets": "{count} nulstillinger",
+	"1 five-hour reset": "1 nulstilling af 5 timer",
+	"{count} five-hour resets": "{count} nulstillinger af 5 timer",
+	"1 weekly reset": "1 ugentlig nulstilling",
+	"{count} weekly resets": "{count} ugentlige nulstillinger",
+	"1 Fable reset": "1 Fable-nulstilling",
+	"{count} Fable resets": "{count} Fable-nulstillinger",
+	"1 full reset": "1 fuld nulstilling",
+	"{count} full resets": "{count} fulde nulstillinger",
+	"Using a reset…": "Bruger en nulstilling…",
+	"Reset used · no resets left": "Nulstilling brugt · ingen nulstillinger tilbage",
+	"Reset used": "Nulstilling brugt",
+	"Reset used · {resets} left": "Nulstilling brugt · {resets} tilbage",
+	"Couldn't reset your limits": "Dine grænser kunne ikke nulstilles",
+	"Nothing was used · {resets} · try again in a moment": "Intet blev brugt · {resets} · prøv igen om lidt",
+	"Couldn't confirm the reset went through": "Det kunne ikke bekræftes, at nulstillingen gik igennem",
+	"Check the bars above in a moment before you use another reset.":
+		"Se på bjælkerne ovenfor om lidt, før du bruger en ny nulstilling.",
+	"use by {date}": "brug senest {date}",
+	"Usable once you reach a limit": "Kan bruges, når du når en grænse",
+	"refills your {limits}": "fylder din {limits} op",
+	"Refills your {limits}": "Fylder din {limits} op",
+	"your weekly reset day stays {day}": "din ugentlige nulstillingsdag er stadig {day}",
+	"Use a reset": "Brug en nulstilling",
+	"Keep going now with a reset": "Fortsæt nu med en nulstilling",
 
 	// Connect, Disconnect, Working… and Connected (several pages)
 	Connect: "Forbind",

@@ -3,7 +3,11 @@ import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-nat
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import type { WebExecutionConnections, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import type {
+	WebClaudeLogin,
+	WebExecutionConnections,
+	WebNativeSubscription,
+} from "../src/cloud/native-subscription.ts";
 import { AGENT_SEND_SCHEMA, projectTranscript, RUNNER_ENTRY_SCHEMA } from "../src/cloud/transcript.ts";
 import type { HostedStaffExecutionActivity, PausedRun } from "../src/cloud/types.ts";
 import { fmtTime } from "../src/ui/dom.ts";
@@ -90,7 +94,10 @@ function setup(
 	selectSessionAccount?: WebNativeSubscription["selectSessionAccount"],
 	refreshAccountMetadata?: WebNativeSubscription["refreshAccountMetadata"],
 	chooseSessionAccount?: WebNativeSubscription["chooseSessionAccount"],
-	more: Pick<WebNativeSubscription, "countSessionsOnAccount" | "chooseSessionsAccount"> = {},
+	more: Pick<
+		WebNativeSubscription,
+		"countSessionsOnAccount" | "chooseSessionsAccount" | "listClaudeLogins" | "useClaude"
+	> = {},
 ) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
@@ -2631,5 +2638,93 @@ describe("a run waiting at its login's usage limit", () => {
 		f.company.store.set({ activity: [earlier, paused(id(100), { until: "2000-01-01T00:00:00.000Z" })] });
 		await settle();
 		expect(title(f.view)).toBe("An earlier run of Fixture agent did not finish");
+	});
+});
+
+describe("the chat's card when the Claude login in use is used up", () => {
+	const until = new Date(Date.now() + 3 * 3_600_000).toISOString();
+	const work: WebClaudeLogin = {
+		loginId: id(60),
+		clientConnectionId: id(61),
+		createdAt: timestamp,
+		providerAccountEmail: "work@example.com",
+		inUse: true,
+		usedUpUntil: until,
+	};
+	const home: WebClaudeLogin = {
+		loginId: id(62),
+		clientConnectionId: id(63),
+		createdAt: timestamp,
+		providerAccountEmail: "home@example.com",
+	};
+	function claudeSetup(logins: WebClaudeLogin[]) {
+		const listed = { signInOpen: true, logins };
+		const listClaudeLogins = vi.fn(async () => structuredClone(listed));
+		const useClaude = vi.fn(async (loginId: string) => {
+			listed.logins = listed.logins.map((login) => ({ ...login, inUse: login.loginId === loginId }));
+		});
+		const f = setup(false, connections(), undefined, undefined, undefined, { listClaudeLogins, useClaude });
+		return { ...f, listed, useClaude };
+	}
+	const title = (view: ConversationView) => view.el.querySelector(".usage-wall-title")?.textContent;
+
+	it("names the used-up login and the one to keep going with in any chat, and moves new Claude work only on Continue", async () => {
+		const f = claudeSetup([{ ...work }, { ...home }]);
+		await settle();
+		expect(title(f.view)).toBe(`Claude is out of usage until ${fmtTime(until)}`);
+		expect(f.view.el.querySelector(".usage-wall-sub")!.textContent).toBe(
+			"work@example.com is used up. Keep going with home@example.com",
+		);
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(false);
+		refresh();
+		await settle();
+		expect(f.useClaude).not.toHaveBeenCalled();
+		buttonNamed(f.view, "Continue")!.click();
+		await settle();
+		expect(f.useClaude).toHaveBeenCalledWith(id(62), expect.any(AbortSignal));
+		expect(title(f.view)).toBe("New Claude work now uses home@example.com");
+		expect(f.view.el.querySelector(".usage-wall-ring.done")).not.toBeNull();
+		expect(buttonNamed(f.view, "Continue")).toBeUndefined();
+		refresh();
+		await settle();
+		expect(title(f.view)).toBe("New Claude work now uses home@example.com");
+	});
+
+	it("says so when Continue could not switch the login, and keeps the card", async () => {
+		const f = claudeSetup([{ ...work }, { ...home }]);
+		await settle();
+		f.useClaude.mockRejectedValueOnce(new Error("refused"));
+		buttonNamed(f.view, "Continue")!.click();
+		await settle();
+		expect(f.view.el.textContent).toContain("The Claude login could not be switched. Try again.");
+		expect(title(f.view)).toBe(`Claude is out of usage until ${fmtTime(until)}`);
+	});
+
+	it("reads the Claude logins once a minute at most, not on every read of the accounts", async () => {
+		const f = claudeSetup([{ ...work }, { ...home }]);
+		await settle();
+		refresh();
+		await settle();
+		refresh();
+		await settle();
+		expect(f.native.listClaudeLogins).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows nothing while no other login has room, or the login in use has room", async () => {
+		for (const logins of [
+			[{ ...work }, { ...home, usedUpUntil: until }],
+			[{ ...work }],
+			[{ ...work, usedUpUntil: new Date(Date.now() - 60_000).toISOString() }, { ...home }],
+		]) {
+			const f = claudeSetup(logins);
+			await settle();
+			expect(f.view.el.querySelector(".usage-wall")).toBeNull();
+			expect(f.useClaude).not.toHaveBeenCalled();
+			dispose?.();
+			dispose = undefined;
+			document.body.replaceChildren();
+		}
 	});
 });
