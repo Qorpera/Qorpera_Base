@@ -1108,8 +1108,6 @@ describe("a member's start begun as the member (deploy/coding-worker/member-cont
 			{ schema, state: "ok", startId: "x" },
 			{ schema, state: "ok", startId: randomUUID(), more: 1 },
 			{ schema: "qorpera.member-machine-desktop/v1", state: "held" },
-			// No begin answers `held` any more (review r1 F1 of #1681): a hold does not stop a start.
-			{ schema, state: "held" },
 		])
 			await expect(control(200, body).control.start(token, start, signal), JSON.stringify(body)).rejects.toThrow(
 				"MEMBER_START_BEGIN_INVALID",

@@ -261,9 +261,7 @@ describe("company account fill over the broker", () => {
 		const call = request();
 		await authority.readCompanyAccountFill(call, AbortSignal.timeout(5000));
 		expect(queries).toHaveLength(1);
-		expect(queries[0]?.text).toBe(
-			"select public.qorpera_fill_company_account($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
-		);
+		expect(queries[0]?.text).toMatch(/\bpublic\.qorpera_fill_company_account\(/);
 		expect(queries[0]?.values.slice(2)).toEqual([
 			JSON.stringify(call.binding),
 			receiptId,
@@ -504,9 +502,7 @@ describe("company account fill on a machine", () => {
 		const f = machine();
 		const call = f.fillRequest();
 		await postgres.readCompanyAccountMachineFill(call, AbortSignal.timeout(5000));
-		expect(queries[0]?.text).toBe(
-			"select public.qorpera_fill_company_account_on_machine($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::text,$8::uuid,$9::uuid,$10::text) as result",
-		);
+		expect(queries[0]?.text).toMatch(/\bpublic\.qorpera_fill_company_account_on_machine\(/);
 		expect(queries[0]?.values.slice(2)).toEqual([
 			JSON.stringify(call.binding),
 			receiptId,

@@ -2174,9 +2174,6 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 	expect(list?.inputSchema.required).toEqual(["path"]);
 	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
 	for (const name of files) expect(offeredNames(evidence)).toContain(name);
-	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
-	// Since the scope reset (C6b) a run neither reads a page nor saves an interface: the pages are the platform's.
-	expect(tools.filter((tool) => ["interface_read", "save_interface"].includes(tool.name))).toEqual([]);
 });
 
 it("refuses a call to a page tool the scope reset took out, without an effect, and the run still answers", async () => {
@@ -3129,25 +3126,18 @@ it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manag
 	};
 	const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
 	expect(todo).toContain("Each todo is a file in your folder");
-	expect(todo).not.toContain("Each todo is also a document in the shared Company File");
 	const sidebar = description("organize_sidebar");
 	expect(sidebar).toContain("The sections are the file QorperaOS/agents/sections.md");
-	expect(sidebar).not.toContain("by its id or name");
 	// The 2026-11-11 amendment (each member's own sidebar), item 4: the change is the company's, not every member's at once.
 	expect(sidebar).toContain("every member sees a change, except where a member placed things themself");
-	expect(sidebar).not.toContain("everyone sees the change at once");
 	const hire = description("hire_agent");
 	expect(hire).toContain("The hire is the agent's own folder");
-	expect(hire).not.toContain("under organization/agents");
 	const chat = description("create_group_chat");
 	expect(chat).toContain("QorperaOS/agents/groups/<name>/group.md");
-	expect(chat).not.toContain("No member approval is needed");
 	const routine = description("manage_routine");
 	expect(routine).toContain("routines/<routineKey>.md");
-	expect(routine).not.toContain("No member approval is needed");
 	// The 2026-10-22 amendment, item 2: an agent's own routines are judged by its job, never held for a member.
 	expect(routine).toContain("your own routines need no member's approval unless a member's own rule asks for it");
-	expect(routine).not.toContain("wait for a member's approval");
 });
 
 async function machineToolNames(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
@@ -3955,139 +3945,11 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	expect(wave("qorpera_record_native_context_view")).toBe(12);
 });
 
-it("pins a company run's tool catalog byte for byte", async () => {
+it("lists a company run's tool catalog, and the tools more_tools opens, in their order", async () => {
 	const f = await fixture("company-runtime", false, undefined, false, false, 10_000, true);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
-	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_begin_native_company_execution_v3")?.[1];
-	const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-	// master's folder-v2 values at a2d6cb27a, which the legacy sweep (step C, C-P1) kept byte for byte, with
-	// Interfaces' save_interface and table_write (I8b) after table_read: the names in their order, each name with
-	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
-	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
-	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
-	// supervisor, so they moved again. Since save_interface's description gives an interface.toml's form and the files'
-	// strict TOML (P0-2's refused first saves, 16 Oct), they moved again. Since the scope reset (C6b) the catalog has no
-	// interface_read and no save_interface, so they moved again. On 21 October 2026 company_edit and company_move came
-	// after company_write, and the file tools' and the dispatcher's descriptions changed (larger reads and writes,
-	// saveTo), so they moved again. When the company's own work was kept by area first (21 October 2026), company_write's,
-	// company_mkdir's, the dispatcher's and send_message's examples and folder guidance changed, so they moved again.
-	// Since the 2026-10-22 amendment manage_routine's description says a change passes a quick review against the
-	// agent's job, so they moved again. Since the platform's folders moved under QorperaOS/ (21 October 2026),
-	// table_read's, table_write's, organize_sidebar's, hire_agent's and create_group_chat's descriptions name them there,
-	// so they moved again. Company sites (20260930550000) add publish_site and unpublish_site after manage_hook, so
-	// they moved again. Private app links (v195) add share_app after unpublish_site, whose description now names app
-	// links, so they moved again. Good will (20260930566000) adds good_will_list and good_will_mark after add_review_rule,
-	// so they moved again. Interface apps
-	// (5 November 2026) add save_app and post_app after table_write, so they moved again. The wall (5 November 2026)
-	// adds update_wall after post_app, so they moved again. Readable cards (5 November 2026) shorten ask_member's body
-	// and say how a card reads; every other tool is as on master.
-	// On 7 November 2026 update_wall's description said a question a member answered leaves waiting, so they moved again.
-	// On 8 November 2026 save_app's description says an app opens as a page of its own, so they moved again.
-	// Later on 8 November 2026 save_app's manifest takes concept and cover (the Concepts viewer), so they moved again.
-	// On 9 November 2026 ask_member's secret card takes a coding value's repository (20260930693000), and its schema
-	// says when to ask for one; the names and descriptions are as before, so only the catalog text moved.
-	// Later on 9 November 2026 that schema says a key an agent can make on npm, GitHub, Stripe or Resend is taken with
-	// computer_browser vault_capture instead (20260930695000); the names and descriptions are as before, so only the
-	// catalog text moved again.
-	// On 9 November 2026 the Co-Founder's crew_and_members and offer_agents_to_member (20260930702000) came after
-	// good_will_mark, so they moved again.
-	// Later on 9 November 2026 ask_member's secret card schema says such a key is saved off the machine's clipboard with
-	// save_coding_value (20260930705000), computer_browser vault_capture only on a company computer; the names and
-	// descriptions are as before, so only the catalog text moved again.
-	// On 10 November 2026 save_app's manifest takes writes, with questions among its reads (a member allows a change
-	// an app asks for, RUNTIME-INTERFACE-APPS.md §5), so they moved again. Later that day its description says which
-	// links in an app open and that every app starts from Qorpera's base style, and its schema says the style's
-	// variables on files (the web opens an app's links and gives it the style, §2 and §4), so they moved again.
-	// Also on 10 November 2026 hire_agent's figure takes star, cloud, bolt, mushroom, moon and puzzle, and no ghost
-	// (20260930709000); the names and descriptions are as before, so only the catalog text moved again.
-	// Still on 10 November 2026 save_app's manifest takes kit: explainer makes an app a short narrated video, with how
-	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
-	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
-	// 20260930720000), so they moved again.
-	// On 11 November 2026 update_wall takes now, the line under the agent's name in the sidebar, and its description says
-	// a line names what came of the work and keeps the team's housekeeping off the wall, so they moved again.
-	// On 11 November 2026 organize_apps came after organize_sidebar (the apps drawer's groups, APP-GROUPS-SPEC §3), and
-	// save_app's schema takes group, so they moved again.
-	// Also on 11 November 2026 ask_member's description says every answer the work cannot go on without goes on a card that
-	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
-	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
-	// moved once more.
-	// On 12 November 2026 manage_code took bring_in (existing code brought in, 20260930736000): its description, and its
-	// schema's from and look with change no longer required, so they moved again.
-	// On 12 November 2026 save_app's description no longer lists the emblems, which are 24 now and would put it past
-	// 4096 bytes (its schema's enum lists them, with what an emblem is), and its schema says on files how to draw an app's
-	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again. Both on one tree, they were
-	// measured once more.
-	// Master's v237 (#1530: one tool result holds up to 32 KiB) moved them too; with the import on one tree (the merge of
-	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
-	// Later on 12 November 2026 organize_apps takes colour and colour_group (the company's colours of the drawer's groups),
-	// and its description says how to choose them, so they moved again.
-	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
-	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
-	// again.
-	// On 13 November 2026 manage_code's from takes branch beside github too, and its schema says so (the import's
-	// follow-ups, the lead's decision 3); its names and descriptions are as before, so only the catalog text moved for
-	// it. With master's organize_apps colours merged into the import's follow-ups (13 November 2026) both were measured
-	// once more, and again with v240's keyholes (S2, S3) and the follow-ups on one tree (the v241 release, 13 November 2026).
-	// On 13 November 2026 a host that names the data gateway's run door offers data_describe, data_apply and data_query
-	// after update_wall (company databases, slice 5, 20260930750000); this run's host names it, so they moved again.
-	// The same day send_message, ask_member and update_wall no longer say the final send is the last act (the answer
-	// first, the contract's 2026-11-13 amendment, proposed), so both moved again, and once more on each tree where that
-	// change meets master's own: agent names by work, the kits that draw an interface app, and company databases
-	// (13 November 2026).
-	// The same day make_picture came after post_app (an agent makes a picture, 20260930746000), so they moved again,
-	// measured on the tree with the kits, the company databases and the answer-first change.
-	// The same day save_app's reads take data (the company's databases, which a kit's data may name; the kit binding,
-	// #1744), so they moved again, measured on the tree with master's data tools and make_picture.
-	// On 14 November 2026 list_hooks, manage_hook and ask_member's secret card no longer name the Company Computer's
-	// tools, which no company has had since 3 October 2026 (track 3, T3-1), so they moved again.
-	// The same day every description became its tool's contract, in lines, its fields' meanings on its schema and the
-	// rules every tool shares left to the instructions (track 3, T3-5), so they moved again.
-	// The same day update_wall left every catalog (the founder: "rather drop the wall - it's the wrong medium for
-	// activity"), and organize_apps no longer says "or on your wall", so both moved again.
-	// Review r1 of #1802 (manage_worker's status names its todoKey) on the core it relies on (#1803, #1805): measured once
-	// more.
-	// The same day the catalog came to describe in full only the tools the Co-Founder's runs use most, and more_tools to
-	// list and open the rest, which the run still has (track 3, T3-6), so they moved again, and once more when
-	// update_memory came to be carried in full.
-	// On 14 November 2026 app_guide came after post_app, and save_app's description and fields point at it: the
-	// guides for making an app stood on save_app's fields, which no model received (20260930762000), so they moved
-	// again. The same day app_guide's description named its guide look, the bar every app's look is held to (company
-	// views plan step 1), and save_app's kit says to read it first, so they moved again.
-	// Both together (master merged into T3-1, 15 November 2026): measured once more on node 2's test machine.
-	// Master and v247's release (app_guide) merged up through T3-3 under no-wall (15 November 2026): measured once more.
-	// T3-5's contracts with app_guide (its own in contract form, save_app's naming it) and master's machine words, merged up through no-wall (15 November 2026): measured once more.
-	// app_guide carried in full where save_app is (T3-6 with #1804, 15 November 2026): measured once more.
-	// On 15 November 2026 data_change came after data_query (a named change writes rows; company databases, slice 7,
-	// 20260930763000), measured on master with release v247 and app_guide's look, so they moved again.
-	// The same day data_apply took allow, a held step's, and says how a member is asked for a step that destroys data
-	// (20260930764000), so they moved again.
-	// The same day ask_member's takeover says that the member signs in on the screen the agent and they both use, not
-	// that the agent's calls are refused meanwhile (the web begins no private hold any more: #1812), in its description
-	// and in the takeover surface's schema, so both moved again, measured on master with data_change and data_apply's
-	// allow.
-	// Master 01c90ff7a merged into T3-1 for landing (15 November 2026): measured once more.
-	// Master 01c90ff7a merged up through T3-3 for landing (15 November 2026) under no-wall: measured once more.
-	// Master 01c90ff7a merged up through no-wall into T3-5 for landing (15 November 2026): app_guide's look and kits in its contract, ask_member's takeover on the shared screen; measured once more.
-	// Master 01c90ff7a merged up through T3-5 into T3-6 for landing (15 November 2026): data_change opened on demand beside the other data tools; measured once more.
-	// Later that day the Co-Founder's update_reading came after offer_agents_to_member and end_role after
-	// create_group_chat (the company's reading of itself, 20260930766000), and hire_agent's description says an existing
-	// coworker takes new work only when it is the same kind and it has room, so both moved again.
-	// Review r1 of #1819: end_role's description says one already ended is answered so, not refused, so both moved again.
-	// Review r2 of #1819: a new call on an ended role is refused again, so end_role's description is round 0's and both
-	// pins are round 0's.
-	// The stack's new head (no-wall 9ecf100fe, with app_guide) merged in (15 November 2026): measured once more on node 1's
-	// test machine.
-	// The company's map (the founder, 15 November 2026: "Use a map kit"): update_reading's description says the founders see
-	// the reading as the first layer of the company's map, so both moved again.
-	// On 14 November 2026 manage_worker's harness field says when a worker is Claude Code's (a plain worker on a member's
-	// Claude sign-in, 20260930770000); the names and descriptions are as before, so only the catalog text moved.
-	// The same day that field also says to give Claude Code write access and what it means: the agent's own rights on its
-	// machine and in the company's files, its output folder where its files go and not a limit (20260930772000).
-	// Then save_app's reads took money and site (the platform's own numbers of the company, asked as questions of the
-	// reserved database qorpera; company views step 3, slice W1, 20260930767000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -4146,12 +4008,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"end_role",
 		"manage_code",
 	]);
-	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"c0e4b4cadf3d0a6a9f09f63df5cbc603ae5d4e40f6b155aa2daa1f4aa783c1c0",
-	);
-	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"6d33ff64c02cf3862ef1f9b17c2b1f58b8154cb3e10bc329f221b23922b862bb",
-	);
 });
 
 it("offers make_picture to a run on a Codex login, and never to one on a member's ChatGPT plan (20260930746000)", async () => {

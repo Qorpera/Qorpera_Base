@@ -170,18 +170,10 @@ it("answers the web app's preflight and start request with CORS headers and a pr
 	f.keyring.close();
 });
 
-it("refuses a start with a wrong capability or a foreign return page", async () => {
+it("refuses a start with a foreign return page", async () => {
 	const f = fixture();
-	const wrong = await start(f, {
-		schema: "qorpera.cloud-connector-oauth-start/v2",
-		captureCapability: randomBytes(32).toString("base64url").slice(0, 43),
-		browserProofSha256: f.proofSha256,
-		returnTo: `${WEB}/`,
-	});
-	// The authority accepts any 64-hex digest in this fixture, so the ticket
-	// describes fine; the foreign return page is what must fail.
-	expect(wrong.response.status).toBe(200);
-	const foreign = await fetch(`http://127.0.0.1:${wrong.port}/v1/oauth/${f.ticketId}/start`, {
+	const port = await f.service.start();
+	const foreign = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({

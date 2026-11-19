@@ -7,17 +7,11 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929026199_runtime_bundle_activation_v261.sql";
-const activationVersion = 261;
-const previousActivationVersion = 260;
-const previousActivationSha256 = "a6aa04f164e14df6c7550510c923919d3173cdb7a5ddcebc51d9a18b6ca3769f";
-const activationRequires = Object.freeze([
-	[
-		"20260930810000_claude_parallel_runs",
-		"#1906 (Claude parallel runs): bundle 261's Claude Code runs cannot renew (their box reaches the API host alone) and ask the vault for their login's newer version every 60 s; the renewal is the shared vault's, through 810000's lock, lease login and compare-and-swap, so bundle 261 must never run on a database without it",
-		"to_regprocedure('public.qorpera_claude_worker_run_cap()') is not null and to_regprocedure('public.qorpera_take_idle_claude_login_renewal(uuid,text)') is not null",
-	],
-]);
+const activation = "supabase/migrations/20260929026299_runtime_bundle_activation_v262.sql";
+const activationVersion = 262;
+const previousActivationVersion = 261;
+const previousActivationSha256 = "0a7910b42fa1d17309cc25f1faacd78093814afb601459ef2d695191eeac0f11";
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);

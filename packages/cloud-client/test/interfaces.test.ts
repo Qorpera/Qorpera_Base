@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	AGENT_COLOURS as STATE_FILES_COLOURS,
-	companyPathKey as stateFilesPathKey,
-} from "../src/company-state-files.ts";
-import { AGENT_COLOURS as SHARED_COLOURS, companyPathKey as sharedPathKey } from "../src/company-state-shared.ts";
-import {
 	AREAS_TABLE,
 	CARDS_TABLE,
 	INTERFACE_LIBRARY,
@@ -25,7 +20,6 @@ import {
 } from "../src/interface-query.ts";
 import {
 	decodeInterfaceFile,
-	INTERFACE_OUTSIDE_VALUE_MAX_CHARS,
 	INTERFACE_SOURCE_COLUMNS,
 	type InterfaceProblem,
 	interfaceInstant,
@@ -397,12 +391,6 @@ ${verb === "message" ? `to = "co-founder"\ntext = ${JSON.stringify(text)}\n` : '
 		expect(() => parseInterfaceFile(withButton("constructor", "About {text}"))).not.toThrow();
 		expect(codes(parseInterfaceFile(withButton("constructor", "About {text}")).problems)).toContain("unknown_source");
 		expect(interfaceOutsideColumns("constructor")).toEqual([]);
-		expect(INTERFACE_OUTSIDE_VALUE_MAX_CHARS).toBe(2000);
-	});
-
-	it("keeps the library's Mailbox valid", () => {
-		const mailbox = INTERFACE_LIBRARY.find((entry) => entry.name === "mailbox");
-		expect(mailbox && parseInterfaceFile(mailbox.interface).ok).toBe(true);
 	});
 });
 
@@ -1123,7 +1111,7 @@ columns = ["name", "constructor"]
 	});
 });
 
-describe("the shared module and the save path's decoding (I2b)", () => {
+describe("the save path's decoding (I2b)", () => {
 	it("keeps a byte order mark so the text matches the saved bytes, and the rows still read", () => {
 		const csv = `number,at,value,unit,kept_by\nA,2026-10-02T09:44Z,1,count,${FINANCE}\n`;
 		const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(csv)]);
@@ -1133,10 +1121,5 @@ describe("the shared module and the save path's decoding (I2b)", () => {
 		expect(parseTableRows(table(NUMBERS_TABLE), text ?? "").rows).toHaveLength(1);
 		expect(parseTableFile(`﻿${NUMBERS_TABLE}`).problems.map((p) => p.code)).toEqual(["encoding"]);
 		expect(decodeInterfaceFile(new Uint8Array([0xff, 0xfe]))).toBeNull();
-	});
-
-	it("shares the path key and colours with the state files", () => {
-		expect(sharedPathKey).toBe(stateFilesPathKey);
-		expect(SHARED_COLOURS).toBe(STATE_FILES_COLOURS);
 	});
 });

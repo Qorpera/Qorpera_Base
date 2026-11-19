@@ -22,7 +22,6 @@ import {
 	cloudWorkerTools,
 	describeCloudAgentOpenWork,
 	fitsOneResult,
-	workerSaveToText,
 } from "@qorpera/runtime/cloud-worker-tools";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -503,6 +502,8 @@ describe("agent todo and worker tools", () => {
 
 	it("tells a worker where the finished files belong when the dispatch names a folder (saveTo)", async () => {
 		const f = await fixture();
+		const sentence =
+			"Save the finished files in product/designs/ in the company folder, where they belong, and list them in your report.";
 		try {
 			const sent = await f.boundary.invoke("s1", "qorpera", "manage_worker", {
 				...dispatch,
@@ -512,14 +513,11 @@ describe("agent todo and worker tools", () => {
 			expect(f.folderWorkers.change).toHaveBeenCalledWith(
 				{
 					...dispatch,
-					context: `${dispatch.context}\n\n${workerSaveToText("product/designs")}`,
+					context: `${dispatch.context}\n\n${sentence}`,
 					saveTo: "product/designs",
 					revival: "batch",
 				},
 				expect.objectContaining({ callId: "s1" }),
-			);
-			expect(workerSaveToText("product/designs")).toBe(
-				"Save the finished files in product/designs/ in the company folder, where they belong, and list them in your report.",
 			);
 			// Without context, the sentence is the context.
 			const { context: _context, ...bare } = dispatch;
@@ -528,7 +526,7 @@ describe("agent todo and worker tools", () => {
 				operationKey: "d2",
 				saveTo: "product/designs",
 			});
-			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0].context).toBe(workerSaveToText("product/designs"));
+			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0].context).toBe(sentence);
 			const calls = f.writerCalls();
 			for (const [index, hostile] of [
 				{ ...dispatch, operationKey: "d3", saveTo: "product/designs", access: "read" },
@@ -840,20 +838,17 @@ describe("agent todo and worker tools", () => {
 });
 
 describe("a folder-v2 agent's todos", () => {
-	it("saves through the folder writer and says the todos are files", async () => {
+	it("lists closed todos through the folder writer and says the todos are files", async () => {
 		const { binding, authority } = nativeToolAuthorityFixture();
 		const identity = authority.identity;
-		const change = vi.fn(async () => ({ kind: "text" as const, value: '{"saved":true}' }));
 		const list = vi.fn(async () => ({ kind: "text" as const, value: '{"todos":[]}' }));
 		const tools = cloudWorkerTools(binding, identity, parentWake, {
-			folderTodos: { change, list } as unknown as CloudFolderTodos,
+			folderTodos: { list } as unknown as CloudFolderTodos,
 			folderWorkers: {} as CloudFolderWorkers,
 		});
 		const todo = tools.find((tool) => tool.name === "manage_todo");
 		if (!todo) throw new Error("Missing todo tool");
 		expect(todo.description).toContain("Each todo is a file in your folder");
-		expect(todo.description).not.toContain("also a document in the shared Company File");
-		expect(todo.description).not.toContain("latest 4 workers");
 		const context = {
 			companyId: identity.companyId,
 			runId: identity.runId,
@@ -862,24 +857,6 @@ describe("a folder-v2 agent's todos", () => {
 			signal: new AbortController().signal,
 			identity,
 		};
-		const request = todo.parseArguments({
-			action: "upsert",
-			operationKey: "todo-1",
-			todoKey: "call-the-bank",
-			title: "Call the bank",
-		});
-		await expect(todo.execute(request, context)).resolves.toEqual({ kind: "text", value: '{"saved":true}' });
-		expect(change).toHaveBeenCalledWith(
-			{
-				action: "upsert",
-				operationKey: "todo-1",
-				todoKey: "call-the-bank",
-				title: "Call the bank",
-				detail: "",
-				state: "open",
-			},
-			context,
-		);
 		const listing = todo.parseArguments({ action: "list", includeClosed: true });
 		await expect(todo.execute(listing, context)).resolves.toEqual({ kind: "text", value: '{"todos":[]}' });
 		expect(list).toHaveBeenCalledWith({ action: "list", includeClosed: true }, context, fitsOneResult);

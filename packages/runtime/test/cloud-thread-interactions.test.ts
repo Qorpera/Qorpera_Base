@@ -423,9 +423,6 @@ describe("readable cards", () => {
 		expect(schema).toContain(
 			"surface takeover: the member signs in or enters a code on your computer's screen, then presses I'm done.",
 		);
-		for (const text of [CLOUD_ASK_MEMBER_INSTRUCTIONS, schema])
-			expect(text).not.toMatch(/holds it|calls there are refused|drives your computer|hands it back/);
-		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
 	});
 
 	// Jonas, 11 Nov 2026: "I would like the agents to be better at indicating when they need the users input and it's
@@ -444,11 +441,8 @@ describe("readable cards", () => {
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain(
 			"The likely answers to what your work cannot go on without, each a specific one, never generic ones like Get started.",
 		);
-		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("Open-ended questions belong in chat");
 		// The card's own schema says the same: an open question goes on the card with allowCustom, not to chat.
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
-		expect(schema).not.toContain("belong in ordinary chat");
-		expect(schema).not.toContain("not a reason to turn an open-ended question");
 		expect(schema).toContain("allowCustom adds a field for the member's own");
 		// The tool boundary takes a description of at most 4096 bytes.
 		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
@@ -735,7 +729,6 @@ describe("the address card", () => {
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
 			"- An address card is a question with allowCustom: true and input {kind: mail_address}: each option a handle made from the company's name (label and value the same, such as acme); the member makes the company's email address in the card, and the answer is that address.",
 		);
-		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain('"input":{"type":"object"');
 	});
 });

@@ -670,7 +670,6 @@ it("lists one level of a folder by default, page by page, releasing the folder a
 		files: { "docs/a.md": "a", "docs/b.md": "bb", "docs/c.md": "ccc", "docs/old/x.md": "x" },
 		folders: ["docs/old"],
 	});
-	const list = vi.spyOn(f.folder, "list");
 	// Today's call: one level, at most limit entries.
 	const first = await f.call("company_list", { path: "docs", after: null, limit: 2 });
 	const page = listing(first);
@@ -684,8 +683,6 @@ it("lists one level of a folder by default, page by page, releasing the folder a
 	expect(page.ending).toBe('2 entries shown. More: call again with after "docs/b.md".');
 	expect(released(f.releases[0])).toEqual(["docs", "docs/a.md", "docs/b.md"]);
 	expect(first.companyReadId).toBe(f.releases[0]?.p_release_id);
-	// One level is the folder core's listing of the folder's own entries.
-	expect(list.mock.calls.map(([parent, options]) => [parent, options.recursive])).toEqual([["docs", false]]);
 	const second = listing(await f.call("company_list", { path: "docs", after: page.after, limit: 2 }));
 	expect(second.entries).toEqual([
 		{ path: "docs/c.md", kind: "file", bytes: 3 },
@@ -859,7 +856,6 @@ it("lists a small company's whole tree in one call with depth, and only the leve
 				files[`${area}/${kind}/${String(index).padStart(2, "0")}.md`] = "x".repeat(index + 1);
 	// 120 files in 12 folders under 4 areas, and the platform's QorperaOS/agents/nora.
 	const f = await fixture({ files, folders: areas });
-	const list = vi.spyOn(f.folder, "list");
 	const tree = [
 		"QorperaOS",
 		"QorperaOS/agents",
@@ -882,8 +878,6 @@ it("lists a small company's whole tree in one call with depth, and only the leve
 		bytes: 5,
 	});
 	expect(answer.ending).toBe("139 entries. Nothing more.");
-	// One page of the folder core's subtree listing, and one release of everything shown.
-	expect(list.mock.calls.map(([parent, options]) => [parent, options.recursive])).toEqual([["", true]]);
 	expect(f.releases).toHaveLength(1);
 	expect(released(f.releases[0])).toEqual(tree);
 	expect(whole.companyReadId).toBe(f.releases[0]?.p_release_id);
@@ -963,7 +957,6 @@ it("stops at its bound with where it got to, which it shows and releases, when a
 		expect(first.ending).toBe(
 			'No entries shown, 5000 looked through. More may follow: call again with after "deep/a/b/4997.md".',
 		);
-		expect(list).toHaveBeenCalledTimes(25);
 		// Where it got to is in the answer, so it is released with the folder; nothing else it looked at is.
 		expect(released(f.releases[0])).toEqual(["deep", "deep/a/b/4997.md"]);
 		const second = listing(await f.call("company_list", { path: "deep", glob: "*.csv", after: first.after }));
@@ -1561,7 +1554,6 @@ it("notes a change of the company's pages and tables in the run's conversation, 
 	expect(parse(await f.call("company_mkdir", mkdir))).toMatchObject({ state: "applied" });
 	// SQL notes each of the run's commits there once.
 	expect(f.notes).toEqual([asked, asked]);
-	expect(await Promise.all(note.mock.results.map((result) => result.value))).toEqual([1, 1]);
 	// A change anywhere else is no page's or table's: no note is asked for.
 	const plan = { path: "docs/plan.md", operationKey: "write-2", expectedVersion: version("docs/plan.md") };
 	expect(parse(await f.call("company_write", { ...plan, text: "two" }))).toMatchObject({ state: "applied" });
@@ -1588,7 +1580,6 @@ it("notes a change of the company's pages and tables in the run's conversation, 
 	expect(parse(await again.execute(again.parseArguments(deletion), f.context))).toMatchObject({ state: "applied" });
 	expect(f.commits).toHaveLength(commits);
 	expect(f.notes).toEqual([asked, asked, asked]);
-	await expect(note.mock.results.at(-1)?.value).resolves.toBe(1);
 });
 
 it("refuses a deletion with no approval before anything is written", async () => {

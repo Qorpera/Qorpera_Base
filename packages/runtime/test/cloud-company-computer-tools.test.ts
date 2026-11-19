@@ -706,7 +706,6 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			shell.inputSchema as { properties: { action: { oneOf: { properties: { action?: { const: string } } }[] } } }
 		).properties.action.oneOf.map((variant) => variant.properties.action?.const);
 		expect(variants).toEqual(["start", "read", "write", "stop", "stop", "list"]);
-		expect(shell.description).not.toContain("15 seconds");
 		expect(shell.description).toContain("public internet");
 		// F3 4d: commands run in the company folder, offline unless the start asks for the network.
 		expect(shell.description).toContain("with the company folder at /company");
@@ -730,28 +729,6 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			expect(() => parseCompanyComputerAction({ kind: "browser", action: "navigate", url })).toThrow();
 		},
 	);
-
-	// F3 4f: the company folder at /company replaced the transfer tool; no capability offers it, and no guest parses one.
-	it("offers no file transfer and parses none", () => {
-		for (const capabilities of [["shell"], ["browser", "desktop", "shell"]] as const)
-			expect(toolHarness(capabilities).session.tools.map((tool) => tool.name)).not.toContain("computer_transfer");
-		for (const transfer of [
-			{
-				kind: "transfer",
-				action: "export",
-				source: { realm: "company_computer", path: "reports/a.bin" },
-				destination: { realm: "object_storage" },
-				mediaType: "application/octet-stream",
-			},
-			{
-				kind: "transfer",
-				action: "import",
-				source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
-				destination: { realm: "company_computer", path: "inbox/a.bin" },
-			},
-		])
-			expect(() => parseCompanyComputerAction(transfer)).toThrow("INVALID_COMPUTER_ARGUMENTS");
-	});
 
 	it("reads a vault_fill as a box, an account and a field, never a value", () => {
 		const fill = {

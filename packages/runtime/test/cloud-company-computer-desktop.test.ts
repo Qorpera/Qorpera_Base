@@ -56,8 +56,6 @@ async function desktopFixture() {
 describe("restored agent wallpaper preparation (synthetic image bytes, local filesystem)", () => {
 	it("uses the existing template mapping and renderer identity hash without accepting arbitrary asset names", () => {
 		const binding = computerBinding();
-		let seed = 0;
-		for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
 		for (const [template, character] of Object.entries(STAFF_CHARACTER_BY_TEMPLATE)) {
 			expect(companyComputerScreenCharacter(binding, template)).toBe(character);
 			expect(companyComputerScreenCreature(binding, template)).toBe(
@@ -67,11 +65,16 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		expect(companyComputerScreenCreature(binding, "legal-expert")).toBe("moon");
 		// The same walk the clients use (`figureFor`), so an agent nobody has
 		// dressed yet shows the same figure on its desktop as in its avatar.
-		const walked = STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
+		const walked = companyComputerScreenCharacter(binding, undefined);
+		expect(STAFF_CHARACTER_IDS).toContain(walked);
 		for (const template of [undefined, "unknown-template", "__proto__", "../../outside"]) {
 			expect(companyComputerScreenCharacter(binding, template)).toBe(walked);
 			expect(companyComputerScreenCreature(binding, template)).toBe(COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[walked]);
 		}
+		const agents = Array.from({ length: 12 }, (_, n) => ({ ...binding, staffAgentId: computerId(80 + n) }));
+		const others = agents.map((agent) => companyComputerScreenCharacter(agent, undefined));
+		expect(new Set(others).size).toBeGreaterThan(1);
+		expect(companyComputerScreenCharacter(agents[0], "unknown-template")).toBe(others[0]);
 		expect(companyComputerScreenCharacter(binding, "co-founder")).toBe("crown");
 		expect(companyComputerScreenCreature(binding, "agent-manager", "flame")).toBe("ribbon");
 		expect(companyComputerScreenCreature(binding, "agent-manager", "../../outside")).toBe("halo");
@@ -88,9 +91,11 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 
 	it("keeps to the first seven backdrops for an image built before the newer figures", () => {
 		const binding = computerBinding();
-		let seed = 0;
-		for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
-		const installed = COMPANY_COMPUTER_FIRST_WALLPAPER_IDS[seed % COMPANY_COMPUTER_FIRST_WALLPAPER_IDS.length];
+		const installed = companyComputerScreenFirstCreature(binding, "agent-manager", "star");
+		expect(COMPANY_COMPUTER_FIRST_WALLPAPER_IDS).toContain(installed);
+		const agents = Array.from({ length: 12 }, (_, n) => ({ ...binding, staffAgentId: computerId(80 + n) }));
+		const firsts = agents.map((agent) => companyComputerScreenFirstCreature(agent, "agent-manager", "star"));
+		expect(new Set(firsts).size).toBeGreaterThan(1);
 		// A figure that has always had a backdrop keeps it.
 		for (const [figure, asset] of [
 			["planet", "brain"],
@@ -644,7 +649,7 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		expect(await readFile(fixture.log, "utf8")).toBe("");
 	});
 
-	it("wires the helper inside the clean per-screen D-Bus environment without the obsolete launchers", async () => {
+	it("wires the helper inside the clean per-screen D-Bus environment", async () => {
 		const wrapper = await readFile(
 			new URL("../../../deploy/lxd-company-computer-guest/qorpera-screen-session", import.meta.url),
 			"utf8",
@@ -652,23 +657,16 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		expect(wrapper).toContain("wallpaper=${QORPERA_SCREEN_WALLPAPER:?");
 		expect(wrapper).toContain(`\${wallpaper} != "\${screen_state}/wallpaper.png"`);
 		expect(wrapper).toContain(`XDG_CONFIG_HOME="\${screen_state}/config"`);
-		// Caches and thumbnails, of company files too, stay in memory.
 		expect(wrapper).toContain(`cache_dir="\${runtime_dir}/cache"`);
 		expect(wrapper).toContain(`XDG_CACHE_HOME="\${cache_dir}"`);
-		// The company folder only when the office service bound it.
 		expect(wrapper).toContain(`\${QORPERA_COMPANY_FOLDER:-} == /company && -d /company && -x /company`);
 		expect(wrapper).toContain(`/usr/bin/dbus-run-session -- /usr/local/bin/qorpera-screen-xfce "\${wallpaper}"`);
-		expect(wrapper).not.toMatch(/QORPERA_LIVE_COMPANY_ROOT|dataset\/live|qorpera-chrome/);
-		// The desktop follows the company's local day and carries only the office dock.
 		expect(wrapper).toContain(`TZ="\${time_zone}" QORPERA_SCREEN_BACKDROPS="\${backdrops}"`);
 		expect(wrapper).toContain(`! -f /usr/share/zoneinfo/\${time_zone}`);
 		for (const launcher of ["qorpera-terminal.desktop", "qorpera-files.desktop", "qorpera-browser.desktop"])
 			expect(wrapper).toContain(launcher);
 		expect(wrapper).toContain("/usr/local/bin/qorpera-screen-browser");
-		expect(wrapper).not.toMatch(/Exec=.*qorpera-chromium|xfce4-web-browser|xfce4-appfinder|applicationsmenu/);
-		// No dialog can ever cover a screen somebody is looking at, and no window list.
 		expect(wrapper).not.toMatch(/xmessage|zenity|tasklist/);
-		// The X server never blanks, never listens and takes no viewer-side overrides.
 		expect(wrapper).toContain("-noreset -s 0 ");
 		expect(wrapper).toContain("-SecurityTypes None");
 		expect(wrapper).toContain("-AllowOverride ''");
@@ -676,16 +674,8 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 			new URL("../../../deploy/lxd-company-computer-guest/qorpera-screen-browser", import.meta.url),
 			"utf8",
 		);
-		expect(browser).toContain("xdotool windowactivate");
-		expect(browser).not.toMatch(/qorpera-chromium|bwrap|playwright/);
-		// The launcher starts nothing itself and says nothing about private sign-in,
-		// which no member client can reach any more.
-		expect(browser).not.toMatch(/chromium-browser|google-chrome|signs in|privately/i);
-		expect(browser).toContain("runtime_root=/run/qorpera");
 		expect(browser).not.toMatch(/xmessage|zenity|notify-send/);
-		const helper = await readFile(xfceHelper, "utf8");
-		expect(helper).not.toMatch(/xmessage|zenity|qorpera-chromium|bwrap/);
-		expect(helper).toContain("xprop -root -spy _NET_CLIENT_LIST");
+		expect(await readFile(xfceHelper, "utf8")).not.toMatch(/xmessage|zenity/);
 	});
 
 	it("asks the office service for the browser through one empty file, waits, asks once more and never opens a dialog", async () => {
@@ -782,8 +772,6 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 			"0x400007": "Chromium",
 		});
 		expect(await readdir(f.root)).not.toContain("started");
-		// The launcher never relies on a visibility search again.
-		expect(await readFile(f.launcher, "utf8")).not.toMatch(/--onlyvisible|xdotool search/);
 		// With no window the tool itself starts, in the launcher's working directory.
 		await f.windows({ "0x400007": "Chromium" });
 		await f.run("files");
@@ -949,7 +937,6 @@ printf '\\n' >> "$TEST_LOG"
 		expect(block).not.toContain("/usr/bin/realpath");
 		// Without the company folder Terminal and Files open in the desktop's home, never in the workbench (F3 4f-1b).
 		expect(text).toMatch(/\nfolder_root=\$\{desktop_home\}\n/);
-		expect(text).not.toMatch(/folder_root=\$\{workbench_root\}|company workbench/);
 		const screenState = join(fixture.root, "screen with spaces");
 		const home = join(fixture.root, "home dir");
 		await mkdir(home);

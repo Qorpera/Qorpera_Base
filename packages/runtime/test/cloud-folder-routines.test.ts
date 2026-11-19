@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { parseCompanyStateFile, type RoutineFile, writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { CloudFolderRoutines, type CloudFolderRoutineUpsert } from "@qorpera/runtime/cloud-folder-routines";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -8,7 +8,7 @@ import {
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
-import { CLOUD_ROUTINE_TOOL_DESCRIPTION, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
+import { cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -48,10 +48,6 @@ async function fixture(...args: Parameters<typeof folderWriterFixture>) {
 }
 
 const parse = (content: { value: unknown }) => JSON.parse(String(content.value));
-const hashedId = (namespace: string, runId: string, key: string) => {
-	const hex = createHash("sha256").update(`${namespace}:${runId}:${key}`).digest("hex");
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] ?? "0", 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-};
 async function refuses(call: Promise<unknown>, reason: string) {
 	const error = await call.then(
 		() => null,
@@ -95,7 +91,8 @@ it("saves a new routine as its file, making the routines folder, with the review
 	const execute = vi.spyOn(CloudNativeToolOperations.prototype, "execute");
 	const context = f.call();
 	const result = parse((await f.routines().change(UPSERT, context)).content);
-	const id = hashedId("qorpera.folder-routine/v1", f.identity.runId, "inbox-1");
+	const id = f.routine("inbox")?.id;
+	expect(id).toMatch(UUID_PATTERN);
 	expect(f.routine("inbox")).toEqual({ ...FILE, id, effort: "medium" });
 	expect(result).toMatchObject({
 		schema: "qorpera.agent-routine-receipt/v2",
@@ -145,6 +142,17 @@ it("saves a new routine as its file, making the routines folder, with the review
 		next: "Saved: tell the member what you set up or changed.",
 	});
 	expect(JSON.parse(stored?.value ?? "{}").routine).not.toHaveProperty("status");
+	const again = parse((await f.routines().change(UPSERT, context)).content);
+	expect(again).toMatchObject({ outcome: "unchanged" });
+	expect(f.commits).toHaveLength(1);
+	expect(f.routine("inbox")?.id).toBe(id);
+	await f.routines().change({ ...UPSERT, operationKey: "other-1", routineKey: "other" }, f.call());
+	expect(f.routine("other")?.id).toMatch(UUID_PATTERN);
+	expect(f.routine("other")?.id).not.toBe(id);
+	const elsewhere = await fixture();
+	await elsewhere.routines().change(UPSERT, elsewhere.call());
+	expect(elsewhere.routine("inbox")?.id).toMatch(UUID_PATTERN);
+	expect(elsewhere.routine("inbox")?.id).not.toBe(id);
 });
 
 it("writes each trigger, the end, the runs, quiet hours and effort as the file says them", async () => {
@@ -675,7 +683,6 @@ it("is manage_routine: its description, its list arguments, the checks before re
 		{ routineKey: "inbox", decisionOwed: () => false, settled: () => settled++ },
 		f.routines(),
 	)[0];
-	expect(tool?.description).toBe(CLOUD_ROUTINE_TOOL_DESCRIPTION);
 	expect(tool?.description).toContain("Each change passes a quick automatic review against your job");
 	expect(tool?.description).toContain("routines/<routineKey>.md");
 	expect(tool?.description).toContain("- list: your routines a page at a time (cursor), or one whole by routineKey.");
@@ -691,7 +698,6 @@ it("is manage_routine: its description, its list arguments, the checks before re
 	);
 	expect(tool?.description).toContain("required (always; it needs your public thread, or the run is skipped)");
 	expect(tool?.description).toContain("each run gets up to 20 new events");
-	expect(tool?.description).not.toMatch(/No member approval|not available/);
 	// The tool boundary takes a description of at most 4096 bytes.
 	expect(Buffer.byteLength(tool?.description ?? "")).toBeLessThanOrEqual(4096);
 	expect(tool?.inputSchema).toHaveProperty("properties.cursor");

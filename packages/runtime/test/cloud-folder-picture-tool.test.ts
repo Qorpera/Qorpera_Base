@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudActionEffect, describeCloudAction } from "@qorpera/runtime/cloud-action-review";
-import { CLOUD_MAKE_PICTURE_DESCRIPTION, cloudPictureTool } from "@qorpera/runtime/cloud-folder-picture-tool";
+import { cloudPictureTool } from "@qorpera/runtime/cloud-folder-picture-tool";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	CloudNativeToolBoundary,
@@ -69,7 +69,6 @@ const request = (more: Record<string, JsonValue> = {}) => ({
 it("is a runtime tool that shows the model a picture, told in under 4096 bytes", async () => {
 	const f = await fixture();
 	expect([f.tool.name, f.tool.source, f.tool.images]).toEqual(["make_picture", "runtime", true]);
-	expect(f.tool.description).toBe(CLOUD_MAKE_PICTURE_DESCRIPTION);
 	expect(Buffer.byteLength(f.tool.description)).toBeLessThanOrEqual(4096);
 	for (const rule of [
 		"something that does not exist yet (the company's own product idea, a scene, a look, an illustration for an app)",

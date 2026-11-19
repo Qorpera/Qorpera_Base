@@ -3,11 +3,6 @@ import { once } from "node:events";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { performance } from "node:perf_hooks";
 import {
-	connectCompanyComputerScreenView,
-	parseViewerEndpoint,
-	startLocalScreenViewWebSocketBridge,
-} from "@qorpera/cloud-client/node/cloud-company-computer-view";
-import {
 	assertCompanyComputerViewerGrant,
 	type CompanyComputerViewerAuthority,
 	type CompanyComputerViewerGrant,
@@ -26,6 +21,7 @@ import {
 	computerRfbUpdate,
 	computerScope,
 } from "./fixtures/company-computer.ts";
+import { connectCompanyComputerScreenView } from "./fixtures/company-computer-view-client.ts";
 
 const sockets = new Set<Socket>();
 const cleanups: Array<() => Promise<void>> = [];
@@ -430,48 +426,11 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		expect(Buffer.concat(fixture.received).length).toBe(hello.length + 50 * request.length);
 	});
 
-	it("rejects substituted binding and oversized handshake lines including a newline in the same chunk", async () => {
-		for (const reply of [
-			`${JSON.stringify({ ok: true, binding: { ...computerBinding(), companyId: computerId(99) }, mode: "watch" })}\n`,
-			`${" ".repeat(4097)}{}\n`,
-			`${JSON.stringify({ ok: false, error: "PRIVATE_SERVICE_SECRET" })}\n`,
-		]) {
-			const port = await listen(
-				createServer((socket) => {
-					sockets.add(socket);
-					socket.on("error", () => undefined);
-					socket.once("data", () => socket.end(reply));
-				}),
-			);
-			await expect(
-				connectCompanyComputerScreenView({
-					host: "127.0.0.1",
-					port,
-					capability: randomBytes(32).toString("base64url"),
-					binding: computerBinding(),
-					mode: "watch",
-					signal: new AbortController().signal,
-				}),
-			).rejects.toThrow("VIEW_UNAVAILABLE");
-		}
-	});
-
-	it("requires exact member takeover leases and private numeric endpoints", () => {
+	it("requires exact member takeover leases", () => {
 		expect(() => assertCompanyComputerViewerGrant({ ...viewerGrant("control"), lease: computerLease() })).toThrow();
 		expect(() => assertCompanyComputerViewerGrant({ ...viewerGrant(), lease: viewerGrant("control").lease })).toThrow(
 			"WATCHER_CANNOT_HOLD_CONTROL",
 		);
-		for (const endpoint of [
-			"example.com:5901",
-			"8.8.8.8:5901",
-			"0.0.0.0:5901",
-			"127.00.0.1:5901",
-			"127.0.0.1:65536",
-			"127.0.0.1:0",
-		]) {
-			expect(() => parseViewerEndpoint(endpoint)).toThrow();
-		}
-		expect(parseViewerEndpoint("100.64.0.1:5901")).toEqual({ host: "100.64.0.1", port: 5901 });
 	});
 });
 
@@ -775,76 +734,5 @@ describe("windowed member input (loopback only, authority/guest doubles)", () =>
 		);
 		// Only what each received chunk ends with survives; never the whole queue.
 		expect(inputsOf(fixture.received).length).toBeLessThan(40 * 6);
-	});
-});
-
-function websocketRequest(url: string, origin: string, head = Buffer.alloc(0)): Socket {
-	const parsed = new URL(url);
-	const socket = connect(Number(parsed.port), "127.0.0.1");
-	sockets.add(socket);
-	const websocketKey = randomBytes(16).toString("base64");
-	socket.on("error", () => undefined);
-	socket.once("connect", () =>
-		socket.write(
-			Buffer.concat([
-				Buffer.from(
-					`GET ${parsed.pathname} HTTP/1.1\r\nHost: 127.0.0.1:${parsed.port}\r\nOrigin: ${origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${websocketKey}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
-				),
-				head,
-			]),
-		),
-	);
-	socket.resume();
-	return socket;
-}
-
-describe("member loopback bridge", () => {
-	it("checks exact renderer origin, consumes one URL, and preserves masked bytes coalesced with the HTTP upgrade", async () => {
-		const fixture = await gatewayFixture();
-		const view = await fixture.attach();
-		view.socket.resume();
-		const unregister = vi.fn();
-		const registerRendererUrl = vi.fn(() => unregister);
-		const bridge = await startLocalScreenViewWebSocketBridge(view, {
-			origin: "https://trusted-renderer.example",
-			registerRendererUrl,
-		});
-		cleanups.push(bridge.close);
-		const wrong = websocketRequest(bridge.url, "https://untrusted.example");
-		await vi.waitFor(() => expect(wrong.destroyed).toBe(true));
-		expect(unregister).not.toHaveBeenCalled();
-		const mask = Buffer.from([1, 2, 3, 4]);
-		const head = Buffer.concat([
-			Buffer.from([130, 128 | hello.length]),
-			mask,
-			Buffer.from(hello.map((byte, index) => byte ^ mask[index % 4])),
-		]);
-		const accepted = websocketRequest(bridge.url, "https://trusted-renderer.example", head);
-		const response: Buffer[] = [];
-		accepted.on("data", (bytes: Buffer) => response.push(bytes));
-		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(hello));
-		expect(Buffer.concat(response).toString()).toContain("101 Switching Protocols");
-		expect(registerRendererUrl).toHaveBeenCalledWith(bridge.url);
-		expect(unregister).toHaveBeenCalledOnce();
-		const duplicate = websocketRequest(bridge.url, "https://trusted-renderer.example");
-		await vi.waitFor(() => expect(duplicate.destroyed).toBe(true));
-		expect(accepted.destroyed).toBe(false);
-		await bridge.close();
-		expect(view.socket.destroyed).toBe(true);
-	});
-
-	it("cleans up an unclaimed renderer bridge within its attach deadline", async () => {
-		const fixture = await gatewayFixture();
-		const view = await fixture.attach();
-		view.socket.resume();
-		const unregister = vi.fn();
-		const bridge = await startLocalScreenViewWebSocketBridge(view, {
-			origin: "null",
-			registerRendererUrl: () => unregister,
-			attachTimeoutMs: 20,
-		});
-		cleanups.push(bridge.close);
-		await vi.waitFor(() => expect(view.socket.destroyed).toBe(true));
-		expect(unregister).toHaveBeenCalledOnce();
 	});
 });

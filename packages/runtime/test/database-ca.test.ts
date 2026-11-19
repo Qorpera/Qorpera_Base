@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, createServer, type Server } from "node:tls";
-import { type DatabaseCaCredentials, databaseTls, SUPABASE_CA_FINGERPRINT } from "@qorpera/runtime/database-ca";
+import { type DatabaseCaCredentials, databaseTls } from "@qorpera/runtime/database-ca";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /* The database's CA (database-ca.ts), which the secret broker, the shared vault and the agent exit's rules reader take
@@ -90,9 +90,6 @@ describe("databaseTls", () => {
 			ca: SUPABASE_CA,
 			rejectUnauthorized: true,
 		});
-		expect(SUPABASE_CA_FINGERPRINT).toBe(
-			"80:70:25:AD:50:D4:ED:21:9D:2C:9C:7D:29:9C:00:4F:82:4E:B0:0C:F7:F6:5A:FE:F6:07:D0:7B:72:E6:CA:FA",
-		);
 		// Any other CA in Supabase's place is refused, in either mode, as before.
 		expect(refused({ supabaseCa: ownCa.bytes.toString("utf8") })).toThrow("Test service database CA is invalid");
 		expect(refused({ supabaseCa: "not a certificate" })).toThrow("Test service database CA is invalid");

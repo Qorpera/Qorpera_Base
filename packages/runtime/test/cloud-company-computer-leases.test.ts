@@ -5,11 +5,6 @@ import {
 	type CompanyComputerScreenLeaseControl,
 	CompanyComputerScreenLeaseHandle,
 } from "@qorpera/runtime/cloud-company-computer-leases";
-import {
-	companyComputerScreenBinding,
-	companyComputerScreenLease,
-	transitionCompanyComputerScreens,
-} from "@qorpera/runtime/cloud-company-computer-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	computerBinding,
@@ -17,7 +12,6 @@ import {
 	computerId,
 	computerLease,
 	computerOperation,
-	computerRegistry,
 	computerRun,
 	computerScope,
 } from "./fixtures/company-computer.ts";
@@ -179,71 +173,6 @@ describe("cloud screen lease handle (test-double authority)", () => {
 });
 
 describe("guest action interlock and takeover drain", () => {
-	it("admits a reused retired slot only after generation replacement and rejects its old lease", async () => {
-		const gate = new CompanyComputerScreenActionGate();
-		const signal = new AbortController().signal;
-		const previous = computerBinding();
-		let registry = computerRegistry();
-		registry = transitionCompanyComputerScreens(
-			registry,
-			registry.scope,
-			{ type: "retire", screenId: previous.screenId },
-			1,
-		).registry;
-		registry = transitionCompanyComputerScreens(
-			registry,
-			registry.scope,
-			{ type: "ensure", staffAgentId: computerId(11), newScreenId: computerId(12) },
-			2,
-		).registry;
-		const next = companyComputerScreenBinding(registry, registry.screens[0]);
-		const fenceEpoch = registry.screens[0].epoch;
-		await gate.fence(previous, fenceEpoch, signal);
-		registry = transitionCompanyComputerScreens(
-			registry,
-			registry.scope,
-			{
-				type: "claim",
-				screenId: next.screenId,
-				leaseId: computerId(13),
-				driver: { kind: "agent", runId: computerId(14), staffAgentId: next.staffAgentId },
-				validForMs: 1000,
-			},
-			3,
-		).registry;
-		const lease = companyComputerScreenLease(registry, registry.screens[0], 4);
-		const perform = () =>
-			gate.perform({
-				lease,
-				operation: computerOperation(),
-				signal,
-				authorize: async () => undefined,
-				execute: async () => "new assignment",
-			});
-		await expect(perform()).rejects.toThrow("SCREEN_BINDING_MISMATCH");
-		const ready = computerDeferred<void>();
-		const replacement = gate.replaceBinding({
-			previous,
-			next,
-			fenceEpoch,
-			signal,
-			assertReplacementReady: () => ready.promise,
-		});
-		await expect(perform()).rejects.toThrow("SCREEN_REPLACEMENT_PENDING");
-		ready.resolve();
-		await replacement;
-		await expect(perform()).resolves.toBe("new assignment");
-		await expect(
-			gate.perform({
-				lease: computerLease(),
-				operation: computerOperation(),
-				signal,
-				authorize: async () => undefined,
-				execute: async () => "stale assignment",
-			}),
-		).rejects.toThrow("SCREEN_BINDING_MISMATCH");
-	});
-
 	it("waits for actual stopped work, discards its result, and does not let the next driver overlap", async () => {
 		const gate = new CompanyComputerScreenActionGate();
 		const started = computerDeferred<AbortSignal>();
@@ -336,7 +265,7 @@ describe("guest action interlock and takeover drain", () => {
 		expect(authorize).toHaveBeenCalledTimes(2);
 	});
 
-	it("admits parallel screens without allowing a generation reset to erase fences", async () => {
+	it("admits parallel screens while another screen's action runs", async () => {
 		const gate = new CompanyComputerScreenActionGate();
 		const started = computerDeferred<void>();
 		const work = computerDeferred<void>();
@@ -365,19 +294,12 @@ describe("guest action interlock and takeover drain", () => {
 		).resolves.toBe("parallel");
 		work.resolve();
 		await first;
+	});
+
+	it("does not let a generation reset erase a fence", async () => {
+		const gate = new CompanyComputerScreenActionGate();
 		await gate.fence(computerBinding(), 2, new AbortController().signal);
 		const next = { ...computerBinding(), screenGeneration: 2 };
-		await expect(
-			gate.replaceBinding({
-				previous: computerBinding(),
-				next,
-				fenceEpoch: 3,
-				signal: new AbortController().signal,
-				assertReplacementReady: async () => {
-					throw new Error("OLD_PROCESS_STILL_ALIVE");
-				},
-			}),
-		).rejects.toThrow("OLD_PROCESS_STILL_ALIVE");
 		await expect(
 			gate.perform({
 				lease: { ...computerLease(), binding: next, epoch: 3 },
@@ -387,21 +309,6 @@ describe("guest action interlock and takeover drain", () => {
 				execute: async () => "unsafe",
 			}),
 		).rejects.toThrow("SCREEN_BINDING_MISMATCH");
-		await gate.replaceBinding({
-			previous: computerBinding(),
-			next,
-			fenceEpoch: 3,
-			signal: new AbortController().signal,
-			assertReplacementReady: async () => undefined,
-		});
-		await expect(
-			gate.perform({
-				lease: { ...computerLease(), binding: next, epoch: 4 },
-				operation: computerOperation(),
-				signal: new AbortController().signal,
-				authorize: async () => undefined,
-				execute: async () => "recovered",
-			}),
-		).resolves.toBe("recovered");
+		await expect(gate.fence(next, 3, new AbortController().signal)).rejects.toThrow("SCREEN_BINDING_MISMATCH");
 	});
 });

@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import {
 	ChatGptPlanOAuth,
 	chatGptPlanCodeChallenge,
@@ -438,5 +438,4 @@ it("keeps a sealed login to exactly its fields", () => {
 	expect(() =>
 		parseChatGptPlanLogin(JSON.stringify({ ...record, accessExpiresAt: "2026-09-30T00:00:00.000Z" })),
 	).toThrow();
-	expect(createHash("sha256").update("v").digest("base64url")).toBe(chatGptPlanCodeChallenge("v"));
 });

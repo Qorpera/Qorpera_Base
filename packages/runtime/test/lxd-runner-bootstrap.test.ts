@@ -364,9 +364,15 @@ describe("LXD runner guest bootstrap", () => {
 		}
 	});
 
-	it.each(GUEST_IMAGE_SELF_UPDATE_UNITS.map((unit) => [unit]))(
+	it.each([
+		["apt-daily.timer", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_TIMER"],
+		["apt-daily-upgrade.timer", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_TIMER"],
+		["apt-daily.service", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_SERVICE"],
+		["apt-daily-upgrade.service", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_SERVICE"],
+		["unattended-upgrades.service", "RUNNER_IMAGE_SELF_UPDATE_ENABLED:UNATTENDED_UPGRADES_SERVICE"],
+	])(
 		"refuses an image that can update itself (%s not masked) before reading any run authority",
-		async (unit) => {
+		async (unit, code) => {
 			const { paths, sharedGid } = await fixture();
 			const uid = process.getuid?.() ?? 0;
 			const gid = process.getgid?.() ?? 0;
@@ -392,7 +398,7 @@ describe("LXD runner guest bootstrap", () => {
 						started.push(service);
 					},
 				}),
-			).rejects.toThrow(`RUNNER_IMAGE_SELF_UPDATE_ENABLED:${unit.toUpperCase().replace(/[.-]/g, "_")}`);
+			).rejects.toThrow(code);
 			expect(started).toEqual([]);
 			expect(identityConsulted).toBe(false);
 			await expect(stat(paths.runnerConfigDestination)).rejects.toMatchObject({ code: "ENOENT" });

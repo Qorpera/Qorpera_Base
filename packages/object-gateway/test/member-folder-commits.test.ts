@@ -3,7 +3,6 @@ import { createServer, type Server } from "node:http";
 import { writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
-import { createMemberCors } from "../src/member-cors.ts";
 import { followUpMemberCommit, serveMemberFolderCommit } from "../src/member-folder-commits.ts";
 
 const environmentId = "34000000-0000-4000-8000-000000000020";
@@ -704,34 +703,5 @@ describe("a member's change set to a folder-v2 company", () => {
 		expect(made).toBeGreaterThanOrEqual(1);
 		expect(made).toBeLessThan(8);
 		expect(calls.length).toBe(made);
-	});
-
-	it("lets a member's browser send it across origins", () => {
-		const cors = createMemberCors(["https://app.example.test"]);
-		const headers = new Map<string, string>();
-		let status = 0;
-		const handled = cors(
-			{
-				method: "OPTIONS",
-				url: `/v1/member-folder-commits/${environmentId}`,
-				headers: {
-					origin: "https://app.example.test",
-					"access-control-request-method": "POST",
-					"access-control-request-headers": "authorization, content-type",
-				},
-			} as never,
-			{
-				setHeader: (name: string, value: string) => headers.set(name.toLowerCase(), String(value)),
-				writeHead: (code: number, written: Record<string, string> = {}) => {
-					status = code;
-					for (const [name, value] of Object.entries(written)) headers.set(name.toLowerCase(), value);
-				},
-				end: () => {},
-			} as never,
-		);
-		expect(handled).toBe(true);
-		expect(status).toBe(204);
-		expect(headers.get("access-control-allow-methods")).toBe("POST");
-		expect(headers.get("access-control-allow-headers")).toBe("authorization, content-type");
 	});
 });

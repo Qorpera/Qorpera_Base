@@ -464,3 +464,10 @@
 .settings-brand-rename svg { width: 16px; height: 16px; }
 .settings-brand-error:empty { display: none; }
 @media (max-width: 560px) { .settings-brand-row { gap: 18px; } .settings-brand-logo, .settings-brand-logo .figure, .settings-brand-logo .company-logo { width: 46px; height: 46px; } .settings-brand-logo { border-radius: 12px; } .settings-brand-name strong { font-size: 24px; } }
+.account-password-set { display: flex; align-items: center; gap: 8px; }
+.account-password-input { width: 200px; height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+.account-password-feedback { margin-top: 8px; }
+@media (max-width: 600px) {
+	.settings-preference-row.account-password { flex-direction: column; align-items: stretch; }
+	.account-password-set .account-password-input { flex: 1; width: auto; }
+}

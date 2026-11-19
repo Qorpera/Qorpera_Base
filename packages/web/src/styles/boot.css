@@ -21,9 +21,9 @@
 .boot .auth { font-family: var(--font-sans); }
 .boot .boot-line { display: inline-block; vertical-align: middle; height: 0.62em; border-radius: 6px; }
 .boot .auth-body h1 .boot-line { width: 3.4em; }
-.boot .auth-lead .boot-line { width: 17em; max-width: 100%; }
+.boot .auth-lead .boot-line { width: 15em; max-width: 100%; }
 .boot .auth-form .boot-line { width: 2.8em; }
-.boot .auth-foot .boot-line { width: 26em; max-width: 100%; }
+.boot .boot-crown { width: 108px; aspect-ratio: 1; border-radius: 28px; }
 .boot .boot-lockup { width: 136px; height: 34px; border-radius: 8px; }
 .boot .boot-field { height: 46px; border-radius: 8px; }
 .boot .boot-primary { height: 46px; margin-top: 6px; border-radius: 8px; }
