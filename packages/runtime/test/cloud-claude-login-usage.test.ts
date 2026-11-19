@@ -64,6 +64,17 @@ describe("Claude Code's usage, as it reports it", () => {
 			unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1794921898, status: "rejected" } },
 		};
 		expect(claudeUsageFromRateLimitInfo(info, NOW)?.limitResetAt).toBe("2026-11-17T13:24:58.000Z");
+		expect(claudeUsageFromRateLimitInfo(info, NOW)).not.toHaveProperty("limitType");
+		expect(claudeUsageFromRateLimitInfo({ ...info, rateLimitType: "seven_day_opus" }, NOW)).toMatchObject({
+			limitResetAt: "2026-11-17T13:24:58.000Z",
+			limitType: "seven_day_opus",
+		});
+		expect(
+			claudeUsageFromRateLimitInfo({ ...info, status: "allowed", rateLimitType: "five_hour" }, NOW),
+		).not.toHaveProperty("limitType");
+		expect(claudeUsageFromRateLimitInfo({ ...info, rateLimitType: "Five Hour!" }, NOW)).not.toHaveProperty(
+			"limitType",
+		);
 		expect(claudeUsageFromRateLimitInfo({ unifiedWindows: { five_hour: { utilization: 2 } } }, NOW)).toBeUndefined();
 		expect(claudeUsageFromRateLimitInfo({ status: "allowed" }, NOW)).toBeUndefined();
 		expect(claudeUsageFromRateLimitInfo("nonsense", NOW)).toBeUndefined();
