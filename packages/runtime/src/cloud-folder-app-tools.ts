@@ -84,6 +84,7 @@ import {
 	KIT_THREE_LICENSE,
 	kitBindings,
 	kitDataFile,
+	kitHeavyPictures,
 	kitLibrary,
 	kitNotes,
 	kitPage,
@@ -1134,6 +1135,13 @@ export function cloudAppTools(options: {
 				const holds = (path: string) =>
 					written.has(path.toLowerCase()) || byKey.get(path.toLowerCase())?.kind === "file";
 				look = kitNotes(kit, data, holds);
+				look.push(
+					...kitHeavyPictures(kit, data, (path) => {
+						const key = path.toLowerCase();
+						const found = written.has(key) ? undefined : byKey.get(key);
+						return found?.kind === "file" ? found.file.bytes : undefined;
+					}),
+				);
 				// Data that names a question reads the company's databases, and a stack answers questions: what the page
 				// needs joins the manifest, never leaves it.
 				const reading = manifestOut ?? before;
