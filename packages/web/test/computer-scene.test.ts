@@ -140,6 +140,29 @@ describe("the machine's own backdrop, as the web draws it", () => {
 		}
 	});
 
+	it("gives the window's corner buttons the dark screen's ink on a lit screen at night, and the picture's ink by day", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		vi.stubGlobal("fetch", async () => new Response("{}", { status: 404 }));
+		try {
+			vi.setSystemTime(new Date("2026-11-14T12:10:00Z"));
+			const day = new ComputerScene({ figure: "neutral", color: "#2563eb", timeZone: "UTC" });
+			day.set("screen");
+			expect(day.el.dataset.tone).toBe("light");
+			day.dispose();
+			const night = new ComputerScene({ figure: "neutral", color: "#2563eb", timeZone: "Pacific/Auckland" });
+			night.set("screen");
+			expect(night.el.dataset.tone).toBe("dark");
+			night.dispose();
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
+		const css = readFileSync(join(web, "src/styles/computer-scene.css"), "utf8");
+		expect(css).toMatch(
+			/\n\.computer-panel:has\(\.computer-scene:not\(\[hidden\]\)\[data-tone=dark\]\),\n[^{}]*\{ --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none;/,
+		);
+	});
+
 	it("reads the hour and the dock's clocks in the company's zone, else in UTC as the machine does", () => {
 		const now = new Date("2026-11-13T02:07:00Z");
 		expect(desktopClock(now, "Europe/Copenhagen")).toEqual({ hour: 3, date: "Fri 13 Nov", time: "03:07" });
