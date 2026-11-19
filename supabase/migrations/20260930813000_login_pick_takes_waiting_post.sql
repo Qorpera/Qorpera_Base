@@ -163,7 +163,6 @@ revoke all on function public.qorpera_take_member_session_account(uuid, uuid, uu
 	from public, anon, authenticated, service_role;
 
 create trigger qorpera_wake_occurrences_sponsor_wake_orchestrators
-	after update of sponsor_binding_id, sponsor_version on public.qorpera_wake_occurrences
-	for each row when (new.status = 'queued'
-		and (new.sponsor_binding_id, new.sponsor_version) is distinct from (old.sponsor_binding_id, old.sponsor_version))
+	after update of sponsor_binding_id on public.qorpera_wake_occurrences
+	for each row when (new.status = 'queued' and new.sponsor_binding_id is distinct from old.sponsor_binding_id)
 	execute function public.qorpera_wake_runner_orchestrators_internal();
