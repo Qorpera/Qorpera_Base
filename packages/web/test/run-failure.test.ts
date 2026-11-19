@@ -338,6 +338,57 @@ describe("a run ChatGPT turned away for too many requests at once (2026093080100
 	});
 });
 
+describe("a run ChatGPT no longer accepts the login's sign-in for (20260930808000)", () => {
+	const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
+	const download = BRIDGE("NATIVE_CREDENTIAL_DOWNLOAD");
+	const OWN =
+		"ChatGPT no longer accepts this login's sign-in, so the work stopped. Sign in again in Settings → AI subscriptions.";
+	const OTHERS =
+		"ChatGPT no longer accepts the sign-in of the login that pays for this run, so the work stopped. The member whose login it is can sign in again in Settings → AI subscriptions.";
+
+	it("tells the member whose login paid to sign in again, and anyone else who can", () => {
+		for (const error of [refused, download]) {
+			expect(classifyRunFailure(error, "failed", false, false, true)).toBe("sign_in_refused");
+			expect(runFailureReason(error, "failed", false, { own: true }, false, true, true)).toBe(OWN);
+			expect(runFailureReason(error, "failed", false, {}, false, false, true)).toBe(OTHERS);
+			expect(runFailureReason(error, "failed", false, { own: false, payerName: "Anna" }, false, false, true)).toBe(
+				OTHERS,
+			);
+		}
+	});
+
+	it("reads as before when the cloud does not say so, and a usage or rate limit keeps its words", () => {
+		expect(runFailureReason(refused, "failed", false, { own: true }, false, true, false)).toMatch(PROVIDER_REFUSED);
+		expect(runFailureReason(refused, "failed", false, { own: true })).toMatch(PROVIDER_REFUSED);
+		expect(runFailureReason(download, "failed", false, { own: true })).toMatch(LOGIN_UNAVAILABLE);
+		expect(runFailureReason(refused, "failed", true, { own: true }, false, true, true)).toMatch(
+			/reached its usage limit/,
+		);
+		expect(classifyRunFailure(refused, "failed", false, true, true)).toBe("rate_limited");
+	});
+
+	it("is not worth trying again as it is, whatever its last error reads as", () => {
+		const timedOut = "Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TIMEOUT]";
+		const dropped =
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE]";
+		const lost = "Runner lease expired before durable completion; durable attempt output requires review";
+		for (const error of [refused, timedOut, dropped, lost]) {
+			expect(runFailureInterrupted(error, "failed", false, false, true)).toBe(false);
+		}
+		for (const error of [timedOut, dropped, lost]) {
+			expect(runFailureInterrupted(error, "failed", false, false, false)).toBe(true);
+		}
+	});
+
+	it("says a waiting run tries again by itself while its sign-in is renewed", () => {
+		const until = new Date(Date.now() + 90_000).toISOString();
+		for (const payer of [{ own: true, continuable: true }, { own: false, payerName: "Anna" }, {}])
+			expect(runWaitingReason(until, payer, false, true)).toBe(
+				"ChatGPT did not accept this login's sign-in. Qorpera is renewing it, and the work tries again by itself in a few minutes.",
+			);
+	});
+});
+
 describe("whether a stopped run is worth trying again as it is", () => {
 	it.each([
 		["Runner lease expired before durable completion; durable attempt output requires review", "failed", true],

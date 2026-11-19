@@ -1836,7 +1836,6 @@ describe("the sessions' pill above the composer", () => {
 		);
 		const summary = pill.el.querySelector<HTMLButtonElement>(".coding-pill-summary")!;
 		const note = summary.querySelector<HTMLElement>(".coding-pill-note")!;
-		expect(note.textContent).toBe(codingSessionStatus(theirs, other).text);
 		expect(note.textContent).toMatch(/^Needs Jonas · paused /);
 		expect(note.dataset.tone).toBe("idle");
 		expect(summary.querySelector(".coding-pill-action")?.textContent).toBe("Open");

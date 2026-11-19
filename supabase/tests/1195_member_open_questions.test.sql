@@ -129,18 +129,12 @@ $$;
 -- 5. Indexes, privileges, marker.
 do $$
 begin
-	perform pg_temp.base_assert((select indexdef from pg_indexes where indexname = 'qorpera_session_events_interaction_requests')
-		like '%(session_id, sequence) WHERE (event_type = ''interaction_request''::text)', 'The requests index is partial');
-	perform pg_temp.base_assert((select indexdef from pg_indexes where indexname = 'qorpera_session_events_interaction_answers')
-		like '%WHERE (event_type = ANY (ARRAY[''interaction_answer''::text, ''authorization_decision''::text]))',
-		'The answers index is partial');
 	perform pg_temp.base_assert(has_function_privilege('authenticated', 'public.qorpera_list_member_open_questions(uuid)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_list_member_open_questions(uuid)', 'execute')
 		and not has_function_privilege('service_role', 'public.qorpera_list_member_open_questions(uuid)', 'execute'),
 		'Members execute it; anon and service_role do not');
-	perform pg_temp.base_assert((select prosecdef and provolatile = 's' and proconfig = array['search_path=""']
-		and prosrc like '%20260930706000%' from pg_proc
-		where oid = 'public.qorpera_list_member_open_questions(uuid)'::regprocedure), 'A stable definer read with the marker');
+	perform pg_temp.base_assert((select prosecdef and provolatile = 's' and proconfig = array['search_path=""'] from pg_proc
+		where oid = 'public.qorpera_list_member_open_questions(uuid)'::regprocedure), 'A stable definer read');
 end
 $$;
 

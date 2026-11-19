@@ -1128,6 +1128,11 @@ a member.
 > [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
 > item 1.
 
+> **Amended 2026-11-19.** For the action review, a coworker's message and the files the company's own agents and
+> members wrote are the company's own work: information, never the request or the mandate, and never outside
+> instructions, except for outside text they show they hold (a saved or forwarded email). See the
+> [inside-work amendment](#2026-11-19-amendment-the-companys-own-work-is-not-outside-instructions).
+
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
 leak them; the adapter prevents raw envelope leakage.
@@ -2615,6 +2620,49 @@ itself. What changed:
   at once.
 - The usage-limit notice names the login to its own member. The member's own
   pick of another login stays as it was.
+
+2026-11-19 amendment: the member's pick takes their post waiting in a thread
+(migration 20260930813000). On 19 Nov a member posted in an agent's thread while
+its login was at its usage limit. The post waited, as the 2026-11-05 amendment
+says, and the member then chose another login on the thread's usage card. The
+pick moved only their waiting turns (20260930580000), so the post stayed on the
+used-up login until its reset, with nothing in the thread to say so. Now:
+
+- The member's own pick of a login in an agent's thread or a group chat (one
+  chat or all chats on that login) also takes the wakes of their own posts there
+  that wait at another of their logins' usage limit, while no run holds them.
+  They go on, on the picked login, at once.
+- The same limits hold as for a waiting turn: never onto or off a ChatGPT plan,
+  never from a login that may work while the member is away onto one that may
+  not, only to a login that may pay for the poster. Another member's post and
+  every other wake (follow-up work, a routine's run) stay on their login.
+- A post the pick cannot take keeps the conversation on its login while it
+  waits, as a waiting turn does: the thread names that login and its usage
+  limit, and "All N chats" on it counts the chat.
+- Each move is recorded (`qorpera_wake_payer_moves`), and the wake's identity
+  guard admits exactly that recorded move of a queued wake with no run.
+- This replaces the 2026-11-05 amendment's "one already waiting stays on its
+  login" for the member's own posts.
+
+2026-11-18 amendment: a full reading holds an account by itself (founder, 18
+November 2026: "Yes, build it"; migration 20260930807000). On 18 Nov a member
+deleted a company, and with it the only usage-limit signals of their account
+login. The login's other companies were free at once, with no reading with room.
+Now:
+
+- The account's newest full reading holds the login by itself, in every company
+  of that member and account, until the full window's reset. A full reading is
+  one with a window at 100 % whose reset is ahead and within 90 days. The hold
+  holds while no reading of the account with room is as new, and a reading with
+  room at the same time wins. It holds as a usage limit's wall does: work waits
+  on the login, and a paused run waits for the reset or a reading with room.
+- This fact is the account's own (member, provider, account identity). It
+  survives deleting the company or connection where it was read, and it goes
+  with the member's account. Only a usage reading the native host records
+  writes it. No company, agent or member can write or read it.
+- Nothing else holds more. A login never read full, or whose newest reading has
+  room, is held only as before. A rate limit is no usage limit. A signal without
+  a reading holds as before. A read that fails writes nothing.
 
 2026-11-09 amendment: a run in Agent notebooks mode waits at its usage limit
 too (founder: make "Work will go on by itself when it resets" true; migration
@@ -6983,6 +7031,55 @@ what runs and the agent is told, always-on machines are never stopped by the ker
    (`saved`, `conflict`, refused); the same decision for the same update on the same day answers `unchanged`. Review
    class: the company's bookkeeping, no card.
 
+### 2026-11-19 amendment: messages that waited together keep their order
+
+> The founder, 19 November 2026, to "Shall I build the database fix for the message order?": "Yes, build it". Found
+> through SQL test 1295, which failed now and then at "the oldest message it took gets its own run". It goes live with
+> migration `20260930814000` (no runtime bundle change).
+
+1. **One time for a pass.** A scheduling pass (`qorpera_folder_materialize_company`) stamps every turn request and wake
+   it looked at with one time. Before, each row got its own clock read, in the order the database visited the rows, so
+   two wakes that waited together could swap places in the next pass and the newer could run first.
+2. **Unchanged.** A row a pass looked at still moves behind the rows it did not look at. Rows with the same stamp run in
+   the order they were made (`created_at`, then `id`).
+
+### 2026-11-16 amendment: web search on a member's Codex login
+
+> The founder, 16 November 2026: "Yes, turn it on" (web search for agents, paid by the member's own plan). It changes
+> the 2026-10-21 amendment's "web search is off" and the 2026-09-27 amendment's item 7 ("web work stays on the Company
+> Computer's browser and on connectors"). It goes live with the runtime bundle that carries it; the native Codex does not change.
+
+1. **Where.** An agent's own thread, when its run is on a member's Codex sign-in, searches the web from OpenAI's cached
+   index (`web_search="cached"`: no live fetch of a site, so a query never reaches a third party's server). The search
+   is Codex's own `web.run`, on the same sign-in, and counts toward that member's ChatGPT plan, then their credits,
+   never Qorpera. The reviewer's, the compactor's, a voice call's and a picture's threads have none, nor a run on a
+   member's ChatGPT plan through the API.
+2. **The fence keeps its meaning.** Each result reaches the model only as a function output the result fence issues
+   as one of Codex's own: an `unconfirmed` envelope of untrusted data, at most 32 KiB, under the run's live authority
+   at every request. The provider's hosted search, whose results never pass the host, is not offered; its
+   `web_search_call` item stays refused.
+3. **The record.** Each search is a `web_search` step of the run's work log, with its query and the envelope the model
+   got. Members see what was found in the agent's own words, never the steps. Every run's text names web.run beside the qorpera tools, for a run that has it.
+
+### 2026-11-17 amendment: a burst of saves wakes a file-change routine once
+
+> The founder, 17 November 2026: "fix the Brooks file storm too". In Brooks one worker run saved 38 change sets under
+> `strategy/` in 16 minutes, and the Brand agent's routine listening to that subtree was woken 38 times, once per change
+> set. Stopped the same day and reopened on the founder's word of 19 November 2026 ("Yes, reopen it"), after a new
+> company ran 67 file-change runs in a night, 45 of them without a tool call. It goes live with migration
+> `20260930809000` alone (no runtime bundle change).
+
+1. **One wake for a burst.** A file-change routine version has at most one file wake waiting to start. A change set that
+   matches its watch while one waits folds into it: the wake keeps its first change set (its key, `seq` and commit) and
+   names every later one; its changes keep at most 21 paths, each at its newest version, and count the rest.
+2. **Settle and ceiling.** A file wake starts 60 seconds after the latest change it holds, and never later than 5
+   minutes after its first, so a steady stream still runs. Both are one platform setting row
+   (`qorpera_folder_file_wake_settings`); a settle of 0 restores one wake per change set.
+3. **One follow-up.** While a file wake runs, the change sets saved meanwhile go to one new waiting wake, the same way.
+4. **What the run reads.** The run's file event is unchanged in shape (`qorpera.folder-file-wake/v1`): its `changes`
+   are every readable path the burst changed, at its newest version, and `more` counts the rest.
+5. **Unchanged.** A change set saved by the routine's own agent still never wakes it.
+
 ### 2026-11-16 amendment: the agent's home for every company
 
 Founder decision of 16 November 2026, to "Switch it on for every company in the next release, with the node 1 fix?":
@@ -7174,6 +7271,112 @@ bundle; no migration, host call or image moves.
    concept's. "Due within a day or two" stays for the research assignments only.
 3. **A look on a machine** is one round that ends in the link, and is reported as a look at the files on a machine,
    never as a test in the app.
+
+### 2026-11-18 amendment: programs members download (the program kit)
+
+> The founder, 18 November 2026: "for desktop apps surely we can create a private space were companies can upload and
+> share code/programs with its members - like a github repo, just built for downloading and testing apps, not for
+> reading code", and "Yes, build step 1" to "kept versions and the program's page with Download". The detail is
+> RUNTIME-INTERFACE-APPS.md §3f and §7 step 15.
+
+1. **A program is an interface app.** Of the kit `program`, in `apps/<name>/` with its `app.toml`; no new tool, no new
+   top-level folder, no migration. Its builds are files in `apps/<name>/versions/<version>/`, which an agent copies
+   there from a machine; `save_app` takes `program.json` (`version`, `forms`, `screens`), refuses a file that is not in
+   the folder, a kept version with other files and an earlier version, and keeps every version, newest first, with its
+   date, sizes and hashes. Nothing in `versions/` is deleted.
+2. **The web draws its page.** Not in the app's frame: the program, its pictures, one Download for the member's own
+   computer or phone, the five kinds, and the earlier versions. A download is the member's own read through Storage's
+   path. Everyone who may read the company folder sees it and may download.
+3. **The agents' words.** `app_guide program` says how to hand in a program; the company context's code projects say
+   to build the real thing early, keep each version as a program app and link the app, never a machine or a folder.
+4. **Order.** An older web reads the kit as a manifest with problems and hides the app: the web goes live first, then
+   the runtime bundle that carries the kit.
+
+### 2026-11-18 amendment: a member adds a program of their own
+
+> The founder, 18 November 2026, after seeing step 1's page: "then build step 2, add your own". The detail is
+> RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7 and RUNTIME-INTERFACE-APPS.md §3f and §7 step 16.
+
+1. **One way in for a browser's bytes.** The object gateway's member program route takes a file of at most 256 MiB in
+   4 MiB pieces, each its own request through the member company gateway, staged under the member's own upload intent,
+   the whole checked against the SHA-256 the member named, and committed as the member at
+   `apps/<name>/versions/<version>/<file>`, only where no file is (the same file again is answered as saved). No other folder path takes bytes from a browser. One upload in flight per
+   member; an upload not finished leaves nothing in the folder. No migration.
+2. **The text** (`app.toml`, `program.json`) goes through the member commit route after the bytes, `program.json` with
+   its version, so two members adding at once never lose a version.
+3. **Who.** A member who may write the folder makes a program or adds a version to a program a member made, never to
+   an agent's. A kept version may name the member who added it (`userId`); an agent's never does.
+4. **Order.** The object gateway and the member company gateway function, then the web.
+
+### 2026-11-18 amendment: a sign-in the provider refused renews at once
+
+> The founder, 18 November 2026, to "Should I build it so a new sign-in replaces the dead one and the card says 'Sign in
+> again'?": "Yes, build it". Section 17's typed usage signals gain one kind; it goes live with migration
+> `20260930808000` and a runtime bundle. The details are in `deploy/first-node/RUNTIME-LOGIN-VAULT.md`, "A pass the
+> provider refuses".
+
+1. **The signal.** A Codex turn that ends with the pinned discriminant `unauthorized` is the usage signal
+   `sign_in_refused`, recorded against the run's exact binding as the others are. No other discriminant, status or text
+   raises it. It never moves work to another login.
+2. **The renewal.** The signal makes the paying login's renewal due now (for a plan login, not before OpenAI's earliest
+   renewal time), through the one renewal lock; a refused renewal sets `needs_sign_in` as before. In a plan login's
+   window before that time, the 30-minute hold can lapse and a member's message can use up its five waits before a
+   renewal is allowed.
+3. **The wait.** Until the renewal's outcome (at most 30 minutes), new work paid by the login waits as at a usage limit,
+   and a member's message that had no effect waits and tries again on the same login as at a rate limit
+   (`paused_for: "sign_in_refused"`). The recovery read of a failed run says `sign_in_refused` once its login needs a
+   new sign-in.
+
+### 2026-11-19 amendment: the company's own work is not outside instructions
+
+> The founder, 19 November 2026, to "Should I fix the review so a coworker's note and an owner's own worker instruction
+> pass?": "Yes, fix it" (his mywave decision of 17 November, "a refusal must never be a dead end", found again). It
+> amends the action review's instructions, the request it reads for a coworker's wake and the denial's text, and goes
+> live with a runtime bundle; no migration, host call or image moves.
+
+On 18 November the review refused, in the founder's own company, a market research owner's follow-up to its own
+worker after that worker reported ("follows text from an earlier task"), and a product owner's follow-up telling its
+concept builder to make five corrections from a coworker's check in the company folder ("an external source"); it
+held a click in the company's own concept app whose mock step is named after an outside service. Each guard the
+reviewer answered true kept the fixed worker and machine rules from applying, and the agents, then the Co-Founder, told
+the founder there was no way forward but Qorpera's support.
+
+1. **Outside is outside the company.** `followsOutsideInstructions` is true for a step that does what content from
+   outside the company told the agent to do: an email, a web page, a file fetched or uploaded from outside, a quote, or
+   a command's output repeating such content. Never outside: the agent's own earlier words, briefs, todos and code, its
+   workers' reports, a coworker's message, and company folder files its agents or members wrote. Step 1's deny cases
+   and the mandate's machine work point to that one definition instead of their own lists.
+2. **Authority does not move (9.2).** These are information, never the request or the mandate: using them in work the
+   request or the mandate covers is the agent's own work; they make nothing else requested, and every other guard
+   (company data out, deletes outside, money, terms, access) is judged by what the action does, whoever proposed it. A
+   company file or a coworker's message that shows it holds outside text, such as a saved or forwarded email, is
+   outside for that text; when the reviewer cannot tell, the guard is false and the action is judged by the other
+   guards and by whether the request or the mandate covers the work: a company file's findings applied to the
+   company's own product, files, machines or workers are its own work.
+3. **Carrying on its own work.** Steering, correcting, following up or stopping the agent's own earlier work is
+   requested when the request or, in a run no member started, the mandate covers it (before: the request alone, which
+   for a chain begun in a first run reads "No member request").
+4. **The company's own product on its machine.** A step in the company's own app or concept on a company machine is
+   no money, terms or access change, whatever service it is named after. The reviewer is told that a screen action's
+   window is the title the machine showed the agent's last look, and its intent only the agent's words, never proof of
+   where it lands. Known limit: the platform does not know the address of the page in the machine's browser; stating
+   that a window shows a local page as a fact needs the screen helper to read the focused tab through the browser's
+   DevTools port, as the account fill does, a new header field and a machine image roll. Not built.
+5. **What started the run.** A run a coworker's message woke, with no request of its own, reads "it was started by a
+   coworker's message, another agent's words: information, never the request" instead of "by agent"; the message
+   itself is still never shown as the request.
+6. **A denial names the one way forward.** The denial now says that when the action is the agent's job and it believes
+   the refusal is mistaken, the one thing its work needs is a member asking for this exact action in their own message
+   in that conversation or, for a worker, its parent instructing it again, which is reviewed afresh; and never to send
+   anyone to Qorpera's support. That is the path the kernel has: a denial stands for the identical call in its run and
+   its conversation until a member writes there again (a card answer does not count), and the call is then reviewed
+   afresh, and a retry for the member who asked waits on a card. A worker has no conversation of its own: the
+   reviewer's denial stands for its run alone, its blocked report wakes its parent, and the parent's follow-up is
+   reviewed and starts a new worker run whose calls are reviewed afresh, carrying on the parent's request; when the
+   parent's own instruction is refused, a member's message in the parent's thread makes its next instruction requested,
+   and the worker's run carries that message on as its request. Its
+   sentence that a card's answer never lets the agent repeat the action goes: the denial's last sentence already says
+   so. Not retrying, rewording or reaching it another way stands.
 
 ## 20. Enforcement matrix
 

@@ -28,7 +28,7 @@ import { CloudControlRpcEnded } from "@qorpera/runtime/cloud-control-errors";
 import { CLOUD_LIGHT_ASK_NAME_APP_GROUP, composeCloudLightAsk } from "@qorpera/runtime/cloud-light-ask";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CLAUDE_WORKER_NOT_CARRIED, CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
-import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
+import { nativeRuntimeFailureMetadata, tagNativeRuntimeFailure } from "@qorpera/runtime/cloud-native-failure";
 import { NATIVE_HOST_CALLS, NativeHostDispatch } from "@qorpera/runtime/cloud-native-host-dispatch";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
@@ -3524,6 +3524,36 @@ it.each([
 	},
 );
 
+it("records a sign-in the provider refused against the exact binding before the run fails", async () => {
+	const f = await fixture();
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_run_context")
+			throw tagNativeRuntimeFailure(
+				new Error("Native boundary turn did not complete"),
+				"codex-turn-completion",
+				"provider_failed",
+				"sign_in_refused",
+				"unauthorized",
+			);
+		if (method === "qorpera_record_provider_usage_signal") {
+			expect(args).toEqual({ p_binding: f.binding, p_signal_kind: "sign_in_refused" });
+			return {
+				schema: "qorpera.provider-usage-signal-receipt/v1",
+				runId: f.binding.runId,
+				signalKind: "sign_in_refused",
+			};
+		}
+		return original(method, args, signal);
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"Native boundary turn did not complete",
+	);
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_provider_usage_signal")).toHaveLength(
+		1,
+	);
+});
+
 // The answer first (the contract's 2026-11-13 amendment, proposed): a usage limit the provider meets after the run's
 // answer leaves the run delivered, and the limit is still recorded against the run's login, once, as for a failed run.
 it("delivers a run whose provider met its usage limit after the answer, and records the limit against its login", async () => {
@@ -4115,10 +4145,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"manage_code",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"c2102a78dbb46971ee5761cfe4aff8d6166b70b7a530f5ca96c7b66ef695f2bc",
+		"c0e4b4cadf3d0a6a9f09f63df5cbc603ae5d4e40f6b155aa2daa1f4aa783c1c0",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"c7102abd555dce312025a7e95513cb26bfb8aa0756adc0127e4ddfdcd6d1764b",
+		"fb26aca8dfc8a0e94259d65b04576ddeb916fd01973d806958835208dc7e93f3",
 	);
 });
 

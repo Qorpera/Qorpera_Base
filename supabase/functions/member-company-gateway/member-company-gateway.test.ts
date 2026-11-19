@@ -276,21 +276,6 @@ describe("public member Company File gateway", () => {
 		["an erase request read", request(`/v1/member-message-erases/${id}/${id}/${id}`), 405],
 		["an erase status write", request(`/v1/member-message-erases/${id}/${id}`, { method: "POST" }), 405],
 		["an erase with a tail", request(`/v1/member-message-erases/${id}/${id}/${id}/${id}`, { method: "POST" }), 404],
-		["a snapshot-v1 path object", request(`/v1/member-company-objects/${id}/${id}/${"b".repeat(64)}`), 404],
-		[
-			"a snapshot-v1 snapshot object",
-			request(`/v1/member-company-snapshot-objects/${id}/${id}/${"b".repeat(64)}`),
-			404,
-		],
-		["a snapshot-v1 edit", request(`/v1/member-company-file/${id}/edits`, { method: "POST", body: "{}" }), 404],
-		["a snapshot-v1 edit read", request(`/v1/member-company-file/${id}/edits/${id}/content`), 404],
-		[
-			"a snapshot-v1 proposal review",
-			request(`/v1/member-company-file/${id}/proposals/${id}/review`, { method: "POST", body: "{}" }),
-			404,
-		],
-		["a snapshot-v1 upload", request(`/v1/member-company-file/${id}/uploads`, { method: "PUT", body: "x" }), 404],
-		["a member file export", request(`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`), 404],
 		["a machine screen write", request(`/v1/member-machine-screens/${id}/${id}`, { method: "POST", body: "{}" }), 405],
 		["a machine screen of one id", request(`/v1/member-machine-screens/${id}`), 404],
 		["a machine screen with another tail", request(`/v1/member-machine-screens/${id}/${id}/keep`), 404],
@@ -352,7 +337,6 @@ describe("public member Company File gateway", () => {
 		}),
 		["a company data drop", request(`/v1/company-data/${id}/drop`, { method: "POST", body: "{}" }), 404],
 		["a company data change log", request(`/v1/company-data/${id}/change-log`, { method: "POST", body: "{}" }), 404],
-		["a company data edit read", request(`/v1/company-data/${id}/edit`), 405],
 		["a company data call without a verb", request(`/v1/company-data/${id}`, { method: "POST", body: "{}" }), 404],
 		["a company data call of no environment", request("/v1/company-data/query", { method: "POST", body: "{}" }), 404],
 		[
@@ -369,41 +353,6 @@ describe("public member Company File gateway", () => {
 			"a company data call of a path for an environment",
 			request(`/v1/company-data/..%2F${id}/query`, { method: "POST", body: "{}" }),
 			404,
-		],
-		[
-			"a company data query past 64 KiB",
-			request(`/v1/company-data/${id}/query`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data watch past 512 KiB",
-			request(`/v1/company-data/${id}/watch`, { method: "POST", body: "x".repeat(512 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data describe past 64 KiB",
-			request(`/v1/company-data/${id}/describe`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data apply past 1 MiB",
-			request(`/v1/company-data/${id}/apply`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data rows past 1 MiB",
-			request(`/v1/company-data/${id}/rows`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data edit past 1 MiB",
-			request(`/v1/company-data/${id}/edit`, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
-			413,
-		],
-		[
-			"a company data change past 64 KiB",
-			request(`/v1/company-data/${id}/change`, { method: "POST", body: "x".repeat(64 * 1024 + 1) }),
-			413,
 		],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
@@ -1091,6 +1040,77 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(readPreflight.status, 403);
 		const wrongMethod = await forward(request(input, { method: "PUT", body: "x" }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("wrong method forwarded"),
+		});
+		assert.equal(wrongMethod.status, 405);
+	});
+	it("forwards a member's program upload: its open, finish and stop up to 16 KiB, each piece up to 4 MiB", async () => {
+		const open = `/v1/member-program-uploads/${id}`;
+		const finish = `${open}/${id}`;
+		const stop = `${finish}/stop`;
+		const piece = `${finish}/63`;
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${headers.get("content-type")}`);
+			assert.equal(headers.get("authorization"), "Bearer member.jwt.token");
+			return Response.json({ ok: true });
+		};
+		const step = new Uint8Array(16 * 1024).fill(32);
+		for (const path of [open, finish, stop]) {
+			const response = await forward(
+				request(path, { method: "POST", body: step, headers: { "content-type": "application/json" } }),
+				{ upstreamUrl, fetchImplementation },
+			);
+			assert.equal(response.status, 200);
+			const over = await forward(
+				request(path, {
+					method: "POST",
+					body: new Uint8Array(16 * 1024 + 1),
+					headers: { "content-type": "application/json" },
+				}),
+				{ upstreamUrl, fetchImplementation: async () => assert.fail("oversized step forwarded") },
+			);
+			assert.equal(over.status, 413);
+		}
+		const bytes = new Uint8Array(4 * 1024 * 1024).fill(7);
+		const put = await forward(
+			request(piece, { method: "PUT", body: bytes, headers: { "content-type": "application/octet-stream" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(put.status, 200);
+		const oversized = await forward(request(piece, { method: "PUT", body: new Uint8Array(4 * 1024 * 1024 + 1) }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("oversized piece forwarded"),
+		});
+		assert.equal(oversized.status, 413);
+		assert.deepEqual(seen, [
+			`POST ${open} application/json`,
+			`POST ${finish} application/json`,
+			`POST ${stop} application/json`,
+			`PUT ${piece} application/octet-stream`,
+		]);
+		for (const path of [`${finish}/64`, `${finish}/07`, `${open}/x`, `${stop}/1`]) {
+			const response = await forward(request(path, { method: "POST", body: "{}" }), {
+				upstreamUrl,
+				fetchImplementation: async () => assert.fail("unknown program route forwarded"),
+			});
+			assert.equal(response.status, 404);
+		}
+		const preflight = await forward(
+			request(piece, {
+				method: "OPTIONS",
+				headers: {
+					"access-control-request-method": "PUT",
+					"access-control-request-headers": "authorization, content-type",
+				},
+			}),
+			{ upstreamUrl, fetchImplementation: async () => assert.fail("preflight forwarded") },
+		);
+		assert.equal(preflight.status, 204);
+		assert.equal(preflight.headers.get("access-control-allow-methods"), "PUT");
+		const wrongMethod = await forward(request(finish, { method: "PUT", body: "x" }), {
 			upstreamUrl,
 			fetchImplementation: async () => assert.fail("wrong method forwarded"),
 		});

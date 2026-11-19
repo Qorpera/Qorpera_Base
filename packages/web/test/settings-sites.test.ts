@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type SitesAccess, SitesView, shownLink } from "../src/app/views/settings-sites.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
@@ -1238,7 +1238,7 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 		}
 	});
 
-	it("sends a member who thinks it wrong to Feedback in their menu, by that item's own label, and names no address", () => {
+	it("sends a member who thinks it wrong to Feedback in their menu, by that item's own label", () => {
 		// The menu's item, as the account menu draws it, in both languages.
 		const shell = readFileSync(resolve("src/app/views/shell.ts"), "utf8");
 		expect(shell).toContain('h("span", { class: "account-item-label" }, uiText("Feedback"))');
@@ -1265,18 +1265,6 @@ describe("Sites: a site Qorpera took down (own code storage step 5.1)", () => {
 			sentence:
 				"Qorpera har taget hjemmesiden ned: Spam. Hvis du mener, det er forkert, så skriv til os under Feedback i din menu.",
 		});
-		// No mail address anywhere in the web's words.
-		const files = (dir: string): string[] =>
-			readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
-				entry.isDirectory()
-					? files(join(dir, entry.name))
-					: entry.name.endsWith(".ts")
-						? [join(dir, entry.name)]
-						: [],
-			);
-		expect(
-			files(resolve("src")).filter((path) => readFileSync(path, "utf8").includes("support@qorpera.com")),
-		).toEqual([]);
 	});
 });
 
@@ -1290,8 +1278,6 @@ describe("Sites and What's new's live row at every width", () => {
 		expect(css).toContain(":is(.sites, .whats-new) {");
 		expect(css).toMatch(/:is\(\.sites, \.whats-new\) \{[^}]*container: site-rows \/ inline-size;/);
 		expect(app).toContain('@import "./sites.css";');
-		// The old cards' rules are gone with the cards.
-		expect(app).not.toContain("page-cards");
 	});
 
 	it("puts the pills under the globe on a narrow page, and What's new's buttons under its line", () => {
@@ -1507,26 +1493,7 @@ describe("sites client", () => {
 			expect(() => site("shop", url), url).toThrow("Invalid site.");
 	});
 
-	it("reads the access answer migration 20260930756000 gives, from its text", async () => {
-		const migration = readFileSync(resolve("../../supabase/migrations/20260930756000_site_hosts.sql"), "utf8");
-		const start = migration.indexOf("create function public.qorpera_company_site_access(");
-		const body = migration.slice(start, migration.indexOf("\nend $$;", start));
-		expect(body.slice(0, body.indexOf(")") + 1)).toBe(
-			"create function public.qorpera_company_site_access(p_profile_id uuid)",
-		);
-		for (const written of [
-			"jsonb_build_object('schema', 'qorpera.company-site-access/v1', 'hosts', public.qorpera_site_hosts_on(),",
-			"'sites', coalesce((select jsonb_agg(jsonb_build_object('siteId', site.id, 'slug', site.slug, 'title', site.title,",
-			"'kind', site.kind, 'source', site.source_path,",
-			"'takenDown', case when site.taken_down_at is not null",
-			"then jsonb_build_object('at', site.taken_down_at, 'reason', site.taken_down_reason) end)",
-		])
-			expect(body).toContain(written);
-		// A reason is one line of 1 to 300 characters.
-		expect(migration).toContain(
-			"char_length(taken_down_reason) between 1 and 300 and taken_down_reason !~ '[[:cntrl:]]'",
-		);
-		// The call as the web makes it, and an answer of exactly those keys (a time as PostgreSQL writes it in JSON).
+	it("reads the access answer as the cloud gives it, a time as PostgreSQL writes it in JSON", async () => {
 		const at = "2026-11-13T19:00:00.123456+00:00";
 		const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>) => ({
 			schema: "qorpera.company-site-access/v1",

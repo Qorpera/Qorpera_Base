@@ -3650,7 +3650,14 @@ export class ConversationView {
 			!company.accessLost &&
 			company.team?.capabilities.read === true
 		)
-			children.push(notice("neutral", t("You can read this conversation. Contributors and above can write.")));
+			children.push(
+				notice(
+					"neutral",
+					company.team?.role === "viewer"
+						? t("You're a spectator: you read along, and the founders write.")
+						: t("You can read this conversation. Contributors and above can write."),
+				),
+			);
 		const refocus = this.#status.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.action
 			: undefined;
@@ -3967,6 +3974,7 @@ export class ConversationView {
 							recovery.rateLimited,
 							(recovery.sourceKind === "session_turn" || recovery.sourceKind === "room_delivery") &&
 								recovery.requestedByUserId === this.#company.userId.toLowerCase(),
+							recovery.signInRefused,
 						)
 					: undefined;
 		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
@@ -3980,7 +3988,13 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit, recovery.rateLimited);
+			runFailureInterrupted(
+				recovery.lastError,
+				recovery.jobStatus,
+				recovery.usageLimit,
+				recovery.rateLimited,
+				recovery.signInRefused,
+			);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -4120,6 +4134,7 @@ export class ConversationView {
 				...(payerName ? { payerName } : {}),
 			},
 			paused.rateLimited,
+			paused.signInRefused,
 		);
 		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
 		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;

@@ -1702,7 +1702,7 @@ describe("an app's card in a message", () => {
 		expect(body.querySelector("a")).toBeNull();
 	});
 
-	it("says the card and the link open the app's own page, not a panel beside the chat", () => {
+	it("says the card and the link open the app's own page", () => {
 		const prose = markdown("See [Sales this week](app:sales-board) for the numbers.");
 		const [link, card] = prose.querySelectorAll<HTMLButtonElement>("[data-app-name]");
 		expect(link?.title).toBe("Open sales-board");
@@ -1710,7 +1710,6 @@ describe("an app's card in a message", () => {
 		// Drawn plain, before the company's apps are read: what it is, and that it leads somewhere.
 		expect(card?.querySelector(".app-card-note")?.textContent).toBe("App");
 		expect(card?.querySelector(".app-card-go svg")).not.toBeNull();
-		expect(prose.textContent).not.toContain("beside the chat");
 	});
 });
 

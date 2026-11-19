@@ -8,6 +8,9 @@ const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
 const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
+const PROGRAM_UPLOAD = new RegExp(`^/v1/member-program-uploads/${UUID}(/${UUID}(/(0|[1-9]|[1-5][0-9]|6[0-3]|stop))?)?$`);
+const MAX_PROGRAM_PIECE_BYTES = 4 * 1024 * 1024;
+const MAX_PROGRAM_STEP_BYTES = 16 * 1024;
 /** A member's look at an agent's desktop computer (20260930712000): a company and a machine, and `/watching` when the
  * member says they still watch. The coding executor of the bridge's node answers it (deploy/coding-worker/README.md). */
 const MACHINE_SCREEN = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}(/watching)?$`);
@@ -120,6 +123,7 @@ const TIMEOUT_MS = 25_000;
 const UPLOAD_TIMEOUT_MS = 35_000;
 const FOLDER_UNAVAILABLE = "Company File gateway is unavailable. A submitted change may still apply.";
 const IMAGE_UNAVAILABLE = "Chat images are unavailable just now. An uploaded image may still be saved.";
+const PROGRAM_UNAVAILABLE = "Programs are unavailable just now. A finished program may still be saved.";
 
 export interface MemberCompanyGatewayOptions {
 	/** Operator-owned origin. Never selected by a request, path, or member token. */
@@ -229,6 +233,22 @@ function route(path: string): RoutePolicy | undefined {
 			...(verb === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
 			unavailable: DATA_WRITES[verb] ?? "Company data is unavailable just now.",
 		};
+	const upload = PROGRAM_UPLOAD.exec(path);
+	if (upload)
+		return upload[3] && upload[3] !== "stop"
+			? {
+					method: "PUT",
+					headers: ["authorization", "content-type"],
+					maxBody: MAX_PROGRAM_PIECE_BYTES,
+					timeoutMs: UPLOAD_TIMEOUT_MS,
+					unavailable: PROGRAM_UNAVAILABLE,
+				}
+			: {
+					method: "POST",
+					headers: ["authorization", "content-type"],
+					maxBody: MAX_PROGRAM_STEP_BYTES,
+					unavailable: PROGRAM_UNAVAILABLE,
+				};
 	const erase = ERASE.exec(path);
 	if (erase)
 		return {

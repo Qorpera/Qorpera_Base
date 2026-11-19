@@ -2114,7 +2114,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "aa5ad7d474ac388ee4a2ecc208f3d631fe275a49688f621749bf75ed751ffc17",
+			instructions: "f9bc3ff9ef70342c805acba7753bff1f1035ea2a692ed4bde1c4a612667d7b5f",
 			prompt: "8d4de0aa97c4fd1b1e41b05fc0f4eaa49296049c3d0c7c476a955d015db99df0",
 		},
 	],
@@ -2122,7 +2122,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "33b7fa81adbffcbafdc44b99d6deffc391d0ba54dc9033f001908fb32dcd2b3e",
+			instructions: "06795ee23938070425160ed3a509ec0870c540a9c405e2ead51a338938a232e4",
 			prompt: "44a41b632be600e8f1070908278c1a70e1b044e95c40f957a5b2d5b81d682bf1",
 		},
 	],
@@ -2130,7 +2130,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "aa5ad7d474ac388ee4a2ecc208f3d631fe275a49688f621749bf75ed751ffc17",
+			instructions: "f9bc3ff9ef70342c805acba7753bff1f1035ea2a692ed4bde1c4a612667d7b5f",
 			prompt: "9cb69c8a1cdf1d2bca1865206e55fb2efb05db9fa5333ad636bb07c78861cfb0",
 		},
 	],
@@ -2639,7 +2639,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"- One file: write it yourself, where it belongs, and link it.",
 		"- Bigger work or many files: a worker, with saveTo set to the folder for the results.",
 		"- Work a member asks Claude Code to do: a worker with harness claude-code, which runs on that member's own Claude sign-in.",
-		"Otherwise leave harness out unless a member asks for codex: a write worker then runs on Claude Code by itself, one at a time for that member, while that member can use it and your machine runs, else on Codex.",
+		"Otherwise leave harness out unless a member asks for codex: a write worker then runs on Claude Code by itself, up to four at once for that member, while that member can use it and your machine runs, else on Codex.",
 		"a machine, with the results saved in the company's files",
 		"A real code project is a coding session (manage_worker, species coding), the only work that needs a repository; its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to

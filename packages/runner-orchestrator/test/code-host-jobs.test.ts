@@ -32,7 +32,6 @@ import {
 	type CodeChangeDiff,
 	type CodeChangeRecordFile,
 	type CodeCommitFile,
-	type CodeCommitSource,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
@@ -45,16 +44,15 @@ import {
 	fsckCodeArea,
 	inspectCodeArea,
 	landCodeBranch,
-	readCodeAreaBase,
 	removeCodeDownloads,
 	retireCodeWorktrees,
 	seedCodeArea,
 	startCodeArea,
 	undoCodeChange,
-	withCodeCommit,
 	withJob,
 	writeCodeChangeRecords,
 } from "../src/code-host-jobs.ts";
+import { readCodeAreaBase } from "./helpers/code-area-base.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
 const exec = promisify(execFile),
@@ -965,92 +963,6 @@ describe("code host git ignores the repository's settings", () => {
 			expect(command.argv.length).toBeLessThanOrEqual(64);
 			if (command.argv[0] === GIT) expect(command.argv[2]).toMatch(/^--git-dir=\//);
 		}
-	});
-});
-
-describe("code host commit reads", () => {
-	it("reads one commit's files by path: a file, something else, nothing, and a file cut after maxBytes + 1", async () => {
-		const f = await fixture(),
-			c = await f.company();
-		const files: Record<string, string> = {
-			".qorpera/environment.json": '{"install":"make"}\n',
-			".devcontainer/devcontainer.json/inside": "x\n",
-			"docker/Dockerfile": "FROM scratch\n",
-			"big.txt": "0123456789".repeat(10),
-			// Names git would quote in --format output: a space, a quote and a character outside ASCII (NFC).
-			'set up/a"b c.json': "odd\n",
-			"docs/été.md": "summer\n",
-		};
-		for (const [path, content] of Object.entries(files)) {
-			await mkdir(dirname(join(f.root, "source", path)), { recursive: true });
-			await writeFile(join(f.root, "source", path), content);
-		}
-		await mkdir(join(f.root, "source/.cursor"));
-		await symlink("../README.md", join(f.root, "source/.cursor/environment.json"));
-		await f.src("add", "--all");
-		await f.src("update-index", "--add", "--cacheinfo", `160000,${f.baseSha},vendored`);
-		await f.src("commit", "--quiet", "-m", "setup");
-		const base = await f.src("rev-parse", "HEAD");
-		await seedCodeArea(c.job, { repository: f.repository, baseSha: base, bundle: await f.bundle("refs/heads/main") });
-		// And a tab, which no seed takes (the company folder does not) and a session's branch may hold all the same: its
-		// commit is read too.
-		const workerId = randomUUID();
-		await addCodeWorktree(c.job, { repository: f.repository, workerId, baseSha: base });
-		const tree = join(c.code, "worktrees", workerId);
-		await writeFile(join(tree, 'set up/a"b\tc.json'), "tab\n");
-		await f.git(tree, "add", 'set up/a"b\tc.json');
-		await f.git(tree, "commit", "--quiet", "-m", "tab");
-		const head = await f.git(tree, "rev-parse", "HEAD");
-		let kept: CodeCommitSource | undefined;
-		const read = await withCodeCommit(c.job, { repository: f.repository, commit: head }, async (source) => {
-			kept = source;
-			const text = async (path: string, maxBytes = 65536) => {
-				const entry = await source.read(path, maxBytes);
-				return entry.kind === "file" ? Buffer.from(entry.bytes).toString("utf8") : entry.kind;
-			};
-			return {
-				qorpera: await text(".qorpera/environment.json"),
-				cursor: await text(".cursor/environment.json"),
-				devcontainer: await text(".devcontainer/devcontainer.json"),
-				folder: await text(".qorpera"),
-				submodule: await text("vendored"),
-				missing: await text("nothing/here"),
-				dockerfile: await text("docker/Dockerfile"),
-				exact: await text("big.txt", 100),
-				cut: await text("big.txt", 10),
-				quoted: await text('set up/a"b c.json'),
-				tab: await text('set up/a"b\tc.json'),
-				accented: await text("docs/été.md"),
-				invalid: await Promise.all(
-					["", "/README.md", "a/../README.md", "./README.md", "docker//Dockerfile", "docker/"].map((path) =>
-						source.read(path, 10).then(
-							() => "read",
-							(error: Error) => error.message,
-						),
-					),
-				),
-			};
-		});
-		expect(read).toEqual({
-			qorpera: '{"install":"make"}\n',
-			cursor: "other",
-			devcontainer: "other",
-			folder: "other",
-			submodule: "other",
-			missing: "missing",
-			dockerfile: "FROM scratch\n",
-			exact: "0123456789".repeat(10),
-			cut: "01234567890",
-			quoted: "odd\n",
-			tab: "tab\n",
-			accented: "summer\n",
-			invalid: Array(6).fill("INVALID_CODE_HOST_PATH"),
-		});
-		await expect(kept?.read("README.md", 10)).rejects.toThrow("CODE_HOST_SOURCE_CLOSED");
-		await expect(
-			withCodeCommit(c.job, { repository: f.repository, commit: "f".repeat(40) }, async () => "never"),
-		).rejects.toMatchObject({ code: "CODE_HOST_COMMIT_UNKNOWN" });
-		expect(await readdir(c.scratchRoot)).toEqual([]);
 	});
 });
 
@@ -3017,8 +2929,6 @@ describe("code host: the change record, undo and download of a repository kept i
 			() => addCodeWorktree(c.job, { repository: kept, workerId: s.workerId, baseSha }),
 			() => landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: next }),
 			() => inspectCodeArea(c.job, { repository: kept, commit: next }),
-			() => readCodeAreaBase(c.job, kept),
-			() => withCodeCommit(c.job, { repository: kept, commit: next }, async () => undefined),
 			() =>
 				exportCodeBranch(
 					c.job,

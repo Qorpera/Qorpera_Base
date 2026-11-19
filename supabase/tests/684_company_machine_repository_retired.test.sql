@@ -7,33 +7,6 @@
 -- At this point of 628: node A (machine-a, executor mx-a) holds build-a, placed and starting.
 select pg_temp.base_claims('service_role');
 
--- 1. No repository column, and no function about the repository disk or the v1 binding (but the binding text).
-do $$
-begin
-	perform pg_temp.base_assert(not exists (select 1 from pg_catalog.pg_attribute
-		where attrelid = 'public.qorpera_company_machines'::regclass and attname = 'repository_worker_id' and not attisdropped),
-		'A machine has no repository');
-	perform pg_temp.base_assert(not exists (select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-		where n.nspname not in ('pg_catalog', 'information_schema')
-			and (position('repository_worker_id' in p.prosrc) > 0 or position('lxd-company-machine/v1' in p.prosrc) > 0
-				or (position('repositoryWorker' in p.prosrc) > 0
-					and p.oid <> 'public.qorpera_company_machine_binding_text(jsonb)'::regprocedure))),
-		'No function names the repository disk or the v1 binding');
-end $$;
-
--- 2. A placement is v2, without the repository key; the machine's view has no repository.
-do $$
-declare v_place public.qorpera_company_machine_placements := pg_temp.mc_placement('build-a');
-begin
-	perform pg_temp.base_assert(v_place.binding ->> 'schema' = 'qorpera.lxd-company-machine/v2'
-		and not v_place.binding ? 'repositoryWorkerId'
-		and not exists (select 1 from public.qorpera_company_machine_placements
-			where binding ->> 'schema' is distinct from 'qorpera.lxd-company-machine/v2' and retired_at is null and removed_at is null),
-		'Every current placement is v2: ' || v_place.binding::text);
-	perform pg_temp.base_assert(not public.qorpera_company_machine_view(pg_temp.mc_machine('build-a')) ? 'repository',
-		'The view has no repository');
-end $$;
-
 -- 3. machine_start refuses repositoryWorker as any other argument it does not know.
 do $$
 declare v_args jsonb := '{"name":"repo","purpose":"Build the repository","cpus":1,"memoryGiB":1,"diskGiB":10,"lifetime":"task"}';

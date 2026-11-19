@@ -31,9 +31,6 @@ import type { HostedProfileMember, HostedSession, HostedSessionEvent, HostedStaf
 import { findMentions, type MentionTarget } from "../src/ui/mentions.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
-/* Quoted outside content in a member's message (contract, the 2026-10-02 amendment; Interfaces step I5d-4): the
- * quote model, sending, room drafts, the transcript and mentions. The message button is in interface-quotes.test.ts. */
-
 const thread = "Thread_0123456789-abcdefghijklmnopqrstuvwxy";
 const otherThread = "Other_thread-0123456789_abcdefghijklmnopqrs";
 const quote = (start: number, end: number, ref = thread): MessageQuote => ({ start, end, source: "mail", ref });
@@ -984,7 +981,7 @@ describe("sending quotes", () => {
 		const s = sending();
 		s.store.set({ draft: "Plain" });
 		expect(await s.controller.sendPrompt(session.sessionId, "Plain")).toBe(true);
-		expect(s.write.mock.calls[0]).toHaveLength(6);
+		expect(s.write.mock.calls[0]?.[7]).toBeUndefined();
 		const words = Array.from({ length: 17 }, (_, n) => `w${n}`);
 		const text = words.map((word) => `«${word}»`).join(" ");
 		s.store.set({ draft: text, quoteRecords: words.map((word) => quoteRecord(word)) });

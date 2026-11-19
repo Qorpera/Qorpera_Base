@@ -392,9 +392,14 @@ class AppFiles {
 		this.planned += file.bytes;
 		this.onProgress?.();
 		await this.#turn(() =>
-			folder.readFilePieces!(file, this.#signal, (piece) => {
-				parts.push(decoder.decode(piece, { stream: true }));
-			}),
+			folder.readFilePieces!(
+				file,
+				this.#signal,
+				(piece) => {
+					parts.push(decoder.decode(piece, { stream: true }));
+				},
+				LIVE,
+			),
 		);
 		parts.push(decoder.decode());
 		this.bytes += file.bytes;
@@ -444,9 +449,14 @@ class AppFiles {
 		const folder = this.#folder;
 		let blob = new Blob([], { type });
 		await this.#turn(() =>
-			folder.readFilePieces!(file, this.#signal, (piece) => {
-				blob = new Blob([blob, piece as BlobPart], { type });
-			}),
+			folder.readFilePieces!(
+				file,
+				this.#signal,
+				(piece) => {
+					blob = new Blob([blob, piece as BlobPart], { type });
+				},
+				LIVE,
+			),
 		);
 		return blob;
 	}
@@ -1607,7 +1617,7 @@ export async function warmApps(folder: Folder, apps: readonly CompanyApp[], sign
 	const reads: (() => Promise<unknown>)[] = [() => readAppBrand(folder, signal)];
 	for (const app of [...apps].sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0))) {
 		const entry = app.manifest?.entry;
-		if (entry === undefined || resolveAppPath("", entry) === null) continue;
+		if (entry === undefined || app.manifest?.kit === "program" || resolveAppPath("", entry) === null) continue;
 		reads.push(() =>
 			readPage(new AppFiles(folder, app.path, signal, { atOnce: WARM_FILES_AT_ONCE, warm: budget }), entry),
 		);

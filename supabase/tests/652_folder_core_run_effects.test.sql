@@ -141,7 +141,9 @@ begin
 	perform set_config('qorpera.folder_send', '', true);
 	-- The folder send clears its marker after its insert.
 	perform pg_temp.send(b, 'ack-marker', 'On it.', 'progress');
-	if current_setting('qorpera.folder_send', true) <> '' then raise exception 'The marker must be cleared after the send'; end if;
+	perform pg_temp.raises_like(format('insert into public.qorpera_agent_sends(event_id, run_id, session_id, assignment_id, idempotency_key, '
+		|| 'phase, text_sha256, body_sha256) values (%L, %L, %L, %L, ''forged-after'', ''progress'', %L, %L)', extensions.gen_random_uuid(), b ->> 'runId',
+		v_session, b ->> 'assignmentId', repeat('1', 64), repeat('2', 64)), '42501', 'Folder send authority is required');
 end $$;
 
 -- 5. The interaction request: a card in the run's conversation, after the recheck and the session; a replay keeps its

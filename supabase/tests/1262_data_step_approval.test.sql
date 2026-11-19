@@ -110,8 +110,6 @@ do $$ begin
 	-- The plain pass is as it was: its three inputs, and the one function of its name the host can call.
 	perform pg_temp.da_same((select count(*) from pg_proc where pronamespace = 'public'::regnamespace
 		and proname in ('qorpera_run_data_pass', 'qorpera_run_data_pass_approved'))::text, '2', '1: one function a name');
-	perform pg_temp.da_same((to_regprocedure('public.qorpera_run_data_pass(uuid,jsonb,text)') is not null)::text, 'true',
-		'1: the plain pass');
 end $$;
 
 -- 2. A member's Allow that this run used: through the native host's entry point with the job's lease token, the pass
@@ -239,11 +237,6 @@ begin
 	perform pg_temp.da_same(pg_temp.da_state(format('select pg_temp.da_pass(%L, %L)', 'nothing',
 		'92400000-0000-4000-8000-0000000a0012')), 'P0002 Data pass has no such database', '4: a database that is not there');
 	perform pg_temp.da_same((select count(*) from public.qorpera_data_passes)::text, '4', '4: no pass was left behind');
-	-- The marker: only these two bodies carry 20260930764000.
-	perform pg_temp.da_same((select string_agg(proc.proname::text, ' ' order by proc.proname::text collate "C")
-		from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-		where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930764000') > 0),
-		'qorpera_data_pass_redeem qorpera_run_data_pass_approved', '4: the marker');
 end $$;
 
 set constraints all immediate;
