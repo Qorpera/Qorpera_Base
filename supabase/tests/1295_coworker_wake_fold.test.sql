@@ -144,6 +144,8 @@ begin
 	perform pg_temp.base_assert(v_run = (pg_temp.cf_wake('w1')).run_id
 		and pg_temp.cf_queued() = array[(pg_temp.cf_wake('w2')).id, (pg_temp.cf_wake('w3')).id],
 		'the oldest message becomes the run; the others wait behind it in the thread');
+	perform pg_temp.base_assert((pg_temp.cf_wake('w2')).admission_scan_at = (pg_temp.cf_wake('w3')).admission_scan_at,
+		'the pass stamps the wakes it looked at with one time, so the older stays first');
 	v_read := pg_temp.cf_read(v_run);
 	v_held := pg_temp.cf_held(v_read);
 	perform pg_temp.base_assert(v_read #>> '{payload,text}' = 'Alice: which price list is current?'

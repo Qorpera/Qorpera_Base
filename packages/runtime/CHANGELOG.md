@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+- Messages that waited together for a busy agent keep their arrival order (founder, 19 Nov 2026: "Yes, build it";
+  contract, the 2026-11-19 amendment; migration `20260930814000`, SQL test 1295): a scheduling pass stamps the turn
+  requests and wakes it looked at with one time, not one clock read per row, so two wakes scanned together no longer
+  swap places in the next pass. This was SQL test 1295's failure, now and then, at "the oldest message it took gets
+  its own run".
 - Release v261 (the Claude release: many Claude Code runs per member at once with the vault as the one renewer, #1906
   with migration `20260930810000` and SQL test 1287, #1907, #1908; the Claude home check, #1897; the picture command,
   #1926 with migration `20260930812000` and SQL test 1298; a Claude Code worker wakes its machine, #1923 with migration
