@@ -728,11 +728,15 @@ describe("a Claude Code worker's run", () => {
 		}
 		expect(named).toEqual(["cloud-native-egress.ts", "cloud-native-isolation.ts"]);
 		expect(launchers).toEqual([
+			"cloud-claude-login-reader.ts",
 			"cloud-codex-tool-session.ts",
 			"cloud-model-login-renewal.ts",
 			"cloud-native-isolation.ts",
 			"cloud-native-provider-host.ts",
 		]);
+		expect(await readFile(join(source, "cloud-claude-login-reader.ts"), "utf8")).toContain(
+			'harness: "claude-code",\n\t\t\t\tclaudeRead: read,',
+		);
 	});
 
 	it("removes the folder when the run is stopped in the middle", async () => {
