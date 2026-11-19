@@ -1128,6 +1128,10 @@ a member.
 > [scope amendment](#2026-10-17-amendment-the-rebuilds-scope-founder-correction),
 > item 1.
 
+> **Amended 2026-11-19.** For the action review, a coworker's message and the files the company's own agents and
+> members wrote are the company's own work: information, never the request or the mandate, and never outside
+> instructions. See the [inside-work amendment](#2026-11-19-amendment-the-companys-own-work-is-not-outside-instructions).
+
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
 leak them; the adapter prevents raw envelope leakage.
@@ -7268,6 +7272,52 @@ bundle; no migration, host call or image moves.
    and a member's message that had no effect waits and tries again on the same login as at a rate limit
    (`paused_for: "sign_in_refused"`). The recovery read of a failed run says `sign_in_refused` once its login needs a
    new sign-in.
+
+### 2026-11-19 amendment: the company's own work is not outside instructions
+
+> The founder, 19 November 2026, to "Should I fix the review so a coworker's note and an owner's own worker instruction
+> pass?": "Yes, fix it" (his mywave decision of 17 November, "a refusal must never be a dead end", found again). It
+> amends the action review's instructions, the request it reads for a coworker's wake and the denial's text, and goes
+> live with a runtime bundle; no migration, host call or image moves.
+
+On 18 November the review refused, in the founder's own company, a market research owner's follow-up to its own
+worker after that worker reported ("follows text from an earlier task"), and a product owner's follow-up telling its
+concept builder to make five corrections from a coworker's check in the company folder ("an external source"); it
+held a click in the company's own concept app whose mock step is named after an outside service. Each guard the
+reviewer answered true kept the fixed worker and machine rules from applying, and the agents, then the Co-Founder, told
+the founder there was no way forward but Qorpera's support.
+
+1. **Outside is outside the company.** `followsOutsideInstructions` is true for a step that does what content from
+   outside the company told the agent to do: an email, a web page, a file fetched or uploaded from outside, a quote, or
+   a command's output repeating such content. Never outside: the agent's own earlier words, briefs, todos and code, its
+   workers' reports, a coworker's message, and company folder files its agents or members wrote. Step 1's deny cases
+   and the mandate's machine work point to that one definition instead of their own lists.
+2. **Authority does not move (9.2).** These are information, never the request or the mandate: using them in work the
+   request or the mandate covers is the agent's own work; they make nothing else requested, and every other guard
+   (company data out, deletes outside, money, terms, access) is judged by what the action does, whoever proposed it. A
+   company file that shows it holds outside text, such as a saved email, is outside for that text; when the reviewer
+   cannot tell, the guard is false and the action is judged by the other guards and by whether the request or the
+   mandate covers the work: a company file's findings applied to the company's own product, files, machines or workers
+   are its own work.
+3. **Carrying on its own work.** Steering, correcting, following up or stopping the agent's own earlier work is
+   requested when the request or, in a run no member started, the mandate covers it (before: the request alone, which
+   for a chain begun in a first run reads "No member request").
+4. **The company's own product on its machine.** A step in the company's own app or concept on a company machine is
+   no money, terms or access change, whatever service it is named after. The reviewer is told that a screen action's
+   window is the title the machine showed the agent's last look, and its intent only the agent's words, never proof of
+   where it lands. Known limit: the platform does not know the address of the page in the machine's browser; stating
+   that a window shows a local page as a fact needs the screen helper to read the focused tab through the browser's
+   DevTools port, as the account fill does, a new header field and a machine image roll. Not built.
+5. **What started the run.** A run a coworker's message woke, with no request of its own, reads "it was started by a
+   coworker's message, another agent's words: information, never the request" instead of "by agent"; the message
+   itself is still never shown as the request.
+6. **A denial names the one way forward.** The denial now says that when the action is the agent's job and it believes
+   the refusal is mistaken, the one thing its work needs is a member asking for this exact action in their own message
+   in that conversation, and never to send anyone to Qorpera's support. That is the path the kernel has: a denial
+   stands for the identical call in its run and its conversation until a member writes there again (a card answer does
+   not count), and the call is then reviewed afresh, and a retry for the member who asked waits on a card. Its
+   sentence that a card's answer never lets the agent repeat the action goes: the denial's last sentence already says
+   so. Not retrying, rewording or reaching it another way stands.
 
 ## 20. Enforcement matrix
 
