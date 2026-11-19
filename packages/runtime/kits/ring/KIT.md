@@ -8,7 +8,7 @@ the pointer round the ring, or the arrow keys, and the middle follows. You write
 
 ## Fields
 
-- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): the page's name and one quiet line.
+- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): read only by screen readers; the page draws no title block.
 - `span`: `"year"` (default), `"month"` or `"week"`. `start`: its first day, `"YYYY-MM-DD"`, such as a business year
   from `"2026-07-01"`. Without it the ring is the calendar year, month or week (from Monday) of today.
 - `marks`: up to 12, each `{"name" (24), "at": "YYYY-MM-DD"}`, such as a VAT date or a launch.
@@ -23,7 +23,7 @@ the pointer round the ring, or the arrow keys, and the middle follows. You write
 - `now`: optional `"YYYY-MM-DD"` that holds the hand still on that day. Leave it out: the hand follows the clock.
 - `words`: the page's own words in your language: `days`, `day`, `today`, `to` ("to {name}"), `left`
   ("left of {name}"), `ago` ("{n} days ago"), `assumed`, `unknown`, `empty`.
-- `source`: an `https:` or `folder:` link to where the dates come from (a small ↗).
+- `source`: an `https:` or `folder:` link to where the dates come from. The page does not draw it.
 
 A `value` of a mark, a wedge or the `centre` may be live from a company database: `{"query":
 "<database>/<question>", "params": {}, "column": "sales", "example": 3900}`. Known once it answers, else not known;

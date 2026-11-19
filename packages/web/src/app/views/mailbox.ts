@@ -26,6 +26,7 @@ import {
 } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
+import { isUnnamed } from "../../ui/company-name.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
 import { fmtTime, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
@@ -806,6 +807,7 @@ function manageOf(page: Page): ManageViews | null {
 			hooks: new HooksView(calls.hooks, company.signal, {
 				access,
 				kinds: ["mailbox"],
+				unnamed: () => isUnnamed(company.profile.profileName),
 				changed,
 				card: (hook) => answerer(drawn(), calls, hook),
 				form: () => newAnswerer(drawn(), calls),

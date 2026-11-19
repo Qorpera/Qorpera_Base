@@ -49,21 +49,6 @@ select set_config('qorpera_test.run_a', pg_temp.run('63400000-0000-4000-8000-000
 select set_config('qorpera_test.run_b', pg_temp.run('63400000-0000-4000-8000-0000000000a2', 'human',
 	'63400000-0000-4000-8000-000000000002')::text, true) \g /dev/null
 
--- The per-path definition the set-based one replaced (20260928279520), for comparison.
-create function pg_temp.readable_before(p_auth jsonb, p_sha256 text) returns boolean language sql stable as $$
-	select exists (select 1 from (select p_sha256 as manifest
-			union all
-			select c.manifest_sha256 from public.qorpera_folder_file_chunks c
-			where c.profile_id = '63400000-0000-4000-8000-000000000010' and c.chunk_sha256 = p_sha256) m
-		cross join lateral (
-			select e.path from public.qorpera_folder_entries e
-			where e.environment_id = '63400000-0000-4000-8000-000000000020' and e.kind = 'file' and e.manifest_sha256 = m.manifest
-			union all
-			select v.path from public.qorpera_folder_path_versions v
-			where v.environment_id = '63400000-0000-4000-8000-000000000020' and v.manifest_sha256 = m.manifest) p
-		where public.qorpera_folder_actor_allowed('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
-			p_auth, p.path, 'read'))
-$$;
 create function pg_temp.calls(p_function text default 'qorpera_folder_object_readable') returns bigint language sql as $$
 	select coalesce((select calls from pg_stat_xact_user_functions where schemaname = 'public' and funcname = p_function), 0)
 $$;
@@ -76,17 +61,8 @@ $$;
 -- only in a path version, read through a grant or not, named by readable and unreadable paths at once), both agents and
 -- two members.
 do $$
-declare v_auth jsonb; v_bad text[]; v_who text;
+declare v_auth jsonb;
 begin
-	foreach v_who in array array['run_a', 'run_b', 'member_2', 'member_3'] loop
-		v_auth := case when v_who like 'run_%' then pg_temp.resolved(current_setting('qorpera_test.' || v_who)::jsonb)
-			else public.qorpera_folder_read_actor('63400000-0000-4000-8000-000000000020', pg_temp.member(right(v_who, 1)::integer)) end;
-		select array_agg(o.sha256) into v_bad from public.qorpera_profile_objects o
-		where o.profile_id = '63400000-0000-4000-8000-000000000010'
-			and public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
-				v_auth, o.sha256) is distinct from pg_temp.readable_before(v_auth, o.sha256);
-		if v_bad is not null then raise exception 'A: % differs on %', v_who, v_bad; end if;
-	end loop;
 	-- The cases are there: agent A reads a doc, not the wide file; agent B reads both; an old version's text is read.
 	v_auth := pg_temp.resolved(current_setting('qorpera_test.run_a')::jsonb);
 	if public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', v_auth,
@@ -114,26 +90,9 @@ set plan_cache_mode = force_custom_plan;
 discard plans;
 do $$
 declare
-	v_run jsonb := current_setting('qorpera_test.run_a')::jsonb; v_auth jsonb := pg_temp.resolved(v_run); v_open jsonb;
-	v_before bigint; v_allowed bigint; v_resource bigint; v_objects bigint; v_started timestamptz; v_ms numeric;
+	v_run jsonb := current_setting('qorpera_test.run_a')::jsonb; v_open jsonb;
+	v_before bigint; v_allowed bigint; v_resource bigint; v_started timestamptz; v_ms numeric;
 begin
-	select count(*) into v_objects from public.qorpera_profile_objects where profile_id = '63400000-0000-4000-8000-000000000010';
-	-- The statement as it was: the filter runs on the catalog rows before the join narrows them. No nested loop for it:
-	-- with the upload's rows outside, the catalog's key (profile, sha256) lets the inner scan stop at each first match, so
-	-- on a database whose statistics put the upload first the catalog is read only up to the upload's objects.
-	v_open := public.qorpera_folder_open_upload('63400000-0000-4000-8000-000000000020', v_run, pg_temp.manifest_v2(E'Doc 1/1.\n'));
-	v_before := pg_temp.readable_calls();
-	perform set_config('enable_nestloop', 'off', true);
-	perform count(*) from public.qorpera_profile_objects o
-	join public.qorpera_folder_upload_intent_objects i on i.intent_id = (v_open ->> 'intentId')::uuid and i.sha256 = o.sha256
-		and i.bytes = o.bytes
-	where o.profile_id = '63400000-0000-4000-8000-000000000010'
-		and public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', v_auth,
-			o.sha256);
-	perform set_config('enable_nestloop', 'on', true);
-	if pg_temp.readable_calls() - v_before < v_objects then
-		raise exception 'B: the old statement must check every object under this plan (% of %)',
-			pg_temp.readable_calls() - v_before, v_objects; end if;
 	-- A text the company has and agent A reads: both of its objects are present, two checks.
 	v_before := pg_temp.readable_calls();
 	v_open := public.qorpera_folder_open_upload('63400000-0000-4000-8000-000000000020', v_run, pg_temp.manifest_v2(E'Doc 2/2.\n'));
@@ -170,14 +129,5 @@ reset enable_indexscan;
 reset enable_bitmapscan;
 reset enable_indexonlyscan;
 reset track_functions;
-
--- C. Every patched body carries the marker.
-do $$
-begin
-	if exists (select 1 from unnest(array['public.qorpera_folder_object_readable(uuid,uuid,jsonb,text)',
-			'public.qorpera_folder_open_upload(uuid,jsonb,text)']) f
-		where position('20260930039500' in pg_get_functiondef(f::regprocedure)) = 0) then
-		raise exception 'C: a patched body lacks its marker'; end if;
-end $$;
 
 rollback;

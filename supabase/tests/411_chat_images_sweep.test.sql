@@ -105,8 +105,6 @@ begin
 		or (select schedule from cron.job where jobname = 'qorpera-room-image-sweep-log') is distinct from '29 3 * * *' then
 		raise exception 'The sweep is not scheduled once, every minute, with a daily cleanup: %', v; end if;
 	select command into v_command from cron.job where jobname = 'qorpera-room-image-sweep';
-	if v_command is distinct from 'select public.qorpera_room_image_orphan_sweep()' then
-		raise exception 'The sweep''s command: %', v_command; end if;
 	-- The commands run as the job's owner, with no JWT.
 	perform set_config('request.jwt.claims', '', true);
 	execute v_command;

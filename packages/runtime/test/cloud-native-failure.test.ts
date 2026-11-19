@@ -45,6 +45,46 @@ it("does not confuse a context or session budget with a subscription allowance",
 		expect(nativeRuntimeUsageSignal(value)).toBeNull();
 });
 
+it("reports a refused sign-in from Codex's pinned unauthorized alone", () => {
+	expect(nativeRuntimeUsageSignal("unauthorized")).toBe("sign_in_refused");
+	for (const value of [
+		"contextWindowExceeded",
+		"sessionBudgetExceeded",
+		"usageLimitExceeded",
+		"serverOverloaded",
+		"cyberPolicy",
+		"internalServerError",
+		"badRequest",
+		"threadRollbackFailed",
+		"sandboxError",
+		"other",
+		null,
+		"Unauthorized",
+		"unauthorized ",
+		"unauthorized: sk-PRIVATE",
+		["unauthorized"],
+		{ unauthorized: {} },
+		{ httpConnectionFailed: { httpStatusCode: 401 } },
+		{ responseStreamConnectionFailed: { httpStatusCode: 401 } },
+		{ responseStreamDisconnected: { httpStatusCode: 403 } },
+		{ responseTooManyFailedAttempts: { httpStatusCode: 401 } },
+		{ httpConnectionFailed: { httpStatusCode: 429 } },
+		{ httpConnectionFailed: { httpStatusCode: 503 } },
+	])
+		expect(nativeRuntimeUsageSignal(value)).not.toBe("sign_in_refused");
+	const tagged = tagNativeRuntimeFailure(
+		new Error("PRIVATE_FAILURE"),
+		"codex-turn-completion",
+		"provider_failed",
+		"sign_in_refused",
+		"unauthorized",
+	);
+	expect(nativeProviderUsageSignal(new Error("PRIVATE_WRAPPER", { cause: tagged }))).toBe("sign_in_refused");
+	expect(nativeProviderUsageSignal(new Error("Provider harness exited with 1 (authentication unavailable)"))).toBe(
+		undefined,
+	);
+});
+
 it("names Codex's error discriminant by a fixed name only, and anything else unknown", () => {
 	for (const name of [
 		"contextWindowExceeded",

@@ -39,6 +39,7 @@ for d in $S $S/slots $S/slots/11 $S/journals /var/lib/qorpera /var/lib/qorpera/i
 done
 install -d -o 65534 -g 65534 -m 0700 $SLOT
 MADE+=("$SLOT")
+pkill -f 'deploy/claude-box/test/renewal-(stub|proxy)\.py' || true
 BOOT=$(lxc exec $H -- cat /proc/sys/kernel/random/boot_id </dev/null)
 lxc exec $H -- sh -c 'rm -rf /company/QorperaOS /etc/c4c-root-made' </dev/null
 say "platform: the home's boot $BOOT"
@@ -51,6 +52,13 @@ for f in $B/run*.out; do echo "--- $f"; tail -c 3000 "$f"; echo; done
 echo "=== stub logs: kinds"
 for f in $B/stub-*.jsonl; do echo "$f: $(python3 -c 'import json,sys,collections; print(dict(collections.Counter(json.loads(l)["kind"] for l in open(sys.argv[1]))))' "$f")"; done
 
+echo "=== lone file changes and reviewer failures"
+grep -h "^LONE\|^REVIEWER" $B/run*.out 2>/dev/null | cut -c1-1500 | sort | uniq -c | head -40
+echo "=== stub logs: requests"
+for f in $B/stub-run1.jsonl $B/stub-run2.jsonl; do echo "$f:"; python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    r=json.loads(l)
+    print(" ", {k: r.get(k) for k in ("kind","path","main","ntools","decision","model","status","name","is_error") if r.get(k) is not None})' "$f" | head -30; done
 echo "=== hunt on the home, as root"
 lxc file push $P/test/hunt.py $H/root/hunt.py --mode 0700 </dev/null >/dev/null
 lxc exec $H -- python3 /root/hunt.py c4c </dev/null | tail -15

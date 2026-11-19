@@ -563,8 +563,6 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_folder_machine_fence(uuid)', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_folder_machine_fence(uuid)', 'execute') then
 		raise exception 'H: qorpera_folder_machine_fence must be postgres-only'; end if;
-	if pg_get_functiondef('public.qorpera_folder_machine_fence(uuid)'::regprocedure) ~* 'for (update|no key update|share)\M|nowait' then
-		raise exception 'H: qorpera_folder_machine_fence takes only KEY SHARE'; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

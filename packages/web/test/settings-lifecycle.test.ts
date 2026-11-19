@@ -9,7 +9,7 @@ import { SettingsView } from "../src/app/views/settings.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { GoodWillCardError } from "../src/cloud/good-will.ts";
-import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
+import type { HostedAccountMatch } from "../src/cloud/types.ts";
 import { markdown } from "../src/ui/markdown.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import {
@@ -82,8 +82,6 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			name !== "qorpera_list_review_rules" &&
 			!name.startsWith("qorpera_member_mail_") &&
 			name !== "qorpera_member_digital_post" &&
-			name !== "qorpera_member_interface_offers" &&
-			name !== "qorpera_member_interface_supervisions" &&
 			name !== "qorpera_member_interface_pages" &&
 			// Leaving reads how many agents work for the member, so the confirmation can say it.
 			name !== "qorpera_read_works_for" &&
@@ -570,11 +568,6 @@ describe("settings session lifecycle", () => {
 		expect(brand.querySelector(".settings-brand-rename")?.getAttribute("aria-label")).toBe("Rename the company");
 		expect(brand.querySelector("input[type=text]")).toBeNull();
 		expect(brand.querySelector(".settings-brand-logo .company-logo")).not.toBeNull();
-		// Only the name and the logo: the brand's colours, fonts and guide stay in the company file.
-		expect(brand.querySelector(".settings-brand-note")).toBeNull();
-		expect([...brand.querySelectorAll("button")].map((button) => button.textContent)).not.toContain(
-			"Open brand files",
-		);
 	});
 	it("opens the Friends window over Settings from the button beside Settings | Storage", async () => {
 		const f = await setup();
@@ -623,19 +616,6 @@ describe("settings session lifecycle", () => {
 		expect(vi.mocked(f.cloud.rpc)).toHaveBeenCalledWith("qorpera_list_review_rules", {
 			p_profile_id: profileA.profileId,
 		});
-		// Storage has its own place in the header, and the pages are hidden and shown from the rail.
-		expect(f.root.querySelector(".settings-dialog :is(.settings-file-card, .settings-pages)")).toBeNull();
-		expect(f.root.querySelector('.settings-dialog a[data-href$="/file"]')).toBeNull();
-		// No company execution controls, and no Organization or Approvals pages to link to.
-		expect(
-			f.root.querySelector(
-				'.settings-dialog :is(.company-execution, .settings-execution, a[data-href$="/organization"], a[data-href$="/approvals"])',
-			),
-		).toBeNull();
-		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toMatch(
-			/Company execution|Organization|Approvals/,
-		);
-		expect(f.root.querySelector('.account-popover a[data-href$="/file"]')).toBeNull();
 		click(f.root, ".settings-close");
 		expect(f.root.querySelector(".settings-dialog")).toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
@@ -1152,7 +1132,7 @@ describe("settings session lifecycle", () => {
 		expect(leaderboardCalls()).toHaveLength(1);
 		expect(content.querySelector('.leaderboard-visible [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
 	});
-	it("finds the member's own logins on AI subscriptions, and no company services", async () => {
+	it("finds the member's own logins on AI subscriptions", async () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
@@ -1169,14 +1149,6 @@ describe("settings session lifecycle", () => {
 		expect(shown("forbindelser")).toEqual(["settings-tab-ai-subscriptions"]);
 		expect(shown("chatgpt")).toEqual(["settings-tab-ai-subscriptions"]);
 		expect(shown("claude")).toEqual(["settings-tab-ai-subscriptions"]);
-		// Company connections left Settings (Jonas, 10 Nov 2026: companies are fully Qorpera-hosted).
-		expect(shown("github")).toEqual([]);
-		expect(shown("gmail")).toEqual([]);
-		// Webhooks live under an agent's routines, mailboxes and Digital Post in the Mailbox, and Sites in the apps
-		// drawer: Settings finds none of them.
-		expect(shown("webhooks")).toEqual([]);
-		expect(shown("postkasser")).toEqual([]);
-		expect(shown("sites")).toEqual([]);
 	});
 	it("stays on the company page when a service sign-in comes back", async () => {
 		sessionStorage.setItem(
@@ -1726,12 +1698,10 @@ describe("settings session lifecycle", () => {
 		expect(section.querySelector(".notice-danger")?.textContent).toBe(
 			"Cards can't be added yet. Nothing is charged until then.",
 		);
-		// The tab is read once, and the Plan & usage tab is gone.
 		click(f.root, "#settings-tab-general");
 		click(f.root, "#settings-tab-company");
 		await draw();
 		expect(f.api.getCompanyGoodWill).toHaveBeenCalledTimes(1);
-		expect(f.root.querySelector("#settings-tab-plan")).toBeNull();
 	});
 	it("hides good will on a cloud without it, and shows the member's companies in General with none open", async () => {
 		const fixtureState = fixture();
@@ -1828,54 +1798,6 @@ describe("settings session lifecycle", () => {
 		expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
 		expect(content().querySelector(".settings-rules")).toBeNull();
 		expect(vi.mocked(f.cloud.rpc)).not.toHaveBeenCalledWith("qorpera_list_review_rules", expect.anything());
-	});
-	it("keeps focus in General when the account plan arrives", async () => {
-		const f = await setup(),
-			pending = deferred<HostedAccountEntitlement>();
-		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
-		open(f.root);
-		await draw();
-		const language = f.root.querySelector<HTMLButtonElement>(".preference-picker-button")!;
-		language.focus();
-		pending.resolve({
-			planKey: "free",
-			billingMode: "fixture",
-			featureSet: "fixture",
-			storageAllocation: "fixture",
-			source: "fixture",
-		});
-		await draw();
-		expect(language.isConnected).toBe(true);
-		expect(document.activeElement).toBe(language);
-	});
-	it("shows an account failure in General", async () => {
-		const f = await setup(),
-			pending = deferred<HostedAccountEntitlement>();
-		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
-		open(f.root);
-		await draw();
-		pending.reject(new Error("Account temporarily unavailable"));
-		await draw();
-		expect(f.root.querySelector(".settings-content")!.textContent).toContain("Account temporarily unavailable");
-	});
-	it("discards a late account response after closing settings or changing account", async () => {
-		const f = await setup(),
-			pending = deferred<HostedAccountEntitlement>();
-		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
-		open(f.root);
-		f.auth(userB);
-		await draw();
-		pending.resolve({
-			planKey: "OLD PRIVATE PLAN",
-			billingMode: "fixture",
-			featureSet: "fixture",
-			storageAllocation: "fixture",
-			source: "fixture",
-		});
-		await draw();
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		expect(f.root.textContent).not.toContain("OLD PRIVATE PLAN");
-		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
 	});
 	it("closes settings immediately when company membership is revoked", async () => {
 		const f = await setup();
@@ -2275,12 +2197,8 @@ describe("settings session lifecycle", () => {
 		expect(content.querySelectorAll(".connection-card")).toHaveLength(0);
 		expect(content.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(true);
 		expect(content.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
-		expect(content.querySelector(".service-card")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// Model accounts never go through the SDK RPC path, and the company's services are not read. Coding values are no
-		// longer drawn in Settings (Jonas, 9 Nov 2026), so they are not read either.
 		expect(sdkRpcs(f)).toEqual([]);
-		expect(content.querySelector(".coding-environment")).toBeNull();
 		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 	});
 });

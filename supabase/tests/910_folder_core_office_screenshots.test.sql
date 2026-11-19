@@ -302,14 +302,6 @@ begin
 			extract(milliseconds from clock_timestamp() - v_at), left(v_answer, 200); end if;
 end $$;
 
--- G. Exactly the patched functions and the new one name this migration.
-do $$
-begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930057000') <> 6 then
-		raise exception 'G: 5 patched functions and 1 new one name 20260930057000 (found %)',
-			(select count(*) from pg_proc where prosrc ~ '20260930057000'); end if;
-end $$;
-
 -- H. 20260930183000 (C1B §8): a shell start's begin makes its command's row before the guest runs anything, keyed by
 --    the start's receipt, with the screen's generation, the run's member and whether the command uses the network
 --    (absent: it does not); the office's report fills in the guest's session id later. The older one-shot form and

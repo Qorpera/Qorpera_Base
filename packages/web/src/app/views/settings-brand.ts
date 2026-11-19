@@ -7,6 +7,7 @@ import {
 	withProblems,
 } from "../../cloud/company-folder-writes.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
+import { companyNameText, isUnnamed } from "../../ui/company-name.ts";
 import { button, companyLogo, h, icon, notice, replace } from "../../ui/dom.ts";
 import { choosePictureCrop } from "../../ui/picture-cropper.ts";
 import { PictureFileError } from "../../ui/picture-file.ts";
@@ -128,8 +129,11 @@ export class CompanyBrandView {
 	update(): void {
 		if (this.#options.signal.aborted) return;
 		const manage = this.#options.canManage();
-		if (!this.#logoSlot.firstChild)
-			replace(this.#logoSlot, companyLogo(this.#options.profileId, "settings-brand-figure"));
+		const unnamed = isUnnamed(this.#options.name());
+		if (!this.#logoSlot.firstChild || this.#logoSlot.dataset.unnamed !== String(unnamed)) {
+			this.#logoSlot.dataset.unnamed = String(unnamed);
+			replace(this.#logoSlot, companyLogo(this.#options.profileId, "settings-brand-figure", unnamed));
+		}
 		this.#logoButton.disabled = !manage || this.#busy;
 		this.#logoButton.classList.toggle("is-changeable", manage);
 		this.#logoButton.toggleAttribute("aria-busy", this.#busy);
@@ -149,7 +153,7 @@ export class CompanyBrandView {
 		if (this.#savedName === current) this.#savedName = undefined;
 		replace(
 			this.#nameSlot,
-			h("strong", null, this.#savedName ?? current),
+			h("strong", null, companyNameText(this.#savedName ?? current)),
 			manage
 				? h(
 						"button",
@@ -209,7 +213,8 @@ export class CompanyBrandView {
 		const input = h("input", {
 			type: "text",
 			class: "settings-brand-name-input",
-			value: this.#savedName ?? this.#options.name(),
+			value: this.#savedName ?? (isUnnamed(this.#options.name()) ? "" : this.#options.name()),
+			placeholder: t("Company name"),
 			maxlength: String(COMPANY_NAME_LIMIT),
 			autocomplete: "off",
 			"aria-label": t("Company name"),

@@ -142,13 +142,6 @@ const ease = (u: number) => 1 - (1 - u) ** 3;
 const smooth = (u: number) => u * u * (3 - 2 * u);
 const clamp = (u: number) => Math.min(1, Math.max(0, u));
 
-/** The seed of an identity (an agent id), so two figures of one company do not move in step. */
-export function atComputerSeed(identity: string): number {
-	let seed = 2166136261;
-	for (const character of identity) seed = Math.imul(seed ^ character.charCodeAt(0), 16777619) >>> 0;
-	return seed;
-}
-
 export function atComputerFrame(seconds: number, seed: number, reduced: boolean): AtComputerFrame {
 	if (reduced) {
 		const face = { x: 0, y: LOOK_Y, width: 1, height: 1, rotation: 0, alpha: 1 };

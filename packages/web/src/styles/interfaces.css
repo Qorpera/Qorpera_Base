@@ -442,3 +442,14 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .rail-app.is-drawing .interface-emblem { animation: app-drawing 1.2s ease-in-out infinite; }
 @keyframes app-drawing { 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .app-look-drawing, .rail-app.is-drawing .interface-emblem { animation: none; } }
+.rail-new-program-mark {
+	display: block;
+	width: 30px;
+	height: 30px;
+	margin: 2px;
+	border: 1.5px dashed var(--text-muted);
+	border-radius: 9px;
+}
+.rail-new-program:hover .rail-new-program-mark {
+	border-color: var(--text);
+}

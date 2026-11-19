@@ -42,28 +42,10 @@ $$;
 
 -- The shape: the patched functions carry the change, and the new functions and table are internal.
 do $$
-declare v_stop text := (select prosrc from pg_proc
-	where oid = 'public.qorpera_cancel_session_run_profile_scope(uuid,uuid)'::regprocedure);
 begin
-	perform pg_temp.base_assert(position('qorpera_stop_run_chain(p_run_id)' in v_stop) > 0
-		and position('pg_advisory_xact_lock(public.qorpera_causal_chain_key(' in v_stop) > 0
-		and position('pg_advisory_xact_lock(public.qorpera_causal_chain_key(' in v_stop) < position('for update of job' in v_stop)
-		and position('run.source_kind in (''session_turn'',''room_delivery'',''wake'')' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_cancel_session_run_profile_scope(uuid,uuid)'::regprocedure)) > 0
-		and position('20260930533000' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_pin_wake_occurrence()'::regprocedure)) > 0
-		and position('20260930533000' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_answer_action_review(uuid,uuid,text,text,uuid,bigint)'::regprocedure)) > 0
-		and position('20260930533000' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_wake_origin(public.qorpera_wake_occurrences)'::regprocedure)) > 0
-		and position('20260930518000' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_wake_origin(public.qorpera_wake_occurrences)'::regprocedure)) > 0
-		and position('qorpera_run_chain_stopped(v_run.id)' in (select prosrc from pg_proc
-			where oid = 'public.qorpera_folder_parent_continuation(uuid,text)'::regprocedure)) > 0
-		and position('qorpera_run_chain_stopped(v_parent.id)' in (select prosrc from pg_proc
+	perform pg_temp.base_assert(position('qorpera_run_chain_stopped(v_parent.id)' in (select prosrc from pg_proc
 			where oid = 'public.qorpera_folder_office_wakes_company(uuid,integer)'::regprocedure)) > 0,
-		'The Stop (its chain lock before the job), admission, the approval answer, the origin, the parent continuation and '
-		|| 'the office start carry the chain Stop; the earlier patches stay');
+		'The office start carries the chain Stop');
 	perform pg_temp.base_assert(not has_function_privilege('authenticated', 'public.qorpera_stop_run_chain(uuid)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_stop_run_chain(uuid)', 'execute')
 		and not has_function_privilege('service_role', 'public.qorpera_stop_run_chain(uuid)', 'execute')

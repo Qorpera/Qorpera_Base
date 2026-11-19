@@ -8,7 +8,7 @@ band's, with its share. You write only `flow.json`.
 
 ## Fields
 
-- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): the page's name and one quiet line.
+- `lang`: language code, such as `"da"`. `title` (40) and `line` (60): read only by screen readers; the page draws no title block.
 - `unit` (8): the unit after every amount, such as `"kr"` or `"people"`.
 - `from`: where it comes from, 1 or more (24 at most), each `{"id", "name" (20), "value"}`: `id` letters, digits,
   `-`; `value` the amount, 0 or more. Leave `value` out when nobody knows it: the band is drawn open with "?".
@@ -24,7 +24,7 @@ band's, with its share. You write only `flow.json`.
 - `headline`: optional `{"value", "label" (24)}`: the big number when nobody points, such as what was kept.
 - `words`: the page's own words in your language: `total` (the big number's label, "in all"), `other`, `rest`
   ("Not accounted for"), `assumed`, `unknown`, `empty`.
-- `source`: an `https:` or `folder:` link to where the numbers come from (a small ↗).
+- `source`: an `https:` or `folder:` link to where the numbers come from. The page does not draw it.
 
 A `value` of an end, a link or the `headline` may be live from a company database: `{"query": "<database>/<question>",
 "params": {"month": "2026-11"}, "column": "amount", "example": 182000}`. Known once it answers, else not known;

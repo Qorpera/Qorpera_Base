@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
 	type AppTreeNode,
 	appColours,
-	appLayoutChanges,
 	arrangeApps,
 	arrangeAppsFully,
 	colourApp,
@@ -174,7 +173,6 @@ describe("the member's own arrangement", () => {
 			"app:fjeldtur-brand",
 			"page:bank",
 		]);
-		expect(appLayoutChanges(mine)).toBe(2);
 	});
 
 	it("makes a group of two apps where the first stood, renames it, and takes it apart again", () => {
@@ -368,7 +366,6 @@ describe('colours (Jonas, 12 Nov 2026: "I would like for all the icons to share 
 		// Lofoten loose: its own choice shows.
 		const loose = placeApp(mine, arrangeApps(company, mine, keys), "app:lofoten", null, "app:finances");
 		expect(appColours(arrangeApps(company, loose, keys), loose, own).get("app:lofoten")).toBe("coral");
-		expect(appLayoutChanges(mine)).toBe(3);
 	});
 
 	it("draws a group in the company's colour from apps/groups.md, below the member's own, above its first app's", () => {
@@ -409,7 +406,6 @@ describe('icons (Jonas, 12 Nov 2026: "change the icons of the interfaces")', () 
 		let mine = emblemApp(EMPTY_APP_LAYOUT, "app:planner", "map");
 		mine = emblemApp(mine, "page:mailbox", "custom:compass");
 		expect(mine.emblems).toEqual({ "app:planner": "map", "page:mailbox": "custom:compass" });
-		expect(appLayoutChanges(mine)).toBe(2);
 		expect(emblemApp(emblemApp(mine, "app:planner", null), "page:mailbox", null)).toEqual(EMPTY_APP_LAYOUT);
 		const read = parseMemberAppLayout({
 			schema: "qorpera.member-app-layout/v1",

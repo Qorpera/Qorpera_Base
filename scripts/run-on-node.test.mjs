@@ -47,6 +47,10 @@ import {
 	includeRules,
 	joinRecords,
 	KEPT_SLOTS,
+	LANE_FOLDERS,
+	LANE_IDLE_DAYS,
+	LOW_DISK_MIB,
+	laneTidyLine,
 	limitEndScript,
 	MACHINES,
 	OOM_KILLED,
@@ -983,7 +987,7 @@ test("the probe reads the locks the run script takes and counts runs still being
 		probe,
 		/kept_busy=0; for i in \$\(seq 5 5\); do \{ flock -n 5 \|\| kept_busy=\$\(\(kept_busy \+ 1\)\); \} 2>\/dev\/null 5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"; done/,
 	);
-	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy extra_busy=\$extra_busy mem_mib=\$mem_mib closed=/);
+	assert.match(probe, / front_waiting=\$front_waiting kept_busy=\$kept_busy extra_busy=\$extra_busy mem_mib=\$mem_mib disk_mib=\$disk_mib closed=/);
 	// guest-setup.sh makes the kept slot's lock file root's and read-only, now and at every boot.
 	const setup = readFileSync(new URL("../deploy/test-machine/guest-setup.sh", import.meta.url), "utf8");
 	assert.match(setup, /^kept=\/run\/lock\/qorpera-test-machine-slot5\.lock$/m);
@@ -1022,7 +1026,7 @@ test(
 	{ skip: flockNoFork ? false : "no util-linux flock(1) here; the test machines have it" },
 	async () => {
 		const dir = mkdtempSync(join(tmpdir(), "run-on-node-locks-"));
-		const paths = (root) => ({ locks: root, closed: join(root, "closed"), setUp: join(root, "versions"), arriving: join(root, "arriving") });
+		const paths = (root) => ({ locks: root, closed: join(root, "closed"), setUp: join(root, "versions"), arriving: join(root, "arriving"), home: root });
 		const ask = (root) => parseStatus(spawnSync("bash", ["-c", probeScript(paths(root))], { encoding: "utf8" }).stdout);
 		const holders = [];
 		// --no-fork: the shell that reports the lock is the process that holds it, and killing it frees it.
@@ -1066,6 +1070,7 @@ test(
 			assert.deepEqual([answer.front_waiting, answer.kept_busy], ["0", "0"]);
 			assert.match(answer.cpus, /^[1-9][0-9]*$/);
 			assert.match(answer.mem_mib, /^[0-9]+$/);
+			assert.match(answer.disk_mib, /^[0-9]+$/);
 			// Slot 2 was never made, and nothing else appeared or went: not the kept slot's file either.
 			assert.deepEqual(listing(), before);
 			// A run in the kept slot counts as busy and as kept.
@@ -2049,7 +2054,10 @@ test("untracked files that look like secrets are named", () => {
 });
 
 test("cleanup prunes runs by the UTC time in their name, never by mtime", () => {
-	const script = pruneScript();
+	const script = pruneScript()
+		.split("\n")
+		.filter((line) => line !== laneTidyLine())
+		.join("\n");
 	assert.match(script, /date -u -d '-1 day' \+%Y%m%dT%H%M%S/);
 	assert.match(script, /\$\{n%%-\*\}" < "\$cutoff"/);
 	assert.doesNotMatch(script, /-mmin|-mtime \+1\b/);
@@ -2234,4 +2242,75 @@ test("the copied tree is exactly what git sees, and the digest covers untracked 
 	} finally {
 		rmSync(temporary, { recursive: true, force: true });
 	}
+});
+
+test("cleanup removes lane folders nothing was written in for 7 days, by the real path", () => {
+	assert.equal(LANE_FOLDERS, "/home/tester/lanes");
+	assert.equal(LANE_IDLE_DAYS, 7);
+	const line = laneTidyLine();
+	assert.ok(pruneScript().split("\n").includes(line));
+	assert.match(line, /^if \[ -z "\$\(find \/home\/tester\/\.lane-tidy -mmin -60 2>\/dev\/null\)" \]; then touch \/home\/tester\/\.lane-tidy; /);
+	assert.match(line, /sudo -n test -e "\$d\/\.keep" 2>\/dev\/null && continue;/);
+	assert.match(line, /sudo -n find "\$d" \\\( -mmin -10080 -o -cmin -10080 \\\) -print -quit/);
+	assert.match(line, /sudo -n rm -rf -- "\$d"; done; fi$/);
+	assert.equal(spawnSync("bash", ["-n", "-c", line]).status, 0);
+});
+
+const gnuFind = /GNU findutils/.test(spawnSync("find", ["--version"], { encoding: "utf8" }).stdout ?? "");
+test("a stale lane goes; a kept, linked, fresh or unreadable one stays", { skip: gnuFind ? false : "no GNU find here; the test machines have it" }, () => {
+	const root = mkdtempSync(join(tmpdir(), "run-on-node-lanes-"));
+	try {
+		const lanes = join(root, "lanes");
+		const outside = join(root, "outside");
+		mkdirSync(join(lanes, "stale", "deep"), { recursive: true });
+		writeFileSync(join(lanes, "stale", "deep", "model.bin"), "x");
+		mkdirSync(join(lanes, "kept"));
+		writeFileSync(join(lanes, "kept", ".keep"), "");
+		writeFileSync(join(lanes, "kept", "data"), "x");
+		mkdirSync(outside);
+		writeFileSync(join(outside, "precious"), "x");
+		symlinkSync(outside, join(lanes, "linked"));
+		writeFileSync(join(lanes, "notes.txt"), "x");
+		const stamp = join(root, "stamp");
+		const tidy = (options) => {
+			rmSync(stamp, { force: true });
+			const result = spawnSync("bash", ["-c", laneTidyLine({ lanes, sudo: "", stamp, ...options })], { encoding: "utf8" });
+			assert.equal(result.stderr, "");
+		};
+		tidy({ idleMinutes: 60 });
+		assert.deepEqual(readdirSync(lanes).sort(), ["kept", "linked", "notes.txt", "stale"]);
+		tidy({ idleMinutes: 0, sudo: "/nonexistent/sudo " });
+		assert.deepEqual(readdirSync(lanes).sort(), ["kept", "linked", "notes.txt", "stale"]);
+		tidy({ idleMinutes: 0 });
+		assert.deepEqual(readdirSync(lanes).sort(), ["kept", "linked", "notes.txt"]);
+		assert.deepEqual(readdirSync(outside), ["precious"]);
+		assert.deepEqual(readdirSync(join(lanes, "kept")).sort(), [".keep", "data"]);
+		mkdirSync(join(lanes, "again"));
+		writeFileSync(join(lanes, "again", "file"), "x");
+		writeFileSync(stamp, "");
+		spawnSync("bash", ["-c", laneTidyLine({ lanes, sudo: "", stamp, idleMinutes: 0 })]);
+		assert.ok(existsSync(join(lanes, "again")));
+		tidy({ idleMinutes: 0, sudo: "env " });
+		assert.equal(existsSync(join(lanes, "again")), false);
+		rmSync(lanes, { recursive: true });
+		tidy({ idleMinutes: 0 });
+		assert.equal(existsSync(lanes), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a machine short of disk ranks after every machine with room, in every lane, and the probe line says so", () => {
+	assert.equal(LOW_DISK_MIB, 15 * 1024);
+	const idle = (name) => ({ name, busy: 0, waiting: 0, quickBusy: 0, quickWaiting: 0, arriving: 0, frontWaiting: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
+	const names = (probes, quick, front) => rankMachines(probes, false, quick, front).map((probe) => probe.name);
+	const short = [{ ...idle("node02"), diskMiB: LOW_DISK_MIB - 1 }, { ...idle("node01"), busy: 5, waiting: 6, quickBusy: 2, quickWaiting: 4, diskMiB: 70_000 }];
+	assert.deepEqual(names(short, false, false), ["node01", "node02"]);
+	assert.deepEqual(names(short, true, false), ["node01", "node02"]);
+	assert.deepEqual(names(short, false, true), ["node01", "node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), diskMiB: LOW_DISK_MIB }, { ...idle("node01"), diskMiB: 70_000 }], false, false), ["node02", "node01"]);
+	assert.deepEqual(names([{ ...idle("node02"), diskMiB: null }, { ...idle("node01"), busy: 1 }], false, false), ["node02", "node01"]);
+	assert.deepEqual(rankMachines(short, true, false).map((probe) => probe.name), ["node01", "node02"]);
+	assert.equal(describeProbes([{ ...idle("node02"), diskMiB: 5600 }]), "node02 0/5 slots busy, 0 waiting, quick 0/2, only 5.5 GiB disk free");
+	assert.equal(describeProbes([{ ...idle("node02"), diskMiB: 70_000 }]), "node02 0/5 slots busy, 0 waiting, quick 0/2");
 });

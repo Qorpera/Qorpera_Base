@@ -266,6 +266,47 @@ begin
 		raise exception 'The sweep skips the intent it cannot lock and sweeps the other: %', v_res; end if;
 end $$;
 
+select set_config('qorpera_test.gc_unlocked', pg_temp.left_object('gc race unlocked'), false);
+select set_config('qorpera_test.gc_unlocked_lease', extensions.gen_random_uuid()::text, false);
+do $$
+begin
+	if not pg_temp.claims(public.qorpera_folder_claim_object_gc(100, current_setting('qorpera_test.gc_unlocked_lease')::uuid),
+		current_setting('qorpera_test.gc_unlocked')) then raise exception 'The claim takes it'; end if;
+end $$;
+do $$
+declare v jsonb := pg_temp.actor('run_one'); v_x text := current_setting('qorpera_test.gc_unlocked');
+	v_lease uuid := current_setting('qorpera_test.gc_unlocked_lease')::uuid; v_call text; v_state text;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform dblink_exec('auth_one', $q$update public.qorpera_profiles set name = name where id = '63500000-0000-4000-8000-000000000010'$q$);
+	perform dblink_exec('auth_one', $q$update public.qorpera_company_files set updated_at = updated_at
+		where environment_id = '63500000-0000-4000-8000-000000000020'$q$);
+	perform * from dblink('auth_one', $q$select 1 from public.qorpera_folder_fences where profile_id = '63500000-0000-4000-8000-000000000010'
+		for update$q$) as t(r integer);
+	perform * from dblink('auth_one', format('select 1 from public.qorpera_runner_jobs where id = %L for update', v ->> 'jobId')) as t(r integer);
+	perform * from dblink('auth_one', format('select 1 from public.qorpera_execution_runs where id = %L for update', v ->> 'runId')) as t(r integer);
+	foreach v_call in array array[
+		'select public.qorpera_folder_sweep_upload_intents(100)',
+		format('select public.qorpera_folder_claim_object_gc(100, %L)', extensions.gen_random_uuid()),
+		format('select public.qorpera_folder_gc_unlink_begin(%L, %L, %L)', '63500000-0000-4000-8000-000000000010', v_x, v_lease),
+		format('select public.qorpera_folder_gc_quarantine_state(%L, %L, %L)', '63500000-0000-4000-8000-000000000010', v_x, v_lease),
+		format('select public.qorpera_folder_gc_unlink_abandon(%L, %L, %L)', '63500000-0000-4000-8000-000000000010', v_x,
+			extensions.gen_random_uuid()),
+		format('select public.qorpera_folder_gc_unlink_finish(%L, %L, %L)', '63500000-0000-4000-8000-000000000010', v_x, v_lease)] loop
+		perform dblink_send_query('auth_two', v_call);
+		if not pg_temp.finishes_unblocked('auth_two', 'auth_one') then
+			perform dblink_exec('auth_one', 'rollback');
+			raise exception 'GC waited on the company: %', v_call; end if;
+		v_state := pg_temp.outcome('auth_two');
+		if v_state <> 'ok' then
+			perform dblink_exec('auth_one', 'rollback');
+			raise exception 'GC beside a held company: % (%)', v_state, v_call; end if;
+	end loop;
+	perform dblink_exec('auth_one', 'rollback');
+	if exists (select 1 from public.qorpera_profile_objects where profile_id = '63500000-0000-4000-8000-000000000010' and sha256 = v_x) then
+		raise exception 'The finish beside a held company removes the object'; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
 
 -- The committed fixture leaves the shared suite database, as 762's does.

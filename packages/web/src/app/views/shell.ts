@@ -42,6 +42,7 @@ import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.t
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
 import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor, playFigure } from "../../ui/avatar.ts";
+import { companyDisplayName, companyInSentence, showCompanyName } from "../../ui/company-name.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -384,6 +385,7 @@ interface RailParts {
 	 * device, each group's tile, and the keys the grid showed, so a change of them glides. */
 	appTree: AppTreeNode[];
 	appTiles: AppTile[];
+	newProgram: HTMLElement | undefined;
 	/** The member's places the arrangement refused; the next change leaves them out. */
 	appRefused: ReadonlySet<string>;
 	/** Each of the agents' apps in the drawer as it is drawn there, by the app's name (`appLook`). */
@@ -666,6 +668,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appsOrder: storedAppsOrder(company.profile.profileId),
 			appTree: [],
 			appTiles: [],
+			newProgram: undefined,
 			appRefused: new Set(),
 			appLooks: new Map(),
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
@@ -794,7 +797,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 					items: [
 						...profiles.map(
 							(profile): MenuEntry => ({
-								label: profile.profileName,
+								label: companyDisplayName(profile.profileName),
 								checked: profile.profileId === company.profile.profileId,
 								select: () => {
 									if (profile.profileId !== company.profile.profileId)
@@ -1233,7 +1236,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
 		if (
-			(section === "interface" || section === "app" || section === "sites" || section === "whats-new") &&
+			(section === "interface" ||
+				section === "app" ||
+				section === "sites" ||
+				section === "whats-new" ||
+				section === "new-program") &&
 			!parts.appsOpen
 		)
 			setAppsOpen(parts, profileId, true);
@@ -1246,8 +1253,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.appsDrawer.classList.toggle("is-open", appsOpen);
 	// Closed, its icons can't be reached.
 	parts.appsDrawer.inert = !appsOpen;
-	if (parts.companyName.textContent !== company.profile.profileName)
-		parts.companyName.textContent = company.profile.profileName;
+	showCompanyName(parts.companyName, company.profile.profileName);
 	// Text in the field keeps it open, so a query never filters from a folded field.
 	if (parts.input.value) parts.searchOpen = true;
 	parts.toolbar.classList.toggle("is-searching", parts.searchOpen);
@@ -1276,7 +1282,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
+	const addsPrograms = hasApps && state.team?.capabilities.write === true;
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route, addsPrograms);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1617,10 +1624,18 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		notices.set(about, entry);
 		return entry.element;
 	};
+	const connectionNotice = () => {
+		if (!state.connectionLost) return null;
+		const text = t("Can't reach Qorpera. Trying again…");
+		const kept = parts.notices.get("connection");
+		const entry = kept?.text === text ? kept : { text, element: notice("neutral", text) };
+		notices.set("connection", entry);
+		return entry.element;
+	};
 	// After Reset sidebar: one line with Undo, until dismissed or the sidebar changes again.
 	const resetNotice = () => {
 		if (!state.sidebarReset) return null;
-		const text = t("Sidebar reset to {company}'s.", { company: company.profile.profileName });
+		const text = t("Sidebar reset to {company}'s.", { company: companyInSentence(company.profile.profileName) });
 		const kept = parts.notices.get("reset");
 		const entry =
 			kept?.text === text
@@ -1646,10 +1661,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		unassignedRows.length +
 		hiddenCount +
 		sectionGroups.reduce((n, g) => n + g.rows.length, 0);
-	if (!state.loading || state.staff.length) parts.loading = undefined;
+	const waiting = (state.loading || state.connectionLost) && !state.staff.length;
+	if (!waiting) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
 	const empty =
-		!state.loading && !cofounderElement && !anyRows
+		!state.loading && !state.connectionLost && !cofounderElement && !anyRows
 			? railQuery
 				? t("No matching conversations.")
 				: t("No agents yet.")
@@ -1718,6 +1734,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	reconcile(
 		parts.list,
 		[
+			connectionNotice(),
 			errorNotice("sessions", state.sessionsError, () =>
 				button(t("Retry conversations"), () => void company.refreshSessions(), { small: true }),
 			),
@@ -1874,6 +1891,7 @@ function drawInterfaces(
 	concepts: number,
 	sites: number,
 	route: Route,
+	addsPrograms: boolean,
 ): void {
 	const profileId = company.profile.profileId;
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
@@ -2060,6 +2078,15 @@ function drawInterfaces(
 	parts.groupRows = groupRows;
 	parts.appTree = tree;
 	parts.appTiles = tiles;
+	if (addsPrograms) {
+		if (parts.newProgram?.textContent !== t("New program"))
+			parts.newProgram = newProgramIcon(`#/c/${profileId}/new-program`);
+		const open = route.name === "company" && route.section === "new-program";
+		parts.newProgram.classList.toggle("active", open);
+		if (open) parts.newProgram.setAttribute("aria-current", "page");
+		else parts.newProgram.removeAttribute("aria-current");
+		drawn.push(parts.newProgram);
+	} else parts.newProgram = undefined;
 	for (const [index, element] of drawn.entries()) element.style.setProperty("--i", String(index));
 	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
 	if (!parts.appsDrag.dragging) placeTiles(parts, drawn);
@@ -2430,6 +2457,15 @@ function whatsNewIcon(href: string, count: number): HTMLElement {
 	);
 }
 
+function newProgramIcon(href: string): HTMLElement {
+	return h(
+		"a",
+		{ class: "rail-app rail-new-program", href, draggable: "false" },
+		h("span", { class: "rail-app-stand" }, h("span", { class: "rail-new-program-mark", "aria-hidden": "true" })),
+		h("span", { class: "rail-app-name" }, t("New program")),
+	);
+}
+
 /* ---- The rail's menus and dragging --------------------------------------------------- */
 
 const newSectionId = () => crypto.randomUUID();
@@ -2647,7 +2683,7 @@ function resetEntries(company: CompanyController, parts: RailParts): MenuEntry[]
 			: {
 					label: t("Reset sidebar"),
 					icon: "reset",
-					hint: t("You have {company}'s sidebar", { company: company.profile.profileName }),
+					hint: t("You have {company}'s sidebar", { company: companyInSentence(company.profile.profileName) }),
 					disabled: true,
 					select: () => {},
 				},
@@ -2698,7 +2734,7 @@ async function askResetSidebar(company: CompanyController, parts: RailParts): Pr
 	if (!own) return;
 	const sure = await confirmDialog(
 		t("Reset your sidebar? These changes of yours go away, and you get {company}'s sidebar:", {
-			company: company.profile.profileName,
+			company: companyInSentence(company.profile.profileName),
 		}),
 		t("Reset"),
 		false,

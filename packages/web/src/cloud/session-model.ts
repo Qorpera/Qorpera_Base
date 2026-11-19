@@ -2,16 +2,57 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
+export const SESSION_PROVIDERS = ["openai", "anthropic"] as const;
+export type SessionProvider = (typeof SESSION_PROVIDERS)[number];
+
 export const SESSION_MODELS = [
-	{ id: "gpt-6-astra", name: "GPT-6 Astra" },
-	{ id: "gpt-6-sol", name: "GPT-6 Sol" },
-	{ id: "gpt-6-luna", name: "GPT-6 Luna" },
-] as const;
+	{ id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai" },
+	{ id: "gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "openai" },
+	{ id: "claude-fable-5-2", name: "Fable 5.2", provider: "anthropic" },
+	{ id: "claude-opus-5-5", name: "Opus 5.5", provider: "anthropic" },
+] as const satisfies ReadonlyArray<{ id: string; name: string; provider: SessionProvider }>;
+
+export const EARLIER_MODEL_NAMES: Readonly<Record<string, string>> = {
+	"gpt-6-sol": "GPT-6 Sol",
+	"gpt-6-luna": "GPT-6 Luna",
+};
+
+export const MODELS_BEFORE_LIST: readonly string[] = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
+
+export function modelName(modelId: string): string {
+	return SESSION_MODELS.find((model) => model.id === modelId)?.name ?? EARLIER_MODEL_NAMES[modelId] ?? modelId;
+}
 
 /** The only listed model a cloud without per-conversation effort accepts. */
 export const SESSION_MODEL_BEFORE_EFFORT = "gpt-6-astra";
 
-export const SESSION_EFFORTS = ["low", "medium", "high"] as const;
+export const SESSION_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export type SessionEffort = (typeof SESSION_EFFORTS)[number];
+
+export const PROVIDER_EFFORTS: Record<SessionProvider, readonly SessionEffort[]> = {
+	openai: ["low", "medium", "high", "xhigh"],
+	anthropic: ["low", "medium", "high", "xhigh", "max"],
+};
+
+export const EFFORTS_BEFORE_LIST: Record<SessionProvider, readonly SessionEffort[]> = {
+	openai: ["low", "medium", "high"],
+	anthropic: ["low", "medium", "high", "xhigh", "max"],
+};
+
+export function modelProvider(modelId: string | undefined): SessionProvider {
+	return SESSION_MODELS.find((model) => model.id === modelId)?.provider ?? "openai";
+}
+
+export function modelEfforts(
+	observed: SessionModel | undefined,
+	modelId: string | undefined,
+): readonly SessionEffort[] {
+	const provider = modelProvider(modelId);
+	const listed = modelId !== undefined && observed?.efforts ? observed.efforts[modelId] : undefined;
+	const offered = listed ? PROVIDER_EFFORTS[provider].filter((effort) => listed.includes(effort)) : [];
+	return offered.length > 0 ? offered : EFFORTS_BEFORE_LIST[provider];
+}
 
 /** Fast is the provider's priority tier; standard turns it off. */
 export const SESSION_SERVICE_TIERS = ["fast", "standard"] as const;
@@ -24,6 +65,8 @@ export interface SessionModel {
 	reasoningEffort?: string;
 	/** Absent while the cloud does not run conversations on the Fast tier. */
 	serviceTier?: string;
+	models?: readonly string[];
+	efforts?: Readonly<Record<string, readonly string[]>>;
 	version: number;
 }
 
@@ -78,7 +121,11 @@ export function createWebSessionModel(
 				selection.serviceTier === undefined) ||
 				(selection.modelId !== undefined && !SESSION_MODELS.some((model) => model.id === selection.modelId)) ||
 				(selection.reasoningEffort !== undefined &&
-					!(SESSION_EFFORTS as readonly string[]).includes(selection.reasoningEffort)) ||
+					!(PROVIDER_EFFORTS[modelProvider(selection.modelId)] as readonly string[]).includes(
+						selection.reasoningEffort,
+					) &&
+					(selection.modelId !== undefined ||
+						!(SESSION_EFFORTS as readonly string[]).includes(selection.reasoningEffort))) ||
 				(selection.serviceTier !== undefined &&
 					(!(SESSION_SERVICE_TIERS as readonly string[]).includes(selection.serviceTier) ||
 						selection.modelId !== undefined ||
@@ -153,6 +200,8 @@ export function createWebSessionModel(
 					const result = value as Record<string, unknown>;
 					const effort = result.reasoning_effort;
 					const tier = result.service_tier;
+					const models = result.models;
+					const efforts = result.efforts;
 					if (response.status !== 200)
 						throw new CloudRpcError(
 							method,
@@ -184,6 +233,28 @@ export function createWebSessionModel(
 								!tier ||
 								tier !== tier.trim() ||
 								new TextEncoder().encode(tier).length > 64)) ||
+						(models !== undefined &&
+							(!Array.isArray(models) ||
+								models.length > 32 ||
+								models.some(
+									(item) => typeof item !== "string" || !item || new TextEncoder().encode(item).length > 256,
+								))) ||
+						(efforts !== undefined &&
+							(!efforts ||
+								typeof efforts !== "object" ||
+								Array.isArray(efforts) ||
+								Object.keys(efforts).length > 32 ||
+								Object.entries(efforts).some(
+									([key, list]) =>
+										!key ||
+										new TextEncoder().encode(key).length > 256 ||
+										!Array.isArray(list) ||
+										list.length > 16 ||
+										list.some(
+											(item) =>
+												typeof item !== "string" || !item || new TextEncoder().encode(item).length > 64,
+										),
+								))) ||
 						typeof result.version !== "number" ||
 						!Number.isSafeInteger(result.version) ||
 						result.version < 0 ||
@@ -199,6 +270,17 @@ export function createWebSessionModel(
 						...(typeof model === "string" ? { modelId: model } : {}),
 						...(typeof effort === "string" ? { reasoningEffort: effort } : {}),
 						...(typeof tier === "string" ? { serviceTier: tier } : {}),
+						...(Array.isArray(models) ? { models: [...new Set(models as string[])] } : {}),
+						...(efforts && typeof efforts === "object"
+							? {
+									efforts: Object.fromEntries(
+										Object.entries(efforts as Record<string, string[]>).map(([key, list]) => [
+											key,
+											[...new Set(list)],
+										]),
+									),
+								}
+							: {}),
 						version: result.version,
 					};
 				} finally {

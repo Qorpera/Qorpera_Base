@@ -133,6 +133,19 @@ describe("renaming in Settings → Brand", () => {
 		expect(brand({ manage: false }).view.el.querySelector(".settings-brand-rename")).toBeNull();
 	});
 
+	it("names a company with no name yet from an empty field", async () => {
+		const { folder, written } = fakeFolder({ texts: ["# No name yet\n\nWhat we build.\n"] });
+		const { view, renamed } = brand({ folder, name: () => "No name yet" });
+		view.el.querySelector<HTMLButtonElement>(".settings-brand-rename")!.click();
+		const input = view.el.querySelector<HTMLInputElement>(".settings-brand-name-input")!;
+		expect(input.value).toBe("");
+		expect(input.placeholder).toBe("Company name");
+		input.value = "Nordlys";
+		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await vi.waitFor(() => expect(renamed).toHaveBeenCalledWith("Nordlys"));
+		expect(written[0]?.text).toBe("# Nordlys\n\nWhat we build.\n");
+	});
+
 	it("writes the new name as the vision's first line and shows it at once", async () => {
 		const { folder, written } = fakeFolder();
 		const { view, renamed } = brand({ folder });

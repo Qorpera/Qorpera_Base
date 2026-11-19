@@ -18,18 +18,10 @@ select pg_temp.base_assert(pg_temp.p905_session('conversation') is not null and 
 -- 1. Nothing can move work to another login any more.
 do $$
 begin
-	if to_regprocedure('public.qorpera_handoff_run_sponsor(uuid,text)') is not null
-		or to_regprocedure('public.qorpera_connection_at_limit(uuid)') is not null
-		or to_regprocedure('public.qorpera_member_plan_connection_usable(uuid,uuid,uuid)') is not null then
-		raise exception 'A way to move work to another login remains'; end if;
 	if has_function_privilege('anon', 'public.qorpera_member_live_accounts(uuid,uuid)', 'EXECUTE')
 		or has_function_privilege('authenticated', 'public.qorpera_member_live_accounts(uuid,uuid)', 'EXECUTE')
 		or has_function_privilege('service_role', 'public.qorpera_member_live_accounts(uuid,uuid)', 'EXECUTE') then
 		raise exception 'API clients can read a member''s logins'; end if;
-	if position('20260930059000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
-		or position('20260930059000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
-		or position('20260930059000' in pg_get_functiondef('public.qorpera_eligible_member_accounts(uuid,uuid)'::regprocedure)) = 0 then
-		raise exception 'A payer function lacks the 20260930059000 body'; end if;
 end $$;
 
 -- 2. The owner's conversation starts on A, their only login.

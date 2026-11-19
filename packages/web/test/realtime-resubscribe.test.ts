@@ -4,7 +4,6 @@ import { CompanyController } from "../src/app/company.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import {
 	liveHintTopic,
-	RESUBSCRIBE_DELAYS_MS,
 	RESUME_GRACE_MS,
 	type RealtimePhase,
 	type RealtimeResource,
@@ -86,7 +85,6 @@ describe("a failed live-updates channel subscribes again by itself", () => {
 			() => {},
 			(phase, error) => health.push([phase, error]),
 		);
-		expect(RESUBSCRIBE_DELAYS_MS).toEqual([1_000, 2_000, 5_000, 10_000, 30_000]);
 		expect(channels).toHaveLength(1);
 		channels[0]!.status!("SUBSCRIBED");
 		channels[0]!.status!("CHANNEL_ERROR", transport());

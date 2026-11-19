@@ -316,6 +316,17 @@ it("dispatches a plain worker Claude Code does: its brief and request name the h
 	expect(parsed?.ok && Object.hasOwn(parsed.file, "repository")).toBe(false);
 });
 
+it("dispatches a plain worker a member asked Codex for: its brief and request name codex", async () => {
+	const f = await fixture({ files: { [TODO]: todoText() } });
+	const result = parse(
+		await f.workers().change({ ...DISPATCH, operationKey: "codex-1", harness: "codex" }, f.context),
+	);
+	expect(result).toMatchObject({ action: "dispatch", outcome: "saved" });
+	expect(f.workerRequests).toEqual([expect.objectContaining({ action: "dispatch", harness: "codex" })]);
+	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");
+	expect(parsed?.ok && parsed.file).toMatchObject({ kind: "worker-brief", species: "in-house", harness: "codex" });
+});
+
 it("follows a worker up: its brief with one more follow-up, and its earlier results removed, under review", async () => {
 	const f = await fixture({
 		files: { [TODO]: todoText(), [`${FOLDER}/brief.md`]: briefText(), [`${FOLDER}/results.md`]: resultsText() },

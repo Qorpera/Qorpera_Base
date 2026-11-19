@@ -1,9 +1,3 @@
-import {
-	APP_FILE_MAX_BYTES,
-	APP_MAX_BYTES,
-	APP_VIDEO_FILE_MAX_BYTES,
-	APP_VIDEOS_MAX_BYTES,
-} from "@qorpera/cloud-client/interface-apps";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ASK_MEMBER_BODY_MAX_BYTES,
@@ -131,16 +125,9 @@ it("says the bounds in a description's own words as the code holds them", async 
 	expect(JSON.stringify(CLOUD_ASK_MEMBER_INPUT_SCHEMA)).toContain(
 		`(at most ${CLOUD_ASK_MEMBER_LABEL_MAX_BYTES} bytes)`,
 	);
-	// save_app's sizes, from the folder's own constants.
-	said(
-		"save_app",
-		`each at most ${APP_FILE_MAX_BYTES / 1024} KiB; pages and code ${APP_MAX_BYTES / 1024 / 1024} MiB in all`,
-	);
-	said(
-		"save_app",
-		`${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each, ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all`,
-	);
-	said("save_app", `files: at most ${property("save_app", "files").maxItems} a call`);
+	said("save_app", "An app has no other bound on its files: any number, size or kind.");
+	expect(property("save_app", "files", "[]", "text").maxLength).toBe(property("company_write", "text").maxLength);
+	said("save_app", `files: at most ${property("save_app", "files").maxItems} text files a call`);
 	// The file tools' pages and lists.
 	said("company_read", `at most ${property("company_read", "limit").maximum}, the default`);
 	said("company_read", `paths (up to ${property("company_read", "paths").maxItems})`);

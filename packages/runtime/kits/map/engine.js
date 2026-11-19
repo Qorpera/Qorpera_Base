@@ -107,6 +107,7 @@ body{margin:0}
 .mp-src{font-size:13px;color:var(--q-muted);text-decoration:none}
 .mp-src:hover{color:var(--q-accent)}
 .mp--bare .mp-head{display:none}
+.mp.is-rest .mp-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .mp-trail{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;padding:18px 43px 0;font-size:13px;line-height:18px;color:var(--q-muted)}
 .mp-trail[hidden]{display:none}
 .mp .mp-crumb{max-width:24em;padding:2px 6px;margin:0 -2px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -591,7 +592,8 @@ body{margin:0}
 		const lang = ui.model.lang;
 		let title = view.layer ? view.layer.title : ui.model.top === "reading" ? w.finding : "";
 		let line = view.layer ? view.layer.line : "";
-		if (standing && standing.stopped && ui.model.top === "reading" && view.depth === 0) {
+		const stopped = !!(standing && standing.stopped && ui.model.top === "reading" && view.depth === 0);
+		if (stopped) {
 			title = standing.since ? fill(w.stood, { time: when(standing.since, lang) }) : w.stoodNow;
 			const member = typeof standing.member === "string" && standing.member ? standing.member.split(/\s+/)[0] : "";
 			// "Your" only when the reading says the login is the member looking's; another member by name; else no one
@@ -625,6 +627,7 @@ body{margin:0}
 			p.src.textContent = `${w.source} ↗`;
 			p.src.hidden = false;
 		} else p.src.hidden = true;
+		ui.root.classList.toggle("is-rest", !stopped && !thing && !source && !!view.layer);
 	}
 
 	function trailEl(view) {

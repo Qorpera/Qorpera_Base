@@ -24,11 +24,6 @@ create function pg_temp.notes(p_actor jsonb) returns setof public.qorpera_sessio
 	select e.* from public.qorpera_session_events e join public.qorpera_execution_runs r on r.session_id = e.session_id
 	where r.id = (p_actor ->> 'runId')::uuid and e.body ->> 'schema' = 'qorpera.interface-change/v1' order by e.sequence
 $$;
--- A commit's note id: its hash as a version 8 UUID.
-create function pg_temp.event_id(p_commit jsonb) returns uuid language sql immutable as $$
-	select overlay(overlay(md5('qorpera.interface-change:' || (p_commit ->> 'commitId'))::uuid::text placing '8' from 15 for 1)
-		placing '8' from 20 for 1)::uuid
-$$;
 create function pg_temp.seq(p_commit jsonb) returns bigint language sql as $$
 	select seq from public.qorpera_folder_commits where id = (p_commit ->> 'commitId')::uuid
 $$;
@@ -105,7 +100,7 @@ begin
 	if pg_temp.note(b) <> pg_temp.noted(1) then raise exception 'One note: %', pg_temp.note(b); end if;
 	select * into strict e from pg_temp.notes(p);
 	-- The id is a version 8 UUID, which the web's strict event check takes.
-	if e.event_id <> pg_temp.event_id(c) or e.event_id::text !~ '^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$'
+	if e.event_id::text !~ '^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$'
 		or e.event_type <> 'session_info' or e.actor_user_id <> '63400000-0000-4000-8000-000000000002'
 		or e.execution_kind is not null or e.execution_id is not null or e.runner_assignment_id is not null
 		or e.body <> jsonb_build_object('schema', 'qorpera.interface-change/v1', 'commitId', c ->> 'commitId',
@@ -139,17 +134,17 @@ begin
 		pg_temp.p16_write(p, 'QorperaOS/tables/numbers/README.md', '"About the numbers, again."')));
 	perform pg_temp.expect(c5, 1, 'saved');
 	if pg_temp.note(b) <> pg_temp.noted(2) then raise exception 'Two notes'; end if;
-	select jsonb_agg(jsonb_build_array(e.event_id, e.body) order by e.sequence) into v_notes from pg_temp.notes(p) e
-	where e.event_id in (pg_temp.event_id(c3), pg_temp.event_id(c5));
+	select jsonb_agg(e.body order by e.sequence) into v_notes from pg_temp.notes(p) e
+	where e.body ->> 'commitId' in (c3 ->> 'commitId', c5 ->> 'commitId');
 	if v_notes is distinct from jsonb_build_array(
-		jsonb_build_array(pg_temp.event_id(c3), jsonb_build_object('schema', 'qorpera.interface-change/v1',
+		jsonb_build_object('schema', 'qorpera.interface-change/v1',
 			'commitId', c3 ->> 'commitId', 'seq', pg_temp.seq(c3), 'runId', p ->> 'runId',
 			'staffAgentId', '63400000-0000-4000-8000-0000000000a1', 'changes', jsonb_build_array(
-				pg_temp.change(1, 'write', 'file', 'QorperaOS/tables/areas/README.md', null)))),
-		jsonb_build_array(pg_temp.event_id(c5), jsonb_build_object('schema', 'qorpera.interface-change/v1',
+				pg_temp.change(1, 'write', 'file', 'QorperaOS/tables/areas/README.md', null))),
+		jsonb_build_object('schema', 'qorpera.interface-change/v1',
 			'commitId', c5 ->> 'commitId', 'seq', pg_temp.seq(c5), 'runId', p ->> 'runId',
 			'staffAgentId', '63400000-0000-4000-8000-0000000000a1', 'changes', jsonb_build_array(
-				pg_temp.change(1, 'write', 'file', 'QorperaOS/tables/numbers/README.md', v_prior))))) then
+				pg_temp.change(1, 'write', 'file', 'QorperaOS/tables/numbers/README.md', v_prior)))) then
 		raise exception 'The notes: %', v_notes; end if;
 	if pg_temp.note(b) <> pg_temp.noted(0) or (select count(*) from pg_temp.notes(p)) <> 3 then
 		raise exception 'A repeat notes nothing more'; end if;

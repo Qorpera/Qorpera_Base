@@ -607,7 +607,7 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
-	it("hands a plain worker to Claude Code only by name, and drops codex as the unsaid default (20260930770000)", async () => {
+	it("names a plain worker's harness only when the model names it, claude-code or codex", async () => {
 		const f = await fixture();
 		try {
 			const claude = await f.boundary.invoke("cc1", "qorpera", "manage_worker", {
@@ -627,7 +627,23 @@ describe("agent todo and worker tools", () => {
 				harness: "codex",
 			});
 			expect(body(codex).status).toBe("ok");
+			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0]).toMatchObject({ action: "dispatch", harness: "codex" });
+			const unnamed = await f.boundary.invoke("cc4", "qorpera", "manage_worker", {
+				...dispatch,
+				operationKey: "cc4",
+				workerKey: "onboarding-cover",
+			});
+			expect(body(unnamed).status).toBe("ok");
 			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0]).not.toHaveProperty("harness");
+			const callsBefore = f.writerCalls();
+			const other = await f.boundary.invoke("cc5", "qorpera", "manage_worker", {
+				...dispatch,
+				operationKey: "cc5",
+				workerKey: "onboarding-other",
+				harness: "cursor",
+			});
+			expect(body(other).status).toBe("denied");
+			expect(f.writerCalls()).toBe(callsBefore);
 			// A repository stays a coding session's.
 			const calls = f.writerCalls();
 			const repository = await f.boundary.invoke("cc3", "qorpera", "manage_worker", {
