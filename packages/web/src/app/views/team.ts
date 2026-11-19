@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedProfileRole } from "../../cloud/types.ts";
+import { companyDisplayName, companyInSentence } from "../../ui/company-name.ts";
 import { button, confirmDialog, h, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
 import { t } from "../../ui/preferences.ts";
@@ -37,7 +38,7 @@ export function roleLabel(role: HostedProfileRole): string {
 		case "contributor":
 			return t("contributor");
 		case "viewer":
-			return t("viewer");
+			return t("spectator");
 		default:
 			return role;
 	}
@@ -159,7 +160,11 @@ export function renderTeam(
 						"div",
 						{ class: "settings-copy" },
 						h("strong", null, member.displayName),
-						h("small", null, member.role === "owner" ? t("Founder") : t("Building")),
+						h(
+							"small",
+							null,
+							member.role === "owner" ? t("Founder") : member.role === "viewer" ? t("Spectator") : t("Building"),
+						),
 					),
 					// A founder steps down on their own while another founder stays.
 					member.userId === company.userId && member.role === "owner" && team.capabilities.leave === true
@@ -173,7 +178,7 @@ export function renderTeam(
 											if (
 												await confirmDialog(
 													t("Step down as founder of {company}? You stay as an admin.", {
-														company: profile.profileName,
+														company: companyInSentence(profile.profileName),
 													}),
 													t("Step down"),
 													true,
@@ -203,7 +208,7 @@ export function renderTeam(
 												await confirmDialog(
 													t("Remove {name} from {company}?", {
 														name: member.displayName,
-														company: profile.profileName,
+														company: companyInSentence(profile.profileName),
 													}),
 													t("Remove"),
 													true,
@@ -417,19 +422,19 @@ export function renderTeam(
 					const confirmed = await confirmDialog(
 						deleting
 							? t("Delete {company}? Type the company name to confirm.", {
-									company: profile.profileName,
+									company: companyInSentence(profile.profileName),
 								})
 							: carried
 								? t(
 										"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, use the Members page.",
-										{ company: profile.profileName, n: String(carried) },
+										{ company: companyInSentence(profile.profileName), n: String(carried) },
 									)
 								: t("Leave {company}? You lose access until someone invites you again.", {
-										company: profile.profileName,
+										company: companyInSentence(profile.profileName),
 									}),
 						deleting ? t("Delete company") : t("Leave"),
 						true,
-						deleting ? profile.profileName : undefined,
+						deleting ? companyDisplayName(profile.profileName) : undefined,
 						signal,
 					);
 					if (!confirmed || !current()) return;

@@ -229,8 +229,7 @@ describe("a link in an app's page", () => {
 		expect(host.openApp).not.toHaveBeenCalled();
 		expect(host.openInStorage).not.toHaveBeenCalled();
 		expect(open).not.toHaveBeenCalled();
-		// And it is shown exactly as written: no base style.
-		expect(page.html).toBe('<a href="app:sales">Sales</a>');
+		expect(page.html).toBe('<!doctype html><html><head></head><body><a href="app:sales">Sales</a></body></html>');
 	});
 });
 

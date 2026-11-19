@@ -145,15 +145,20 @@ describe("mail outbox", () => {
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get("cache-control"), "no-store");
 		assert.deepEqual(await response.json(), { claimed: 3, sent: 3, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
-		assert.deepEqual(sent[0], [
-			{
-				from: '"Ada at Northwind" <support@mail.example.test>',
-				to: ["bob@acme.test"],
-				subject: "Email 1",
-				text: "Hello\n\n-- \nWritten and sent by Ada, an AI agent working for Northwind.",
-			},
-			"company-mail/73300000-0000-4000-8000-000000000001",
-		]);
+		assert.deepEqual(sent[0][0], {
+			from: '"Ada at Northwind" <support@mail.example.test>',
+			to: ["bob@acme.test"],
+			subject: "Email 1",
+			text: "Hello\n\n-- \nWritten and sent by Ada, an AI agent working for Northwind.",
+		});
+		assert.deepEqual(
+			sent.map(([, key]) => key),
+			[
+				"company-mail/73300000-0000-4000-8000-000000000001",
+				"company-mail/73300000-0000-4000-8000-000000000002",
+				"company-mail/73300000-0000-4000-8000-000000000003",
+			],
+		);
 		assert.deepEqual(sent[1][0].cc, ["boss@acme.test"]);
 		assert.deepEqual(sent[1][0].headers, {
 			"In-Reply-To": "<m30@example.org>",

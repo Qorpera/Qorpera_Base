@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { NativeProviderLoginAuthorization } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import {
@@ -17,6 +18,19 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BRIDGE_RESPONSE_BYTES = 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_SESSION_PATTERN = /^[^\0\r\n]{1,1024}$/;
+const BRIDGE_READY_TIMEOUT_MS = 300_000;
+const BRIDGE_READY_POLL_MS = 250;
+const BRIDGE_HEALTH_REQUEST_MS = 5000;
+export const NATIVE_BRIDGE_NOT_LISTENING =
+	"Native provider bridge is not listening [code=NATIVE_BRIDGE_CONNECTION:TRANSPORT_UNAVAILABLE]";
+export const NATIVE_BRIDGE_NEVER_LISTENED =
+	"Native provider bridge did not start listening [code=NATIVE_BRIDGE_CONNECTION:TIMEOUT]";
+
+function connectionRefused(error: unknown): boolean {
+	if (!(error instanceof TypeError)) return false;
+	const cause: unknown = error.cause;
+	return !!cause && typeof cause === "object" && (cause as { code?: unknown }).code === "ECONNREFUSED";
+}
 
 export interface NativeProviderComputerBridge {
 	readonly executionGuarantees: Readonly<CloudRunnerSandboxGuarantees>;
@@ -176,6 +190,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 	readonly #executeUrl: string;
 	readonly #cancelUrl: string;
 	readonly #loginUrl: string;
+	readonly #healthUrl: string;
 	readonly #bridgeToken?: string;
 	readonly #fetch: typeof fetch;
 	readonly #signal?: AbortSignal;
@@ -204,6 +219,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		this.#executeUrl = new URL("execute", base).href;
 		this.#cancelUrl = new URL("cancel", base).href;
 		this.#loginUrl = new URL("login", base).href;
+		this.#healthUrl = new URL("healthz", base).href;
 		this.#bridgeToken = bridgeToken;
 		this.#fetch = fetchImplementation;
 		this.#signal = options.signal;
@@ -229,6 +245,27 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		return new HttpNativeProviderIdentityBridge(this.#loginUrl, this.#fetch, { signal: this.#signal }).beginLogin(
 			authorization,
 		);
+	}
+
+	async waitUntilListening(
+		signal: AbortSignal,
+		timeoutMs = BRIDGE_READY_TIMEOUT_MS,
+		pollMs = BRIDGE_READY_POLL_MS,
+	): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		for (;;) {
+			signal.throwIfAborted();
+			const response = await this.#fetch(this.#healthUrl, {
+				method: "GET",
+				redirect: "error",
+				signal: AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_HEALTH_REQUEST_MS)]),
+			}).catch(() => undefined);
+			void response?.body?.cancel().catch(() => undefined);
+			if (response?.ok) return;
+			signal.throwIfAborted();
+			if (Date.now() >= deadline) throw new Error(NATIVE_BRIDGE_NEVER_LISTENED);
+			await delay(pollMs, undefined, { signal });
+		}
 	}
 
 	async startCompany(
@@ -346,6 +383,9 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 						body: JSON.stringify(body),
 						redirect: "error",
 						signal,
+					}).catch((error: unknown) => {
+						if (connectionRefused(error)) throw new Error(NATIVE_BRIDGE_NOT_LISTENING, { cause: error });
+						throw error;
 					});
 					if (!response.ok) {
 						// A refusal names its fixed code; nothing else of the body is kept.

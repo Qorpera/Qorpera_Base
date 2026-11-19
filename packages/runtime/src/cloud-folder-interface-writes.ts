@@ -554,7 +554,12 @@ export function cloudInterfaceWriteTools(options: {
 	const tableWrite: CloudNativeTool = {
 		name: "table_write" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
-		description: `Set and remove rows of a table (${osPath("tables")}/<table>/rows.csv, as ${osPath("tables")}/<table>/table.toml defines it). set lists rows to add or change, each an object of column names and values: a row whose key columns match a row of the table changes in the cells you name, and any other row is added. A new row may leave out an id column to get a new id; the result's ids give it, with the row's place in set (from 0). A value is text, a number, true or false, a list of texts for a list column, or null to empty an optional cell. remove lists rows to remove, each named by exactly its key columns; one that is not in the table is counted in notFound. At most ${ROWS_PER_CALL} rows in each list. You write a table only when its [write] agents names you or is all. You change a needs_yes column (a claim) only for the member who supervises your area (${osPath("tables/areas")}): put their id in an empty cell, or empty a cell that holds them; an area's owner, supervisor and agents are the members' to change. Keep operationKey for the same change, and use a new one for any other change. The result's state is applied only when the rows were saved.`,
+		description: [
+			`Set and remove rows of a table (${osPath("tables")}/<table>/rows.csv, as ${osPath("tables")}/<table>/table.toml defines it), at most ${ROWS_PER_CALL} rows in each list. You write a table only when its [write] agents names you or is all.`,
+			"- set: rows to add or change, each an object of column names and values. A row whose key columns match a row of the table changes in the cells you name; any other row is added. A new row may leave out an id column to get a new id: the answer's ids give it, with the row's place in set (from 0). A value is text, a number, true or false, a list of texts for a list column, or null to empty an optional cell.",
+			"- remove: rows to remove, each named by exactly its key columns; one not in the table is counted in notFound.",
+			`A needs_yes column (a claim) you change only for the member who supervises your area (${osPath("tables/areas")}): put their id in an empty cell, or empty a cell that holds them. An area's owner, supervisor and agents are the members' to change. The result's state is applied only when the rows were saved.`,
+		].join("\n"),
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,

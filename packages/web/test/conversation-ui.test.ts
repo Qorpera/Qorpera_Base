@@ -1080,7 +1080,6 @@ describe("conversation UI boundaries", () => {
 	it("keeps selected attachment bytes local and blocks text submission until they are removed", async () => {
 		const f = fixture(),
 			root = document.createElement("div");
-		vi.spyOn(f.api, "appendPrompt");
 		document.body.append(root);
 		// Isolate attachment gating from the model-account selection flow.
 		dispose = mountApplication(root, f.cloud, f.api, { nativeSubscription: undefined });
@@ -1101,7 +1100,6 @@ describe("conversation UI boundaries", () => {
 		button(root, "Remove brief.txt").click();
 		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
-		expect(f.api.appendPrompt).not.toHaveBeenCalled();
 		expect(
 			vi.mocked(fetch).mock.calls.filter(([url]) => !String(url).endsWith("/qorpera_list_member_notifications")),
 		).toHaveLength(0);
@@ -1110,8 +1108,6 @@ describe("conversation UI boundaries", () => {
 		const companyRead = (name: string) =>
 			name.startsWith("qorpera_member_mail_") ||
 			name === "qorpera_member_digital_post" ||
-			name === "qorpera_member_interface_offers" ||
-			name === "qorpera_member_interface_supervisions" ||
 			name === "qorpera_member_interface_pages" ||
 			// The apps drawer's Sites and What's new entries.
 			name === "qorpera_list_company_sites" ||
@@ -1445,7 +1441,6 @@ describe("conversation UI boundaries", () => {
 		expect(dock?.classList.contains("coding-dock")).toBe(true);
 		expect(dock?.hidden).toBe(true);
 		expect(f.view.el.querySelector(".thread-run-failure + .coding-dock + footer.composer")).not.toBeNull();
-		expect(f.view.el.querySelector(".agent-wall")).toBeNull();
 	});
 
 	it("places the failed-run line above the coding dock without a notification host", () => {
@@ -2391,8 +2386,6 @@ describe("new conversation and agent setup", () => {
 		expect(f.view.el.querySelector<HTMLElement>(".recipient-menu")!.hidden).toBe(false);
 		expect(choices(f.view.el)).toEqual(["create", "group", staff.id]);
 		expect(choice(f.view.el, staff.id).textContent).toContain("Fixture agent");
-		// The old screen's heading, cards and Open/Cancel footer are gone.
-		expect(f.view.el.querySelector("h1, .recipient-card, .recipient-footer")).toBeNull();
 		document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
 		expect(f.search.getAttribute("aria-expanded")).toBe("false");
 		expect(f.view.el.querySelector<HTMLElement>(".recipient-menu")!.hidden).toBe(true);

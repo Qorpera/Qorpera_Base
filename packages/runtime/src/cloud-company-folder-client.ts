@@ -157,6 +157,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["22023", "This mailbox name is reserved"],
 			["22023", "A mailbox name that reads as Qorpera is reserved"],
 			["22023", "A mailbox purpose is one line of at most 512 characters"],
+			["22023", "A new address is a name, a dot and the company's handle, like hello.acme"],
 			["0A000", "Company mail is not set up yet"],
 			["P0002", "No hook has this name"],
 			["55000", "This hook was removed"],
@@ -166,6 +167,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["23505", "This address is taken"],
 			["23505", "A hook with this name already exists"],
 			["42501", "Only owners and admins can open hooks; ask one of them"],
+			["42501", "Only a member can choose the company's email handle"],
 		] as const
 	).map(([code, message]) => [`${code} ${message}`, message] as const),
 	// The run receipt's: the key names an earlier, different request of this run.
@@ -1510,6 +1512,19 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return { state: "pass", pass: input.pass, files: input.files as number };
+	}
+
+	/** Whether this run has a receipt under the operations layer's logical key (`<tool>:<key>`), read only
+	 * (`qorpera_folder_run_receipt_exists`, 20260930766000): a writer tells a repeat of a call, which its receipt
+	 * answers, from a new one before it begins anything. */
+	async runReceiptExists(logicalOperationKey: string, signal: AbortSignal): Promise<boolean> {
+		const answer = await this.#once(
+			"qorpera_folder_run_receipt_exists",
+			{ p_logical_operation_key: logicalOperationKey },
+			signal,
+		);
+		if (typeof answer !== "boolean") invalid();
+		return answer as boolean;
 	}
 
 	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers

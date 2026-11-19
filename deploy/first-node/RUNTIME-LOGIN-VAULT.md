@@ -42,7 +42,8 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
     run with `qorpera_model_login_run_binding`, the native lease validator's own conditions read
     without company-wide locks (exact binding; job leased and unexpired; assignment accepted and unexpired; lease
     live; sponsor and compute available; connection, version, capsule and policy active; identity
-    and runner at the current epoch; company not paused). Past half the pass life and with
+    and runner at the current epoch; company not paused). Past half the pass life, or at once when a run
+    reported that the provider refused the current pass (below, "A pass the provider refuses"), and with
     `allowRenewal`, the first caller takes the lock (`update … where renewal_until is null or < now()`
     and the backoff after failures has passed: 1, 2, 4 ... minutes, at most an hour). Returns the
     envelope, or `unchanged` when the host already holds the current version and no renewal was
@@ -745,7 +746,39 @@ member's Codex login is kept once by the shared vault and used in every company 
 | Commit fails three times | Lock released as `renewal_unsaved`, permanent: the login asks for a new sign-in; this run keeps the new pass. |
 | One broker copy down | A company broker: the other node's copy serves runs (the vault must run on both nodes before any login moves). The shared vault: systemd restarts node 1's copy; node 2's keeps renewing but serves no requests (see its failover). |
 | Provider refuses a renewal | `needs_sign_in`; the vault refuses new runs on the login (they fail at the credential download) until the member signs in again (change 2B). Runs already going keep their pass until it ends. |
+| Provider refuses a pass before its renewal is due (seen after a ChatGPT plan upgrade) | The run's turn ends with Codex's `unauthorized`; the renewal falls due at once and new work on the login waits, at most 30 minutes, for its outcome (below). |
 | Member signs out or leaves | The pointer capsule and lease checks refuse at once; running work is stopped by the existing checks. |
+
+## A pass the provider refuses (founder, 18 November 2026; migration `20260930808000`)
+
+After a member upgraded their ChatGPT plan, OpenAI stopped accepting the pass the vault had handed out for their login,
+days before its renewal was due, and every run on it failed while the login stayed `active`.
+
+- **The report.** A Codex turn that ends with the pinned discriminant `unauthorized` (never provider text) carries the
+  usage signal `sign_in_refused` (`nativeRuntimeUsageSignal`), which the run's host records as it records `usage_limit`
+  (`qorpera_record_provider_usage_signal`). The signal marks the run's login (the company login of the run's capsule, or
+  the account login of its link): `refused_version` is its current version and `refused_at` the time, only while the
+  login is `active`, the version is not already marked, and that version existed when the run's lease began (a version
+  renewed during the run is not the one the provider refused).
+- **The renewal.** A login whose current version is its `refused_version` is due now (for a plan login, not before
+  OpenAI's earliest renewal time, `renew_not_before`) (`qorpera_model_login_renewal_due`), for a run's issue and for the
+  vault's idle passes, which take such a login first. In a plan login's window before that time (up to an hour after a
+  renewal), the 30-minute hold can lapse and a member's message can use up its five waits before a renewal is allowed.
+  It goes through the same lock, commit and release as any renewal: a good renewal is a newer version and work goes on;
+  a refused one sets `needs_sign_in` exactly as before (a newer version is never marked; a revoked login stays revoked).
+  Codex logins and ChatGPT plan logins only; a Claude login is never a vault model login.
+- **The hold.** Until the renewal's outcome, new work paid by the login waits as work at a usage limit waits
+  (`qorpera_sponsor_waits_for_usage_limit`: conversation messages, wakes, coding sessions' next turns), in every company
+  the login is linked into. It ends by itself at a newer version, at `needs_sign_in` or `revoked`, and 30 minutes after
+  the refusal whatever happened (the renewal stays due). It lives on the login row, so deleting the company that
+  reported it does not end it. Nothing moves to another login.
+- **A member's message.** A run a member started that had no effect yet waits and tries again on the same login as at a
+  rate limit (`pausedFor: "sign_in_refused"`, the same five waits), unless the login already needs a new sign-in. The
+  next attempt's issue renews the pass first when no other caller has.
+- **What the member reads.** The member's connection list says `login_status` for a vault login, and a run's recovery
+  says `sign_in_refused` once its login needs a new sign-in. The web half (#1959) reads them: Settings says ChatGPT no
+  longer accepts the sign-in and offers Sign in again, and the chat says so before the usage-limit sentence.
+- **Not covered.** The vault's usage reads keep no status, so a refused usage read raises nothing; a run does.
 
 ## Moving and retiring
 
@@ -805,18 +838,25 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   writes it once to Claude Code's input; Claude Code exchanges it itself.
 - **Keep:** the vault seals Claude Code's `.credentials.json` and `.claude.json`, unread
   (`qorpera.claude-login-files/v1`, field `claude_login_files`), under the member's key, and completes the sign-in
-  with `qorpera_complete_claude_login_sign_in` into `qorpera_claude_logins` (one active per member; a newer sign-in
-  replaces it). No provider connection, capsule, model login or sponsor is made, and nothing that runs agents reads
-  the table. Members list and sign out their own (`qorpera_list_claude_logins`, `qorpera_sign_out_claude_login`).
+  with `qorpera_complete_claude_login_sign_in` into `qorpera_claude_logins`. A member may hold several; exactly one
+  is In use (`in_use`, `20260930804000`), and new Claude work takes it. A sign-in of the same account (the same email,
+  ignoring case) replaces that row and keeps its In-use state; another account joins Not in use, unless the member has
+  no other login. No provider connection, capsule, model login or sponsor is made. Members list theirs
+  (`qorpera_list_claude_logins`, with `inUse` and `usedUpUntil`), pick the one In use (`qorpera_use_claude_login`) and
+  sign out (`qorpera_sign_out_claude_login`; signing out the login In use while others remain names the next one,
+  `p_next_login_id`, or is refused).
 - **Deploy (in this order):**
   1. Apply migration `20260930564000` (with the release). Until step 7 nobody can begin a Claude sign-in: the
      allow-list is empty and the web offers no Claude button.
-  2. On both vault hosts, the pinned Claude Code binary: `@anthropic-ai/claude-code-linux-x64@2.1.231` (npm integrity
-     `sha512-ou1X+6JWOgbY5pUerfdOmeyPwKwEN515sx9it2sxsYEqKRTvOOHkiN94enRxge9/Z1J2Iqhd4VdkQIl6UoUvYw==`, the guest
-     image's pin), its `package/claude` installed root-owned 0555 as `/opt/qorpera-model-login-helper/claude`.
+  2. On both vault hosts, the pinned Claude Code binary, the same build the Claude Code box runs
+     (`deploy/first-node/native-claude/linux-x64-artifact.json`): `@anthropic-ai/claude-code-linux-x64@2.1.325` (npm
+     integrity `sha512-BqZzMvP/zgLLL34S+7OzbG+cyoFp7gwWHU5koVwsyMlTAz+0zZAmbY+UkzvtN2RXxp6AcMenbYIjQJxoXfUY3w==`),
+     its `package/claude` (365,842,960 bytes, sha256
+     `0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf`) installed root-owned 0555 as
+     `/opt/qorpera-model-login-helper/claude`.
   3. On both vault hosts, the release's vault and helper build (`npm run pack:model-login-helper`, and the shared
      vault's broker build); the helper's `config.json` gains `"claudePath": "/opt/qorpera-model-login-helper/claude"`
-     and `"claudeSha256": "<its sha256>"` (both or neither). Restart the helper, then the broker, and look for
+     and `"claudeSha256": "0dc4f4a9a165fc60746d7ae8489712e5fc352f1e7ad4eb22e7141bd0812eb0cf"` (both or neither). Restart the helper, then the broker, and look for
      `Model login helper: Claude sign-ins on (pinned Claude Code).` A helper restart ends every sign-in in flight,
      Codex ones too: do it when no member is signing in, or tell them to sign in again.
   4. Node 1's mux (and node 2's standby copy): the path map `$qorpera_model_login_broker` keeps every route it has
@@ -828,6 +868,26 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   5. The edge function `native-provider-login` (the `claude-code` path).
   6. The web build.
   7. `insert into public.qorpera_claude_sign_in_members(user_id) values ('<founder user id>');`
+- **Moving a host from 2.1.231 to the box's pin (the release that carries the Claude Code worker, #1833):** one vault
+  host at a time, when no member is signing in. The running helper checks before every launch, a Codex renewal the
+  broker starts included, that its binaries are the ones it started with, and exits if one changed; so the helper is
+  stopped for the swap:
+  1. Fetch the tarball the artifact names, check its integrity, then the binary's size and sha256 against the artifact.
+  2. Keep the way back: copy the running `/opt/qorpera-model-login-helper/claude` to `claude.2.1.231` (root, 0555) and
+     write down its sha256 and the config's current `claudeSha256`.
+  3. Stop the helper. Install the new binary root-owned 0555 as `claude.new` and `mv` it over `claude`; set
+     `claudeSha256` to the artifact's sha256; start the helper (it refuses a binary whose sha256 is not its config's)
+     and look for the line of step 3. Codex renewals on that host wait while it is stopped.
+  4. On the FIRST host moved, one real Claude sign-in by the founder before the second host is moved: the 2.1.325
+     probe ran without a network, so the code exchange through the sign-in's egress list is proven only by that.
+  5. Way back on a host: stop the helper, `mv` `claude.2.1.231` back over `claude`, set `claudeSha256` back to the
+     value written down in 2, start the helper.
+
+  Kept Claude logins are files Claude Code reads, so they stay. What the sign-in reads from Claude Code is the same on
+  2.1.325: `claude auth login --claudeai` prints Anthropic's link on claude.com (the code redirect on
+  platform.claude.com) and asks for the code on its input, and `claude auth status` answers JSON with `email`. Its JSON
+  now holds more keys, among them `configDirectory` and `loginExpiresAt`, so the login's `provider_account_reference`
+  (the sha256 of that output) differs between two sign-ins of one account; nothing reads it for a Claude login.
 - **Rollback:** delete the member's row from `qorpera_claude_sign_in_members`. That stops new Claude sign-ins and
   those in flight: the vault's read refuses them, so their code is never taken and nothing is saved. Kept Claude
   logins stay until their member signs out (or delete their rows). Removing `claudePath`/`claudeSha256` from the
@@ -836,3 +896,61 @@ identity is live, `COMPUTE_IDENTITY_OCCUPIED`).
   wants them ended at once revokes Qorpera's access in their Claude account settings.
 - **Later (the coding harness):** it opens a Claude login only for a coding session its member started, and checks
   the allow-list again when it does.
+
+## Claude logins renewed in the vault; many Claude Code runs of one member at once (20260930810000)
+
+Design and the measurements behind it: `lanes/agent-box-20261113/claude-parallel/DESIGN.md`. The pinned Claude Code
+renews only in the last 5 minutes of its token, only at `POST platform.claude.com/v1/oauth/token`; with that host
+refused it goes on with the token it holds; it reads a replaced `.credentials.json` again before its next call.
+
+- **Each login on its own.** A member may hold several Claude logins (`20260930804000`); everything below is per
+  login: its lock, its checks, its versions, its refusals and its sign-out. A run's lease records the worker's login
+  when it is taken, and the run opens, polls and is refreshed from that login to its end, also after a follow-up or
+  the member's In-use switch points the worker at another (`qorpera_claude_login_run` reads the lease's
+  `claude_login_id`); only later runs take the login In use.
+- **Runs cannot renew and never seal back.** A Claude Code worker's box reaches `api.anthropic.com` alone (its egress
+  relay refuses `platform.claude.com`). The run host asks the vault every 60 s for the version it holds
+  (`/v1/claude-logins/open` with `knownVersion`; the vault answers `current`, or the newer files) and replaces the
+  run's `.credentials.json` with a newer one. Nothing is read back from the run.
+- **The vault renews, by the official Claude Code.** At a run's open (when the login was last checked more than 30 s
+  ago) and at a run's poll (more than 90 s ago), while a live lease holds that login, and in the upkeep pass for any
+  active login not checked for 20 hours (In use or not), the shared vault takes the login's renewal lock
+  (`qorpera_take_claude_login_renewal` / `qorpera_take_idle_claude_login_renewal`, its principal's own calls; one vault
+  host at a time, 2 minutes; another host's poll waits up to 8 s for it and opens again, a run's first open up to 15 s,
+  after which the run host is answered `busy` and asks again), opens the login under the
+  member's key and has the helper run `claude auth status --json` on it in a private folder (`/v1/claude/check`, the
+  helper's isolation, Anthropic's sign-in hosts). The helper compares the credentials' bytes and reads `loggedIn` from
+  Claude Code's output, nothing else. A changed file is sealed as the next version, a compare-and-swap on the version
+  and envelope the check started from (`qorpera_commit_claude_login_renewal`; the lock decides who checks, not who may
+  seal); anything else is recorded
+  (`qorpera_release_claude_login_renewal`: `unchanged`, `failed`, `refused`; a `failed` check counts as no check and
+  rests the login from 1 minute, doubling to an hour, so a failing login neither blocks the idle pass nor is retried at
+  every poll). A changed file is kept even when Claude Code's status run ends badly (its refresh token has already
+  rotated). A renewal the database could not save is retried for 100 s, then kept in the vault process and saved before
+  that host's next check of the login or its next idle pass. It seals on the base it was taken from even after its
+  2-minute lock passed to another host (only one renewal from a refresh token works at Anthropic), and that host's
+  release then answers stale and records no refusal. It is lost by a restart of the vault process before it is saved,
+  or by that host staying cut off from the database while the other host's checks of the old version are refused twice
+  (about 5 minutes): the member then signs in again.
+- **Signed out:** Claude Code refusing the same version twice, at least 2 minutes apart, signs the login out as the
+  member's own sign-out does. When it was the login In use and the member has another active login, In use moves to
+  one of those (one not used up first, then the oldest), under `20260930804000`'s per-member lock, so a member with an
+  active login always has one In use. A run's open or poll then answers `SIGNED_OUT`; a run already going ends at its token's
+  end in Claude Code's words ("their Claude sign-in has ended"); new Claude Code workers are refused at the dispatch.
+- **The cap:** `qorpera_claude_parallel_runs.cap` live Claude Code runs per member, across all of the member's logins
+  (slots of `qorpera_claude_worker_leases`, keyed by member). Per member, not per login: new work always takes the one
+  login In use, so a per-login cap would differ only while a switch leaves runs on the old login, and the cap is a
+  share of node 2's slots, which is the member's, not an account's. Each Claude account's plan limit is its own. The migration keeps 1; the release sets 4 (below). A worker waits only while its
+  member's live runs fill the cap.
+- **Deploy (in this order):**
+  1. Apply migration `20260930810000` (the cap stays 1: nothing changes for runs yet).
+  2. On both vault hosts, one at a time, the release's vault and helper build (the helper gains `/v1/claude/check`,
+     the vault its renewer). Restart the helper, then the broker; look for
+     `Model login helper: Claude sign-ins and Claude login checks on (pinned Claude Code).` Runs of the previous
+     runtime still renew and seal back meanwhile (the seal-back route stays for this release); the vault's
+     compare-and-swap and the two-refusal rule keep that safe.
+  3. The runtime bundle (and the runner image that carries it): from then on runs cannot renew.
+  4. `update public.qorpera_claude_parallel_runs set cap = 4;`
+  Never 3 before 2: runs that cannot renew with nothing renewing for them end at their token's end.
+- **Rollback:** `update public.qorpera_claude_parallel_runs set cap = 1;` (one run per member again). The renewer
+  stays right for one run as for four. A later cleanup drops the seal-back route and functions.

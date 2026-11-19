@@ -184,7 +184,10 @@ Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
 `npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
 deleted afterwards (`--keep` keeps it; it then belongs to the runner user, so use sudo inside it). At the start of every run, runs older than a day (by the UTC time
-in their name), worktree copies unused for 3 days and hosted-db containers older than 6 hours are removed.
+in their name), worktree copies unused for 3 days and hosted-db containers older than 6 hours are removed. So is any
+folder under `~/lanes` in which no file was written or changed for 7 days (checked at most once an hour); a lane that
+must stay holds a `.keep` file.
+A machine with less than 15 GiB of disk free ranks after every machine with room, and the probe line says so.
 Untracked files that look like credentials (`.env`, `.env.*`, `*.env`, `.envrc`, `.npmrc`, `.netrc`, `.pgpass`,
 `.git-credentials`, `.aws/credentials`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `id_*` without an extension,
 `credentials*.json`, `service-account*.json`, `*.private.json`) stop the run unless `--allow-secrets` is given.
@@ -202,8 +205,8 @@ the machines `passedOver`.
 The hosted-db suite and the other PostgreSQL scripts run `POSTGRES_IMAGE` (`scripts/test-hosted-db.mjs`), which
 `guest-setup.sh` pulls too: PostgreSQL 17.6 on Debian's glibc, started on production's locale (ICU en-US, `POSTGRES_LOCALE`).
 Each of them checks the locale once its PostgreSQL is ready (`checkLocale`) and stops on any other: the hosted-db
-harness (and so every script on `hostedDatabase`), `load-folder-core`, `test-identity-recovery`,
-`test-login-recovery-automation` and `test-runtime-office-delete-reason`; a test in `scripts/test-hosted-db.test.mjs` fails a script that starts the image
+harness (and so every script on `hostedDatabase`), `load-folder-core`, `test-identity-recovery`
+and `test-runtime-office-delete-reason`; a test in `scripts/test-hosted-db.test.mjs` fails a script that starts the image
 without both.
 
 Several sessions can use a machine at once. Each run has its own directory and runner user, and the

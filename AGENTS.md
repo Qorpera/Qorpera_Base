@@ -21,6 +21,15 @@
 - Always ask before removing functionality or code that appears intentional.
 - Do not preserve backward compatibility unless the user asks for it.
 
+## Comments
+
+- Write no comments. Let the code say it: a better name, a smaller function, a type.
+- A rule others must follow becomes a lint rule or a test, never a comment.
+- Something still to do gets done in the same change or is left out. No notes about later work.
+- One exception: code that looks wrong but is right, where no test can hold the reason. Start that comment with `WHY:` and keep it to three lines.
+- `node scripts/run-on-node.mjs changed` stops before any test, and `npm run check` fails (`check:comments`), on every comment a change adds or edits unless it starts with `WHY:`. Tool directives (`biome-ignore`, `@ts-expect-error`, `shellcheck`) pass on their own line. Comments from before the rule stay until their lines are edited, also when their code moves to another file.
+- Never put `WHY:` on a comment to get past the check. Delete the comment.
+
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
@@ -28,6 +37,7 @@
 - Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - Runtime release train (`deploy/first-node/RUNTIME-RELEASE-TRAIN.md`): feature PRs never touch `activationVersion` or the other version lines in `scripts/generate-cloud-runtime-bundle.mjs`, `cloud-runtime-bundle.generated.ts`, `runtime-bundle-manifest.json`, `guest-package-manifest.json` or `*_runtime_bundle_activation_v*.sql` migrations, and never run `generate:runtime-bundle`; the coordinator's `release/runtime-vNNN` branch does.
+- A PR that gives agents a new capability, a new model or a change in behaviour they should take up adds its entry to `PLATFORM_UPDATES` (`packages/runtime/src/cloud-platform-updates.ts`): one plain paragraph to the Co-Founder. Date it the day the PR is written; the Co-Founder of a company created up to 30 days later still gets it, in its next planning run. A PR that merges more than 30 days after that date moves the date to its merge day first, so no company founded on the old bundle misses it.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Commit reviewed changes as needed to complete the user's authorized task. Do not ask for repeated commit approval.
 

@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { expandTestFixture } from "./test-hosted-db.mjs";
 import {
 	answeredUnit,
+	DATA_DB,
+	DATA_FILES,
 	deadlocksIn,
 	findSecrets,
 	fixtureSql,
@@ -300,12 +302,67 @@ const vsockListenersSeen = () => [
 	listener("*", 5250, "qorpera-folder", BRIDGE_PID, "/tmp/qorpera-p4.OI0AYHO5/qorpera-folder"),
 ];
 
+function dataPassing() {
+	const ticket = `002-drop-points.${"a".repeat(64)}.${"b".repeat(64)}`;
+	const rows = { columns: ["id", "title", "points"], rows: [[1, "First", 1], [2, "Second", 3]], more: false };
+	const ran = (by, line, answer, exitCode = 0) => ({ by, line, exitCode, answer, words: [], doorCalls: answer ? 1 : 0, passCalls: answer ? 1 : 0 });
+	const heldAnswer = { applied: false, results: [{ name: "001-tickets", state: "already" }, { name: "002-drop-points", state: "held",
+		detail: "It would destroy data, which waits for a member", destroys: [{ what: "dropped table column", object: "p4desk.tickets.points" }],
+		allow: ticket }] };
+	const toml = "data/p4desk/database.toml";
+	const question = "data/p4desk/queries/open.sql";
+	return {
+		store: { ready: true, container: "p4-data-store-1" },
+		tls: { scheme: "https:", caSha256: Array.from({ length: 32 }, () => "AB").join(":") },
+		probes: { wrongToken: { status: 401 }, unpinned: { error: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" } },
+		redeems: [
+			{ path: "/rest/v1/rpc/qorpera_data_pass_redeem", publishable: true, bearer: false, as: "anon", kind: "machine", viewId: "view-2",
+				machineId: "m-1", database: DATA_DB, allow: null },
+			{ path: "/rest/v1/rpc/qorpera_data_pass_redeem", publishable: true, bearer: false, as: "anon", kind: "machine", viewId: "view-2",
+				machineId: "m-1", database: null, allow: null },
+		],
+		door: [{ n: 1, path: "/v1/run-data/describe", status: 401 }, { n: 2, path: "/v1/run-data/apply", status: 200 }],
+		doorRequests: 2,
+		hellos: [{ role: "data", viewId: "view-2", lookup: "found", machine: "qorpera-machine-1", ok: true }],
+		write: { receipt: { exitCode: 0 }, saved: Object.fromEntries(Object.keys(DATA_FILES).map((p) => [`data/${DATA_DB}/${p}`, 1])) },
+		apply: ran("alice", "data apply p4desk", { applied: true, results: [{ name: "001-tickets", state: "applied" }] }),
+		change: ran("alice", "data change p4desk add-ticket title=Second points:=3", { changed: 1, columns: ["id", "title", "points"],
+			rows: [[2, "Second", 3]], more: false }),
+		reads: {
+			viewId: "view-2", viewBefore: ["p4/seed.md", toml, "data/p4desk/tables/001-tickets.sql"], bobBefore: ["p4/seed.md"],
+			bobAfter: ["p4/seed.md", toml, question], viewAfter: ["p4/seed.md", toml, question],
+		},
+		query: ran("bob", "data --root /root/p4-data query p4desk open", rows),
+		queryPlain: ran("alice", "data query p4desk open", rows),
+		describe: ran("alice", "data describe", { databases: [{ name: DATA_DB }] }),
+		describeOne: ran("alice", "data describe p4desk", { databases: [{ name: DATA_DB, tables: [{ name: "tickets" }] }] }),
+		heldWrite: { receipt: { exitCode: 0 }, saved: { "data/p4desk/tables/002-drop-points.sql": 1 } },
+		held: ran("alice", "data apply p4desk", heldAnswer),
+		heldAgain: ran("alice", "data apply p4desk", heldAnswer),
+		heldUsage: { ...ran("alice", `data apply p4desk ${ticket}`, null, 2), words: ["data: apply takes one database"] },
+		afterHeld: ran("alice", "data query p4desk open", rows),
+		storeAfter: { steps: ["001-tickets"], points: 1, tickets: 2 },
+		passes: { machine: 9, withAllow: 0, redeemed: 9 },
+		other: {
+			machine: "qorpera-machine-2", exitCode: 3, stdout: "",
+			stderr: "data: the company's databases cannot be reached from this machine now: The view, its pass or this machine did not match\n",
+			hellos: [{ role: "data", viewId: "view-2", lookup: "found", machine: "qorpera-machine-2", ok: false, code: "VIEW_REFUSED" }],
+			doorCalls: 0, passCalls: 0, redeems: 0,
+		},
+		still: ran("alice", "data query p4desk open", rows),
+		disk: {
+			image: "qtm-0123abcd_qorpera-machine-1/root.img", bytes: 10737418240, status: 0, error: null, marker: 2,
+			secrets: ["dataStoreSuper", "dataDoorToken", "dataCaKey", "dataCaKey1", "dataDoorKey", "dataPass1"].map((name) => ({ name, found: 0 })),
+		},
+	};
+}
+
 /** Evidence every check passes. */
 function passing() {
 	return {
 		steps: {
 			boot: {
-				mounted: true, placementId: "placement-1",
+				mounted: true, placementId: "placement-1", lxdName: "qorpera-machine-1",
 				view: { id: "view-1", kind: "test_machine", state: "open", staffAgentId: STAFF.alice, runId: null },
 				placement: { id: "placement-1", schema: V2, repositoryWorkerId: false },
 				devices: [{ name: "root", type: "disk", path: "/" }],
@@ -428,6 +485,7 @@ function passing() {
 				aliceAfter: { refused: { code: "MACHINE_COMMAND_ENDED", folderLost: "restart_view_closed", lost: WORDS.lostViewClosed } },
 				look: { receipt: { exitCode: 0, output: "company-mounted\nentries 2\nno-unit\nno-marker\n", companyFolder: mounted() } },
 			},
+			data: dataPassing(),
 		},
 		cleanupErrors: [],
 		service: { bridgeExit: null },
@@ -491,6 +549,24 @@ const failing = {
 	},
 	narrowed: (e) => {
 		e.steps.narrowed.carol.read = { receipt: { state: "running", companyFolder: mounted() } };
+	},
+	dataStoreAndDoor: (e) => {
+		e.steps.data.redeems[0].bearer = true;
+	},
+	dataCommand: (e) => {
+		e.steps.data.apply = { ...e.steps.data.apply, exitCode: 3, answer: null };
+	},
+	dataReadTakenIn: (e) => {
+		e.steps.data.reads.viewBefore.push("data/p4desk/queries/open.sql");
+	},
+	dataHeld: (e) => {
+		e.steps.data.storeAfter.points = 0;
+	},
+	dataOtherMachineRefused: (e) => {
+		e.steps.data.other.doorCalls = 1;
+	},
+	dataSecretsNotOnMachine: (e) => {
+		e.steps.data.disk.secrets[1].found = 1;
 	},
 	serviceClean: (e) => {
 		e.service.bridgeExit = { status: 1, signal: null };
@@ -1000,4 +1076,11 @@ test("a change credited for the whole commit counts when its unit carries none",
 	assert.equal(judge(evidence).overlapCredited.ok, true);
 	evidence.steps.overlap.commits[1].credits = [ids.b];
 	assert.equal(judge(evidence).overlapCredited.ok, false);
+});
+
+test("a pass the gateway redeemed as another role than anon fails the store and door check", () => {
+	failsOnly("dataStoreAndDoor", {
+		"a redeem ran as the service role": (e) => Object.assign(e.steps.data.redeems[1], { as: "service_role" }),
+		"a redeem reached no database": (e) => Object.assign(e.steps.data.redeems[0], { as: null }),
+	});
 });

@@ -82,8 +82,10 @@ The folder only through the one view served to that VM, so never more than the c
 authority allows it (below). The network only through the agent exit, under company rules, with our own networks refused
 (agent exit §3) and the exit's port isolation between guests. One host service on vsock: the folder service, whose
 bridge asks LXD which instance has the caller's CID and serves only that instance's view
-(`packages/object-gateway/src/folder-service/machines.ts`). LXD's own agent channel, which runs only what the host
-starts.
+(`packages/object-gateway/src/folder-service/machines.ts`). The company's databases only through that same service, as
+that one view (the `data` command: RUNTIME-COMPANY-DATABASES.md §9a): what the view may read under `data/<name>/` is
+what the machine may ask and change, and no database login or key is in the VM. LXD's own agent channel, which runs
+only what the host starts.
 
 **What it can't reach:**
 
@@ -300,7 +302,9 @@ them. Step 6 builds that as follows:
    read set and every run with a command running on the machine at the time whose job is leased, before any output of
    the machine reaches a model and before any save of the machine commits: the service releases the machine's recorded
    reads before each of its commits, quiet publishes included. Not followed: a copy on the machine's disk of a read that
-   never reached a model or a save (C1b-3 §6: "it does not trace every copy").
+   never reached a model or a save (C1b-3 §6: "it does not trace every copy"). What the service's `data` role answers
+   (RUNTIME-COMPANY-DATABASES.md §9a) is recorded the same way, before the answer leaves: the files of the database's
+   folder whose rows or words the answer can show, as the core read them for the call's pass.
 2. **The view's read set lives with the disk.** It holds every read of the machine, those made while no command ran
    included, and carries to the next view of the same placement (a reboot or a wake on the same disk). A new placement
    starts clean, because it has a new disk.

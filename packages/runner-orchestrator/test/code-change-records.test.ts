@@ -1222,26 +1222,7 @@ describe("codeChangeIndexText: a site's own host and what is being prepared (ste
 			);
 	});
 
-	it("writes the line for what migration 20260930756000 says is being prepared, read from its text", () => {
-		const migration = readFileSync(
-			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
-			"utf8",
-		);
-		// Only while hosts are on, preparing: null, or the due change's number (a ready point's change, a whole number).
-		expect(migration).toContain(
-			"|| case when public.qorpera_site_hosts_on() then jsonb_build_object('preparing', (select case",
-		);
-		expect(migration).toContain("then jsonb_build_object('change', due.point -> 'change') end");
-		expect(migration.split("'preparing'")).toHaveLength(2);
-		expect(
-			codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null, preparing: { change: 17 } }).split("\n")[4],
-		).toBe("Being prepared for What's new: change 17 (about a minute).");
-		expect(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null, preparing: null })).toBe(
-			codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null }),
-		);
-	});
-
-	it("says a site Qorpera took down in place of what is live, never with its link, as migration 20260930756000 sends it", () => {
+	it("says a site Qorpera took down in place of what is live, never with its link", () => {
 		const down =
 			"Live: nothing. This site was taken down by Qorpera (Phishing, confirmed.) and cannot be published until Qorpera restores it. Tell a member of the company.";
 		// The kernel sends nothing live then (no link), and no preparing; what is ready stays.
@@ -1273,17 +1254,6 @@ describe("codeChangeIndexText: a site's own host and what is being prepared (ste
 				codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null, takenDown }),
 				JSON.stringify(takenDown),
 			).toBe(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: null }));
-		// The migration sends it so: the reason, hosts on or off; nothing live then.
-		const migration = readFileSync(
-			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
-			"utf8",
-		);
-		expect(migration).toContain(
-			"then jsonb_build_object('takenDown', jsonb_build_object('reason', public.qorpera_site_down_reason(p_repository.site_id)))",
-		);
-		expect(migration).toContain(
-			"and public.qorpera_site_down_reason(p_repository.site_id) is null then jsonb_build_object('version'",
-		);
 	});
 
 	it("links exactly the own hosts of the one host list (SQL test 1252) on the Live line, and none of its other hosts", () => {

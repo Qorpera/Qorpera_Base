@@ -1,5 +1,6 @@
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
+import { type CloudCodexHome, type CloudCodexHomeReview, cloudHomeActionReview } from "./cloud-codex-home.ts";
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
@@ -45,6 +46,8 @@ import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
 
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
+	/** Tools among `tools` that the run opens through more_tools instead of its catalog (T3-6, cloudToolsOnDemand). */
+	deferred?: ReadonlySet<string>;
 	captures?: CloudNativeCaptureImages;
 	/** The run's desktop folder reports (F3 4f-2b): its tool results show them. */
 	folderReports?: CloudNativeFolderReports;
@@ -124,6 +127,16 @@ export async function runCloudNativeRunToolSession(options: {
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
 	isolation?: NativeIsolationConfiguration;
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1), for a run whose company has the switch on: the channel
+	 * from this run's sealed slot to its own machine, where Codex's own shell and file tools run. It is given the
+	 * run's review (slice 4) and its work log (slice 2) here, where both are built. Absent: the run is as today.
+	 */
+	home?: (input: {
+		readonly review: CloudCodexHomeReview;
+		readonly log: CloudRunLog | undefined;
+		readonly signal: AbortSignal;
+	}) => CloudCodexHome | undefined;
 	/** How a ChatGPT plan run's Codex gets the plan's token (the host's setting). */
 	chatGptPlanAuth?: CloudChatGptPlanAuth;
 	signal: AbortSignal;
@@ -153,6 +166,7 @@ export async function runCloudNativeRunToolSession(options: {
 		throw error;
 	}
 	let boundary: CloudNativeToolBoundary | undefined;
+	let home: CloudCodexHome | undefined;
 	let adapters: CloudNativeRunToolAdapters | undefined;
 	let executionFailed = false;
 	let closingStarted = false;
@@ -241,18 +255,28 @@ export async function runCloudNativeRunToolSession(options: {
 		};
 		await assertActive(run.signal);
 		const reviewer = options.actionReview ? new CloudActionReviewChannel() : undefined;
+		// The run's home, if its company has one: every command and change on it is reviewed by the same gate as a
+		// machine command (slice 4), and what it did becomes the run's own steps (slice 2).
+		const review = reviewer && options.actionReview ? options.actionReview(reviewer) : undefined;
+		home = options.home?.({
+			review: cloudHomeActionReview(review),
+			log: adapters.runLog?.log,
+			signal: run.signal,
+		});
 		boundary = new CloudNativeToolBoundary({
 			observability: options.observability,
 			companyId: run.identity.companyId,
 			runId: run.identity.runId,
 			identity: run.identity,
 			tools: adapters.tools,
+			...(adapters.deferred ? { deferred: adapters.deferred } : {}),
 			captures: adapters.captures,
 			...(adapters.folderReports ? { folderReports: adapters.folderReports } : {}),
 			assertActive,
 			signal: run.signal,
-			...(reviewer && options.actionReview ? { review: options.actionReview(reviewer) } : {}),
+			...(review ? { review } : {}),
 			...(adapters.runLog ? { runLog: adapters.runLog.log } : {}),
+			...(home ? { home } : {}),
 		});
 		const runLog = adapters.runLog;
 		result = await runCloudCodexToolSession({
@@ -292,6 +316,7 @@ export async function runCloudNativeRunToolSession(options: {
 						},
 					}
 				: {}),
+			...(home ? { home } : {}),
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,
@@ -346,6 +371,8 @@ export async function runCloudNativeRunToolSession(options: {
 		throw error;
 	} finally {
 		boundary?.close();
+		// The home's socket and its session go with the run, whatever ended it (review round 1, F10).
+		if (home) await home.close(run.signal.aborted ? "stopped" : "ended").catch(() => undefined);
 		// A run that failed on its own commits the steps it finished, as closing would have, within 10 s: a timed batch
 		// still running stops then too. A stopped run does not: its authority is gone, and a later attempt may already be
 		// writing the log.

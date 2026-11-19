@@ -116,7 +116,7 @@ const settled = (state: ModelLoginSignInState): boolean => state.status === "com
 
 /** One of Claude Code's login files, as bytes: a regular file, never through a link (O_NOFOLLOW), read from the
  * handle it was checked on. */
-async function claudeLoginFile(path: string): Promise<Buffer> {
+export async function claudeLoginFile(path: string): Promise<Buffer> {
 	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
 		const metadata = await handle.stat();

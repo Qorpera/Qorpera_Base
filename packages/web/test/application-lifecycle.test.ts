@@ -2,23 +2,25 @@
 import { createHash, webcrypto } from "node:crypto";
 import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
-import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import { takeWantedDataList } from "../src/app/data-page.ts";
 import { tellAgent } from "../src/app/tell-agent.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
+import { pageNoteCard } from "../src/app/views/page-note.ts";
 import { renderRail } from "../src/app/views/shell.ts";
-import { CloudRpcError } from "../src/cloud/client.ts";
+import { CloudRpcError, describeError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
-import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
+import type { HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
 import { h } from "../src/ui/dom.ts";
 import { appCard, markdown } from "../src/ui/markdown.ts";
 import { PAGE_READY } from "../src/ui/page-frame.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
 	fixture,
@@ -391,6 +393,42 @@ describe("account and route ownership", () => {
 		expect(container.querySelector(".hub-welcome")).not.toBeNull();
 		expect(container.querySelector(".skeleton-companies")).toBeNull();
 	});
+	it("keeps the company placeholders and says it is reconnecting while the company list cannot be reached", async () => {
+		const f = mounted("#/");
+		vi.mocked(f.api.listProfiles).mockRejectedValue(
+			new CloudRpcError(
+				"qorpera_list_hosted_profiles",
+				{ message: "TimeoutError: Qorpera did not answer in time." },
+				0,
+			),
+		);
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		await hub.refresh();
+		renderHub(hub, container);
+		expect(placeholderLabel(container)).toBe("Loading companies");
+		expect(container.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(container.querySelector(".notice-danger")).toBeNull();
+		expect(container.querySelector(".hub-welcome")).toBeNull();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA]);
+		window.dispatchEvent(new Event("online"));
+		await vi.waitFor(() => expect(hub.store.get().connectionLost).toBeUndefined());
+		renderHub(hub, container);
+		expect(container.querySelector(".company-card")?.textContent).toContain(profileA.profileName);
+		expect(container.querySelector(".notice-neutral")).toBeNull();
+		hub.dispose();
+	});
+	it("shows any other failure of the company list as an error", async () => {
+		const f = mounted("#/");
+		vi.mocked(f.api.listProfiles).mockRejectedValue(new Error("Companies unavailable"));
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		await hub.refresh();
+		renderHub(hub, container);
+		expect(hub.store.get().connectionLost).toBeUndefined();
+		expect(container.querySelector(".notice-danger")?.textContent).toBe("Companies unavailable");
+		hub.dispose();
+	});
 	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
 		const home = `#/c/${profileA.profileId}`;
 		const f = mounted(home);
@@ -552,23 +590,12 @@ describe("account and route ownership", () => {
 		expect(root.textContent).toContain("Account B");
 	});
 
-	it("loads entitlement and friends afresh for the new account", async () => {
+	it("loads friends afresh for the new account", async () => {
 		const { api, auth, root } = mounted("#/account");
 		await draw();
-		expect(api.getAccountEntitlement).toHaveBeenCalledTimes(1);
-		const entitlement: HostedAccountEntitlement = {
-			planKey: "Account B plan",
-			billingMode: "fixture",
-			featureSet: "fixture",
-			storageAllocation: "fixture",
-			source: "fixture",
-		};
-		vi.mocked(api.getAccountEntitlement).mockResolvedValue(entitlement);
 		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
 		auth(userB);
 		await draw();
-		// The plan is no longer shown (good will replaced it), but the new account's entitlement is read afresh.
-		expect(api.getAccountEntitlement).toHaveBeenCalledTimes(2);
 		expect(api.listFriends).not.toHaveBeenCalled();
 		const openFriends = () => {
 			root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
@@ -613,7 +640,6 @@ describe("account and route ownership", () => {
 		expect(location.hash).toBe("#/account");
 		const saved = "Card saved. It pays the company's next invoice.";
 		expect(root.querySelector(".settings-good-will-account .notice-ok")?.textContent).toBe(saved);
-		expect(root.textContent).not.toContain("Plan & usage");
 		// Leaving the page takes the notice with it; the next visit reads afresh.
 		location.hash = "#/";
 		await draw();
@@ -655,13 +681,6 @@ describe("account and route ownership", () => {
 		expect(mine.hidden).toBe(false);
 		expect(mine.querySelector(".notice-ok")).toBeNull();
 		expect(root.textContent).not.toContain(saved);
-	});
-
-	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
-		const f = mounted(hash);
-		await draw();
-		expect(f.root.querySelector(".company-card[data-href]")?.textContent).toContain(profileA.profileName);
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 	});
 
 	it("does not navigate after a staff-session request finishes on another page", async () => {
@@ -993,52 +1012,6 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 	});
 
-	it("reads the offers again each time the company's folder changes, and stops once the member signs out", async () => {
-		const fake = folderFake({ seed: [] });
-		let next = 500;
-		for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, text);
-		const hints: ((seq: number) => void)[] = [];
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockImplementation((onHint) => {
-			hints.push(onHint);
-			return { close: async () => {} } as never;
-		});
-		const f = mounted(`#/c/${profileA.profileId}`);
-		// Members is on, so the folder is read for its table. The fixture's cloud answers no other RPC, so each offers
-		// read fails and the reader keeps what it had; the calls are counted.
-		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
-			if (name !== "qorpera_member_interface_pages") throw new Error("Unexpected RPC");
-			const pages = [
-				{ page: "mailbox", on: false },
-				{ page: "members", on: true },
-			];
-			return { schema: "qorpera.member-interface-pages/v1", pages, mayChange: true };
-		});
-		await draw();
-		// The table is read at the sync after the page shows.
-		await vi.advanceTimersByTimeAsync(1000);
-		await draw();
-		const reads = () =>
-			vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name === "qorpera_member_interface_offers").length;
-		const opened = reads();
-		expect(opened).toBeGreaterThan(0);
-		expect(hints).toHaveLength(1);
-		const rows = "QorperaOS/tables/areas/rows.csv";
-		fake.put(rows, fake.text(rows)!);
-		hints[0]!(fake.seq);
-		await vi.advanceTimersByTimeAsync(1000);
-		await draw();
-		expect(reads()).toBeGreaterThan(opened);
-		const changed = reads();
-		f.auth(null);
-		await draw();
-		fake.put(rows, fake.text(rows)!);
-		hints[0]!(fake.seq);
-		await vi.advanceTimersByTimeAsync(120_000);
-		await draw();
-		expect(reads()).toBe(changed);
-	});
-
 	/** The company's folder with one posted app, `apps/sales-board/`, made by the fixture's agent. */
 	function withApp() {
 		const fake = folderFake({ seed: [] });
@@ -1238,6 +1211,18 @@ describe("account and route ownership", () => {
 		]);
 	});
 
+	it("opens the Data page at the list a question was asked on, from its card in the conversation", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const card = pageNoteCard("data", "workshop:waited-over-a-week", "Workshop · Waited over a week");
+		f.root.querySelector(".thread")!.append(card);
+		card.click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/i/data`);
+		expect(takeWantedDataList(profileA.profileId)).toBe("workshop:waited-over-a-week");
+		expect(takeWantedDataList(profileA.profileId)).toBeUndefined();
+	});
+
 	it("leads back to the conversation from a card whose app is gone", async () => {
 		withApp();
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
@@ -1368,10 +1353,8 @@ describe("account and route ownership", () => {
 	 * at the bottom of the concepts sidepanel"), open or folded. */
 	const endsWithItsList = (root: HTMLElement) => {
 		const side = root.querySelector<HTMLElement>(".concepts > .concepts-side")!;
-		expect(side.querySelector(".concepts-guard, .concepts-foot, .concepts-actions")).toBeNull();
 		expect(side.lastElementChild?.classList.contains("concepts-panel")).toBe(true);
 		expect(side.querySelector(".concepts-panel")?.lastElementChild?.tagName).toBe("NAV");
-		expect(side.textContent).not.toContain("never asks for passwords");
 	};
 	/** A concept's row's menu, opened as a right-click (`at` the pointer) or the keyboard's menu key (no point) opens it. */
 	const rowMenu = (root: HTMLElement, name: string, at = { clientX: 40, clientY: 120 }) => {
@@ -1696,6 +1679,58 @@ describe("account and route ownership", () => {
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
 		expect(appPage(f.root)?.getAttribute("aria-label")).toBe("Sales board");
 		expect(concepts(f.root)).toBeNull();
+	});
+
+	it("says in the rail that it is reconnecting when the conversations cannot be reached, and clears it once they can", async () => {
+		const f = mounted(`#/c/${profileA.profileId}`);
+		vi.mocked(f.api.listSessions).mockRejectedValue(
+			new CloudRpcError("qorpera_list_shared_sessions", { message: "TypeError: Failed to fetch" }, 0),
+		);
+		await draw();
+		await draw();
+		const rail = f.root.querySelector(".rail")!;
+		expect(rail.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(rail.textContent).not.toContain("Failed to fetch");
+		expect(rail.querySelector(".notice-danger")).toBeNull();
+		vi.mocked(f.api.listSessions).mockResolvedValue([session]);
+		window.dispatchEvent(new Event("online"));
+		await draw();
+		await draw();
+		expect(rail.textContent).not.toContain("Can't reach Qorpera");
+	});
+
+	it("says a lost connection in the member's language once the app is mounted", () => {
+		mounted();
+		const lost = new CloudRpcError("qorpera_get_team", { message: "TypeError: Failed to fetch" }, 0);
+		setLanguagePreference("da");
+		try {
+			expect(describeError(lost)).toBe("Qorpera kan ikke nås lige nu. Tjek din forbindelse, og prøv igen.");
+		} finally {
+			setLanguagePreference("system");
+		}
+		expect(describeError(lost)).toBe("Qorpera can't be reached right now. Check your connection and try again.");
+	});
+
+	it("waits in Storage and the rail while the company cannot be reached, with no error and no empty list", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/file`);
+		const lost = new CloudRpcError("qorpera_get_team", { message: "TypeError: Failed to fetch" }, 0);
+		vi.mocked(f.api.getTeam).mockRejectedValue(lost);
+		vi.mocked(f.api.listStaff).mockRejectedValue(lost);
+		await draw();
+		await draw();
+		const storage = f.root.querySelector(".settings-dialog")!;
+		expect(storage.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
+		expect(storage.querySelector(".notice-danger")).toBeNull();
+		const rail = f.root.querySelector(".rail")!;
+		expect(rail.textContent).not.toContain("No agents yet.");
+		expect(rail.querySelector(".notice-danger")).toBeNull();
+		vi.mocked(f.api.getTeam).mockResolvedValue(team);
+		vi.mocked(f.api.listStaff).mockResolvedValue([staff]);
+		window.dispatchEvent(new Event("online"));
+		await draw();
+		await draw();
+		expect(storage.textContent).not.toContain("Can't reach Qorpera");
+		expect(rail.textContent).not.toContain("Can't reach Qorpera");
 	});
 
 	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {
@@ -2198,97 +2233,5 @@ describe("the rail's line under an idle agent's name in the app", () => {
 				),
 			{ timeout: 3000 },
 		);
-	});
-
-	it("shows no wall in the agent's thread and reads none, though its folder holds a wall.md", async () => {
-		// Jonas, 14 Nov 2026: "rather drop the wall - it's the wrong medium for activity"; of the line under the name
-		// that came from it: "Let it go too". A wall.md left in the agent's folder is never asked for.
-		const wall = "QorperaOS/agents/nora/wall.md";
-		const routine = {
-			routine_id: id(63),
-			client_routine_id: id(163),
-			version: 1,
-			status: "active",
-			staff_agent_id: staff.id,
-			title: "Morning brief",
-			prompt: "Brief me.",
-			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
-			effort: "medium",
-			sponsor_binding_id: id(87),
-			sponsor_version: 1,
-			logical_computer_id: null,
-			required_capability: "agent_turn",
-			job_type: "agent_turn",
-			publication_mode: "automatic",
-			review_policy_key: null,
-			reviewer_staff_ids: [],
-			created_at: userA.created_at,
-			updated_at: userA.created_at,
-			next_run_at: new Date(Date.now() + 30 * 3_600_000).toISOString(),
-		};
-		const asked: { method: string; args: unknown }[] = [];
-		const answer = async (method: string, args: unknown): Promise<unknown> => {
-			asked.push({ method, args });
-			if (method === "qorpera_member_company_state_folders")
-				return {
-					schema: "qorpera.member-company-state-folders/v1",
-					agents: [{ staffAgentId: staff.id, file: "QorperaOS/agents/nora/agent.md" }],
-					groups: [],
-					routines: [],
-				};
-			if (method === "qorpera_member_folder_read") {
-				const path = (args as { p_path?: unknown } | undefined)?.p_path;
-				if (path !== wall) return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false };
-				return {
-					schema: "qorpera.folder-read/v1",
-					asOfSeq: 1,
-					found: true,
-					entry: {
-						path: wall,
-						kind: "file",
-						version: id(92),
-						seq: 1,
-						updatedAt: userA.created_at,
-						manifestSha256: "a".repeat(64),
-						fileSha256: "b".repeat(64),
-						bytes: 64,
-						mediaType: "text/markdown",
-						executable: false,
-					},
-				};
-			}
-			if (method === "qorpera_list_cloud_routines") return [routine];
-			if (method === "qorpera_list_member_notifications") return [];
-			throw new Error(`Unexpected fixture RPC: ${method}`);
-		};
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-				const url = new URL(String(input));
-				const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
-				return Response.json(await answer(url.pathname.split("/").at(-1)!, body));
-			}),
-		);
-		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		vi.mocked(f.cloud.rpc).mockImplementation((method: string, args?: Record<string, unknown>) =>
-			answer(method, args),
-		);
-		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
-		await vi.waitFor(
-			() =>
-				expect(f.root.querySelector(`.rail [data-agent-id="${staff.id}"] small`)?.textContent).toMatch(
-					/^Next: Morning brief · /,
-				),
-			{ timeout: 3000 },
-		);
-		await vi.waitFor(() => expect(f.root.querySelector(".thread footer.composer")).not.toBeNull(), {
-			timeout: 3000,
-		});
-		// The tab coming back and the agent's run ending read the wall until 14 Nov 2026; neither does now.
-		window.dispatchEvent(new Event("focus"));
-		await draw();
-		expect(f.root.querySelector(".agent-wall")).toBeNull();
-		expect(f.root.querySelector(".thread-foot")?.textContent ?? "").not.toMatch(/waits? on you/i);
-		expect(asked.filter(({ args }) => JSON.stringify(args ?? null).includes("wall.md"))).toEqual([]);
 	});
 });

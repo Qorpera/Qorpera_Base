@@ -66,7 +66,7 @@ write, with the tools they already have, and need no migration.
 | `entry` | relative path to an `.html` file | `index.html` | the page that opens |
 | `owner` | agent handle | the creating agent | who made it; the app's header names it |
 | `posted` | true or false | false | shown in every member's apps drawer |
-| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions`, `data`, `money`, `site` | `[]` | the live sources the app may read (§5) |
+| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions`, `data`, `reading`, `money`, `site` | `[]` | the live sources the app may read (§5) |
 | `writes` | list of `answers` and `table:<name>`, at most 16 | `[]` | what the app may ask a member to change (§5 "Changes"); `<name>` is a company table's folder name, never `areas` |
 | `concept` | true or false | false | a concept of the company's product: it opens in the Concepts viewer (`#/c/<id>/concepts/<name>`, full screen, a side panel to pick a concept), and the drawer shows one Concepts entry for all of them, posted or not |
 | `cover` | relative path to a `.png`, `.jpg` or `.webp` in the app's folder | none | the picture of a concept in the viewer's side panel; without one, its emblem |
@@ -75,11 +75,16 @@ write, with the tools they already have, and need no migration.
 Unknown keys, bad types and bad values are problems; an app whose manifest has problems is not shown (its card says
 so and links the file).
 
-**Files.** Kinds: `.html .htm .css .js .mjs .json .txt .md .csv .svg .png .jpg .jpeg .gif .webp`. Each file at most
-512 KiB (the write tools' bound), at most 64 files, at most 4 MiB in all. Other kinds may sit in the folder (an agent's
-notes) but are never loaded into the page.
-**Videos** (Jonas, 7 November 2026: demo videos of design ideas): `.mp4 .webm`, each at most 12 MiB and 48 MiB in all, on
-top of the limits above. An agent writes them from a machine or moves them in; no text tool writes one.
+**Files** (amended 17 November 2026; Jonas: "also uncap the file-sizes... they are meant to be able to do anything,
+the cap is a major constraint"). An app holds files of any kind, in any number and of any size the company folder
+stores: 256 MiB a file, the folder's own bound (64 pieces of 4 MiB), which stays a step of its own. A page loads any of
+them. A known extension is handed over with its media type (`APP_FILE_TYPES`: pages, styles, scripts and data,
+pictures including `.avif .bmp .ico`, video `.mp4 .webm .mov .m4v`, sound `.mp3 .m4a .aac .wav .ogg .oga .opus
+.flac`, fonts `.woff2 .woff .ttf .otf`, 3D `.glb .gltf .bin .obj .usdz .hdr .exr .ktx2`, `.wasm .pdf .xml .map`); any
+other as `application/octet-stream`. `save_app` writes the text files, of any kind that is not binary
+(`APP_BINARY_KINDS`), each as large as one call carries; a machine writes the rest, or moves them in. Until 17 November
+2026 a page loaded 17 kinds, each page or code file at most 512 KiB, at most 64 files and 4 MiB of pages and code, and
+pictures and videos (Jonas, 7 November 2026: demo videos of design ideas) at most 12 MiB each and 48 MiB in all.
 **Icons** (Jonas, 12 November 2026: "change the icons of the interfaces and have a generate icon button too for them to
 create a new custom one based on it's name or contents"): an app's own icons are `icons/<id>.svg` in its folder, an id
 of lowercase letters, digits and hyphens (`compass`, `trail-sign`), at most 12 an app. Each is drawn as the built-in
@@ -90,15 +95,76 @@ at most 8 KiB. The web and `save_app` read a file alike, so what the web could n
 one, or another emblem, under Icon and colour in the app's menu in the drawer; Generate icon there asks the app's maker
 (its `owner`, else the Co-Founder) in the chat to draw 3 more.
 
-**How a page is put together.** The frame has no origin and no network, so the host (the web app, with the member's
-own read authority) reads the entry and the files it names and hands the frame one self-contained page:
-- `<link rel="stylesheet" href="x.css">` becomes `<style>` with the file's text;
-- `<script src="x.js">` becomes an inline `<script>` (its `type` kept);
-- `src` of `img`, `source`, `audio`, `video` and `url(...)` in styles become `data:` URLs;
-- only relative paths inside the app's folder are resolved; anything else (`https:`, `/abs`, `..` out of the folder)
-  is left as written, and the frame's policy blocks it.
-Module scripts may not `import` other files in v1 (inline them or use classic scripts). The page then goes through
-`framePage` exactly as a Company File page does.
+**How a page is put together** (amended 17 November 2026: the page opens first, and a file is read when the page uses
+it). The frame has no origin and no network. The host (the web app, with the member's own read authority) reads the
+entry, puts the page together and hands it to the frame with the files its first paint needs, as blobs; every other
+file of the app comes through the port when the page uses it (`file`, §5). Until then the host packed every file a
+page named into it as `data:` URLs before anything showed.
+- `<link rel="stylesheet" href="x.css">` becomes `<style>` with the file's text, and each `url(...)` in it, in a
+  `<style>` and in a `style` attribute names the file's mark; those files (pictures, fonts) come with the page.
+- `<script src="x.js">` becomes an inline `<script>` (its `type` kept) when it is at most 128 KiB
+  (`PAGE_TEXT_INLINE_BYTES`); a larger one keeps its place and order and comes as a file of its own
+  (`text/javascript`). Measured in headless Chromium on node 2 (17 November 2026, median of 9, hand-over to run): up
+  to 128 KiB inline and a file of its own take the same time (16 to 24 ms); from 256 KiB the file of its own is
+  faster (256 KiB 18 against 26 ms, 1 MiB 22 against 30, 4 MiB 29 against 63).
+- A picture (`img src`, a `video` poster, an SVG `image href`) comes with the page when it is in a `hidden` part of
+  the page (it is there for a script to read: a kit's `#kit-media`), or when it is at most 2 MiB
+  (`PAGE_MEDIA_FILE_BYTES`) and the page's pictures, video and sound sent with it so far stay within 16 MiB
+  (`PAGE_MEDIA_BYTES`) and 24 files (`PAGE_MEDIA_FILES`). Video and sound (`video`, `audio`, `source`, `track` src)
+  come with the page when at most 2 MiB, within the same 16 MiB and 24 files. These are budgets for the first paint,
+  never a reason a file does not load. Anything else is marked to come later (`data-qorpera-src`, `-poster`, `-href`, with
+  its path in the app): the frame reads it when its element comes near the screen (a screen's height ahead), or for
+  sound when it is played, loaded or plays by itself. A copy of a marked element (`cloneNode`) is marked too.
+- A file's mark is `qorpera-file-<the first 32 hex of its hash>-<its kind>`; the frame puts an address of its own
+  (`blob:`) in its place before the page is written. Nothing large travels as a `data:` URL.
+- A file the page names that the folder does not hold loads nothing; the frame's console names it in plain words.
+- A script reads any file of the app by a relative path, with no code of its own: `fetch` and `XMLHttpRequest` (GET
+  or HEAD) answer from the app's file (a file it lacks is a 404, said in the console), an element's `src` or poster
+  set to one, `new Audio(path)` and `setAttribute` load it, and `qorpera.file(path)` gives an address the page can use
+  (for a worker, a module's `import()`, a model or a font) and `qorpera.bytes(path)` its bytes (an `ArrayBuffer`).
+  `fetch`, `XMLHttpRequest` and `qorpera.bytes` ask the host each time, so a page sees a file that changed; an address
+  an element or `qorpera.file` was given stays for the page's life. A read that failed is asked again next time.
+  So a stock 3D, font or audio loader reads its files as anywhere. A relative `src` written by a script into markup
+  (`innerHTML`) is read too, after the browser has refused it once.
+- Only relative paths inside the app's folder are read; anything else (`https:`, `/abs`, `..` out of the folder) is
+  left as written, and the frame's policy blocks it. Until 18 November 2026 a module script's own relative `import`
+  was not resolved; it is now (next item).
+- Module scripts (18 November 2026; the founder, to "Fix script imports in app pages now?": "Yes, fix it", after
+  Klokkesten's 3D page stayed on "Åbner modellen …"). `<script type="module" src>` and an inline module import the
+  page's own files as anywhere: static `import … from`, `export … from` and `import "…"` with a relative path at any
+  depth, a bare name the page's `<script type="importmap">` maps to a file of the folder (an exact name such as
+  `"three"`, or a prefix such as `"three/addons/"` or `"@/": "./"` for the app's own folder), a literal
+  `import("./x.js")`, cycles between modules, and JSON and CSS modules (`with { type: "json" }` or `"css"`: the file
+  as it is, a JSON one as an `application/json` blob, a CSS one as a `data:` address since the frame's `style-src`
+  names `data:` and not `blob:`; a CSS module's own `url()` is not read). The host
+  reads the graph while it puts the page together (`app/app-modules.ts`, with es-module-lexer 2.3.1, MIT, vendored in
+  `src/vendor/es-module-lexer`): each module's specifiers become `qorpera-module:/<path>`, an import map the host
+  writes first in the head maps each such name (and each exact name of the page's map) to the module's `blob:`, and the
+  page's own maps go. So each module is evaluated once, in the order the browser gives, and a stack names
+  `qorpera-module:/<path>:<line>:<column>` of the file as written. `import.meta.url` is the module's place in the frame
+  (`<frame folder>/<path>`, each part escaped, so a name with a space, `&` or `ø` stays the file's), so `new URL("./x.bin", import.meta.url)` and `fetch` of it read the neighbour file; an
+  inline module's is the frame document's. A module is read whole (piece by piece above 8 MiB) and copied once for its
+  blob. A specifier that is not a file of the folder (`https:`, `/abs`, `..` out of it, a bare name the map does not
+  name or maps elsewhere, a missing file, an import of another `type`) is left as written, fails alone, and the console
+  says so in one line (`Qorpera: viewer.js imports lodash, which the page's import map does not name`). Not resolved: an `import()` of a
+  computed name, an import map's `scopes`, and modules a module worker imports.
+- A module worker (`new Worker(url, { type: "module" })`) starts from an address `qorpera.file` gives (18 November
+  2026): the frame reads its source and starts it from a `data:` address (base64) after the worker guard, under the
+  frame's policy. It runs code of its own file only; its own `import`s are not resolved. Chromium takes an address of
+  at most 2 MiB, so a module worker's file can be at most 1,532 KiB (measured on node 2: 1,569,335 bytes start, 1,570,312
+  do not); a larger one does not start, fails alone, and the console says so in one `Qorpera:` line.
+- While the files of the first paint arrive, the app's "Opening…" says how far it is, when they pass 4 MiB.
+- A file larger than 8 MiB is read piece by piece (4 MiB pieces, one at a time for one file, at most 8 files at once
+  for a page) and built into one blob as the pieces arrive, so no second whole copy is held beside it.
+The page then goes through `framePage` exactly as a Company File page does.
+
+**A page opened by itself** (17 November 2026). An HTML page opened from the company folder (a `folder:` link beside a
+chat, or Storage's preview) is put together and loads its files the same way, with the folder it stands in as its
+root, and a port that answers `file` alone: it reads only files in its own folder and below (no `..` out of it, no
+company path from the top), never one in a folder the platform keeps (`APP_CLOSED_FOLDERS`; a page standing in one
+reads none), always as the member's own read, and has no live sources, no changes and no links. A page that reloads itself is handed its page again with a new port, as Storage did before; an app's page
+that does so stays stopped until Reload, since its port carries the member's live data and requests. One that cannot be put
+together (a page in a platform folder) is shown as before, by itself.
 
 **The base style** (10 November 2026; `packages/web/src/app/interface-app-style.ts`). The host gives every app's page
 one small stylesheet to start from. Before it, the host gave a page no style at all, so each agent made up a look: six
@@ -261,8 +327,9 @@ web does not already answer. What the kit adds is that the agent writes one file
   runtime, held together by a test). Changing one word of a caption gives it a new name, so that caption alone
   falls silent until it is recorded again. `save_app` writes those elements from `voice/clips.json`
   (`{"clips": [{"caption": "3f0a9c1e", "file": "3f0a9c1e.mp4", "seconds": 5.42}]}`): one clip a caption, the file
-  the caption's hash with `.mp4` or `.webm`, at most 60 seconds, at most 56 clips (an app's 64 files less the rest),
-  and only clips whose file is in `voice/`. A list that does not read costs the video its voice, never the save.
+  the caption's hash with `.mp4` or `.webm`, at most 60 seconds, any number of them (until 17 November 2026 at most
+  56, an app's 64 files less the rest; the answer's look advises 25 to 35 captions), and only clips whose file is in
+  `voice/`. A list that does not read costs the video its voice, never the save.
   The web's page builder puts each clip into the page as it puts a video in (§2: `source[src]`), so the web knows
   nothing of the kit. A spoken caption lasts as long as its clip and half a second. The player speaks the clip of
   the caption on screen through one audio element, with the timeline as the clock: pause, scrub and jump are the
@@ -350,10 +417,13 @@ in every app of the kit.
 | `model` | does it make money, and what moves it? | sliders for the numbers, one large figure, a waterfall from what a customer pays to what is left, and a curve against volume with its break-even; a number nobody knows yet is a hatched slider a member drags, or sets with "Try an example" |
 | `board` | what is out there, and which one? | `scale`: real things as pictures standing on one true scale, each opening a sheet of facts; `choose`: two to four directions as worlds to step into, with a button that answers the agent's open question; `wall`: reference pictures with a note each |
 | `path` | how does it go, and where is the hole? | one to three lanes through the same steps, the evidence as marks under the step it supports, a step nobody has shown as fog with a question mark, and a flag for what will fill it; with numbers on the steps it is a funnel |
-| `object` | what is the thing? | a turntable of the thing a member turns by hand, its parts pointed out on it with a leader to each name, and its figures under it |
+| `object` | what is the thing? | the thing as a live 3D model (17 November 2026) or a turntable, turned by hand, its parts pointed out on it with a leader to each name, and its figures under it |
 | `curve` | where is it going? | one value over time, big: the past as a filled area, what is expected as a dotted line inside a band as wide as it is unsure, a "now" line, a dashed safe level, up to three marked points, and the value that matters large at the top, which follows a finger, the pointer or the arrow keys along the curve; a future nobody has said anything about is fog (14 November 2026) |
 | `stack` | what wants my yes? | the things that wait on a member, one big card at a time (a soft colour field or a picture, one number, one line, the asking agent's figure; or a paper, for a bill), the open question's options as buttons under it, progress as dots, a stamp when it is answered and a page that says so when nothing is left (14 November 2026) |
 | `shelf` | how do our things stand? | the company's own things side by side on one shelf, each a big picture with a soft colour block behind it as high as its level and its number under it, a low one warm, an agent's one-line note with its figure; without levels a gallery of finished things with the maker's figure (14 November 2026) |
+| `map` | what are we making, and who is at it? | the company, or one owner's area, as one picture: three to seven things, each its shape (one of the reading's 25), pale and filled from the bottom as far as it is built or known, the attended one biggest in the middle and the others bigger the more agents stand at them, the agents' figures at a thing's lower corners with a mark on those at work, a member's mark where a thing waits; a thing opens into a layer of what is made inside it (1 to 12 things, four layers deep, 80 in all), zoomed into with a spring, its own shape small beside the layer's title as the mark of where you are, the path at the top (each step a button) and Escape going up one, the focus back on the thing that was opened (no entry in the browser's history); a thing that has an interface of its own links to it (`opens`); a thing not looked at for 14 days is pale with its age, `unknown` dashed with "?", `assumed` dashed and pale. Its first layer may be the company's reading of itself, live (`top: "reading"`, `qorpera.reading()`, §5): the company's sentence as the title, a quiet line of what changed with "Not right?" (a `tell`), the team in a row before the first reading, grey and still with since when and why while the company cannot run (Jonas, 15 November 2026: "it should not be the platform that draws it, rather an agent should maintain it"; asked how: "Use a map kit") |
+| `ring` | when is it? | a year, a month or a week as one ring, its months or days round it and the part gone by a shade darker, a hand at now, marks for points in time (a deadline, a launch, a payday) and wedges for stretches (a campaign, a holiday, a season) that reach out as far as their amount where they have one; the middle holds the next thing and how many days off it is, or a number, and follows a finger, the pointer or the arrow keys round the ring; at most 12 marks and 8 wedges, and what falls outside the span is not drawn (15 November 2026) |
+| `flow` | where does it come from, and where does it go? | money or people as wide soft bands from where they come, through the company's bar in the middle (or straight from each source to each end, with `links`), to where they go, each band as wide as its amount and what is kept last in green; past six ends on a side the smallest join one band, Other; one big number, all that came in, which becomes a band's amount and share as a member points at it or steps with the arrow keys; an amount nobody knows is an open band with "?" (15 November 2026) |
 
 An app made from one (`kit = "model"`, …) is an ordinary app: the same folder, the same frame, the same limits, no
 call the web does not already answer.
@@ -367,7 +437,10 @@ call the web does not already answer.
 
 - **`save_app` writes the two that are Qorpera's.** With `manifest.kit` a data kit, a new app needs its data file
   among its files (`APP_DATA_MISSING` without it), and the data must read as the kit's (`APP_DATA_INVALID`, with why:
-  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without). A call that names
+  not JSON, not one object, larger than 256 KiB, or without what the kit cannot draw without; a ring's dates that are
+  no `YYYY-MM-DD`, a ring of more than 12 marks or 8 wedges, a flow's end with no name or an id twice, a flow of more
+  than 24 ends a side or 24 links, and a link to an end it lacks). Its answer's `look` also names a ring's marks and
+  wedges outside its span and a flow's side whose smallest ends join Other. A call that names
   `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
   (`APP_KIT_ENTRY`). On a later save the two are written again only where the folder holds none or other text (by
   hash): new data, a new title, a picture that has arrived, or the engine of a newer runtime. An existing app takes
@@ -378,6 +451,11 @@ call the web does not already answer.
   folder), and the engine takes each from there by its path. One the folder lacks is left out, the engine draws a
   quiet placeholder for it, and the save's `look` says which. So an agent writes its pictures first, from a machine,
   or saves the data again after: a save with the data in the folder and none in the call reads the folder's.
+- **Pictures as WebP.** Every data kit's guide ends, and `style` for a page written by hand ends, with one paragraph
+  (`PICTURES`, `cloud-app-guides.ts`): save a photo, a render or a screenshot as .webp (`cwebp -q 90`, or Pillow's
+  save with quality 90, both in the machine image), since every member downloads each picture an app shows and a
+  render as a PNG is about ten times its size as WebP (measured 19 November 2026 on one board app's eight renders:
+  9.4 MB as PNGs, 0.72 MB as WebP); .png for a small flat graphic that must stay exact, .svg for what is drawn.
 - **The engine reads the data through the bridge**, as it stands when the page opens, and again after a change
   notice, no sooner than ten seconds after its last draw (§5). So the app's own folder is the one source: a change of
   `<kit>.json` shows without a new page. The page also holds the data as it was saved, for one case: opened where
@@ -409,7 +487,10 @@ call the web does not already answer.
   `data-kit-src="figure:<id>"`, since a page has no network and the figures are not the app's files. The pictures are
   `packages/runtime/kits/figures/<id>.webp`, and `npm run generate:app-kits` writes them into
   `cloud-app-kit-figures.generated.ts`. `stack` and `shelf` draw the asking agent or the maker by it; with none, the
-  name's first letter in a soft circle.
+  name's first letter in a soft circle. A `map`'s page carries all twelve, since its data names agents by their names
+  and who stands where is found when the page opens: `save_app` adds `reading` to a map's reads (never takes it away)
+  when its first layer is the company's reading or a thing names an agent, and the engine takes each agent's figure,
+  and whether it works now, from `qorpera.reading()`'s team; an agent the company does not have stands nowhere.
 - **A note to the app's owner** (`tell`, §5; Jonas, 13 November 2026: "you can't act very much inside of the
   interfaces"). The detail a tap opens has one quiet button at its foot, never on the stage: `board`'s item sheet
   (and in `choose` a direction's world, in `wall` the picture's lightbox), `path`'s step sheet, `object`'s part note,
@@ -426,7 +507,9 @@ call the web does not already answer.
   button stays. The button is drawn only where the page's `qorpera` has `tell`: an older web, and the page opened
   outside Qorpera, show none.
 - **`look`** is what a read of the data finds (`kitNotes`): pictures the folder lacks, and texts longer than a kit
-  shows. How the page looks stays the agent's to check on a machine.
+  shows. A save over the app's folder also names the PNGs of more than 400 KiB that the data names and the folder
+  holds (`kitHeavyPictures`: three names at most, their size together, and the `cwebp` command that makes each a
+  .webp); nothing is refused and no file is changed. How the page looks stays the agent's to check on a machine.
 
 Not built: the Co-Founder's `company` page has no kit of its own; a helper that renders an object's turntable and
 its parts' tracks in Blender on a machine (an agent writes that script itself today, from the guide); and a look at an
@@ -434,6 +517,57 @@ app's screenshot by someone other than its maker. Pictures an agent generates ar
 
 A model whose groups hold no input is refused as one without groups is (`APP_DATA_INVALID`): the engine would draw
 one line that says there is nothing to show.
+
+### The object kit's live 3D (17 November 2026)
+
+Jonas, 17 November 2026, "Yes, all three" on the app-files design page, whose second pick was "both": agents may bring
+their own 3D library into an app (the files of §2 carry it), and the object kit gets a ready live mode, so an agent
+writes no 3D code. Our servers have no graphics cards; a member's computer has one, and draws the model itself.
+
+- **Data.** `object.json`'s `model` (and a variant's) is the path of a `.glb` in the app's folder; `turntable` or
+  `picture` beside it is the fallback and the poster while the model arrives. `environment` (an `.hdr` in the folder)
+  replaces the default light; `view` `{"yaw", "pitch"}` in degrees replaces the opening view (yaw 30, pitch 14). A
+  part's `node` names an object of the model (its node name as Blender exported it, or a mesh name); `track` stays
+  for pictures. `parseKitData` refuses a model that is not a plain `.glb` path in the folder, an `environment` that is
+  no `.hdr` path, a `view` that is no object of numbers; `kitNotes` names a model or light the folder lacks and a thing
+  with a model and no picture. Data without `model` writes and draws exactly what it did: the same three files, the
+  same page, the same pixels (proof: lanes/app-files-uncapped-20261117, `shots3d/`).
+- **The library is the kit's.** three.js 0.186.1 (MIT) with its `GLTFLoader`, `HDRLoader`, `RoomEnvironment` and the
+  two blur shaders, bundled into one minified script by `scripts/build-object-kit-three.mjs` from the npm package
+  (`packages/runtime/kits/object/vendor/three.js`, 627 KB, with `three.LICENSE.txt` as shipped; held as
+  `cloud-app-kit-three.generated.ts`). `save_app` writes it into the app as `three.js` and `three.license.txt` only
+  when the data names a model (`kitLibrary`), and on a later save only where the folder holds other text; an agent may
+  not write either (`APP_KIT_FILE`). The page does not name it: the engine reads it when it needs it, through
+  `qorpera.file` (outside Qorpera, the relative path), so a turntable-only page is unchanged and the first paint does
+  not wait for it. No Draco, meshopt or KTX2 decoder: a compressed model is refused by the loader, and the page's
+  console says to export without compression.
+- **Light and look.** The thing stands on its lowest point, its upright axis through the middle of its bounds, fitted
+  to the stage so the circle it sweeps when it turns fills 90 % of the stage's height or width, as a turntable's
+  frames do; a perspective camera at about 3.4 times its size. Image-based light from three's `RoomEnvironment`
+  through PMREM (or the data's `.hdr`), AgX tone mapping (Blender's default view since 4.0), sRGB output, a transparent
+  canvas over the page's own background. A soft contact shadow rendered once from below (the parts nearest the ground
+  darkest, blurred twice: a tight one and a wider one at half strength), tinted from the page's background, so it
+  reads in light and dark. The stage, the labels, the strip, the facts and the bare form are the turntable's; the
+  canvas covers the stage's whole width and height and, while zoomed in, fades out over its top and bottom 28 px.
+- **Handling.** Drag turns it round the upright axis and tilts it between -6 and 52 degrees (a vertical swipe on a
+  touch screen still scrolls the page); pinch or wheel zooms between 0.8 and 2.2 times, about the stage's middle, and
+  past 1.2 the names beside it fade so only the dots stay; no panning; a double tap, Home or End go back to the opening
+  view (or its far side); the arrow keys turn by 15 degrees, `+` and `-` zoom. It turns once in 42 s by itself until
+  touched, again 20 s after the last touch, never with reduced motion. It draws only while something moves: at rest
+  the page asks for no frames. Pixel ratio at most 2, 1.5 on a touch screen or under 700 px.
+- **Parts.** A part's dot sits on its node's centre, projected. Whether it shows is read from an id picture (each
+  part's meshes in their own colour, 320 px wide at most, the part's own glass included and other glass left out),
+  around the dot, at most every 140 ms while it moves and once when it stops: that is the ray test, done on the
+  graphics card. A tap on a part or its name turns the thing the short way to the turn where the part shows most
+  (24 turns measured from the id pictures at the first tap). A `node` the model lacks is said in the page's console
+  with the model's node names, and the part is listed without a dot.
+- **When 3D cannot run** (no WebGL 2, a context the browser takes away, a library or model that does not load or
+  parse) the page shows the turntable or picture as before, else one quiet line in the page's language
+  (`words.nomodel`, else Danish, Swedish, Norwegian, German, Dutch, French, Spanish or English). While the model
+  arrives the poster stands still; with no picture a thin quiet line moves under the stage after 0.45 s.
+
+Not built: animations inside a model, exploded views, materials switching, AR, measuring. Not measured: a real phone,
+Safari, Firefox; the timings in the guide are a test machine's software renderer.
 
 ## 3c. Pictures: make_picture (13 November 2026)
 
@@ -454,14 +588,9 @@ migration `20260930746000`, which only names the tool among a run's observations
   the change for review (the answer's `state` is `proposed`), a missing folder is refused, a stale or present file is a
   conflict. Before the picture is made, the tool refuses a path whose folder is not there and a path that is a folder or
   a link: each picture costs the member's plan. Exists and version are checked at the commit only, as company_write's.
-- **An app's room.** For a path under `apps/<name>/`, before the picture is made the tool lists the app as save_app
-  does (`appFileSizes`, `APP_LIST_LIMIT`) and refuses (`APP_TOO_LARGE`) when one more file would pass 64, or when less
-  than 4 MiB of the 48 MiB of pictures and videos is left (the file the call replaces not counted). Once the picture is
-  made, the app is listed again and counted the same way with the picture's real bytes, since another run may have
-  filled it during the generation (`APP_TOO_LARGE`: made, not saved). The commit checks the target's version only (the
-  folder core has no precondition on a folder's listing for a write), so the moment between that listing and the commit
-  stays open, as between save_app's own listing and commit: the bound is held at each save and by the page's reader,
-  not by the commit.
+- **An app's room** (removed 17 November 2026, with every cap on an app's files): a picture goes into an app whatever
+  the app holds. Until then the tool listed the app as save_app did and refused (`APP_TOO_LARGE`) past 64 files or
+  48 MiB of pictures and videos.
 - **A repeat costs no picture within the run.** The tool keeps, for the run's life, what it answered per
   `operationKey` (the newest 256 calls, with the picture itself for the newest 4). A repeat of the same call is answered
   from there before anything is made: the same answer, the picture again when it is kept; a call whose outcome stayed
@@ -596,6 +725,174 @@ image, an image answer of `app_guide`) is a mechanism of its own, so the guide t
 For any tool: what a model must choose by goes in the description (4096 bytes) or in field descriptions of a schema
 that stays under the bound; a bound on a number or a length is said in words; anything longer is an answer.
 
+## 3e. Retired interfaces (15 November 2026)
+
+The founder, 15 November 2026: "users should also get a "retire interface" config when rightclicking an interface to
+stop maintaining it, and hide it". What follows is the lane's design (lanes/company-reading-20261114), not his words.
+
+**The state** is one company file, `apps/retired.md` (`cloud-client/app-retired.ts`, `APP_RETIRED_PATH`), one line an
+interface:
+
+```
+# Retired interfaces
+- old-plan | 6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8 | 2026-11-15T09:30:00Z
+```
+
+the app's folder name, the member who retired it (their user id) and when (ISO, UTC). An app is retired while its name
+has a line that reads; the first line of a name says who and when; any other line is kept as written and means
+nothing; at most the first 200 lines are read, of a file of at most 1 MiB (a larger one, or one that is not text,
+retires nothing). It is not a key of `app.toml`: an unknown key fails the manifest's parse in every older reader and
+hides the app, `save_app` rebuilds the manifest from its fields, and a Restore of an old `app.toml` would undo it.
+`retired.md` is no app's folder (`appPath` reads none in it), so the drawer, `organize_apps` and `save_app`, which list
+the folders of `apps/`, never take it for an app. `parseRetiredApps` reads it, `retireApp` adds a line at the end and
+`bringBackApp` takes a name's lines out, every other byte as written.
+
+**Who writes it: members only.** A member retires an interface, or brings it back, from their own sidebar (§4); the
+web writes the file through the member's folder client, as its other member writes. No SQL rule guards it: the member
+commit route is open for `apps/`, and the runtime's tools are where an agent is held.
+
+**The agents** (the runtime, `cloud-folder-app-retired.ts`) read the file as the run's own read of the folder, as
+`organize_apps` reads `apps/groups.md`, and a tool that answers releases it with its other reads:
+
+- `save_app` on a retired name, an existing app or a new one under that name, `post_app` on a retired app either way,
+  and `make_picture` into a retired app's folder are refused before their review, and again before they write.
+- `company_write`, `company_edit`, `company_mkdir`, `company_delete` and either end of `company_move` are refused for a
+  path in a retired app's folder, the folder itself included.
+
+  The refusal, as the agent receives it (the tool boundary puts `REFUSED: ` in front): "APP_RETIRED: a member retired
+  the interface <name> on <day month year>. Leave it: do not change it, post it or remake it under another name, and
+  conclude any routine you keep only for it. A member brings it back from their own sidebar; tell whoever asked for
+  the change."
+- The file itself is closed to every agent write, edit, new folder, move and deletion, and so is a move of the `apps`
+  folder while anything stands at its `retired.md`, and a move of a folder holding a `retired.md` onto the `apps`
+  folder's own path (moving the `apps` folder away with no list in it stays allowed; that second rule closes the way
+  back in): `APP_RETIRED_MEMBERS_ONLY: nothing was changed; apps/retired.md lists the interfaces
+  members retired, and only a member retires an interface or brings one back, from their own sidebar. Leave the file
+  as it is.` (A deletion of `apps` itself is refused already: only an empty folder is deleted.)
+- `organize_apps list` ends a retired app's line with ` (retired by a member)` and counts it in no group's and no loose
+  number of apps, since no member's drawer shows it; moving it in the layout stays allowed.
+
+No tool's description, no role text and no context prose says any of this yet: an agent learns it from the refusal and
+the list. Not held: a company machine's own writes into an app's folder (the machine's file channel is not a tool of
+the run), and a member's own changes.
+
+## 3f. Programs: the program kit (18 November 2026)
+
+Jonas, 18 November 2026, after a live test in which agents built a Linux program and an Android app whose files had no
+home: "for desktop apps surely we can create a private space were companies can upload and share code/programs with its
+members - like a github repo, just built for downloading and testing apps, not for reading code", and "Yes, build step
+1" to "kept versions and the program's page with Download" (design: lanes/native-apps-review-20261118/design).
+
+**The app.** A program is an interface app of the kit `program` (`APP_KITS`), in `apps/<name>/` with its `app.toml`
+like every app: it is in the apps drawer, has its card in a message (`app:<name>`), is posted and organised as any app.
+No new tool and no new top-level folder. The kit writes no file: the web draws its page itself, since a page in the
+app's frame cannot start a download. Its manifest's `entry` stays `index.html` and no such file is needed.
+
+**Its data** (`cloud-client/app-program.ts`). The agent builds on a machine, copies one file for each kind a person
+opens into `apps/<name>/versions/<version>/` through `/company`, and calls `save_app` with `kit: "program"` and one
+file, `program.json`, holding:
+
+- `version`: short text, letters, digits and `. _ + -`, at most 24 characters, not starting or ending with a dot and
+  with no `..` (`isProgramVersion`); it is the folder's name under `versions/`;
+- `forms`: 1 to 5 `{"for", "file"}`, `for` one of `android`, `linux`, `windows`, `mac`, `iphone`, at most one each;
+  `file` one file's name in `versions/<version>/`, no folder, at most 200 characters, and one the company folder
+  takes (`isProgramFileName` requires that the joined path passes `parseCloudCompanyPath`: no `%`, `:`, ending dot or
+  space, device name such as `con`, non-NFC text or C1 control; `save_app` refuses such a hand-in in plain words, and
+  a member's drop says the file can't be used as it is named);
+- `screens` (optional): `{"phone", "desktop"}`, each a `.png`, `.jpg` or `.webp` in the app's folder: real
+  screenshots of the running program.
+
+The app's one line is its manifest's `about`. `save_app` (`cloud-app-kit-program.ts`) refuses, and saves nothing, when
+a file the data names is not in the app's folder as the run lists it (`PROGRAM_FILE_MISSING`, naming the file and
+`/company/apps/<name>/<path>` where it must be), when the version is kept with other files, by kind, name or content
+(`PROGRAM_VERSION_KEPT`), when it is an earlier kept version than the newest (`PROGRAM_VERSION_EARLIER`), when the data
+does not read (`APP_DATA_INVALID`: the field and what it must be; `versions` given by the agent is refused too), when a
+program app has no `program.json` (`APP_DATA_MISSING`), and in a run that has not read `app_guide program`
+(`APP_GUIDE_UNREAD`). It then writes `program.json` as the data plus `versions`: every kept version, newest first, each
+with its date (the save's, ISO) and its forms with each file's size and SHA-256 as the folder holds it (`writeProgram`,
+read back by `parseProgram`, which the web uses). The same newest version saved again with the same files keeps its
+date and takes new screens. Nothing under `versions/` is deleted or trimmed: every version stays in the list (no
+pattern in the code trims a kept list; `PROGRAM_FULL` refuses a save only when the list no longer fits the file's
+256 KiB). A save without screens says so in `look`.
+
+**The page** (`packages/web/src/app/views/program-page.ts`; `AppPanel` shows it in place of a frame for a manifest
+whose kit is `program`): the app's name as the one big line, then a green dot and "Version 0.1 · <day>" in the
+client's day words; one soft field in a neutral tint holding the program's own pictures (`screens.phone` in a plain
+phone outline in front, `screens.desktop` in a plain rounded window behind, either alone, or with none one large
+tile with the app's emblem, or its initial for the default emblem, and the file's name and size); one **Download**
+with a small line ("For this computer", "For this phone") when the member's system, read from the browser
+(`program-download.ts`), has a form; else "Download for <Kind>" for the first form in the fixed order Android, Linux,
+Windows, Mac, iPhone; "Install" on an Android phone with an Android form. Chips for the five kinds in that order: solid
+with a green dot when the version has that form, which downloads it, dashed and grey when not, which does nothing. A
+download is the member's own read of the file with Storage's path (`WebFileDownloads.offerPieces`), under the file's
+own name, its percent on the button while it runs, then "It's in your Downloads."; a file over Storage's 256 MiB says
+what Storage says. The "…" menu lists "Earlier versions", each as "<version> · <day>"; a pick shows that version (its
+forms, its Download) with a quiet way back to the newest. Everyone who reads the company folder sees it and may
+download; nothing else of the page writes.
+
+**An older web client** reads `kit = "program"` as a manifest with problems: the app is in no drawer (a posted app
+needs a manifest that reads), and its card or link opens the line "This app's app.toml has problems". Deploy the web
+first, then the runtime bundle that carries the kit.
+
+Not built in this step: a member's own upload, the on-screen trial, a link for friends, signing keys, public pages, a
+Remove of a version, a desktop program of Qorpera's own.
+
+**A member's own program** (step 2; Jonas, 18 November 2026: "then build step 2, add your own"). A member who may
+write the company folder makes a new program by giving one file, or several at once (one for each kind), or adds a
+version to a program a member made (a manifest without `owner`); never to an agent's program, whose versions are the
+agent's. The bytes go up through the object gateway's member program route (RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7),
+the only folder path that takes bytes from a browser: `apps/<name>/versions/<version>/<file>`, at most 256 MiB a
+file. Then the text, through the member commit route (C4 §5) in one change set: a new program's `app.toml` (kit
+`program`, its name, no `owner`, `posted = true`, the default emblem) and `program.json` (`writeProgram`; each form with
+the size and SHA-256 of what was staged, so the page's download check holds), with `expectedVersion` when the program
+has one, so two members adding at once conflict and the second reads the newer list, takes the next version, moves
+its files there in a change set of its own, and then writes `program.json` again. A member's versions are named `1`, `2` and so on (the next whole number not
+kept). A `program.json` past the commit route's 64 KiB text cannot take a member's version: the page says "This
+program holds as many versions as it can."
+
+**Who added it.** A kept version may carry `userId`, the member who added it from the web (`ProgramVersion.userId`,
+a lower-case UUID; any other value makes the file unread). `parseProgram` keeps it and `writeProgram` writes it;
+`save_app` keeps it on the versions it does not touch, and an agent's own version never has it (a hand-in naming
+`userId` is refused: it is not a field of a hand-in). A runtime bundle from before this keeps the versions but drops
+the field when an agent saves the program: the version then reads by its day, not "added by".
+
+**The web's part** (`packages/web/src/app/program-add.ts`, `views/program-add.ts`). The apps drawer's last entry, a
+dashed tile "New program", only for a member who may write (and only while the drawer itself shows), opens
+`#/c/<profileId>/new-program`: the big line "New program" in a muted tone, one dashed drop area ("Drop a program here",
+under it "or choose a file", a real file chooser; on a phone the area reads "Choose a program"), and the Co-Founder's
+figure (`agentFigure`, as the Sites page draws it) beside the chat's own bubble: "Made something yourself? Drop it here
+and everyone in <company> can get it." A file's kind comes from its name (`.apk` Android; `.ipa` iPhone; `.exe`, `.msi`
+Windows; `.dmg`, `.pkg` Mac; `.AppImage`, `.deb`, `.rpm`, `.flatpak`, `.tar.gz`, `.tar.xz`, `.tgz` Linux); any other
+asks "What is it for?" over the five kinds, and a click answers. Two files of one kind, more than five, an empty file,
+a name the format refuses and a file past 256 MiB are refused in one plain line. A new program's name is the file's
+without its ending, a trailing version and words such as setup or installer (`Lagerliste-1.0-setup.exe` gives
+Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3`, and claimed before any
+byte goes up: a change set of its own makes `apps/<slug>`, and a folder already there (an agent's app the page did not
+know of, another member's at the same moment) takes the next slug, so a member's program never lands in another app. The drawer has no rename
+for an app, so renaming is not in this step. While the file goes up the tile stands (initial, name, size) and fills with
+the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop; no spinner, and the Co-Founder's
+bubble reads "Putting it in place for everyone in <company>." Leaving the page or Stop ends it: what was placed is
+deleted again (a new program's claimed folder whole), once any finish already sent has answered, so nothing is
+listed. Once the last change set (`app.toml`, `program.json`, and a move before it) is sent, Stop goes and it is not
+cut short: it settles, and nothing it lists is deleted. **A lost answer** (the folder saved, the reply never came)
+changes nothing on screen it should not: every change set keeps its operation key for the life of the add, keyed by
+what it sends (the kept version's date is fixed once, so the same change set is the same request), and before Try
+again and before any delete, the change set whose answer was lost is sent again with the same key: the commit route
+replays what it did (C4 §5), and only what is known not saved is deleted, moved or written again. A file's upload keeps
+its key and path the same way, and the gateway answers `saved` for that very file. As a second check, a `program.json`
+counts as listed when it holds a version that was not there when the add began, by this member, with every file of
+the drop (by SHA-256, and only once every file is hashed). All files are hashed before any byte goes up. Dropping the
+very files of the newest version (by anyone) is refused there and then: "This is the version that is already here."
+The same files as an older version are listed again as a new version, like any other file. A refusal says too large (the
+size and the most), not allowed, the company paused, another of the member's programs still going up, someone adding
+at the same moment (Try again), that version already having this file, the company folder's own refusal in its words
+(no retry), a name the folder does not take, or the connection dropped (Try again, which continues where it stopped). After it, the
+program's own page opens (its tile, chips and Download), its drawer tile selected, the dot line "Version 1 · added by
+you" ("added by <first name>" for another member the client knows, the day otherwise). A program a member made (no
+`owner`) has "Add a version" above "Earlier versions" in its "…" menu, which opens the same drop area in the field with
+a way back; a file dropped onto its page does the same. An agent's program and a viewer get neither. There is no
+Remove: the client has no retire of an app on this branch (§3e's web part is not on master).
+
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
@@ -727,6 +1024,7 @@ await qorpera.list("reports")                 // a folder's entries: name, path,
 await qorpera.table("tasks")                  // a table's name, columns and rows
 await qorpera.todos()                         // each agent's todos: agent, title, status, updatedAt
 await qorpera.agents()                        // agents: name, role, working
+await qorpera.reading()                       // the company's reading of itself, its team and its standing (`reading`)
 await qorpera.questions()                     // the agents' open questions that point at this app
 await qorpera.query("shop/sales", params)     // a company database's question (`data`, RUNTIME-COMPANY-DATABASES.md §5)
 await qorpera.query("qorpera/money-now")      // the platform's own numbers of the company (`money`, `site`): below
@@ -779,6 +1077,23 @@ Rules:
 - **Never into the bridge:** the member's token, email, id or session, this app's own state, other members' settings,
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.
+- **The company's reading** (`reading` in `reads`; the `map` kit; Jonas, 15 November 2026: "Use a map kit"): a page
+  reads no file of `QorperaOS/`, so the web reads `QorperaOS/vision/reading.md` as the member (`parseCompanyStateFile`,
+  kind `reading`; its bytes only when its version changed; a file that does not read keeps the last reading that did)
+  and answers plain names, never a path, a handle, a user id or an agent id (`app/company-reading.ts`):
+  `{reading: null | {sentence, line, attention, things: [{key, name, shape, full, state, agents: [{name, figure,
+  working}], waits: [{name, me}]}], changes: [{agent: {name, figure} | null, what, line}], notes}, team: [{name,
+  figure, working, cofounder}], standing: null | {stopped, since, why, you, member, resetsAt}}`. An agent is found by its
+  folder name and drawn by `figure`, one of the twelve a kit's page carries (`figureFor`, as the rail draws it: the
+  agent's own, else its template's, else one by its id); one the reading names that the company does not have, or
+  whose role ended, stands at no thing, while a change line keeps an ended agent's name and figure: found by its own
+  `agent.md` (renamed or numbered alike), else by the platform's folder name for its name (`companyStateName`, `-2`). `waits` names the
+  members a thing waits for (`founders` is every owner), `me` the member looking. `standing` is
+  `qorpera_read_company_standing` (null from a backend without it, asked no more): `you` is true when the login that
+  holds the company is the member looking's, `member` names another member whose login it is, and both say nothing
+  (false, null) when nobody can be named, which the `map` kit then says in neutral words. The team is the agents at work, the Co-Founder
+  first. The standing is read every 30 s while a page that reads `reading` is shown and the tab is, and when the tab
+  comes back; a change of it reaches the page as a change notice (`onChange`), as a change of the folder does.
 - **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads; `todos` counts as
   ten, since it reads every agent's todos, and a request for a change, a note or a web page to open as five), a call's params at most
   4 KiB (a row's cells 16 KiB), an answer at most 1 MiB. `questions` reads the cloud at most once in four seconds. A
@@ -792,7 +1107,13 @@ Rules:
   `reads`, because nothing is read for it. The answer is the same whether or not what the link names is there, and the
   frame document drops it, so a page learns nothing from a link.
 - **No requests of its own**: the frame keeps `sandbox="allow-scripts"`, no origin, the frame document's policy
-  (`default-src 'none'`, no `connect-src`), and this app's `frame-src 'self'`. Some side channels remain (a
+  (`default-src 'none'`), and this app's `frame-src 'self'`. Since 17 November 2026 the policy names `blob:` and
+  `data:` and nothing else for what the page's own files need: `script-src 'unsafe-inline' 'unsafe-eval' blob:;
+  font-src data: blob:; connect-src data: blob:; worker-src blob:` (with `img-src` and `media-src data: blob:` as
+  before), and since 18 November 2026 `worker-src blob: data:`: a module worker starts only from `data:` in a frame
+  with no origin, and a `data:` worker keeps the frame's policy (proven in Chromium like the rest). A `blob:` address is one the frame made from bytes it holds, and a worker the page starts keeps the frame's
+  policy; `scripts/test-web-app-frame-browser.mjs` proves in Chromium that the page and its worker reach nothing on
+  the network by fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon, an element or a frame, and have no WebRTC. Some side channels remain (a
   `dns-prefetch`/`preconnect` link the page's script adds is acted on before anything can take it out): blocking them is
   best effort, not a boundary.
 
@@ -999,7 +1320,7 @@ An independent Opus review of this design and the frame ran on 5 November 2026 b
 | M1 threat model | corrected above; side channels are best effort |
 | M2 reads: allow list, path checks, never-in-bridge | platform folders refused, host path checks, the list above |
 | M3 runtime prefetch hints can't be removed | dropped the plan; said so |
-| M4 budgets survive Reload; request size; host-side limits | budget per app per tab; 4 KiB params; 64 files / 4 MiB enforced when the host reads |
+| M4 budgets survive Reload; request size; host-side limits | budget per app per tab; 4 KiB params. Since 17 November 2026 an app's files have no cap (§2): a read of the page's own file (`file`) takes no share of the minute's budget, the host reads 8 files at once at most, and a refused one counts toward the frame's 300 refusals |
 | L1 path resolution, fixed data: types | URL-style resolution inside the app folder, escapes refused, type by extension |
 | L2 freeze `qorpera` | frozen, with the frame document's own copies of the port methods |
 
@@ -1131,6 +1452,34 @@ thread's "Quoted from an email" title).
     `save_app`'s fields a line each and its rule that a kit's file needs its guide read, and a model of no input
     refused. One migration (20260930762000: the tool's name in the observations' list); no node change and no change
     to the web.
+12. Retired interfaces (§3e, 15 November 2026): the file's format (`cloud-client/app-retired.ts`) and the runtime's
+    refusals and list label (`cloud-folder-app-retired.ts`). No migration, no tool name, no node change. The web's part
+    (the menu item, hiding, the retired page and the way back) is a change of its own, released after the runtime.
+
+13. No cap on an app's files (17 November 2026; Jonas: "also uncap the file-sizes"): every kind, count and size bound
+    on an app's files is gone from the format (`cloud-client/interface-apps.ts`), the web's reader, `save_app` (it
+    lists the app's whole folder and releases what the save drew on) and `make_picture`; the web puts the page
+    together with the files of its first paint as blobs and reads every other file when the page uses it (§2), also
+    for a page opened by itself; the frame document's policy names `blob:` and `data:` for fonts, fetch, workers,
+    module scripts and wasm; `company_write` and `company_edit` take as much text as one call carries (960 KiB,
+    `MAX_TOOL_ARGUMENT_BYTES`, under the native session's 1 MiB message). No migration and no node change; the web goes
+    live when it merges, the runtime with the next bundle.
+
+14. Module scripts import the page's own files (18 November 2026; the founder: "Yes, fix it"): relative, mapped and
+    literal dynamic imports and cycles are resolved by the web while it puts a page together, a module worker starts
+    from its own file, and the frame's `worker-src` adds `data:` (§2). Web only: live when it merges.
+
+15. Programs (§3f, 18 November 2026): the kit `program` and its data (`cloud-client/app-program.ts`), `save_app`'s
+    checks and kept list (`cloud-app-kit-program.ts`), `app_guide program`, the company context's sentence and the
+    platform update `program-kit`; the web's native page with Download and earlier versions. No migration and no node
+    change. The web goes first (an older web hides a program app), then the runtime bundle.
+
+16. A member's own program (§3f, 18 November 2026): the object gateway's member program route and its Edge Function
+    allow-list (RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §7), cloud-client's `prepareCloudMemberFolderUpload`,
+    `uploadFile` and `CloudSha256`, `ProgramVersion.userId`; the web's New program page, its drawer entry and Add a
+    version. No migration, no new host call, no change to the folder service. Order: the object gateway on node 1 and
+    the member company gateway function (either first: each refuses the route without the other), then the web; the
+    runtime bundle that keeps `userId` through an agent's save may come at any time after.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

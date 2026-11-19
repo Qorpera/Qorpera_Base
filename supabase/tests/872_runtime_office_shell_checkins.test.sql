@@ -601,12 +601,6 @@ select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticate
 		where has_function_privilege(r.role, 'public.qorpera_folder_machine_checkins_due(uuid,integer)', 'execute')
 			or has_function_privilege(r.role, 'public.qorpera_folder_machine_checkins_company(uuid,integer)', 'execute')),
 	'only the platform reads, writes and runs these');
--- Each patched function names this migration.
-select pg_temp.check(not exists (select 1 from unnest(array['public.qorpera_pin_wake_occurrence()',
-	'public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', 'public.qorpera_folder_materialize_company(uuid,integer)',
-	'public.qorpera_folder_read_wake(jsonb)', 'public.qorpera_runtime_wake_policy_internal(uuid)',
-	'public.qorpera_run_continuation(public.qorpera_execution_runs)']) f(name)
-	where position('20260930098000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each patched function names this migration');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 

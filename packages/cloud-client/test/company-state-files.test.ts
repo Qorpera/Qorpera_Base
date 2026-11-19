@@ -1476,9 +1476,41 @@ describe("connections, rules, todos and worker files", () => {
 						head(`species: coding\nharness: codex\nrepository: "github.com/a/b"\nbase_branch: "${branch}"`),
 					),
 				).toEqual([expect.objectContaining({ key: "base_branch" })]);
-			expect(refused(PATH, head("species: in-house\nharness: codex"))).toEqual([
-				expect.objectContaining({ key: "harness", message: "harness belongs to a coding session's brief" }),
+			expect(refused(PATH, head("species: in-house\nharness: cursor"))).toEqual([
+				expect.objectContaining({
+					key: "harness",
+					message: 'harness must be one of: claude-code, codex (found "cursor")',
+				}),
 			]);
+			expect(refused(PATH, head('species: in-house\nrepository: "github.com/a/b"'))).toEqual([
+				expect.objectContaining({ key: "repository", message: "repository belongs to a coding session's brief" }),
+			]);
+		});
+
+		it("names Claude Code on a plain brief, and only claude-code (20260930770000)", () => {
+			const claude: Omit<WorkerBriefFile, "kind"> = { ...brief, harness: "claude-code" };
+			const text = writeWorkerBriefFile(claude);
+			expect(text).toContain("species: in-house\nharness: claude-code\n");
+			// The parse is the one the database checks: the harness key only when it is named.
+			expect(ok(PATH, text)).toEqual({ kind: "worker-brief", ...claude });
+			expect(ok(PATH, appendWorkerFollowUp(PATH, text, "Use the new logo.", "2026-10-03T09:00:00Z"))).toMatchObject({
+				species: "in-house",
+				harness: "claude-code",
+				followUps: 1,
+			});
+			expect(Object.keys(ok(PATH, writeWorkerBriefFile(brief)) as object)).not.toContain("harness");
+		});
+
+		it("names Codex on a plain brief when a member asked for it, and keeps it through a follow-up", () => {
+			const codex: Omit<WorkerBriefFile, "kind"> = { ...brief, harness: "codex" };
+			const text = writeWorkerBriefFile(codex);
+			expect(text).toContain("species: in-house\nharness: codex\n");
+			expect(ok(PATH, text)).toEqual({ kind: "worker-brief", ...codex });
+			expect(ok(PATH, appendWorkerFollowUp(PATH, text, "Use the new logo.", "2026-10-03T09:00:00Z"))).toMatchObject({
+				species: "in-house",
+				harness: "codex",
+				followUps: 1,
+			});
 		});
 
 		it("refuses a brief's missing, misplaced and unbalanced sections", () => {

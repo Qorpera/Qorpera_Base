@@ -5,6 +5,7 @@ import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { JsonValue } from "@qorpera/contracts";
 import { APP_GUIDES, appGuide } from "@qorpera/runtime/cloud-app-guides";
 import { KIT_FIGURES } from "@qorpera/runtime/cloud-app-kit-figures.generated";
+import { OBJECT_THREE_JS, OBJECT_THREE_LICENSE } from "@qorpera/runtime/cloud-app-kit-three.generated";
 import {
 	DATA_KITS,
 	KIT_DATA_MAX_BYTES,
@@ -12,10 +13,15 @@ import {
 	KIT_FALLBACK_STYLE,
 	KIT_GUIDE,
 	KIT_LIVE_QUESTIONS,
+	KIT_THREE,
+	KIT_THREE_LICENSE,
 	kitBindings,
 	kitDataFile,
 	kitFigures,
+	kitHeavyPictures,
+	kitLibrary,
 	kitMedia,
+	kitModels,
 	kitNotes,
 	kitPage,
 	parseKitData,
@@ -94,8 +100,19 @@ const BOARD = {
 };
 
 it("names the data kits as the kits an app can be made from", () => {
-	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS]);
-	expect([...DATA_KITS]).toEqual(["model", "board", "path", "object", "curve", "stack", "shelf"]);
+	expect([...APP_KITS]).toEqual(["explainer", ...DATA_KITS, "program"]);
+	expect([...DATA_KITS]).toEqual([
+		"model",
+		"board",
+		"path",
+		"object",
+		"curve",
+		"stack",
+		"shelf",
+		"map",
+		"ring",
+		"flow",
+	]);
 	expect(DATA_KITS.map(kitDataFile)).toEqual([
 		"model.json",
 		"board.json",
@@ -104,6 +121,9 @@ it("names the data kits as the kits an app can be made from", () => {
 		"curve.json",
 		"stack.json",
 		"shelf.json",
+		"map.json",
+		"ring.json",
+		"flow.json",
 	]);
 });
 
@@ -124,8 +144,8 @@ it("holds each kit's engine and guide exactly as its source files have them", ()
 		// A guide is written for an agent, and small enough that the four sit in one schema with room to spare.
 		expect(Buffer.byteLength(KIT_GUIDE[kit]), kit).toBeLessThan(4608);
 		// A kit's words name the button of a note to the app's owner, which save_app's kits paragraph explains once. A
-		// curve has no thing a member opens, so no note.
-		if (kit !== "curve") expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
+		// curve, a ring and a flow have no thing a member opens, so no note.
+		if (!["curve", "ring", "flow"].includes(kit)) expect(KIT_GUIDE[kit], kit).toMatch(/`tell`, `told`\./);
 		// Each guide's example is data its own kit reads.
 		const example = /```json\n([\s\S]*?)\n```/.exec(KIT_GUIDE[kit])?.[1] ?? "";
 		expect(parseKitData(kit, example), kit).toHaveProperty("data");
@@ -138,13 +158,13 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 	for (const said of [
 		"lets members see and handle one thing of the company (an object to turn, a model to try, an app to use, a video to watch)",
-		"It is never a document or a report: text to read stays a file in the folder.",
-		"kit: the form Qorpera draws for you, of explainer, model, board, path, object",
-		"Nearly every app is made from a kit: you write the kit's one file among files (its data, <kit>.json; an explainer's scenes.js) and save_app writes the page and the engine",
-		"kit says what each kit draws; app_guide says what its file holds: read the kit's guide before you write the file",
+		"Text to read stays a file.",
+		"Kits draw nearly every app: you write the kit's one file among files (<kit>.json, such as model.json; an explainer's scenes.js), and save_app writes index.html and engine.js, which you never write or edit.",
+		"A kit's page shows the pictures its data names that are in the folder when you save: write them first, or save the data again after.",
+		"What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved.",
 		// A page written by hand follows the kits.
-		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
-		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
+		"labels and numbers, not sentences, boxes of text, a date or a list of what you did",
+		"what is not known yet drawn as open, such as a dashed outline or a question mark, not written about.",
 	])
 		expect(tool.description).toContain(said);
 	const kit = (
@@ -152,7 +172,21 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 			properties: { manifest: { properties: { kit: { enum: unknown[]; description: string } } } };
 		}
 	).properties.manifest.properties.kit;
-	expect(kit.enum).toEqual(["explainer", "model", "board", "path", "object", "curve", "stack", "shelf", null]);
+	expect(kit.enum).toEqual([
+		"explainer",
+		"model",
+		"board",
+		"path",
+		"object",
+		"curve",
+		"stack",
+		"shelf",
+		"map",
+		"ring",
+		"flow",
+		"program",
+		null,
+	]);
 	for (const said of [
 		"model: how something works in numbers, such as a business model, a price, costs or capacity.",
 		"board: real things as pictures, such as a market's products on one scale, directions to choose between, or a wall of references.",
@@ -161,6 +195,9 @@ it("tells an agent on kit what each kit draws, and in the kit's guide what its o
 		"curve: one value over time, such as money in the bank or orders a day, the past and what is expected.",
 		"stack: things that want a member's yes, one card each, such as bills to pay or ads to run.",
 		"shelf: the company's own things side by side, each with one level, such as products and their stock.",
+		"map: the company or your own area as its things, which fill as they are built, with the agents at them and layers to open, such as the company's map or a product's parts.",
+		"ring: a year, month or week with its dates, such as deadlines and seasons.",
+		"flow: money or people from where they come to where they go, such as a month's money.",
 	])
 		expect(kit.description).toContain(said);
 	// What the data kits share stands at the head of each one's guide, which app_guide answers with: on the
@@ -914,12 +951,143 @@ it("reads a kit's data, or says in words why it does not read", () => {
 	expect(problem("board", '{"mode": "scale"}')).toBe("board.json has no items: the board kit draws nothing without");
 	expect(problem("path", "{}")).toBe("path.json has no steps and no lanes: the path kit draws nothing without");
 	expect(problem("object", "{}")).toBe(
-		"object.json has no turntable, picture or variants: the object kit has no thing to show",
+		"object.json has no model, turntable, picture or variants: the object kit has no thing to show",
 	);
 	expect(problem("object", '{"picture": "pictures/box.webp"}')).toBeNull();
 	expect(problem("model", JSON.stringify({ ...MODEL, pad: "x".repeat(KIT_DATA_MAX_BYTES) }))).toBe(
 		"model.json is larger than 256 KiB: it holds the facts and the names of the pictures, never the pictures or the long text",
 	);
+});
+
+const OBJECT = {
+	lang: "en",
+	title: "The box",
+	model: "model/box.glb",
+	turntable: { picture: "pictures/box.webp", frames: 4, columns: 4, frameWidth: 560, frameHeight: 560 },
+	parts: [{ id: "lid", name: "Lid", state: "known", node: "Lid" }],
+};
+
+it("holds the object kit's 3D library and its licence exactly as the vendored files have them", () => {
+	expect(OBJECT_THREE_JS).toBe(kitFile("object", "vendor/three.js"));
+	expect(OBJECT_THREE_LICENSE).toBe(kitFile("object", "vendor/three.LICENSE.txt"));
+	expect(OBJECT_THREE_LICENSE).toMatch(/^The MIT License\n\nCopyright © 2010-2026 three\.js authors/);
+	expect(OBJECT_THREE_JS).toContain("@license");
+	expect(OBJECT_THREE_JS).toContain('"186"');
+	expect(OBJECT_THREE_JS.startsWith("var QORPERA_THREE=")).toBe(true);
+	expect(() => new Script(OBJECT_THREE_JS)).not.toThrow();
+	expect(Buffer.byteLength(OBJECT_THREE_JS)).toBeLessThan(700 * 1024);
+});
+
+it("reads an object's model, and refuses one that is not a .glb in the app's folder", () => {
+	const problem = (text: string) => {
+		const parsed = parseKitData("object", text);
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	const notGlb = `object.json has a model that is not the path of a .glb file in the app's folder, such as "model/box.glb"`;
+	expect(problem('{"model": "box.glb"}')).toBeNull();
+	expect(problem(JSON.stringify(OBJECT))).toBeNull();
+	for (const model of ["box.gltf", "https://example.com/box.glb", "../box.glb", "/company/apps/box/box.glb", 3])
+		expect(problem(JSON.stringify({ model })), String(model)).toBe(notGlb);
+	expect(problem('{"picture": "a.webp", "variants": [{"id": "b", "model": "b.obj"}]}')).toBe(
+		`object.json has a model in variant 1 that is not the path of a .glb file in the app's folder, such as "model/box.glb"`,
+	);
+	expect(problem('{"model": "box.glb", "environment": "light.exr"}')).toBe(
+		"object.json has an environment that is not the path of an .hdr file in the app's folder",
+	);
+	expect(
+		problem('{"model": "box.glb", "environment": "light/studio.hdr", "view": {"yaw": 40, "pitch": 10}}'),
+	).toBeNull();
+	for (const view of ['{"yaw": "left"}', "[30, 10]", "30", "null"])
+		expect(problem(`{"model": "box.glb", "view": ${view}}`), view).toBe(
+			'object.json has a view that is not {"yaw", "pitch"} in degrees',
+		);
+	expect(
+		kitModels("object", {
+			model: "a.glb",
+			variants: [{ model: "b.glb" }, { model: "a.glb" }, { picture: "c.webp" }],
+		}),
+	).toEqual(["a.glb", "b.glb"]);
+	expect(kitModels("object", { picture: "c.webp" })).toEqual([]);
+	expect(kitModels("board", { model: "a.glb" })).toEqual([]);
+	expect(kitLibrary("object", { picture: "c.webp" })).toEqual([]);
+	expect(kitLibrary("object", OBJECT)).toEqual([
+		{ path: KIT_THREE, text: OBJECT_THREE_JS },
+		{ path: KIT_THREE_LICENSE, text: OBJECT_THREE_LICENSE },
+	]);
+	expect(kitMedia(OBJECT)).toEqual(["pictures/box.webp"]);
+});
+
+it("tells an object's maker which model or light the folder lacks, and of a model with no picture beside it", () => {
+	expect(kitNotes("object", OBJECT, () => true)).toEqual([]);
+	expect(
+		kitNotes("object", { ...OBJECT, environment: "light/studio.hdr" }, (path) => path.startsWith("pictures/")),
+	).toEqual([
+		"model/box.glb, light/studio.hdr are named in object.json but not in the app's folder: the page shows the picture or turntable in their place, or a line that the model could not be shown. Write them into the app's folder from a machine.",
+	]);
+	expect(kitNotes("object", { model: "box.glb", node: "x".repeat(120) }, () => true)).toEqual([
+		"1 thing has a model and no turntable or picture: give one beside the model, which the page shows while the model arrives and where a browser cannot draw 3D.",
+	]);
+	expect(kitNotes("object", { picture: "pictures/box.webp" }, () => true)).toEqual([]);
+});
+
+it("writes the 3D library into an object's app only when its data names a model, and never as the agent's", async () => {
+	const f = await fixture();
+	const { model: _model, ...still } = OBJECT;
+	const list = (made: { files: { path: string }[] }) => made.files.map((file) => file.path).sort();
+	const made = read(
+		await f.call(
+			"save_app",
+			save("kasse", "make-1", { title: "The box", kit: "object" }, [
+				{ path: "object.json", text: JSON.stringify(still) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect([...f.files.keys()].filter((path) => path.startsWith("apps/kasse/")).sort()).toEqual([
+		"apps/kasse/app.toml",
+		"apps/kasse/engine.js",
+		"apps/kasse/index.html",
+		"apps/kasse/object.json",
+	]);
+	expect(f.text("apps/kasse/index.html")).toBe(kitPage("kasse", "object", "The box", still, () => false));
+	expect(f.text("apps/kasse/index.html")).not.toContain("three");
+	const live = read(
+		await f.call(
+			"save_app",
+			save("kasse", "change-1", null, [{ path: "object.json", text: JSON.stringify(OBJECT) }]),
+		),
+	);
+	expect(list(live)).toEqual([
+		"apps/kasse/index.html",
+		"apps/kasse/object.json",
+		"apps/kasse/three.js",
+		"apps/kasse/three.license.txt",
+	]);
+	expect(f.text("apps/kasse/three.js")).toBe(OBJECT_THREE_JS);
+	expect(f.text("apps/kasse/three.license.txt")).toBe(OBJECT_THREE_LICENSE);
+	expect(f.text("apps/kasse/index.html")).toBe(kitPage("kasse", "object", "The box", OBJECT, () => false));
+	const again = read(
+		await f.call(
+			"save_app",
+			save("kasse", "change-2", null, [{ path: "object.json", text: JSON.stringify({ ...OBJECT, line: "A box" }) }]),
+		),
+	);
+	expect(list(again)).toEqual(["apps/kasse/index.html", "apps/kasse/object.json"]);
+	const fresh = read(
+		await f.call(
+			"save_app",
+			save("skab", "make-2", { title: "Skab", kit: "object" }, [
+				{ path: "object.json", text: JSON.stringify(OBJECT) },
+			]),
+		),
+	);
+	expect(fresh.state).toBe("applied");
+	expect(f.text("apps/skab/three.js")).toBe(OBJECT_THREE_JS);
+	for (const path of ["three.js", "three.license.txt"])
+		await refuses(
+			f.call("save_app", save("kasse", `own-${path}`, null, [{ path, text: "x" }])),
+			`APP_KIT_FILE: ${path} is the object kit's own file, which save_app writes; leave it out and give object.json`,
+		);
 });
 
 it("tells the maker which pictures the folder lacks and which texts the page cuts", () => {
@@ -1101,6 +1269,69 @@ it("names in the page the pictures the folder holds, and says which it lacks", a
 	const page = f.text("apps/marked/index.html");
 	expect(page).toContain('data-kit-src="pictures/halo.webp"');
 	expect(page).not.toContain('data-kit-src="pictures/arc-one.webp"');
+});
+
+it("tells the maker of an app to save its pictures as WebP, in every data kit's guide and the hand-written page's", () => {
+	for (const said of [
+		"Save a photo, a render or a screenshot for an app as .webp, not .png: on a machine, cwebp -q 90 shot.png -o shot.webp, or Pillow's save with quality=90.",
+		"Every member downloads each picture the app shows, and a 1600 px render of about 1 MB as a PNG is about a tenth of that as WebP.",
+		"Keep .png for a small flat graphic that must stay exact to the pixel, and .svg for what you draw.",
+	])
+		for (const each of [...DATA_KITS, "style"] as const) expect(appGuide(each), each).toContain(said);
+	for (const each of ["look", "reads", "writes", "icons", "explainer", "program"] as const)
+		expect(appGuide(each), each).not.toContain(".webp, not .png");
+});
+
+it("names the heavy PNGs a kit's data shows, by what the folder holds of them", () => {
+	const KIB = 1024;
+	const sizes: Record<string, number> = {
+		"pictures/a.png": 2103 * KIB,
+		"pictures/b.PNG": 1126 * KIB,
+		"pictures/small.png": 400 * KIB,
+		"pictures/c.webp": 900 * KIB,
+		"film/d.mp4": 3000 * KIB,
+	};
+	const bytesOf = (path: string) => sizes[path];
+	const board = (...pictures: string[]) => ({ items: pictures.map((picture, at) => ({ id: `i${at}`, picture })) });
+	expect(kitHeavyPictures("board", board("pictures/small.png", "pictures/c.webp", "film/d.mp4"), bytesOf)).toEqual([]);
+	expect(kitHeavyPictures("board", board("pictures/gone.png"), bytesOf)).toEqual([]);
+	expect(kitHeavyPictures("board", board("pictures/a.png", "pictures/small.png"), bytesOf)).toEqual([
+		"1 picture is a PNG of 2.1 MB (pictures/a.png): every member downloads it when the app shows it. As .webp it is about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in board.json and save again.",
+	]);
+	expect(kitHeavyPictures("shelf", board("pictures/a.png", "pictures/b.PNG", "pictures/a.png"), bytesOf)).toEqual([
+		"2 pictures are PNGs of 3.2 MB in all (pictures/a.png, pictures/b.PNG): every member downloads them when the app shows them. As .webp they are about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in shelf.json and save again.",
+	]);
+	const many = ["p/1.png", "p/2.png", "p/3.png", "p/4.png"];
+	expect(kitHeavyPictures("board", board(...many), () => 500 * KIB)[0]).toContain(
+		"4 pictures are PNGs of 2.0 MB in all (p/1.png, p/2.png, p/3.png, …):",
+	);
+});
+
+it("says on a save which pictures in the app's folder are heavy PNGs", async () => {
+	const f = await fixture({
+		folders: ["apps", "apps/marked", "apps/marked/pictures", "apps/marked/film"],
+		files: {
+			"apps/marked/pictures/arc-one.webp": "RIFF",
+			"apps/marked/pictures/halo.png": "x".repeat(600 * 1024),
+			"apps/marked/film/halo.mp4": "x".repeat(900 * 1024),
+		},
+	});
+	const data = {
+		...BOARD,
+		items: BOARD.items.map((item) => ({ ...item, picture: item.picture.replace("halo.webp", "halo.png") })),
+	};
+	const made = read(
+		await f.call(
+			"save_app",
+			save("marked", "make-1", { title: "Marked", kit: "board" }, [
+				{ path: "board.json", text: JSON.stringify(data) },
+			]),
+		),
+	);
+	expect(made.state).toBe("applied");
+	expect(made.look).toEqual([
+		"1 picture is a PNG of 0.6 MB (pictures/halo.png): every member downloads it when the app shows it. As .webp it is about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in board.json and save again.",
+	]);
 });
 
 it("finds the questions a kit's data names exactly as the page's script does", async () => {
@@ -1431,4 +1662,366 @@ it("gives a stack's app the open questions and their answers, which its buttons 
 	);
 	expect(shelf.state).toBe("applied");
 	expect(manifestOf(f, "stock")).toMatchObject({ reads: [], writes: [] });
+});
+
+/* The map kit (Jonas, 15 November 2026, on the company's page: "it should not be the platform that draws it, rather an
+ * agent should maintain it", and asked how: "Use a map kit"): the company, or an owner's area, as its things with
+ * layers to dive into; the company's own map takes its first layer live from the company's reading. Its engine runs in
+ * a browser (packages/web/test/app-kit-engines.test.ts); here are its data, its page and save_app. */
+
+const part = (id: string, more: Record<string, JsonValue> = {}) => ({ id, name: id, shape: "box", full: 50, ...more });
+const OWN_MAP = {
+	lang: "en",
+	top: {
+		title: "The repair tracker",
+		attention: "app",
+		things: [part("app"), part("price", { waits: true }), part("costs", { opens: "app:business-model" })],
+	},
+	layers: { app: { things: [part("jobs"), part("login", { state: "unknown" })] } },
+};
+
+it("reads a map's data, or says in words why it does not read", () => {
+	const problem = (value: unknown) => {
+		const parsed = parseKitData("map", JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem(OWN_MAP)).toBeNull();
+	expect(problem({ top: "reading" })).toBeNull();
+	expect(problem({ top: "reading", layers: { tracker: { things: [part("jobs")] } } })).toBeNull();
+	expect(problem({})).toBe("map.json has no top: the map kit draws nothing without");
+	expect(problem({ top: "company" })).toBe(
+		'map.json needs top: "reading" for the company\'s reading, or an object with its things',
+	);
+	expect(problem({ top: { things: [part("a"), part("b")] } })).toBe(
+		"map.json needs 3 to 7 things in top: the map kit draws one picture of them",
+	);
+	expect(problem({ ...OWN_MAP, layers: [] })).toBe(
+		"map.json has layers that are no object: each key is a thing's id, its value what is inside it",
+	);
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [] } } })).toBe(
+		"map.json has a layer app without 1 to 12 things",
+	);
+	// Every thing is one the page draws: an object with an id and a name, its id once in its list; a layer's key is an
+	// id (review r1 of #1847, F2).
+	const top = (things: unknown[]) => ({ ...OWN_MAP, top: { ...OWN_MAP.top, things } });
+	expect(problem(top([part("a"), part("b"), "c"]))).toBe("map.json has a thing in top that is no object (number 3)");
+	expect(problem(top([part("a"), part("b"), part("repair_app")]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { shape: "box", name: "No id" }]))).toBe(
+		"map.json has a thing in top whose id is not letters, digits and - (number 3): the page cannot draw it",
+	);
+	expect(problem(top([part("a"), part("b"), { id: "c", name: " " }]))).toBe(
+		"map.json has a thing c in top with no name",
+	);
+	expect(problem(top([part("a"), part("b"), part("a")]))).toBe("map.json has the id a twice in top");
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [part("x"), part("x")] } } })).toBe(
+		"map.json has the id x twice in the layer app",
+	);
+	expect(problem({ ...OWN_MAP, layers: { app: { things: [{ id: "x" }] } } })).toBe(
+		"map.json has a thing x in the layer app with no name",
+	);
+	expect(problem({ ...OWN_MAP, layers: { repair_app: { things: [part("x")] } } })).toBe(
+		"map.json has a layer repair_app whose key is not a thing's id (letters, digits and -)",
+	);
+	// Four layers deep at most: the first and three under it.
+	const chain = (depth: number) =>
+		Object.fromEntries(
+			Array.from({ length: depth }, (_, k) => [k ? `l${k}` : "app", { things: [part(`l${k + 1}`)] }]),
+		);
+	expect(problem({ ...OWN_MAP, layers: chain(3) })).toBeNull();
+	expect(problem({ ...OWN_MAP, layers: chain(4) })).toBe("map.json goes 5 layers deep: the map kit opens 4 at most");
+	expect(problem({ top: "reading", layers: chain(4) })).toBe(
+		"map.json goes 5 layers deep: the map kit opens 4 at most",
+	);
+	// 80 things in all.
+	const many = Object.fromEntries(
+		Array.from({ length: 7 }, (_, k) => [
+			`g${k}`,
+			{ things: Array.from({ length: 12 }, (_, j) => part(`g${k}-${j}`)) },
+		]),
+	);
+	expect(problem({ ...OWN_MAP, layers: many })).toBe("map.json holds 87 things: the map kit draws 80 at most");
+});
+
+it("carries every agent's figure in a map's page, since who stands where is found as it opens", () => {
+	const page = kitPage("map", "map", "Map", OWN_MAP, () => true);
+	for (const [id, url] of Object.entries(KIT_FIGURES))
+		expect(page).toContain(`<img data-kit-src="figure:${id}" src="${url}" alt="">`);
+	expect(kitFigures(OWN_MAP)).toEqual([]);
+	expect(KIT_ENGINE_JS.map).toBe(kitFile("map", "engine.js"));
+});
+
+it("gives a map's app the company's reading where it draws the reading or an agent's figure", async () => {
+	const LOOK =
+		"reading was added to the app's reads: a map's page reads the company's reading of itself and its agents' figures live.";
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	const company = read(
+		await f.call(
+			"save_app",
+			save("company", "make-1", { title: "Company", kit: "map", reads: ["agents"] }, [
+				{ path: "map.json", text: JSON.stringify({ top: "reading" }) },
+			]),
+		),
+	);
+	expect(company.state).toBe("applied");
+	expect(manifestOf(f, "company")?.reads).toEqual(["agents", "reading"]);
+	expect(company.look).toContain(LOOK);
+	expect(f.text("apps/company/engine.js")).toBe(KIT_ENGINE_JS.map);
+	// An owner's map that names an agent in a layer reads it too; one that names none asks for nothing.
+	const named = { ...OWN_MAP, layers: { app: { things: [part("jobs", { agents: ["Product"] })] } } };
+	const own = read(
+		await f.call(
+			"save_app",
+			save("tracker", "make-2", { title: "Tracker", kit: "map" }, [
+				{ path: "map.json", text: JSON.stringify(named) },
+			]),
+		),
+	);
+	expect(manifestOf(f, "tracker")?.reads).toEqual(["reading"]);
+	expect(own.look).toContain(LOOK);
+	const plain = read(
+		await f.call(
+			"save_app",
+			save("plain", "make-3", { title: "Plain", kit: "map" }, [{ path: "map.json", text: JSON.stringify(OWN_MAP) }]),
+		),
+	);
+	expect(manifestOf(f, "plain")?.reads).toEqual([]);
+	expect(plain.look ?? []).not.toContain(LOOK);
+	// Saved again with the reading, nothing more is added and the manifest is not written.
+	const again = read(
+		await f.call(
+			"save_app",
+			save("company", "change-1", null, [
+				{
+					path: "map.json",
+					text: JSON.stringify({ top: "reading", layers: { tracker: { things: [part("jobs")] } } }),
+				},
+			]),
+		),
+	);
+	expect(again.files.map((file: { path: string }) => file.path)).not.toContain("apps/company/app.toml");
+	expect(again.look ?? []).not.toContain(LOOK);
+});
+
+/* The ring and the flow (company views plan step 5): a year, a month or a week as a ring with marks and wedges, and money
+ * or people as bands from where they come to where they go. Their engines run in a browser
+ * (packages/web/test/app-kit-engines.test.ts); here are their data's bounds, what a save tells their maker, and save_app. */
+
+const RING = {
+	lang: "da",
+	title: "Lysvækkers år",
+	span: "year",
+	start: "2026-01-01",
+	marks: [
+		{ name: "Moms", at: "2026-12-01", value: { query: "bogholderi/moms", column: "beloeb" } },
+		{ name: "Lancering", at: "2026-10-08" },
+	],
+	wedges: [{ name: "Julesæson", from: "2026-11-15", to: "2026-12-24" }],
+};
+const FLOW = {
+	lang: "da",
+	title: "Pengene i november",
+	unit: "kr",
+	middle: "Banken",
+	from: [
+		{ id: "shop", name: "Webshop", value: { query: "bank/penge_ind", params: { slags: "salg" }, column: "beloeb" } },
+		{ id: "retail", name: "Forhandlere", value: 64200 },
+	],
+	to: [
+		{ id: "parts", name: "Dele", value: 71800 },
+		{ id: "kept", name: "Beholdt", value: 26700, kept: true },
+	],
+};
+
+it("reads a ring's data, or says in words why it does not read", () => {
+	const problem = (value: unknown) => {
+		const parsed = parseKitData("ring", JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem(RING)).toBeNull();
+	// A ring of wedges alone, and a wedge of one day (no to), read.
+	expect(problem({ span: "week", wedges: [{ name: "Fri", from: "2026-11-20" }] })).toBeNull();
+	expect(problem({ title: "Year" })).toBe(
+		"ring.json has no mark and no wedge: the ring kit has nothing to put on its ring",
+	);
+	expect(problem({ ...RING, span: "quarter" })).toBe(
+		'ring.json has a span the ring kit does not draw: "year", "month" or "week"',
+	);
+	expect(problem({ ...RING, start: "2026-13-01" })).toBe("ring.json has a start that is not a date (YYYY-MM-DD)");
+	expect(problem({ ...RING, now: "15 Nov" })).toBe("ring.json has a now that is not a date (YYYY-MM-DD)");
+	expect(problem({ ...RING, marks: {} })).toBe("ring.json has marks that are no list");
+	expect(problem({ ...RING, marks: [{ name: "Moms", at: "2026-02-30" }] })).toBe(
+		"ring.json has a mark Moms whose at is not a date (YYYY-MM-DD)",
+	);
+	expect(problem({ ...RING, marks: [{ at: "2026-03-01" }] })).toBe("ring.json has a mark with no name (number 1)");
+	expect(problem({ ...RING, wedges: [{ name: "Jul", from: "2026-12-01", to: "jul" }] })).toBe(
+		"ring.json has a wedge Jul whose to is not a date (YYYY-MM-DD)",
+	);
+	// The kit's bounds: 12 marks and 8 wedges, which save_app holds to, so what it takes is what the page draws.
+	const marks = (count: number) =>
+		Array.from({ length: count }, (_, at) => ({
+			name: "Løn",
+			at: `2026-${String((at % 12) + 1).padStart(2, "0")}-25`,
+		}));
+	const wedges = (count: number) =>
+		Array.from({ length: count }, (_, at) => ({ name: "Uge", from: `2026-0${(at % 9) + 1}-01` }));
+	expect(problem({ marks: marks(12), wedges: wedges(8) })).toBeNull();
+	expect(problem({ marks: marks(13) })).toBe("ring.json has 13 marks: the ring kit draws 12 at most");
+	expect(problem({ marks: marks(1), wedges: wedges(9) })).toBe("ring.json has 9 wedges: the ring kit draws 8 at most");
+});
+
+it("reads a flow's data, or says in words why it does not read", () => {
+	const problem = (value: unknown) => {
+		const parsed = parseKitData("flow", JSON.stringify(value));
+		return "problem" in parsed ? parsed.problem : null;
+	};
+	expect(problem(FLOW)).toBeNull();
+	expect(problem({ from: FLOW.from })).toBe("flow.json has no to: the flow kit draws nothing without");
+	expect(problem({ ...FLOW, to: [] })).toBe("flow.json has no end in to: the flow kit draws a band from each");
+	expect(problem({ ...FLOW, from: [{ id: "shop", value: 1 }] })).toBe(
+		"flow.json has an end in from with no name (number 1)",
+	);
+	expect(problem({ ...FLOW, from: [{ id: "web shop", name: "Webshop" }] })).toBe(
+		"flow.json has an end Webshop in from whose id is not letters, digits and -",
+	);
+	expect(problem({ ...FLOW, to: [...FLOW.to, { id: "parts", name: "Parts again" }] })).toBe(
+		"flow.json has parts twice in to",
+	);
+	// More ends than the page draws read: the smallest join one band, Other. Past 24 a side, not.
+	const ends = (count: number) =>
+		Array.from({ length: count }, (_, at) => ({ id: `e${at}`, name: `End ${at}`, value: at }));
+	expect(problem({ ...FLOW, from: ends(24) })).toBeNull();
+	expect(problem({ ...FLOW, from: ends(25) })).toBe("flow.json has 25 ends in from: the flow kit takes 24 at most");
+	// Bands straight through join ends it has, by their ids, 24 at most.
+	const links = [{ from: "shop", to: "parts", value: 3 }];
+	expect(problem({ ...FLOW, links })).toBeNull();
+	expect(problem({ ...FLOW, links: [{ from: "shop", to: "rent", value: 3 }] })).toBe(
+		"flow.json has a link (number 1) whose to is no id of an end in to",
+	);
+	expect(problem({ ...FLOW, links: [{ from: "Webshop", to: "parts" }] })).toBe(
+		"flow.json has a link (number 1) whose from is no id of an end in from",
+	);
+	expect(problem({ ...FLOW, links: Array.from({ length: 25 }, () => links[0]) })).toBe(
+		"flow.json has 25 links: the flow kit draws 24 at most",
+	);
+	expect(problem({ ...FLOW, links: {} })).toBe("flow.json has links that are no list");
+});
+
+it("tells the maker of a ring what falls outside its span, and of a flow which ends join one band", () => {
+	const today = new Date(2026, 10, 15, 9);
+	expect(kitNotes("ring", RING, () => true, today)).toEqual([]);
+	// Without start the ring is the year, month or week of today; a week begins on a Monday.
+	expect(kitNotes("ring", { marks: [{ name: "Moms", at: "2027-03-01" }, ...RING.marks] }, () => true, today)).toEqual([
+		"1 mark or wedge is outside the ring's year, 2026-01-01 to 2026-12-31: the page leaves it out. Give start, or take it away.",
+	]);
+	expect(
+		kitNotes(
+			"ring",
+			{
+				span: "week",
+				marks: [{ name: "Løn", at: "2026-11-15" }],
+				wedges: [
+					{ name: "Udsalg", from: "2026-11-02", to: "2026-11-08" },
+					{ name: "Jul", from: "2026-11-21", to: "2026-12-24" },
+				],
+			},
+			() => true,
+			today,
+		),
+	).toEqual([
+		"2 marks or wedges are outside the ring's week, 2026-11-09 to 2026-11-15: the page leaves them out. Give start, or take them away.",
+	]);
+	// a ring held still on a day by now is the span that holds that day, as its page draws it
+	expect(
+		kitNotes(
+			"ring",
+			{
+				span: "week",
+				now: "2026-11-11",
+				marks: [{ name: "Løn", at: "2026-11-13" }],
+				wedges: [{ name: "Jul", from: "2026-11-21" }],
+			},
+			() => true,
+			new Date(2026, 10, 16, 9),
+		),
+	).toEqual([
+		"1 mark or wedge is outside the ring's week, 2026-11-09 to 2026-11-15: the page leaves it out. Give start, or take it away.",
+	]);
+	expect(kitNotes("ring", { ...RING, span: "month", start: "2026-02-01" }, () => true, today)).toEqual([
+		"3 marks or wedges are outside the ring's month, 2026-02-01 to 2026-02-28: the page leaves them out. Give start, or take them away.",
+	]);
+	expect(kitNotes("flow", FLOW, () => true)).toEqual([]);
+	const ends = Array.from({ length: 9 }, (_, at) => ({ id: `e${at}`, name: `End ${at}`, value: at }));
+	expect(kitNotes("flow", { ...FLOW, to: ends }, () => true)).toEqual([
+		"to has 9 ends to draw: the page draws 5 of them (the largest, and a kept one always) and joins the other 4 into one band (words.other). Fewer bands read better.",
+	]);
+	// with links, only the ends a link joins are drawn, so only they count
+	const linked = {
+		from: [{ id: "a", name: "A" }],
+		to: ends,
+		links: ends.slice(0, 6).map((end) => ({ from: "a", to: end.id, value: 1 })),
+	};
+	expect(kitNotes("flow", linked, () => true)).toEqual([]);
+	// Through the middle both sides are the same money: a difference past a rounding is drawn as a band of its own, and
+	// its maker is told. Not while an amount is live, which is not known at the save.
+	const sides = (came: number, went: number) => ({
+		from: [{ id: "shop", name: "Shop", value: came }],
+		to: [{ id: "parts", name: "Parts", value: went }],
+	});
+	expect(kitNotes("flow", sides(240000, 215000), () => true)).toEqual([
+		'from adds up to 240,000 and to to 215,000: the page draws the 25,000 between them as a quiet band, going out (words.rest, "Not accounted for"). Give the end it is, such as what was kept, so the two sides add up.',
+	]);
+	expect(kitNotes("flow", sides(200000, 240000), () => true)[0]).toContain("as a quiet band, coming in");
+	expect(kitNotes("flow", sides(241000, 240000), () => true)).toEqual([]);
+	// an empty list of links is bands through the middle, as the page draws it
+	expect(kitNotes("flow", { ...sides(240000, 215000), links: [] }, () => true)).toHaveLength(1);
+	expect(kitNotes("flow", { ...FLOW, to: ends, links: [] }, () => true)).toEqual([
+		"to has 9 ends to draw: the page draws 5 of them (the largest, and a kept one always) and joins the other 4 into one band (words.other). Fewer bands read better.",
+	]);
+	expect(kitNotes("flow", FLOW, () => true)).toEqual([]);
+});
+
+it("makes a ring and a flow, and gives their pages the company's databases their data names", async () => {
+	const manifestOf = (f: Awaited<ReturnType<typeof fixture>>, name: string) => {
+		const parsed = parseAppManifest(f.text(`apps/${name}/app.toml`) ?? "");
+		return parsed.ok ? parsed.manifest : null;
+	};
+	const f = await fixture();
+	for (const [name, kit, data] of [
+		["year", "ring", RING],
+		["money", "flow", FLOW],
+	] as const) {
+		const made = read(
+			await f.call(
+				"save_app",
+				save(name, `make-${name}`, { title: data.title, kit }, [
+					{ path: `${kit}.json`, text: JSON.stringify(data) },
+				]),
+			),
+		);
+		expect(made.state, kit).toBe("applied");
+		expect(f.text(`apps/${name}/engine.js`), kit).toBe(KIT_ENGINE_JS[kit]);
+		expect(f.text(`apps/${name}/index.html`), kit).toBe(kitPage(name, kit, data.title, data, () => false));
+		// a mark's amount and an end's are live: data joins the reads, and the look says so
+		expect(manifestOf(f, name), kit).toMatchObject({ reads: ["data"], writes: [] });
+		expect(made.look, kit).toContain(
+			"data was added to the app's reads: its data names a question of the company's databases, which the page reads live.",
+		);
+	}
+	// what the page cannot draw is refused with why, and nothing is saved
+	await refuses(
+		f.call(
+			"save_app",
+			save("bad-ring", "make-bad", { title: "Year", kit: "ring" }, [
+				{ path: "ring.json", text: JSON.stringify({ marks: [{ name: "Moms", at: "1 March" }] }) },
+			]),
+		),
+		"APP_DATA_INVALID: ring.json has a mark Moms whose at is not a date (YYYY-MM-DD)",
+	);
+	expect(f.folders.has("apps/bad-ring")).toBe(false);
 });

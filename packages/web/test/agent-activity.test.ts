@@ -259,6 +259,17 @@ describe("shared agent activity", () => {
 			paidWhileAway: true,
 			movable: true,
 		});
+		expect(
+			parseStaffExecutionActivity([{ ...row, ...pause, paused_for: "rate_limited", movable: false }])[0]?.paused,
+		).toMatchObject({ rateLimited: true, movable: false });
+		const signIn = parseStaffExecutionActivity([
+			{ ...row, ...pause, paused_for: "sign_in_refused", movable: false },
+		])[0]?.paused;
+		expect(signIn).toMatchObject({ signInRefused: true, movable: false });
+		expect(signIn).not.toHaveProperty("rateLimited");
+		expect(
+			parseStaffExecutionActivity([{ ...row, ...pause, paused_for: "usage_limit" }])[0]?.paused,
+		).not.toHaveProperty("rateLimited");
 		// An older cloud, or a run that does not wait: nothing.
 		expect(parseStaffExecutionActivity([row])[0]).not.toHaveProperty("paused");
 		expect(parseStaffExecutionActivity([{ ...row, paused_until: null }])[0]).not.toHaveProperty("paused");
@@ -307,6 +318,8 @@ describe("shared agent activity", () => {
 			const line = stateLine(AGENT_LOOK[state]) as HTMLElement;
 			expect(line.textContent).toBe(AGENT_LOOK[state].line);
 			expect(line.querySelectorAll(".status-wave-letter")).toHaveLength(7);
+			for (const letter of line.querySelectorAll<HTMLElement>(".status-wave-letter"))
+				expect(letter.dataset.letter).toBe(letter.textContent);
 		}
 	});
 

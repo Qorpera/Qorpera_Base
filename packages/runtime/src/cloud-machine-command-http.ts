@@ -12,6 +12,7 @@ import {
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
 import { CloudCommandPages } from "./cloud-command-pages.ts";
+import { MACHINE_ACCOUNT_FILL_REFUSALS } from "./cloud-machine-account-fill.ts";
 import { MACHINE_CODING_VALUE_REFUSALS } from "./cloud-machine-coding-value.ts";
 import {
 	MACHINE_SCREEN_MAX_PNG_BYTES,
@@ -387,16 +388,19 @@ export function parseCloudMemberMachineActAnswer(
 // executor that took the member's request (cloud-member-machine-screen-http.ts) to the executor of the machine's node, on
 // the peer listener only. It carries the single-use id SQL gave the start (qorpera_member_machine_desktop_start_begin);
 // the receiving executor reads SQL again, serves the start, and only ever runs it locally: the image's own
-// `desktop start`. The answer is whether the desktop started or ran already, or why it did not.
+// `desktop start`. The answer is whether the desktop started or ran already, or why it did not. A start that opens
+// something (20260930758000) is the same request: what it opens comes from SQL's read on the machine's node, never over
+// this route, and the answer is then "opened", or why not.
 export const CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA = "qorpera.member-machine-start-http/v1";
 export const CLOUD_MEMBER_MACHINE_START_SCHEMA = "qorpera.member-machine-start-answer/v1";
 export interface CloudMemberMachineStartPeerRequest {
 	readonly schema: typeof CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA;
 	readonly startId: string;
 }
-/** The desktop runs now: started by this start, or running already (the image's `desktop start` found it running). */
+/** The desktop runs now: started by this start, or running already (the image's `desktop start` found it running); for a
+ * start that opens something (20260930758000), it runs and that is open. */
 export interface CloudMemberMachineStart {
-	readonly outcome: "started" | "running";
+	readonly outcome: "started" | "running" | "opened";
 }
 /** Why a member's start did not end with a running desktop, sent back as 409 with its code: the machine is not running,
  * its disk has had a company folder view the member (or the agent it was started by) may not see, it is too small for a
@@ -410,6 +414,16 @@ export const CLOUD_MEMBER_MACHINE_START_REFUSALS = [
 	"MACHINE_BOOT_CHANGED",
 	"MACHINE_IMAGE_WITHOUT_SCREEN",
 	"DESKTOP_DID_NOT_START",
+	// A start that opens something (20260930758000): a path that is no path of the company folder, one the member may not
+	// read or that the computer does not have (told alike), someone else typing privately, a computer without the company
+	// folder, and an open that failed.
+	"DESKTOP_OPEN_PATH_INVALID",
+	"DESKTOP_OPEN_NOT_FOUND",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_OPEN_NO_FOLDER",
+	"DESKTOP_DID_NOT_OPEN",
+	// The desktop's one actor (an agent's action, a member's) did not let the open through in time (review r1 F1 of #1781).
+	"DESKTOP_BUSY",
 ] as const;
 export type CloudMemberMachineStartRefusalCode = (typeof CLOUD_MEMBER_MACHINE_START_REFUSALS)[number];
 export class CloudMemberMachineStartRefusal extends Error {
@@ -447,7 +461,7 @@ export function parseCloudMemberMachineStartAnswer(
 	if (
 		answer.schema !== CLOUD_MEMBER_MACHINE_START_SCHEMA ||
 		answer.startId !== request.startId ||
-		(answer.outcome !== "started" && answer.outcome !== "running")
+		(answer.outcome !== "started" && answer.outcome !== "running" && answer.outcome !== "opened")
 	)
 		throw new Error(ERROR);
 	return Object.freeze({ outcome: answer.outcome });
@@ -632,6 +646,53 @@ class PeerFramePieces {
 	}
 }
 
+export type CloudMachineAccountFillInput = { commandId: string; envelope: string; idempotencyKey: string };
+export type CloudMachineAccountFillHttpRequest = Readonly<{
+	schema: "qorpera.machine-command-http/v1";
+	binding: CloudNativeToolBinding;
+	scope: CloudMachineCommandScope;
+	action: "account_fill";
+	input: CloudMachineAccountFillInput;
+}>;
+export const CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA = "qorpera.machine-account-fill/v1";
+/** The value was typed whole into the focused box of the account's site; never the value. */
+export interface CloudMachineAccountFillAnswer {
+	readonly schema: typeof CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA;
+	readonly commandId: string;
+	readonly filled: true;
+}
+/** Why a machine typed nothing, sent back as 409 with its code: SQL's answers the agent can act on, a machine whose image
+ * has no fill helper yet, the vault's refusal (with the database's own words), and the helper's own codes. */
+export const CLOUD_MACHINE_ACCOUNT_FILL_REFUSALS = [
+	"MACHINE_NOT_RUNNING",
+	"ACCOUNTS_SWITCHED_OFF",
+	"ACCOUNT_NOT_OPEN",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS",
+	"VAULT_REFUSED",
+	...MACHINE_ACCOUNT_FILL_REFUSALS,
+] as const;
+export type CloudMachineAccountFillRefusalCode = (typeof CLOUD_MACHINE_ACCOUNT_FILL_REFUSALS)[number];
+export class CloudMachineAccountFillRefusal extends Error {
+	readonly code: CloudMachineAccountFillRefusalCode;
+	/** The vault's own words, for VAULT_REFUSED only: the database's refusal (no value is ever in one). */
+	readonly vault?: string;
+	constructor(code: CloudMachineAccountFillRefusalCode, vault?: string) {
+		super(code);
+		this.code = code;
+		if (code === "VAULT_REFUSED" && vault !== undefined) this.vault = vault;
+	}
+}
+export function isCloudMachineAccountFillRefusal(code: unknown): code is CloudMachineAccountFillRefusalCode {
+	return (CLOUD_MACHINE_ACCOUNT_FILL_REFUSALS as readonly unknown[]).includes(code);
+}
+/** The vault's words as they may travel: one line of at most 512 characters. */
+export function cloudMachineVaultWords(value: unknown): string | undefined {
+	return typeof value === "string" && value.length >= 1 && value.length <= 512 && !/[\0-\x1f\x7f]/.test(value)
+		? value
+		: undefined;
+}
+
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
 	start(
@@ -655,6 +716,11 @@ export interface CloudMachineCommandGateway {
 		input: CloudMachineCodingValueInput,
 		signal: AbortSignal,
 	): Promise<CloudMachineCodingValueAnswer>;
+	accountFill?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineAccountFillInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineAccountFillAnswer>;
 	/** machine_screen (20260930708000): one look, or one action for one executing receipt, and the screen after it, or
 	 * its refusal (CloudMachineScreenRefusal). Sent once: an action is never sent again (an unanswered one is the
 	 * agent's to look at). */
@@ -775,6 +841,50 @@ export function parseCloudMachineCodingValueHttpRequest(value: unknown): CloudMa
 		scope: Object.freeze({ machineId: scope.machineId }),
 		action: "coding_value",
 		input: Object.freeze({ commandId: body.commandId, envelope: body.envelope }),
+	});
+}
+export function parseCloudMachineAccountFillHttpRequest(value: unknown): CloudMachineAccountFillHttpRequest {
+	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = record(input.scope, ["machineId"]);
+	const body = record(input.input, ["commandId", "envelope", "idempotencyKey"]);
+	if (
+		input.schema !== "qorpera.machine-command-http/v1" ||
+		input.action !== "account_fill" ||
+		typeof scope.machineId !== "string" ||
+		!UUID.test(scope.machineId) ||
+		typeof body.commandId !== "string" ||
+		!UUID.test(body.commandId) ||
+		typeof body.envelope !== "string" ||
+		!body.envelope ||
+		Buffer.byteLength(body.envelope) > 65536 ||
+		typeof body.idempotencyKey !== "string" ||
+		!HASH.test(body.idempotencyKey)
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: "qorpera.machine-command-http/v1",
+		binding: parseCloudNativeToolBinding(input.binding),
+		scope: Object.freeze({ machineId: scope.machineId }),
+		action: "account_fill",
+		input: Object.freeze({ commandId: body.commandId, envelope: body.envelope, idempotencyKey: body.idempotencyKey }),
+	});
+}
+/** The executor's answer to exactly this request: typed, and nothing else. */
+export function parseCloudMachineAccountFillAnswer(
+	request: CloudMachineAccountFillHttpRequest,
+	value: unknown,
+): CloudMachineAccountFillAnswer {
+	const answer = record(value, ["schema", "commandId", "filled"]);
+	if (
+		answer.schema !== CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA ||
+		answer.commandId !== request.input.commandId ||
+		answer.filled !== true
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA,
+		commandId: request.input.commandId,
+		filled: true,
 	});
 }
 /** The executor's answer to exactly this request: its receipt and a box of the helper's shape. */
@@ -1178,6 +1288,69 @@ export function createHttpCloudMachineCommandGateway(options: {
 				if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
 					throw new CloudMachineCommandUnanswered();
 				if (error instanceof CloudMachineCodingValueRefusal) throw error;
+				throw new Error(ERROR);
+			}
+		},
+		accountFill: async (scope, input, signal) => {
+			try {
+				const admitted = parseCloudMachineAccountFillHttpRequest({
+					schema: "qorpera.machine-command-http/v1",
+					binding,
+					scope,
+					action: "account_fill",
+					input,
+				});
+				const body = JSON.stringify(admitted);
+				if (Buffer.byteLength(body) > REQUEST_LIMIT) throw new Error(ERROR);
+				return await withCloudDeadline(
+					async (requestSignal) => {
+						const response = await transport(`${base}/v1/machine-commands/account-fill`, {
+							method: "POST",
+							redirect: "error",
+							signal: requestSignal,
+							headers: {
+								authorization: `Bearer ${options.token}`,
+								"content-type": "application/json",
+								...(options.holder ? { "x-qorpera-identity": options.holder() } : {}),
+							},
+							body,
+						}).catch(() => {
+							throw new CloudMachineCommandUnanswered();
+						});
+						if (response.status >= 500) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new CloudMachineCommandUnanswered();
+						}
+						if (response.status === 409) {
+							const { code, vault } = JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							) as { code?: unknown; vault?: unknown };
+							if (isCloudMachineAccountFillRefusal(code))
+								throw new CloudMachineAccountFillRefusal(code, cloudMachineVaultWords(vault));
+							throw new Error(ERROR);
+						}
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error(ERROR);
+						}
+						return parseCloudMachineAccountFillAnswer(
+							admitted,
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							),
+						);
+					},
+					30000,
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+					throw new CloudMachineCommandUnanswered();
+				if (error instanceof CloudMachineAccountFillRefusal) throw error;
 				throw new Error(ERROR);
 			}
 		},
@@ -1629,6 +1802,10 @@ export interface CloudMachineCommandServiceOptions {
 		request: CloudMachineCodingValueHttpRequest,
 		signal: AbortSignal,
 	): Promise<CloudMachineCodingValueAnswer>;
+	accountFill?(
+		request: CloudMachineAccountFillHttpRequest,
+		signal: AbortSignal,
+	): Promise<CloudMachineAccountFillAnswer>;
 	/** machine_screen (20260930708000): authorized in SQL and run on the machine's node, or forwarded there; a refusal
 	 * is a CloudMachineScreenRefusal. */
 	screen?(request: CloudMachineScreenHttpRequest, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;

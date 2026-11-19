@@ -169,8 +169,6 @@ describe("creating an agent", () => {
 		["qorpera-teal", "teal"],
 		["#2047BD", "blue"],
 		[" #fa59ac ", "pink"],
-		// A colour the palette had before 10 November 2026 names nothing now.
-		["#ff2994", null],
 		["#123456", null],
 		["coral", null],
 	])("writes the colour %s as %s", (color, colour) => {

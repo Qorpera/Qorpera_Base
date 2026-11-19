@@ -98,6 +98,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"offer_agents_to_member",
 	// A key the agent made, saved off its company machine's clipboard into the vault (20260930705000).
 	"save_coding_value",
+	"fill_company_account",
 	// A look at, or one action on, a company machine's desktop, with the screen shown to the model (20260930708000).
 	"machine_screen",
 	// The company's code kept in Qorpera (20260930720000): taking a change out of main, and describing one.
@@ -112,6 +113,11 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"make_picture",
 	// How one part of an interface app is made, read before it is made (20260930762000).
 	"app_guide",
+	"record_reflection",
+	// The company's reading of itself (20260930766000): the Co-Founder's writer of it, and ending an agent's role.
+	"update_reading",
+	"end_role",
+	"hire_team",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

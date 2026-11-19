@@ -27,7 +27,10 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		const manifestEncoded = await readFile(join(outputRoot, "manifest.json"), "utf-8");
 		const manifest = JSON.parse(manifestEncoded);
 		assert.equal(manifest.schema, "qorpera.lxd-runner-guest-package/v1");
-		assert.deepEqual(manifest.nativeHarnesses, { codex: "0.147.0", claudeCode: "2.1.231" });
+		const claudePin = JSON.parse(
+			await readFile(join(repositoryRoot, "deploy/first-node/native-claude/linux-x64-artifact.json"), "utf-8"),
+		);
+		assert.deepEqual(manifest.nativeHarnesses, { codex: "0.147.0", claudeCode: claudePin.source.version });
 		assert.equal(manifest.runnerImage.schema, "qorpera.ephemeral-runner-image-contract/v1");
 		assert.match(manifest.runnerImage.image, /@sha256:[0-9a-f]{64}$/);
 		assert.deepEqual(
@@ -36,6 +39,10 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 				"harness/package-lock.json",
 				"harness/package.json",
 				"install-image-contract.sh",
+				"native-claude/artifact.json",
+				"qorpera-claude-box-ns.apparmor",
+				"qorpera-claude-box-stage.sh",
+				"qorpera-claude-home-shell.mjs",
 				"qorpera-company-runner.service",
 				"qorpera-ephemeral-runner.mjs",
 				"qorpera-ephemeral-runner.service",
@@ -65,6 +72,17 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 			assert.equal(createHash("sha256").update(content).digest("hex"), artifact.sha256);
 		}
 		assert.equal((await stat(join(outputRoot, "install-image-contract.sh"))).mode & 0o111, 0o111);
+		// The Claude Code box's parts (slice C2) are the repository's own bytes; the shell prefix runs as it is packaged.
+		for (const [file, source] of [
+			["native-claude/artifact.json", "deploy/first-node/native-claude/linux-x64-artifact.json"],
+			["qorpera-claude-box-stage.sh", "deploy/claude-box/qorpera-claude-box-stage.sh"],
+			["qorpera-claude-box-ns.apparmor", "deploy/claude-box/qorpera-claude-box-ns.apparmor"],
+		])
+			assert.deepEqual(await readFile(join(outputRoot, file)), await readFile(join(repositoryRoot, source)), file);
+		const shellCheck = spawnSync(process.execPath, ["--check", join(outputRoot, "qorpera-claude-home-shell.mjs")], {
+			encoding: "utf-8",
+		});
+		assert.equal(shellCheck.status, 0, shellCheck.stderr);
 		const ephemeralRunnerService = await readFile(
 			join(outputRoot, "qorpera-ephemeral-runner.service"),
 			"utf-8",
@@ -191,18 +209,12 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		const acceptanceArchivePin = acceptance.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
 		const builderSourceCommit = builder.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
 		const acceptanceSourceCommit = acceptance.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
-		const acceptanceImageFingerprint = acceptance.match(/EXPECTED_IMAGE_FINGERPRINT="([0-9a-f]{64})"/)?.[1];
 		assert.ok(builderPin, "image candidate builder must pin a package manifest");
 		assert.equal(acceptancePin, builderPin, "image candidate recipes must pin the same package manifest");
 		assert.match(builderArchivePin ?? "", /^[0-9a-f]{64}$/);
 		assert.equal(acceptanceArchivePin, builderArchivePin, "image candidate recipes must pin the same package archive");
 		assert.match(builderSourceCommit ?? "", /^[0-9a-f]{40}$/);
 		assert.equal(acceptanceSourceCommit, builderSourceCommit, "image candidate recipes must pin the same source commit");
-		assert.equal(
-			acceptanceImageFingerprint,
-			"507024b38d726a12fc74514e7e473f7766e8e339495e610c425d80b6787f61d9",
-			"image acceptance must pin the signed v56 input fingerprint",
-		);
 		assert.equal(builderPin, candidateSha256, "candidate recipes must pin the full governed guest manifest");
 		assert.equal(candidate.nativeCompany.schema, "qorpera.native-company-guest/v1");
 		assert.equal(candidate.nativeCompany.sourceCommit, source.commit);
@@ -242,13 +254,44 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		} else {
 			t.diagnostic(`current guest pin not compared with its source: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
 		}
-		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
-		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"'));
 		assert.ok(builder.includes("--no-same-owner"));
-		assert.ok(!builder.includes('STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v52"'));
-		assert.ok(acceptance.includes('IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"'));
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
+		// One Claude Code on the image: the pinned unmodified build, never the harness packages' (2.1.231 leaked the
+		// sign-in in the box's set-up; nothing older than 2.1.311 stays).
+		assert.match(installer, /apt-get install --yes[^\n]*\bsshfs\b/);
+		const harness = JSON.parse(await readFile(join(repositoryRoot, "deploy/lxd-runner-guest/harness/package.json"), "utf-8"));
+		assert.deepEqual(Object.keys(harness.dependencies), ["@openai/codex"]);
+		assert.doesNotMatch(
+			await readFile(join(repositoryRoot, "deploy/lxd-runner-guest/harness/package-lock.json"), "utf-8"),
+			/anthropic/,
+		);
+		assert.doesNotMatch(installer, /node_modules\/@anthropic-ai\/claude-code/);
+		assert.ok(installer.includes('ln -sfn "${CLAUDE_DIR}/claude" /usr/local/bin/claude'));
+		assert.ok(installer.includes("CLAUDE_DIR=/opt/qorpera-harnesses/native-claude"));
+		assert.ok(installer.includes("`sha512-${digest.digest(\"base64\")}` !== pin.source.integrity"));
+		assert.ok(installer.includes('install -o root -g "${CLAUDE_BOX_GROUP}" -m 0750 /usr/bin/unshare /opt/qorpera-runner/qorpera-claude-box-ns'));
+		assert.ok(installer.includes("/etc/apparmor.d/qorpera-claude-box-ns"));
+		assert.ok(installer.includes('grep -Fxq "qorpera-claude-box-ns (unconfined)" /sys/kernel/security/apparmor/profiles'));
+		// The runtime's paths are the image's.
+		const box = await readFile(join(repositoryRoot, "packages/runtime/src/cloud-claude-box.ts"), "utf-8");
+		for (const path of [
+			"/opt/qorpera-harnesses/native-claude/claude",
+			"/opt/qorpera-runner/qorpera-claude-home-shell.mjs",
+			"/opt/qorpera-runner/qorpera-claude-box-stage.sh",
+			"/opt/qorpera-runner/qorpera-claude-box-ns",
+			"/usr/bin/sshfs",
+		])
+			assert.ok(box.includes(`"${path}"`), path);
+		assert.ok(
+			(await readFile(join(repositoryRoot, "deploy/claude-box/qorpera-claude-box-ns.apparmor"), "utf-8")).includes(
+				"profile qorpera-claude-box-ns /opt/qorpera-runner/qorpera-claude-box-ns flags=(unconfined) {",
+			),
+		);
+		// The box's checks come after everything they check is installed, and before the image says it is done.
+		const boxChecks = installer.indexOf("claude_box_refuse() {");
+		assert.ok(boxChecks > installer.indexOf("apparmor_parser --replace --write-cache /etc/apparmor.d/qorpera-claude-box-ns"));
+		assert.ok(boxChecks < installer.indexOf("LXD_RUNNER_IMAGE_CONTRACT_INSTALLED"));
 		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));
 		// The published image never updates itself (run d1f454e2, 2026-09-24): the
 		// units the guest bootstraps check are masked before anything is installed,

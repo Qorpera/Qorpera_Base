@@ -5,14 +5,14 @@
 
 select pg_temp.base_claims('service_role');
 create function pg_temp.mw_request() returns jsonb language sql as $$
-	select jsonb_build_object('from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+	select jsonb_build_object('from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 		'subject', 'Prices', 'text', 'Here are the prices.')
 $$;
 
 update public.qorpera_mail_settings set domain = 'mail.example.test', enabled = true, sending = true;
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
-	'92400000-0000-4000-8000-000000000020', 'support', 'Customer support') \g /dev/null
+	'92400000-0000-4000-8000-000000000020', 'support.base', 'Customer support') \g /dev/null
 select pg_temp.base_claims('service_role');
 
 -- Alice's run acknowledges its wake, sends an email itself, and dispatches an in-house worker on a todo the owner gave her.

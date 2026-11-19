@@ -31,8 +31,10 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 /*
  * Company sites (founder go, 3 November 2026; migration 20260930550000): an agent publishes a static website from the
- * company folder to a private link, https://sites.qorpera.com/<slug>/, which people outside the company open with a
- * password. The site-serve edge function serves it (supabase/functions/site-serve).
+ * company folder to a private address of its own, https://<slug>.qorpera.com/, which people outside the company open
+ * with a password. The site-serve edge function serves it (supabase/functions/site-serve) at the top of that address, as
+ * its own origin with no sandbox, since site hosts went on (own code storage, step 5.1, v247; deploy/sites/SITE-HOSTS.md);
+ * the old link, https://sites.qorpera.com/<slug>/, answers 308 to it.
  *
  * - publish_site reads the source with the run's own view of the folder: a folder (its index.html is the home page) or
  *   one HTML file (published as index.html). Only web files go out (the database's list, `qorpera_site_content_type`);
@@ -46,8 +48,9 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  *   already has are copied in the database), the missing bytes in batches of at most 10 MiB, and finish, which switches
  *   the site to the new version at once. The same call again (its call id) continues or answers its own version.
  * - A source under code/ is refused before anything (own code storage, step 4): a repository kept in Qorpera goes live
- *   only from the What's new page, where a member puts a version its checks made live.
- * - The agent never sees the password: the founder reads, copies and changes it on the Sites page in the apps drawer.
+ *   only when an owner or admin puts a version its checks made live (What's new, or the card under the agent's thread).
+ * - The agent never sees the password: owners and admins read, copy and change it on the Sites page in the apps drawer,
+ *   and copy it from the site's row under a message that links the site (web #1848).
  * - unpublish_site takes one of the company's sites offline: its copy, password and visitors' sessions go.
  * - share_app (private app links, v195; migration 20260930562000, deploy/sites/APP-PREVIEW.md) shares one port of one
  *   of the company's always-on machines at https://<slug>-preview.qorpera.com/, behind a site's password: an app site
@@ -120,26 +123,27 @@ const WEB_EXTENSIONS = new Set([
 	"pdf",
 ]);
 
-export const CLOUD_PUBLISH_SITE_TOOL_DESCRIPTION =
-	"Publish a static website from the company folder to a private link, https://sites.qorpera.com/<slug>/, that people outside the company open with a password. " +
-	"source is a folder whose index.html is the home page (every web file under it goes out: HTML, CSS, JavaScript, JSON, text, images, fonts, audio, video, PDF), or one .html file, published as the home page. " +
-	"Link the site's files to each other with relative links (about.html, img/logo.png), never links starting with /. At most 500 files and 25 MiB, 10 MiB a file; hidden files, links and other types are left out and named in the answer. Only static files are served: no server code runs. " +
-	"slug is the site's name in its link: 3 to 48 lowercase letters, digits and hyphens. title is optional. " +
-	"Each page runs sandboxed on its own: scripts, forms and links work, but it cannot keep data in the browser (localStorage, cookies) or show the site's own pages in an iframe, and a PDF may only download. " +
-	"A site's first publish waits for an owner or admin to approve it on a card, and so does publishing it from another folder. Publishing the same slug again replaces the whole site at once and keeps its password. " +
-	"You never see the password: tell the member the link and that the password is on the Sites page in the apps drawer, where founders and admins see, copy and change it.";
+/** Where a site's or an app link's password is, which the agent never sees. A message that links one of the company's
+ * sites shows the site's row under it, with the password's copy key for owners and admins (web #1848). */
+const SITE_PASSWORD =
+	"You never see the password, so never write one: put the address in your message as a link, and members see the site's row under it, where owners and admins copy the password. They also see, copy and change it on the Sites page in the apps drawer.";
+
+export const CLOUD_PUBLISH_SITE_TOOL_DESCRIPTION = [
+	"Publish a static website from the company folder to a private address of its own, https://<slug>.qorpera.com/, that people outside the company open with a password. Only static files are served: no server code runs (a server app goes by share_app).",
+	"source is a folder whose index.html is the home page (every web file under it goes out: HTML, CSS, JavaScript, JSON, text, images, fonts, audio, video, PDF), or one .html file, published as the home page. Its files link each other from / (/img/logo.png) or relatively (img/logo.png): both work. At most 500 files and 25 MiB, 10 MiB a file; hidden files, links and other types are left out and named in the answer.",
+	"Each site is its own origin: browser storage, cookies (never one with Domain=qorpera.com) and frames of its own pages work; other sites cannot frame it or load its files, and it gets no service worker.",
+	`A site's first publish waits for an owner or admin to approve it on a card, and so does publishing it from another folder. Publishing the same slug again replaces the whole site at once and keeps its password. ${SITE_PASSWORD}`,
+].join("\n");
 
 export const CLOUD_UNPUBLISH_SITE_TOOL_DESCRIPTION =
-	"Take one of the company's websites or app links offline: its link stops working. A website's published copy and password are deleted (the files stay in the company folder); an app link keeps its name and password for its next share_app, and the app keeps running on its machine. slug is the site's name in its link.";
+	"Take one of the company's websites or app links offline: its link stops working. A website's published copy and password are deleted (the files stay in the company folder); an app link keeps its name and password for its next share_app, and the app keeps running on its machine.";
 
-export const CLOUD_SHARE_APP_TOOL_DESCRIPTION =
-	"Share a server app (Node, Python, Docker, any program that answers HTTP) at a private link, https://<slug>-preview.qorpera.com/, that people outside the company open with a password, as they open a website. " +
-	"The app runs on one of the company's always-on machines: start one with machine_start and lifetime always-on (a task machine sleeps, and its link stops), run the app there with machine_run listening on a port (on 127.0.0.1 or all addresses), then call share_app with the machine's name and that port. A coding session's work is on the machine at /company/code/<owner>/<name>/worktrees/<workerId>. " +
-	"Static files (HTML, CSS, JavaScript, images) need no machine: publish them with publish_site instead. " +
-	"slug is the link's name: 3 to 48 lowercase letters, digits and hyphens. title is optional. " +
-	"The machine must be running. The platform starts the link program that connects the link to the app on that machine, as a command with no time limit (machine_list counts it; machine_read shows its status lines, machine_cancel stops it). Its command carries a one-time code that the program spends within seconds; only that program can use it again. The link works while the program and the app run; otherwise the link says the app is not running. If it stops, call share_app again. The link passes HTTP requests, not WebSockets (a dev server's live reload does not work through it). " +
-	"A first share waits for an owner or admin to approve it on a card, and so does sharing the link from another machine or port. Sharing the same slug again keeps its link and password. " +
-	"You never see the password: tell the member the link and that the password is on the Sites page in the apps drawer, where founders and admins see, copy and change it. unpublish_site turns the link off.";
+export const CLOUD_SHARE_APP_TOOL_DESCRIPTION = [
+	"Share a server app (Node, Python, Docker, any program that answers HTTP) at a private link, https://<slug>-preview.qorpera.com/, that people outside the company open with a password, as they open a website. Static files (HTML, CSS, JavaScript, images) need no machine: publish them with publish_site.",
+	"The app runs on one of the company's always-on machines: start one with machine_start and lifetime always-on (a task machine sleeps, and its link stops), run the app there with machine_run listening on a port (on 127.0.0.1 or all addresses), then call share_app with the machine's name and that port; the machine must be running. A coding session's work is on the machine at /company/code/<owner>/<name>/worktrees/<workerId>.",
+	"The platform starts the link program that connects the link to the app on that machine, as a command with no time limit (machine_list counts it; machine_read shows its status lines; machine_cancel stops it). Its command carries a one-time code that the program spends within seconds; only that program can use it again. The link works while the program and the app run; otherwise it says the app is not running. If it stops, call share_app again. The link passes HTTP requests, not WebSockets (a dev server's live reload does not work through it).",
+	`A first share waits for an owner or admin to approve it on a card, and so does sharing the link from another machine or port. Sharing the same slug again keeps its link and password. ${SITE_PASSWORD} unpublish_site turns the link off.`,
+].join("\n");
 
 /** One file a site will serve: its path in the site and the folder entry it is read from. */
 interface SiteFile {
@@ -268,6 +272,10 @@ function sitePath(relative: string): { path: string } | { skip: true } | { bad: 
  * executor's for a checks file's `site.name`, byte for byte (cloud-site-tools.test.ts reads the migration's text). */
 export const SITE_NAME_RULE =
 	"A site's name is 3 to 48 characters of a to z, 0 to 9 and single hyphens, starts and ends with a letter or digit, does not end in -preview, does not contain qorpera, and is not a reserved name (such as app, api, mail, shop, login).";
+
+/** What publish_site's and share_app's slug field says: the address the name makes, then the name rule (Codex sends no
+ * pattern, so the rule reaches the model only in words). */
+const slugField = (address: string) => `The name in its address, ${address}. ${SITE_NAME_RULE}`;
 
 function parseSlug(value: unknown): string {
 	// A slug of the wrong shape, refused here; one the kernel's rule refuses gets these same words from the kernel.
@@ -456,7 +464,11 @@ export function cloudSiteTools(options: {
 			additionalProperties: false,
 			required: ["slug", "source"],
 			properties: {
-				slug: { type: "string", pattern: SLUG.source },
+				slug: {
+					type: "string",
+					pattern: SLUG.source,
+					description: slugField("https://<slug>.qorpera.com/"),
+				},
 				source: { type: "string", minLength: 1, maxLength: 4096 },
 				title: { type: "string", minLength: 1, maxLength: 120 },
 			},
@@ -477,11 +489,11 @@ export function cloudSiteTools(options: {
 				throw new CloudToolArgumentRefusal(
 					"source must be the company's own work, not a platform folder (QorperaOS, hooks, digital-post, bank, members)",
 				);
-			// Own code storage, step 4: a repository kept in Qorpera goes live only from the What's new page, on a member's
-			// yes, never through this tool; refused here, before the review and any card (SQL refuses it again in begin).
+			// Own code storage, step 4: a repository kept in Qorpera goes live only when an owner or admin puts it live,
+			// never through this tool; refused here, before the review and any card (SQL refuses it again in begin).
 			if (top === "code")
 				throw new CloudToolArgumentRefusal(
-					"source must not be under code/: a repository kept in Qorpera goes live only through What's new, on a member's yes",
+					"source must not be under code/: a repository kept in Qorpera goes live only when an owner or admin puts it live",
 				);
 			return { slug, source, title: parseTitle(input.title) };
 		},
@@ -677,9 +689,9 @@ export function cloudSiteTools(options: {
 					...(prepared.skipped.length ? { leftOut: prepared.skipped, leftOutMore: prepared.skippedOmitted } : {}),
 					password:
 						receipt.mode === "new"
-							? "The site has a new password. You never see it: the founder finds, copies and changes it on the Sites page in the apps drawer."
+							? "The site has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer."
 							: "The password is unchanged. You never see it: it is on the Sites page in the apps drawer.",
-					next: "Tell the member the link, and that the password is on the Sites page in the apps drawer. Visitors open the link and enter the password.",
+					next: "Put url in your message to the member as a link: the site's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password. Visitors open the address and enter the password.",
 				}),
 			};
 		},
@@ -693,7 +705,9 @@ export function cloudSiteTools(options: {
 			type: "object",
 			additionalProperties: false,
 			required: ["slug"],
-			properties: { slug: { type: "string", pattern: SLUG.source } },
+			properties: {
+				slug: { type: "string", pattern: SLUG.source, description: "The site's or app link's name in its link." },
+			},
 		},
 		parseArguments(value) {
 			return { slug: parseSlug(args(value, "unpublish_site", ["slug"]).slug) };
@@ -738,7 +752,11 @@ export function cloudSiteTools(options: {
 			additionalProperties: false,
 			required: ["slug", "machine", "port"],
 			properties: {
-				slug: { type: "string", pattern: SLUG.source },
+				slug: {
+					type: "string",
+					pattern: SLUG.source,
+					description: slugField("https://<slug>-preview.qorpera.com/"),
+				},
 				title: { type: "string", minLength: 1, maxLength: 120 },
 				machine: { type: "string", pattern: MACHINE.source },
 				port: { type: "integer", minimum: 1, maximum: 65535 },
@@ -934,7 +952,7 @@ export function cloudSiteTools(options: {
 				started = undefined;
 			}
 			const password = shared.newPassword
-				? "The link has a new password. You never see it: the founder finds, copies and changes it on the Sites page in the apps drawer."
+				? "The link has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer."
 				: "The password is unchanged. You never see it: it is on the Sites page in the apps drawer.";
 			const link = {
 				url,
@@ -970,7 +988,7 @@ export function cloudSiteTools(options: {
 				});
 			return reply("connecting", {
 				linkProgram,
-				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Tell the member the link, and that the password is on the Sites page in the apps drawer.`,
+				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Put url in your message to the member as a link: the link's row shows under it, where owners and admins copy the password (also on the Sites page in the apps drawer). Never write a password.`,
 			});
 		},
 	};

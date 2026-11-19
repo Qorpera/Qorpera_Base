@@ -1,16 +1,16 @@
 import type {
 	NativeExecutionConnections,
 	NativeMemberConnection,
-	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type {
+	WebClaudeLogin,
 	WebExecutionConnections,
 	WebMemberConnection,
 	WebNativeSubscription,
 } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { withReply } from "../../cloud/wall-reply.ts";
-import { button, h, replace } from "../../ui/dom.ts";
+import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { RunPayer } from "../../ui/run-failure.ts";
 import type { CompanyController } from "../company.ts";
@@ -73,6 +73,9 @@ function loginRank(connection: WebMemberConnection, now: number): readonly numbe
 	];
 }
 
+const refusedSignIn = (connection: NativeMemberConnection): boolean =>
+	(connection as WebMemberConnection).loginStatus === "needs_sign_in";
+
 function compareRanks(a: readonly number[], b: readonly number[]): number {
 	for (let index = 0; index < a.length; index++) {
 		const difference = (a[index] ?? 0) - (b[index] ?? 0);
@@ -81,10 +84,53 @@ function compareRanks(a: readonly number[], b: readonly number[]): number {
 	return 0;
 }
 
+const SVG = "http://www.w3.org/2000/svg";
+
+function usageRing(done: boolean): SVGSVGElement {
+	const ring = document.createElementNS(SVG, "svg");
+	ring.setAttribute("class", done ? "usage-wall-ring done" : "usage-wall-ring");
+	ring.setAttribute("viewBox", "0 0 24 24");
+	ring.setAttribute("aria-hidden", "true");
+	const shapes: [string, Record<string, string>][] = [
+		["circle", { cx: "12", cy: "12", r: "9", class: "track" }],
+		done
+			? ["path", { d: "m8 12.5 2.6 2.6L16 9.6", class: "tick" }]
+			: ["circle", { cx: "12", cy: "12", r: "9", class: "fill" }],
+	];
+	for (const [tag, attributes] of shapes) {
+		const shape = document.createElementNS(SVG, tag);
+		for (const [attribute, value] of Object.entries(attributes)) shape.setAttribute(attribute, value);
+		ring.append(shape);
+	}
+	return ring;
+}
+
+function usageCard(
+	title: string,
+	detail: string | undefined,
+	done: boolean,
+	actions: readonly HTMLElement[],
+): HTMLElement {
+	return h(
+		"div",
+		{ class: "usage-wall" },
+		usageRing(done),
+		h(
+			"div",
+			{ class: "usage-wall-text" },
+			h("p", { class: "usage-wall-title" }, title),
+			detail ? h("p", { class: "usage-wall-sub" }, detail) : null,
+		),
+		actions.length ? h("div", { class: "usage-wall-actions" }, ...actions) : null,
+	);
+}
+
 /** The waits before reading the accounts again after a read failed: 2 s, 5 s, 10 s, 30 s, then every minute. Coming
  * back to the window or online reads at once. (3 Nov 2026: the composer stayed locked on "Model accounts are
  * unavailable" until the page was reloaded.) */
 export const ACCOUNT_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000, 30_000, 60_000];
+
+const CLAUDE_READ_EVERY_MS = 60_000;
 
 /** One of the member's logins that can pay for a conversation, as the composer's Login page lists it. */
 export interface SessionLogin {
@@ -109,11 +155,9 @@ export class SessionExecutionView {
 	readonly #lifetime = new AbortController();
 	#request: AbortController | undefined;
 	#observed: WebExecutionConnections | undefined;
-	#provenance: readonly SessionTurnProvenance[] = [];
 	#started = false;
 	#busy = false;
 	#error: string | undefined;
-	#historyError: string | undefined;
 	#renderKey = "";
 	#room = false;
 	#serverSelection = false;
@@ -123,6 +167,14 @@ export class SessionExecutionView {
 	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Account reads that failed in a row; the next read waits by ACCOUNT_RETRY_DELAYS_MS. */
 	#failures = 0;
+	#sameLogin: { connectionId: string; count: number } | undefined;
+	#countedFor: string | undefined;
+	#countRequest: AbortController | undefined;
+	#moved: { login: string | undefined; stuck: boolean; done: boolean; title: string; detail?: string } | undefined;
+	#claudeOut: { login: WebClaudeLogin; until: string; next: WebClaudeLogin } | undefined;
+	#claudeMoved: { loginId: string; account: string } | undefined;
+	#claudeSwitching = false;
+	#claudeReadAt: number | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -184,8 +236,6 @@ export class SessionExecutionView {
 		if (room !== this.#room) {
 			this.#request?.abort();
 			this.#request = undefined;
-			this.#provenance = [];
-			this.#historyError = undefined;
 			this.#busy = false;
 			this.#started = false;
 			this.#room = room;
@@ -200,7 +250,6 @@ export class SessionExecutionView {
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
-			this.#provenance = [];
 			this.#started = false;
 			this.#busy = false;
 			this.#usageHydratedAt = undefined;
@@ -234,7 +283,6 @@ export class SessionExecutionView {
 		this.#busy = true;
 		// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
 		if (!this.#failures) this.#error = undefined;
-		this.#historyError = undefined;
 		this.#render();
 		this.#changed();
 		const conversation = this.#company.conversation(this.#sessionId).get();
@@ -251,14 +299,11 @@ export class SessionExecutionView {
 			}
 			return this.#native.listConnections(signal);
 		};
-		const [connections, provenance] = await Promise.allSettled([
-			readConnections(),
-			this.#room ? Promise.resolve([]) : this.#native.listSessionTurnProvenance(this.#sessionId, signal),
-		]);
+		const connections = await readConnections().catch(() => undefined);
 		if (signal.aborted) return;
 		this.#serverConnectionId = serverConnectionId;
-		if (connections.status === "fulfilled") {
-			this.#observed = connections.value;
+		if (connections) {
+			this.#observed = connections;
 			if (this.#failures) this.#error = undefined;
 			this.#failures = 0;
 		} else {
@@ -266,14 +311,11 @@ export class SessionExecutionView {
 			this.#failures++;
 			this.#error = t("Model accounts are unavailable. Trying again…");
 		}
-		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
-		else {
-			this.#provenance = [];
-			this.#historyError = t("Execution history is unavailable.");
-		}
 		this.#busy = false;
 		this.#request = undefined;
 		this.#choose();
+		this.#settleMoved();
+		void this.#countSameLogin();
 		this.#render();
 		this.#changed();
 		this.#scheduleRefresh(
@@ -282,6 +324,79 @@ export class SessionExecutionView {
 				: undefined,
 		);
 		void this.#hydrateUsage();
+		if (this.#claudeReadAt === undefined || Date.now() - this.#claudeReadAt >= CLAUDE_READ_EVERY_MS)
+			void this.#readClaude(signal);
+	}
+
+	async #readClaude(signal: AbortSignal): Promise<void> {
+		if (!this.#native.listClaudeLogins) return;
+		this.#claudeReadAt = Date.now();
+		let logins: readonly WebClaudeLogin[];
+		try {
+			logins = (await this.#native.listClaudeLogins(signal)).logins;
+		} catch {
+			return;
+		}
+		if (signal.aborted) return;
+		const now = Date.now();
+		const usedUp = (login: WebClaudeLogin) => login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
+		const inUse = logins.find((login) => login.inUse);
+		const next = inUse && usedUp(inUse) ? logins.find((login) => login !== inUse && !usedUp(login)) : undefined;
+		this.#claudeOut = inUse?.usedUpUntil && next ? { login: inUse, until: inUse.usedUpUntil, next } : undefined;
+		if (this.#claudeMoved && (inUse?.loginId !== this.#claudeMoved.loginId || usedUp(inUse)))
+			this.#claudeMoved = undefined;
+		this.#render();
+	}
+
+	async #useClaude(next: WebClaudeLogin): Promise<void> {
+		if (!this.#native.useClaude || this.#claudeSwitching || this.#lifetime.signal.aborted) return;
+		this.#claudeSwitching = true;
+		this.#render();
+		try {
+			await this.#native.useClaude(next.loginId, this.#lifetime.signal);
+			this.#claudeMoved = {
+				loginId: next.loginId,
+				account: next.providerAccountEmail ?? t("your other Claude login"),
+			};
+			this.#claudeOut = undefined;
+		} catch {
+			this.#error = t("The Claude login could not be switched. Try again.");
+		} finally {
+			this.#claudeSwitching = false;
+		}
+		if (!this.#lifetime.signal.aborted) this.#render();
+	}
+
+	#claudeCard(): HTMLElement | null {
+		if (this.#claudeMoved) {
+			const card = usageCard(
+				t("New Claude work now uses {account}", { account: this.#claudeMoved.account }),
+				undefined,
+				true,
+				[],
+			);
+			card.setAttribute("role", "status");
+			return card;
+		}
+		const out = this.#claudeOut;
+		if (!out) return null;
+		const other = out.next.providerAccountEmail ?? t("your other Claude login");
+		return usageCard(
+			t("Claude is out of usage until {time}", { time: fmtTime(out.until) }),
+			t("{account} is used up. Keep going with {other}", {
+				account: out.login.providerAccountEmail ?? t("Your Claude login"),
+				other,
+			}),
+			false,
+			[
+				button(t("Continue"), () => void this.#useClaude(out.next), {
+					small: true,
+					primary: true,
+					disabled: this.#claudeSwitching,
+					title: t("Use {account}", { account: other }),
+				}),
+			],
+		);
 	}
 
 	async #hydrateUsage(): Promise<void> {
@@ -387,7 +502,7 @@ export class SessionExecutionView {
 			.filter((connection) => {
 				if (seen.has(connection.connectionId)) return false;
 				seen.add(connection.connectionId);
-				if (remainingAllowance(connection, now) === 0) return false;
+				if (remainingAllowance(connection, now) === 0 || refusedSignIn(connection)) return false;
 				try {
 					selectSessionExecutionSponsor(observed, connection.connectionId, this.#company.userId);
 					return true;
@@ -410,7 +525,8 @@ export class SessionExecutionView {
 		const own = this.#own();
 		if (!observed || !own || !this.#keeps(own)) return undefined;
 		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
-		if (!connection || remainingAllowance(connection, Date.now()) !== 0) return undefined;
+		if (!connection || refusedSignIn(connection) || remainingAllowance(connection, Date.now()) !== 0)
+			return undefined;
 		try {
 			selectSessionExecutionSponsor(observed, own, this.#company.userId);
 			return own;
@@ -578,6 +694,47 @@ export class SessionExecutionView {
 		return !this.#lifetime.signal.aborted && this.#own() === connectionId && this.canSend;
 	}
 
+	#stuckLogin(): string | undefined {
+		const own = this.#own();
+		const available = this.#available();
+		if (
+			!own ||
+			!this.#serverSelection ||
+			!this.#native.chooseSessionAccount ||
+			!this.#native.countSessionsOnAccount ||
+			!this.#native.chooseSessionsAccount ||
+			!this.#observed?.connections.some((connection) => connection.connectionId === own) ||
+			available.includes(own) ||
+			!available.length
+		)
+			return undefined;
+		return own;
+	}
+
+	async #countSameLogin(): Promise<void> {
+		const own = this.#stuckLogin();
+		if (own === this.#countedFor) return;
+		this.#countRequest?.abort();
+		this.#countRequest = undefined;
+		this.#countedFor = own;
+		this.#sameLogin = undefined;
+		if (!own || !this.#native.countSessionsOnAccount) return;
+		const request = new AbortController();
+		this.#countRequest = request;
+		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+		let count: number | undefined;
+		try {
+			count = await this.#native.countSessionsOnAccount(own, signal);
+		} catch {
+			count = undefined;
+		}
+		if (signal.aborted) return;
+		this.#countRequest = undefined;
+		if (count === undefined) this.#countedFor = undefined;
+		else this.#sameLogin = { connectionId: own, count };
+		this.#render();
+	}
+
 	/** The conversation's own login: the cloud's choice where the cloud chooses, else the one it keeps. */
 	#own(): string | undefined {
 		return this.#serverSelection
@@ -605,6 +762,7 @@ export class SessionExecutionView {
 	 * taken; the cloud's choice has been read again by then. */
 	async #pick(connectionId: string): Promise<boolean> {
 		if (this.#lifetime.signal.aborted || this.#busy || !this.#observed) return false;
+		this.#moved = undefined;
 		if (!this.#serverSelection) {
 			let picked = false;
 			try {
@@ -639,7 +797,66 @@ export class SessionExecutionView {
 		return picked;
 	}
 
+	async #pickAll(fromConnectionId: string, connectionId: string, account: string): Promise<void> {
+		if (this.locked || this.#lifetime.signal.aborted || !this.#native.chooseSessionsAccount) return;
+		this.#busy = true;
+		this.#moved = undefined;
+		this.#render();
+		this.#changed();
+		let moved: number | undefined;
+		try {
+			moved = await this.#native.chooseSessionsAccount(fromConnectionId, connectionId, this.#lifetime.signal);
+		} catch {
+			this.#error = t("The chats could not be moved. Try again.");
+		} finally {
+			this.#busy = false;
+		}
+		if (this.#lifetime.signal.aborted) return;
+		if (moved === undefined) {
+			this.#render();
+			this.#changed();
+			return;
+		}
+		this.#sameLogin = undefined;
+		this.#countedFor = undefined;
+		await this.refresh();
+		if (this.#lifetime.signal.aborted) return;
+		const login = this.#own();
+		const stuck = login === fromConnectionId;
+		const title =
+			moved === 0
+				? stuck
+					? this.#outOfUsage(fromConnectionId)
+					: t("No chats were waiting on that login any more.")
+				: stuck
+					? moved === 1
+						? t("{count} other chat moved to {account}", { count: moved, account })
+						: t("{count} other chats moved to {account}", { count: moved, account })
+					: moved === 1
+						? t("{count} chat moved to {account}", { count: moved, account })
+						: t("{count} chats moved to {account}", { count: moved, account });
+		this.#moved = {
+			login,
+			stuck,
+			done: moved > 0 || !stuck,
+			title,
+			...(stuck
+				? {
+						detail: t("This chat stays on its login: the work waiting in it can't move to {account}.", {
+							account,
+						}),
+					}
+				: {}),
+		};
+		this.#render();
+	}
+
 	#render(): void {
+		if (this.#company.store.get().team?.role === "viewer") {
+			if (this.#renderKey !== "spectator") replace(this.el);
+			this.#renderKey = "spectator";
+			return;
+		}
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		const canWrite = this.#canWrite();
 		const selected = conversation.retrySend?.executionSponsor ?? conversation.executionSponsor;
@@ -647,9 +864,7 @@ export class SessionExecutionView {
 		const key = JSON.stringify([
 			this.#room,
 			this.#observed,
-			this.#provenance,
 			this.#error,
-			this.#historyError,
 			selected,
 			this.#serverConnectionId,
 			locked,
@@ -657,6 +872,11 @@ export class SessionExecutionView {
 			conversation.sending,
 			Boolean(conversation.retrySend),
 			this.canSend,
+			this.#sameLogin,
+			this.#moved,
+			this.#claudeOut,
+			this.#claudeMoved,
+			this.#claudeSwitching,
 		]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
@@ -693,29 +913,15 @@ export class SessionExecutionView {
 							{ small: true, disabled: conversation.sending || !canWrite },
 						),
 					)
-				: this.#observed && !this.#error && this.canSend && !this.#busy && this.#waiting() !== undefined
-					? h(
-							"div",
-							null,
-							h(
-								"p",
-								{ class: "muted" },
-								t(
-									"This conversation's model account has reached its usage limit. A message you send now waits and goes on by itself when it resets.",
-								),
-							),
-							this.#otherLogins(this.#observed, locked),
-						)
-					: this.#observed && !this.#error && !this.canSend && !this.#busy
-						? this.#unchosen(this.#available())
-							? this.#choice(this.#observed, !canWrite)
-							: h(
-									"div",
-									null,
-									h("p", { class: "muted" }, this.#unavailableReason(this.#observed)),
-									this.#otherLogins(this.#observed, locked),
-								)
-						: null,
+				: (this.#movedCard() ??
+						(this.#observed && !this.#error && this.canSend && !this.#busy && this.#waiting() !== undefined
+							? this.#usageWall(this.#observed, locked, true)
+							: this.#observed && !this.#error && !this.canSend && !this.#busy
+								? this.#unchosen(this.#available())
+									? this.#choice(this.#observed, !canWrite)
+									: (this.#usageWall(this.#observed, locked, false) ??
+										h("p", { class: "muted" }, this.#unavailableReason(this.#observed)))
+								: this.#claudeCard())),
 		);
 	}
 
@@ -736,44 +942,129 @@ export class SessionExecutionView {
 		);
 	}
 
-	/** The conversation's own login can't pay now (its usage limit, or disabled): the member may move the
-	 * conversation to another of their logins that can. Only their click moves it; nothing moves on its own. */
-	#otherLogins(observed: NativeExecutionConnections, disabled: boolean): HTMLElement | null {
-		const own = this.#own();
-		// Only under the conversation's own account's reason, and only where the member's pick reaches the cloud.
-		if (!own || !observed.connections.some((connection) => connection.connectionId === own)) return null;
-		if (this.#serverSelection && !this.#native.chooseSessionAccount) return null;
-		const available = this.#available();
-		const others = available.filter((connectionId) => connectionId !== own);
-		if (!others.length) return null;
-		return h(
-			"div",
-			{ class: "session-execution-choice" },
-			h("p", { class: "muted" }, t("Or use another of your logins now.")),
-			// Numbered as "Choose a login to continue" numbers them.
-			...others.map((connectionId) =>
-				button(
-					t("Use {account}", { account: this.#account(observed, connectionId, available) }),
-					() => void this.#pick(connectionId),
-					{ small: true, disabled },
-				),
-			),
-		);
+	#outOfUsage(connectionId: string): string {
+		const connection = this.#observed?.connections.find((candidate) => candidate.connectionId === connectionId);
+		const reset = connection ? this.payer(connection.sponsorBindingId).resetsAt : undefined;
+		return reset ? t("Out of usage until {time}", { time: fmtTime(reset) }) : t("Out of usage");
 	}
 
-	/** Why sending is off. A conversation's own account at its limit is named first: the
-	 * conversation waits for it and never moves to another account on its own. */
+	#usageWall(observed: NativeExecutionConnections, disabled: boolean, waiting: boolean): HTMLElement[] | null {
+		const own = this.#own();
+		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
+		if (!own || !connection || !this.#keeps(own)) return null;
+		const atLimit = !refusedSignIn(connection) && remainingAllowance(connection, Date.now()) === 0;
+		const available = this.#available();
+		const name = (connectionId: string) => this.#account(observed, connectionId, available);
+		const [first, ...rest] =
+			this.#serverSelection && !this.#native.chooseSessionAccount
+				? []
+				: available.filter((connectionId) => connectionId !== own);
+		const count = this.#sameLogin?.connectionId === own ? this.#sameLogin.count : 0;
+		const actions = !first
+			? []
+			: count > 1 && this.#stuckLogin() === own
+				? [
+						button(t("All {count} chats", { count }), () => void this.#pickAll(own, first, name(first)), {
+							small: true,
+							primary: true,
+							disabled,
+							title: t("Use {account} for all {count} chats waiting on this login", {
+								account: name(first),
+								count,
+							}),
+						}),
+						button(t("Just this one"), () => void this.#pick(first), {
+							small: true,
+							disabled,
+							title: t("Use {account}", { account: name(first) }),
+						}),
+					]
+				: [
+						button(t("Continue"), () => void this.#pick(first), {
+							small: true,
+							primary: true,
+							disabled,
+							title: t("Use {account}", { account: name(first) }),
+						}),
+					];
+		const detail = first
+			? t("Keep going with {account}", { account: name(first) })
+			: atLimit
+				? waiting
+					? t("A message you send now goes on when it resets.")
+					: t("Sending resumes when it resets.")
+				: undefined;
+		const [before = "", after = ""] = t("Or use {accounts}").split("{accounts}");
+		return [
+			usageCard(atLimit ? this.#outOfUsage(own) : this.#unavailableReason(observed), detail, false, actions),
+			rest.length
+				? h(
+						"p",
+						{ class: "usage-wall-more" },
+						before,
+						...rest.flatMap((connectionId, index) => [
+							index ? ", " : null,
+							h(
+								"button",
+								{
+									type: "button",
+									class: "usage-wall-link",
+									disabled,
+									onclick: () => void this.#pick(connectionId),
+								},
+								name(connectionId),
+							),
+						]),
+						after,
+					)
+				: null,
+		].filter((element): element is HTMLElement => element !== null);
+	}
+
+	#settleMoved(): void {
+		const moved = this.#moved;
+		if (!moved) return;
+		const stuck = this.#stuckLogin();
+		if (
+			moved.login !== this.#own() ||
+			(moved.stuck ? stuck !== moved.login : stuck !== undefined || !this.canSend || this.#waiting() !== undefined)
+		)
+			this.#moved = undefined;
+	}
+
+	#movedCard(): HTMLElement | null {
+		const moved = this.#moved;
+		if (
+			!moved ||
+			moved.login !== this.#own() ||
+			(moved.stuck ? this.#stuckLogin() !== moved.login : !this.canSend || this.#waiting() !== undefined)
+		)
+			return null;
+		const card = usageCard(moved.title, moved.detail, moved.done, []);
+		card.setAttribute("role", "status");
+		return card;
+	}
+
 	#unavailableReason(observed: NativeExecutionConnections): string {
 		const now = Date.now();
 		const own = this.#own();
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
-		if (own && atLimit.some((connection) => connection.connectionId === own))
-			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
+		const refused = observed.connections.filter(
+			(connection) => connection.connectionStatus !== "revoked" && refusedSignIn(connection),
+		);
+		const signIn = refused.find((connection) => connection.connectionId === own) ?? refused[0];
+		const signInAgain = signIn?.providerAccountEmail
+			? t("ChatGPT no longer accepts the sign-in for {email}. Sign in again in Settings → AI subscriptions.", {
+					email: signIn.providerAccountEmail,
+				})
+			: t("ChatGPT no longer accepts this login's sign-in. Sign in again in Settings → AI subscriptions.");
+		if (signIn && signIn.connectionId === own) return signInAgain;
 		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).
 		if (own && this.#keeps(own))
 			return t(
 				"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.",
 			);
+		if (signIn) return signInAgain;
 		if (atLimit.length)
 			return t("Your model accounts have reached their usage limits. Sending resumes when an account resets.");
 		return t("Connect a model account in Settings → AI subscriptions to send messages.");
@@ -787,7 +1078,6 @@ export class SessionExecutionView {
 		this.#usageRequest?.abort();
 		this.#usageRequest = undefined;
 		this.#observed = undefined;
-		this.#provenance = [];
 		this.el.replaceChildren();
 	}
 }

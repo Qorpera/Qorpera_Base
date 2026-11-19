@@ -1,7 +1,7 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, cache, command, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
+use qorpera_folder::{bridge, cache, command, data, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
 use std::ffi::CString;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -14,6 +14,7 @@ const USAGE: &str = "Usage:
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
   qorpera-folder command --shell-pid <pid> --tree <dir> --network yes|no -- <program> [args]
+  qorpera-folder data [--view-file /run/qorpera-folder/view.json] [--root /company] [--connect vsock:2:5250] describe [<database>] | apply <database> | query <database> <question> [name=value ...] | query <database> --sql '<one select>' [name=value ...] | change <database> <change> [name=value ...]
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
@@ -50,7 +51,19 @@ locked, no_new_privs and the command filter. --network no gives it its own netwo
 Fds 0 to 2 become the command's; fd 3 gets one JSON line when it is ready to run ({\"t\":\"started\",\"pid\",\"mntns\"}),
 ends ({\"t\":\"exit\",\"code\",\"signal\"}) or fails ({\"t\":\"failed\",\"error\"}, after started too). The command runs
 only after the caller writes G on fd 4; end of file there before it stops the start. SIGTERM stops it as the shell host
-does. Exit codes: 0 its end was reported, 1 failed (reported on fd 3), 2 usage or fds 0 to 4 not open.";
+does. Exit codes: 0 its end was reported, 1 failed (reported on fd 3), 2 usage or fds 0 to 4 not open.
+
+data: a company machine's command for the company's databases (the folders data/<database>/ of the company folder),
+as the machine's folder view: what the view may read there is what it may ask and change. describe shows the databases
+(or one): tables, steps, questions and changes. apply applies a database's waiting steps; a step that would destroy
+data is held, and its yes is asked from an agent's data_apply, never from a machine. query asks a question by name
+(data/<database>/queries/<question>.sql) or one select of its own; change runs a named change
+(data/<database>/actions/<change>.sql). A value is text; name:=<JSON> gives a number, true, false or null. The answer
+is printed as one line of JSON. When the store asks for a file's text, the command reads it under <root> and sends it
+by its hash; a file written a moment ago is used once it is saved to the folder (the command asks again for 10 s).
+Exit codes: 0 an answer, 1 a refusal (its words on standard error), 2 usage, 3 the databases cannot be reached from
+this machine now, no answer came, or the answer could not be printed (an apply or a change may then have run: look
+before running it again).";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
 const EXIT_VIEW_CLOSED: u8 = 3;
@@ -63,6 +76,7 @@ fn main() -> ExitCode {
 		Some("bridge") => bridge(&args[1..]),
 		Some("relay") => relay(&args[1..]),
 		Some("command") => command(&args[1..]),
+		Some("data") => data(&args[1..]),
 		Some("version" | "--version") => {
 			println!("qorpera-folder {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
 			Ok(ExitCode::SUCCESS)
@@ -367,6 +381,32 @@ fn relay(args: &[String]) -> Result<ExitCode, Usage> {
 
 fn command(args: &[String]) -> Result<ExitCode, Usage> {
 	Ok(ExitCode::from(command::run(&command_request(args)?)))
+}
+
+const MACHINE_VIEW_FILE: &str = "/run/qorpera-folder/view.json";
+
+fn data(args: &[String]) -> Result<ExitCode, Usage> {
+	let mut split = 0;
+	while args.get(split).is_some_and(|a| a.starts_with("--")) {
+		split += 2;
+	}
+	let o = options(&args[..split.min(args.len())], &["view-file", "root", "connect"])?;
+	let call = data::call(&args[split.min(args.len())..]).map_err(Usage)?;
+	let view_file = o.get("view-file").map(String::as_str).unwrap_or(MACHINE_VIEW_FILE);
+	let root = PathBuf::from(o.get("root").map(String::as_str).unwrap_or("/company"));
+	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
+	let view = match viewfile::read(std::path::Path::new(view_file)) {
+		Ok(view) => view,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+			eprintln!("data: this machine has no company folder ({}), so it reaches no databases", root.display());
+			return Ok(ExitCode::from(data::EXIT_UNREACHABLE));
+		}
+		Err(e) => {
+			eprintln!("data: the machine's folder view cannot be read ({e}); the command runs as root");
+			return Ok(ExitCode::from(data::EXIT_UNREACHABLE));
+		}
+	};
+	Ok(ExitCode::from(data::run(&addr, &view, &root, &call, &data::Waits::default(), &mut std::io::stdout(), &mut std::io::stderr())))
 }
 
 /// `command`'s options, then `--` and the program with its arguments.

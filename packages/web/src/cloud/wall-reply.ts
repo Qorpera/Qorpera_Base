@@ -43,18 +43,23 @@ export function appNoteLine(app: string, at: string | null, about: string): stri
 	return `app:${app}${at === null ? "" : `#${at}`} · ${about}`;
 }
 
-/** A note from an app as the message it goes as: that line first, then the member's own words. */
-export function appNoteText(app: string, at: string | null, about: string, words: string): string {
-	return withReply(appNoteLine(app, at, about), words, 0);
+const NOTE_PAGES: ReadonlySet<string> = new Set(["data"]);
+
+export function pageNoteLine(page: string, at: string | null, about: string): string {
+	return `page:${page}${at === null ? "" : `#${at}`} · ${about}`;
 }
 
 /** The app, the thing and what it is about, from a message's quoted first line, or undefined when it names no app. */
-export function appNoteHeader(line: string): { app: string; at: string | null; about: string } | undefined {
-	const match = /^app:([^\s#·]+)(?:#(\S+))? · (.+)$/.exec(line);
+export function appNoteHeader(
+	line: string,
+): { app: string; at: string | null; about: string; page?: true } | undefined {
+	const match = /^(app|page):([^\s#·]+)(?:#(\S+))? · (.+)$/.exec(line);
 	if (!match) return undefined;
-	const app = appLinkName(`app:${match[1]}`);
-	if (app === undefined || (match[2] !== undefined && !APP_NOTE_AT.test(match[2]))) return undefined;
-	return { app, at: match[2] ?? null, about: match[3] as string };
+	const name = match[2] as string;
+	const page = match[1] === "page";
+	const app = page ? (NOTE_PAGES.has(name) ? name : undefined) : appLinkName(`app:${name}`);
+	if (app === undefined || (match[3] !== undefined && !APP_NOTE_AT.test(match[3]))) return undefined;
+	return { app, at: match[3] ?? null, about: match[4] as string, ...(page ? { page: true as const } : {}) };
 }
 
 /** How a draft carries the line an app's note answers wherever it is saved and shared (the room's shared draft,

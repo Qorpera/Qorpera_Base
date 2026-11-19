@@ -97,6 +97,11 @@ describe("agent routine tool", () => {
 			expect(f.saved().map((request) => request.effort)).toEqual(["high", undefined]);
 			const bad = await f.boundary.invoke("routine_e3", "qorpera", "manage_routine", { ...weekly, effort: "max" });
 			expect(bad.success).toBe(false);
+			const threadOnly = await f.boundary.invoke("routine_e4", "qorpera", "manage_routine", {
+				...weekly,
+				effort: "xhigh",
+			});
+			expect(threadOnly.success).toBe(false);
 			expect(f.writer.change).toHaveBeenCalledTimes(2);
 		} finally {
 			f.run.close();
@@ -964,11 +969,12 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			folderDecision: { decide, check: () => {} } as unknown as CloudFolderRoutineDecision,
 		});
 		expect(tool.description).toContain(
-			"In this company the routine is a file, and a new intent or title goes through the automatic review; if it is not approved, decide again without them.",
+			"a new intent or title goes through the automatic review, and if it is not approved, decide again without them.",
 		);
-		expect(tool.description).toContain("a refused one is decided again under a new operationKey");
-		expect(tool.description).toContain("intent, when the work changed");
-		expect(tool.description).toContain("state refused carries the reason: choose again or conclude.");
+		expect(tool.description).toContain(
+			"state refused carries the reason: decide again under a new operationKey, or conclude.",
+		);
+		expect(tool.description).toContain("intent, title, effort and report change only when given");
 		const boundary = new CloudNativeToolBoundary({
 			companyId: run.identity.companyId,
 			runId: run.identity.runId,

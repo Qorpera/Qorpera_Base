@@ -1,10 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
+import { parseCompanyStateFile, writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
-import { type CloudFolderHire, CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
-import { CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER, cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
+import {
+	type CloudFolderHire,
+	CloudFolderHiring,
+	type CloudFolderTeamHire,
+	type CloudFolderTeamMember,
+} from "@qorpera/runtime/cloud-folder-hiring";
+import {
+	CLOUD_END_ROLE_TOOL_DESCRIPTION,
+	CLOUD_HIRE_TEAM_TOOL_DESCRIPTION,
+	CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER,
+	cloudHiringTools,
+} from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	type CloudNativeTool,
+	CloudToolArgumentRefusal,
+	CloudToolRefusal,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -58,7 +72,7 @@ it("saves a hire as one new folder with agent.md, its folders and the first assi
 		"the platform starts Ada Lind on it by itself, usually within a minute: no start message is needed.",
 	);
 	expect(result.next).toContain("if Ada Lind has not begun after a few minutes");
-	expect(result.next).toContain(`send_coworker_message (recipientStaffId ${result.agent.id})`);
+	expect(result.next).toContain(`send_coworker_message with priority true (recipientStaffId ${result.agent.id})`);
 	expect(result.next).toContain("a message sent while Ada Lind is still starting waits for it.");
 	expect(result.next).not.toContain("has not started");
 	expect(result.agent.id).toBe(hashedId("qorpera.folder-hire/v1", f.identity.runId, "hire-1"));
@@ -257,5 +271,511 @@ it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, 
 	// The key is bound to that request: other arguments under it are refused, pointing at QorperaOS/agents/.
 	expect(() => tool?.parseArguments({ ...args, name: "Someone Else" })).toThrow(
 		/check QorperaOS\/agents\/ before hiring again/,
+	);
+});
+
+// Ending a role (the company's reading of itself, 20260930766000): agent.md set to archived through a reviewed commit.
+const agentMd = (
+	id: string,
+	name: string,
+	kind: "co-founder" | "agent" = "agent",
+	status: "active" | "archived" = "active",
+) =>
+	writeAgentFile({
+		id,
+		name,
+		role: name,
+		agentKind: kind,
+		status,
+		colour: null,
+		figure: null,
+		model: null,
+		effort: null,
+		instructions: `Own ${name}.`,
+	});
+async function roles() {
+	const research = randomUUID();
+	const f = await fixture({
+		files: {
+			"QorperaOS/agents/research/agent.md": agentMd(research, "Research"),
+			"QorperaOS/agents/market/agent.md": agentMd(randomUUID(), "Market", "agent", "archived"),
+			"QorperaOS/agents/co-founder/agent.md": agentMd(randomUUID(), "Co-Founder", "co-founder"),
+		},
+	});
+	f.seed("QorperaOS/agents/nora/agent.md", agentMd(f.identity.staffAgentId, "Nora"));
+	return { ...f, research };
+}
+const END = { operationKey: "end-1", agent: "research", reason: "The customer interviews are done." };
+
+it("ends a role by setting agent.md to archived, recording the call's review for exactly that change", async () => {
+	const f = await roles();
+	const prepared = await f.hiring().prepareEndRole(END, f.context.signal);
+	expect(prepared).toEqual({ ...END, name: "Research" });
+	const result = parse(await f.hiring().endRole(END, f.context));
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-role-end-receipt/v1",
+		runId: f.identity.runId,
+		outcome: "saved",
+		agent: { id: f.research, name: "Research", folder: "QorperaOS/agents/research" },
+	});
+	expect(result.next).toBe(
+		"Research's role has ended. The platform now pauses its routines and closes its threads by itself; its files stay, and a member can bring it back. Tell the founders who and why.",
+	);
+	expect(f.commits).toHaveLength(1);
+	const [commit] = f.commits;
+	expect(commit).toMatchObject({ key: "end-role:end-1", receiptId: result.receiptId });
+	expect(commit?.units.map((unit) => [unit.op, unit.path, typeof unit.expectedVersion])).toEqual([
+		["write", "QorperaOS/agents/research/agent.md", "string"],
+	]);
+	expect(f.recordings[0]?.p_request).toEqual({
+		actionReviewId: f.context.actionReviewId,
+		tool: "end_role",
+		argumentSha256: f.context.argumentSha256,
+		units: commit?.units,
+	});
+	const agent = parseCompanyStateFile(
+		"QorperaOS/agents/research/agent.md",
+		f.text("QorperaOS/agents/research/agent.md") ?? "",
+	);
+	// Only the status changed: nothing else is deleted.
+	expect(agent?.ok && agent.file).toMatchObject({
+		kind: "agent",
+		id: f.research,
+		name: "Research",
+		status: "archived",
+		instructions: "Own Research.",
+	});
+	expect([...f.folders]).toContain("QorperaOS/agents/research");
+	// Once ended, the same call again has a receipt: prepare says so for the card and goes on, to that receipt. A new
+	// call (another key) has none and is refused.
+	expect(await f.hiring().prepareEndRole(END, f.context.signal)).toEqual({ ...END, name: "Research", ended: true });
+	await refuses(
+		f.hiring().prepareEndRole({ ...END, operationKey: "end-9" }, f.context.signal),
+		"Research's role has already ended",
+	);
+});
+
+// Review r1 of #1819 (F1): a repeated end_role after its archive landed and its answer was lost must reach its receipt,
+// in the same run and in a resumed one (no tool or operations memory), and never be refused before it.
+it("answers a repeated end_role from its receipt after the archive landed, in this run and in a resumed one", async () => {
+	const f = await roles();
+	const toolOf = () => {
+		const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+		const tools = cloudHiringTools(f.identity, {
+			folderHiring: f.hiring(operations),
+			folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+		});
+		return tools[2] as CloudNativeTool;
+	};
+	const call = async (tool: CloudNativeTool) => {
+		const prepared = await (tool.prepare as NonNullable<CloudNativeTool["prepare"]>)(
+			tool.parseArguments(END),
+			f.context,
+		);
+		return parse((await tool.execute(prepared, f.context)) as { value: unknown });
+	};
+	// The first call lands; its answer never reaches the model.
+	const tool = toolOf();
+	const first = await call(tool);
+	expect(first).toMatchObject({ outcome: "saved" });
+	// The same call again in this run, and in a resumed run whose tool and operations remember nothing: the receipt.
+	for (const again of [tool, toolOf()]) expect(await call(again)).toEqual(first);
+	expect(f.commits).toHaveLength(1);
+	expect(f.recordings).toHaveLength(1);
+});
+
+// Review r2 of #1819: a new call on a role that has already ended has no receipt under its key, and is refused before
+// the review, with no receipt begun, no commit and nothing kept; the run's next change goes ahead.
+it("refuses a new end_role on an agent already archived before the review, beginning nothing", async () => {
+	const f = await roles();
+	const before = f.text("QorperaOS/agents/market/agent.md");
+	const ended = { ...END, operationKey: "end-2", agent: "market" };
+	await refuses(f.hiring().prepareEndRole(ended, f.context.signal), "Market's role has already ended");
+	// Archived meanwhile, between prepare and the effect: refused before the receipt in the same way.
+	await refuses(f.hiring().endRole(ended, f.context), "Market's role has already ended");
+	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
+	expect(f.ledger.size).toBe(0);
+	expect(f.commits).toEqual([]);
+	expect(f.recordings).toEqual([]);
+	expect(f.text("QorperaOS/agents/market/agent.md")).toBe(before);
+	expect(parse(await f.hiring().endRole(END, { ...f.context, callId: randomUUID() }))).toMatchObject({
+		outcome: "saved",
+	});
+});
+
+it("refuses before the review the Co-Founder, the calling agent and a folder that is no agent's", async () => {
+	const f = await roles();
+	for (const [agent, reason] of [
+		["co-founder", "The Co-Founder's role does not end"],
+		["nora", "An agent does not end its own role"],
+		["sales", "No agent has the folder QorperaOS/agents/sales"],
+		["groups", "No agent has the folder QorperaOS/agents/groups"],
+		["Not A Handle", "No agent has the folder"],
+	] as const)
+		await refuses(f.hiring().prepareEndRole({ ...END, agent }, f.context.signal), reason);
+	// The same refusals stand at the effect; none of them changes when the call's own archive lands.
+	await refuses(f.hiring().endRole({ ...END, agent: "nora" }, f.context), "An agent does not end its own role");
+	const { actionReviewId: _, ...unreviewed } = f.context;
+	await refuses(f.hiring().endRole(END, unreviewed), "needs the automatic review's approval");
+	expect(f.commits).toEqual([]);
+	expect(f.recordings).toEqual([]);
+});
+
+it("tells the model an end that waits for a member not to call again, and is the end_role tool", async () => {
+	const waiting = await fixture(
+		{ files: { "QorperaOS/agents/research/agent.md": agentMd(randomUUID(), "Research") } },
+		{
+			hook: (path) =>
+				path.endsWith("research/agent.md") ? { outcome: "waiting_for_review", reason: "waiting_for_review" } : null,
+		},
+	);
+	const result = parse(await waiting.hiring().endRole(END, waiting.context));
+	expect(result).toMatchObject({ outcome: "waiting_for_review" });
+	expect(result.next).toContain("do not call again");
+	const f = await roles();
+	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+	const tools = cloudHiringTools(f.identity, {
+		folderHiring: f.hiring(operations),
+		folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+	});
+	expect(tools.map((tool) => tool.name)).toEqual(["hire_agent", "create_group_chat", "end_role", "hire_team"]);
+	const tool = tools[2]!;
+	expect(tool.description).toBe(CLOUD_END_ROLE_TOOL_DESCRIPTION);
+	expect(tool.description).toContain("agent is its folder name under QorperaOS/agents/; reason is one sentence");
+	expect(() => tool.parseArguments({ ...END, reason: "Two\nlines" })).toThrow(CloudToolArgumentRefusal);
+	expect(() => tool.parseArguments({ ...END, reason: "x".repeat(281) })).toThrow(CloudToolArgumentRefusal);
+	expect(() => tool.parseArguments({ ...END, extra: 1 })).toThrow();
+	const parsed = tool.parseArguments(END);
+	// The card names the agent: prepare reads it before the review.
+	const prepared = await tool.prepare!(parsed, f.context);
+	expect(prepared).toEqual({ ...END, name: "Research" });
+	expect(parse((await tool.execute(prepared, f.context)) as { value: unknown })).toMatchObject({ outcome: "saved" });
+	expect(() => tool.parseArguments({ ...END, reason: "Another reason." })).toThrow(
+		/already used in this run for ending another role/,
+	);
+	// hire_agent says when an existing coworker takes new work.
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toContain(
+		"Give it to an existing coworker only when it is the same kind of work and that coworker has room; otherwise hire.",
+	);
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).not.toContain("beats a new hire");
+});
+
+const member = (name: string, assignment = `Start on ${name}.`): CloudFolderTeamMember => ({
+	name,
+	role: `${name} owner`,
+	jobDescription: `Own ${name}.`,
+	firstAssignment: assignment,
+	figure: "acorn",
+});
+const TEAM: CloudFolderTeamHire = {
+	operationKey: "team-1",
+	hires: [
+		"Market",
+		"Brand",
+		"Brand research",
+		"Product",
+		"Customer research",
+		"Strategy",
+		"Industrial design",
+		"App",
+	].map((name) => member(name)),
+};
+
+it("hires a team as one commit of new folders under one review, each with its own ids and handle", async () => {
+	const f = await fixture({ folders: ["QorperaOS/agents/market"] });
+	const result = parse(await f.hiring().hireTeam(TEAM, f.context));
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-team-hire-receipt/v1",
+		runId: f.identity.runId,
+		outcome: "saved",
+	});
+	expect(result.hires.map((hire: { folder: string }) => hire.folder)).toEqual([
+		"QorperaOS/agents/market-2",
+		"QorperaOS/agents/brand",
+		"QorperaOS/agents/brand-research",
+		"QorperaOS/agents/product",
+		"QorperaOS/agents/customer-research",
+		"QorperaOS/agents/strategy",
+		"QorperaOS/agents/industrial-design",
+		"QorperaOS/agents/app",
+	]);
+	expect(result.hires.map((hire: { id: string }) => hire.id)).toEqual(
+		TEAM.hires.map((_, index) => hashedId("qorpera.folder-hire-team/v1", f.identity.runId, `team-1:${index}`)),
+	);
+	expect(new Set(result.hires.map((hire: { id: string }) => hire.id)).size).toBe(8);
+	expect(result.hires.every((hire: { outcome: string }) => hire.outcome === "saved")).toBe(true);
+	expect(f.commits).toHaveLength(1);
+	const [commit] = f.commits;
+	expect(commit).toMatchObject({ key: "hire-team-folder:team-1", receiptId: result.receiptId });
+	expect(commit?.units.map((unit) => unit.op)).toEqual(Array(8).fill("new_folder"));
+	expect(f.recordings).toHaveLength(1);
+	expect(f.recordings[0]?.p_request).toEqual({
+		actionReviewId: f.context.actionReviewId,
+		tool: "hire_team",
+		argumentSha256: f.context.argumentSha256,
+		units: commit?.units,
+	});
+	for (const [index, hire] of result.hires.entries()) {
+		const agent = parseCompanyStateFile(`${hire.folder}/agent.md`, f.text(`${hire.folder}/agent.md`) ?? "");
+		expect(agent?.ok && agent.file).toMatchObject({
+			kind: "agent",
+			id: hire.id,
+			name: TEAM.hires[index]?.name,
+			status: "active",
+			instructions: TEAM.hires[index]?.jobDescription,
+		});
+		const todo = parseCompanyStateFile(
+			`${hire.folder}/todos/first-assignment.md`,
+			f.text(`${hire.folder}/todos/first-assignment.md`) ?? "",
+		);
+		expect(todo?.ok && todo.file).toMatchObject({
+			kind: "todo",
+			id: hashedId("qorpera.folder-hire-team-todo/v1", f.identity.runId, `team-1:${index}`),
+			status: "open",
+			requestedBy: f.identity.requesterUserId,
+		});
+	}
+	expect(result.next).toContain("are hired, together:");
+	expect(result.next).toContain("each one's first run already lists the whole team as coworkers");
+	expect(result.next).toContain("No start message or introduction is needed. Tell the member who you hired and why.");
+	expect(result.next).toContain(
+		"Use send_coworker_message, with priority true, only for one that has not begun after a few minutes or needs more than its assignment says.",
+	);
+	expect(result.next).not.toContain("recipientStaffId");
+	const again = parse(await f.hiring().hireTeam(TEAM, f.context));
+	expect(again).toEqual(result);
+	expect(f.commits).toHaveLength(1);
+	expect(f.recordings).toHaveLength(1);
+});
+
+it("never shares an id with a hire_agent call under the same key", async () => {
+	const f = await fixture();
+	const single = parse(await f.hiring().hire({ ...HIRE, operationKey: "team-1:0" }, f.context));
+	const team = parse(
+		await f.hiring().hireTeam(TEAM, { ...f.context, callId: randomUUID(), actionReviewId: randomUUID() }),
+	);
+	expect(team.hires.map((hire: { id: string }) => hire.id)).not.toContain(single.agent.id);
+});
+
+it("says which hires a folder taken meanwhile kept out, and that the others are hired", async () => {
+	const f = await fixture();
+	vi.spyOn(f.folder, "listAll").mockResolvedValueOnce({ asOfSeq: 1, entries: [] });
+	f.folders.add("QorperaOS/agents/brand");
+	const result = parse(await f.hiring().hireTeam(TEAM, f.context));
+	expect(result.outcome).toBe("partly_saved");
+	expect(result.hires[1]).toMatchObject({ name: "Brand", outcome: "conflict", reason: "exists" });
+	expect(result.hires.filter((hire: { outcome: string }) => hire.outcome === "saved")).toHaveLength(7);
+	expect(result.next).toContain("Brand was not (Brand: QorperaOS/agents/brand is taken)");
+	expect(result.next).toContain("hire_agent for one, hire_team for several");
+	const g = await fixture();
+	vi.spyOn(g.folder, "listAll").mockResolvedValueOnce({ asOfSeq: 1, entries: [] });
+	for (const hire of TEAM.hires.slice(0, 2)) g.folders.add(`QorperaOS/agents/${hire.name.toLowerCase()}`);
+	const small = { operationKey: "team-2", hires: TEAM.hires.slice(0, 2) };
+	const none = parse(await g.hiring().hireTeam(small, g.context));
+	expect(none).toMatchObject({ outcome: "conflict" });
+	expect(none.next).toContain("Nothing was hired");
+});
+
+it("refuses before the review a team whose files cannot be saved or whose names repeat, and one without approval", async () => {
+	const f = await fixture();
+	const hiring = f.hiring();
+	expect(() => hiring.checkTeam({ ...TEAM, hires: [member("Market"), member(" market ")] })).toThrow(
+		new CloudToolArgumentRefusal(
+			"hire 2: name is the same as hire 1's: name each by its own work, and never a name a coworker already has",
+		),
+	);
+	expect(() => hiring.checkTeam({ ...TEAM, hires: [member("Market"), member("Bad\tName")] })).toThrow(
+		/^This team cannot be saved as the company's files: hire 2: /,
+	);
+	expect(() => hiring.checkTeam(TEAM)).not.toThrow();
+	const { actionReviewId: _, ...unreviewed } = f.context;
+	await refuses(hiring.hireTeam(TEAM, unreviewed), "needs the automatic review's approval");
+	expect(f.commits).toEqual([]);
+	expect(f.recordings).toEqual([]);
+	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
+});
+
+it("is the hire_team tool: two to twelve hires with hire_agent's fields, bound to its key", async () => {
+	const f = await fixture();
+	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+	const tools = cloudHiringTools(f.identity, {
+		folderHiring: f.hiring(operations),
+		folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+	});
+	const [hireAgent] = tools;
+	const tool = tools.find((item) => item.name === "hire_team")!;
+	expect(tool.description).toBe(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION);
+	expect(tool.maxArgumentBytes).toBe(90 * 1024);
+	const schema = tool.inputSchema as {
+		properties: { hires: { minItems: number; maxItems: number; items: { properties: Record<string, unknown> } } };
+	};
+	expect(schema.properties.hires).toMatchObject({ minItems: 2, maxItems: 12 });
+	const { operationKey: _, ...fields } = (hireAgent?.inputSchema as { properties: Record<string, unknown> })
+		.properties;
+	expect(schema.properties.hires.items.properties).toEqual(fields);
+	const args = { operationKey: "team-9", hires: [member("Market"), member("Brand")] };
+	expect(() => tool.parseArguments({ ...args, hires: [member("Market")] })).toThrow(
+		new CloudToolArgumentRefusal("hires holds 2 to 12 hires and has 1; hire one coworker with hire_agent"),
+	);
+	expect(() =>
+		tool.parseArguments({ ...args, hires: Array.from({ length: 13 }, (_, n) => member(`Area ${n}`)) }),
+	).toThrow(CloudToolArgumentRefusal);
+	expect(() =>
+		tool.parseArguments({
+			...args,
+			hires: [member("Market"), { ...member("Brand"), firstAssignment: "Å".repeat(2001) }],
+		}),
+	).toThrow(
+		new CloudToolArgumentRefusal("hire 2: firstAssignment holds at most 4000 bytes in this company: shorten it"),
+	);
+	expect(() => tool.parseArguments({ ...args, hires: [member("Market"), { ...member("Brand"), extra: 1 }] })).toThrow(
+		CloudToolArgumentRefusal,
+	);
+	expect(() => tool.parseArguments({ ...args, extra: 1 })).toThrow();
+	const parsed = tool.parseArguments(args);
+	expect(parsed).toEqual({ operationKey: "team-9", hires: args.hires });
+	const result = parse((await tool.execute(parsed, f.context)) as { value: unknown });
+	expect(result).toMatchObject({ outcome: "saved" });
+	expect(() => tool.parseArguments({ ...args, hires: [member("Market"), member("Sales")] })).toThrow(
+		/check QorperaOS\/agents\/ before hiring again/,
+	);
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toMatch(
+		/^Hire one new coworker, at any time as the company evolves, for a continuing responsibility that nobody owns/,
+	);
+	expect(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER).toContain(
+		"To hire two or more at one time, above all the first team, use hire_team.",
+	);
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toMatch(
+		/^Hire two or more new coworkers at one time, above all the company's first team, so that each starts knowing the others/,
+	);
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toContain(
+		"one hire, at any later time as the company evolves, goes by hire_agent",
+	);
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).not.toContain("send_coworker_message");
+});
+
+it("tells the model which hire, which field and what is wrong for every refused hire_team and hire_agent call", async () => {
+	const f = await fixture();
+	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+	const tools = cloudHiringTools(f.identity, {
+		folderHiring: f.hiring(operations),
+		folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+	});
+	const [hireAgent] = tools;
+	const team = tools.find((item) => item.name === "hire_team")!;
+	const two = [member("Market"), member("Brand")];
+	const holds = "name, role, jobDescription, firstAssignment and figure (figure is optional)";
+	const key = "one key for the call: 1 to 96 letters, digits, '.', '_', ':' or '-', starting with a letter or a digit";
+	const takes = "hire_team takes operationKey, once for the whole call, and hires, a list of 2 to 12 hires";
+	const refusal = (tool: CloudNativeTool, args: unknown) => {
+		try {
+			tool.parseArguments(args as never);
+		} catch (error) {
+			expect(error).toBeInstanceOf(CloudToolArgumentRefusal);
+			expect(Buffer.byteLength((error as Error).message)).toBeLessThanOrEqual(1024);
+			expect((error as Error).message).toMatch(/^[\u0020-\u007e\u00c0-\u00ff]*$/);
+			return (error as Error).message;
+		}
+		throw new Error("accepted");
+	};
+	const cases: [unknown, string][] = [
+		[
+			{ operationKey: "t", hires: two.map((hire, n) => ({ operationKey: `h-${n}`, ...hire })) },
+			`hire 1: operationKey is given once for the whole call, never inside a hire. A hire holds ${holds}`,
+		],
+		[{ operationKey: "t", team: two }, `${takes}; it was given a key that is neither`],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], role: "Brand\nand naming" }] },
+			"hire 2: role must be one line, with no line breaks",
+		],
+		[
+			{ operationKey: "t", hires: JSON.stringify(two) },
+			"hires must be a list of hire objects, not text holding one: send the list itself",
+		],
+		[{ operationKey: "t" }, `hires is missing: ${takes}, each holding ${holds}`],
+		[{ hires: two }, `operationKey is missing: ${key}`],
+		[{ operationKey: "has space", hires: two }, `operationKey is not a valid key: ${key}`],
+		[
+			{ operationKey: "t", hires: [two[0]] },
+			"hires holds 2 to 12 hires and has 1; hire one coworker with hire_agent",
+		],
+		[
+			{ operationKey: "t", hires: Array.from({ length: 13 }, (_, n) => member(`Area ${n}`)) },
+			"hires holds 2 to 12 hires and has 13; hire a larger team in two calls",
+		],
+		[{ operationKey: "t", hires: [two[0], "Brand"] }, `hire 2 must be an object holding ${holds}`],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], title: "x", owner: "y" }] },
+			`hire 2: holds a key that is not a field of a hire. A hire holds ${holds}`,
+		],
+		[{ operationKey: "t", hires: [two[0], { ...two[1], name: undefined }] }, "hire 2: name is missing"],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], name: "Brand\nTeam" }] },
+			"hire 2: name must be one line, with no line breaks",
+		],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], name: "x".repeat(161) }] },
+			"hire 2: name holds at most 160 bytes: shorten it",
+		],
+		[{ operationKey: "t", hires: [two[0], { ...two[1], role: 7 }] }, "hire 2: role must be text"],
+		[{ operationKey: "t", hires: [two[0], { ...two[1], jobDescription: "  " }] }, "hire 2: jobDescription is empty"],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], jobDescription: "y".repeat(16385) }] },
+			"hire 2: jobDescription holds at most 16384 bytes: shorten it",
+		],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], firstAssignment: "a\u0000b" }] },
+			"hire 2: firstAssignment holds a NUL character: remove it",
+		],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], figure: "dragon" }] },
+			"hire 2: figure must be one of planet, acorn, flame, rocket",
+		],
+		[
+			{ operationKey: "t", hires: [two[0], { ...two[1], name: "Märket–Ø", role: "One\ntwo" }] },
+			"hire 2: role must be one line, with no line breaks",
+		],
+		[[two], `${takes}, as one object`],
+	];
+	for (const [args, expected] of cases) {
+		const message = refusal(team, args);
+		if (expected.includes(": figure must be one of")) expect(message.startsWith(expected)).toBe(true);
+		else expect(message).toBe(expected);
+	}
+	expect(refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], name: "Market" }] })).toBe(
+		"hire 2: name is the same as hire 1's: name each by its own work, and never a name a coworker already has",
+	);
+	const single = { operationKey: "one", ...member("Market") };
+	const agentCases: [unknown, string][] = [
+		[{ ...single, hires: [] }, `hire_agent takes operationKey, ${holds}; it was given a key that is none of these`],
+		[{ ...single, operationKey: undefined }, `operationKey is missing: ${key}`],
+		[{ ...single, role: "Market\nresearch" }, "role must be one line, with no line breaks"],
+		[
+			{ ...single, firstAssignment: "Å".repeat(2001) },
+			"firstAssignment holds at most 4000 bytes in this company: shorten it",
+		],
+		[{ ...single, name: "" }, "name is empty"],
+	];
+	for (const [args, expected] of agentCases) expect(refusal(hireAgent!, args)).toBe(expected);
+	expect(hireAgent!.parseArguments(single)).toEqual(single);
+	const secret = `sk-live-${"A".repeat(40)}`;
+	const leaks = [
+		refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], [secret]: "x" }] }),
+		refusal(team, { operationKey: "t", [secret]: two }),
+		refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], name: secret, role: "One\ntwo" }] }),
+		refusal(team, {
+			operationKey: "t",
+			hires: [
+				{ ...two[0], name: secret },
+				{ ...two[1], name: secret },
+			],
+		}),
+		refusal(team, { operationKey: "t", hires: [two[0], { ...two[1], name: `${secret}\tx` }] }),
+		refusal(hireAgent!, { ...single, [secret]: "x" }),
+		refusal(hireAgent!, { ...single, name: secret, role: "One\ntwo" }),
+	];
+	for (const text of leaks) expect(text).not.toContain("sk-live");
+	expect(CLOUD_HIRE_TEAM_TOOL_DESCRIPTION).toContain(
+		"operationKey is given once, for the whole call, never inside a hire. hires holds 2 to 12 hires, and each hire holds only name (one line of at most 160 bytes, a name no other hire or coworker has), role (one line of at most 320 bytes), jobDescription (at most 16,384 bytes), firstAssignment (at most 4,000 bytes) and figure (optional).",
 	);
 });

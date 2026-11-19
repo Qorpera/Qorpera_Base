@@ -14,7 +14,7 @@ select pg_temp.base_claims('service_role');
 create function pg_temp.mf_binding() returns jsonb language sql as $$
 	select current_setting('qorpera_test.base_binding')::jsonb
 $$;
-create function pg_temp.mf_request(p_from text default 'support@mail.example.test', p_extra jsonb default '{}') returns jsonb
+create function pg_temp.mf_request(p_from text default 'support.base@mail.example.test', p_extra jsonb default '{}') returns jsonb
 language sql as $$
 	select jsonb_build_object('from', p_from, 'to', jsonb_build_array('customer@example.org'), 'subject', 'Hello',
 		'text', 'Thanks for writing.') || p_extra
@@ -80,16 +80,16 @@ $$;
 
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
 select pg_temp.base_error($q$select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
-	'92400000-0000-4000-8000-000000000020', 'support', 'Customer support')$q$, '42501');
+	'92400000-0000-4000-8000-000000000020', 'support.base', 'Customer support')$q$, '42501');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000005');
 select pg_temp.base_error($q$select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
-	'92400000-0000-4000-8000-000000000020', 'support', 'Customer support')$q$, '42501');
+	'92400000-0000-4000-8000-000000000020', 'support.base', 'Customer support')$q$, '42501');
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select pg_temp.base_error($q$select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
-	'79600000-0000-4000-8000-000000000020', 'support', 'Customer support')$q$, '22023');
+	'79600000-0000-4000-8000-000000000020', 'support.base', 'Customer support')$q$, '22023');
 select set_config('qorpera_test.mf_mailbox', public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
-	'92400000-0000-4000-8000-000000000020', 'support', 'Customer support')::text, true);
-select pg_temp.base_assert(current_setting('qorpera_test.mf_mailbox')::jsonb ->> 'email' = 'support@mail.example.test'
+	'92400000-0000-4000-8000-000000000020', 'support.base', 'Customer support')::text, true);
+select pg_temp.base_assert(current_setting('qorpera_test.mf_mailbox')::jsonb ->> 'email' = 'support.base@mail.example.test'
 	and current_setting('qorpera_test.mf_mailbox')::jsonb ->> 'proof' = 'mail'
 	and not (current_setting('qorpera_test.mf_mailbox')::jsonb ?| array['address', 'path']),
 	'The mailbox shows its email address and never its hook address: ' || current_setting('qorpera_test.mf_mailbox'));
@@ -98,14 +98,14 @@ select set_config('qorpera_test.mf_forms', public.qorpera_create_event_hook('924
 -- Members see the mailbox's email address; its hook address never shows.
 select pg_temp.base_assert((select count(*) = 1 from jsonb_array_elements(public.qorpera_list_event_hooks(
 		'92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020')) as hook(value)
-	where hook.value ->> 'email' = 'support@mail.example.test' and not hook.value ? 'address'),
+	where hook.value ->> 'email' = 'support.base@mail.example.test' and not hook.value ? 'address'),
 	'Members list the mailbox with its email address and no hook address');
 -- The other company's owner: its own mailbox and hook, and never this company's address.
 select pg_temp.base_claims('authenticated', '79600000-0000-4000-8000-000000000001');
 select pg_temp.base_error($q$select public.qorpera_create_company_mailbox('79600000-0000-4000-8000-000000000010',
-	'79600000-0000-4000-8000-000000000020', 'support', 'Their support')$q$, '23505');
+	'79600000-0000-4000-8000-000000000020', 'support.base', 'Their support')$q$, '23505');
 select public.qorpera_create_company_mailbox('79600000-0000-4000-8000-000000000010', '79600000-0000-4000-8000-000000000020',
-	'theirs', 'Their mailbox') \g /dev/null
+	'theirs.other', 'Their mailbox') \g /dev/null
 select set_config('qorpera_test.mf_elsewhere', public.qorpera_create_event_hook('79600000-0000-4000-8000-000000000010',
 	'79600000-0000-4000-8000-000000000020', 'elsewhere', 'Their form posts') ->> 'id', true);
 select pg_temp.base_claims('service_role');
@@ -126,7 +126,7 @@ begin
 		and v_hooks -> 0 ->> 'address' = current_setting('qorpera_test.mf_forms')::jsonb ->> 'address'
 		and v_hooks -> 0 ->> 'url' = 'https://intake.example.test/functions/v1/event-intake/'
 			|| (current_setting('qorpera_test.mf_forms')::jsonb ->> 'address')
-		and v_hooks -> 1 ->> 'email' = 'support@mail.example.test'
+		and v_hooks -> 1 ->> 'email' = 'support.base@mail.example.test'
 		and not (v_hooks -> 1 ?| array['address', 'path', 'url']),
 		'Agents list their own company''s hooks, with addresses for an owner''s run, and never a mailbox''s: ' || v_hooks::text);
 end
@@ -196,19 +196,19 @@ $$;
 
 select pg_temp.mf_send_error('from-' || n, pg_temp.mf_request(address), '42501',
 	'No mailbox of this company has that address; list_hooks shows them')
-from unnest(array['theirs@mail.example.test', 'theirs']) with ordinality as item(address, n);
-select set_config('qorpera_test.mf_their_mail', pg_temp.mf_mail(1, 'theirs+stripe@mail.example.test', 'Confirm your Stripe account')
+from unnest(array['theirs.other@mail.example.test', 'theirs.other']) with ordinality as item(address, n);
+select set_config('qorpera_test.mf_their_mail', pg_temp.mf_mail(1, 'theirs.other+stripe@mail.example.test', 'Confirm your Stripe account')
 	->> 'deliveryId', true);
-select set_config('qorpera_test.mf_our_mail', pg_temp.mf_mail(2, 'support+stripe@mail.example.test', 'Confirm your Stripe account')
+select set_config('qorpera_test.mf_our_mail', pg_temp.mf_mail(2, 'support.base+stripe@mail.example.test', 'Confirm your Stripe account')
 	->> 'deliveryId', true);
 select pg_temp.mf_send_error('reply-theirs', pg_temp.mf_request(p_extra => jsonb_build_object('inReplyTo',
 	current_setting('qorpera_test.mf_their_mail'))), '42501', 'The email this answers is not one the company received');
 select pg_temp.base_assert(current_setting('qorpera_test.mf_their_mail') is not null
 	and current_setting('qorpera_test.mf_our_mail')::uuid = any (pg_temp.mf_found('{"subject":"Confirm"}'))
 	and not (current_setting('qorpera_test.mf_their_mail')::uuid = any (pg_temp.mf_found('{"subject":"Confirm"}')))
-	and pg_temp.mf_found('{"to":"theirs+stripe@mail.example.test"}') = '{}',
+	and pg_temp.mf_found('{"to":"theirs.other+stripe@mail.example.test"}') = '{}',
 	'Another company''s mail is not found');
-select pg_temp.base_error(format('select pg_temp.mf_find(%L::jsonb)', '{"mailbox":"theirs@mail.example.test"}'), '22023',
+select pg_temp.base_error(format('select pg_temp.mf_find(%L::jsonb)', '{"mailbox":"theirs.other@mail.example.test"}'), '22023',
 	'No mailbox of this company has that address; list_hooks shows them');
 -- No header of its own: a blind copy, or a line break in the subject, is refused; a received message id with a line
 -- break leaves the reply unthreaded; the agent's and company's names lose quotes, brackets, line breaks and bidi controls.
@@ -220,7 +220,7 @@ select pg_temp.base_assert(not (receipt ->> 'threaded')::boolean and (pg_temp.mf
 		and (pg_temp.mf_outbox('mf-crlf')).thread_references is null,
 	'A message id with a line break leaves the reply unthreaded: ' || receipt::text)
 from (select pg_temp.mf_send('mf-crlf', pg_temp.mf_request(p_extra => jsonb_build_object('inReplyTo',
-	pg_temp.mf_mail(4, 'support@mail.example.test', 'Refund', jsonb_build_object('messageId',
+	pg_temp.mf_mail(4, 'support.base@mail.example.test', 'Refund', jsonb_build_object('messageId',
 		E'<m4@example.org>\r\nBcc: x@example.org')) ->> 'deliveryId'))) as receipt) as answer;
 update public.qorpera_profile_staff set display_name = E'Ada "the"\n<Bot>\\‮tob ؜x­'
 where profile_id = '92400000-0000-4000-8000-000000000010' and staff_agent_id = '92400000-0000-4000-8000-000000000030';
@@ -255,13 +255,13 @@ select pg_temp.base_assert((pg_temp.mf_outbox('mf-b')).status = 'sent' and (pg_t
 
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	local_part, 'Going') from unnest(array['gone', 'resting']) as local_part \g /dev/null
+	local_part || '.base', 'Going') from unnest(array['gone', 'resting']) as local_part \g /dev/null
 select pg_temp.base_claims('service_role');
-select pg_temp.mf_send('mf-' || local_part, pg_temp.mf_request(local_part || '@mail.example.test'))
+select pg_temp.mf_send('mf-' || local_part, pg_temp.mf_request(local_part || '.base@mail.example.test'))
 from unnest(array['gone', 'resting']) as local_part \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_set_event_hook_status((select hook_id from public.qorpera_company_mailboxes
-	where local_part = item.local_part and removed_at is null), item.status)
+	where local_part = item.local_part || '.base' and removed_at is null), item.status)
 from (values ('gone', 'removed'), ('resting', 'paused')) as item(local_part, status) \g /dev/null
 select pg_temp.base_claims('service_role');
 select public.qorpera_claim_company_mail(50, '79600000-0000-4000-8000-0000000000a4') \g /dev/null
@@ -275,7 +275,7 @@ select pg_temp.base_assert((pg_temp.mf_outbox('mf-gone')).status = 'cancelled'
 update public.qorpera_company_mail_outbox set next_attempt_at = clock_timestamp() where call_id = 'mf-a';
 insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
 values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001');
-select pg_temp.base_assert(pg_temp.mf_mail(3, 'support@mail.example.test') ->> 'outcome' = 'unknown',
+select pg_temp.base_assert(pg_temp.mf_mail(3, 'support.base@mail.example.test') ->> 'outcome' = 'unknown',
 	'A company being deleted takes no mail');
 select pg_temp.mf_send_error('deleting', pg_temp.mf_request(), '55000');
 select pg_temp.base_assert(public.qorpera_claim_company_mail(50, '79600000-0000-4000-8000-0000000000a3') = '[]'::jsonb,

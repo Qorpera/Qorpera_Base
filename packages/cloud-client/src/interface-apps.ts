@@ -12,16 +12,6 @@ import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
 export const APPS_FOLDER = "apps";
 export const APP_MANIFEST = "app.toml";
 export const APP_MANIFEST_MAX_BYTES = 4 * 1024;
-/** One file of an app, as the write tools bound a file. */
-export const APP_FILE_MAX_BYTES = 512 * 1024;
-export const APP_MAX_FILES = 64;
-/** What a page of an app may load in all, its entry included. */
-export const APP_MAX_BYTES = 4 * 1024 * 1024;
-/** One picture or video of an app, and an app's pictures and videos in all, on top of the rest (a machine writes them;
- * no text tool does). Pictures share the videos' bounds since 7 November 2026: a photoreal render is 0.5 to 2 MB, past
- * the 512 KiB of a page or code file. */
-export const APP_VIDEO_FILE_MAX_BYTES = 12 * 1024 * 1024;
-export const APP_VIDEOS_MAX_BYTES = 48 * 1024 * 1024;
 export const APP_NAME_MAX_CHARS = 60;
 export const APP_ABOUT_MAX_CHARS = 200;
 export const APP_DEFAULT_ENTRY = "index.html";
@@ -33,10 +23,8 @@ export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
 export const OWED_APPS = Object.freeze(["products", "money", "ads"] as const);
 export type OwedApp = (typeof OWED_APPS)[number];
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app;
- * `data`: the company's databases, asked by their questions; `money` and `site`: the platform's own numbers of the
- * company, asked as questions of the reserved database `qorpera` (APP_NUMBERS_DATABASE): `money` the bank's sums
- * (`qorpera/money-*`), `site` the visits of the company's sites (`qorpera/sites`, `qorpera/site-*`). Neither needs
- * `data`, and `data` reads neither. */
+ * `data`: the company's databases, asked by their questions; `reading`: the company's reading of itself
+ * (QorperaOS/vision/reading.md), its agents and whether it can run, as plain names (the `map` kit's first layer). */
 export const APP_READS = Object.freeze([
 	"files",
 	"tables",
@@ -44,6 +32,7 @@ export const APP_READS = Object.freeze([
 	"agents",
 	"questions",
 	"data",
+	"reading",
 	"money",
 	"site",
 ] as const);
@@ -111,7 +100,9 @@ export function parseAppWrites(
  * videos that are visual-first to let you see the company"): the kit writes `engine.js` and `index.html`, the agent
  * `<kit>.json` and the pictures it names. `curve`, `stack` and `shelf` are data kits of the same kind, each one big
  * shape (Jonas, 14 November 2026): a value over time, things that want a member's yes, the company's things side by
- * side. */
+ * side. `map` draws the company, or an owner's area, as its things with layers to dive into (Jonas, 15 November 2026:
+ * "Use a map kit"). `ring` and `flow` are two more such shapes (company views plan step 5): a year, a month or a week
+ * as a ring, and money or people from where they come to where they go. */
 export const APP_KITS = Object.freeze([
 	"explainer",
 	"model",
@@ -121,10 +112,13 @@ export const APP_KITS = Object.freeze([
 	"curve",
 	"stack",
 	"shelf",
+	"map",
+	"ring",
+	"flow",
+	"program",
 ] as const);
 export type AppKit = (typeof APP_KITS)[number];
 
-/** The kinds of file a page may load, by extension, with the media type each is handed to the frame as. */
 export const APP_FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
 	html: "text/html",
 	htm: "text/html",
@@ -135,34 +129,82 @@ export const APP_FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
 	txt: "text/plain",
 	md: "text/markdown",
 	csv: "text/csv",
+	xml: "application/xml",
+	map: "application/json",
 	svg: "image/svg+xml",
 	png: "image/png",
 	jpg: "image/jpeg",
 	jpeg: "image/jpeg",
 	gif: "image/gif",
 	webp: "image/webp",
+	avif: "image/avif",
+	bmp: "image/bmp",
+	ico: "image/x-icon",
 	mp4: "video/mp4",
 	webm: "video/webm",
+	mov: "video/quicktime",
+	m4v: "video/mp4",
+	mp3: "audio/mpeg",
+	m4a: "audio/mp4",
+	aac: "audio/aac",
+	wav: "audio/wav",
+	ogg: "audio/ogg",
+	oga: "audio/ogg",
+	opus: "audio/ogg",
+	flac: "audio/flac",
+	woff2: "font/woff2",
+	woff: "font/woff",
+	ttf: "font/ttf",
+	otf: "font/otf",
+	glb: "model/gltf-binary",
+	gltf: "model/gltf+json",
+	bin: "application/octet-stream",
+	obj: "model/obj",
+	usdz: "model/vnd.usdz+zip",
+	hdr: "image/vnd.radiance",
+	exr: "image/x-exr",
+	ktx2: "image/ktx2",
+	wasm: "application/wasm",
+	pdf: "application/pdf",
 });
-/** The kinds that are videos. */
-export const APP_VIDEO_KINDS: ReadonlySet<string> = new Set(["mp4", "webm"]);
-/** The kinds that are pictures (an SVG is text). */
-export const APP_PICTURE_KINDS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
-/** Pictures and videos: each at most APP_VIDEO_FILE_MAX_BYTES, all of them at most APP_VIDEOS_MAX_BYTES. */
-export const APP_MEDIA_KINDS: ReadonlySet<string> = new Set([...APP_PICTURE_KINDS, ...APP_VIDEO_KINDS]);
-/** The kinds that are text: an agent writes them with its text tools. */
-export const APP_TEXT_KINDS: ReadonlySet<string> = new Set([
-	"html",
-	"htm",
-	"css",
-	"js",
-	"mjs",
-	"json",
-	"txt",
-	"md",
-	"csv",
-	"svg",
+export const APP_BINARY_KINDS: ReadonlySet<string> = new Set([
+	"png",
+	"jpg",
+	"jpeg",
+	"gif",
+	"webp",
+	"avif",
+	"bmp",
+	"ico",
+	"mp4",
+	"webm",
+	"mov",
+	"m4v",
+	"mp3",
+	"m4a",
+	"aac",
+	"wav",
+	"ogg",
+	"oga",
+	"opus",
+	"flac",
+	"woff2",
+	"woff",
+	"ttf",
+	"otf",
+	"glb",
+	"bin",
+	"usdz",
+	"hdr",
+	"exr",
+	"ktx2",
+	"wasm",
+	"pdf",
 ]);
+
+export function appMediaType(path: string): string {
+	return APP_FILE_TYPES[appFileKind(path)] ?? "application/octet-stream";
+}
 
 export interface AppManifest {
 	readonly name: string;

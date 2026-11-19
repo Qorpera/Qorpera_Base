@@ -17,6 +17,7 @@ import {
 	cloudControlRefusalCode,
 	cloudPostgrestError,
 } from "./cloud-control-errors.ts";
+import { NativeHostCallUnknown } from "./cloud-native-host-dispatch.ts";
 import { CLOUD_TOOL_REQUEST_MAX_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -90,6 +91,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
 			"qorpera_begin_native_company_execution_v3",
 			"qorpera_bind_native_company_context",
+			// A Claude Code worker's run: its member's name and what its home changed (20260930772000).
+			"qorpera_claude_worker_run_facts",
+			"qorpera_claude_worker_fall_back",
+			"qorpera_record_claude_run_usage",
 			"qorpera_describe_company_run_context",
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
@@ -118,10 +123,17 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_good_will_agent_mark",
 			"qorpera_cofounder_crew",
 			"qorpera_offer_agents_to_member",
+			// The Co-Founder's senses (20260930765000).
+			"qorpera_describe_company_senses",
+			// Whether the run has a receipt under a key (20260930766000).
+			"qorpera_folder_run_receipt_exists",
 			// Machines agents start (2026-09-28).
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",
 			"qorpera_company_machines_available",
+			// The agent's home (20260930752000): whether this run has one, and its session's close when the run ends.
+			"qorpera_company_home_available",
+			"qorpera_close_home_session",
 			// The folder core (core C3).
 			"qorpera_folder_read",
 			"qorpera_folder_list",
@@ -214,7 +226,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					signal: requestSignal,
 					headers,
 					body,
-				}).catch(() => {
+				}).catch((error: unknown) => {
+					// A call the native host's lists do not name was never sent: the host's own fault, not a lost answer.
+					if (error instanceof NativeHostCallUnknown) throw error;
 					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
 				});
 				requestSignal.throwIfAborted();
@@ -376,7 +390,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					// A lost answer PostgREST gave whose statement ended (a lock or statement timeout) or never began (its pool
 					// wait): a read of the run's row may be asked again without waiting out the copy (R1, 28 Oct 2026).
 					if (category === "transport_unavailable" && refused && cloudControlEndedCode(refused.code))
-						throw new CloudControlRpcEnded("Company File authority unavailable");
+						throw new CloudControlRpcEnded("Company File authority unavailable", refused.code);
 					throw new CloudRuntimeDiagnosticError(category, "Company File authority unavailable");
 				}
 				return value;

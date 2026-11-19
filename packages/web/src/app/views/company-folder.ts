@@ -13,13 +13,15 @@ import {
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import type { CodeDownloadCalls } from "../../cloud/code-downloads.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
+import { AppFrame } from "../../ui/app-frame.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { reducedMotion } from "../../ui/motion.ts";
-import { framePage, PageFrames } from "../../ui/page-frame.ts";
+import { framePage } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
+import { assembleApp, PageFiles } from "../interface-apps.ts";
 import { CodeDownload } from "./code-download.ts";
 import { CodeImport } from "./code-import.ts";
 
@@ -57,6 +59,17 @@ export interface CompanyFolderBrowserOptions {
 	readonly search?: HTMLInputElement;
 	readonly embedded?: boolean;
 	readonly onSectionChange?: (section: "documents" | "recents") => void;
+	/** Choose mode (Open's "A file…" on an agent's computer, 20260930758000): the same rows, where a file's row picks it
+	 * (again: unpicks it) and a folder's still opens it; the folder open is the pick while no file is. Nothing that
+	 * changes the folder is reachable: no preview (so no history, Restore or download), no Recents, no code download or
+	 * import, and a link is shown but not picked. Told every pick, null at the top with nothing picked. */
+	readonly choose?: (pick: CompanyFolderPick | null) => void;
+}
+
+/** What choose mode picked: a file, or the folder open. */
+export interface CompanyFolderPick {
+	readonly path: string;
+	readonly kind: "file" | "folder";
 }
 
 type FileCategory = "folder" | "document" | "spreadsheet" | "image" | "pdf" | "link" | "other";
@@ -160,7 +173,7 @@ const MAX_PREVIEW_TEXT_BYTES = 1024 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
 /** The browser hands out at most this much in one download (member-web's WebFileDownloads): a folder file's most,
  * read piece by piece. */
-const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+export const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
 /** How many newest Recents pages a refresh reads to reach the changes already shown. */
@@ -243,7 +256,7 @@ export class CompanyFolderBrowser {
 	/** Set while the window shows a file still being read, so what comes in fades in. */
 	#loading = false;
 	readonly #search: HTMLInputElement;
-	readonly #frames: PageFrames;
+	readonly #frames = new Set<AppFrame>();
 	/** A page's view, kept while the same page stays open. */
 	#pageView: "page" | "source" = "page";
 	/** The open page across the window. */
@@ -274,6 +287,8 @@ export class CompanyFolderBrowser {
 	/** Where the feed is followed from: everything up to it is on screen. */
 	#position: CloudMemberFolderFeedPosition | null = null;
 	#opened: Opened | null = null;
+	/** Choose mode: the file picked in the open folder, or null when the folder itself is the pick. */
+	#picked: string | null = null;
 	/** A restore whose answer was lost, by path, until it or another restore there has an answer. */
 	readonly #lost = new Map<string, { key: string; unit: CloudMemberFolderUnit; version: string }>();
 	#busy = false;
@@ -301,7 +316,14 @@ export class CompanyFolderBrowser {
 				spellcheck: "false",
 			});
 		this.#stop = new AbortController();
-		this.#frames = new PageFrames(this.#stop.signal);
+		this.#stop.signal.addEventListener(
+			"abort",
+			() => {
+				for (const frame of this.#frames) frame.dispose();
+				this.#frames.clear();
+			},
+			{ once: true },
+		);
 		this.#viewer = options.embedded
 			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1" }, this.#preview)
 			: null;
@@ -398,9 +420,11 @@ export class CompanyFolderBrowser {
 		this.#preview.hidden = true;
 		host.classList.add("files-page", "folder-page", "storage-browser");
 		host.classList.toggle("is-embedded", options.embedded === true);
+		host.classList.toggle("is-choosing", options.choose !== undefined);
 		replace(
 			host,
-			options.embedded
+			// Choose mode sits in its owner's dialog, which names it: no page heading, no Recents.
+			options.embedded || options.choose
 				? null
 				: h(
 						"header",
@@ -450,7 +474,8 @@ export class CompanyFolderBrowser {
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
 		const downloads = this.#downloads;
 		const client = this.#client;
-		const calls = this.#source.codeDownloads?.bind(this.#source);
+		// Choose mode offers no code download or import: it picks, nothing more.
+		const calls = this.#options.choose ? undefined : this.#source.codeDownloads?.bind(this.#source);
 		if (calls)
 			this.#code ??= new CodeDownload({
 				signal: this.#signal(),
@@ -706,12 +731,36 @@ export class CompanyFolderBrowser {
 		if (!append && (this.#position === null || page.asOfSeq > this.#position.afterSeq))
 			this.#position = { afterSeq: page.asOfSeq, cursor: null };
 		if (moved) this.#search.value = "";
+		// A pick is of the folder shown: another folder, or a file no longer in it, leaves the folder as the pick.
+		if (moved || !this.#items.some((item) => item.path === this.#picked)) this.#picked = null;
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
 		this.#code?.enter(dir);
 		this.#import?.enter(dir);
 		this.#drawList(!append);
+		this.#tellPick();
 		if (jumped) await this.#refreshOpened();
+	}
+
+	/** Choose mode: a file's row picks it, or unpicks it when it is the pick; the rows are marked where they stand. */
+	#pick(path: string): void {
+		this.#picked = this.#picked === path ? null : path;
+		for (const main of this.#list.querySelectorAll<HTMLElement>("button.files-row-main[aria-pressed]")) {
+			const picked = main.dataset.path === this.#picked;
+			main.setAttribute("aria-pressed", String(picked));
+			main.closest(".files-row")?.classList.toggle("is-open", picked);
+		}
+		this.#tellPick();
+	}
+
+	#tellPick(): void {
+		this.#options.choose?.(
+			this.#picked !== null
+				? { path: this.#picked, kind: "file" }
+				: this.#dir
+					? { path: this.#dir, kind: "folder" }
+					: null,
+		);
 	}
 
 	async #enter(dir: string): Promise<void> {
@@ -745,7 +794,8 @@ export class CompanyFolderBrowser {
 	#drawCrumbs(): void {
 		const parts = this.#dir ? this.#dir.split("/") : [];
 		// The title already names the top folder, so the trail is drawn only below it.
-		this.#crumbs.hidden = this.#options.embedded === true && parts.length === 0;
+		this.#crumbs.hidden =
+			(this.#options.embedded === true || this.#options.choose !== undefined) && parts.length === 0;
 		const steps: HTMLElement[] = [
 			parts.length
 				? h(
@@ -823,10 +873,13 @@ export class CompanyFolderBrowser {
 						? "table"
 						: "file";
 		const label = fileKind(item);
+		// Choose mode: a folder opens as everywhere; a file picks; a link is shown and not picked.
+		const choosing = this.#options.choose !== undefined;
+		const picked = choosing && this.#picked === item.path;
 		return h(
 			"li",
 			{
-				class: `files-row${item.target !== null ? " is-link" : ""}${this.#opened?.path === item.path ? " is-open" : ""}`,
+				class: `files-row${item.target !== null ? " is-link" : ""}${(choosing ? picked : this.#opened?.path === item.path) ? " is-open" : ""}`,
 			},
 			h(
 				"button",
@@ -834,7 +887,12 @@ export class CompanyFolderBrowser {
 					type: "button",
 					class: "files-row-main",
 					"data-path": item.path,
-					onclick: () => void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item))),
+					...(choosing && !folder ? { "aria-pressed": String(picked) } : {}),
+					disabled: choosing && item.target !== null,
+					onclick: () =>
+						folder || !choosing
+							? void this.#run(() => (folder ? this.#enter(item.path) : this.#open(item)))
+							: this.#pick(item.path),
 				},
 				h(
 					"span",
@@ -1195,7 +1253,7 @@ export class CompanyFolderBrowser {
 		const live = page !== undefined ? framePage(page) : null;
 		let body: HTMLElement;
 		if (opened.image) body = h("img", { class: "files-image", src: opened.image, alt: name });
-		else if (page !== undefined) body = this.#page(page, live, name);
+		else if (page !== undefined) body = this.#page(page, live, name, opened.path);
 		else if (opened.text !== undefined)
 			body = MARKDOWN.has(extension(opened.path))
 				? h("div", { class: "files-doc" }, markdown(opened.text))
@@ -1251,14 +1309,18 @@ export class CompanyFolderBrowser {
 				h("div", { class: "files-preview-actions" }, ...actions),
 			],
 			live !== null
-				? [this.#iconButton("expand", t("Show {name} large", { name }), () => this.#showLarge(live, name))]
+				? [
+						this.#iconButton("expand", t("Show {name} large", { name }), () =>
+							this.#showLarge(live, name, opened.path),
+						),
+					]
 				: [],
 		);
 	}
 
 	/** A page, live in its frame or as its source. The frame is made the first time the page shows and kept while the
 	 * source shows, so the page keeps its state. A page that can't be shown live shows its source, and says so. */
-	#page(html: string, live: string | null, name: string): HTMLElement {
+	#page(html: string, live: string | null, name: string, path: string): HTMLElement {
 		const stage = h("div", { class: "files-page-stage" });
 		const source = h("pre", { class: "files-text files-page-source" }, html);
 		if (live === null)
@@ -1277,8 +1339,9 @@ export class CompanyFolderBrowser {
 		const show = (view: "page" | "source") => {
 			this.#pageView = view;
 			if (view === "page" && !frame) {
-				frame = this.#frames.frame(live, t("Page: {name}", { name }), "files-page-frame");
-				stage.prepend(frame);
+				const made = this.#frame(path, live, t("Page: {name}", { name }), "files-page-frame");
+				frame = made;
+				stage.prepend(made);
 			}
 			if (frame) frame.hidden = view !== "page";
 			source.hidden = view !== "source";
@@ -1303,7 +1366,7 @@ export class CompanyFolderBrowser {
 
 	/** The page across the window, run afresh, in the dialog the attachment preview uses. `live`: what framePage handed
 	 * over. */
-	#showLarge(live: string, name: string): void {
+	#showLarge(live: string, name: string, path: string): void {
 		this.#large?.close(false);
 		const dialog = new SurfaceDialog(name, "file-preview-dialog page-preview-dialog", () => {
 			if (this.#large === dialog) this.#large = undefined;
@@ -1311,9 +1374,38 @@ export class CompanyFolderBrowser {
 		this.#large = dialog;
 		dialog.content.append(
 			h("h2", null, name),
-			this.#frames.frame(live, t("Page: {name}", { name }), "page-preview-frame"),
+			this.#frame(path, live, t("Page: {name}", { name }), "page-preview-frame"),
 		);
 		dialog.open();
+	}
+
+	#frame(path: string, live: string, title: string, className: string): HTMLIFrameElement {
+		for (const done of this.#frames)
+			if (!done.frame.isConnected && done.frame.dataset.shown) {
+				done.dispose();
+				this.#frames.delete(done);
+			}
+		const signal = this.#signal();
+		const root = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+		const folder = this.#client!;
+		const files = new PageFiles(folder, root, signal);
+		const page = assembleApp(folder, { path: root, entry: baseName(path) }, signal).then(
+			(assembled) => (assembled.ok ? assembled.framed : { html: live }),
+			() => ({ html: live }),
+		);
+		const frame = new AppFrame(
+			page,
+			title,
+			className,
+			(call) => files.answer(call),
+			() => undefined,
+			{ again: true },
+		);
+		this.#frames.add(frame);
+		frame.frame.addEventListener("load", () => {
+			frame.frame.dataset.shown = "true";
+		});
+		return frame.frame;
 	}
 
 	async #reopen(path: string): Promise<void> {

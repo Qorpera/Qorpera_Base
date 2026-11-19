@@ -43,7 +43,9 @@ body{margin:0}
 .ck-line{margin:2px 0 0;font-size:15px;line-height:1.4;color:var(--q-muted)}
 .ck--bare{padding:clamp(12px,1vw,16px)}
 .ck--bare .ck-head{display:none}
-.ck-hero{margin-top:clamp(14px,2.4vh,26px);min-height:calc(clamp(44px,6vw,80px) + 32px)}
+.ck .ck-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.ck .ck-src{display:none}
+.ck-hero{margin-top:0;min-height:calc(clamp(44px,6vw,80px) + 32px)}
 .ck--bare .ck-hero{margin-top:0}
 .ck-row{display:flex;align-items:baseline;gap:.28em;white-space:nowrap}
 .ck-n{font-size:clamp(44px,6vw,80px);font-weight:650;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}

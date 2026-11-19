@@ -440,7 +440,6 @@ export interface WorkerBriefFile {
 	readonly id: string;
 	readonly title: string;
 	readonly species: "in-house" | "coding";
-	/** A coding session's harness and repository (C3a): a coding brief has both, an in-house one neither. */
 	readonly harness?: "codex" | "claude-code";
 	readonly repository?: CloudCodingRepository;
 	readonly access: "read" | "write";
@@ -2011,6 +2010,10 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 	const title = fields.text("title", true, 200, { bytes: true });
 	const species = fields.choice("species", true, ["in-house", "coding"] as const);
 	const coding = workerCoding(fields, species, problems);
+	const plainHarness =
+		species === "in-house" && fields.has("harness")
+			? fields.choice("harness", true, ["claude-code", "codex"] as const)
+			: null;
 	const access = fields.choice("access", true, ["read", "write"] as const);
 	const revival = fields.choice("revival", true, ["each", "batch"] as const);
 	const dispatchedAt = fields.instant("dispatched_at", true);
@@ -2071,6 +2074,7 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 		title,
 		species,
 		...(coding ?? {}),
+		...(plainHarness ? { harness: plainHarness } : {}),
 		access,
 		revival,
 		dispatchedAt,
@@ -2096,7 +2100,7 @@ function workerCoding(
 	problems: Problems,
 ): { harness: "codex" | "claude-code"; repository: CloudCodingRepository } | null {
 	if (species !== "coding") {
-		for (const key of ["harness", "repository", "base_branch"])
+		for (const key of ["repository", "base_branch"])
 			if (fields.has(key) && species === "in-house")
 				problems.add("value", fields.line(key), key, `${key} belongs to a coding session's brief`);
 		return null;

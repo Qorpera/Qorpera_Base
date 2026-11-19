@@ -13,9 +13,6 @@
  *   reaches its receipt (it makes a picture it then throws away).
  * - Under `apps/<name>/` the owner check is save_app's: a picture in another agent's or a member's app is reviewed as
  *   delegation (`prepare` says so); an app's `icons/` hold save_app's SVGs and take no picture.
- * - Every picture is held to an app's bound for one picture (12 MiB), must decode as a PNG, and goes in as one binary
- *   unit, `image/png`, under the call's receipt. The picture is made before the receipt: a failure is a refusal that
- *   began nothing (a receipt left executing would stop every later change of the run).
  * - The answer is company_write's with the picture's facts, and the picture itself follows it, fitted as company_read
  *   fits an image (cloud-folder-images.ts), when it was saved or parked for review and is the one just made.
  */
@@ -25,11 +22,7 @@ import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-
 import {
 	APP_MANIFEST,
 	APP_MANIFEST_MAX_BYTES,
-	APP_MAX_FILES,
-	APP_MEDIA_KINDS,
-	APP_VIDEOS_MAX_BYTES,
 	APPS_FOLDER,
-	appFileKind,
 	appPath,
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
@@ -41,7 +34,7 @@ import {
 	sha256,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
-import { APP_LIST_LIMIT, appFileSizes } from "./cloud-folder-app-tools.ts";
+import { refuseRetiredPath } from "./cloud-folder-app-retired.ts";
 import {
 	cloudFolderRefusal,
 	mutationText,
@@ -82,20 +75,13 @@ const MIB = 1024 * 1024;
  * made, since the ledger has no read of a completed operation by key that starts nothing. */
 const REMEMBERED_CALLS = 256;
 const REMEMBERED_PICTURES = 4;
-/** The room an app's pictures and videos must have left before a picture for it is made: what one picture takes in
- * practice (gpt-image's 1536x1024 PNG was 1.87 MB on the Mac trial of 13 November 2026), with some to spare. A picture
- * that comes back larger than the room left is refused before it is saved. */
-const APP_PICTURE_ROOM_BYTES = 4 * MIB;
 
 /** What make_picture tells the agent (at most 4096 bytes, as every tool's description). */
-export const CLOUD_MAKE_PICTURE_DESCRIPTION =
-	"Make one picture of something that does not exist yet, such as the company's own product idea, a scene, a look or an illustration for an app, and save it as a PNG file at path in the company folder. One picture per call. " +
-	"A real thing is shown by its real picture, never a generated one: for a real product, person or place, or a competitor's product, save a screenshot of the maker's own picture instead. Never pass a generated picture off as a photo of something real: where an app shows one, it says drawn or illustration. " +
-	"Write the prompt as a short description that says the subject, the view, the light and the background; for a thing that will stand on a page, ask for a plain or transparent-looking background. " +
-	"The answer shows you the picture: look at it, and when it is not good enough, call again with a better prompt and a new operationKey, giving the answer's version as expectedVersion to replace it. " +
-	"Pictures for an app go into the app's folder, such as apps/<name>/pictures/, before the save_app that shows them. " +
-	`path ends in .png, and its folder must exist (COMPANY_FILE_PARENT_MISSING otherwise; make it with company_mkdir). Leave expectedVersion out for a new file, or give the version company_read reported to replace one; a changed version is COMPANY_FILE_VERSION_CHANGED and nothing is saved. A picture is at most ${MAX_CLOUD_PICTURE_BYTES / MIB} MiB. ` +
-	"Each picture uses the member's own ChatGPT plan, which limits how many it makes: make the ones the work needs. Keep operationKey for the same call, and use a new one for any other. The result's state is applied only when it was saved.";
+export const CLOUD_MAKE_PICTURE_DESCRIPTION = [
+	"Make one picture of something that does not exist yet (the company's own product idea, a scene, a look, an illustration for an app) and save it as a PNG at path; one picture per call. A real thing is shown by its real picture: for a real product, person or place, or a competitor's product, save a screenshot of the maker's own picture instead. A generated picture is never passed off as a photo of something real: where an app shows one, it says drawn or illustration.",
+	"The answer shows you the picture: look at it, and when it is not good enough, call again with a better prompt and a new operationKey, with the answer's version as expectedVersion to replace it. The result's state is applied only when it was saved.",
+	`path ends in .png, in a folder that exists (COMPANY_FILE_PARENT_MISSING otherwise: make it with company_mkdir); pictures for an app go into its folder, such as apps/<name>/pictures/, before the save_app that shows them. A picture is at most ${MAX_CLOUD_PICTURE_BYTES / MIB} MiB. Each picture uses the member's own ChatGPT plan, which limits how many it makes: make the ones the work needs.`,
+].join("\n");
 
 /** What follows a saved picture's answer. */
 const SAVED_NEXT =
@@ -133,6 +119,25 @@ function pictureRefusal(error: unknown): never {
 			"PICTURE_FAILED: the picture could not be made now; nothing was saved. Call again once with a new operationKey; if it fails again, go on without it.",
 	};
 	throw new CloudToolRefusal(words[error.reason]);
+}
+
+export async function cloudPictureForeignOwner(
+	folder: CloudCompanyFolderClient,
+	path: string,
+	owner: string,
+	signal: AbortSignal,
+): Promise<boolean> {
+	const app = appPath(path);
+	if (!app) return false;
+	await refuseRetiredPath(folder, path, signal, "saved");
+	let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
+	try {
+		stored = await folder.readText(`${APPS_FOLDER}/${app.name}/${APP_MANIFEST}`, APP_MANIFEST_MAX_BYTES, signal);
+	} catch (error) {
+		if (!(error instanceof CloudCompanyPathNotText)) unavailable(error, "saved");
+	}
+	const parsed = stored ? parseAppManifest(stored.text) : null;
+	return parsed?.ok === true && parsed.manifest.owner !== owner.toLowerCase();
 }
 
 interface PictureRequest {
@@ -177,28 +182,6 @@ export function cloudPictureTool(options: {
 			return unavailable(error, "saved");
 		}
 	};
-	/** An app's room for a picture at `app.inner`, as save_app counts the app from a listing of it: whether one more
-	 * file fits beside its files (the one at that path, which the picture replaces, not counted), and the bytes its
-	 * pictures and videos have left. Listed before the picture is made, and again before it is saved. */
-	const appRoom = async (
-		app: NonNullable<ReturnType<typeof appPath>>,
-		signal: AbortSignal,
-	): Promise<{ oneMoreFile: boolean; mediaLeft: number }> => {
-		const root = `${APPS_FOLDER}/${app.name}`;
-		const listed = await folder
-			.list(root, { recursive: true, limit: APP_LIST_LIMIT }, signal)
-			.catch((error) => unavailable(error, "saved"));
-		const sizes = appFileSizes(listed.entries, root);
-		sizes.delete(app.inner.toLowerCase());
-		const media = [...sizes].reduce(
-			(sum, [inner, bytes]) => (APP_MEDIA_KINDS.has(appFileKind(inner)) ? sum + bytes : sum),
-			0,
-		);
-		return {
-			oneMoreFile: listed.next === null && sizes.size + 1 <= APP_MAX_FILES,
-			mediaLeft: APP_VIDEOS_MAX_BYTES - media,
-		};
-	};
 	return {
 		name: "make_picture" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -215,9 +198,15 @@ export function cloudPictureTool(options: {
 					type: "string",
 					minLength: 1,
 					maxLength: MAX_CLOUD_PICTURE_PROMPT_BYTES,
-					description: "What to draw, in words: the subject, the view, the light and the background.",
+					description:
+						"A short description of what to draw: the subject, the view, the light and the background; for a thing that will stand on a page, a plain or transparent-looking background.",
 				},
-				expectedVersion: { type: ["string", "null"], pattern: UUID_PATTERN.source },
+				expectedVersion: {
+					type: ["string", "null"],
+					pattern: UUID_PATTERN.source,
+					description:
+						"Left out for a new file; to replace one, the version company_read or the last answer reported (a changed version is COMPANY_FILE_VERSION_CHANGED, and nothing is saved).",
+				},
 			},
 		},
 		parseArguments(value) {
@@ -259,20 +248,7 @@ export function cloudPictureTool(options: {
 		// Read before the review, so its effect class is the one that runs.
 		async prepare(value, context) {
 			const request = value as unknown as PictureRequest;
-			const app = appPath(request.path);
-			if (!app) return value;
-			let stored: Awaited<ReturnType<CloudCompanyFolderClient["readText"]>> = null;
-			try {
-				stored = await folder.readText(
-					`${APPS_FOLDER}/${app.name}/${APP_MANIFEST}`,
-					APP_MANIFEST_MAX_BYTES,
-					context.signal,
-				);
-			} catch (error) {
-				if (!(error instanceof CloudCompanyPathNotText)) unavailable(error, "saved");
-			}
-			const parsed = stored ? parseAppManifest(stored.text) : null;
-			return parsed?.ok === true && parsed.manifest.owner !== owner
+			return (await cloudPictureForeignOwner(folder, request.path, owner, context.signal))
 				? ({ ...request, foreignOwner: true } as unknown as JsonValue)
 				: value;
 		},
@@ -309,6 +285,7 @@ export function cloudPictureTool(options: {
 				return { ...earlier.reply };
 			}
 			// What would refuse the picture anyway is checked before it is made: the member's plan pays for each one.
+			await refuseRetiredPath(folder, request.path, context.signal, "saved");
 			const parent = request.path.split("/").slice(0, -1).join("/");
 			if (parent !== "") {
 				const into = await read(parent, context.signal);
@@ -319,16 +296,6 @@ export function cloudPictureTool(options: {
 				if (into.kind !== "folder")
 					throw new CloudToolRefusal(
 						"COMPANY_FILE_PARENT_MISSING: nothing was made; what this path goes in is a file or a link, not a folder. Save the picture in a folder.",
-					);
-			}
-			// A picture for an app goes in only while the app has room for it, as save_app counts the app's files: one
-			// more file, and a picture's room among its pictures and videos.
-			const app = appPath(request.path);
-			if (app) {
-				const room = await appRoom(app, context.signal);
-				if (!room.oneMoreFile || room.mediaLeft < APP_PICTURE_ROOM_BYTES)
-					throw new CloudToolRefusal(
-						`APP_TOO_LARGE: nothing was made; the app ${app.name} has no room for another picture (an app holds at most ${APP_MAX_FILES} files and ${APP_VIDEOS_MAX_BYTES / MIB} MiB of pictures and videos). Remove pictures it no longer shows with company_delete first, or save this one outside the app.`,
 					);
 			}
 			const at = await read(request.path, context.signal);
@@ -365,20 +332,6 @@ export function cloudPictureTool(options: {
 						? { revisedPrompt: made.revisedPrompt }
 						: { revisedPromptCut: true as const }
 					: {};
-			// The app is listed again once the picture is made, as late as a refusal can still begin nothing: another run may
-			// have filled it during the generation. The commit checks the target's version only, so the moment between this
-			// listing and the commit stays open, as it does between save_app's own listing and commit.
-			if (app) {
-				const room = await appRoom(app, context.signal);
-				if (!room.oneMoreFile || made.png.byteLength > room.mediaLeft) {
-					const full = room.oneMoreFile
-						? `at ${made.png.byteLength} bytes it is more than the ${Math.max(0, room.mediaLeft)} bytes left for pictures and videos`
-						: `one more file would pass the ${APP_MAX_FILES} an app holds`;
-					throw new CloudToolRefusal(
-						`APP_TOO_LARGE: the picture was made but not saved; the app ${app.name} has no room for it now, as it changed while the picture was made or was full already: ${full}. Remove pictures it no longer shows with company_delete first, or save it outside the app.`,
-					);
-				}
-			}
 			let content: CloudToolContent;
 			try {
 				content = await operations.execute({

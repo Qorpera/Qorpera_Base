@@ -46,7 +46,6 @@ import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
 	type AgentThreadHandle,
-	parseAccountEntitlement,
 	parseAccountMatch,
 	parseAgentThreadHandle,
 	parseCompanyFile,
@@ -98,7 +97,6 @@ import { listScreensInUse, type ScreensInUse } from "./screens-in-use.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import { type Leaderboard, markOnline, readLeaderboard, setLeaderboardHidden } from "./social.ts";
 import type {
-	HostedAccountEntitlement,
 	HostedAccountMatch,
 	HostedCompanyFile,
 	HostedFriend,
@@ -141,10 +139,6 @@ export class CloudApi {
 
 	listProfiles(): Promise<HostedProfile[]> {
 		return this.cloud.rpc("qorpera_list_hosted_profiles").then(parseProfiles);
-	}
-
-	getAccountEntitlement(): Promise<HostedAccountEntitlement> {
-		return this.cloud.rpc("qorpera_get_account_entitlement").then(parseAccountEntitlement);
 	}
 
 	/** The company's good will: its months, invoices and the card that pays them. Any member may read it. */
@@ -388,6 +382,27 @@ export class CloudApi {
 				p_time_zone: timeZone,
 			})
 			.then(parseCompanyTimeZone);
+	}
+
+	addPendingSpectators(profileId: string, emails: readonly string[]): Promise<string[]> {
+		return this.cloud
+			.rpc("qorpera_add_pending_spectators", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_emails: [...emails],
+			})
+			.then(parseEmails);
+	}
+
+	listPendingSpectators(profileId: string): Promise<string[]> {
+		return this.cloud
+			.rpc("qorpera_list_pending_spectators", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseEmails);
+	}
+
+	invitePendingSpectators(profileId: string): Promise<string[]> {
+		return this.cloud
+			.rpc("qorpera_invite_pending_spectators", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseEmails);
 	}
 
 	inviteMember(
@@ -950,19 +965,6 @@ export class CloudApi {
 			.then(parseActionReviewReceipt);
 	}
 
-	/** The one member write into a conversation: a queued prompt. The mouth is
-	 * server-side; this never produces agent text. */
-	appendPrompt(sessionId: string, clientInputId: string, text: string): Promise<SessionInputReceipt> {
-		return this.cloud
-			.rpc("qorpera_append_session_input", {
-				p_session_id: requiredUuid(sessionId, "Session id"),
-				p_client_input_id: requiredUuid(clientInputId, "Client input id"),
-				p_kind: "user_message",
-				p_body: { schema: SESSION_PROMPT_SCHEMA, text, images: [] },
-			})
-			.then(parseSessionInputReceipt);
-	}
-
 	// Company File
 
 	getCompanyFile(environmentId: string): Promise<HostedCompanyFile> {
@@ -1066,4 +1068,10 @@ function parseSecretCaptureTicket(value: unknown): CloudSecretCaptureTicket {
 		version: scope.version as number,
 		expiresAt: input.expiresAt,
 	};
+}
+
+function parseEmails(value: unknown): string[] {
+	if (!Array.isArray(value) || !value.every((item) => typeof item === "string"))
+		throw new Error("The cloud answered something other than a list of emails.");
+	return value;
 }

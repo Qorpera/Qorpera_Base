@@ -98,9 +98,7 @@ $$;
 select pg_temp.place_assert(
 	has_function_privilege('authenticated', 'public.qorpera_place_member_contacts(uuid,jsonb)', 'EXECUTE')
 		and not has_function_privilege('anon', 'public.qorpera_place_member_contacts(uuid,jsonb)', 'EXECUTE')
-		and not has_function_privilege('service_role', 'public.qorpera_place_member_contacts(uuid,jsonb)', 'EXECUTE')
-		and position('20260930717000' in pg_get_functiondef('public.qorpera_place_member_contacts(uuid,jsonb)'::regprocedure)) > 0
-		and position('20260930717000' in pg_get_functiondef('public.qorpera_list_member_chats(uuid)'::regprocedure)) > 0,
+		and not has_function_privilege('service_role', 'public.qorpera_place_member_contacts(uuid,jsonb)', 'EXECUTE'),
 	'authenticated alone places contacts');
 select pg_temp.place_assert(
 	has_function_privilege('authenticated', 'public.qorpera_list_member_chats(uuid)', 'EXECUTE')

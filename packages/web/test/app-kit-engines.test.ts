@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vite
  * `window.qorpera` (reads that fail and then work, questions that come later, the rows a Save asks for), with the ten
  * seconds of the bridge's pace on a fake clock, and a page that changes size. What they draw is looked at in a browser. */
 
-const KITS = ["model", "board", "path", "object", "curve", "stack", "shelf"] as const;
+const KITS = ["model", "board", "path", "object", "curve", "stack", "shelf", "map", "ring", "flow"] as const;
 type Kit = (typeof KITS)[number];
 /** The kits where a member opens a thing, with a note to the app's owner at its foot. */
 const THING_KITS = ["model", "board", "path", "object", "shelf"] as const;
@@ -18,7 +18,11 @@ type ThingKit = (typeof THING_KITS)[number];
 const kitFile = (kit: Kit, name: string) => readFileSync(resolve(`../runtime/kits/${kit}/${name}`), "utf8");
 /** A kit's guide example: the data in its KIT.md, as an agent reads it. */
 const example = (kit: Kit) => /```json\n([\s\S]*?)\n```/.exec(kitFile(kit, "KIT.md"))?.[1] ?? "";
-const titleOf = (text: string) => (JSON.parse(text) as { title: string }).title;
+/** The page's title as the data gives it: a map's is its first layer's. */
+const titleOf = (text: string) => {
+	const data = JSON.parse(text) as { title?: string; top?: { title?: string } };
+	return data.title ?? data.top?.title;
+};
 
 interface Question {
 	readonly id: string;
@@ -757,6 +761,47 @@ describe("the board kit's engine", () => {
 		expect(document.querySelector(".bk-pick")).toBeNull();
 	});
 
+	it("draws the pictures as the page, grows the one under the pointer and marks the chosen one on its picture", async () => {
+		resize(1700, 700);
+		const media = document.createElement("div");
+		media.id = "kit-media";
+		media.hidden = true;
+		media.innerHTML = ["lys", "ro"]
+			.map((id) => `<img data-kit-src="pictures/${id}.webp" src="data:image/webp;base64,AA==" alt="">`)
+			.join("");
+		document.body.append(media);
+		const pictures = JSON.stringify({
+			...JSON.parse(board),
+			line: "Two names",
+			items: [
+				{ id: "lys", name: "Lys", poster: "pictures/lys.webp" },
+				{ id: "ro", name: "Ro", poster: "pictures/ro.webp" },
+			],
+		});
+		const { qorpera } = await open("board", pictures, (bridge) => {
+			bridge.questions = [question];
+		});
+		const row = document.querySelector(".bk-panels") as HTMLElement;
+		expect(row.classList.contains("is-pics")).toBe(true);
+		expect(document.querySelector("h1")?.textContent).toBe("Names");
+		expect(getComputedStyle(document.querySelector(".bk-head") as Element).position).toBe("absolute");
+		expect(document.querySelector('.bk-panel[data-id="lys"] .bk-stage > .bk-win > .bk-ptop')).not.toBeNull();
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1fr)");
+		const enter = Object.assign(new Event("pointerenter"), { pointerType: "mouse" });
+		document.querySelector('.bk-panel[data-id="ro"]')?.dispatchEvent(enter);
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1.4fr)");
+		document.querySelector('.bk-panel[data-id="ro"]')?.dispatchEvent(new Event("pointerleave"));
+		expect(row.style.getPropertyValue("--tc")).toBe("minmax(0,1fr) minmax(0,1fr)");
+		document.querySelector<HTMLButtonElement>('.bk-panel[data-id="lys"]')?.click();
+		document.querySelector<HTMLButtonElement>(".bk-world .bk-pick")?.click();
+		await settle();
+		expect(qorpera.answer).toHaveBeenCalledWith("q-1", "lys");
+		const chip = (id: string) =>
+			getComputedStyle(document.querySelector(`.bk-panel[data-id="${id}"] .bk-chosen`) as Element).display;
+		expect(chip("lys")).toBe("inline-flex");
+		expect(chip("ro")).toBe("none");
+	});
+
 	it("asks nothing more for a board it has drawn again", async () => {
 		const { now, change, qorpera } = await open("board", board, (bridge) => {
 			bridge.questions = new Error("Too many calls");
@@ -809,6 +854,127 @@ describe("the object kit's engine", () => {
 		change();
 		await settle(10000);
 		expect(document.querySelector(".ok-head h1")?.textContent).toBe("The new box");
+	});
+});
+
+describe("the object kit's engine with a model", () => {
+	const turntable = { picture: "pictures/box.webp", frames: 4, columns: 4, frameWidth: 560, frameHeight: 560 };
+	const parts = [
+		{
+			id: "lid",
+			name: "Lid",
+			state: "known",
+			node: "Lid",
+			track: [
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+				[0.5, 0.2, 1],
+			],
+		},
+	];
+	const box = (more: Record<string, unknown>) => ({ lang: "en", title: "The box", parts, ...more });
+	async function openObject(data: object, more: Record<string, unknown> = {}) {
+		const bridge = standIn(JSON.stringify(data));
+		page.QORPERA_KIT = { app: "demo", kit: "object", data: "object.json" };
+		page.qorpera = { ...bridge.qorpera, ...more };
+		new Function(kitFile("object", "engine.js"))();
+		await settle();
+		return bridge;
+	}
+	const said = () => vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const object = () => document.querySelector(".ok-object") as HTMLElement;
+
+	it("draws a turntable-only page as before: no 3D library asked for, nothing of the live mode in it", async () => {
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		const warn = said();
+		await openObject(box({ turntable }), { file });
+		drawFrames(3);
+		expect(file).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
+		expect(document.querySelector("main.ok")?.classList.contains("live")).toBe(false);
+		expect(document.querySelectorAll(".ok-gl, .ok-wait, .ok-none, script[src]")).toHaveLength(0);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-hint")?.classList.contains("show")).toBe(true);
+	});
+
+	it("shows the turntable as today where the browser has no WebGL, and says why in the console", async () => {
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		const warn = said();
+		await openObject(box({ model: "box.glb", turntable }), { file });
+		drawFrames(3);
+		expect(file).not.toHaveBeenCalled();
+		expect(document.querySelector("main.ok")?.classList.contains("live")).toBe(false);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-none")).toBeNull();
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(warn).toHaveBeenCalledWith(
+			"Object kit: this browser cannot draw live 3D (it has no WebGL 2), so the page shows the thing's picture instead.",
+		);
+	});
+
+	it("says in one quiet line, in the page's language, that the model could not be shown when it has no picture", async () => {
+		said();
+		await openObject({ ...box({ model: "box.glb" }), lang: "da" });
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("Modellen kunne ikke vises.");
+		document.body.replaceChildren();
+		await openObject(box({ model: "box.glb", words: { nomodel: "No model here." } }));
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("No model here.");
+		expect(document.querySelectorAll(".ok-label")).toHaveLength(1);
+		expect(document.querySelectorAll(".ok-fact")).toHaveLength(0);
+	});
+
+	it("shows the poster still while the library and the model arrive, and a quiet mark where there is no picture", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		await openObject(box({ model: "box.glb", turntable }), { file });
+		drawFrames(3);
+		expect(file).toHaveBeenCalledWith("three.js");
+		expect(file).not.toHaveBeenCalledWith("box.glb");
+		expect(document.head.querySelector("script[src]")?.getAttribute("src")).toBe("blob:null/three.js");
+		expect(object().getAttribute("role")).toBe("img");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(document.querySelector(".ok-none")).toBeNull();
+		document.body.replaceChildren();
+		document.head.replaceChildren();
+		await openObject(box({ model: "box.glb" }), { file });
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(true);
+		expect(document.querySelector(".ok-none")).toBeNull();
+	});
+
+	it("falls back to the turntable, or the line, when the 3D library cannot be read", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const warn = said();
+		const file = vi.fn(async (path: string) => {
+			throw new Error(`${path} is not in the page's folder`);
+		});
+		await openObject(box({ model: "model/box.glb", turntable }), { file });
+		await settle();
+		drawFrames(3);
+		expect(object().getAttribute("role")).toBe("slider");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+		expect(document.querySelector(".ok-none")).toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			"Object kit: model/box.glb could not be shown (three.js is not in the page's folder). The page shows the thing's picture instead.",
+		);
+		document.body.replaceChildren();
+		await openObject(box({ model: "model/box.glb" }), { file });
+		await settle();
+		expect(document.querySelector(".ok-none:not([hidden])")?.textContent).toBe("The model could not be shown.");
+		expect(document.querySelector(".ok-wait")?.classList.contains("on")).toBe(false);
+	});
+
+	it("reads a model, a light and a view only as paths of the app's own folder", async () => {
+		vi.stubGlobal("WebGL2RenderingContext", function WebGL2RenderingContext() {});
+		const file = vi.fn(async (path: string) => `blob:null/${path}`);
+		said();
+		await openObject(box({ model: "https://example.com/box.glb", turntable }), { file });
+		expect(file).not.toHaveBeenCalled();
+		expect(object().getAttribute("role")).toBe("slider");
+		document.body.replaceChildren();
+		await openObject(box({ model: "../box.glb" }), { file });
+		expect(file).not.toHaveBeenCalled();
+		expect(document.querySelector(".ok-empty, .ok-none, .ok-wait")).toBeNull();
 	});
 });
 
@@ -1157,6 +1323,9 @@ describe("a kit's page as a concept", () => {
 		curve: { root: "ck--bare", header: ".ck-head", kept: ".ck-plot" },
 		stack: { root: "st--bare", header: ".st-head", kept: ".st-card" },
 		shelf: { root: "sh--bare", header: ".sh-head", kept: ".sh-thing" },
+		map: { root: "mp--bare", header: ".mp-head", kept: ".mp-thing" },
+		ring: { root: "rk--bare", header: ".rk-head", kept: ".rk-stage" },
+		flow: { root: "fk--bare", header: ".fk-head", kept: ".fk-stage" },
 	};
 	/** What the page shows of an element: jsdom reads the engine's own stylesheet for a class selector. */
 	const shows = (selector: string) => {
@@ -1164,13 +1333,18 @@ describe("a kit's page as a concept", () => {
 		return found !== null && getComputedStyle(found).display !== "none";
 	};
 
-	it.each(KITS)("of %s draws its title block and its own padding when the page is no concept", async (kit) => {
+	it.each(KITS)("of %s keeps its title for screen readers only when the page is no concept", async (kit) => {
 		await open(kit, example(kit));
 		drawFrames(3);
 		const root = document.querySelector("main") as HTMLElement;
 		expect(root.className).not.toContain("--bare");
-		expect(shows(BARE[kit].header)).toBe(true);
+		const header = document.querySelector(kit === "object" ? ".ok-head h1" : BARE[kit].header) as Element;
+		expect(getComputedStyle(header).position).toBe("absolute");
+		expect(getComputedStyle(header).width).toBe("1px");
+		if (kit === "object")
+			expect(getComputedStyle(document.querySelector(".ok-head p") as Element).position).not.toBe("absolute");
 		expect(document.querySelector("h1")?.textContent).toBe(titleOf(example(kit)));
+		expect(document.querySelector(BARE[kit].kept)).not.toBeNull();
 	});
 
 	it.each(KITS)("of %s draws no title block when the page is a concept, and keeps what a member does", async (kit) => {
@@ -1570,5 +1744,767 @@ describe("the shelf kit's engine", () => {
 		await settle();
 		expect(thing("desk")?.querySelector(".sh-num b")?.textContent).toBe("12");
 		expect(thing("desk")?.querySelector(".sh-num")?.classList.contains("low")).toBe(true);
+	});
+});
+
+describe("the map kit's engine", () => {
+	/* The company, or an owner's area, as a picture (Jonas, 15 November 2026: "Use a map kit"): its things as shapes
+	 * that fill, the agents' figures at them, layers to dive into; the company's own map takes its first layer from
+	 * qorpera.reading(). */
+	const agent = (name: string, figure: string, working = false) => ({ name, figure, working });
+	const reading = (over: Record<string, unknown> = {}) => ({
+		reading: {
+			sentence: "We know what a workshop needs and have a repair tracker on paper.",
+			line: "One thing waits for you.",
+			attention: "tracker",
+			things: [
+				{
+					key: "needs",
+					name: "What workshops need",
+					shape: "factory",
+					full: 62,
+					state: "One workshop known",
+					agents: [agent("Customer research", "heart")],
+					waits: [],
+				},
+				{
+					key: "tracker",
+					name: "The repair tracker",
+					shape: "board",
+					full: 34,
+					state: "On paper",
+					agents: [agent("Product", "puzzle", true), agent("Engineering", "bolt")],
+					waits: [],
+				},
+				{
+					key: "money",
+					name: "Money",
+					shape: "coin",
+					full: 14,
+					state: "Waits for you",
+					agents: [agent("Strategy", "puzzle")],
+					waits: [{ name: "Jonas Krüger", me: true }],
+				},
+			],
+			changes: [{ agent: { name: "Sales", figure: "rocket" }, what: "joined", line: "Sales joined" }],
+			notes: [],
+		},
+		team: [
+			agent("Product", "puzzle", true),
+			{ ...agent("Co-Founder", "crown"), cofounder: true },
+			agent("Strategy", "puzzle"),
+		],
+		standing: { stopped: false, since: null, why: null, member: null, resetsAt: null },
+		...over,
+	});
+	const company = (layers: Record<string, unknown> = {}) => JSON.stringify({ lang: "en", top: "reading", layers });
+	const parts = {
+		tracker: {
+			line: "Its parts",
+			things: [
+				{ id: "jobs", name: "Job list", shape: "board", full: 60, agents: ["Product"] },
+				{ id: "login", name: "Sign-in", shape: "code", full: 80, seen: "2026-10-20" },
+				{ id: "sms", name: "Text the customer", shape: "chat", state: "assumed" },
+				{ id: "pay", name: "Payments", shape: "coin", state: "unknown" },
+				{ id: "costs", name: "What it costs", shape: "chart", opens: "app:business-model" },
+			],
+		},
+		jobs: { things: [{ id: "list", name: "The list", shape: "document", full: 40 }] },
+	};
+	/** The map opened as the frame opens it, with the figures its page carries and the bridge's reading and note. */
+	async function openMap(file: string, answer: unknown, tell?: Mock) {
+		const media = document.createElement("div");
+		media.id = "kit-media";
+		media.hidden = true;
+		media.innerHTML = ["crown", "heart", "puzzle", "bolt", "rocket"]
+			.map((id) => `<img data-kit-src="figure:${id}" src="data:image/webp;base64,${id}" alt="">`)
+			.join("");
+		document.body.append(media);
+		const bridge = standIn(file);
+		const said = { answer };
+		const read = vi.fn(async () => said.answer);
+		page.QORPERA_KIT = { app: "company", kit: "map", data: "map.json" };
+		page.qorpera = { ...bridge.qorpera, reading: read, ...(tell ? { tell } : {}) };
+		new Function(kitFile("map", "engine.js"))();
+		await settle();
+		return { ...bridge, read, said };
+	}
+	const thing = (id: string) => document.querySelector<HTMLElement>(`.mp-thing[data-id="${id}"]`);
+
+	beforeEach(() => {
+		vi.setSystemTime(new Date("2026-11-15T12:00:00Z"));
+	});
+
+	it("draws the company's reading: its sentence, the attended thing biggest in the middle, the agents at their things", async () => {
+		await openMap(company(), reading());
+		expect(document.querySelector("h1")?.textContent).toBe(
+			"We know what a workshop needs and have a repair tracker on paper.",
+		);
+		expect(document.querySelector(".mp-line")?.textContent).toBe("One thing waits for you.");
+		const size = (id: string) =>
+			Number.parseFloat((thing(id)?.querySelector(".mp-shape") as HTMLElement).style.width);
+		// three things at 1052 px: the attended one is the table's first slot, 230 units, in the middle
+		expect(size("tracker")).toBe(230);
+		expect(size("needs")).toBe(150);
+		const middle =
+			Number.parseFloat(thing("tracker")?.style.left ?? "0") +
+			Number.parseFloat(thing("tracker")?.style.width ?? "0") / 2;
+		expect(middle).toBe(526);
+		expect((thing("tracker")?.querySelector(".mp-fill") as HTMLElement).style.height).toBe("34%");
+		expect(thing("tracker")?.querySelector(".mp-label")?.textContent).toBe("On paper");
+		// each agent as its figure, a working one with its mark; the member a thing waits for by a face
+		const names = [...document.querySelectorAll(".mp-canvas .mp-fig")].map((fig) => fig.getAttribute("aria-label"));
+		expect(names).toEqual(["Product, working", "Engineering", "Customer research", "Strategy", "Jonas Krüger"]);
+		expect(document.querySelector('.mp-canvas .mp-fig[aria-label="Product, working"] img')?.getAttribute("src")).toBe(
+			"data:image/webp;base64,puzzle",
+		);
+		expect(document.querySelector('.mp-canvas .mp-fig[aria-label="Product, working"] .mp-dot')).not.toBeNull();
+		expect(document.querySelector(".mp-face.me")?.textContent).toBe("JK");
+		// what changed, quietly; with no tell on the bridge, no "Not right?"
+		expect(document.querySelector(".mp-changes")?.textContent).toBe("Sales joined");
+		expect(document.querySelector(".mp-pill")).toBeNull();
+	});
+
+	it('asks "Not right?" as a draft the member sends from the bar, never by itself', async () => {
+		const tell = vi.fn(async () => ({ sent: true }));
+		await openMap(company(), reading(), tell);
+		const pill = document.querySelector<HTMLButtonElement>(".mp-pill");
+		expect(pill?.textContent).toBe("Not right?");
+		expect(tell).not.toHaveBeenCalled();
+		pill?.click();
+		await settle();
+		expect(tell).toHaveBeenCalledWith({
+			about: "We know what a workshop needs and have a repair tracker on…",
+			text: "Not right: Sales joined.",
+		});
+		expect(document.querySelector(".mp-pill")?.textContent).toBe("Sent");
+	});
+
+	it("stands the team in a row, the Co-Founder first, before the company's first reading", async () => {
+		await openMap(company(), reading({ reading: null }));
+		expect(document.querySelector("h1")?.textContent).toBe(
+			"We are finding our feet. The first reading comes with the next plan.",
+		);
+		expect(document.querySelector(".mp-thing")).toBeNull();
+		expect([...document.querySelectorAll(".mp-canvas .mp-fig")].map((fig) => fig.getAttribute("aria-label"))).toEqual(
+			["Co-Founder", "Product, working", "Strategy"],
+		);
+	});
+
+	it("says whose login holds the company only when the reading says so, and no one's when nobody can be named", async () => {
+		// review r1 of #1847, F3: a null member is not "you"
+		const line = async (standing: Record<string, unknown>) => {
+			await openMap(
+				company(),
+				reading({
+					standing: { stopped: true, since: null, why: "sign_in", resetsAt: null, ...standing },
+				}),
+			);
+			const said = document.querySelector(".mp-line")?.textContent;
+			document.body.replaceChildren();
+			return said;
+		};
+		expect(await line({ you: true, member: null })).toBe("Your ChatGPT needs a new sign-in, so none of us can work.");
+		expect(await line({ you: false, member: "Sofie Lund" })).toBe(
+			"Sofie's ChatGPT needs a new sign-in, so none of us can work.",
+		);
+		expect(await line({ you: false, member: null })).toBe(
+			"A ChatGPT login needs a new sign-in, so none of us can work.",
+		);
+	});
+
+	it("turns grey and still while the company stands still, and says since when and why", async () => {
+		await openMap(
+			company(),
+			reading({
+				standing: {
+					stopped: true,
+					since: "2026-11-15T09:10:00Z",
+					why: "login_full",
+					member: "Sofie Lund",
+					resetsAt: "2026-11-20T09:00:00Z",
+				},
+			}),
+		);
+		expect(document.querySelector("main")?.classList.contains("is-still")).toBe(true);
+		expect(getComputedStyle(document.querySelector(".mp-head") as Element).position).not.toBe("absolute");
+		expect(document.querySelector("h1")?.textContent).toMatch(/^We have stood still since .+\.$/);
+		expect(document.querySelector(".mp-line")?.textContent).toBe(
+			"Sofie's ChatGPT is full, so none of us can work. It opens again on November 20.",
+		);
+		// no working marks, no change line
+		expect(document.querySelector(".mp-label")).not.toBeNull();
+		expect(document.querySelector(".mp-dot")).toBeNull();
+		expect((document.querySelector(".mp-changes") as HTMLElement).hidden).toBe(true);
+	});
+
+	it("opens a thing into its layer, names the way back, and goes up with Escape to the thing it came from", async () => {
+		await openMap(company(parts), reading());
+		const head = document.querySelector(".mp-head") as Element;
+		expect(getComputedStyle(head).position).toBe("absolute");
+		const dive = thing("tracker")?.querySelector<HTMLButtonElement>("button.mp-hit");
+		expect(dive?.getAttribute("aria-label")).toBe("The repair tracker, On paper, opens");
+		// a thing with no layer does not open
+		expect(thing("needs")?.querySelector("button")).toBeNull();
+		dive?.click();
+		expect(getComputedStyle(head).position).not.toBe("absolute");
+		expect(document.querySelector("h1")?.textContent).toBe("The repair tracker");
+		expect(document.querySelector(".mp-line")?.textContent).toBe("Its parts");
+		expect(document.querySelector(".mp-trail")?.textContent).toBe(
+			"We know what a workshop needs and have…›The repair tracker",
+		);
+		expect(document.querySelectorAll(".mp-thing")).toHaveLength(5);
+		// where you are: the opened thing's own shape, small, filled as far as it is, beside the title; no ground
+		const here = document.querySelector<HTMLElement>(".mp-here");
+		expect(here?.hidden).toBe(false);
+		expect(here?.getAttribute("aria-hidden")).toBe("true");
+		expect((here?.querySelector(".mp-fill") as HTMLElement).style.height).toBe("34%");
+		expect(document.querySelector(".mp-ground")).toBeNull();
+		// an agent named in the data is drawn as the team's figure; a stale thing by its age; open and assumed things
+		expect(document.querySelector('.mp-canvas .mp-fig[aria-label="Product, working"]')).not.toBeNull();
+		expect(thing("login")?.classList.contains("is-stale")).toBe(true);
+		expect(thing("login")?.querySelector(".mp-label")?.textContent).toBe("3 w");
+		expect(thing("pay")?.classList.contains("is-unknown")).toBe(true);
+		expect((thing("pay")?.querySelector(".mp-q") as HTMLElement).hidden).toBe(false);
+		// a thing not known, or only assumed, is its outline alone: the coin's dashed path has no cut, its whole one has
+		const subpaths = (id: string, which: string) =>
+			thing(id)?.querySelector(`.${which} path`)?.getAttribute("d")?.match(/M/g)?.length;
+		expect(subpaths("pay", "mp-dash")).toBe(1);
+		expect(subpaths("pay", "mp-solid")).toBe(2);
+		expect(subpaths("sms", "mp-pale")).toBe(1);
+		expect(thing("sms")?.classList.contains("is-assumed")).toBe(true);
+		expect(thing("costs")?.querySelector("a.mp-hit")?.getAttribute("href")).toBe("app:business-model");
+		// one layer further, then back up one at a time
+		thing("jobs")?.querySelector<HTMLButtonElement>("button.mp-hit")?.click();
+		expect(document.querySelector("h1")?.textContent).toBe("Job list");
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		await settle();
+		expect(document.querySelector("h1")?.textContent).toBe("The repair tracker");
+		const up = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		document.dispatchEvent(up);
+		expect(up.defaultPrevented).toBe(true);
+		await settle();
+		expect(document.querySelector("h1")?.textContent).toBe(
+			"We know what a workshop needs and have a repair tracker on paper.",
+		);
+		expect(document.activeElement).toBe(thing("tracker")?.querySelector("button.mp-hit"));
+		expect((document.querySelector(".mp-here") as HTMLElement).hidden).toBe(true);
+		// at the first layer Escape is the frame's again
+		const last = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		document.dispatchEvent(last);
+		expect(last.defaultPrevented).toBe(false);
+	});
+
+	it("keeps the open layer through a change of the company, and moves what changed", async () => {
+		const map = await openMap(company(parts), reading());
+		thing("tracker")?.querySelector<HTMLButtonElement>("button.mp-hit")?.click();
+		const jobs = thing("jobs");
+		map.said.answer = reading({ team: [agent("Product", "puzzle", false)] });
+		map.change();
+		await settle(10000);
+		expect(map.read).toHaveBeenCalledTimes(2);
+		expect(document.querySelector("h1")?.textContent).toBe("The repair tracker");
+		expect(thing("jobs")).toBe(jobs);
+		expect(document.querySelector('.mp-canvas .mp-fig[aria-label="Product"]')).not.toBeNull();
+	});
+
+	it("draws an owner's own map from its data, with nobody standing where the company has no such agent", async () => {
+		await openMap(
+			JSON.stringify({
+				lang: "en",
+				top: {
+					title: "Sales",
+					attention: "leads",
+					things: [
+						{ id: "leads", name: "Leads", shape: "people", full: 30, agents: ["Strategy", "Nobody"] },
+						{ id: "deals", name: "Deals", shape: "handshake", full: 10, waits: true },
+						{ id: "ads", name: "Ads", shape: "megaphone", state: "unknown" },
+					],
+				},
+			}),
+			reading(),
+		);
+		expect(document.querySelector("h1")?.textContent).toBe("Sales");
+		const names = [...document.querySelectorAll(".mp-canvas .mp-fig")].map((fig) => fig.getAttribute("aria-label"));
+		expect(names).toEqual(["Strategy", "waits for a founder"]);
+		// the founder it waits for is the member's accent mark, as on the company's map
+		expect(document.querySelector(".mp-face.founder")).not.toBeNull();
+		// an owner's map has no change line
+		expect((document.querySelector(".mp-changes") as HTMLElement).hidden).toBe(true);
+	});
+
+	it("stacks the things in one column, the attended one first, under 720 px", async () => {
+		resize(390, 844);
+		await openMap(company(), reading());
+		expect(document.querySelector(".mp-canvas")?.classList.contains("is-column")).toBe(true);
+		const tops = ["tracker", "needs", "money"].map((id) => Number.parseFloat(thing(id)?.style.top ?? "0"));
+		expect(tops[0]).toBeLessThan(tops[1] ?? 0);
+		expect(tops[1]).toBeLessThan(tops[2] ?? 0);
+	});
+});
+
+describe("the map kit's way back", () => {
+	it("goes up by the path at the top, each step a button, and leaves the browser's history alone", async () => {
+		const pushes = vi.spyOn(history, "pushState");
+		const goes = vi.spyOn(history, "go");
+		page.QORPERA_KIT = { app: "own", kit: "map", data: "map.json" };
+		page.qorpera = standIn(
+			JSON.stringify({
+				lang: "en",
+				top: {
+					title: "Sales",
+					attention: "leads",
+					things: [
+						{ id: "leads", name: "Leads", shape: "people", full: 30 },
+						{ id: "deals", name: "Deals", shape: "handshake", full: 10 },
+						{ id: "ads", name: "Ads", shape: "megaphone", full: 5 },
+					],
+				},
+				layers: { leads: { things: [{ id: "list", name: "The list", shape: "document", full: 40 }] } },
+			}),
+		).qorpera;
+		new Function(kitFile("map", "engine.js"))();
+		await settle();
+		document.querySelector<HTMLButtonElement>('.mp-thing[data-id="leads"] button.mp-hit')?.click();
+		expect(document.querySelector("h1")?.textContent).toBe("Leads");
+		const crumb = document.querySelector<HTMLButtonElement>(".mp-trail button.mp-crumb");
+		expect(crumb?.textContent).toBe("Sales");
+		crumb?.click();
+		expect(document.querySelector("h1")?.textContent).toBe("Sales");
+		expect(document.activeElement).toBe(document.querySelector('.mp-thing[data-id="leads"] button.mp-hit'));
+		expect(pushes).not.toHaveBeenCalled();
+		expect(goes).not.toHaveBeenCalled();
+	});
+});
+
+describe("the ring kit's engine", () => {
+	const year = {
+		lang: "en",
+		title: "Our year",
+		span: "year",
+		start: "2026-01-01",
+		now: "2026-11-15",
+		unit: "kr",
+		marks: [
+			{ name: "VAT return", at: "2026-03-01", tone: "warm" },
+			{ name: "Lamp launch", at: "2026-10-08", tone: "good" },
+			{ name: "Black Friday", at: "2026-11-27" },
+			{ name: "VAT return", at: "2026-12-01", tone: "warm", value: 41800 },
+			// outside the year: not drawn
+			{ name: "VAT return", at: "2027-03-01" },
+		],
+		wedges: [
+			{ name: "Summer break", from: "2026-07-06", to: "2026-07-31", tone: "teal" },
+			{ name: "Christmas season", from: "2026-11-15", to: "2026-12-24", tone: "warm" },
+		],
+	};
+	const big = () => document.querySelector(".rk-n")?.textContent;
+	const unit = () => document.querySelector(".rk-u")?.textContent ?? "";
+	const what = () => document.querySelector(".rk-what")?.textContent;
+	const when = () => document.querySelector(".rk-when")?.textContent;
+	const stage = () => document.querySelector<HTMLElement>(".rk-stage");
+	const key = (name: string) => stage()?.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+
+	it("draws the year's months, the part gone by, its marks and wedges, the hand, and the next thing in the middle", async () => {
+		await open("ring", JSON.stringify(year));
+		expect(document.querySelectorAll(".rk-seg")).toHaveLength(12);
+		// January to October are gone by on the 15th of November
+		expect(document.querySelectorAll(".rk-seg.gone")).toHaveLength(10);
+		expect(document.querySelector(".rk-tick.now")?.textContent).toBe("Nov");
+		expect(document.querySelectorAll(".rk-mark")).toHaveLength(4);
+		expect(document.querySelectorAll(".rk-mark.gone")).toHaveLength(2);
+		expect(document.querySelectorAll(".rk-wedge")).toHaveLength(2);
+		expect(document.querySelector(".rk-hand")).not.toBeNull();
+		// the next thing: a mark today or later, or a wedge not yet begun; a wedge that begins today is going on
+		expect([big(), unit(), what(), when()]).toEqual(["12", "days", "to Black Friday", "Nov 27"]);
+		expect(document.querySelector(".rk-mark.next")).not.toBeNull();
+		expect(stage()?.getAttribute("aria-valuetext")).toBe("12 days, to Black Friday, Nov 27");
+	});
+
+	it("lets the middle follow the arrow keys round the ring, and Escape bring back the next thing", async () => {
+		await open("ring", JSON.stringify(year));
+		expect(stage()?.getAttribute("role")).toBe("slider");
+		key("ArrowRight");
+		// a mark with an amount shows it
+		expect([big(), unit(), what(), when()]).toEqual(["41,800", "kr", "VAT return", "Dec 1"]);
+		expect(document.querySelector(".rk.picking")).not.toBeNull();
+		key("ArrowLeft");
+		key("ArrowLeft");
+		// a wedge going on now: the days left of it
+		expect([big(), unit(), what(), when()]).toEqual(["40", "days", "left of Christmas season", "Nov 15 – Dec 24"]);
+		key("Home");
+		// a mark gone by: its day, and how long ago
+		expect([big(), what(), when()]).toEqual(["Mar 1", "VAT return", "259 days ago"]);
+		key("Escape");
+		expect([big(), what()]).toEqual(["12", "to Black Friday"]);
+		expect(document.querySelector(".rk.picking")).toBeNull();
+	});
+
+	it("turns with the pointer: the middle shows the mark near it, else the wedge it is in", async () => {
+		await open("ring", JSON.stringify(year));
+		// jsdom lays nothing out: the ring is as wide as the window lets it be, its middle half of that
+		const size = Number.parseFloat(stage()?.style.width ?? "0");
+		const c = size / 2;
+		const at = (day: number, r: number) => {
+			const a = (day / 365) * Math.PI * 2;
+			return { clientX: c + r * Math.sin(a), clientY: c - r * Math.cos(a), bubbles: true };
+		};
+		const r = c - 50;
+		// 8 October is the 281st day of the year
+		stage()?.dispatchEvent(new MouseEvent("pointermove", at(280.5, r)));
+		expect(what()).toBe("Lamp launch");
+		// mid July, inside the summer break, far from any mark
+		stage()?.dispatchEvent(new MouseEvent("pointermove", at(200, r)));
+		expect(what()).toBe("Summer break");
+		// in the middle: nothing is picked, and the next thing comes back
+		stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: c, clientY: c, bubbles: true }));
+		expect(what()).toBe("to Black Friday");
+	});
+
+	it("draws a week's wedges as far out as their amounts, one not known open with a question mark", async () => {
+		const week = {
+			lang: "en",
+			title: "Sales this week",
+			span: "week",
+			start: "2026-11-16",
+			now: "2026-11-18",
+			centre: { value: 15000, unit: "kr", label: "this week" },
+			wedges: [
+				{ name: "Monday", from: "2026-11-16", value: 3000 },
+				{ name: "Tuesday", from: "2026-11-17", value: 6000 },
+				{ name: "Wednesday", from: "2026-11-18", state: "unknown" },
+			],
+		};
+		await open("ring", JSON.stringify(week));
+		expect(document.querySelectorAll(".rk-seg")).toHaveLength(7);
+		expect([...document.querySelectorAll(".rk-tick")].map((tick) => tick.textContent)).toEqual([
+			"Mon",
+			"Tue",
+			"Wed",
+			"Thu",
+			"Fri",
+			"Sat",
+			"Sun",
+		]);
+		expect(document.querySelectorAll(".rk-wedge.unk")).toHaveLength(1);
+		expect(document.querySelector(".rk-q")?.textContent).toBe("?");
+		// Tuesday's amount is twice Monday's, and reaches twice as far out from the inner edge
+		const outer = (index: number) => {
+			const d = document.querySelectorAll(".rk-wedge")[index]?.getAttribute("d") ?? "";
+			const [, x, y] = /^M([\d.-]+) ([\d.-]+)/.exec(d) ?? [];
+			return Math.hypot(
+				Number(x) - Number.parseFloat(stage()?.style.width ?? "0") / 2,
+				Number(y) - Number.parseFloat(stage()?.style.width ?? "0") / 2,
+			);
+		};
+		const inner = (index: number) => {
+			const d = document.querySelectorAll(".rk-wedge")[index]?.getAttribute("d") ?? "";
+			const [, rin] = /L[\d.-]+ [\d.-]+A([\d.-]+)/.exec(d) ?? [];
+			return Number(rin);
+		};
+		expect((outer(1) - inner(1)) / (outer(0) - inner(0))).toBeCloseTo(2, 1);
+		// the middle holds the given number while nobody points
+		expect([big(), unit(), what()]).toEqual(["15,000", "kr", "this week"]);
+		key("End");
+		expect([big(), what()]).toEqual(["?", "Wednesday"]);
+		expect(document.querySelector(".rk-tag")?.textContent).toBe("not known");
+	});
+
+	it("never draws one mark on another: a mark a day after another takes an orbit of its own", async () => {
+		const close = {
+			...year,
+			marks: [
+				{ name: "Annual report", at: "2026-05-31" },
+				{ name: "VAT return", at: "2026-06-01" },
+				{ name: "Payday", at: "2026-06-02" },
+			],
+		};
+		await open("ring", JSON.stringify(close));
+		const dots = [...document.querySelectorAll(".rk-mark")].map((dot) => ({
+			x: Number(dot.getAttribute("cx")),
+			y: Number(dot.getAttribute("cy")),
+			r: Number(dot.getAttribute("r")),
+		}));
+		expect(dots).toHaveLength(3);
+		// apart by more than two marks' width, room for a picked one drawn half as large again
+		for (const [at, dot] of dots.entries())
+			for (const other of dots.slice(at + 1))
+				expect(Math.hypot(dot.x - other.x, dot.y - other.y)).toBeGreaterThan(dot.r * 2.9);
+		// the pointer finds each where it lies
+		for (const [at, dot] of dots.entries()) {
+			stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: dot.x, clientY: dot.y, bubbles: true }));
+			expect(what()).toBe(["Annual report", "VAT return", "Payday"][at]);
+		}
+	});
+
+	it("keeps 12 marks of one day apart and clear of the middle on a phone, each found by the pointer", async () => {
+		resize(390, 844);
+		const crowd = {
+			...year,
+			marks: Array.from({ length: 12 }, (_, at) => ({ name: `Due ${at}`, at: "2026-06-01" })),
+		};
+		await open("ring", JSON.stringify(crowd));
+		const c = Number.parseFloat(stage()?.style.width ?? "0") / 2;
+		const dots = [...document.querySelectorAll(".rk-mark")].map((dot) => ({
+			x: Number(dot.getAttribute("cx")),
+			y: Number(dot.getAttribute("cy")),
+			r: Number(dot.getAttribute("r")),
+		}));
+		expect(dots).toHaveLength(12);
+		for (const [at, dot] of dots.entries()) {
+			// never under the middle's words, never across the ring
+			expect(Math.hypot(dot.x - c, dot.y - c)).toBeGreaterThan(c * 0.4);
+			for (const other of dots.slice(at + 1))
+				expect(Math.hypot(dot.x - other.x, dot.y - other.y)).toBeGreaterThan(dot.r * 2);
+			stage()?.dispatchEvent(new MouseEvent("pointermove", { clientX: dot.x, clientY: dot.y, bubbles: true }));
+			expect(what()).toBe(`Due ${at}`);
+		}
+		// the crowd stays round its day, as many drawn before it as after
+		const angle = (dot: { x: number; y: number }) => Math.atan2(dot.x - c, c - dot.y);
+		const day = angle(dots[0] ?? { x: c, y: 0 });
+		expect(dots.filter((dot) => angle(dot) < day - 1e-6).length).toBeGreaterThan(0);
+		expect(dots.filter((dot) => angle(dot) > day + 1e-6).length).toBeGreaterThan(0);
+	});
+
+	it("draws 12 marks and 8 wedges at most, and only what falls in its span", async () => {
+		const many = {
+			...year,
+			marks: Array.from({ length: 14 }, (_, at) => ({
+				name: `Pay ${at}`,
+				at: `2026-${String((at % 12) + 1).padStart(2, "0")}-25`,
+			})),
+			wedges: Array.from({ length: 10 }, (_, at) => ({
+				name: `Stretch ${at}`,
+				from: `2026-${String(at + 1).padStart(2, "0")}-02`,
+				to: `2026-${String(at + 1).padStart(2, "0")}-09`,
+			})),
+		};
+		await open("ring", JSON.stringify(many));
+		expect(document.querySelectorAll(".rk-mark")).toHaveLength(12);
+		expect(document.querySelectorAll(".rk-wedge")).toHaveLength(8);
+	});
+
+	it("draws the middle's live number as known, and again at once when it moves", async () => {
+		const live = {
+			...year,
+			centre: { value: { query: "shop/sales", column: "kr" }, unit: "kr", label: "sold this year" },
+		};
+		const db = databases({ "shop/sales": { kr: 182400 } });
+		const { qorpera } = await openLive("ring", live, db);
+		expect([big(), unit(), what()]).toEqual(["182,400", "kr", "sold this year"]);
+		db.set("shop/sales", { kr: 190000 });
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(big()).toBe("190,000");
+	});
+
+	it("draws the middle's live number with no answer yet as not known", async () => {
+		const live = {
+			...year,
+			centre: { value: { query: "shop/sales", column: "kr" }, unit: "kr", label: "sold this year" },
+		};
+		await openLive("ring", live, databases({}));
+		await settle(3000);
+		expect([big(), what()]).toEqual(["?", "sold this year"]);
+		expect(document.querySelector(".rk-tag")?.textContent).toBe("not known");
+	});
+});
+
+describe("the flow kit's engine", () => {
+	const money = {
+		lang: "en",
+		title: "Money in November",
+		unit: "kr",
+		middle: "Bank",
+		from: [
+			{ id: "shop", name: "Web shop", value: 180000 },
+			{ id: "retail", name: "Retailers", value: 60000 },
+		],
+		to: [
+			{ id: "parts", name: "Parts", value: 70000 },
+			{ id: "kept", name: "Kept", value: 30000, kept: true },
+			{ id: "salaries", name: "Salaries", value: 90000 },
+			{ id: "ads", name: "Ads", value: 50000 },
+		],
+	};
+	const big = () => document.querySelector(".fk-n")?.textContent;
+	const sub = () => document.querySelector(".fk-sub")?.textContent;
+	const names = () => [...document.querySelectorAll(".fk-name")].map((name) => name.textContent);
+	const stage = () => document.querySelector<HTMLElement>(".fk-stage");
+	const key = (name: string) => stage()?.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+	/** A band's width where it leaves its end: the path's two edges at its start. */
+	const width = (index: number) => {
+		const d = document.querySelectorAll(".fk-band")[index]?.getAttribute("d") ?? "";
+		const numbers = (d.match(/-?[\d.]+/g) ?? []).map(Number);
+		// M x y0 C … x1 y1 L x1 y2 C … x y3 Z: the end's edges are y0 and the last y
+		return Math.abs((numbers[numbers.length - 1] ?? 0) - (numbers[1] ?? 0));
+	};
+
+	it("draws a band for each end through the middle, each as wide as its amount, and all that came in big", async () => {
+		await open("flow", JSON.stringify(money));
+		expect(document.querySelectorAll(".fk-band")).toHaveLength(6);
+		expect(document.querySelector(".fk-mid")).not.toBeNull();
+		expect(document.querySelector(".fk-mid-t")?.textContent).toBe("Bank");
+		// what is kept stands last, under the rest
+		expect(names()).toEqual(["Web shop", "Retailers", "Parts", "Salaries", "Ads", "Kept"]);
+		expect(width(0) / width(1)).toBeCloseTo(3, 1);
+		expect(width(3) / width(4)).toBeCloseTo(90 / 50, 1);
+		// both sides add up: nothing is left over
+		expect(document.querySelector(".fk-band.rest")).toBeNull();
+		expect(big()).toBe("240,000");
+		expect(sub()).toBe("in all");
+	});
+
+	it("makes the big number a band's amount and share as the arrow keys step through the bands", async () => {
+		await open("flow", JSON.stringify(money));
+		expect(stage()?.getAttribute("role")).toBe("slider");
+		key("ArrowRight");
+		expect([big(), sub()]).toEqual(["180,000", "Web shop75%"]);
+		expect(document.querySelectorAll(".fk-band.on")).toHaveLength(1);
+		expect(document.querySelector(".fk.picking")).not.toBeNull();
+		key("End");
+		expect([big(), sub()]).toEqual(["30,000", "Kept13%"]);
+		expect(stage()?.getAttribute("aria-valuetext")).toBe("Kept: 30,000 kr");
+		key("Escape");
+		expect(big()).toBe("240,000");
+		expect(document.querySelector(".fk.picking")).toBeNull();
+	});
+
+	it("joins the smallest ends past six into one band, Other, and keeps what is kept", async () => {
+		const many = {
+			...money,
+			from: [{ id: "shop", name: "Web shop", value: 36500 }],
+			to: [
+				...["Parts", "Salaries", "Ads", "Tax", "Rent", "Freight", "Software", "Bank fees"].map((name, at) => ({
+					id: `t${at}`,
+					name,
+					value: (8 - at) * 1000,
+				})),
+				{ id: "kept", name: "Kept", value: 500, kept: true },
+			],
+		};
+		await open("flow", JSON.stringify(many));
+		expect(document.querySelectorAll(".fk-band")).toHaveLength(1 + 6);
+		expect(names().slice(1)).toEqual(["Parts", "Salaries", "Ads", "Tax", "Other", "Kept"]);
+		// Other is the four smallest together: 4,000 + 3,000 + 2,000 + 1,000
+		key("End");
+		key("ArrowLeft");
+		expect([big(), sub()]).toEqual(["10,000", "Other27%"]);
+	});
+
+	it("keeps the band a finger picked when it lifts, and lets a pointer that leaves take it away", async () => {
+		await open("flow", JSON.stringify(money));
+		const leave = (pointerType: string) => {
+			const event = new MouseEvent("pointerleave");
+			Object.defineProperty(event, "pointerType", { value: pointerType });
+			stage()?.dispatchEvent(event);
+		};
+		// a name with its bar is a finger's room to pick by, as wide as the name and as tall as a finger
+		document
+			.querySelector(".fk-lab[data-n=salaries] .fk-hit")
+			?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+		expect([big(), sub()]).toEqual(["90,000", "Salaries38%"]);
+		leave("touch");
+		expect(big()).toBe("90,000");
+		leave("mouse");
+		expect(big()).toBe("240,000");
+	});
+
+	it("draws what one side lacks of the other as a quiet band of its own, in the data's word", async () => {
+		// 240,000 came in and 215,000 went out: the 25,000 between is drawn going out, before what is kept
+		await open(
+			"flow",
+			JSON.stringify({ ...money, to: money.to.map((end) => (end.id === "ads" ? { ...end, value: 25000 } : end)) }),
+		);
+		expect(names()).toEqual(["Web shop", "Retailers", "Parts", "Salaries", "Ads", "Not accounted for", "Kept"]);
+		expect(document.querySelectorAll(".fk-band.rest")).toHaveLength(1);
+		expect(document.querySelector(".fk-lab.rest .fk-amt")?.textContent).toBe("25,000 kr");
+		// it is no end of the company's own: the big number is still what came in
+		expect(big()).toBe("240,000");
+		key("End");
+		key("ArrowLeft");
+		// a share of all the side's bands, so the side's shares add up: 25,000 of the 240,000 drawn
+		expect([big(), sub()]).toEqual(["25,000", "Not accounted for10%"]);
+		document.body.replaceChildren();
+		// more out than in: the difference comes in, on the left, in the data's own word
+		await open(
+			"flow",
+			JSON.stringify({
+				...money,
+				words: { rest: "Unexplained" },
+				from: [{ id: "shop", name: "Web shop", value: 200000 }],
+			}),
+		);
+		expect(names().slice(0, 2)).toEqual(["Web shop", "Unexplained"]);
+		expect(document.querySelector(".fk-lab.rest .fk-amt")?.textContent).toBe("40,000 kr");
+		document.body.replaceChildren();
+		// a rounding (1 % at most) is no band
+		await open("flow", JSON.stringify({ ...money, from: [{ id: "shop", name: "Web shop", value: 241000 }] }));
+		expect(document.querySelector(".fk-band.rest")).toBeNull();
+	});
+
+	it("runs bands straight from each source to each end with links, with no middle", async () => {
+		const people = {
+			lang: "en",
+			title: "Visits",
+			unit: "visits",
+			from: [
+				{ id: "google", name: "Google" },
+				{ id: "mail", name: "Newsletter" },
+			],
+			to: [
+				{ id: "bought", name: "Bought", tone: "good" },
+				{ id: "left", name: "Left" },
+			],
+			links: [
+				{ from: "google", to: "bought", value: 200 },
+				{ from: "google", to: "left", value: 3800 },
+				{ from: "mail", to: "bought", value: 150 },
+				{ from: "mail", to: "left", value: 850 },
+			],
+		};
+		await open("flow", JSON.stringify(people));
+		expect(document.querySelectorAll(".fk-band")).toHaveLength(4);
+		expect(document.querySelector(".fk-mid")).toBeNull();
+		// an end's amount is what its bands carry
+		expect([...document.querySelectorAll(".fk-amt")].map((amount) => amount.textContent)).toEqual([
+			"4,000 visits",
+			"1,000 visits",
+			"350 visits",
+			"4,650 visits",
+		]);
+		expect(big()).toBe("5,000");
+		key("ArrowRight");
+		expect([big(), sub()]).toEqual(["200", "Google → Bought4%"]);
+		expect(document.querySelectorAll(".fk-lab.on")).toHaveLength(2);
+	});
+
+	it("draws a live amount as known, and again at once when it moves", async () => {
+		const live = {
+			...money,
+			from: [{ id: "shop", name: "Web shop", value: { query: "bank/money_in", column: "amount" } }, money.from[1]],
+		};
+		const db = databases({ "bank/money_in": { amount: 180000 } });
+		const { qorpera } = await openLive("flow", live, db);
+		expect(big()).toBe("240,000");
+		db.set("bank/money_in", { amount: 200000 });
+		drawFrames();
+		await settle();
+		expect(qorpera.read).toHaveBeenCalledTimes(2);
+		expect(big()).toBe("260,000");
+	});
+
+	it("draws a live amount with no answer yet as an open band, and no total", async () => {
+		const live = {
+			...money,
+			from: [{ id: "shop", name: "Web shop", value: { query: "bank/money_in", column: "amount" } }, money.from[1]],
+		};
+		await openLive("flow", live, databases({}));
+		await settle(3000);
+		expect(big()).toBe("?");
+		expect(sub()).toBe("in allnot known");
+		expect(document.querySelectorAll(".fk-band.unk")).toHaveLength(1);
+		expect(document.querySelector(".fk-q")?.textContent).toBe("?");
 	});
 });

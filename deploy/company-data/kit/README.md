@@ -186,9 +186,8 @@ deadlock). The company's database carries every setting the gateway's `LOG_SETTI
 It also checks retention with KEEP=2 in a backup folder whose path has a space, removing only backups' own names, and
 a WAL archive with a cut gzip trailer never acknowledged, then replaced.
 
-Last result: 13 November 2026, a test machine, the run door's PR after review 2 (a status that answers with no
-run-door folder, a lost key made again): 66 of 66 checks passed. Log: lanes
-`company-databases-20261113/rundoor/drill-5.log`.
+Last result: 16 November 2026, a test machine, the Data list's part f (a data pass names its agent): 68 of 68 checks
+passed. Log: lanes `company-databases-20261113/proofs/list-f-drill-r1.log`.
 
 ## Not done here
 

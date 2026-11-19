@@ -2,9 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import { ReleaseDesk } from "../src/app/views/release-desk.ts";
 import { ThreadReady } from "../src/app/views/thread-ready.ts";
-import { WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
+import { whatsNewEntry } from "../src/app/views/whats-new.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CodeReleaseAnswer, CodeReleaseSite, CodeReleases, SitePreviewAnswer } from "../src/cloud/releases.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
@@ -255,7 +254,7 @@ describe("A change is ready: the card", () => {
 		expect(shown.querySelector(".whats-new-change img")).not.toBeNull();
 	});
 
-	it("puts it live as What's new does: Putting it live…, then the exchange it was, with the version and the site's link", async () => {
+	it("puts it live as What's new does: its buttons keep their words and go off, then the exchange it was, with the version and the site's link", async () => {
 		const answer = deferred<CodeReleaseAnswer>();
 		const { ready, client, listed } = await card([releasesOf([gift()]), releasesOf([live4()])], {
 			putLive: () => answer.promise,
@@ -268,9 +267,12 @@ describe("A change is ready: the card", () => {
 			{ live: 3, change: 17, token: TOKEN },
 			expect.any(AbortSignal),
 		);
-		expect(buttons(cardOf(ready)).map((item) => [item.textContent, item.disabled])).toEqual([
-			["Putting it live…", true],
-			["Not yet", true],
+		// The row never changes width in a thread: the same words, all off, the pressed one busy (the review of #1850).
+		expect(
+			buttons(cardOf(ready)).map((item) => [item.textContent, item.disabled, item.getAttribute("aria-busy")]),
+		).toEqual([
+			["Put it live", true, "true"],
+			["Not yet", true, null],
 		]);
 		answer.resolve({ state: "live", version: 4 });
 		await settle();
@@ -385,6 +387,11 @@ describe("A change is ready: the card", () => {
 		expect(ready.el.querySelector(".thread-ready-down a")?.textContent).toBe("Hjemmesider");
 	});
 
+	it("says Put it live for a project's first version too, so its row of buttons is the same row (What's new's page names the first version)", async () => {
+		const first = await card([releasesOf([gift({ live: null, back: null })], true, true)]);
+		expect(labels(cardOf(first.ready))).toEqual(["Look first", "Put it live", "Not yet"]);
+	});
+
 	it("opens Look first's tab within the press and answers `moved` in What's new's words", async () => {
 		const tab = { opener: window as unknown, closed: false, location: { replace: vi.fn() }, close: vi.fn() };
 		const open = vi.spyOn(window, "open").mockImplementation(() => tab as unknown as Window);
@@ -395,7 +402,8 @@ describe("A change is ready: the card", () => {
 		expect(open).toHaveBeenCalledWith("about:blank", "_blank");
 		expect(tab.opener).toBeNull();
 		await settle();
-		expect(labels(cardOf(ready))).toEqual(["Opening…", "Put it live", "Not yet"]);
+		expect(labels(cardOf(ready))).toEqual(["Look first", "Put it live", "Not yet"]);
+		expect(buttons(cardOf(ready)).map((item) => item.getAttribute("aria-busy"))).toEqual(["true", null, null]);
 		answer.resolve({ state: "moved" });
 		await settle();
 		expect(tab.close).toHaveBeenCalled();
@@ -431,21 +439,6 @@ describe("A change is ready: the card", () => {
 		const { ready } = await card([releasesOf([gift()], true, true)]);
 		expect(labels(cardOf(ready))).toEqual(["Se den først", "Sæt live", "Ikke endnu"]);
 		expect(cardOf(ready).querySelector(".interaction-call strong")?.textContent).toBe("Klar til at gå live");
-	});
-
-	it("shares What's new's desk: both places put a change live through the one implementation", async () => {
-		const putLive = vi.spyOn(ReleaseDesk.prototype, "putLive");
-		const { ready } = await card([releasesOf([gift()]), releasesOf([live4()])]);
-		press(cardOf(ready), "Put it live");
-		await settle();
-		const controller = company();
-		const page = new WhatsNewView(controller, calls([releasesOf([gift()])], {}), controller.signal);
-		cleanup.push(() => page.dispose());
-		document.body.append(page.el);
-		await settle();
-		press(page.el, "Put it live");
-		await settle();
-		expect(putLive).toHaveBeenCalledTimes(2);
 	});
 
 	it("starts from the company's last read without one of its own, and reads which sites Qorpera took down beside it", async () => {

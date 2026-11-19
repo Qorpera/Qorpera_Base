@@ -74,8 +74,9 @@ runner guest and work only with that runner job's current lease token. Clients n
 they answer 42501 "native host call is refused".
 
 Company databases (slice 5, migration 20260930750000): `anon` may also call `qorpera_data_pass_redeem(p_pass)`. It is
-for the data gateway (`deploy/company-data/`), which redeems a run's data pass once: only knowing the pass (32 random
-bytes, only their sha256 kept, 60 s) opens it. Clients never call it; anything but a live, unredeemed pass answers null.
+for the data gateway (`deploy/company-data/`), which redeems a data pass once: a run's, or (migration 20260930775000)
+a company machine's, made for its folder view. Only knowing the pass (32 random bytes, only their sha256 kept, 60 s)
+opens it. Clients never call it; anything but a live, unredeemed pass answers null.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
@@ -224,6 +225,32 @@ bytes, only their sha256 kept, 60 s) opens it. Clients never call it; anything b
   usage last. `qorpera_list_member_native_execution_connections` reports each
   login's `recent_turns` (`{refused, completed}`), so a client orders its own list
   the same way.
+- `qorpera_count_member_sessions_on_account(p_profile_id, p_connection_id)` and
+  `qorpera_choose_member_sessions_account(p_profile_id, p_from_connection_id,
+  p_connection_id)` (20260930785000, one click for every chat on a login; Jonas,
+  16 Nov 2026): count answers how many of the caller's own open conversations
+  that they can read pay with that login of theirs now (0 for a login that is not
+  theirs), naming a conversation's login as select does: the login of their
+  oldest turn waiting there at a usage limit, else the one saved for it, and none
+  once the member disconnected it (select answers `null` there, and the
+  conversation waits for the member's own pick). Choose moves each of those that
+  pay with `from` to `p_connection_id` by choose's own rules, from the same
+  internal step as choose (one of the caller's own logins that could pay now,
+  whatever its usage; the conversation's waiting turns go with it, never onto or
+  off a ChatGPT plan, never from a login that may work while the member is away
+  onto one that may not, never one the materializer holds), and answers how many
+  conversations now pay with another login: one whose waiting turn could not go
+  with it still pays with `from` and is not counted. 0 when none is left on
+  `from`, or when `from` is `p_connection_id`. It reads the logins once, takes
+  the conversations' rows in id order and decides each again under its lock, so
+  a pick made meanwhile in another tab stands and two such calls never move a
+  conversation twice. 22023 "This login cannot pay for your conversation" for any
+  other login (checked before anything moves, and again under the locks), 42501
+  without a signed-in member. Other members' conversations, closed ones and
+  agents' routine runs are never touched. Nothing moves without the member's
+  click: the web offers it under a conversation whose own login is at its limit
+  or cannot pay, once another of their conversations waits on the same login,
+  and asks for the count once for each login the conversation is stuck on.
 - At a usage limit (20260930575000) the conversation still keeps its login, and a
   client may send on it: the message waits queued and goes on by itself, on the
   same login, once the limit resets or a usage reading shows room. The usage-limit notice (`provider_usage_limit`) also
@@ -547,10 +574,11 @@ the RPCs stay for the runtime's gate.
 - `qorpera_upsert_scoped_compute_identity`
 
 
-### Accounts, profiles, membership (19)
+### Accounts, profiles, membership (22)
 
 - `qorpera_accept_profile_invitation`
 - `qorpera_accept_profile_invitations`
+- `qorpera_add_pending_spectators`
 - `qorpera_can_authorize_profile`
 - `qorpera_can_read_profile`
 - `qorpera_can_write_profile`
@@ -558,9 +586,11 @@ the RPCs stay for the runtime's gate.
 - `qorpera_decline_profile_invitation`
 - `qorpera_delete_hosted_profile`
 - `qorpera_get_account_entitlement`
+- `qorpera_invite_pending_spectators`
 - `qorpera_invite_profile_member`
 - `qorpera_leave_hosted_profile`
 - `qorpera_list_hosted_profiles`
+- `qorpera_list_pending_spectators`
 - `qorpera_list_profile_invitations`
 - `qorpera_member_role`
 - `qorpera_profile_team_info`
@@ -584,7 +614,11 @@ charged before it (20260930010000).
 - `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
   a table with the caller's seat; repeat-safe per creation id. Needs a
   confirmed email. A creation id that already belongs to a company that is not
-  a table is refused (`23505`).
+  a table is refused (`23505`). Since 20260930796000 the name may be null,
+  empty or nothing but spaces: the company then opens with no name yet, its
+  name the exact text `No name yet` (in its profile, environment and vision),
+  and a client shows it as unnamed wherever it compares the name to that text.
+  It becomes named when its vision's first line gets another name.
 - `qorpera_read_company_founding(p_profile_id)` → `qorpera.company-founding/v1`:
   `companyName`, `vision` (the description draft), `phase` (`open`,
   `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
@@ -619,7 +653,9 @@ charged before it (20260930010000).
   `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
   A stale revision is `PT412`. A name is refused (`22023`) as Open and the
   seed refuse it: more than 120 characters, a control character or line
-  separator, or nothing but spaces (20260930039000). Ready needs the caller's
+  separator, or nothing but spaces (20260930039000); since 20260930796000 a
+  name of nothing but spaces (or null) is taken as `No name yet` instead.
+  Ready needs the caller's
   own usable ChatGPT
   account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
   for that revision: a change to the name, description, a role or who sits at
@@ -856,6 +892,23 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
   `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
   0A000 before the mail domain is set.
+- Company mail handles (20260930796000): a new mailbox's local part is `<box>.<handle>` (one dot), where the box
+  is 1–39 lowercase letters, digits, hyphens and underscores (letter or digit at both ends) and the handle is the
+  company's part of the address, 2–24 lowercase letters, digits and inner hyphens. Anything else is refused (22023
+  "A new address is a name, a dot and the company's handle, like hello.acme"); the reserved names and names that read
+  as Qorpera are refused for the box and the handle each (22023, the messages above). A handle belongs to one company
+  across the platform and stays its own while the company exists, also when its mailboxes are removed. An owner's or
+  admin's `qorpera_create_company_mailbox` with a free handle claims it for the company, up to 3 handles a company
+  (54000 "A company has at most 3 email handles"; removing mailboxes frees none); a handle another company
+  owns, or that another company's live mailbox ends in or equals, is 23505 "This address is taken". An agent's
+  `manage_hook` mailbox uses only a handle the company already owns (42501 "Only a member can choose the company's
+  email handle"). Mailboxes made before this (no dot, such as `brooks`) keep working; each such address that is a
+  valid handle became its company's handle.
+- `qorpera_company_mail_handle_status(p_profile_id, p_handle)` → `ours` (the company owns it), `free`, `taken` or
+  `invalid` (not a handle, reserved, or reads as Qorpera); read-only, for a live check while a member types.
+  `qorpera_company_mail_handles(p_profile_id)` → `{domain, handles}`: the mail domain (null before it is set) and the
+  company's handles, oldest first. Any member of the company (42501 "Company mail addresses are unavailable"
+  otherwise).
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
@@ -873,7 +926,9 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's, the sending member's or the company's name or the mailbox
-  reads as Qorpera.
+  reads as Qorpera. Since 20260930796000 an agent's email goes out from "<agent> at <company's short name>" (as a
+  member's, below), or "<agent>" while the company has no name yet, and its AI line names the company's whole name,
+  or "a new company" while it has none.
 - Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
   `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
   served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
@@ -907,7 +962,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `cancelled`) and sends nothing twice. `from` is one of the company's mailbox addresses, or its name alone; `to` is
   1 to 10 plain addresses and `cc` up to 9, 10 together; `subject` is one line of 1 to 200 characters; `text` is 1
   to 20,000 characters of plain text, sent as written. The email goes out from "<member> at <company>" with no AI
-  line, begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
+  line (since 20260930796000 the company's short name: without a trailing legal ending such as ApS or Inc, cut at
+  a word to at most 40 characters with "…"; just "<member>" while the company has no name yet), begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
   unavailable"), a viewer, a mailbox that is not the company's, the company's own mailboxes as recipients, or a
   name that reads as Qorpera; 22023 for a request of another shape; 0A000 while the mailbox is paused or sending is
   switched off; 54000 past the company's hourly or daily limit on recipients, with when the email can go. Show the
@@ -1044,6 +1100,12 @@ by their keys, never with a lowercase literal.
 - `qorpera_member_folder_read_many(environment, paths)` (`20260930722000`): `{schema: "qorpera.folder-read-many/v1",
   reads}`, `reads[i]` what `qorpera_member_folder_read(environment, paths[i])` answers, for 1 to 64 paths, in one
   snapshot; an invalid path refuses the whole call. A client that finds it missing reads each path alone.
+- `qorpera_member_folder_may_write(environment, path)` (`20260930779000`): `{schema: "qorpera.member-folder-may-write/v1",
+  path, write}`, whether the folder core lets the signed-in member write `path` now (the path's resource and the
+  member's place in it; a name the folder never holds, such as `trail/`, is no write). The path is checked as the
+  core checks every path, with one trailing `/` allowed. A member of the company only (42501), not while it is being deleted or paused (55000); an
+  invalid path is 22023. It changes nothing. The data gateway asks it before a member's row edit (company databases
+  §5a).
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
@@ -1087,22 +1149,24 @@ by their keys, never with a lowercase literal.
   `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
   admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
-### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank, 20260930697000_interface_pages_hidden_per_member)
+### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank, 20260930697000_interface_pages_hidden_per_member, 20260930782000_interface_page_data)
 
 Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
-three pages in its Interfaces tab, Mailbox, Members and Bank. Mailbox and Bank are on and Members off until an owner or admin switches one (20260930583000). A client draws
+four pages in its Interfaces tab, Mailbox, Members, Bank and Data. Mailbox, Bank and Data are on and Members off until an owner or admin switches one (20260930583000, 20260930782000). A client draws
 them from the definitions it ships, never from a definition in the folder's `QorperaOS/interfaces/`: Pulse, a page an agent wrote
 and any other page name are pages that aren't there, in the tab, a direct link or a fallback. Switching changes no
 data: the pages' tables, the areas' consents and offers, and who pays stay as they are. Each call answers 42501 for a
 caller who is not a member of a folder-v2 company with that environment.
 
 - `qorpera_member_interface_pages(environment)`: `{schema: "qorpera.member-interface-pages/v1", pages, mayChange}`,
-  `pages` being `[{page, on, hidden}]` for `mailbox`, `members` then `bank`, and `mayChange` whether the caller is an
+  `pages` being `[{page, on, hidden}]` for `mailbox`, `members`, `bank` then `data`, and `mayChange` whether the caller is an
   owner or admin. `hidden` (20260930697000) is whether the caller hid the page from their own rail: a client that reads
   it shows a page unless the member hid it (Members once the company has a second member), whatever `on` says, and
   offers Hide and Show; a client finds `hidden` on every page or treats the answer as one from before it, where `on`
   decides. A client refuses a page name it doesn't know, so a web that knows `bank` goes live before or with
-  20260930520000.
+  20260930520000, and one that knows `data` before or with 20260930782000. The web shows Data only while the company
+  data gateway's `describe` lists a database the member may read (deploy/first-node/RUNTIME-COMPANY-DATABASES.md §5a).
+  A member's own drawer (20260930728000) takes `page:data` as it takes the other pages.
   Read it when the company opens, on focus, and after switching.
 - `qorpera_set_interface_page(environment, page, on)`: owners and admins only (42501 "Only the company's owners and
   admins can switch its pages"); another page name or a null is 22023, and a company being deleted 55000. Answers
@@ -1519,6 +1583,28 @@ stops and deletes it as one it started.
   answers. A busy record moves its last use only
   while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
   window without use, busy or not.
+
+### A computer a member woke sleeps when that member is gone (20260930759000_machine_member_sleep)
+
+A task machine that is awake only because a member woke it (the window's wake, or a computer a member started for an
+agent) sleeps sooner than the node's quiet window: its node's `member_sleep_after_seconds` (600 by default) after that
+member's last sign, whatever is busy on it. It is such a machine while no agent has used it since that start (no
+command of an agent's that still runs or started since, no agent at its screen, no run that still goes that started it
+or asked for it by `machine_start`); once an agent uses it, the quiet window decides again until it has slept. An
+always-on machine is never one. There is no new call:
+
+- `qorpera_list_agent_machines` also answers, per machine, `memberSleepSeconds`: those seconds for such a machine, null
+  for every other.
+- The member's signs are what their own calls already record: the wake (`qorpera_member_manage_company_machine`
+  `start`, `qorpera_member_start_agent_computer`), a look (`qorpera_member_machine_screen_begin`), private typing (the
+  take-over, each action and the hand-back, never the heartbeat), an action or a pointer pass on the desktop shared with the agent, and
+  a start of the desktop. A look counts only for as long after the member's word (`watch.confirmed: true`) as the
+  machine's seconds: looks that go on in a tab nobody touches stop counting.
+- So, for a machine with `memberSleepSeconds`: a window stops looking and asks whether the member still watches after
+  that long without a touch on the page (at most the 30 minutes it keeps for every machine); it says `confirmed: true`
+  again within a minute of a touch, and also while the live picture shows the screen (the stream records nothing), on a
+  look whose picture it does not draw. A machine that slept is `stopped`, as after any idle sleep, and the member's ask
+  wakes it.
 
 ### The company's time zone (20260930739000_company_time_zone)
 
@@ -1990,10 +2076,102 @@ text, an account number, a single payment or the summary's items. Design: the co
   - `site-pages` (`site`, `from`, `to` as `site-days`, `limit` 1 to 50, default 10): `site`, `path` (the file's path in
     the site, `index.html`, `about/index.html`), `views`, `visits` (the visits that began there); the most viewed paths
     a site.
+- The `orders-*` questions (20260930776000_company_numbers_orders, door `orders`) answer any member of the company
+  (viewers too) and any run of it (the founder, 15 Nov 2026: everyone in the company, as site visits; the rule lives in
+  one SQL function, `qorpera_company_numbers_orders_readable`). They count the company's orders from its Stripe hooks:
+  when the vault verifies a Stripe delivery, the platform keeps one counts-only row a payment (when, how much, in what
+  currency, refunded so far, dispute, state), never a buyer's name, email, phone, address, country, IP, card, Stripe's
+  customer id, metadata, description or line items, and never Stripe's ids (a hash only). The events read are
+  `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`,
+  `charge.refunded`, `charge.dispute.created` and `charge.dispute.closed`: an agent picks these when it adds the hook's
+  endpoint at Stripe. Only Checkout Sessions of mode `payment` are orders: a subscription's later refunds and disputes name its invoices' payments, which its session never names, so subscriptions are left out for now (and `setup` is no order). Events
+  may come in any order (a refund before its session is kept and counted once the session comes).
+  - Every question takes `currency` (three letters, any case; by default the currency of most of the orders in the
+    last 90 days, else DKK) and `test` (`true` answers Stripe test-mode orders, kept apart from live ones; also the
+    string `"true"`). Money is a JSON number in the currency's major unit: two decimals, Stripe's zero-decimal
+    currencies (JPY, KRW, ...) whole, its three-decimal ones (KWD, BHD, ...) three. An order is a paid one: a session
+    still unpaid or whose payment failed is not counted (except in `orders-states`' `failed`). Only counts and sums,
+    never one order. Days and months are the company's, by the zone rule above; refunds count on the order's day.
+  - `orders-now` (`currency`, `test`): one row always: `stripe` (`none` no Stripe hook, `waiting` none has verified a
+    delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, a free one too, no state of the
+    company's yet, and, for Stripe's orders, made no earlier than the first Stripe order of the same mode, live or test,
+    that the company ever gave a state of its own, so a shop that starts marking on day 40 sees only orders from then
+    on; an added order never moves that start and, paid with no state of the company's, is to pack whenever it was
+    made (20260930777000); null while the company has set no state of its own in 90 days, Stripe's orders or added
+    ones, so it never grows for a shop that ships nothing), `on_the_way`, `refunds_30d` (refunded on the orders of the 30 days to today), `disputes_open`,
+    `last_order_at` (ISO, UTC, or null). `to_pack`, `on_the_way`, `disputes_open` and `last_order_at` count every
+    currency; the rest the one asked.
+  - `orders-hours` (`currency`, `test`, `from`, `to` as `site-hours` takes them; default the 48 hours to this one, at
+    most 7 days): `hour` (ISO, UTC), `hour_local`, `orders`, `sales`; every hour, zeros included.
+  - `orders-days` (`currency`, `test`, `from`, `to`; default the 30 days to today, at most 400): `day`, `orders`,
+    `sales`, `refunds`; every day, zeros included.
+  - `orders-months` (`currency`, `test`): `month` (`YYYY-MM`), `orders`, `sales`, `refunds`: this month and the 11
+    before.
+  - `orders-states` (`currency`, `test`, `from`, `to` as `orders-days`, for the orders made then; `from` at most 400
+    days back, since order rows go then: 22023 otherwise): `state`, `orders`,
+    `amount`, one row each of `paid`, `packed`, `on_the_way`, `delivered`, `cancelled`, `failed`, in that order.
+    `packed` to `cancelled` are the company's own word (`order-state` below).
+  - `orders-sources` (`currency`, `test`, `from`, `to` as `orders-states`; 20260930777000): `source`, `orders`,
+    `sales`, `refunds`, one row each of `stripe` and `added` (orders added by hand, `order-add` below), in that order,
+    zeros included, for the orders made then. The days keep no source, so `orders-days` and `orders-months` count both
+    together.
+  - Order rows are kept 400 days after the order; the days as long as the company. The upkeep (pg_cron, every 10
+    minutes) adds changed orders to their days and retries a delivery whose order was locked when it came (while its
+    body is kept, 7 days); until then the answers read the order rows, so a day is whole at any time. A day added keeps
+    the zone the company had then.
 - A name of another shape, a parameter the question does not take or a value out of its bounds: 22023 in plain words
   (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
 - A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
   host's call (scope folder), with its own path authority.
+
+### The company's word on its orders (20260930777000_company_numbers_order_changes)
+
+What only the company knows about its orders (packed, on its way, delivered, cancelled), and the orders that never
+went through Stripe, it says with two changes on the same reserved name: an interface app's
+`qorpera.act("qorpera/order-state", ...)` (asked on the platform's bar, a later web slice), an agent's
+`data_change {database: "qorpera", change: "order-state", params}` (a later runtime slice). Design: the company-views
+lane's DESIGN-5-orders.md, "The narrow write" and §E (the founder, 15 Nov 2026: everyone in the company may see the
+sales; agents may add orders outside Stripe by hand, marked as added, at most 500 a day).
+
+- `qorpera_member_company_numbers_change(environment, change, params)` (authenticated): a member of a folder-v2
+  company (42501 "Company numbers are unavailable" for anyone else). `change` is the name after `qorpera/`, `params`
+  an object of named values. Who may read the orders (`qorpera_company_numbers_orders_readable`: everyone in the
+  company) may change them, except a viewer, a read-only member: 42501 "A viewer sees the orders but changes none".
+  Owners, admins and contributors may.
+  Answers the data gateway's change shape `{changed, columns, rows, more, asOf}`: `changed` how many orders it wrote
+  (0 when nothing changed), `columns` and `rows` what it gives back, `more` false, `asOf` the time (ISO, UTC).
+- A run changes the same with `qorpera_run_company_numbers_change(environment, actor, change, params)` through the
+  native host's call (scope folder), resolved as its read is. A run of an in-house worker with read access changes
+  nothing (42501 "A worker with read access changes no orders"), as the folder core refuses its writes.
+- The state's setter is kept as a kind (`agent` for a run, `member`), never a name.
+- `order-state` (`order`, `state`, `test` optional): `order` is Stripe's payment id (`pi_...`, from the event's
+  `payment_intent`), a Checkout Session's id (`cs_...`, only for a session with no payment, as a free one) or the ref
+  `order-add` gave (`add_...`). It is hashed with the company's id and matched, never kept. `state` is `packed`,
+  `on_the_way`, `delivered` or `cancelled`: forward only (a step may be skipped), or to `cancelled` from any state; a
+  cancelled order takes no other; the same state again answers `changed` 0. `test` true names a test-mode order, false
+  a live one; without it the order is found in either mode. Only a paid order takes a state. Stripe's facts (amount,
+  refunds, dispute) never change; cancelling an added order counts it refunded in full (no Stripe refund will); it
+  still counts as an order with its sales, and nothing deletes one. Gives
+  back `state`. P0002 "No order of this company is named so (a paid Checkout Session is named by its payment_intent,
+  pi_...)" for an order the company does not have; P0002 "The order named is not paid: only a paid order takes a
+  state" for one unpaid, failed, or a refund whose session never came; 22023 for a state it cannot take ("The order
+  is delivered already: a state only moves forward (packed, on_the_way, delivered), or to cancelled", "The order is
+  cancelled: a cancelled order takes no other state").
+- `order-add` (`at`, `amount`, `currency`, `state` optional): an order outside Stripe (MobilePay, an invoice, a sale at
+  a market), live, counted with Stripe's in every question and apart in `orders-sources` (never in `orders-now`'s
+  `stripe`, which speaks of the hook). `at`: when it was ordered, a time with its zone (`2026-11-15T14:30Z`,
+  `2026-11-15T15:30+01:00`, kept to the second) or a company day (`2026-11-15`, its first minute in the company's
+  zone), within the last 399 days (order rows go at 400) and not ahead of now (a minute's leeway). `amount`: what was paid, in the currency's major unit, a JSON number or its text (`249.95`), 0 or more, with
+  no more decimals than the questions answer for that currency (JPY whole, KWD three), at most 9 999 999 999 minor
+  units. `currency`: an ISO 4217 code, any case (funds and metals codes are refused). `state`: `paid` (the default),
+  `packed`, `on_the_way` or `delivered` (a sale already handled is added as it stands; cancel one with `order-state`).
+  Gives back `order` (the ref, `add_` and 32 hex: only its hash is kept, so the caller keeps it to name the order
+  later) and `state`. A company adds at most 500 orders in 24 hours: 54000 "A company adds at most 500 orders in 24
+  hours: add the rest later".
+- A change that is not there, and one the caller may not run: P0002 "No change qorpera/<change> that you may run" (the
+  same words). A parameter the change does not take, one it needs left out, or a value of the wrong kind or out of
+  bounds: 22023 in plain words (`The change takes no :x`, `The change takes :order`, `:amount has at most 2 decimals
+  in DKK`, ...).
 
 ### The company's reading and standing (20260930765000_company_reading)
 
@@ -2013,7 +2191,8 @@ member may delete it. A company whose routines stand still cannot write its own 
   wakes wait, and names the first that is not ready: `login_full` (with `resetsAt`, when the login's window resets),
   `sign_in` (a new sign-in is needed) or `no_login`; `member` is that member's user id. `why`, `member` and `resetsAt`
   are null when every such login is ready. Any member reads it, a viewer too; anyone else is 42501 "Standing
-  unavailable". Read it when the company page opens and every 30 s while it is open.
+  unavailable". The web reads it for an interface app that reads `reading` (`qorpera.reading()`, such as the
+  company's map), when its page opens and every 30 s while it is open.
 - The Co-Founder's facts for the reading are a host call of its run, never a member's:
   `qorpera_describe_company_senses(binding)`.
 
@@ -2171,7 +2350,10 @@ only after durable storage.
   `apply`, 512 KiB for `watch` (up to 24 question texts of 16 KiB each), 64 KiB for `query` and `describe`. Answers
   are JSON with `cache-control: no-store`, passed back with their status. A watch is held up to 20 s by the data
   gateway after its own reads; the bridge allows it 30 s, the others the default 25 s. Behind the member company
-  gateway, which reads a body only for a signed-in member.
+  gateway, which reads a body only for a signed-in member. The Data list (§5a) adds `/rows` (a page of a table),
+  `/edit` (a member's add, change or remove of a row), `/change` (a named change) and `/changes` (what changed, from
+  the record of who changed what), the same way: at most 1 MiB for `rows`, `edit` and `changes` (they may carry the
+  question texts the list's rule reads), 64 KiB for `change`.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read
@@ -2280,7 +2462,7 @@ renders only these surfaces and never agent-authored HTML:
 
 | `surface` | `payload` (closed object) | Member outcomes | `answer` |
 | --- | --- | --- | --- |
-| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?` | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
+| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?`, `input?` (20260930796000: exactly `{kind: "mail_address"}`, only with `allowCustom: true`; an address card whose options are handle suggestions and whose answer is the created address as a custom value) | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
 | `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81), `repository?` (20260930693000: only with `connectorId: environment`, owner/name in lower case) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer. A coding value (`connectorId: environment`, a name `qorpera_coding_environment_name_allowed` takes) is an environment variable coding sessions get: with `repository`, an owner or admin saves it for the company and gives it to that repository (`qorpera_grant_coding_environment_secret`); otherwise it is the member's own, which reaches their coding sessions in every repository |
 | `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
 | `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |
@@ -2741,3 +2923,11 @@ above.
     (`qorpera_answer_action_review`, section 2). Older approval cards without
     `reviewId` keep the v75 path.
 
+- Pending spectators (20260930794000): people a founder picks, as a company is made, to follow it as viewers.
+  `qorpera_add_pending_spectators(profile, emails)` (owner or admin, at the founding table or later; a company keeps
+  at most 50 to invite, else 54000; a malformed or missing email is refused, 23514) keeps them on the company and
+  answers the whole list; `qorpera_list_pending_spectators(profile)` answers it to owners and admins, as invitations
+  are (everyone else gets an empty list); `qorpera_invite_pending_spectators(profile)`
+  (owner or admin) does nothing while the founding table is open, and after Start invites each as a viewer through
+  `qorpera_invite_profile_member`, an email the company already has or has invited counting as done, and takes each
+  off the list. It answers the emails it invited. Any other refusal rolls the whole call back and keeps the list.

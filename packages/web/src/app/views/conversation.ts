@@ -1,6 +1,7 @@
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import { questionInput } from "../../cloud/interactions.ts";
 import {
 	type InterfaceChange,
 	type InterfaceChangeSubject,
@@ -95,6 +96,7 @@ import {
 } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
+import { pageNoteApp, pageNoteCard } from "./page-note.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
@@ -666,7 +668,6 @@ export class ConversationView {
 			actions.sessionModel,
 			this.#notificationSignal,
 			() => this.#setSubmenu(this.#models, true),
-			() => this.#setSubmenu(this.#models, false),
 			() => this.update(),
 		);
 		this.#logins = this.#execution
@@ -726,8 +727,12 @@ export class ConversationView {
 			) {
 				event.preventDefault();
 				const page = open?.el ?? this.#menuMain;
-				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
-				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+				const controls = [
+					...page.querySelectorAll<HTMLElement>(
+						'button:not(:disabled):not([hidden]), [role="slider"][tabindex="0"]:not([aria-disabled="true"])',
+					),
+				];
+				const current = controls.indexOf(document.activeElement as HTMLElement);
 				const index = matchesKey(event, "first")
 					? 0
 					: matchesKey(event, "last")
@@ -1968,7 +1973,7 @@ export class ConversationView {
 		else this.#answerEmblem.style.removeProperty("--app-colour");
 		this.#answerLabel.textContent = note ? (app?.name ?? note.app) : t("Answering");
 		this.#answerQuestion.textContent = note ? note.about : (answering ?? "");
-		const stop = note ? t("Leave the app out") : t("Stop answering");
+		const stop = note?.page ? t("Leave the page out") : note ? t("Leave the app out") : t("Stop answering");
 		this.#answerStop.setAttribute("aria-label", stop);
 		this.#answerStop.title = stop;
 		this.#composer.placeholder = answering && !note ? t("Your answer…") : t("Message…");
@@ -1978,6 +1983,7 @@ export class ConversationView {
 	 * drawer draws them), with a key that changes when any of it does. */
 	#answerApp(answering: string | undefined): { name: string; look?: AppLook; key: string } | undefined {
 		const note = answering === undefined ? undefined : appNoteHeader(answering);
+		if (note?.page) return pageNoteApp(note.app);
 		const app = note && this.#company.store.get().apps?.find((entry) => entry.name === note.app);
 		if (!app?.manifest) return undefined;
 		const look = appLook(this.#company, app);
@@ -2062,7 +2068,11 @@ export class ConversationView {
 		const note = appNoteHeader(reply.question);
 		if (note)
 			return [
-				h("div", { class: "app-cards" }, appCard(note.app, note.app, note.about)),
+				h(
+					"div",
+					{ class: "app-cards" },
+					note.page ? pageNoteCard(note.app, note.at, note.about) : appCard(note.app, note.app, note.about),
+				),
 				...(reply.text ? [h("div", { class: "text" }, ...this.#withMentions(reply.text, own))] : []),
 			];
 		return [
@@ -3018,6 +3028,7 @@ export class ConversationView {
 				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
 				const answers = canAnswer(item.actorUserId);
 				const takeOver = Boolean(agent) && item.request.surface === "takeover";
+				const address = questionInput(item.request) === "mail_address";
 				const cardKey = JSON.stringify([
 					item.request,
 					// What the card shows of an answer; the input it went out as is not shown.
@@ -3026,6 +3037,7 @@ export class ConversationView {
 					// Whose a secret saved here is: a coding value's card says which repositories get it (a role change
 					// moves it).
 					item.request.surface === "secret" ? this.#company.secretSavedForCompany(item.request) : null,
+					address ? this.#company.canChooseMailAddress() : null,
 					item.answerFailed,
 					item.chainStopped,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
@@ -3108,6 +3120,9 @@ export class ConversationView {
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
 											savesForCompany: this.#company.secretSavedForCompany(item.request),
 										}
+									: {}),
+								...(address && answers
+									? { mailAddress: this.#company.mailAddressCalls(this.#sessionId, item.id) }
 									: {}),
 							},
 						),
@@ -3635,7 +3650,14 @@ export class ConversationView {
 			!company.accessLost &&
 			company.team?.capabilities.read === true
 		)
-			children.push(notice("neutral", t("You can read this conversation. Contributors and above can write.")));
+			children.push(
+				notice(
+					"neutral",
+					company.team?.role === "viewer"
+						? t("You're a spectator: you read along, and the founders write.")
+						: t("You can read this conversation. Contributors and above can write."),
+				),
+			);
 		const refocus = this.#status.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.action
 			: undefined;
@@ -3878,7 +3900,6 @@ export class ConversationView {
 		const company = this.#company.store.get();
 		const readable = !this.#isRoom && !company.accessLost && company.team?.capabilities.read;
 		const failed = readable ? this.#company.failedRunFor(session?.staffAgentId) : undefined;
-		// A run waiting at its login's usage limit is the agent's newest work: it shows above an earlier failure.
 		const waiting = readable ? this.#company.pausedRunFor(session?.staffAgentId) : undefined;
 		if (waiting?.paused && (!failed || failed.earlier)) {
 			this.#renderWaitingRun(session, waiting.runId, waiting.paused);
@@ -3941,11 +3962,20 @@ export class ConversationView {
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit, {
-							...payer,
-							...(logins.length ? { continuable: true } : {}),
-							...(payerName ? { payerName } : {}),
-						})
+					? runFailureReason(
+							recovery.lastError,
+							recovery.jobStatus,
+							recovery.usageLimit,
+							{
+								...payer,
+								...(logins.length ? { continuable: true } : {}),
+								...(payerName ? { payerName } : {}),
+							},
+							recovery.rateLimited,
+							(recovery.sourceKind === "session_turn" || recovery.sourceKind === "room_delivery") &&
+								recovery.requestedByUserId === this.#company.userId.toLowerCase(),
+							recovery.signInRefused,
+						)
 					: undefined;
 		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
 		const continueNote = this.#continueNote?.runId === runId ? this.#continueNote?.text : undefined;
@@ -3958,7 +3988,13 @@ export class ConversationView {
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
 			recovery !== undefined &&
-			runFailureInterrupted(recovery.lastError, recovery.jobStatus, recovery.usageLimit);
+			runFailureInterrupted(
+				recovery.lastError,
+				recovery.jobStatus,
+				recovery.usageLimit,
+				recovery.rateLimited,
+				recovery.signInRefused,
+			);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -4068,10 +4104,6 @@ export class ConversationView {
 		}
 	}
 
-	/** The agent's run waiting at its login's usage limit (20260930703000): it goes on by itself at the reset, on the
-	 * same login. The member whose own login pays may move it now to another of theirs that can pay ("Continue with …"):
-	 * the run itself goes on there at once, from where it stopped, so it never also comes back on the old login. Anyone
-	 * else reads who can. Nothing to dismiss: the line goes when the run goes on. */
 	#renderWaitingRun(session: HostedSession | undefined, runId: string, paused: PausedRun): void {
 		const company = this.#company.store.get();
 		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
@@ -4081,7 +4113,7 @@ export class ConversationView {
 		// resumes, never onto or off a ChatGPT plan, and only onto a login that may work while its member is away when the
 		// paying one may.
 		const logins =
-			payer?.own === true && paused.movable && !paused.paidByChatgptPlan && canWrite
+			payer?.own === true && paused.movable && !paused.rateLimited && !paused.paidByChatgptPlan && canWrite
 				? (this.#execution?.continueLogins(
 						paused.sponsorBindingId,
 						(connection) =>
@@ -4094,11 +4126,16 @@ export class ConversationView {
 				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
 				: undefined;
 		const title = t("{name} is waiting to go on", { name: agentName });
-		const reason = runWaitingReason(paused.until, {
-			...payer,
-			...(logins.length ? { continuable: true } : {}),
-			...(payerName ? { payerName } : {}),
-		});
+		const reason = runWaitingReason(
+			paused.until,
+			{
+				...payer,
+				...(logins.length ? { continuable: true } : {}),
+				...(payerName ? { payerName } : {}),
+			},
+			paused.rateLimited,
+			paused.signInRefused,
+		);
 		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
 		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;
 		const key = JSON.stringify(["waiting", runId, title, reason, logins, moving, note]);

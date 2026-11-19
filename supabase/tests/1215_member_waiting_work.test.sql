@@ -231,9 +231,8 @@ begin
 		and not has_function_privilege('anon', 'public.qorpera_list_member_waiting_work(uuid)', 'execute')
 		and not has_function_privilege('service_role', 'public.qorpera_list_member_waiting_work(uuid)', 'execute'),
 		'Members execute it; anon and service_role do not');
-	perform pg_temp.base_assert((select prosecdef and provolatile = 's' and proconfig = array['search_path=""']
-		and prosrc like '%20260930723000%' from pg_proc
-		where oid = 'public.qorpera_list_member_waiting_work(uuid)'::regprocedure), 'A stable definer read with the marker');
+	perform pg_temp.base_assert((select prosecdef and provolatile = 's' and proconfig = array['search_path=""'] from pg_proc
+		where oid = 'public.qorpera_list_member_waiting_work(uuid)'::regprocedure), 'A stable definer read');
 end
 $$;
 

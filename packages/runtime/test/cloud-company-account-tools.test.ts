@@ -319,12 +319,15 @@ describe("company_account", () => {
 
 	it("tells the agent the rules in its own words", () => {
 		const { tool } = fixture();
+		expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 		for (const rule of [
 			"Which way in: a service with an official connection",
 			"never by a website sign-up or sign-in",
 			"a person's task in their own browser",
 			"Never ask anyone for a password.",
-			"only with computer_browser vault_fill",
+			"only with fill_company_account on a company machine",
+			"computer_browser vault_fill",
+			"never type, say or screenshot a password yourself",
 			"ends the attempt at once: never retry it; set the account needs_person",
 			"closed deletes the company's password and authenticator for good",
 		])
@@ -333,9 +336,10 @@ describe("company_account", () => {
 		for (const rule of [
 			"# Accounts on websites",
 			"Open one only when an open todo of yours needs it",
-			"never by signing up or signing in on its website",
-			"Never ask anyone for a password, and type one only with vault_fill",
-			"stop at once and never retry: mark the account needs_person",
+			"A site that checks for automated browsers is a person's task in their own browser",
+			"Never ask anyone for a password and never type one yourself: on a machine the vault types it with fill_company_account",
+			"open the page with desktop open and click into the field first",
+			"stop at once without retrying: mark the account needs_person",
 		])
 			expect(instructions, rule).toContain(rule);
 	});

@@ -1,5 +1,5 @@
 import type { Cloud } from "./client.ts";
-import { UUID_PATTERN } from "./parse.ts";
+import { array, CloudShapeError, oneOf, record, UUID_PATTERN } from "./parse.ts";
 
 /**
  * Member surface for the company's event hooks: webhooks other services post
@@ -80,6 +80,29 @@ export function parseEventHook(value: unknown, projectUrl: string): EventHook {
 	};
 }
 
+export const MAIL_HANDLE = /^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])$/;
+export const MAIL_BOX = /^[a-z0-9]([a-z0-9_-]{0,37}[a-z0-9])?$/;
+
+export const MAIL_HANDLE_STATUSES = ["ours", "free", "taken", "invalid"] as const;
+export type MailHandleStatus = (typeof MAIL_HANDLE_STATUSES)[number];
+
+export interface MailHandles {
+	domain: string | null;
+	handles: string[];
+}
+
+export function parseMailHandles(value: unknown): MailHandles {
+	const input = record(value, "mail handles");
+	const domain = input.domain;
+	if (domain !== null && (typeof domain !== "string" || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)))
+		throw new CloudShapeError("mail domain");
+	const handles = array(input.handles, "mail handles").map((handle) => {
+		if (typeof handle !== "string" || !MAIL_HANDLE.test(handle)) throw new CloudShapeError("mail handle");
+		return handle;
+	});
+	return { domain, handles };
+}
+
 export interface WebEventHooks {
 	/** The company's live hooks and mailboxes, by name. */
 	list(signal?: AbortSignal): Promise<EventHook[]>;
@@ -89,6 +112,8 @@ export interface WebEventHooks {
 	createMailbox(localPart: string, purpose: string, signal?: AbortSignal): Promise<EventHook>;
 	/** Pauses, resumes or removes a hook or a mailbox. Removing is final and frees its name. */
 	setStatus(hookId: string, status: EventHookStatus | "removed", signal?: AbortSignal): Promise<void>;
+	mailHandles(signal?: AbortSignal): Promise<MailHandles>;
+	handleStatus(handle: string, signal?: AbortSignal): Promise<MailHandleStatus>;
 }
 
 export function createWebEventHooks(
@@ -137,6 +162,21 @@ export function createWebEventHooks(
 			signal?.throwIfAborted();
 			if (!UUID_PATTERN.test(hookId)) throw new Error("Invalid hook.");
 			await cloud.rpc("qorpera_set_event_hook_status", { p_hook_id: hookId, p_status: status });
+		},
+		async mailHandles(signal) {
+			signal?.throwIfAborted();
+			return parseMailHandles(await cloud.rpc("qorpera_company_mail_handles", { p_profile_id: profile.profileId }));
+		},
+		async handleStatus(handle, signal) {
+			signal?.throwIfAborted();
+			return oneOf(
+				await cloud.rpc("qorpera_company_mail_handle_status", {
+					p_profile_id: profile.profileId,
+					p_handle: handle,
+				}),
+				MAIL_HANDLE_STATUSES,
+				"mail handle status",
+			);
 		},
 	};
 }

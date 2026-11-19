@@ -1,6 +1,7 @@
 import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_ASK_MEMBER_SURFACES,
@@ -157,11 +158,12 @@ const PAYLOADS = {
 		minimal: { options: [{ label: "Apples" }] },
 		maximal: {
 			options: [
-				{ label: "Apples", value: "apples", description: "Crisp.", style: "primary", preview: "fruit/apples.svg" },
+				{ label: "apples", value: "apples", description: "Crisp.", style: "primary", preview: "fruit/apples.svg" },
 			],
 			multiSelect: false,
 			allowCustom: true,
 			dismissOnMoveOn: false,
+			input: { kind: "mail_address" },
 		},
 	},
 	secret: {
@@ -413,8 +415,9 @@ describe("readable cards", () => {
 	// the other members share. The agent was told its calls are refused meanwhile and could have passed that on as
 	// privacy; it is told what is true, and still to end its turn until I'm done wakes it.
 	it("tells an agent that a member signs in on the screen they share, and promises no privacy", () => {
+		// T3-5's contract says it on its takeover line.
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
-			"For sign-in or page entry on your desktop computer use takeover: the member does it on the screen you both use, so never promise it is private; end your turn, I'm done wakes you. With no such computer, say so. Then look: I'm done is not login proof.",
+			"- takeover: for a sign-in or page entry on your desktop computer the member does it on the screen you both use, so never promise it is private; end your turn: their I'm done wakes you.",
 		);
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).toContain(
@@ -430,18 +433,23 @@ describe("readable cards", () => {
 	// card says what is stopped; nothing optional does.
 	it("puts every answer the work waits for on a card that says what is stopped, and nothing optional", () => {
 		for (const rule of [
-			"Use question for every answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them.",
-			"Options are the likely answers, never generic ones like Get started; for an open question add allowCustom, a field for their own answer.",
-			"Optional ideas, offers and news stay in chat.",
-			"The body is at most a few short lines or bullets: what is stopped until they answer (I've stopped the price list until you pick one), what is being chosen,",
+			"- question: an answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them.",
+			"ideas, offers and news stay in chat.",
 		])
 			expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(rule);
+		// What a card says, and its options, are on the fields Codex sends (track 3, T3-5).
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_INPUT_SCHEMA)).toContain(
+			"what is stopped until they answer, what is being chosen, the one or two things that matter",
+		);
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain(
+			"The likely answers to what your work cannot go on without, each a specific one, never generic ones like Get started.",
+		);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("Open-ended questions belong in chat");
 		// The card's own schema says the same: an open question goes on the card with allowCustom, not to chat.
 		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
 		expect(schema).not.toContain("belong in ordinary chat");
 		expect(schema).not.toContain("not a reason to turn an open-ended question");
-		expect(schema).toContain("add allowCustom for an open one");
+		expect(schema).toContain("allowCustom adds a field for the member's own");
 		// The tool boundary takes a description of at most 4096 bytes.
 		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
 		// The card takes a typed answer beside its options.
@@ -503,7 +511,7 @@ describe("ask_member card shapes", () => {
 					type: "string",
 					minLength: 1,
 					maxLength: 40,
-					description: "A button of 1 to 3 words that resolves the pending decision.",
+					description: "A button of 1 to 3 words (at most 40 bytes), such as Approve or Change it.",
 				},
 			};
 		expect(offered[CLOUD_ASK_MEMBER_SURFACES.indexOf(surface)]).toEqual(kernel);
@@ -545,7 +553,7 @@ describe("ask_member card shapes", () => {
 		}
 		expect(refusal).toBeInstanceOf(CloudToolArgumentRefusal);
 		expect((refusal as Error).message).toBe(
-			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger, preview?}], multiSelect?, allowCustom?, dismissOnMoveOn?}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
+			"the question payload must be {options: [{label, value?, description?, style?: default|primary|danger, preview?}], multiSelect?, allowCustom?, dismissOnMoveOn?, input?: {kind: mail_address}}. Each option is an object with a label, never a plain string. Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.",
 		);
 	});
 
@@ -645,5 +653,89 @@ describe("ask_member card shapes", () => {
 				payload: { options: ["Apples"] },
 			}),
 		).toThrow(/^Invalid interaction request: the question payload must be/);
+	});
+});
+
+describe("the address card", () => {
+	const address = (payload: Record<string, unknown>) => ({
+		idempotencyKey: "mail-address",
+		text: "Choose the company's email address.",
+		surface: "question",
+		title: "Your company's email address",
+		payload: {
+			options: [{ label: "nordlys-studio", value: "nordlys-studio" }, { label: "nordlys" }],
+			allowCustom: true,
+			input: { kind: "mail_address" },
+			...payload,
+		},
+	});
+	const refusal = (value: unknown): string => {
+		try {
+			parseCloudAskMemberInput(value);
+		} catch (error) {
+			expect(error).toBeInstanceOf(CloudToolArgumentRefusal);
+			return (error as Error).message;
+		}
+		throw new Error("accepted");
+	};
+
+	it("takes handle suggestions with a field for the member's own, and keeps the input as the kernel stores it", () => {
+		const card = address({});
+		expect(parseCloudAskMemberInput(card).data.payload).toEqual(card.payload);
+		expect(
+			parseCloudInteractionRequestData({
+				schema: "qorpera.interaction/v1",
+				surface: card.surface,
+				title: card.title,
+				payload: card.payload,
+			}).payload,
+		).toEqual(card.payload);
+	});
+
+	it("refuses an address card without allowCustom, saying why, as a new card and as a stored one", () => {
+		const words =
+			"an address card (input kind mail_address) needs allowCustom: true, since the member's answer is the address they make";
+		expect(refusal(address({ allowCustom: false }))).toBe(words);
+		const { allowCustom: _, ...without } = address({}).payload;
+		expect(refusal({ ...address({}), payload: without })).toBe(words);
+		expect(() =>
+			parseCloudInteractionRequestData({
+				schema: "qorpera.interaction/v1",
+				surface: "question",
+				title: "T",
+				payload: without,
+			}),
+		).toThrow(`Invalid interaction request: ${words}`);
+	});
+
+	it("refuses any other input", () => {
+		for (const input of [{ kind: "phone" }, { kind: "mail_address", domain: "x" }, "mail_address", null])
+			expect(refusal(address({ input }))).toBe(
+				"a question's input is {kind: mail_address}, the address card, and nothing else",
+			);
+	});
+
+	it("refuses options that are not handles, or whose value differs from the label", () => {
+		const words = "an address card's options are handles made from the company's name";
+		for (const options of [
+			[{ label: "Nordlys" }],
+			[{ label: "n" }],
+			[{ label: "nordlys-" }],
+			[{ label: "nordlys.studio" }],
+			[{ label: "a".repeat(25) }],
+			[{ label: "nordlys", value: "hello.nordlys" }],
+		])
+			expect(refusal(address({ options }))).toContain(words);
+		expect(parseCloudAskMemberInput(address({ options: [{ label: "a".repeat(24) }] })).data.payload).toMatchObject({
+			options: [{ label: "a".repeat(24) }],
+		});
+	});
+
+	it("tells the model what an address card is and what its answer holds", () => {
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(
+			"- An address card is a question with allowCustom: true and input {kind: mail_address}: each option a handle made from the company's name (label and value the same, such as acme); the member makes the company's email address in the card, and the answer is that address.",
+		);
+		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
+		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain('"input":{"type":"object"');
 	});
 });

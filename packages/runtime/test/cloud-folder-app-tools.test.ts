@@ -77,18 +77,19 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 	// is part of this one, so a longer list can push it over. The emblems are listed on the schema alone since there are
 	// 24 (12 November 2026), which put it at 4177.
 	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
-	expect(tool.description).toContain("emblem: one of the 24 pictures its schema lists, colour:");
+	// The emblems and colours are the schema's enums, which Codex sends; the description names the fields.
+	expect(tool.description).toContain("optionally about, emblem, colour, kit, entry");
 	for (const rule of [
 		// Jonas, 13 November 2026: pages that kept every rule of 10 November (a first screen that says how the area
 		// stands, about 300 words, a diagram) were still documents in boxes. A page written by hand now follows the kits.
-		"The thing itself fills the first screen, to look at and handle, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
-		"a title of two or three words, at most one short line under it, then the thing",
-		"Labels and numbers, never sentences; no boxes of text, no date, no list of what you did.",
-		"What is not known yet is drawn as open, such as a dashed outline or a question mark, never written about.",
-		"Give the page something to do: a control that changes what it shows, or a choice a member makes (writes).",
-		"Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
-		"Every app starts from Qorpera's base style, which your own CSS overrides, with the company's colours as variables: app_guide style says which",
-		"Draw what the company already holds from its live data instead of typing it in: app_guide reads says how.",
+		"The thing fills the first screen, on a laptop and on a phone (about 390 px wide, one column, nothing cut off)",
+		"a title of two or three words, at most one short line, then the thing",
+		"labels and numbers, not sentences, boxes of text, a date or a list of what you did",
+		"what is not known yet drawn as open, such as a dashed outline or a question mark, not written about.",
+		"Give it something to do: a control that changes what it shows, or a choice a member makes (writes).",
+		"Links open on a member's click: app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
+		"Every page starts from Qorpera's base style with the company's colours as CSS variables (--q-bg, --q-text, --q-muted, --q-line, --q-surface, --q-accent, --q-on-accent, --q-accent-soft, --q-good, --q-warn, --q-bad): use them, not colours of your own (app_guide style).",
+		"Qorpera shows the member what will be saved, and only their yes saves it. app_guide reads and writes say how.",
 		"The answer's look names what a read of the saved app found: fix it, unless it does not fit this app.",
 	])
 		expect(tool.description).toContain(rule);
@@ -132,7 +133,9 @@ it("tells how a page written by hand is made, within the bytes a tool's descript
 it("tells in the guide writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
 	const f = await fixture();
 	const tool = f.tool("save_app");
-	expect(tool.description).toContain("writes: what it may ask a member to change");
+	expect(tool.description).toContain(
+		"asks a member to change an answer or a table row (qorpera.answer, setRow, addRow; writes names them)",
+	);
 	const writes = appGuide("writes");
 	for (const rule of [
 		// The gate: the page asks, the member allows on a bar the page cannot draw, and the save is the member's own.
@@ -181,13 +184,17 @@ it("keeps save_app's schema small enough that the model receives its fields' des
 		"curve: one value over time",
 		"stack: things that want a member's yes",
 		"shelf: the company's own things side by side",
+		"map: the company or your own area as its things",
+		"ring: a year, month or week with its dates",
+		"flow: money or people from where they come to where they go",
 		"explainer: a mechanism or a decision that a short narrated video explains.",
 	])
 		expect(properties.kit?.description).toContain(said);
 	expect(properties.reads?.description).toContain("app_guide reads says how");
 	expect(properties.writes?.description).toContain("app_guide writes says how");
+	// T3-5's contract says it on the kits' line.
 	expect(f.tool("save_app").description).toContain(
-		"app_guide says what its file holds: read the kit's guide before you write the file, since a kit's file is saved only in a run that has read it.",
+		"What the file holds is in the kit's guide (app_guide): a kit's file is saved only in a run that has read it, else APP_GUIDE_UNREAD and nothing is saved.",
 	);
 });
 
@@ -203,7 +210,11 @@ it("answers a guide's text, and nothing of the company", async () => {
 		"curve",
 		"stack",
 		"shelf",
+		"map",
+		"ring",
+		"flow",
 		"explainer",
+		"program",
 		"style",
 		"reads",
 		"writes",
@@ -213,7 +224,7 @@ it("answers a guide's text, and nothing of the company", async () => {
 	refusesArguments(
 		tool,
 		{ about: "kits" },
-		"about must be one of look, model, board, path, object, curve, stack, shelf, explainer",
+		"about must be one of look, model, board, path, object, curve, stack, shelf, map, ring, flow, explainer",
 	);
 	refusesArguments(tool, {}, "app_guide takes exactly about");
 	refusesArguments(tool, { about: "model", more: 1 }, "app_guide takes exactly about");
@@ -224,9 +235,9 @@ it("answers a guide's text, and nothing of the company", async () => {
 		expect(Buffer.byteLength(JSON.stringify(appGuide(about))), about).toBeLessThan(16 * 1024);
 	}
 	// A data kit's guide starts with what the data kits share, then its own: fields, bounds and an example.
-	for (const kit of ["model", "board", "path", "object", "curve", "stack", "shelf"] as const) {
+	for (const kit of ["model", "board", "path", "object", "curve", "stack", "shelf", "map", "ring", "flow"] as const) {
 		expect(appGuide(kit), kit).toMatch(
-			/^For a data kit \(model, board, path, object, curve, stack, shelf\) you write one file among files/,
+			/^For a data kit \(model, board, path, object, curve, stack, shelf, map, ring, flow\) you write one file among files/,
 		);
 		expect(appGuide(kit), kit).toContain(`\`${kit}.json\``);
 		expect(appGuide(kit), kit).toContain("```json");
@@ -270,8 +281,9 @@ it("holds every app to one look, with screens at the bar and three not to make",
 	// Short: a guide read before every first app.
 	expect(Buffer.byteLength(look)).toBeLessThan(2500);
 	// An agent meets it where it chooses: app_guide's description, and save_app's kit.
+	// T3-5's contract says it on app_guide's look line.
 	expect(f.tool("app_guide").description).toContain(
-		"look is the bar for how every app looks, with screens to follow and screens to avoid: read it before your first app.",
+		"- look: the bar every app's look is held to, with screens to follow and screens to avoid. Read it before your first app.",
 	);
 	const kit = (
 		f.tool("save_app").inputSchema as {
@@ -351,7 +363,8 @@ it("refuses arguments it cannot save before anything is read", async () => {
 	refusesArguments(tool, save("sales", "k", null, []), "give a manifest, files, or both");
 	refusesArguments(tool, save("sales", "k", null, [{ path: "../x.html", text: "" }]), "relative to the app's folder");
 	refusesArguments(tool, save("sales", "k", null, [{ path: "app.toml", text: "" }]), "written from manifest");
-	refusesArguments(tool, save("sales", "k", null, [{ path: "run.sh", text: "" }]), "an app's text files are");
+	refusesArguments(tool, save("sales", "k", null, [{ path: "pictures/a.png", text: "" }]), "a .png file is not text");
+	refusesArguments(tool, save("sales", "k", null, [{ path: "font.woff2", text: "" }]), "from a company machine");
 	refusesArguments(
 		tool,
 		save("sales", "k", null, [
@@ -458,9 +471,9 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 const LINKS_NOTE =
 	"a link opens another app (app:<name>), a file of the company's own work (folder:<path>, never under QorperaOS/), a web page (https://…) or a place in the page (#id). For anything else, such as a tab, use a button with a click handler.";
 const WORDS_NOTE =
-	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws), and keep the text in its file.";
+	"a member would have to read this, so it is a document, not an app. Show the thing itself with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws), and keep the text in its file.";
 const UNSHOWN_NOTE =
-	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf or explainer: kit's schema says what each draws).";
+	"Nothing to look at, only text: an app shows a thing to look at and handle. Make it with a kit (model, board, path, object, curve, stack, shelf, map, ring, flow or explainer: kit's schema says what each draws).";
 const words = (count: number) => Array.from({ length: count }, () => "word").join(" ");
 
 it("reads a page quickly and names what a member would trip on", () => {
@@ -791,55 +804,34 @@ it("posts its own app without review, and reviews posting or changing another's 
 	);
 });
 
-it("counts a video as a file of its app, but not toward the bytes of the rest", async () => {
+it("saves an app of any number, size and kind of files, reading the whole folder and releasing what it drew on", async () => {
 	const app = 'name = "Ideas"\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\nposted = false\n';
-	const big = await fixture({
+	const notes = Object.fromEntries(Array.from({ length: 300 }, (_, n) => [`apps/ideas/n${n}.txt`, "note"]));
+	const f = await fixture({
 		folders: ["apps"],
 		files: {
 			"apps/ideas/app.toml": app,
 			"apps/ideas/index.html": PAGE,
-			"apps/ideas/a.mp4": "x".repeat(5 * 1024 * 1024),
+			"apps/ideas/studio.html": "x".repeat(600 * 1024),
+			"apps/ideas/film.mp4": "x".repeat(13 * 1024 * 1024),
+			"apps/ideas/model.glb": "x",
+			"apps/ideas/type.woff2": "x",
+			...notes,
 		},
 	});
-	// Refused, this would throw.
-	await big.call("save_app", save("ideas", "video-1", null, [{ path: "more.txt", text: "more" }]));
-	const notes = Object.fromEntries(Array.from({ length: 62 }, (_, n) => [`apps/ideas/n${n}.txt`, "note"]));
-	const full = await fixture({
-		folders: ["apps"],
-		files: { "apps/ideas/app.toml": app, "apps/ideas/index.html": PAGE, "apps/ideas/a.mp4": "x", ...notes },
-	});
-	await refuses(
-		full.call("save_app", save("ideas", "video-2", null, [{ path: "one-more.txt", text: "more" }])),
-		"APP_TOO_LARGE",
+	const answer = read(
+		await f.call(
+			"save_app",
+			save("ideas", "big-1", null, [
+				{ path: "n299.txt", text: "changed" },
+				{ path: "scene.gltf", text: "{}" },
+				{ path: "shaders/sky.glsl", text: "void main() {}" },
+			]),
+		),
 	);
-});
-
-it("counts pictures with videos, and refuses a change to an app holding a file too big to open", async () => {
-	// 7 November 2026: Rumlig's demo app held 10 MB pages and 0.5-0.8 MB renders; it saved, and never opened.
-	const app = 'name = "Demos"\nowner = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f"\nposted = false\n';
-	const renders = await fixture({
-		folders: ["apps"],
-		files: {
-			"apps/demos/app.toml": app,
-			"apps/demos/index.html": PAGE,
-			"apps/demos/room.jpg": "x".repeat(5 * 1024 * 1024),
-			"apps/demos/walk.mp4": "x".repeat(3 * 1024 * 1024),
-		},
-	});
-	// A 5 MiB render (past the 4 MiB of pages and code) and a 3 MiB video are within the pictures' and videos' bounds.
-	await renders.call("save_app", save("demos", "media-1", null, [{ path: "notes.txt", text: "notes" }]));
-	const page = await fixture({
-		folders: ["apps"],
-		files: {
-			"apps/demos/app.toml": app,
-			"apps/demos/index.html": PAGE,
-			"apps/demos/studio.html": "x".repeat(600 * 1024),
-		},
-	});
-	await refuses(
-		page.call("save_app", save("demos", "media-2", null, [{ path: "notes.txt", text: "notes" }])),
-		"APP_FILE_TOO_LARGE",
-	);
+	expect(answer).toMatchObject({ state: "applied" });
+	expect(f.text("apps/ideas/n299.txt")).toBe("changed");
+	expect(f.text("apps/ideas/shaders/sky.glsl")).toBe("void main() {}");
 });
 
 it("posts only the manifest it checked: an app made or changed in between is refused, never posted unreviewed", async () => {

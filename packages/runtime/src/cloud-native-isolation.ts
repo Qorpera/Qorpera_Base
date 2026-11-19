@@ -3,6 +3,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
+	NATIVE_CLAUDE_CODE_EGRESS_HOSTS,
 	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
 	NATIVE_CODEX_EGRESS_HOSTS,
 	startNativeCodexEgress,
@@ -27,7 +28,11 @@ export const CHATGPT_PLAN_TOKEN_ENVIRONMENT = "QORPERA_CHATGPT_PLAN_ACCESS_TOKEN
  * run reaches OpenAI's API alone. */
 export type NativeChatGptPlanAccess = { readonly directory: string } | { readonly accessToken: string };
 
-async function rootOwnedFile(path: string): Promise<void> {
+export type NativeClaudeRead = "usage" | "screen";
+export const NATIVE_CLAUDE_TERMINAL = Object.freeze({ rows: 40, cols: 200 });
+
+/** A root-owned file no one else may write, every folder above it root's too (also the Claude Code box's check). */
+export async function rootOwnedFile(path: string): Promise<void> {
 	if (!isAbsolute(path) || path !== resolve(path) || (await realpath(path)) !== path)
 		throw new Error("Native isolation requires physical absolute artifacts");
 	let current = path;
@@ -45,7 +50,31 @@ async function rootOwnedFile(path: string): Promise<void> {
 	}
 }
 
-async function privateDirectory(path: string): Promise<void> {
+async function rootOwnedFolders(path: string): Promise<void> {
+	let current = path;
+	while (true) {
+		const metadata = await lstat(current);
+		if (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0 || !metadata.isDirectory())
+			throw new Error("Unsafe native isolation artifact ownership");
+		if (current === "/") break;
+		current = dirname(current);
+	}
+}
+
+export async function rootOwnedProgram(path: string): Promise<string> {
+	if (!isAbsolute(path) || path !== resolve(path))
+		throw new Error("Native isolation requires physical absolute artifacts");
+	const real = await realpath(path);
+	const metadata = await lstat(real);
+	// WHY: no single-link check: Ubuntu 26.04's stty is a symlink to one of the uutils binary's many hard links.
+	if (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0 || !metadata.isFile())
+		throw new Error("Unsafe native isolation artifact ownership");
+	await rootOwnedFolders(dirname(real));
+	return real;
+}
+
+/** A folder of this account's own that no one else may enter (also the Claude Code box's check). */
+export async function privateDirectory(path: string): Promise<void> {
 	const metadata = await lstat(path);
 	if (
 		!isAbsolute(path) ||
@@ -65,9 +94,35 @@ async function privateDirectory(path: string): Promise<void> {
 export function nativeIsolationEgressHosts(
 	chatGptPlan: NativeChatGptPlanAccess | undefined,
 	harness?: "claude-code",
+	claudeRead?: NativeClaudeRead,
 ): readonly string[] {
-	if (harness === "claude-code") return NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS;
+	if (harness === "claude-code")
+		return claudeRead ? NATIVE_CLAUDE_CODE_EGRESS_HOSTS : NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS;
 	return chatGptPlan ? NATIVE_CHATGPT_PLAN_EGRESS_HOSTS : NATIVE_CODEX_EGRESS_HOSTS;
+}
+
+function claudeReadEnvironment(read: NativeClaudeRead | undefined): Record<string, string> {
+	if (read === "usage") return { DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" };
+	if (read === "screen")
+		return {
+			CLAUDE_CODE_SANDBOXED: "1",
+			TERM: "xterm-256color",
+			COLUMNS: String(NATIVE_CLAUDE_TERMINAL.cols),
+			LINES: String(NATIVE_CLAUDE_TERMINAL.rows),
+		};
+	return { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+}
+
+export function nativeTerminalCommand(stty: string, program: string, args: readonly string[]): string[] {
+	const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+	const { rows, cols } = NATIVE_CLAUDE_TERMINAL;
+	return [
+		"-q",
+		"-e",
+		"-c",
+		`${quote(stty)} rows ${rows} cols ${cols} && exec ${[program, ...args].map(quote).join(" ")}`,
+		"/dev/null",
+	];
 }
 
 /** What the namespace of one native process sees: bwrap's arguments and the environment bwrap starts with.
@@ -80,12 +135,19 @@ export function nativeIsolationInvocation(options: {
 	codexHome: string;
 	relayPath: string;
 	fenceSocket?: string;
+	/** The agent's home (slice 1): the host's socket in this same scratch root, which Codex reaches with
+	 * `stdio-to-uds` to run its own shell and file tools on the run's machine. Never a path outside the root. */
+	homeSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
 	harness?: "claude-code";
+	claudeRead?: NativeClaudeRead;
 }): { args: string[]; environment: Record<string, string> } {
 	const plan = options.chatGptPlan;
 	const claude = options.harness === "claude-code";
-	if (claude && (plan || options.fenceSocket)) throw new Error("A Claude sign-in runs alone");
+	if (claude && (plan || options.fenceSocket || options.homeSocket)) throw new Error("A Claude sign-in runs alone");
+	if (options.claudeRead && !claude) throw new Error("A Claude read runs Claude Code");
+	if (options.homeSocket && dirname(options.homeSocket) !== options.scratchRoot)
+		throw new Error("The home's socket is the run's own");
 	const planDirectory = plan && "directory" in plan ? plan.directory : undefined;
 	const planToken = plan && "accessToken" in plan ? plan.accessToken : undefined;
 	if (planToken !== undefined && !/^[\x21-\x7e]{1,16384}$/.test(planToken))
@@ -150,6 +212,8 @@ export function nativeIsolationInvocation(options: {
 		// each newer token.
 		...(planDirectory ? ["--ro-bind", planDirectory, planDirectory] : []),
 		...(options.fenceSocket ? ["--ro-bind", options.fenceSocket, options.fenceSocket] : []),
+		// Read-only, as the fence's socket is: the namespace writes JSON-RPC lines to it, nothing else.
+		...(options.homeSocket ? ["--ro-bind", options.homeSocket, options.homeSocket] : []),
 	];
 	const environment = {
 		HOME: join(options.scratchRoot, "home"),
@@ -158,7 +222,7 @@ export function nativeIsolationInvocation(options: {
 			? {
 					CLAUDE_CONFIG_DIR: options.codexHome,
 					DISABLE_AUTOUPDATER: "1",
-					CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+					...claudeReadEnvironment(options.claudeRead),
 				}
 			: { CODEX_HOME: options.codexHome }),
 		XDG_CONFIG_HOME: join(options.scratchRoot, "config"),
@@ -206,9 +270,12 @@ export async function launchIsolatedNativeProcess(options: {
 	scratchRoot: string;
 	codexHome: string;
 	fenceSocket?: string;
+	/** The agent's home socket, in the scratch root beside the fence's (cloud-codex-home.ts). */
+	homeSocket?: string;
 	chatGptPlan?: NativeChatGptPlanAccess;
 	/** A Claude sign-in: `codexHome` is Claude Code's config directory (the vault's helper only). */
 	harness?: "claude-code";
+	claudeRead?: NativeClaudeRead;
 	signal: AbortSignal;
 }): Promise<{
 	child: ChildProcessWithoutNullStreams;
@@ -232,6 +299,10 @@ export async function launchIsolatedNativeProcess(options: {
 		options.command,
 	])
 		await rootOwnedFile(file);
+	const terminal =
+		options.claudeRead === "screen"
+			? { script: await rootOwnedProgram("/usr/bin/script"), stty: await rootOwnedProgram("/usr/bin/stty") }
+			: undefined;
 	await privateDirectory(options.scratchRoot);
 	await privateDirectory(options.codexHome);
 	if (planDirectory) await privateDirectory(planDirectory);
@@ -240,28 +311,39 @@ export async function launchIsolatedNativeProcess(options: {
 	const relay = await startNativeCodexEgress({
 		root: options.scratchRoot,
 		signal: options.signal,
-		hosts: nativeIsolationEgressHosts(plan, options.harness),
+		hosts: nativeIsolationEgressHosts(plan, options.harness, options.claudeRead),
 	});
 	let child: ChildProcessWithoutNullStreams | undefined;
 	try {
-		if (options.fenceSocket) {
-			const metadata = await lstat(options.fenceSocket);
+		for (const [socket, what] of [
+			[options.fenceSocket, "result-fence"],
+			[options.homeSocket, "home"],
+		] as const) {
+			if (!socket) continue;
+			const metadata = await lstat(socket);
 			if (
-				dirname(options.fenceSocket) !== options.scratchRoot ||
+				dirname(socket) !== options.scratchRoot ||
 				!metadata.isSocket() ||
 				metadata.uid !== process.getuid?.() ||
 				(metadata.mode & 0o077) !== 0
 			)
-				throw new Error("Unsafe native result-fence socket");
+				throw new Error(`Unsafe native ${what} socket`);
 		}
 		const invocation = nativeIsolationInvocation({ ...options, relayPath: relay.path });
 		options.signal.throwIfAborted();
-		child = spawn("/usr/bin/bwrap", invocation.args, {
-			cwd: options.scratchRoot,
-			env: invocation.environment,
-			stdio: ["pipe", "pipe", "pipe"],
-			detached: true,
-		});
+		child = terminal
+			? spawn(terminal.script, nativeTerminalCommand(terminal.stty, "/usr/bin/bwrap", invocation.args), {
+					cwd: options.scratchRoot,
+					env: { ...invocation.environment, SHELL: "/bin/sh" },
+					stdio: ["pipe", "pipe", "pipe"],
+					detached: true,
+				})
+			: spawn("/usr/bin/bwrap", invocation.args, {
+					cwd: options.scratchRoot,
+					env: invocation.environment,
+					stdio: ["pipe", "pipe", "pipe"],
+					detached: true,
+				});
 		const launched = child;
 		// Killing the namespace's init removes descendants, including processes
 		// that called setsid. The unit's cgroup is a second kill/resource boundary.

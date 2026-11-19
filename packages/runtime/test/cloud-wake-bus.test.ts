@@ -11,6 +11,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
+	CLOUD_COWORKER_PRIORITY_REQUIRED,
 	CLOUD_COWORKER_STARTING,
 	CLOUD_COWORKER_STARTING_WAIT_MS,
 	CLOUD_WAKE_SCHEMA,
@@ -641,6 +642,12 @@ describe("worker dispatch and completion envelopes", () => {
 		expect(parseCloudWakeEnvelope(turn, identity).payload.species).toBe("coding");
 		expect(() =>
 			parseCloudWakeEnvelope(
+				{ ...turn, source: { ...turn.source, occurrenceKey: `${turn.source.occurrenceKey}:codex` } },
+				identity,
+			),
+		).toThrow("Invalid worker dispatch wake");
+		expect(() =>
+			parseCloudWakeEnvelope(
 				{ ...turn, payload: { ...turn.payload, coding: { ...coding, sequence: 2 } } },
 				identity,
 			),
@@ -655,6 +662,59 @@ describe("worker dispatch and completion envelopes", () => {
 			),
 		).toThrow();
 		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, coding } }, identity)).toThrow();
+	});
+	it("admits a plain worker Claude Code does by its harness, claude-code alone (20260930770000)", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const claude = { ...wake, payload: { ...wake.payload, harness: "claude-code" } };
+		expect(parseCloudWakeEnvelope(claude, identity).payload.harness).toBe("claude-code");
+		// Codex is never named, nothing else is a plain worker's harness, and a coding turn's harness is in its scope.
+		for (const harness of ["codex", "claude", null, ""])
+			expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, harness } }, identity)).toThrow(
+				"Invalid worker dispatch wake",
+			);
+		expect(() =>
+			parseCloudWakeEnvelope({ ...claude, payload: { ...claude.payload, species: "coding" } }, identity),
+		).toThrow();
+		expect(Object.hasOwn(parseCloudWakeEnvelope(wake, identity).payload, "harness")).toBe(false);
+	});
+	it("admits a plain Codex worker's wake under the key a Claude Code fallback starts it by, and nothing else", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const codex = `worker-dispatch:${wake.source.id}:1:codex`;
+		const fallback = { ...wake, source: { ...wake.source, occurrenceKey: codex } };
+		expect(parseCloudWakeEnvelope(fallback, identity).source.occurrenceKey).toBe(codex);
+		expect(() =>
+			parseCloudWakeEnvelope({ ...fallback, payload: { ...fallback.payload, harness: "claude-code" } }, identity),
+		).toThrow("Invalid worker dispatch wake");
+		for (const occurrenceKey of [
+			`worker-dispatch:${wake.source.id}:2:codex`,
+			`worker-dispatch:${wake.source.id}:1:claude`,
+			`worker-dispatch:${wake.source.id}:1:codex:codex`,
+			`worker-dispatch:${randomUUID()}:1:codex`,
+		])
+			expect(() => parseCloudWakeEnvelope({ ...wake, source: { ...wake.source, occurrenceKey } }, identity)).toThrow(
+				"Invalid worker dispatch wake",
+			);
+	});
+	it("admits the member's Claude pick on a Claude Code worker's wake alone (20260930784000)", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const pick = { model: "claude-opus-5-5", effort: "max" };
+		const claude = { ...wake, payload: { ...wake.payload, harness: "claude-code", claude: pick } };
+		expect(parseCloudWakeEnvelope(claude, identity).payload.claude).toEqual(pick);
+		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, claude: pick } }, identity)).toThrow(
+			"Invalid worker dispatch wake",
+		);
+		for (const bad of [
+			null,
+			"claude-opus-5-5",
+			{ model: "claude-sonnet-5-5", effort: "high" },
+			{ model: "gpt-6.1-sol", effort: "high" },
+			{ model: "claude-fable-5-2", effort: "ultra" },
+			{ model: "claude-fable-5-2" },
+			{ ...pick, extra: true },
+		])
+			expect(() =>
+				parseCloudWakeEnvelope({ ...claude, payload: { ...claude.payload, claude: bad } }, identity),
+			).toThrow("Invalid worker dispatch wake");
 	});
 	it("admits a completion as an internal continuation that may speak in its parent's conversation", () => {
 		const { identity, wake } = workerWakeFixture("worker-completion");
@@ -1491,6 +1551,27 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 		expect(Buffer.byteLength(JSON.stringify(heavy.payload))).toBeGreaterThan(16384);
 		expect(parseCloudWakeEnvelope(heavy, identity).payload.heldMessages).toHaveLength(12);
 	});
+	it("reads a coworker wake carrying the most the kernel lets one run take: 19200 bytes of messages, some in full", () => {
+		const { identity, wake } = pairWakeFixture();
+		const transcript = Array.from({ length: 12 }, () => ({
+			eventId: randomUUID(),
+			staffAgentId: wake.actorStaffId as string,
+			text: "ø".repeat(400),
+			at: "2026-09-22T22:30:00.000000Z",
+		}));
+		const heldMessages = [
+			...Array.from({ length: 4 }, () => ({ ...heldLine(), text: "ø".repeat(2048) })),
+			...Array.from({ length: 2 }, () => ({ ...heldLine(), text: "ø".repeat(700) })),
+			...Array.from({ length: 6 }, () => ({ ...heldLine(), text: "ok" })),
+		];
+		expect(heldMessages.reduce((bytes, line) => bytes + Buffer.byteLength(line.text), 0)).toBeLessThanOrEqual(19200);
+		const full = {
+			...wake,
+			payload: { ...wake.payload, text: "ø".repeat(2048), transcript, heldMessages },
+		};
+		expect(Buffer.byteLength(JSON.stringify(full.payload))).toBeGreaterThan(32768);
+		expect(parseCloudWakeEnvelope(full, identity).payload.heldMessages).toEqual(heldMessages);
+	});
 	it("rejects a held message the agent supposedly left for itself", () => {
 		const human = fixture();
 		const self = human.authority.identity.staffAgentId;
@@ -1515,6 +1596,24 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 				identity,
 			),
 		).toThrow("Invalid held coworker messages");
+	});
+	it("refuses a message that does not say whether it wakes the coworker", async () => {
+		const { run, message, call, bus, createBoundary } = await coworkerFixture();
+		const { priority: _priority, ...undecided } = message;
+		const boundary = createBoundary();
+		try {
+			const response = await boundary.invoke("undecided_1", "qorpera", "send_coworker_message", undecided);
+			expect(response.success).toBe(false);
+			expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: `INVALID_ARGUMENTS: ${CLOUD_COWORKER_PRIORITY_REQUIRED}` },
+			});
+			expect(call).not.toHaveBeenCalled();
+			expect(bus.coworkerTool().inputSchema.required).toContain("priority");
+		} finally {
+			boundary.close();
+			run.close();
+		}
 	});
 	it("sends priority false to the kernel and accepts a held receipt", async () => {
 		const { binding, run, message, call, createBoundary } = await coworkerFixture();

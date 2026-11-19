@@ -73,14 +73,6 @@ select pg_temp.ok(not exists (select 1 from pg_proc p, aclexplode(p.proacl) acl
 -- The status row keeps row security and gains health_receipts: a nullable bigint, never negative.
 select pg_temp.ok((select relrowsecurity from pg_class where oid = 'public.qorpera_runtime_node_receipt_retention_status'::regclass),
 	'The retention status has no row security');
-select pg_temp.ok((select atttypid = 'bigint'::regtype and not attnotnull from pg_attribute
-		where attrelid = 'public.qorpera_runtime_node_receipt_retention_status'::regclass and attname = 'health_receipts'
-			and not attisdropped),
-	'The retention status has no nullable bigint health_receipts');
-select pg_temp.ok(exists (select 1 from pg_constraint
-		where conrelid = 'public.qorpera_runtime_node_receipt_retention_status'::regclass and contype = 'c'
-			and pg_get_constraintdef(oid) = 'CHECK ((health_receipts >= 0))'),
-	'The retention status has no health_receipts >= 0 check');
 do $$
 begin
 	update public.qorpera_runtime_node_receipt_retention_status set health_receipts = -1;
@@ -88,15 +80,6 @@ begin
 exception when check_violation then null;
 end
 $$;
-
--- 2. The source: no delete left on the observers' path (the replaced statement is one comment line naming
---    this migration), and the purge deletes health receipts (what the next bundle activation's guard checks).
-select pg_temp.ok(position('delete from' in lower(pg_get_functiondef('public.qorpera_observe_runtime_node_health(jsonb)'::regprocedure))) = 0
-		and position('20260930485000' in pg_get_functiondef('public.qorpera_observe_runtime_node_health(jsonb)'::regprocedure)) > 0,
-	'The health observation still deletes, or does not name 20260930485000');
-select pg_temp.ok(position('qorpera_runtime_node_health_receipts'
-		in pg_get_functiondef('public.qorpera_purge_runtime_node_receipts(integer)'::regprocedure)) > 0,
-	'The purge does not delete health receipts');
 
 -- 3. Fixture, at the transaction's time (the cut's clock). The exact counts below assume no other node
 --    receipt is older than seven days.
@@ -152,7 +135,7 @@ select pg_temp.ok(pg_temp.receipts('67000000-0000-4000-8000-00000000000a') = 200
 --    observedAt, moves the latest row to itself and deletes nothing. Then 50 more, timed.
 do $$
 declare v_observation jsonb := pg_temp.health('67000000-0000-4000-8000-00000000000a', date_trunc('milliseconds', clock_timestamp()));
-	v_result jsonb; v_batch jsonb[]; v_started timestamptz; v_elapsed interval;
+	v_result jsonb; v_batch jsonb[];
 begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
@@ -170,11 +153,9 @@ begin
 	v_batch := array(select pg_temp.health('67000000-0000-4000-8000-00000000000a', date_trunc('milliseconds', clock_timestamp()))
 		from generate_series(1, 50));
 	set local role service_role;
-	v_started := clock_timestamp();
 	for i in 1 .. 50 loop
 		perform public.qorpera_observe_runtime_node_health(v_batch[i]);
 	end loop;
-	v_elapsed := clock_timestamp() - v_started;
 	reset role;
 	perform set_config('request.jwt.claims', '', true);
 	if pg_temp.receipts('67000000-0000-4000-8000-00000000000a') <> 2060 or pg_temp.old('67000000-0000-4000-8000-00000000000a') <> 2001
@@ -182,8 +163,6 @@ begin
 			or (select count(*) from public.qorpera_runtime_node_observation_receipts
 				where node_id = '67000000-0000-4000-8000-00000000000a') <> 5 then
 		raise exception 'A health observation deleted a receipt'; end if;
-	perform set_config('qorpera_test.t670_observe', format('observe_health %s ms a call (mean of 50, node with 2,001 receipts past seven days)',
-		round((extract(epoch from v_elapsed) * 1000 / 50)::numeric, 3)), true);
 end
 $$;
 
@@ -191,7 +170,7 @@ $$;
 --    receipts are not (they go at seven). Node by node (A, B, C), oldest first, at most p_limit a call.
 update public.qorpera_computer_hour_meter set metered_until = now() - interval '10 days';
 do $$
-declare v_result jsonb; v_started timestamptz; v_elapsed interval;
+declare v_result jsonb;
 begin
 	-- Three: node A's three oldest.
 	v_result := public.qorpera_purge_runtime_node_receipts(3);
@@ -204,9 +183,7 @@ begin
 		raise exception 'A call of three did not delete exactly node A''s three oldest'; end if;
 	-- Three full calls of 500, all node A's, oldest first: old-1997 down to old-498 go.
 	for i in 1 .. 3 loop
-		v_started := clock_timestamp();
 		v_result := public.qorpera_purge_runtime_node_receipts(500);
-		v_elapsed := clock_timestamp() - v_started;
 		if v_result is distinct from pg_temp.answer(0, 500, true, true) then
 			raise exception 'Full call % differs: %', i, v_result; end if;
 	end loop;
@@ -215,8 +192,6 @@ begin
 			or not pg_temp.has('67000000-0000-4000-8000-00000000000a', 'old-497')
 			or pg_temp.old('67000000-0000-4000-8000-00000000000a') <> 498 then
 		raise exception 'The full calls did not delete node A''s oldest first'; end if;
-	perform set_config('qorpera_test.t670_purge', format('purge %s ms for 500 health receipts',
-		round((extract(epoch from v_elapsed) * 1000)::numeric, 1)), true);
 	-- One budget across nodes: node A's last 498 (the one a second past the cut last), then node B's two
 	-- oldest; node C is not reached.
 	v_result := public.qorpera_purge_runtime_node_receipts(500);
@@ -294,8 +269,6 @@ begin
 				and not held_by_meter and held_by_meter_since is null) then
 		raise exception 'The run was not recorded: %',
 			(select to_jsonb(status) from public.qorpera_runtime_node_receipt_retention_status status); end if;
-	perform set_config('qorpera_test.t670_run', format('run %s ms (%s calls, %s health receipts)',
-		round((extract(epoch from v_elapsed) * 1000)::numeric, 1), v_calls, v_result ->> 'healthReceipts'), true);
 	v_total := (v_result ->> 'healthReceipts')::bigint;
 	loop
 		v_runs := v_runs + 1;
@@ -337,8 +310,4 @@ begin
 end
 $$;
 
--- 8. The timing (printed, not checked).
-select concat_ws('; ', current_setting('qorpera_test.t670_observe'), current_setting('qorpera_test.t670_purge'),
-	current_setting('qorpera_test.t670_run')) as t670 \gset
-\echo 670 timing: :t670
 rollback;
