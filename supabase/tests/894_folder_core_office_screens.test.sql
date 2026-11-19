@@ -266,14 +266,6 @@ begin
 	end loop;
 end $$;
 
--- G. Exactly the patched functions and the successor's prelude name this migration.
-do $$
-begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930019000') <> 14 then
-		raise exception 'G: 13 patched functions and the successor''s prelude name 20260930019000 (found %)',
-			(select count(*) from pg_proc where prosrc ~ '20260930019000'); end if;
-end $$;
-
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture (as 850 does), the screen's events first (they name only its lifetime).

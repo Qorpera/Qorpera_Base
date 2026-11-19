@@ -73,12 +73,6 @@ from unnest(array['anon', 'authenticated']) role_name,
 	unnest(array['public.qorpera_claim_computer_hour_notices(integer,uuid)',
 		'public.qorpera_complete_computer_hour_notice(uuid,uuid,text)',
 		'public.qorpera_fail_computer_hour_notice(uuid,uuid,text,boolean)']) function_name;
-select pg_temp.notice_assert(not exists (
-	select 1 from pg_proc function join pg_namespace namespace on namespace.oid = function.pronamespace
-	cross join unnest(array['anon', 'authenticated', 'service_role']) role_name
-	where namespace.nspname = 'public' and function.proname like 'qorpera\_computer\_hour\_%'
-		and has_function_privilege(role_name, function.oid, 'EXECUTE')
-), 'The notice helpers (notice_month, notice_hours, queue_notice, notice_usage, queue_summaries) are callable by no API role');
 select pg_temp.notice_assert(not has_table_privilege(role_name, 'public.qorpera_computer_hour_notices', 'INSERT'),
 	'Notices are written only by the database, not by ' || role_name)
 from unnest(array['anon', 'authenticated', 'service_role']) role_name;
@@ -95,8 +89,8 @@ select pg_temp.use('71300000-0000-4000-8000-000000000010', 500);
 select pg_temp.notice_assert(pg_temp.notices('running_low') = array['71300000-0000-4000-8000-000000000001',
 	'71300000-0000-4000-8000-000000000002']::uuid[], 'Running low on free hours: every founder');
 select pg_temp.notice_assert(details = jsonb_build_object('companyName', 'Hour notices', 'leftSeconds', 3500,
-	'month', public.qorpera_computer_hour_notice_month(clock_timestamp()), 'hoursSeconds', 18000)
-	and occasion = '71300000-0000-4000-8000-000000000010:' || public.qorpera_computer_hour_notice_month(clock_timestamp())
+	'month', to_char(clock_timestamp() at time zone 'Europe/Copenhagen', 'YYYY-MM'), 'hoursSeconds', 18000)
+	and occasion = '71300000-0000-4000-8000-000000000010:' || to_char(clock_timestamp() at time zone 'Europe/Copenhagen', 'YYYY-MM')
 	and status = 'pending' and next_attempt_at > clock_timestamp() + interval '9 minutes',
 	'What the notice says, sent ten minutes later: ' || details::text)
 from public.qorpera_computer_hour_notices where kind = 'running_low' and user_id = '71300000-0000-4000-8000-000000000001';

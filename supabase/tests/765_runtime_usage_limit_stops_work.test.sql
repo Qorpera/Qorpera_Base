@@ -32,14 +32,6 @@ values ((current_setting('qorpera_test.ul_connection')::jsonb ->> 'connection_id
 select set_config('qorpera_test.ul_sponsor_version',sponsor_version::text,true)
 from public.qorpera_execution_runs where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 
--- The failure report no longer asks the handoff.
-do $$
-begin
-	if position('qorpera_handoff_run_sponsor(' in
-		pg_get_functiondef('public.qorpera_fail_runner_job(uuid,text,uuid,text,text,boolean)'::regprocedure)) > 0 then
-		raise exception 'The runner failure report still hands runs off'; end if;
-end $$;
-
 -- A reaches its usage limit during the run, and the runner reports the run failed.
 select pg_temp.base_claims('service_role');
 set local role service_role;

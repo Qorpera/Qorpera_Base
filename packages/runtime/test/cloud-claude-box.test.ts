@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CLOUD_ACTION_REVIEW_INSTRUCTIONS } from "@qorpera/runtime/cloud-action-review";
 import {
+	CLAUDE_ACTION_REVIEW_ANSWER,
+	CLAUDE_ACTION_REVIEW_MODEL,
 	CLAUDE_BOX_CONFIGURATION,
 	CLAUDE_BOX_DENY,
 	CLAUDE_BOX_HOME_FOLDERS,
@@ -9,13 +12,17 @@ import {
 	CLAUDE_BOX_TOOLS_KEPT_OUT,
 	CLAUDE_CODE_MINIMUM_VERSION,
 	CLAUDE_CODE_PIN,
+	ClaudeCodeReviewer,
 	claudeBoxArguments,
 	claudeBoxEnvironment,
 	claudeBoxInvocation,
 	claudeBoxMountOptions,
 	claudeBoxSettings,
+	claudeReviewerArguments,
+	claudeReviewerInvocation,
+	claudeReviewerVerdict,
 } from "@qorpera/runtime/cloud-claude-box";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 const root = join(import.meta.dirname, "../../..");
 const scratch = "/var/lib/qorpera-native-provider/runs/abc";
@@ -262,4 +269,110 @@ it("mounts a login folder as Claude Code's config folder and never a token's var
 	const box = args.slice(args.indexOf("/usr/bin/bwrap") + 1);
 	expect(pairs(box, "--bind")[0]).toEqual(["/var/lib/qorpera-claude-logins/m1", "/slot/config"]);
 	expect(Object.fromEntries(pairs(box, "--setenv")).CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR).toBeUndefined();
+});
+
+it("asks the file tools' hook of the host before each change, only in a box whose work is reviewed", () => {
+	expect(JSON.parse(claudeBoxSettings()).hooks).toBeUndefined();
+	expect(JSON.parse(claudeBoxSettings(undefined, { reviewHook: true })).hooks).toEqual({
+		PreToolUse: [
+			{
+				matcher: "Write|Edit|NotebookEdit",
+				hooks: [{ type: "command", command: "/opt/qorpera/review-hook", timeout: 600 }],
+			},
+		],
+	});
+	const plain = pairs(claudeBoxInvocation({ ...base, login: "token" }).args, "--ro-bind");
+	const reviewed = pairs(claudeBoxInvocation({ ...base, login: "token", reviewHook: true }).args, "--ro-bind");
+	expect(plain).not.toContainEqual([`${scratch}/review-hook`, CLAUDE_BOX_PATHS.reviewHook]);
+	expect(reviewed).toContainEqual([`${scratch}/review-hook`, CLAUDE_BOX_PATHS.reviewHook]);
+});
+
+it("reviews in a box of its own: no tools, no home, no shell, the run's own sign-in and model", () => {
+	const root = `${scratch}/rAbc123`;
+	const args = claudeReviewerInvocation({
+		configuration: CLAUDE_BOX_CONFIGURATION,
+		root,
+		relayPath: `${root}/egress.sock`,
+		login: { folder: "/var/lib/qorpera-claude-logins/m1" },
+		model: CLAUDE_ACTION_REVIEW_MODEL,
+	});
+	expect(pairs(args, "--bind")).toEqual([
+		["/var/lib/qorpera-claude-logins/m1", "/slot/config"],
+		[`${root}/h`, "/slot/home"],
+	]);
+	const readOnly = pairs(args, "--ro-bind").map(([, inside]) => inside);
+	for (const inside of [
+		CLAUDE_BOX_PATHS.shellSocket,
+		CLAUDE_BOX_PATHS.shellPrefix,
+		"/opt/qorpera/bin/rg",
+		...CLAUDE_BOX_HOME_FOLDERS,
+	])
+		expect(readOnly).not.toContain(inside);
+	expect(args.slice(args.indexOf("--") + 1)).toEqual([
+		"/usr/bin/node",
+		"/opt/qorpera/native-entry.mjs",
+		`${root}/egress.sock`,
+		"/opt/claude/claude",
+		...claudeReviewerArguments(CLAUDE_ACTION_REVIEW_MODEL),
+	]);
+	expect(claudeReviewerArguments("haiku")).toEqual([
+		"-p",
+		"--output-format",
+		"json",
+		"--max-turns",
+		"1",
+		"--tools",
+		"",
+		"--settings",
+		"/opt/qorpera/settings.json",
+		"--setting-sources",
+		"user",
+		"--strict-mcp-config",
+		"--system-prompt-file",
+		"/opt/qorpera/system-note.md",
+		"--model",
+		"haiku",
+	]);
+	expect(() => claudeReviewerArguments("haiku --tools Bash")).toThrow("Invalid Claude model");
+	const token = claudeReviewerInvocation({
+		configuration: CLAUDE_BOX_CONFIGURATION,
+		root,
+		relayPath: `${root}/egress.sock`,
+		login: "token",
+		model: "haiku",
+	});
+	expect(pairs(token, "--bind")[0]).toEqual([`${root}/c`, "/slot/config"]);
+	expect(Object.fromEntries(pairs(token, "--setenv")).CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR).toBe("3");
+	expect(CLAUDE_ACTION_REVIEW_ANSWER).toContain('"guards"');
+	expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("qorpera.review_verdict");
+});
+
+it("reads the verdict from the reviewer's one result, and nothing else", () => {
+	const verdict = { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" };
+	const result = (text: string, error = false) =>
+		JSON.stringify({ type: "result", subtype: error ? "error_max_turns" : "success", is_error: error, result: text });
+	expect(claudeReviewerVerdict(`${result(`Here: ${JSON.stringify(verdict)}`)}\n`)).toEqual(verdict);
+	expect(() => claudeReviewerVerdict(result(JSON.stringify(verdict), true))).toThrow("no verdict");
+	expect(() => claudeReviewerVerdict(result("I cannot decide."))).toThrow("no verdict");
+	expect(() => claudeReviewerVerdict("")).toThrow();
+});
+
+it("reviews one at a time, and a closed reviewer starts none", async () => {
+	let running = 0;
+	let most = 0;
+	const run = vi.fn(async () => {
+		running += 1;
+		most = Math.max(most, running);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		running -= 1;
+		return { decision: "allow" };
+	});
+	const reviewer = new ClaudeCodeReviewer(run);
+	const input = { instructions: "i", prompt: "p", model: "haiku", effort: "low" as const };
+	await Promise.all([1, 2, 3].map(() => reviewer.review(input, new AbortController().signal)));
+	expect(most).toBe(1);
+	expect(reviewer.reviews).toBe(3);
+	reviewer.close();
+	await expect(reviewer.review(input, new AbortController().signal)).rejects.toThrow();
+	expect(run).toHaveBeenCalledTimes(3);
 });

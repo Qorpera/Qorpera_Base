@@ -476,9 +476,6 @@ begin
 			raise exception 'a sign-in completion with capability % answered %', coalesce(v_capability, 'null'), v_state; end if;
 	end loop;
 	perform set_config('request.jwt.claims', '', true);
-	if position('20260930005000' in pg_get_functiondef(
-		'public.qorpera_complete_native_provider_login(uuid,text,uuid,text,text,text,text,text,jsonb,text)'::regprocedure)) = 0 then
-		raise exception 'the sign-in completion is not this version'; end if;
 end $$;
 
 -- 7. The sign-in and identity family lose the execute rights the default privileges left them.

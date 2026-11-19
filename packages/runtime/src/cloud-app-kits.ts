@@ -711,6 +711,25 @@ export function kitPage(
 	].join("\n");
 }
 
+const HEAVY_PNG_BYTES = 400 * 1024;
+
+export function kitHeavyPictures(kit: DataKit, data: unknown, bytesOf: (path: string) => number | undefined): string[] {
+	const heavy = kitMedia(data)
+		.filter((path) => /\.png$/i.test(path))
+		.map((path) => ({ path, bytes: bytesOf(path) ?? 0 }))
+		.filter((picture) => picture.bytes > HEAVY_PNG_BYTES);
+	if (heavy.length === 0) return [];
+	const megabytes = (heavy.reduce((sum, picture) => sum + picture.bytes, 0) / (1024 * 1024)).toFixed(1);
+	const names = `${heavy
+		.slice(0, 3)
+		.map((picture) => picture.path)
+		.join(", ")}${heavy.length > 3 ? ", …" : ""}`;
+	const one = heavy.length === 1;
+	return [
+		`${one ? "1 picture is a PNG" : `${heavy.length} pictures are PNGs`} of ${megabytes} MB${one ? "" : " in all"} (${names}): every member downloads ${one ? "it" : "them"} when the app shows ${one ? "it" : "them"}. As .webp ${one ? "it is" : "they are"} about a tenth of that: on a machine, cwebp -q 90 name.png -o name.webp, then name the .webp in ${kitDataFile(kit)} and save again.`,
+	];
+}
+
 /**
  * What a read of a kit's data tells its maker after a save: advice, never a refusal.
  * - Pictures and videos the data names that the app's folder does not hold: the page shows a placeholder until they are

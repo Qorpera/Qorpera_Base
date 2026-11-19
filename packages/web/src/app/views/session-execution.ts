@@ -1,9 +1,9 @@
 import type {
 	NativeExecutionConnections,
 	NativeMemberConnection,
-	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type {
+	WebClaudeLogin,
 	WebExecutionConnections,
 	WebMemberConnection,
 	WebNativeSubscription,
@@ -73,6 +73,9 @@ function loginRank(connection: WebMemberConnection, now: number): readonly numbe
 	];
 }
 
+const refusedSignIn = (connection: NativeMemberConnection): boolean =>
+	(connection as WebMemberConnection).loginStatus === "needs_sign_in";
+
 function compareRanks(a: readonly number[], b: readonly number[]): number {
 	for (let index = 0; index < a.length; index++) {
 		const difference = (a[index] ?? 0) - (b[index] ?? 0);
@@ -127,6 +130,8 @@ function usageCard(
  * unavailable" until the page was reloaded.) */
 export const ACCOUNT_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000, 30_000, 60_000];
 
+const CLAUDE_READ_EVERY_MS = 60_000;
+
 /** One of the member's logins that can pay for a conversation, as the composer's Login page lists it. */
 export interface SessionLogin {
 	readonly connectionId: string;
@@ -150,11 +155,9 @@ export class SessionExecutionView {
 	readonly #lifetime = new AbortController();
 	#request: AbortController | undefined;
 	#observed: WebExecutionConnections | undefined;
-	#provenance: readonly SessionTurnProvenance[] = [];
 	#started = false;
 	#busy = false;
 	#error: string | undefined;
-	#historyError: string | undefined;
 	#renderKey = "";
 	#room = false;
 	#serverSelection = false;
@@ -168,6 +171,10 @@ export class SessionExecutionView {
 	#countedFor: string | undefined;
 	#countRequest: AbortController | undefined;
 	#moved: { login: string | undefined; stuck: boolean; done: boolean; title: string; detail?: string } | undefined;
+	#claudeOut: { login: WebClaudeLogin; until: string; next: WebClaudeLogin } | undefined;
+	#claudeMoved: { loginId: string; account: string } | undefined;
+	#claudeSwitching = false;
+	#claudeReadAt: number | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -229,8 +236,6 @@ export class SessionExecutionView {
 		if (room !== this.#room) {
 			this.#request?.abort();
 			this.#request = undefined;
-			this.#provenance = [];
-			this.#historyError = undefined;
 			this.#busy = false;
 			this.#started = false;
 			this.#room = room;
@@ -245,7 +250,6 @@ export class SessionExecutionView {
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
-			this.#provenance = [];
 			this.#started = false;
 			this.#busy = false;
 			this.#usageHydratedAt = undefined;
@@ -279,7 +283,6 @@ export class SessionExecutionView {
 		this.#busy = true;
 		// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
 		if (!this.#failures) this.#error = undefined;
-		this.#historyError = undefined;
 		this.#render();
 		this.#changed();
 		const conversation = this.#company.conversation(this.#sessionId).get();
@@ -296,25 +299,17 @@ export class SessionExecutionView {
 			}
 			return this.#native.listConnections(signal);
 		};
-		const [connections, provenance] = await Promise.allSettled([
-			readConnections(),
-			this.#room ? Promise.resolve([]) : this.#native.listSessionTurnProvenance(this.#sessionId, signal),
-		]);
+		const connections = await readConnections().catch(() => undefined);
 		if (signal.aborted) return;
 		this.#serverConnectionId = serverConnectionId;
-		if (connections.status === "fulfilled") {
-			this.#observed = connections.value;
+		if (connections) {
+			this.#observed = connections;
 			if (this.#failures) this.#error = undefined;
 			this.#failures = 0;
 		} else {
 			this.#observed = undefined;
 			this.#failures++;
 			this.#error = t("Model accounts are unavailable. Trying again…");
-		}
-		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
-		else {
-			this.#provenance = [];
-			this.#historyError = t("Execution history is unavailable.");
 		}
 		this.#busy = false;
 		this.#request = undefined;
@@ -329,6 +324,79 @@ export class SessionExecutionView {
 				: undefined,
 		);
 		void this.#hydrateUsage();
+		if (this.#claudeReadAt === undefined || Date.now() - this.#claudeReadAt >= CLAUDE_READ_EVERY_MS)
+			void this.#readClaude(signal);
+	}
+
+	async #readClaude(signal: AbortSignal): Promise<void> {
+		if (!this.#native.listClaudeLogins) return;
+		this.#claudeReadAt = Date.now();
+		let logins: readonly WebClaudeLogin[];
+		try {
+			logins = (await this.#native.listClaudeLogins(signal)).logins;
+		} catch {
+			return;
+		}
+		if (signal.aborted) return;
+		const now = Date.now();
+		const usedUp = (login: WebClaudeLogin) => login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
+		const inUse = logins.find((login) => login.inUse);
+		const next = inUse && usedUp(inUse) ? logins.find((login) => login !== inUse && !usedUp(login)) : undefined;
+		this.#claudeOut = inUse?.usedUpUntil && next ? { login: inUse, until: inUse.usedUpUntil, next } : undefined;
+		if (this.#claudeMoved && (inUse?.loginId !== this.#claudeMoved.loginId || usedUp(inUse)))
+			this.#claudeMoved = undefined;
+		this.#render();
+	}
+
+	async #useClaude(next: WebClaudeLogin): Promise<void> {
+		if (!this.#native.useClaude || this.#claudeSwitching || this.#lifetime.signal.aborted) return;
+		this.#claudeSwitching = true;
+		this.#render();
+		try {
+			await this.#native.useClaude(next.loginId, this.#lifetime.signal);
+			this.#claudeMoved = {
+				loginId: next.loginId,
+				account: next.providerAccountEmail ?? t("your other Claude login"),
+			};
+			this.#claudeOut = undefined;
+		} catch {
+			this.#error = t("The Claude login could not be switched. Try again.");
+		} finally {
+			this.#claudeSwitching = false;
+		}
+		if (!this.#lifetime.signal.aborted) this.#render();
+	}
+
+	#claudeCard(): HTMLElement | null {
+		if (this.#claudeMoved) {
+			const card = usageCard(
+				t("New Claude work now uses {account}", { account: this.#claudeMoved.account }),
+				undefined,
+				true,
+				[],
+			);
+			card.setAttribute("role", "status");
+			return card;
+		}
+		const out = this.#claudeOut;
+		if (!out) return null;
+		const other = out.next.providerAccountEmail ?? t("your other Claude login");
+		return usageCard(
+			t("Claude is out of usage until {time}", { time: fmtTime(out.until) }),
+			t("{account} is used up. Keep going with {other}", {
+				account: out.login.providerAccountEmail ?? t("Your Claude login"),
+				other,
+			}),
+			false,
+			[
+				button(t("Continue"), () => void this.#useClaude(out.next), {
+					small: true,
+					primary: true,
+					disabled: this.#claudeSwitching,
+					title: t("Use {account}", { account: other }),
+				}),
+			],
+		);
 	}
 
 	async #hydrateUsage(): Promise<void> {
@@ -434,7 +502,7 @@ export class SessionExecutionView {
 			.filter((connection) => {
 				if (seen.has(connection.connectionId)) return false;
 				seen.add(connection.connectionId);
-				if (remainingAllowance(connection, now) === 0) return false;
+				if (remainingAllowance(connection, now) === 0 || refusedSignIn(connection)) return false;
 				try {
 					selectSessionExecutionSponsor(observed, connection.connectionId, this.#company.userId);
 					return true;
@@ -457,7 +525,8 @@ export class SessionExecutionView {
 		const own = this.#own();
 		if (!observed || !own || !this.#keeps(own)) return undefined;
 		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
-		if (!connection || remainingAllowance(connection, Date.now()) !== 0) return undefined;
+		if (!connection || refusedSignIn(connection) || remainingAllowance(connection, Date.now()) !== 0)
+			return undefined;
 		try {
 			selectSessionExecutionSponsor(observed, own, this.#company.userId);
 			return own;
@@ -783,6 +852,11 @@ export class SessionExecutionView {
 	}
 
 	#render(): void {
+		if (this.#company.store.get().team?.role === "viewer") {
+			if (this.#renderKey !== "spectator") replace(this.el);
+			this.#renderKey = "spectator";
+			return;
+		}
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		const canWrite = this.#canWrite();
 		const selected = conversation.retrySend?.executionSponsor ?? conversation.executionSponsor;
@@ -790,9 +864,7 @@ export class SessionExecutionView {
 		const key = JSON.stringify([
 			this.#room,
 			this.#observed,
-			this.#provenance,
 			this.#error,
-			this.#historyError,
 			selected,
 			this.#serverConnectionId,
 			locked,
@@ -802,6 +874,9 @@ export class SessionExecutionView {
 			this.canSend,
 			this.#sameLogin,
 			this.#moved,
+			this.#claudeOut,
+			this.#claudeMoved,
+			this.#claudeSwitching,
 		]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
@@ -846,7 +921,7 @@ export class SessionExecutionView {
 									? this.#choice(this.#observed, !canWrite)
 									: (this.#usageWall(this.#observed, locked, false) ??
 										h("p", { class: "muted" }, this.#unavailableReason(this.#observed)))
-								: null)),
+								: this.#claudeCard())),
 		);
 	}
 
@@ -877,7 +952,7 @@ export class SessionExecutionView {
 		const own = this.#own();
 		const connection = observed.connections.find((candidate) => candidate.connectionId === own);
 		if (!own || !connection || !this.#keeps(own)) return null;
-		const atLimit = remainingAllowance(connection, Date.now()) === 0;
+		const atLimit = !refusedSignIn(connection) && remainingAllowance(connection, Date.now()) === 0;
 		const available = this.#available();
 		const name = (connectionId: string) => this.#account(observed, connectionId, available);
 		const [first, ...rest] =
@@ -974,11 +1049,22 @@ export class SessionExecutionView {
 		const now = Date.now();
 		const own = this.#own();
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
+		const refused = observed.connections.filter(
+			(connection) => connection.connectionStatus !== "revoked" && refusedSignIn(connection),
+		);
+		const signIn = refused.find((connection) => connection.connectionId === own) ?? refused[0];
+		const signInAgain = signIn?.providerAccountEmail
+			? t("ChatGPT no longer accepts the sign-in for {email}. Sign in again in Settings → AI subscriptions.", {
+					email: signIn.providerAccountEmail,
+				})
+			: t("ChatGPT no longer accepts this login's sign-in. Sign in again in Settings → AI subscriptions.");
+		if (signIn && signIn.connectionId === own) return signInAgain;
 		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).
 		if (own && this.#keeps(own))
 			return t(
 				"This conversation's model account can't be used right now. Check it in Settings → AI subscriptions.",
 			);
+		if (signIn) return signInAgain;
 		if (atLimit.length)
 			return t("Your model accounts have reached their usage limits. Sending resumes when an account resets.");
 		return t("Connect a model account in Settings → AI subscriptions to send messages.");
@@ -992,7 +1078,6 @@ export class SessionExecutionView {
 		this.#usageRequest?.abort();
 		this.#usageRequest = undefined;
 		this.#observed = undefined;
-		this.#provenance = [];
 		this.el.replaceChildren();
 	}
 }

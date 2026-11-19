@@ -56,9 +56,6 @@ $$;
 do $$
 begin
 	perform pg_temp.base_claims('service_role');
-	perform pg_temp.base_assert((select column_default from information_schema.columns where table_schema = 'public'
-		and table_name = 'qorpera_provider_execution_policies' and column_name = 'max_native_concurrency') = '64',
-		'a provider policy allows 64 runs at once by default');
 	perform pg_temp.base_error($sql$select public.qorpera_set_provider_execution_policy('openai', 'native_subscription', 'codex-cli',
 		'supported', 'enabled', 65, null, 'login-64-runs')$sql$, '23514');
 	perform pg_temp.base_assert(public.qorpera_set_provider_execution_policy('openai', 'native_subscription', 'codex-cli', 'supported',

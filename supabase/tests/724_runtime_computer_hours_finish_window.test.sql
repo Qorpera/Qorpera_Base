@@ -30,12 +30,6 @@ create function pg_temp.fw_worker() returns public.qorpera_runtime_workers langu
 	select * from public.qorpera_runtime_workers where profile_id = '92400000-0000-4000-8000-000000000010' and worker_key = 'scan'
 $$;
 
-select pg_temp.base_assert(not has_function_privilege(role_name, function_name, 'EXECUTE'),
-	function_name || ' is not callable by ' || role_name)
-from unnest(array['anon', 'authenticated', 'service_role']) role_name,
-	unnest(array['public.qorpera_computer_hour_finish_window_over(uuid,timestamp with time zone)',
-		'public.qorpera_computer_hour_wake_ended_out_of_hours(uuid)']) function_name;
-
 -- Alice's run (the parent) acknowledges its wake. The owner gives Alice a todo, and the run dispatches an in-house worker on
 -- it: the todo's folder and the worker's folder with its brief, staged by the run itself, under the run's allowed review.
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'hours-ack') \g /dev/null

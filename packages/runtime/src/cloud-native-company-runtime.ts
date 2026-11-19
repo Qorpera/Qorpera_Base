@@ -5,6 +5,7 @@ import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
+	CloudActionReviewChannel,
 	CloudActionReviewGate,
 	cloudActionEffect,
 	cloudActionReviewMandate,
@@ -19,12 +20,21 @@ import {
 } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import {
+	CLAUDE_ACTION_REVIEW_MODEL,
 	CLAUDE_CODE_PIN,
 	type ClaudeBoxConfiguration,
 	type ClaudeCodeBoxOptions,
 	launchClaudeCodeBox,
 } from "./cloud-claude-box.ts";
 import type { CloudClaudeHomeChannel } from "./cloud-claude-home-shell.ts";
+import type { ClaudeLoginUsage } from "./cloud-claude-login-usage.ts";
+import type { CloudClaudePictures } from "./cloud-claude-picture-command.ts";
+import {
+	type CloudClaudePictureLane,
+	claudeWorkerPictures,
+	cloudClaudePictureLaneFor,
+	cloudClaudePictureSessionStart,
+} from "./cloud-claude-picture-lane.ts";
 import {
 	CLAUDE_WORKER_CATALOG,
 	CLAUDE_WORKER_SYSTEM_NOTE,
@@ -46,6 +56,7 @@ import {
 	type CloudCodexHomeReview,
 	CloudCodexHomeSteps,
 	type CloudCompanyHome,
+	cloudHomeActionReview,
 	cloudHomeRefusalWords,
 	parseCloudCompanyHome,
 } from "./cloud-codex-home.ts";
@@ -81,7 +92,7 @@ import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
 import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
-import { cloudPictureTool } from "./cloud-folder-picture-tool.ts";
+import { cloudPictureForeignOwner, cloudPictureTool } from "./cloud-folder-picture-tool.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import {
 	CloudFolderReading,
@@ -105,6 +116,7 @@ import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory 
 import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
 	type CloudCompanyContextSource,
+	type CloudNativeCompanyContext,
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	cloudNativeStableInstructions,
@@ -198,6 +210,9 @@ import { CloudConversationLines, memoryCompactionRecorder } from "./memory-tree/
 import { memoryPromptCacheKey } from "./memory-tree/view.ts";
 import { memoryZoomTool } from "./memory-tree/zoom.ts";
 
+const CLOUD_CLAUDE_USAGE_MS = 10_000;
+const CLOUD_CLAUDE_USAGE_EVERY_MS = 60_000;
+
 /** A plain worker Claude Code does (20260930770000) on a node without its composition (no vault route for Claude
  * sign-ins, or no home channel): refused, never run on Codex. */
 export const CLAUDE_WORKER_NOT_CARRIED =
@@ -213,6 +228,7 @@ export interface CloudClaudeWorkerHost {
 	readonly configuration?: ClaudeBoxConfiguration;
 	/** Proofs only: the box's egress transport and CA for a stub model. No production host sets it. */
 	readonly proof?: ClaudeCodeBoxOptions["proof"];
+	readonly pictures?: (identityRoot: string) => NonNullable<CloudClaudePictures["make"]>;
 }
 
 // The company runtime's control plane completes folder receipts: a folder-v2 run's writers commit under them.
@@ -518,6 +534,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (typeof outputFolder !== "string") throw new Error("Invalid worker dispatch wake");
 				return await this.#claudeCodeWorker(identityRoot, signal, {
 					binding,
+					context,
 					identity: context.identity,
 					handle: context.folder.agent,
 					wake,
@@ -1670,19 +1687,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
-	/**
-	 * A Claude Code worker's run (slice C4c). Admitted as any plain worker's run (its ordinary binding, C4a), it starts
-	 * no Codex: its admission records Claude Code's own tools as its catalog and its brief as its context; then Claude
-	 * Code works on the agent's machine (runClaudeWorker) and its last message is written as the worker's results
-	 * through report_work's own path, under the run's receipt. The worker-completion wake follows as for any worker.
-	 * A failure before Claude Code started ends the worker blocked, in its words; only a stopped run (or a lost run
-	 * authority) fails the run itself.
-	 */
 	async #claudeCodeWorker(
 		identityRoot: string,
 		signal: AbortSignal,
 		input: {
 			binding: CloudNativeToolBinding;
+			context: CloudNativeCompanyContext;
 			identity: CloudNativeToolIdentity;
 			handle: string;
 			wake: CloudWakeEnvelope;
@@ -1697,6 +1707,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		if (!host || !channelOf) throw new Error(CLAUDE_WORKER_NOT_CARRIED);
 		const brief = claudeWorkerBrief(wake.payload as Record<string, unknown>);
 		const run = await CloudNativeToolRun.open(binding, this.#control, signal, NATIVE_AUTHORITY_LEASE_SECONDS * 1000);
+		let pictureLane: CloudClaudePictureLane | undefined;
 		try {
 			const runSignal = AbortSignal.any([signal, run.signal]);
 			const operations = new CloudNativeToolOperations(run, this.#control);
@@ -1786,11 +1797,61 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				.catch(() => {
 					runSignal.throwIfAborted();
 					return null;
-				})) as { member?: unknown; earlier?: unknown } | null;
+				})) as { member?: unknown; earlier?: unknown; ownCodexLogin?: unknown } | null;
 			const member = typeof facts?.member === "string" && facts.member ? facts.member : "the member who asked";
 			const earlier = typeof facts?.earlier === "string" && facts.earlier ? facts.earlier : null;
 			const home = await input.home;
 			const sessionId = randomUUID();
+			const reviewer = new CloudActionReviewChannel();
+			const notebooks = new CloudFolderNotebooks({
+				folder,
+				runId: binding.runId,
+				agentFolder: cloudAgentFolder(
+					identity.companyId,
+					identity.staffAgentId,
+					cloudAgentFolderPlace(input.context),
+				),
+			});
+			const vision = home
+				? await readCloudAgentHeadVision(notebooks.composition, runSignal).catch(() => {
+						runSignal.throwIfAborted();
+						return null;
+					})
+				: null;
+			const review = new CloudActionReviewGate({
+				binding,
+				control: {
+					call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
+				},
+				reviewer,
+				reviewerModel: CLAUDE_ACTION_REVIEW_MODEL,
+				request: cloudActionReviewRequest(input.context, wake),
+				mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null),
+				holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
+				facts: {
+					coworkers: new Map(input.context.coworkers.map((coworker) => [coworker.id, coworker.name])),
+					timeZone: wake.time.timeZone,
+				},
+			});
+			const chosen = await claudeWorkerPictures({
+				facts,
+				home: home !== undefined,
+				...(host.pictures ? { given: host.pictures(identityRoot) } : {}),
+				lane: () => this.#claudePictureLane(identityRoot, binding, identity, runSignal),
+				foreignOwner: (path, ownerSignal) =>
+					cloudPictureForeignOwner(folder, path, identity.staffAgentId, ownerSignal),
+			});
+			pictureLane = chosen.lane;
+			const pictures = chosen.pictures;
+			const usageMark: { at: number; owed: ClaudeLoginUsage | null } = { at: 0, owed: null };
+			const recordUsage = (usage: ClaudeLoginUsage) =>
+				this.#paths
+					.call(
+						"qorpera_record_claude_run_usage",
+						{ p_binding: binding, p_usage: usage },
+						AbortSignal.timeout(CLOUD_CLAUDE_USAGE_MS),
+					)
+					.catch(() => undefined);
 			let outcome: ClaudeWorkerOutcome;
 			if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
 			else
@@ -1814,6 +1875,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							channel: channelOf(binding) as CloudClaudeHomeChannel,
 							sessionId,
 							machineId: home.machineId,
+							review: {
+								gate: cloudHomeActionReview(review),
+								machine: { id: home.machineId, name: home.machine },
+								attach: (made) => reviewer.attach(made),
+							},
+							pictures,
 							// The run's one home session (both channels) is ended in SQL once both are closed.
 							endSession: async (id, reason) => {
 								await this.#paths.call(
@@ -1824,6 +1891,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							},
 						}),
 					root: identityRoot,
+					usage: (usage) => {
+						usageMark.owed = usage;
+						if (Date.now() - usageMark.at < CLOUD_CLAUDE_USAGE_EVERY_MS) return;
+						usageMark.at = Date.now();
+						usageMark.owed = null;
+						void recordUsage(usage);
+					},
 					step: (step) => {
 						if (!log) return;
 						try {
@@ -1855,6 +1929,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					},
 					signal: runSignal,
 				});
+			if (usageMark.owed) await recordUsage(usageMark.owed);
 			runSignal.throwIfAborted();
 			await log?.close(AbortSignal.timeout(10_000)).catch(() => undefined);
 			// What the run changed on the machine's folder, as its home's window credited it (at most four in the report), once
@@ -1912,8 +1987,41 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				delivery: { messageCount: 0, finalMessageId: null },
 			};
 		} finally {
+			if (pictureLane)
+				await Promise.race([pictureLane.close(), new Promise((resolve) => setTimeout(resolve, 30_000).unref())]);
 			run.close();
 		}
+	}
+
+	#claudePictureLane(
+		identityRoot: string,
+		binding: CloudNativeToolBinding,
+		identity: CloudNativeToolIdentity,
+		signal: AbortSignal,
+	): Promise<CloudClaudePictureLane | undefined> {
+		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		return cloudClaudePictureLaneFor({
+			identityRoot,
+			signal,
+			start: cloudClaudePictureSessionStart({
+				binding,
+				controlPlane: this.#control,
+				adapters: () => ({
+					tools: [],
+					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
+					checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
+					recordContextView: (frame, outputs, requestSignal) =>
+						gateway.recordContextView(frame, outputs, requestSignal),
+					fenceContextView: (frame, outputs, requestSignal) =>
+						gateway.fenceContextView(frame, outputs, requestSignal),
+				}),
+				command: this.#command,
+				binarySha256: this.#sha256,
+				identityRoot,
+				...(this.#isolation ? { isolation: this.#isolation } : {}),
+				...(this.#timeoutMs === undefined ? {} : { timeoutMs: this.#timeoutMs }),
+			}),
+		});
 	}
 
 	async #claudeWorkerFellBack(

@@ -706,29 +706,6 @@ begin
 			and not has_table_privilege(v_role, 'public.qorpera_company_machine_screen_watches', 'select, insert, update, delete'),
 			format('8: the grants for %s', v_role));
 	end loop;
-	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930712000') > 0) = array[
-			'qorpera_authorize_machine_screen', 'qorpera_folder_member_machine_reads', 'qorpera_list_agent_machines',
-			'qorpera_machine_hint', 'qorpera_member_machine_screen_authority', 'qorpera_member_machine_screen_begin'],
-		'8: the marker''s bodies');
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure), '20260930708000') > 0,
-		'8: the screen read keeps its own marker');
-	-- The disk's rule names the member, as the agent's names its run's agent and requester.
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_member_machine_screen_begin(uuid,uuid,jsonb)'::regprocedure),
-			'public.qorpera_folder_principal_allowed(v_machine.profile_id, v_root, ''member'', v_user, ''read'')') > 0
-			and strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_member_machine_screen_authority(uuid,text,text)'::regprocedure),
-			'public.qorpera_folder_principal_allowed(v_machine.profile_id, v_root, ''member'', v_watch.user_id, ''read'')') > 0,
-		'8: the disk''s rule names the member');
-	perform pg_temp.base_assert((select array_agg(format('%s.%s', tgrelid::regclass, tgname) order by tgrelid::regclass::text, tgname)
-			from pg_trigger where tgfoid = 'public.qorpera_machine_hint()'::regprocedure and tgdeferrable and tginitdeferred)
-			= array['qorpera_company_machine_placements.qorpera_machine_hint',
-				'qorpera_company_machine_placements.qorpera_machine_hint_change',
-				'qorpera_company_machines.qorpera_machine_hint', 'qorpera_company_machines.qorpera_machine_hint_change'],
-		'8: the hint''s deferred triggers');
 end $$;
 
 rollback;

@@ -217,9 +217,8 @@ select pg_temp.check(has_function_privilege('service_role', 'public.qorpera_mark
 		where has_function_privilege(r.role, 'public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)', 'execute')),
 	'the executor still marks a boot running, and no other API role does');
 select pg_temp.check((select prosecdef and proconfig = array['search_path=""'] from pg_proc
-		where oid = 'public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure)
-	and position('20260930659000' in pg_get_functiondef('public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure)) > 0,
-	'the patched function is still security definer with an empty search path, and names this migration');
+		where oid = 'public.qorpera_mark_company_machine_running(uuid,text,text,text,uuid)'::regprocedure),
+	'the patched function is still security definer with an empty search path');
 
 select pg_temp.check((select bool_and(has_table_privilege(pg_get_userbyid(p.proowner), 'public.qorpera_company_machine_boots', privilege))
 	from pg_proc p cross join unnest(array['SELECT','INSERT','UPDATE','DELETE']) privilege

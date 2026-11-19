@@ -10,6 +10,7 @@ import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
 	CLOUD_ACTION_REVIEW_TOOL,
+	CloudActionReviewBusy,
 	type CloudActionReviewChannel,
 	type CloudActionReviewer,
 } from "./cloud-action-review.ts";
@@ -214,6 +215,7 @@ interface ReviewThread {
 	readonly threadId: string;
 	turnId?: string;
 	verdictReceived: boolean;
+	busy?: true;
 	/** Exact outputs this host issued for the reviewer's calls. */
 	readonly issued: Map<string, string>;
 	resolve(value: unknown): void;
@@ -436,8 +438,15 @@ export function cloudCodexBoundaryConfig(
 		`service_tier="${codexServiceTier(plan ? "standard" : serviceTier)}"`,
 		...(plan ? chatGptPlanProviderConfig(plan) : []),
 		...(home ? cloudCodexHomeConfig() : CLOUD_CODEX_BOUNDARY_FIXED_CONFIG),
+		...(plan ? [] : CLOUD_CODEX_WEB_SEARCH_CONFIG),
 	]);
 }
+
+// WHY: on with web_search="disabled" it offers nothing; it keeps every model's search on Codex's own web.run, whose
+// result the fence issues, and never the hosted tool, whose web_search_call item the pinned fence refuses.
+export const CLOUD_CODEX_WEB_SEARCH_CONFIG: readonly string[] = Object.freeze(["features.standalone_web_search=true"]);
+
+export const CLOUD_CODEX_AGENT_THREAD_CONFIG = Object.freeze({ web_search: "cached" });
 
 /**
  * The run's fixed configuration when it has a home (lanes/agent-box-20261113, slice 1). Three features of Codex's own
@@ -521,6 +530,12 @@ export const CLOUD_CODEX_BOUNDARY_FIXED_CONFIG: readonly string[] = Object.freez
 export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = cloudCodexBoundaryConfig(
 	CLOUD_RUNTIME_MODEL_POLICY.effort,
 );
+
+function providerBusy(error: unknown): boolean {
+	if (!error || typeof error !== "object" || Array.isArray(error)) return false;
+	const signal = nativeRuntimeUsageSignal((error as Record<string, unknown>).codexErrorInfo);
+	return signal !== null && signal !== "sign_in_refused";
+}
 
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native boundary protocol");
@@ -666,6 +681,7 @@ function verifyConfiguration(
 		config.approvals_reviewer !== "user" ||
 		config.sandbox_mode !== (home ? "danger-full-access" : "read-only") ||
 		config.web_search !== "disabled" ||
+		(features.standalone_web_search === true) !== (plan === undefined) ||
 		config.model_reasoning_effort !== effort ||
 		config.service_tier !== codexServiceTier(plan ? "standard" : serviceTier) ||
 		features.fast_mode !== true ||
@@ -681,6 +697,20 @@ function verifyConfiguration(
 		object(config.agents).enabled !== false
 	)
 		throw new Error("Native boundary configuration was not applied");
+}
+
+// WHY: Codex offers its own web.run only on these providers; on any other it falls back to the provider's hosted search.
+function standaloneWebSearch(value: unknown): boolean {
+	const config = object(object(value).config);
+	if (config.model_provider === undefined || config.model_provider === "openai") return true;
+	const providers = config.model_providers;
+	const provider =
+		providers && typeof providers === "object" && !Array.isArray(providers)
+			? (providers as Record<string, unknown>)[String(config.model_provider)]
+			: undefined;
+	if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+	const info = provider as Record<string, unknown>;
+	return info.name === "OpenAI" || info.supports_standalone_web_search === true;
 }
 
 /** Splits a child's stdout into lines. Each chunk is scanned once, so a long line
@@ -906,6 +936,7 @@ class CodexBoundaryRpc {
 	 * stops the work (2026-10-01), never a rate limit. A Codex pinned with the usage-limit codes reports that
 	 * code itself as `usageLimitExceeded`; an older pin reported a 429 it gave up on, which this still reads. */
 	chatGptPlan = false;
+	webSearch = false;
 	/** The run's home, when it has one: Codex's own item notifications become its steps (slice 2). */
 	home?: CloudCodexHome;
 
@@ -1376,8 +1407,20 @@ class CodexBoundaryRpc {
 			if (review.turnId !== undefined && review.turnId !== turnId)
 				review.reject(new Error("Native review binding failed"));
 			else review.turnId = turnId;
+		} else if (message.method === "error" && review && params?.willRetry === false) {
+			if (providerBusy(params.error)) review.busy = true;
 		} else if (message.method === "turn/completed" && review) {
-			if (!review.verdictReceived) review.reject(new Error("Native review ended without a verdict"));
+			if (!review.verdictReceived)
+				review.reject(
+					review.busy ||
+						providerBusy(
+							params?.turn && typeof params.turn === "object"
+								? (params.turn as Record<string, unknown>).error
+								: undefined,
+						)
+						? new CloudActionReviewBusy()
+						: new Error("Native review ended without a verdict"),
+				);
 			this.#endReview(threadId);
 		}
 		// The reviewer's text, reasoning, usage and diagnostics are never delivered or kept.
@@ -2050,6 +2093,15 @@ class CodexBoundaryRpc {
 		await rm(expected, { force: true }).catch(() => undefined);
 		await rmdir(dirname(expected)).catch(() => undefined);
 		await rmdir(folder).catch(() => undefined);
+	}
+
+	#noteWebSearch(method: string, value: unknown): void {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return;
+		const item = value as Record<string, unknown>;
+		if (item.type !== "webSearch" || typeof item.id !== "string") return;
+		if (method === "item/completed")
+			this.#boundary?.webSearched(item.id, typeof item.query === "string" ? item.query : "");
+		else if (method === "item/started") this.#boundary?.webSearched(item.id, "", false);
 	}
 
 	/** The plan Codex names in an account notification, kept as a fixed word, never anything else of it. */
@@ -2774,13 +2826,16 @@ class CodexBoundaryRpc {
 				typeof params.delta === "string"
 			)
 				this.#boundary?.runLog?.agentText(params.delta);
-		} else if (this.home && message.method.startsWith("item/")) {
+		} else if (message.method.startsWith("item/")) {
 			// What the model did on its home, as Codex says it happened: a command with its exit code, a file change
 			// with its paths. The run's work log keeps it as a step of its own (slice 2). Nothing is delivered from
 			// here to the model or the provider, and a notification this host cannot read is passed over.
 			const params = message.params;
-			if (params && typeof params === "object" && !Array.isArray(params) && !this.#finished)
-				this.home.noteItem(message.method, params as Record<string, unknown>);
+			if (params && typeof params === "object" && !Array.isArray(params) && !this.#finished) {
+				if ((params as Record<string, unknown>).threadId === this.#threadId)
+					this.#noteWebSearch(message.method, (params as Record<string, unknown>).item);
+				this.home?.noteItem(message.method, params as Record<string, unknown>);
+			}
 		}
 		// Assistant text, reasoning, diffs, tool events and diagnostics are never delivered or returned.
 	}
@@ -3112,13 +3167,13 @@ async function startCloudCodexProcess(
 		const userAgent = initialized.userAgent;
 		handshake.initialized();
 		progress.stage = "codex-configuration";
-		verifyConfiguration(
-			await handshake.request("config/read", { includeLayers: false, cwd: workspace }, "handshake"),
-			inputs.effort,
-			inputs.serviceTier,
-			plan,
-			inputs.home !== undefined,
+		const configuration = await handshake.request(
+			"config/read",
+			{ includeLayers: false, cwd: workspace },
+			"handshake",
 		);
+		verifyConfiguration(configuration, inputs.effort, inputs.serviceTier, plan, inputs.home !== undefined);
+		handshake.webSearch = plan === undefined && standaloneWebSearch(configuration);
 		progress.stage = "codex-skills";
 		const skills = object(
 			await handshake.request("skills/list", { cwds: [workspace], forceReload: true }, "handshake"),
@@ -3519,6 +3574,16 @@ export async function runCloudCodexToolSession(options: {
 		if (started.fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
+		const attachPictures = (): void => {
+			if (rpc.chatGptPlan || !options.pictures) return;
+			if (options.pictures.timeoutMs !== undefined) rpc.pictureMs = options.pictures.timeoutMs;
+			options.pictures.attach((input, pictureSignal) =>
+				rpc.picture(
+					{ ...input, cwd: started.workspace, model: options.model, codexHome: started.codexHome },
+					pictureSignal,
+				),
+			);
+		};
 		stage = "execution-admission";
 		await options.beforeModelStart?.(signal);
 		signal.throwIfAborted();
@@ -3526,6 +3591,7 @@ export async function runCloudCodexToolSession(options: {
 			// A light ask: each question is one fresh tool-less side thread, as a compactor's line is; the agent's thread
 			// never starts. The run's provider session is the last thread it asked in.
 			stage = "codex-turn-completion";
+			attachPictures();
 			let asked: string | undefined;
 			await options.light(async (instructions, text, askSignal) => {
 				if (
@@ -3597,6 +3663,7 @@ export async function runCloudCodexToolSession(options: {
 					sandbox: home ? "danger-full-access" : "read-only",
 					developerInstructions: nativeInstructions,
 					dynamicTools: [options.boundary.specification],
+					...(rpc.webSearch ? { config: CLOUD_CODEX_AGENT_THREAD_CONFIG } : {}),
 				},
 				"agent-thread",
 			),
@@ -3613,15 +3680,7 @@ export async function runCloudCodexToolSession(options: {
 			options.voice.attach((input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal));
 		}
 		// Pictures the same way: Codex's image tool reaches the Codex login's ChatGPT backend, never a plan's token.
-		if (!rpc.chatGptPlan && options.pictures) {
-			if (options.pictures.timeoutMs !== undefined) rpc.pictureMs = options.pictures.timeoutMs;
-			options.pictures.attach((input, pictureSignal) =>
-				rpc.picture(
-					{ ...input, cwd: started.workspace, model: options.model, codexHome: started.codexHome },
-					pictureSignal,
-				),
-			);
-		}
+		attachPictures();
 		const startTurn = async (text: string): Promise<void> => {
 			const turnStarted = object(
 				await rpc.request(

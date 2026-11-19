@@ -69,6 +69,17 @@ export const FOUNDING: Record<string, string> = {
 	"Your idea from qorpera.com": "Din idé fra qorpera.com",
 	Start: "Start",
 	"Invite friends": "Inviter venner",
+	"Invite people": "Inviter folk",
+	"{count} invited": "{count} inviteret",
+	"Add someone by email": "Tilføj nogen via e-mail",
+	"Add as spectator": "Tilføj som tilskuer",
+	"Builds with you, on their own subscription.": "Bygger med dig, på sit eget abonnement.",
+	"Follows the chats. No subscription.": "Følger chattene. Intet abonnement.",
+	"Your friends could not be read.": "Dine venner kunne ikke læses.",
+	"{emails} will be invited to follow once the company starts.":
+		"{emails} bliver inviteret til at følge med, når virksomheden starter.",
+	"{emails} could not be kept to follow the company. Invite them from the team page once it starts.":
+		"{emails} kunne ikke gemmes til at følge virksomheden. Inviter dem fra teamsiden, når den er startet.",
 	"A webshop with ceramics": "En webshop med keramik",
 	"A marketing agency": "Et marketingbureau",
 	"A café with takeaway": "En café med takeaway",

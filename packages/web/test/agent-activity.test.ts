@@ -262,6 +262,11 @@ describe("shared agent activity", () => {
 		expect(
 			parseStaffExecutionActivity([{ ...row, ...pause, paused_for: "rate_limited", movable: false }])[0]?.paused,
 		).toMatchObject({ rateLimited: true, movable: false });
+		const signIn = parseStaffExecutionActivity([
+			{ ...row, ...pause, paused_for: "sign_in_refused", movable: false },
+		])[0]?.paused;
+		expect(signIn).toMatchObject({ signInRefused: true, movable: false });
+		expect(signIn).not.toHaveProperty("rateLimited");
 		expect(
 			parseStaffExecutionActivity([{ ...row, ...pause, paused_for: "usage_limit" }])[0]?.paused,
 		).not.toHaveProperty("rateLimited");

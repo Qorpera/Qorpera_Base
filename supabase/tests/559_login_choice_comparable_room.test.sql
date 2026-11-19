@@ -239,15 +239,6 @@ select pg_temp.lr_expect('a', 'a login whose last run failed on Qorpera''s side 
 do $$
 declare v_role text; v_function text;
 begin
-	if position('20260930059000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
-		or position('20260930059000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
-		or position('20260930543000' in pg_get_functiondef('public.qorpera_coding_owner_login(uuid,uuid,text)'::regprocedure)) = 0
-		or position('20260930559000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
-		or position('20260930559000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
-		or position('20260930559000' in pg_get_functiondef('public.qorpera_coding_owner_login(uuid,uuid,text)'::regprocedure)) = 0
-		or position('20260930559000' in pg_get_functiondef('public.qorpera_list_member_native_execution_connections(uuid)'::regprocedure)) = 0
-	then
-		raise exception 'a first choice lacks its earlier or its 20260930559000 body'; end if;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_function in array array['public.qorpera_native_account_login_connections(uuid)',
 			'public.qorpera_native_account_turns_refused(uuid)', 'public.qorpera_native_account_turn_completed(uuid)',

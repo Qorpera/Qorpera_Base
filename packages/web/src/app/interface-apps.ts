@@ -45,7 +45,7 @@ import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall, FramedPage } from "../ui/app-frame.ts";
 import { folderLinkPath } from "../ui/folder-links.ts";
 import { webHref } from "../ui/markdown.ts";
-import { framePage } from "../ui/page-frame.ts";
+import { framePage, PAGE_FRAME_URL } from "../ui/page-frame.ts";
 import {
 	AppActionRefused,
 	type AppGate,
@@ -60,6 +60,7 @@ import {
 	prepareTell,
 	restoreTell,
 } from "./app-actions.ts";
+import { bindModules } from "./app-modules.ts";
 import type { AppReadingAnswer, CompanyReading } from "./company-reading.ts";
 import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
@@ -381,6 +382,31 @@ class AppFiles {
 		}
 	}
 
+	async moduleText(path: string): Promise<string | null> {
+		const file = await this.file(path);
+		if (file === null) return null;
+		if (this.#warm || !this.#inPieces(file)) return this.text(path);
+		const folder = this.#folder;
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		const parts: string[] = [];
+		this.planned += file.bytes;
+		this.onProgress?.();
+		await this.#turn(() =>
+			folder.readFilePieces!(
+				file,
+				this.#signal,
+				(piece) => {
+					parts.push(decoder.decode(piece, { stream: true }));
+				},
+				LIVE,
+			),
+		);
+		parts.push(decoder.decode());
+		this.bytes += file.bytes;
+		this.onProgress?.();
+		return parts.join("");
+	}
+
 	async pageBlob(path: string, type: string): Promise<Blob | null> {
 		const file = await this.file(path);
 		if (!file || !this.#inPieces(file)) {
@@ -423,9 +449,14 @@ class AppFiles {
 		const folder = this.#folder;
 		let blob = new Blob([], { type });
 		await this.#turn(() =>
-			folder.readFilePieces!(file, this.#signal, (piece) => {
-				blob = new Blob([blob, piece as BlobPart], { type });
-			}),
+			folder.readFilePieces!(
+				file,
+				this.#signal,
+				(piece) => {
+					blob = new Blob([blob, piece as BlobPart], { type });
+				},
+				LIVE,
+			),
 		);
 		return blob;
 	}
@@ -490,6 +521,7 @@ interface PageRead {
 	readonly page: Document;
 	readonly files: ReadonlyMap<string, Blob>;
 	readonly missing: readonly string[];
+	readonly said: readonly string[];
 	readonly later: readonly string[];
 }
 
@@ -524,7 +556,13 @@ export async function assembleApp(
 	return {
 		ok: true,
 		page: handed,
-		framed: { html: handed, files: [...read.files], missing: read.missing, base: dirOf(app.entry) },
+		framed: {
+			html: handed,
+			files: [...read.files],
+			missing: read.missing,
+			...(read.said.length > 0 ? { said: read.said } : {}),
+			base: dirOf(app.entry),
+		},
 		key: [handed, ...read.later].join("\n"),
 		files: files.count,
 		bytes: files.bytes,
@@ -604,7 +642,7 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 		if (value.includes("url("))
 			changes.push(css(value, base).then((text) => () => element.setAttribute("style", text)));
 	}
-	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]")]) {
+	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]:not([type='module' i])")]) {
 		const path = resolveAppPath(base, script.getAttribute("src") ?? "");
 		if (path === null) continue;
 		changes.push(
@@ -679,7 +717,14 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 		}
 	}
 	for (const change of await Promise.all(changes)) change?.();
-	return { page, files: handed, missing: [...missing], later };
+	const modules = await bindModules(
+		page,
+		{ warm: files.warm, text: (path) => files.moduleText(path), resolve: resolveAppPath },
+		base,
+		new URL(PAGE_FRAME_URL, document.baseURI).href,
+	);
+	if (modules && !files.warm) for (const [token, blob] of modules.files) handed.set(token, blob);
+	return { page, files: handed, missing: [...missing], said: [...(modules?.said ?? [])], later };
 }
 
 export class PageFiles {
@@ -1572,7 +1617,7 @@ export async function warmApps(folder: Folder, apps: readonly CompanyApp[], sign
 	const reads: (() => Promise<unknown>)[] = [() => readAppBrand(folder, signal)];
 	for (const app of [...apps].sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0))) {
 		const entry = app.manifest?.entry;
-		if (entry === undefined || resolveAppPath("", entry) === null) continue;
+		if (entry === undefined || app.manifest?.kit === "program" || resolveAppPath("", entry) === null) continue;
 		reads.push(() =>
 			readPage(new AppFiles(folder, app.path, signal, { atOnce: WARM_FILES_AT_ONCE, warm: budget }), entry),
 		);

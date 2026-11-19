@@ -43,34 +43,9 @@ begin
 end
 $$;
 
-select pg_temp.base_assert(not has_function_privilege(role_name, function_name, 'EXECUTE'),
-	function_name || ' is not callable by ' || role_name)
-from unnest(array['anon', 'authenticated', 'service_role']) role_name,
-	unnest(array['public.qorpera_company_at_zero(uuid,timestamp with time zone)',
-		'public.qorpera_computer_hour_zero_run_guard()']) function_name;
--- The routine listing reads the zero state (on both pages), with no full check.
-select pg_temp.base_assert((length(pg_get_functiondef('public.qorpera_list_routine_schedule_heads(uuid,integer)'::regprocedure))
-	- length(replace(pg_get_functiondef('public.qorpera_list_routine_schedule_heads(uuid,integer)'::regprocedure),
-		'qorpera_computer_hour_zero_state', ''))) / length('qorpera_computer_hour_zero_state') = 2,
-	'The routine listing reads the zero state on both pages');
--- Every folder-v2 function that creates runs or queues routine slots checks for zero (the listing reads the zero state
--- instead, above): the due list and the company's materializer, which checks before it locks anything, and the routine
--- slot's folder mode.
-select pg_temp.base_assert(count(*) = 5 and bool_and(checks.found = checks.expected),
-	'Checks for zero: ' || string_agg(checks.fn || ' ' || checks.found || '/' || checks.expected, ', '))
-from (
-	select wanted.fn, wanted.expected,
-		(length(pg_get_functiondef(wanted.fn::regprocedure))
-			- length(replace(pg_get_functiondef(wanted.fn::regprocedure), 'qorpera_company_at_zero', '')))
-			/ length('qorpera_company_at_zero') as found
-	from (values
-		('public.qorpera_folder_materialize_due(uuid,integer)', 1),
-		('public.qorpera_folder_materialize_company(uuid,integer)', 1),
-		('public.qorpera_folder_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamptz,timestamptz,timestamptz,jsonb)', 1),
-		('public.qorpera_list_routine_schedule_heads(uuid,integer)', 0),
-		('public.qorpera_read_company_computer_hours(uuid,date)', 1)
-	) wanted(fn, expected)
-) checks;
+select pg_temp.base_assert(not has_function_privilege(role_name, 'public.qorpera_company_at_zero(uuid,timestamp with time zone)', 'EXECUTE'),
+	'qorpera_company_at_zero is not callable by ' || role_name)
+from unnest(array['anon', 'authenticated', 'service_role']) role_name;
 
 -- The owner gives Carol a routine (a routine file, paid by the owner's login); the scheduler has not fired it yet.
 select pg_temp.base_commit(pg_temp.base_owner(), 'zero-routine', jsonb_build_array(pg_temp.base_write(

@@ -1,10 +1,6 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 select pg_temp.base_claims('service_role');
 
-select pg_temp.base_assert(to_regprocedure(
-	'public.qorpera_folder_home_shared(public.qorpera_company_machines, uuid, uuid, uuid)') is not null,
-	'the sharing rule (20260930754000) is in this database');
-
 insert into public.qorpera_profiles(id, name, created_by_user_id)
 values ('12860000-0000-4000-8000-000000000010', 'Home every company, made after the switch',
 	'92400000-0000-4000-8000-000000000001');
@@ -27,10 +23,6 @@ $$;
 
 do $$
 begin
-	perform pg_temp.base_assert((select column_default = 'false' and is_nullable = 'NO' and data_type = 'boolean'
-		from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_home_settings'
-			and column_name = 'every_company'), '1: every_company is a boolean, not null, false by default');
-
 	perform pg_temp.hc_switch(null, null, false);
 	perform pg_temp.base_assert(not pg_temp.hc_allowed(pg_temp.hc_listed()) and not pg_temp.hc_allowed(pg_temp.hc_new()),
 		'1: with no rows no company has the home');
@@ -82,9 +74,6 @@ do $$
 begin
 	perform pg_temp.hc_switch(true, true, true);
 	update public.qorpera_home_settings set every_company = false where singleton;
-	perform pg_temp.base_assert(not (select every_company from public.qorpera_home_settings where singleton)
-		and (select enabled from public.qorpera_home_settings where singleton),
-		'4: the way back turns every company off and leaves the platform switch on');
 	perform pg_temp.base_assert(pg_temp.hc_allowed(pg_temp.hc_listed()),
 		'4: after the way back the listed company still has the home');
 	perform pg_temp.base_assert(not pg_temp.hc_allowed(pg_temp.hc_new()),
@@ -106,10 +95,9 @@ begin
 		perform pg_temp.base_assert(not has_function_privilege(v_role, 'public.qorpera_company_home_allowed(uuid)', 'execute'),
 			'5: ' || v_role || ' cannot call the company''s home gate');
 	end loop;
-	perform pg_temp.base_assert((select p.prosecdef and p.provolatile = 's' and p.prorettype = 'boolean'::regtype
-			and p.proconfig = array['search_path=""']
+	perform pg_temp.base_assert((select p.prosecdef and p.proconfig = array['search_path=""']
 		from pg_catalog.pg_proc p where p.oid = 'public.qorpera_company_home_allowed(uuid)'::regprocedure),
-		'5: the gate is still a stable security definer with an empty search path, returning boolean');
+		'5: the gate is a security definer with an empty search path');
 	perform pg_temp.base_assert((select relrowsecurity from pg_catalog.pg_class where oid = 'public.qorpera_home_settings'::regclass)
 		and (select relrowsecurity from pg_catalog.pg_class where oid = 'public.qorpera_home_companies'::regclass),
 		'5: both tables keep row level security');

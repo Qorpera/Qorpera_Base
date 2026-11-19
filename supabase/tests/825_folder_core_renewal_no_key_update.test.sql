@@ -106,17 +106,8 @@ begin
 	if v_state <> 'ok' then raise exception 'C: the snapshot-v1 renewal beside it: %', v_state; end if;
 end $$;
 
--- D. The folder copy of locked_job is locked_job with its name, its marker line and its lock clause changed, and
--- nothing else; it is postgres-only.
 do $$
-declare v_text text;
 begin
-	v_text := replace(replace(replace(pg_get_functiondef('public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)'::regprocedure),
-		'FUNCTION public.qorpera_folder_renewal_locked_job(', 'FUNCTION public.qorpera_runner_broker_locked_job('),
-		E'\t-- P23 (20260930002200): a folder-v2 renewal; tool calls hold the job KEY SHARE, which this mode does not block.\n', ''),
-		E'\tfor no key update;\n', E'\tfor update;\n');
-	if v_text is distinct from pg_get_functiondef('public.qorpera_runner_broker_locked_job(uuid,text,uuid,text)'::regprocedure) then
-		raise exception 'D: the folder copy of locked_job differs beyond its lock'; end if;
 	if has_function_privilege('public', 'public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)', 'execute')

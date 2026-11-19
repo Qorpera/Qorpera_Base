@@ -92,19 +92,16 @@ describe("agent notes", () => {
 		expect([...next]).toEqual([["a", { title: "Market check", at: at(3) }]]);
 	});
 
-	it("lists the routines once, publishes only changes, lists again after a settled hint, and reads no wall", async () => {
+	it("lists the routines once, publishes only changes, lists again after a settled hint", async () => {
 		vi.useFakeTimers({ now: NOW });
 		const listRoutines = vi.fn(async () => [
 			{ staffAgentId: "b", title: "Market check", nextRunAt: at(3), status: "active" as const },
 		]);
-		// A source that still offers a wall's read, as the web's did until 14 Nov 2026: nothing asks for it.
-		const readWall = vi.fn(async () => "# Wall\n\n## Now\n- Prices set, now choosing suppliers\n");
 		const controller = new AbortController();
-		const source: AgentNotesSource & { readWall: typeof readWall } = {
+		const source: AgentNotesSource = {
 			agents: () => ["a", "b"],
 			listRoutines,
 			signal: controller.signal,
-			readWall,
 		};
 		const publish = vi.fn();
 		const notes = new AgentNotes(source, publish);
@@ -133,7 +130,6 @@ describe("agent notes", () => {
 		notes.changed();
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(listRoutines).not.toHaveBeenCalled();
-		expect(readWall).not.toHaveBeenCalled();
 	});
 
 	it("reads a roster that arrives after the company opened at once, and the same roster not again", async () => {

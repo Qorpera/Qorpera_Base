@@ -43,11 +43,6 @@ export function appNoteLine(app: string, at: string | null, about: string): stri
 	return `app:${app}${at === null ? "" : `#${at}`} · ${about}`;
 }
 
-/** A note from an app as the message it goes as: that line first, then the member's own words. */
-export function appNoteText(app: string, at: string | null, about: string, words: string): string {
-	return withReply(appNoteLine(app, at, about), words, 0);
-}
-
 const NOTE_PAGES: ReadonlySet<string> = new Set(["data"]);
 
 export function pageNoteLine(page: string, at: string | null, about: string): string {

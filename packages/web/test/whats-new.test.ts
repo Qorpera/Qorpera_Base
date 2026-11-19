@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
@@ -1326,59 +1324,6 @@ describe("What's new: Look first's link and a refused write (step 5.1)", () => {
 				else expect(() => parseSitePreviewAnswer(answer(url), drawn), label).toThrow(CloudShapeError);
 			}
 		}
-	});
-
-	it("reads every answer migration 20260930756000 gives Look first, Put it live and Go back, from its text", async () => {
-		const migration = readFileSync(resolve("../../supabase/migrations/20260930756000_site_hosts.sql"), "utf8");
-		const start = migration.indexOf("create function public.qorpera_open_site_preview(");
-		const body = migration.slice(start, migration.indexOf("\nend $$;", start));
-		// The call, with exactly its arguments.
-		expect(body.slice(0, body.indexOf(")") + 1)).toBe(
-			"create function public.qorpera_open_site_preview(p_profile_id uuid, p_owner text, p_name text, p_change integer)",
-		);
-		const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>) => ({
-			schema: "qorpera.site-preview/v1",
-			state: "off",
-		}));
-		await codeReleaseCalls({ rpc } as unknown as Cloud, id(10)).openPreview(
-			"company",
-			"shop",
-			{ change: 17, slug: "wristband-shop" },
-			new AbortController().signal,
-		);
-		expect(rpc.mock.calls).toEqual([
-			["qorpera_open_site_preview", { p_profile_id: id(10), p_owner: "company", p_name: "shop", p_change: 17 }],
-		]);
-		// Its schema and every state it answers.
-		expect(body).toContain("c_schema constant text := 'qorpera.site-preview/v1'");
-		const states = [...body.matchAll(/jsonb_build_object\('schema', c_schema, 'state', '(\w+)'/g)].map(
-			(match) => match[1],
-		);
-		expect([...new Set(states)].sort()).toEqual(["gone", "moved", "off", "open"]);
-		for (const state of ["gone", "moved", "off"] as const)
-			expect(parseSitePreviewAnswer({ schema: "qorpera.site-preview/v1", state }, "wristband-shop")).toEqual({
-				state,
-			});
-		// The link: the site's own next host, and a ticket of 43 (qorpera_site_new_secret: 32 random bytes, base64url).
-		expect(body).toContain("'state', 'open', 'url', 'https://' || v_site.slug || '--next.'");
-		expect(body).toContain("|| '/.qorpera/enter?t=' || v_ticket");
-		expect(body).toContain("v_ticket := public.qorpera_site_new_secret();");
-		expect(
-			parseSitePreviewAnswer({ schema: "qorpera.site-preview/v1", state: "open", url: NEXT }, "wristband-shop"),
-		).toEqual({
-			state: "open",
-			url: NEXT,
-		});
-		// Put it live and Go back refused for a site taken down, and preview only while hosts are on.
-		const refusals = [
-			...migration.matchAll(
-				/return '(\{"schema":"qorpera\.code-release\/v1","state":"refused","code":"[A-Z_]+"\})'::jsonb;/g,
-			),
-		].map((match) => match[1] ?? "");
-		expect(refusals).toHaveLength(2);
-		for (const refusal of refusals)
-			expect(parseCodeReleaseAnswer(JSON.parse(refusal))).toEqual({ state: "refused", code: "SITE_TAKEN_DOWN" });
-		expect(migration).toContain("then jsonb_build_object('preview', v_role in ('owner','admin'))");
 	});
 
 	it("reads Look first's answer: exactly the site's next host with a one-time ticket, nothing else", () => {

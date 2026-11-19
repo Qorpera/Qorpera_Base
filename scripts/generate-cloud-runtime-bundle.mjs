@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025499_runtime_bundle_activation_v254.sql";
-const activationVersion = 254;
-const previousActivationVersion = 253;
-const previousActivationSha256 = "ec5969910e64e58b11d03e8ac777ee44121384317988b071ea9660ed2d023646";
+const activation = "supabase/migrations/20260929026199_runtime_bundle_activation_v261.sql";
+const activationVersion = 261;
+const previousActivationVersion = 260;
+const previousActivationSha256 = "a6aa04f164e14df6c7550510c923919d3173cdb7a5ddcebc51d9a18b6ca3769f";
 const activationRequires = Object.freeze([
 	[
-		"20260930796000_company_mail_handles_and_unnamed",
-		"#1915 (company mail handles, 'No name yet'): bundle 254 (#1921) asks for the address on an ask_member card with input kind mail_address, which only 796000's kernel validator takes, and manage_hook names <box>.<handle> under a handle the company owns",
-		"to_regclass('public.qorpera_company_mail_handles') is not null",
+		"20260930810000_claude_parallel_runs",
+		"#1906 (Claude parallel runs): bundle 261's Claude Code runs cannot renew (their box reaches the API host alone) and ask the vault for their login's newer version every 60 s; the renewal is the shared vault's, through 810000's lock, lease login and compare-and-swap, so bundle 261 must never run on a database without it",
+		"to_regprocedure('public.qorpera_claude_worker_run_cap()') is not null and to_regprocedure('public.qorpera_take_idle_claude_login_renewal(uuid,text)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

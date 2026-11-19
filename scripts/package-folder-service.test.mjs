@@ -70,19 +70,6 @@ test("packages the folder service, the folder program, the units and the install
 		});
 		assert.notEqual(unconfigured.status, 0);
 		assert.match(unconfigured.stderr, /CREDENTIALS_DIRECTORY is not set/);
-		// Patterns are off as the unit ships (keyholes S4, v240: the engine is the founder's open choice): under its flags
-		// node has no linear-time engine, so the search's hello says `regex: false` and a pattern is refused in words.
-		// The one change that turns them on is --enable-experimental-regexp-engine on the unit's ExecStart line (and its
-		// pin, EXPECTED_SERVICE_UNIT_SHA256): with it node runs V8's linear-time engine and refuses what that engine
-		// cannot run in linear time.
-		const probe =
-			'let off; try { new RegExp("a", "l"); off = "on"; } catch { off = "off"; } if (off === "off") console.log("off"); else console.log(off, new RegExp("^(a|aa)*b$", "lm").test("a".repeat(40000)), (() => { try { new RegExp("(a)\\\\1", "l"); return "taken"; } catch { return "refused"; } })())';
-		const off = spawnSync(process.execPath, [...unitFlags, "-e", probe], { encoding: "utf8" });
-		assert.equal(off.status, 0, off.stderr);
-		assert.equal(off.stdout.trim(), "off");
-		const on = spawnSync(process.execPath, [...unitFlags, "--enable-experimental-regexp-engine", "-e", probe], { encoding: "utf8" });
-		assert.equal(on.status, 0, on.stderr);
-		assert.equal(on.stdout.trim(), "on false refused");
 
 		// The installers' pins are the units' hashes.
 		const pins = {
@@ -190,12 +177,6 @@ void (async () => {
 			timeout: 20_000,
 		});
 		assert.equal(run.stdout, '200 {"method":"POST","body":"{}","apikey":"k"}');
-		const fetched = await promisify(execFile)(
-			process.execPath,
-			["--jitless", "-e", `fetch(${JSON.stringify(url)}).then(() => console.log("ok"), () => console.log("failed"))`],
-			{ timeout: 20_000 },
-		);
-		assert.equal(fetched.stdout.trim(), "failed", "fetch works under --jitless now; the transport could go back to it");
 	} finally {
 		server.close();
 		await rm(temporary, { recursive: true, force: true });

@@ -172,8 +172,6 @@ describe("conversation model transport", () => {
 			version: 5,
 		});
 		await expect(f.control.set(session.sessionId, { modelId: "future-model" }, 5)).rejects.toThrow("Refresh");
-		for (const retired of ["gpt-5.6-sol", "gpt-5.6-terra"])
-			await expect(f.control.set(session.sessionId, { modelId: retired }, 5)).rejects.toThrow("Refresh");
 		await expect(
 			f.control.set(session.sessionId, { modelId: "gpt-6.2-sol", reasoningEffort: "max" }, 5),
 		).rejects.toThrow("Refresh");

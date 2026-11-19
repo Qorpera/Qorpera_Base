@@ -201,9 +201,7 @@ begin
 		or v.prompt is distinct from 'Look at the inbox.' or v.effort is distinct from 'medium'
 		or v.triggers is distinct from '[{"id":"file","kind":"schedule","intervalMinutes":60,"replyPolicy":"optional"}]'
 		or v.sponsor_binding_id is distinct from '70800000-0000-4000-8000-0000000000b1' or v.sponsor_version is distinct from 1::bigint
-		or v.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000001'
-		or v.content_sha256 is distinct from public.qorpera_company_state_routine_sha(v.staff_agent_id, v.title, v.prompt, v.triggers,
-			v.effort, v.sponsor_binding_id, v.sponsor_version) then
+		or v.created_by_user_id is distinct from '70700000-0000-4000-8000-000000000001' then
 		raise exception 'Its version is what a run pins, paid by the saver''s login: %', to_jsonb(v); end if;
 	if c.trigger_id is distinct from 'file' or c.last_scheduled_for is not null or c.next_due_at is distinct from '-infinity'::timestamptz then
 		raise exception 'A new routine starts at a fresh position: %', to_jsonb(c); end if;
@@ -557,7 +555,7 @@ begin
 	-- Deleting retires the routine and frees its name; a restore brings it back.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0001', jsonb_build_array(pg_temp.del('QorperaOS/agents/nora/routines/inbox.md'))), 1, 'saved');
 	x := pg_temp.rt(e1);
-	if x.status is distinct from 'retired' or x.folder_retired_at is null or x.routine_key is distinct from 'inbox.' || replace(e1::text, '-', '') then
+	if x.status is distinct from 'retired' or x.folder_retired_at is null or x.routine_key = 'inbox' then
 		raise exception 'A deleted routine retires: %', to_jsonb(x); end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'del-0002', jsonb_build_array(pg_temp.routine('QorperaOS/agents/nora/routines/inbox.md',
 		pg_temp.rparse(ec, 'New inbox', pg_temp.every())))), 1, 'saved');

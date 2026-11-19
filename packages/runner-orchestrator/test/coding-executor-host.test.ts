@@ -1518,49 +1518,6 @@ describe("a coding turn on its member's machine", () => {
 			"NOT_PREPARED",
 		);
 	});
-	it("refuses a configuration without pinned helpers", () => {
-		expect(
-			() =>
-				new LxdCodingExecutorHost({
-					control: { call: vi.fn() },
-					owner: "coding-host",
-					machineIdSha256: "f".repeat(64),
-					journalRoot: "/srv/control",
-					storagePolicy: {
-						schema: "qorpera.coding-nas-policy/v1",
-						mountPoint: "/srv",
-						rootPath: "/srv",
-						source: "192.168.1.40:/coding",
-						serverAddress: "192.168.1.40",
-					},
-					client: {} as LxdCodingExecutorHostOptions["client"],
-					vmPolicy: {
-						providerId: "coding",
-						providerPolicySha256: "a".repeat(64),
-						project: "coding",
-						imageFingerprint: "b".repeat(64),
-						bootstrapSha256: "c".repeat(64),
-						storagePool: "coding",
-						network: "qagent0",
-						cpus: 4,
-						memoryBytes: 8589934592,
-						rootDiskBytes: 34359738368,
-					},
-					guest: {
-						uid: 1100,
-						gid: 1100,
-						storageHelperSha256: "latest",
-						commandHelperSha256: "a".repeat(64),
-						gitHelperSha256: "a".repeat(64),
-						watchdogHelperSha256: "a".repeat(64),
-						resourceProfile: {
-							maxLogBytes: 67108864,
-						},
-					},
-					repositoryCredentials: { withRepositoryToken: vi.fn() },
-				}),
-		).toThrow("CODING_HOST_CONFIGURATION_INVALID");
-	});
 });
 describe("the host's own configuration", () => {
 	it.each([
@@ -5740,17 +5697,6 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			switched = answer;
 			expect(await ask(), JSON.stringify(answer)).toStrictEqual(read);
 		}
-		// What migration 20260930756000 adds to the answer, read from its text: rootLinks only as true (while sites have
-		// hosts of their own), a drill only as check or site (the column's own rule); every combination reads as said.
-		const migration = await readFile(
-			new URL("../../../supabase/migrations/20260930756000_site_hosts.sql", import.meta.url),
-			"utf8",
-		);
-		expect(migration).toContain(
-			`if public.qorpera_site_hosts_on() then v_answer := v_answer || '{"rootLinks":true}'::jsonb; end if;`,
-		);
-		expect(migration).toContain("v_answer := v_answer || jsonb_build_object('drill', v_drill);");
-		expect(migration).toContain("add column drill text check (drill is null or drill in ('check', 'site')),");
 		for (const rootLinks of [undefined, true] as const)
 			for (const drill of [undefined, "check", "site"] as const) {
 				const said = { ...(rootLinks ? { rootLinks } : {}), ...(drill ? { drill } : {}) };

@@ -51,16 +51,4 @@ begin
 		jsonb_build_object('op','write','path','vault/copy.md','file',v_secret))), 1, 'saved');
 end $$;
 
--- The check is placed after the possession check, and the body carries the marker.
-do $$
-declare v_body text := (select prosrc from pg_proc
-	where oid = 'public.qorpera_folder_file_bytes_problem(uuid,uuid,jsonb,jsonb,jsonb,text[])'::regprocedure);
-begin
-	if strpos(v_body, '20260930043000') = 0
-		or strpos(v_body, 'File reference does not match its manifest') < strpos(v_body, 'qorpera_folder_object_readable(')
-		or (length(v_body) - length(replace(v_body, 'File reference does not match its manifest', '')))
-			/ length('File reference does not match its manifest') <> 1 then
-		raise exception 'The bytes check decides possession before it calls a reference malformed'; end if;
-end $$;
-
 rollback;

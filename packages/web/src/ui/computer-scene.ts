@@ -10,7 +10,9 @@ import { type FigureArtwork, loadFigureMotion } from "./figure-motion.ts";
  * recorded eye motion while it waits. When the machine boots the screen lights up to the hour's tone, the figure
  * settles into the wallpaper's flat tone (the machine's own backdrop, drawn here from the same traced paths:
  * public/assets/desktop/backdrops, scripts/desktop-backdrops.mjs), and the dock's three icons arrive. The first real
- * picture then lands on the same scene.
+ * picture then lands on the same scene: the wallpaper keeps the figure's eyes, still, where the scene has them, and
+ * the dock stands on the wallpaper, in the hour's ground, here as on the machine (Jonas, 14 Nov 2026: "The eyes should
+ * stay on the wallpaper", "the docker should also not be black - it should be transparrant/wallpapers color").
  *
  * Every moving part is a transform or an opacity, by CSS animations and transitions or Web Animations: no frame loop
  * and no canvas drawn per frame. The avatar is painted once. A timer picks the next eye move; it stops while the scene
@@ -41,8 +43,21 @@ export function hourLight(hour: number): number {
 	return 6;
 }
 
-/** The hour's ground and figure (hue 225, the figure five points off the ground), as the machine paints them. */
-export function hourColours(hour: number): { ground: string; figure: string; figureLight: number } {
+/** What is written on the machine's dock, by the tone of the ground it stands on (deploy/machine/desktop-look
+ * DATE_INK and TIME_INK; a test holds them alike): the date is the quieter of the two. */
+export const DOCK_INK = Object.freeze({
+	dark: Object.freeze({ date: "#a3abba", time: "#eef0f4" }),
+	light: Object.freeze({ date: "#4b515c", time: "#1d2026" }),
+});
+
+/** The hour's ground and figure (hue 225, the figure five points off the ground), as the machine paints them, and the
+ * ground's tone: the dock is that ground (14 Nov 2026), and what is written on it is dark on a light one. */
+export function hourColours(hour: number): {
+	ground: string;
+	figure: string;
+	figureLight: number;
+	tone: keyof typeof DOCK_INK;
+} {
 	const light = hourLight(hour);
 	const dark = light < 50;
 	const figure = dark ? light + 5.5 : light - 5;
@@ -51,6 +66,7 @@ export function hourColours(hour: number): { ground: string; figure: string; fig
 		ground: `hsl(225 ${saturation}% ${light}%)`,
 		figure: `hsl(225 ${saturation}% ${figure}%)`,
 		figureLight: figure,
+		tone: dark ? "dark" : "light",
 	};
 }
 
@@ -428,6 +444,10 @@ export class ComputerScene {
 		off.style.background = night.ground;
 		const ground = h("div", { class: "computer-scene-ground" });
 		ground.style.background = hour.ground;
+		// The dock has no colour of its own: once the screen is on, its date and time stand on the hour's ground.
+		this.el.style.setProperty("--computer-scene-date-ink", DOCK_INK[hour.tone].date);
+		this.el.style.setProperty("--computer-scene-time-ink", DOCK_INK[hour.tone].time);
+		this.el.dataset.tone = hour.tone;
 		const flatOn = svg("svg", {
 			class: "computer-scene-flat is-on",
 			viewBox: "560 200 800 800",

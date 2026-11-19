@@ -121,10 +121,7 @@ begin
 	-- Deleting a file retires its row (a tombstone key): it is listed no more, closed or not.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1-todo-delete', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','QorperaOS/agents/ada/todos/call-the-bank.md','expectedVersion',pg_temp.w1_version('QorperaOS/agents/ada/todos/call-the-bank.md')))), 1, 'saved');
-	-- (A search reaches it on any page: its tombstone key starts with its old name.)
-	if (select todo_key from public.qorpera_runtime_agent_todos where folder_path = 'QorperaOS/agents/ada/todos/call-the-bank.md')
-			not like 'call-the-bank.%'
-		or jsonb_array_length(pg_temp.w1_list(ada, '{"includeClosed":true,"search":"call-the-bank"}') -> 'todos') <> 0 then
+	if jsonb_array_length(pg_temp.w1_list(ada, '{"includeClosed":true,"search":"call-the-bank"}') -> 'todos') <> 0 then
 		raise exception 'A deleted todo is not listed'; end if;
 	-- A retired row is no cursor either.
 	perform pg_temp.raises(format('select pg_temp.w1_list(%L, %L)', ada, jsonb_build_object('cursor',

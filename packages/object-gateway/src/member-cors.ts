@@ -7,6 +7,9 @@ const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
 const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
+const PROGRAM_UPLOAD = new RegExp(
+	`^/v1/member-program-uploads/${UUID}(/${UUID}(/(0|[1-9]|[1-5][0-9]|6[0-3]|stop))?)?$`,
+);
 
 function route(url: string): { method: string; headers: string[] } | undefined {
 	if (PRESENCE.test(url)) return { method: "POST", headers: ["authorization", "content-type"] };
@@ -17,6 +20,9 @@ function route(url: string): { method: string; headers: string[] } | undefined {
 		return { method: attachment[1] === "upload" ? "PUT" : "GET", headers: ["authorization", "content-type"] };
 	const erase = ERASE.exec(url);
 	if (erase) return { method: erase[1] ? "POST" : "GET", headers: ["authorization"] };
+	const upload = PROGRAM_UPLOAD.exec(url);
+	if (upload)
+		return { method: upload[3] && upload[3] !== "stop" ? "PUT" : "POST", headers: ["authorization", "content-type"] };
 	return undefined;
 }
 

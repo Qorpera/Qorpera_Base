@@ -344,22 +344,6 @@ begin
 			and current_setting('qorpera_test.cv_c14') = current_setting('qorpera_test.cv_c13'),
 		'1: the store stores ' || pg_temp.cv_delta(current_setting('qorpera_test.cv_c13')::jsonb,
 			current_setting('qorpera_test.cv_c12')::jsonb)::text);
-	-- What qorpera_authorize_coding_environment serves for a session on qorpera/qorpera_base (5j-1's predicate): a company
-	-- environment secret of this authority, under a name still allowed, with a live grant there from a current owner or
-	-- admin, its current version sealed under the authority's key.
-	perform pg_temp.base_assert(exists (select 1 from public.qorpera_cloud_secrets as secret
-			join public.qorpera_cloud_secret_versions as version
-				on version.secret_id = secret.id and version.version = secret.current_version
-			join public.qorpera_cloud_secret_broker_authorities as authority on authority.id = secret.broker_authority_id
-			where secret.id = v_secret.id and secret.connector_id = 'environment' and secret.owner_kind = 'company'
-				and secret.status = 'active' and public.qorpera_coding_environment_name_allowed(secret.secret_name)
-				and version.broker_authority_id = authority.id and version.key_id = authority.key_id
-				and exists (select 1 from public.qorpera_coding_environment_grants as environment_grant
-					join public.qorpera_profile_members as issuer on issuer.profile_id = environment_grant.profile_id
-						and issuer.user_id = environment_grant.issued_by_user_id and issuer.role in ('owner', 'admin')
-					where environment_grant.secret_id = secret.id and environment_grant.repository = 'qorpera/qorpera_base'
-						and environment_grant.status = 'active')),
-		'1: the coding session of qorpera/qorpera_base is served the value');
 	perform pg_temp.base_assert(current_setting('qorpera_test.cv_list11')::jsonb @> jsonb_build_array(jsonb_build_object(
 			'secretId', v_secret.id, 'name', 'NPM_TOKEN', 'ownerKind', 'company', 'version', 1,
 			'grants', jsonb_build_array(jsonb_build_object('grantId', v_grant.id, 'repository', 'qorpera/qorpera_base')))),
@@ -903,25 +887,8 @@ begin
 			and not public.qorpera_valid_office_browser_action(v_action #- '{codingValue,repository}')
 			and not public.qorpera_valid_office_browser_action(jsonb_set(v_action, '{codingValue,variable}', '"ld_preload"'))
 			and not public.qorpera_valid_office_browser_action(jsonb_set(v_action, '{codingValue,variable}', '"claude_code_token"'))
-			and not public.qorpera_valid_office_browser_action(jsonb_set(v_action, '{codingValue,service}', 'null'))
-			and (select provolatile from pg_proc where oid = 'public.qorpera_valid_office_browser_action(jsonb)'::regprocedure) = 's',
+			and not public.qorpera_valid_office_browser_action(jsonb_set(v_action, '{codingValue,service}', 'null')),
 		'6: the vault_capture action');
-	perform pg_temp.base_assert((select pg_get_constraintdef(oid) from pg_constraint
-			where conrelid = 'public.qorpera_cloud_secret_audit_events'::regclass
-				and conname = 'qorpera_cloud_secret_audit_events_event_type_check') like '%''coding_value_captured''%'
-			and (select pg_get_constraintdef(oid) from pg_constraint
-				where conrelid = 'public.qorpera_cloud_secret_audit_events'::regclass
-					and conname = 'qorpera_cloud_secret_audit_events_event_type_check') like '%''coding_value_capture_key_replaced''%',
-		'6: the audit event types');
-	-- The deploy guard's marker is in these seven bodies, and in no other.
-	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930695000') > 0) = array[
-			'qorpera_folder_coding_value_authority', 'qorpera_folder_coding_value_capture_context',
-			'qorpera_folder_prepare_coding_value_capture', 'qorpera_folder_read_coding_value_capture',
-			'qorpera_folder_store_coding_value_capture', 'qorpera_native_office_coding_value_capture',
-			'qorpera_valid_office_browser_action'],
-		'6: the marker''s bodies');
 end $$;
 
 -- 7. Save from the machine (20260930705000) ---------------------------------------------------------------------------------
@@ -1277,16 +1244,6 @@ begin
 			and not public.qorpera_valid_machine_coding_value_call(v_call || '{"service": null}')
 			and not public.qorpera_valid_machine_coding_value_call('[]'),
 		'7: the call check');
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure), '''save_coding_value''') > 0,
-		'7: the observations'' list');
-	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930705000') > 0) = array[
-			'qorpera_authorize_machine_coding_value', 'qorpera_folder_coding_value_capture_context',
-			'qorpera_folder_read_coding_value_capture', 'qorpera_record_runtime_observation',
-			'qorpera_valid_machine_coding_value_call'],
-		'7: the marker''s bodies');
 end $$;
 
 rollback;

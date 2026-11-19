@@ -9,22 +9,6 @@ begin;
 -- or of another, however many receipts are older than seven days.
 create function pg_temp.ok(p_value boolean,p_message text) returns void language plpgsql as $$
 begin if p_value is distinct from true then raise exception '%',p_message; end if; end $$;
-create function pg_temp.definition() returns text language sql as $$
-	select pg_get_functiondef('public.qorpera_observe_runtime_node_health(jsonb)'::regprocedure) $$;
-
--- 1. The function's clock checks, SECURITY DEFINER, empty search_path and privileges are as before.
-select pg_temp.ok(position(E'v_at>clock_timestamp()+interval \'2 seconds\' or v_at<clock_timestamp()-interval \'60 seconds\''
-	in pg_temp.definition()) > 0,'The observation currentness check changed');
-select pg_temp.ok((select prosecdef and proconfig = array['search_path=""'] and provolatile = 'v'
-	and pg_get_userbyid(proowner) = 'postgres'
-	from pg_proc where oid = 'public.qorpera_observe_runtime_node_health(jsonb)'::regprocedure),
-	'SECURITY DEFINER, search_path, volatility or owner changed');
-select pg_temp.ok(has_function_privilege('service_role','public.qorpera_observe_runtime_node_health(jsonb)','EXECUTE')
-	and not has_function_privilege('anon','public.qorpera_observe_runtime_node_health(jsonb)','EXECUTE')
-	and not has_function_privilege('authenticated','public.qorpera_observe_runtime_node_health(jsonb)','EXECUTE')
-	and not exists(select 1 from pg_proc p,aclexplode(p.proacl) acl
-		where p.oid = 'public.qorpera_observe_runtime_node_health(jsonb)'::regprocedure and acl.grantee = 0),
-	'Execute privileges changed');
 
 -- 2. Two nodes with enrolled policies. Node A: 1100 receipts from eight days ago, one a minute past the
 --    cut, one exactly at it, one a minute inside it and three from yesterday; its latest row names its
@@ -137,6 +121,19 @@ select pg_temp.ok(current_setting('qorpera_test.last_result')::jsonb->>'observat
 		= current_setting('qorpera_test.last_observation')::jsonb->>'observationId'
 	and pg_temp.old('71600000-0000-4000-8000-00000000000a') = 1101
 	and pg_temp.kept('71600000-0000-4000-8000-00000000000a') = 8,'An observation as service_role lost a receipt');
+do $$
+declare v_at timestamptz;
+begin
+	foreach v_at in array array[clock_timestamp() - interval '2 minutes', clock_timestamp() + interval '1 minute'] loop
+		begin
+			perform public.qorpera_observe_runtime_node_health(pg_temp.health('71600000-0000-4000-8000-00000000000a', v_at));
+			raise exception 'An observation that is not current was taken: %', v_at using errcode = 'QT716';
+		exception when invalid_parameter_value then
+			if sqlerrm <> 'Node health observation is not current' then raise; end if;
+		end;
+	end loop;
+end
+$$;
 
 -- 6. Node B was never the calling node: all seven old receipts and its latest row stay.
 select pg_temp.ok(pg_temp.old('71600000-0000-4000-8000-00000000000b') = 7

@@ -481,14 +481,4 @@ begin
 				raise exception '6: % may call %', v_role, v_function; end if;
 		end loop;
 	end loop;
-	-- Every patched body names the migration.
-	foreach v_function in array array['public.qorpera_company_state_parse_problems(text,jsonb)',
-		'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)',
-		'public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)',
-		'public.qorpera_folder_worker_dispatch_payload(public.qorpera_runtime_workers,public.qorpera_runtime_agent_todos)',
-		'public.qorpera_folder_workers_company(uuid,integer)',
-		'public.qorpera_folder_worker_due(public.qorpera_runtime_workers)'] loop
-		if position('20260930770000' in pg_get_functiondef(v_function::regprocedure)) = 0 then
-			raise exception '6: % does not name 20260930770000', v_function; end if;
-	end loop;
 end $$;

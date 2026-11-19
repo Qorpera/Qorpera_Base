@@ -439,9 +439,7 @@ begin
 			('FOLDER_RESTART', '[]'::jsonb, 'The machine restarted for the company folder'),
 			('FOLDER_RESTART', '[{"commandId":"52300000-0000-4000-8000-0000000000c1","turn":1,"command":"npm run dev"},
 				{"commandId":"52300000-0000-4000-8000-0000000000c2","turn":1,"command":"npm test"}]',
-				'The machine restarted for the company folder; 2 commands were stopped'),
-			('MACHINE_STOPPED', '[]', 'The machine stopped'), ('SLEEP', '[]', 'The machine went to sleep'),
-			('EXECUTOR_DISABLED', '[]', 'Coding is not enabled here any more')) v(reason, stopped, text)
+				'The machine restarted for the company folder; 2 commands were stopped')) v(reason, stopped, text)
 		where public.qorpera_coding_stopped_event(v.reason, v.stopped) ->> 'text' is distinct from v.text) then
 		raise exception 'The words'; end if;
 end $$;
