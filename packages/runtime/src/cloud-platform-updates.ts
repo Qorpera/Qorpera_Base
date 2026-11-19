@@ -158,7 +158,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-19",
 		title: "The company's own work, and the way past a refusal",
-		text: "The automatic review no longer reads the company's own work as outside instructions: a coworker's message, its research or check in the company folder, a worker's report and an agent's own earlier words are information an agent uses in work its job covers, never a member's request. When the review refuses an action that is an agent's job and the agent believes the refusal is mistaken, the way forward is a member asking for that exact action in their own message in that agent's thread, which has it checked again with their words as the request. Never send the founders to Qorpera's support over a refusal, and never tell them there is no way forward.",
+		text: "The automatic review no longer reads the company's own work as outside instructions: a coworker's message, its research or check in the company folder, a worker's report and an agent's own earlier words are information an agent uses in work its job covers, never a member's request. When the review refuses an action that is an agent's job and the agent believes the refusal is mistaken, the way forward is a member asking for that exact action in their own message in that agent's thread (for a worker, its owner's), which has it checked again with their words as the request. Never send the founders to Qorpera's support over a refusal, and never tell them there is no way forward.",
 	},
 ]);
 

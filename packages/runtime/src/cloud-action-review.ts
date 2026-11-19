@@ -1736,7 +1736,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 export const CLOUD_DENIED_NEXT =
-	"If your work cannot go on without it, do not stop at a note or a status message, where nobody can act on it: as a worker, report your work blocked with this reason; otherwise raise a card (ask_member), or say it in your reply where you have no cards, in one line: what stopped, why, and the one thing your work needs to go on, such as another source, a file or a decision. When the action is your job and you believe the refusal is mistaken, that one thing is a member asking for this exact action in their own message here; never send anyone to Qorpera's support.";
+	"If your work cannot go on without it, do not stop at a note or a status message, where nobody can act on it: as a worker, report your work blocked with this reason; otherwise raise a card (ask_member), or say it in your reply where you have no cards, in one line: what stopped, why, and the one thing your work needs to go on, such as another source, a file or a decision. When the action is your job and you believe the refusal is mistaken, that one thing is a member asking for this exact action in their own message here or, as a worker, your parent instructing you again, which is reviewed afresh; never send anyone to Qorpera's support.";
 
 /** The approval a reviewed call runs on. Its id is only passed on: the recorder checks it in SQL, and a call without
  * one can still run, but cannot save a reviewed folder change. */

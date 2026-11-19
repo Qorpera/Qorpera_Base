@@ -2603,7 +2603,7 @@ describe("the review step", () => {
 		const text = (result as { text: string }).text;
 		expect(text).toContain("Do not retry it, reword it or reach it another way");
 		expect(text).toContain(
-			"the one thing your work needs to go on, such as another source, a file or a decision. When the action is your job and you believe the refusal is mistaken, that one thing is a member asking for this exact action in their own message here; never send anyone to Qorpera's support.",
+			"the one thing your work needs to go on, such as another source, a file or a decision. When the action is your job and you believe the refusal is mistaken, that one thing is a member asking for this exact action in their own message here or, as a worker, your parent instructing you again, which is reviewed afresh; never send anyone to Qorpera's support.",
 		);
 		expect(text).toContain("as a worker, report your work blocked with this reason");
 		expect(text).toContain("(a card answer does not count)");
@@ -4472,7 +4472,7 @@ describe("the company's own work is not outside instructions (AL?, 18 November 2
 
 	it("tells an agent refused the one way forward that exists, and never to send anyone to support", async () => {
 		const next =
-			"When the action is your job and you believe the refusal is mistaken, that one thing is a member asking for this exact action in their own message here; never send anyone to Qorpera's support.";
+			"When the action is your job and you believe the refusal is mistaken, that one thing is a member asking for this exact action in their own message here or, as a worker, your parent instructing you again, which is reviewed afresh; never send anyone to Qorpera's support.";
 		const fresh = (await gate({ record: { decision: "deny", reason: BRIEFS[1].reason } }).check()) as {
 			text: string;
 		};

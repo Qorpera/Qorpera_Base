@@ -1130,7 +1130,8 @@ a member.
 
 > **Amended 2026-11-19.** For the action review, a coworker's message and the files the company's own agents and
 > members wrote are the company's own work: information, never the request or the mandate, and never outside
-> instructions. See the [inside-work amendment](#2026-11-19-amendment-the-companys-own-work-is-not-outside-instructions).
+> instructions, except for outside text they show they hold (a saved or forwarded email). See the
+> [inside-work amendment](#2026-11-19-amendment-the-companys-own-work-is-not-outside-instructions).
 
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
@@ -7313,9 +7314,14 @@ the founder there was no way forward but Qorpera's support.
    itself is still never shown as the request.
 6. **A denial names the one way forward.** The denial now says that when the action is the agent's job and it believes
    the refusal is mistaken, the one thing its work needs is a member asking for this exact action in their own message
-   in that conversation, and never to send anyone to Qorpera's support. That is the path the kernel has: a denial
-   stands for the identical call in its run and its conversation until a member writes there again (a card answer does
-   not count), and the call is then reviewed afresh, and a retry for the member who asked waits on a card. Its
+   in that conversation or, for a worker, its parent instructing it again, which is reviewed afresh; and never to send
+   anyone to Qorpera's support. That is the path the kernel has: a denial stands for the identical call in its run and
+   its conversation until a member writes there again (a card answer does not count), and the call is then reviewed
+   afresh, and a retry for the member who asked waits on a card. A worker has no conversation of its own: the
+   reviewer's denial stands for its run alone, its blocked report wakes its parent, and the parent's follow-up is
+   reviewed and starts a new worker run whose calls are reviewed afresh, carrying on the parent's request; when the
+   parent's own instruction is refused, a member's message in the parent's thread makes its next instruction requested,
+   and the worker's run carries that message on as its request. Its
    sentence that a card's answer never lets the agent repeat the action goes: the denial's last sentence already says
    so. Not retrying, rewording or reaching it another way stands.
 
