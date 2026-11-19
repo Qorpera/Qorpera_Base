@@ -573,6 +573,52 @@ describe("a Claude Code worker's run", () => {
 		await rm(runRoot, { recursive: true });
 	});
 
+	it("never puts another Claude login's files in place of the one the run started on", async () => {
+		const v = vault();
+		const other = "22222222-2222-4222-8222-222222222222";
+		const opened = v.logins.open;
+		let asked = 0;
+		const logins: ClaudeWorkerLogins = {
+			open: async (signal, knownVersion) => {
+				const answer = await opened(signal, knownVersion);
+				if (knownVersion === undefined || !("files" in answer)) return answer;
+				asked += 1;
+				return { ...answer, claudeLoginId: other };
+			},
+		};
+		let seen: string | undefined;
+		const box = standInBox([init(), use("t1", "Bash", { command: "long" })], async (folder) => {
+			v.renew("other-login-2");
+			for (let i = 0; i < 400 && asked < 3; i++) await new Promise((r) => setTimeout(r, 5));
+			seen = sha(await readFile(join(folder, ".credentials.json")));
+		});
+		const runRoot = await root();
+		const outcome = await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins,
+			launch: async (options) => {
+				const started = await box.launch(options);
+				return {
+					...started,
+					lines: (async function* () {
+						for await (const line of started.lines) yield line;
+						yield answer("t1");
+						yield result("Done.");
+					})(),
+				};
+			},
+			root: runRoot,
+			signal: new AbortController().signal,
+			refreshMs: 5,
+		});
+		expect(asked).toBeGreaterThanOrEqual(3);
+		expect(seen).toBe(sha(credentials("v1")));
+		expect(outcome).toMatchObject({ outcome: "succeeded", login: { refreshed: 0 } });
+		for (const bytes of v.state.openedBuffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
+		await rm(runRoot, { recursive: true });
+	});
+
 	it("keeps the copy it has when the vault cannot be asked, and stops asking once the login is refused", async () => {
 		const v = vault();
 		const open = v.logins.open;

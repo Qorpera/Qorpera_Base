@@ -359,14 +359,16 @@ async function openWhenRenewed(
 class ClaudeWorkerLoginRefresher {
 	readonly #logins: ClaudeWorkerLogins;
 	readonly #folder: string;
+	readonly #loginId: string;
 	#version: number;
 	refreshed = 0;
 	ended = false;
 
-	constructor(logins: ClaudeWorkerLogins, folder: string, version: number) {
+	constructor(logins: ClaudeWorkerLogins, folder: string, opened: ClaudeWorkerOpenedLogin) {
 		this.#logins = logins;
 		this.#folder = folder;
-		this.#version = version;
+		this.#loginId = opened.claudeLoginId;
+		this.#version = opened.version;
 	}
 
 	async refresh(signal: AbortSignal): Promise<void> {
@@ -379,7 +381,8 @@ class ClaudeWorkerLoginRefresher {
 		if ("current" in next) return;
 		try {
 			const credentials = next.files.get(".credentials.json");
-			if (!credentials || next.version <= this.#version) return;
+			// WHY: a run keeps the Claude login it started on; another login's files never replace its own.
+			if (!credentials || next.claudeLoginId !== this.#loginId || next.version <= this.#version) return;
 			const staged = join(this.#folder, ".credentials.json.qorpera-next");
 			await rm(staged, { force: true });
 			await writeFile(staged, credentials, { mode: 0o600, flag: "wx" });
@@ -511,7 +514,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			} finally {
 				for (const bytes of login.files.values()) bytes.fill(0);
 			}
-			refresher = new ClaudeWorkerLoginRefresher(options.logins, folder, login.version);
+			refresher = new ClaudeWorkerLoginRefresher(options.logins, folder, login);
 			try {
 				box = await options.launch({
 					scratchRoot: scratchRoot as string,

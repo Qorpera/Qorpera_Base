@@ -686,7 +686,7 @@ describe("the vault's database calls, its route and its upkeep", () => {
 		};
 	}
 
-	it("calls migration 790000's functions with their arguments in order", async () => {
+	it("calls migration 810000's functions with their arguments in order", async () => {
 		const { queries, database } = recording();
 		const principalId = randomUUID();
 		const principal = new PostgresCloudSecretBrokerPrincipal({
