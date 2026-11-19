@@ -447,6 +447,7 @@ export class ComputerScene {
 		// The dock has no colour of its own: once the screen is on, its date and time stand on the hour's ground.
 		this.el.style.setProperty("--computer-scene-date-ink", DOCK_INK[hour.tone].date);
 		this.el.style.setProperty("--computer-scene-time-ink", DOCK_INK[hour.tone].time);
+		this.el.dataset.tone = hour.tone;
 		const flatOn = svg("svg", {
 			class: "computer-scene-flat is-on",
 			viewBox: "560 200 800 800",

@@ -107,4 +107,5 @@
    2026). Not while the words are the scene's own strip (`.is-scene`): the scene's lit phases (starting, screen) draw
    a light desktop by day, and keep the picture's ink (review r1 of #1801). */
 .computer-panel:has(.computer-scene:not([hidden]):is([data-phase=off], [data-phase=asleep], [data-phase=waking])),
+.computer-panel:has(.computer-scene:not([hidden])[data-tone=dark]),
 .computer-panel:has(.computer-loading:not([hidden], .is-scene)) { --computer-hover-ink: #e9ebf0; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: none; --computer-hover-button-bg: rgb(255 255 255 / 14%); }
