@@ -129,6 +129,9 @@ export const SETTINGS: Record<string, string> = {
 	Decline: "Afvis",
 	"Search friends, or type an email to add someone": "Søg efter venner, eller skriv en e-mail for at tilføje nogen",
 	"Company invitations": "Invitationer til virksomheder",
+	"{name} invited you as a spectator · no subscription needed":
+		"{name} har inviteret dig som tilskuer · intet abonnement",
+	"Invited as a spectator · no subscription needed": "Inviteret som tilskuer · intet abonnement",
 	"Requests for you": "Anmodninger til dig",
 	"asked {date}": "modtaget {date}",
 	Sent: "Sendt",
@@ -164,6 +167,7 @@ export const SETTINGS: Record<string, string> = {
 	"Make someone else a founder before you leave.": "Gør en anden til stifter, før du forlader virksomheden.",
 	"Company setup must finish before you can leave.": "Virksomheden skal være sat op, før du kan forlade den.",
 	Building: "Bygger",
+	Spectator: "Tilskuer",
 	"Remove {name} from {company}?": "Fjern {name} fra {company}?",
 	"{name} was removed.": "{name} blev fjernet.",
 	"Invited · email failed": "Inviteret · e-mail mislykkedes",
@@ -676,6 +680,15 @@ export const SETTINGS: Record<string, string> = {
 	"Add a company logo": "Tilføj et logo",
 	Brand: "Brand",
 	"Change the company logo": "Skift logoet",
+	"Rename the company": "Omdøb virksomheden",
+	"The company's vision could not be read.": "Virksomhedens vision kunne ikke læses.",
+	"Only someone who may change the company's files can rename it.":
+		"Kun en, der må ændre virksomhedens filer, kan omdøbe den.",
+	"The name was not accepted.": "Navnet blev ikke godtaget.",
+	"Try again.": "Prøv igen.",
+	"The vision kept changing while it was saved. Try again.":
+		"Visionen blev ved med at ændre sig, mens den blev gemt. Prøv igen.",
+	"The name could not be saved.": "Navnet kunne ikke gemmes.",
 	"Choose a new logo": "Vælg et nyt logo",
 	"Company logo": "Virksomhedens logo",
 	"Remove logo": "Fjern logo",

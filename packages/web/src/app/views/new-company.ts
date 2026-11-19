@@ -1,10 +1,22 @@
 import { FOUNDING_NAME_MAX_CHARACTERS } from "../../cloud/company-founding.ts";
+import type { HostedFriend } from "../../cloud/types.ts";
 import { companyInSentence, UNNAMED_COMPANY } from "../../ui/company-name.ts";
-import { button, growToText, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
+import { button, growToText, h, icon, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { IDEA_MAX_CHARACTERS } from "../router.ts";
 import type { HubController } from "./hub.ts";
 import { cheerStartCrown, claimStartCrown } from "./start-crown.ts";
+
+type GuestRole = "founder" | "spectator";
+
+interface Guest {
+	name: string;
+	email: string;
+	userId?: string;
+	role: GuestRole;
+}
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export interface Viewer {
 	userId: string;
@@ -66,6 +78,16 @@ class NewCompanyView {
 	readonly #go: HTMLButtonElement;
 	readonly #invite: HTMLButtonElement;
 	readonly #inviteFace = h("span", { class: "hero-invite-face" });
+	readonly #inviteLabel = h("span", null, t("Invite friends"));
+	readonly #sheet = h("div", {
+		class: "hero-invite-sheet",
+		role: "dialog",
+		"aria-label": t("Invite people"),
+		hidden: true,
+	});
+	#guests = new Map<string, Guest>();
+	#friends: HostedFriend[] | undefined;
+	#friendsFailed = false;
 	readonly #status = h("div", { class: "hero-status" });
 	readonly #invitations = h("div", { class: "hero-invitations" });
 	/** qorpera.com's idea, while the box still holds it. */
@@ -119,10 +141,10 @@ class NewCompanyView {
 		);
 		this.#invite = h(
 			"button",
-			{ type: "button", class: "hero-invite", onclick: () => this.#withFriends() },
+			{ type: "button", class: "hero-invite", "aria-expanded": "false", onclick: () => this.#toggleSheet() },
 			this.#inviteFace,
 			h("span", { class: "hero-plus", "aria-hidden": "true" }, icon("plus")),
-			t("Invite friends"),
+			this.#inviteLabel,
 		);
 		this.el = h(
 			"div",
@@ -140,6 +162,7 @@ class NewCompanyView {
 				this.#from,
 				h("div", { class: "hero-idea-row" }, this.#idea),
 				h("div", { class: "hero-row" }, this.#invite, this.#go),
+				this.#sheet,
 			),
 			this.#status,
 			this.#invitations,
@@ -170,6 +193,9 @@ class NewCompanyView {
 		this.#name.value = other.#name.value;
 		this.#carried = other.#carried;
 		if (document.activeElement === other.#idea) this.#caret = caretOf(other.#idea);
+		this.#guests = new Map(other.#guests);
+		this.#friends = other.#friends;
+		this.#guestsChanged();
 		this.#changed();
 	}
 
@@ -241,26 +267,178 @@ class NewCompanyView {
 
 	#start(): void {
 		const idea = this.#idea.value.trim();
+		const guests = [...this.#guests.values()];
+		const founders = guests.flatMap((guest) => (guest.role === "founder" && guest.userId ? [guest.userId] : []));
+		const spectators = guests.filter((guest) => guest.role === "spectator").map((guest) => guest.email);
+		if (founders.length) {
+			this.#toggleSheet(false);
+			void this.#hub.startFromIdea(idea, "friends", this.#name.value, { founders, spectators });
+			return;
+		}
 		if (!idea) {
 			this.#idea.focus();
 			return;
 		}
+		this.#toggleSheet(false);
 		cheerStartCrown();
-		void this.#hub.startFromIdea(idea, "start", this.#name.value);
+		void this.#hub.startFromIdea(idea, "start", this.#name.value, { spectators });
 	}
 
-	#withFriends(): void {
-		void this.#hub.startFromIdea(this.#idea.value.trim(), "friends", this.#name.value);
+	#toggleSheet(open = this.#sheet.hidden): void {
+		this.#sheet.hidden = !open;
+		this.#invite.setAttribute("aria-expanded", String(open));
+		if (open && this.#friends === undefined) void this.#loadFriends();
+		this.#drawSheet();
 	}
 
-	/** A table opened with this idea (from the arrow, Invite friends or Resume): the box starts empty, so the next
-	 * company's idea is never written after this one's. */
+	async #loadFriends(): Promise<void> {
+		try {
+			this.#friends = await this.#hub.friends();
+		} catch {
+			this.#friends = [];
+			this.#friendsFailed = true;
+		}
+		this.#drawSheet();
+	}
+
+	#choose(friend: HostedFriend, role: GuestRole): void {
+		if (this.#guests.get(friend.userId)?.role === role) this.#guests.delete(friend.userId);
+		else
+			this.#guests.set(friend.userId, {
+				name: friend.displayName || friend.email,
+				email: friend.email,
+				userId: friend.userId,
+				role,
+			});
+		this.#guestsChanged();
+	}
+
+	#addEmail(input: HTMLInputElement): void {
+		const email = input.value.trim().toLowerCase();
+		if (!EMAIL.test(email)) {
+			input.focus();
+			return;
+		}
+		this.#guests.set(email, { name: email, email, role: "spectator" });
+		this.#guestsChanged();
+		this.#sheet.querySelector<HTMLInputElement>(".hero-invite-email")?.focus();
+	}
+
+	#guestsChanged(): void {
+		const count = this.#guests.size;
+		this.#inviteLabel.textContent = count ? t("{count} invited", { count }) : t("Invite friends");
+		this.#drawSheet();
+	}
+
+	#drawSheet(): void {
+		if (this.#sheet.hidden) return;
+		const email: HTMLInputElement = h("input", {
+			type: "email",
+			class: "hero-invite-email",
+			placeholder: t("Add someone by email"),
+			"aria-label": t("Email"),
+			onkeydown: (event: KeyboardEvent) => {
+				if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+				event.preventDefault();
+				this.#addEmail(email);
+			},
+		});
+		const friends = this.#friends;
+		const emailed = [...this.#guests.values()].filter((guest) => !guest.userId);
+		replace(
+			this.#sheet,
+			h("p", { class: "hero-invite-title" }, t("Invite people")),
+			...(friends === undefined
+				? [h("p", { class: "hero-invite-note" }, t("Loading your friends"))]
+				: friends.map((friend) => this.#friendRow(friend))),
+			...emailed.map((guest) => this.#emailRow(guest)),
+			this.#friendsFailed ? h("p", { class: "hero-invite-note" }, t("Your friends could not be read.")) : null,
+			h(
+				"div",
+				{ class: "hero-invite-add" },
+				email,
+				button(t("Add as spectator"), () => this.#addEmail(email), { small: true }),
+			),
+			h(
+				"div",
+				{ class: "hero-invite-foot" },
+				button(t("Done"), () => this.#toggleSheet(false), { primary: true, small: true }),
+			),
+		);
+	}
+
+	#friendRow(friend: HostedFriend): HTMLElement {
+		const name = friend.displayName || friend.email;
+		const role = this.#guests.get(friend.userId)?.role;
+		const choice = (option: GuestRole, label: string) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: "hero-invite-role",
+					"aria-pressed": String(role === option),
+					onclick: () => this.#choose(friend, option),
+				},
+				label,
+			);
+		return h(
+			"div",
+			{ class: "hero-invite-person" },
+			personAvatar(name, friend.userId),
+			h(
+				"div",
+				{ class: "hero-invite-who" },
+				h("strong", null, name),
+				h(
+					"small",
+					null,
+					role === "founder"
+						? t("Builds with you, on their own subscription.")
+						: role === "spectator"
+							? t("Follows the chats. No subscription.")
+							: friend.email,
+				),
+			),
+			h(
+				"div",
+				{ class: "hero-invite-roles", role: "group", "aria-label": t("Role for {name}", { name }) },
+				choice("founder", t("Founder")),
+				choice("spectator", t("Spectator")),
+			),
+		);
+	}
+
+	#emailRow(guest: Guest): HTMLElement {
+		return h(
+			"div",
+			{ class: "hero-invite-person" },
+			personAvatar(guest.email, guest.email),
+			h(
+				"div",
+				{ class: "hero-invite-who" },
+				h("strong", null, guest.email),
+				h("small", null, t("Follows the chats. No subscription.")),
+			),
+			button(
+				t("Remove"),
+				() => {
+					this.#guests.delete(guest.email);
+					this.#guestsChanged();
+				},
+				{ small: true },
+			),
+		);
+	}
+
 	#opened(idea: string): void {
 		if (this.#idea.value.trim() !== idea.trim()) return;
 		this.#refocus = false;
 		this.#idea.value = "";
 		this.#name.value = "";
 		this.#carried = undefined;
+		this.#guests.clear();
+		this.#toggleSheet(false);
+		this.#guestsChanged();
 		this.#changed();
 	}
 

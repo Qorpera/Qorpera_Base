@@ -34,6 +34,7 @@
 	animation: founding-start-sweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 .founding-starting .founding-sub { margin-top: 28px; }
+.founding-pending { margin: 0; color: var(--text-muted); font-size: 14px; text-align: center; }
 .founding-start-founders { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 26px; }
 .founding-start-founders p { margin: 0; color: var(--text-muted); font-size: 15px; }
 .founding-start-faces { display: inline-flex; }

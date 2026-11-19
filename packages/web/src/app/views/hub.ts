@@ -6,7 +6,12 @@ import {
 	type FoundingTableEntry,
 } from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
-import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
+import type {
+	HostedFriend,
+	HostedIncomingProfileInvitation,
+	HostedProfile,
+	HostedProfileRole,
+} from "../../cloud/types.ts";
 import {
 	companyDisplayName,
 	companyInSentence,
@@ -31,13 +36,20 @@ import { renderNewCompany, type Viewer } from "./new-company.ts";
  * switched the lobby off, creating a company is paused. There is no local company list — the cloud is
  * the only registry. */
 
+const RENAME_SETTLE_WAITS_MS = [1500, 2500, 4000, 8000, 15000, 30000];
+
 /** A role as the hub names it; the English is the role's own word. */
 const ROLE_LABELS: Record<HostedProfileRole, string> = {
 	owner: phrase("founder"),
 	admin: phrase("admin"),
 	contributor: phrase("contributor"),
-	viewer: phrase("viewer"),
+	viewer: phrase("spectator"),
 };
+
+export interface Guests {
+	founders?: readonly string[];
+	spectators?: readonly string[];
+}
 
 /** What the new-company box asked for: open the table and start from there, or invite friends first. */
 export type CreationIntent = "start" | "friends";
@@ -46,6 +58,8 @@ export interface CreationOptions {
 	/** The idea: the table's first text, which the founders write on together. */
 	vision?: string;
 	intent?: CreationIntent;
+	founders?: readonly string[];
+	spectators?: readonly string[];
 }
 
 /** A table being opened, kept across a reload so a retry reuses its creation id. */
@@ -91,6 +105,7 @@ export class HubController {
 	#refresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: Creation | undefined;
+	readonly #renames = new Map<string, { name: string; stale: Set<string>; staleKnown: boolean }>();
 
 	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
@@ -116,11 +131,15 @@ export class HubController {
 				const vision = "vision" in saved && typeof saved.vision === "string" ? saved.vision : undefined;
 				const intent =
 					"intent" in saved && (saved.intent === "start" || saved.intent === "friends") ? saved.intent : undefined;
+				const founders = "founders" in saved ? texts(saved.founders) : [];
+				const spectators = "spectators" in saved ? texts(saved.spectators) : [];
 				this.#creation = {
 					name: saved.name.trim(),
 					clientCreationId: saved.clientCreationId,
 					...(vision ? { vision } : {}),
 					...(intent ? { intent } : {}),
+					...(founders.length ? { founders } : {}),
+					...(spectators.length ? { spectators } : {}),
 				};
 				this.store.set({ creationRetry: this.#creation });
 			} else if (saved !== null && this.#creationKey) sessionStorage.removeItem(this.#creationKey);
@@ -148,6 +167,49 @@ export class HubController {
 		if (this.#disposed) return;
 		await this.#refresh;
 		await this.refresh();
+	}
+
+	renamed(profileId: string, name: string): void {
+		if (this.#disposed) return;
+		const earlier = this.#renames.get(profileId);
+		const shown = this.store.get().profiles.find((profile) => profile.profileId === profileId)?.profileName;
+		const stale = new Set(earlier?.stale);
+		if (earlier) stale.add(earlier.name);
+		else if (shown !== undefined) stale.add(shown);
+		stale.delete(name);
+		this.#renames.set(profileId, { name, stale, staleKnown: earlier?.staleKnown ?? shown !== undefined });
+		this.store.set(({ profiles }) => ({ profiles: this.#withRenames(profiles) }));
+		void this.#settleRename(profileId, name);
+	}
+
+	#withRenames(profiles: HostedProfile[]): HostedProfile[] {
+		if (!this.#renames.size) return profiles;
+		return profiles.map((profile) => {
+			const rename = this.#renames.get(profile.profileId);
+			if (!rename) return profile;
+			if (profile.profileName === rename.name) {
+				this.#renames.delete(profile.profileId);
+				return profile;
+			}
+			if (!rename.staleKnown) {
+				rename.stale.add(profile.profileName);
+				rename.staleKnown = true;
+			}
+			if (!rename.stale.has(profile.profileName)) {
+				this.#renames.delete(profile.profileId);
+				return profile;
+			}
+			return { ...profile, profileName: rename.name };
+		});
+	}
+
+	async #settleRename(profileId: string, name: string): Promise<void> {
+		for (const wait of RENAME_SETTLE_WAITS_MS) {
+			await new Promise((resolve) => setTimeout(resolve, wait));
+			if (this.#disposed || this.#renames.get(profileId)?.name !== name) return;
+			await this.refreshAfter();
+			if (this.#renames.get(profileId)?.name !== name) return;
+		}
 	}
 
 	async companyRemoved(profileId: string): Promise<void> {
@@ -198,7 +260,7 @@ export class HubController {
 			]);
 			if (revision === this.#membershipRevision)
 				this.store.set({
-					profiles,
+					profiles: this.#withRenames(profiles),
 					invitations,
 					...founding,
 					loading: false,
@@ -275,7 +337,7 @@ export class HubController {
 		}
 	}
 
-	startFromIdea(idea: string, intent: CreationIntent, name = ""): Promise<boolean> {
+	startFromIdea(idea: string, intent: CreationIntent, name = "", guests: Guests = {}): Promise<boolean> {
 		const vision = idea.trim();
 		const typed = name
 			.replace(/\p{Cc}/gu, " ")
@@ -283,7 +345,16 @@ export class HubController {
 			.trim()
 			.slice(0, FOUNDING_NAME_MAX_CHARACTERS)
 			.trim();
-		return this.createCompany(typed, { ...(vision ? { vision } : {}), intent });
+		return this.createCompany(typed, {
+			...(vision ? { vision } : {}),
+			intent,
+			...(guests.founders?.length ? { founders: guests.founders } : {}),
+			...(guests.spectators?.length ? { spectators: guests.spectators } : {}),
+		});
+	}
+
+	async friends(): Promise<HostedFriend[]> {
+		return (await this.#api.listFriends()).filter((friend) => friend.status === "accepted");
 	}
 
 	async createCompany(name: string, options: CreationOptions = {}): Promise<boolean> {
@@ -297,6 +368,8 @@ export class HubController {
 		const wanted: CreationOptions = {
 			...(options.vision ? { vision: options.vision } : {}),
 			...(options.intent ? { intent: options.intent } : {}),
+			...(options.founders?.length ? { founders: options.founders } : {}),
+			...(options.spectators?.length ? { spectators: options.spectators } : {}),
 		};
 		this.store.set({ creating: { name: trimmed, clientCreationId: "", ...wanted }, error: undefined });
 		// Asked every time, never taken from an older read: the cloud may have switched the lobby on or off since.
@@ -358,6 +431,8 @@ export class HubController {
 				...(creation.intent === "friends" ? { friends: true } : {}),
 				...(creation.intent === "start" ? { start: true } : {}),
 				...(pending ? { vision: pending } : {}),
+				...(creation.founders?.length ? { founders: [...creation.founders] } : {}),
+				...(creation.spectators?.length ? { spectators: [...creation.spectators] } : {}),
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 			return true;
@@ -618,4 +693,10 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 			),
 		),
 	);
+}
+
+function texts(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+		: [];
 }

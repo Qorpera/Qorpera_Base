@@ -645,6 +645,7 @@ export class CompanyController {
 	#connectedBefore = false;
 	/** This member's time zone was handed in for the company, which had none (#offerTimeZone): once, whatever came of it. */
 	#timeZoneOffered = false;
+	#spectatorsInvited = false;
 	/** The cloud has no newest-first transcript read (before 20260928279410): threads read forward. */
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
@@ -1037,6 +1038,7 @@ export class CompanyController {
 				.join(" ");
 			this.store.set({ team, accessLost: false });
 			void this.#offerTimeZone(team);
+			void this.#invitePendingSpectators(team);
 			this.#joinPresence();
 			// Someone joined or left: the member chats are theirs too. (The first read comes with refreshAll.)
 			if (before !== undefined && before !== team.members.map((member) => member.userId).join(" "))
@@ -1071,6 +1073,22 @@ export class CompanyController {
 					}));
 				this.stop();
 			} else if (!this.#lost(error)) this.store.set({ error: describeError(error) });
+		}
+	}
+
+	async #invitePendingSpectators(team: HostedProfileTeam): Promise<void> {
+		if (this.#spectatorsInvited || !team.capabilities.manageMembers) return;
+		this.#spectatorsInvited = true;
+		try {
+			const invited = await this.#api.invitePendingSpectators(this.profile.profileId);
+			if (!this.#stopped && invited.length) void this.refreshTeam();
+		} catch (error) {
+			if (this.#stopped || (error instanceof CloudRpcError && error.missing)) return;
+			this.store.set({
+				error: t(
+					"The spectators picked for this company could not be invited yet. Opening it again tries once more.",
+				),
+			});
 		}
 	}
 
