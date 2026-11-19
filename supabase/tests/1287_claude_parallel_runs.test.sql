@@ -360,7 +360,7 @@ begin
 		= '12870000-0000-4000-8000-0000000000c3', '7: after the member''s switch new work takes the login In use');
 	update public.qorpera_runtime_workers set claude_login_id = '12870000-0000-4000-8000-0000000000c3'
 	where id = (pg_temp.p_worker(6)).id;
-	update public.qorpera_claude_logins set checked_at = clock_timestamp() - interval '1 hour'
+	update public.qorpera_claude_logins set checked_at = clock_timestamp() - interval '1 hour', failed_at = null, failures = 0
 	where id in ('12870000-0000-4000-8000-0000000000c1', '12870000-0000-4000-8000-0000000000c3');
 end $$;
 
