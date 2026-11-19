@@ -193,7 +193,8 @@ async function setup() {
 				!String(url).endsWith("/qorpera_select_member_session_account") &&
 				!String(url).endsWith("/qorpera_get_native_account_refresh") &&
 				!String(url).endsWith("/qorpera_begin_native_account_refresh") &&
-				!String(url).endsWith("/qorpera_list_member_native_execution_connections"),
+				!String(url).endsWith("/qorpera_list_member_native_execution_connections") &&
+				!String(url).endsWith("/qorpera_list_claude_logins"),
 		);
 	return { ...f, root, fetcher, requests };
 }

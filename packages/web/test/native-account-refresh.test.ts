@@ -484,9 +484,14 @@ describe("Claude reads and resets", () => {
 				status: "pending",
 			}),
 		);
-		expect(await f.client.readClaude!({ force: true })).toBe(id(120));
+		expect(await f.client.readClaude!({ loginId: id(130), force: true })).toBe(id(120));
 		expect(f.begins).toHaveLength(1);
-		expect(f.begins[0]).toMatchObject({ p_profile_id: profileA.profileId, p_force: true, p_reset_kind: null });
+		expect(f.begins[0]).toMatchObject({
+			p_profile_id: profileA.profileId,
+			p_claude_login_id: id(130),
+			p_force: true,
+			p_reset_kind: null,
+		});
 		expect(f.begins[0]!.p_capability_sha256).toMatch(/^[0-9a-f]{64}$/);
 		expect(f.posts).toHaveLength(2);
 		const bearer = f.posts[0]!.headers.get("authorization")!.slice("Bearer ".length);
@@ -509,8 +514,8 @@ describe("Claude reads and resets", () => {
 				status: "completed",
 			}),
 		);
-		expect(await f.client.readClaude!({})).toBe(id(121));
-		expect(f.begins[0]).toMatchObject({ p_force: false, p_reset_kind: null });
+		expect(await f.client.readClaude!({ loginId: id(131) })).toBe(id(121));
+		expect(f.begins[0]).toMatchObject({ p_claude_login_id: id(131), p_force: false, p_reset_kind: null });
 		expect(f.posts).toEqual([]);
 	});
 
@@ -528,12 +533,14 @@ describe("Claude reads and resets", () => {
 				? Response.json({ code: "55000", message: "Account refresh already in progress" }, { status: 400 })
 				: Response.json(pending),
 		);
-		expect(await busy.client.readClaude!({ reset: "full" })).toBe(id(122));
+		expect(await busy.client.readClaude!({ loginId: id(130), reset: "full" })).toBe(id(122));
 		expect(busy.begins.map((body) => body.p_reset_kind)).toEqual(["full", "full"]);
 		const refused = claudeSetup(() =>
 			Response.json({ code: "55000", message: "No such Claude reset to use" }, { status: 400 }),
 		);
-		await expect(refused.client.readClaude!({ reset: "session" })).rejects.toBeInstanceOf(ClaudeReadNotStarted);
+		await expect(refused.client.readClaude!({ loginId: id(130), reset: "session" })).rejects.toBeInstanceOf(
+			ClaudeReadNotStarted,
+		);
 		expect(refused.begins).toHaveLength(1);
 		expect(refused.posts).toEqual([]);
 	});
@@ -593,5 +600,56 @@ describe("Claude reads and resets", () => {
 		expect(bad.logins[0]).not.toHaveProperty("usage");
 		expect(bad.logins[0]).not.toHaveProperty("resets");
 		expect(bad.logins[0]).not.toHaveProperty("lastReset");
+	});
+
+	it("lists which Claude login is In use and until when one is used up, picks one and signs out naming the next", async () => {
+		const f = fixture();
+		const base = { clientConnectionId: id(98), createdAt: timestamp, providerAccountEmail: "work@example.com" };
+		const calls: { url: string; body: Record<string, unknown> }[] = [];
+		const answers: unknown[] = [
+			{
+				schema: "qorpera.claude-logins/v1",
+				signInOpen: true,
+				readable: true,
+				logins: [
+					{ ...base, loginId: id(97), inUse: true, usedUpUntil: "2026-11-18T20:28:00Z" },
+					{ ...base, loginId: id(96), inUse: false, usedUpUntil: null },
+				],
+			},
+			{
+				schema: "qorpera.claude-logins/v1",
+				signInOpen: true,
+				logins: [{ ...base, loginId: id(97), usedUpUntil: "soon" }],
+			},
+			{ schema: "qorpera.claude-login-use/v1", loginId: id(96), logins: [] },
+			{ schema: "qorpera.claude-login-sign-out/v1", loginId: id(97), status: "revoked" },
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: RequestInit) => {
+				calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+				return Response.json(answers.shift());
+			}),
+		);
+		const client = createWebNativeSubscription(
+			f.cloud,
+			profileA.profileId,
+			userA.id,
+			new AbortController().signal,
+			vi.fn(),
+		);
+		const listed = await client.listClaudeLogins!();
+		expect(listed.logins.map((login) => [login.inUse ?? false, login.usedUpUntil])).toEqual([
+			[true, "2026-11-18T20:28:00Z"],
+			[false, undefined],
+		]);
+		await expect(client.listClaudeLogins!()).rejects.toThrow("Invalid cloud response");
+		await client.useClaude!(id(96));
+		await client.signOutClaude!(id(97), undefined, id(96));
+		expect(calls.slice(2).map((call) => [call.url.split("/rpc/")[1], call.body])).toEqual([
+			["qorpera_use_claude_login", { p_login_id: id(96) }],
+			["qorpera_sign_out_claude_login", { p_login_id: id(97), p_next_login_id: id(96) }],
+		]);
+		await expect(client.signOutClaude!(id(97), undefined, "not-a-login")).rejects.toThrow("Invalid Claude login.");
 	});
 });
