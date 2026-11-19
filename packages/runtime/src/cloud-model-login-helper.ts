@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
+import type { ClaudeLoginRead, ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import {
 	CLAUDE_LOGIN_CHECK_REQUEST_SCHEMA,
 	CLAUDE_LOGIN_CHECK_SCHEMA,
@@ -11,7 +12,6 @@ import {
 	claudeLoginCheckFiles,
 	parseClaudeLoginCheck,
 } from "./cloud-claude-login-renewal.ts";
-import type { ClaudeLoginRead, ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import {
 	CLAUDE_RESET_KINDS,
 	type ClaudeLoginResets,
