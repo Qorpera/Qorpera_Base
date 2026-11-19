@@ -7,20 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929025199_runtime_bundle_activation_v251.sql";
-const activationVersion = 251;
-const previousActivationVersion = 250;
-const previousActivationSha256 = "78618f12bdb6cb3c275809c9c55d13e3877dfa374c62ab14bcd5a501b1f1e097";
+const activation = "supabase/migrations/20260929025999_runtime_bundle_activation_v259.sql";
+const activationVersion = 259;
+const previousActivationVersion = 258;
+const previousActivationSha256 = "f2741acd0a00d6faf6fa9b9911675088e146fb566dcb99247c7de97187efe321";
 const activationRequires = Object.freeze([
 	[
-		"20260930779000_member_folder_may_write",
-		"the Data list (slice 10 part a, on master): a member's write check for the Data app; the member bridge's rows, edit and changes routes reach the data gateway, which asks it",
-		"to_regprocedure('public.qorpera_member_folder_may_write(uuid,text)') is not null",
-	],
-	[
-		"20260930782000_interface_page_data",
-		"the Data list (slice 10 part e, on master): the page data in the platform's page lists; the web shows the Data page only once the platform lists it",
-		"exists (select 1 from pg_catalog.pg_constraint where conname = 'qorpera_interface_pages_page_check' and pg_catalog.pg_get_constraintdef(oid) like '%''data''%')",
+		"20260930804000_several_claude_logins",
+		"#1947 (several Claude logins): bundle 259's run host records which limit refused a Claude Code run (limitType, Claude Code's rateLimitType) next to limitResetAt; qorpera_claude_usage_valid accepts that key only once 804000 applied, and without it the run's usage is refused and not recorded",
+		"position('limitType' in coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_claude_usage_valid(jsonb)')), '')) > 0 and to_regprocedure('public.qorpera_use_claude_login(uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

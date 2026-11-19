@@ -15,6 +15,7 @@ import type {
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { HostedFriend } from "../cloud/types.ts";
+import { isUnnamed } from "../ui/company-name.ts";
 import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 import { ConnectionsView, memberProviderSignIns } from "./views/settings-connections.ts";
@@ -26,6 +27,7 @@ import { ConnectionsView, memberProviderSignIns } from "./views/settings-connect
 const POLL_MS = 2500;
 /** While the ChatGPT panel is open, a finished sign-in turns into Ready sooner. */
 const CONNECT_POLL_MS = 1500;
+const CONNECT_GRACE_MS = 8000;
 /** After the company is made, the table is read a little longer while the Co-Founder's first run is queued, so a
  * first run that fails (or starts) is shown; never past this. */
 const FIRST_RUN_WATCH_MS = 120_000;
@@ -195,6 +197,8 @@ export class FoundingController {
 	/** The company starts by itself (FoundingState.autoStart), and its start is under way. */
 	#autoStart = false;
 	#autoStarting = false;
+	readonly #openedAt = Date.now();
+	#waitingForLogin = false;
 	/** The page's check for words in its fields that the table on the server does not have (FoundingView). */
 	#unsaved: (() => boolean) | undefined;
 	// Live presence: this tab on the table's topic, the other tabs there, and what each of them writes.
@@ -290,7 +294,7 @@ export class FoundingController {
 				if (document.hidden) this.#schedule();
 				else void this.refresh();
 			},
-			connectOpen ? CONNECT_POLL_MS : POLL_MS,
+			connectOpen || this.#waitingForLogin ? CONNECT_POLL_MS : POLL_MS,
 		);
 	}
 
@@ -392,16 +396,21 @@ export class FoundingController {
 			return;
 		}
 		if (!mine.modelLoginReady) {
-			if (!this.store.get().connectOpen) this.openConnect(true);
+			// WHY: an account login is linked into a new company by the vault a few seconds after it is made (2 s on
+			// 16 Nov 2026), so the first reads say "not connected" for a member who is.
+			this.#waitingForLogin = Date.now() - this.#openedAt < CONNECT_GRACE_MS;
+			if (!this.#waitingForLogin && !this.store.get().connectOpen) this.openConnect(true);
 			return;
 		}
+		this.#waitingForLogin = false;
 		this.#autoStarting = true;
 		// Started, or not: either way it is over (a start that failed leaves the table, with what went wrong). An
 		// invitation sent from another tab while Ready was out does not move the revision, and Start would withdraw
 		// it: the table Ready answered with must still be yours alone.
 		void this.startAlone(table.revision, (now) => now.seats.length === 1).then(() => {
 			this.#autoStarting = false;
-			if (!this.disposed) this.#endAutoStart();
+			if (this.disposed) return;
+			this.#endAutoStart();
 		});
 	}
 
@@ -766,7 +775,9 @@ export class FoundingController {
 				live.field === "vision"
 					? table.vision
 					: live.field === "name"
-						? table.companyName
+						? isUnnamed(table.companyName)
+							? ""
+							: table.companyName
 						: (seats.get(live.userId)?.role ?? "");
 			const key = `${live.userId}:${live.field}`;
 			const prior = texts.get(key);

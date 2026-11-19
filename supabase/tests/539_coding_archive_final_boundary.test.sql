@@ -7,16 +7,6 @@
 -- the view at once, and an attachment that had lapsed before the archive gets no time. The office, the folders and the
 -- helpers are 639's; 523 covers a restarted machine, 639 and 644 the other ends of a coding view.
 
--- 0. The marker: qorpera_folder_view_valid names this migration and keeps the earlier markers.
-do $$
-declare v_lost text;
-begin
-	select string_agg(m.marker, ', ') into v_lost
-	from unnest(array['20260930183000', '20260930420000', '20260930446000', '20260930517000']) m(marker)
-	where strpos(pg_get_functiondef('public.qorpera_folder_view_valid(public.qorpera_folder_views)'::regprocedure), m.marker) = 0;
-	if v_lost is not null then raise exception 'Lost a marker: %', v_lost; end if;
-end $$;
-
 -- The node, the executor exec-1, agent A's repository grant, and a member who will leave.
 do $$
 begin

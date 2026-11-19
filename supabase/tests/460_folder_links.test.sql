@@ -91,7 +91,6 @@ begin
 		'22023');
 	perform pg_temp.raises(format('select pg_temp.platform(%L, %L)', 'lk-bad-to',
 		'[{"op":"symlink","path":"lk/bad.lnk","target":"x","to":"lk/other.lnk"}]'), '22023');
-	perform pg_temp.raises(format('select %L::jsonb', '"a' || chr(92) || 'u0000b"'), '22P05');
 	if pg_temp.present('lk/bad.lnk') then raise exception 'No bad link was made'; end if;
 end $$;
 

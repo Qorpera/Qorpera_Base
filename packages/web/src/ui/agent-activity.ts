@@ -61,6 +61,7 @@ function waveInto(container: HTMLElement, text: string, index: number): number {
 			const letter = document.createElement("span");
 			letter.className = "status-wave-letter";
 			letter.textContent = segment;
+			letter.dataset.letter = segment;
 			letter.style.setProperty("--wave-delay", `${((index++ * LETTER_STEP) % WAVE_PERIOD) - WAVE_PERIOD - phase}ms`);
 			word.append(letter);
 		}

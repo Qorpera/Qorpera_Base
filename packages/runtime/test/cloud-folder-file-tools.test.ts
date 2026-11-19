@@ -14,6 +14,7 @@ import {
 	CloudToolArgumentRefusal,
 	type CloudToolContent,
 	CloudToolRefusal,
+	MAX_TOOL_ARGUMENT_BYTES,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CloudRuntimeDiagnosticError,
@@ -111,7 +112,6 @@ it("offers the seven tools as Company File tools, with the legacy names", async 
 		["company_mkdir", "company_file"],
 		["company_delete", "company_file"],
 	]);
-	// A write or an edit carries a file's text, up to 512 KiB of it, escaped: their own argument bound.
 	expect(f.tools.filter((tool) => tool.maxArgumentBytes !== undefined).map((tool) => tool.name)).toEqual([
 		"company_write",
 		"company_edit",
@@ -1637,7 +1637,7 @@ it("tells the model the company's work is stopped, or the folder unavailable, an
 });
 
 // The 21 October 2026 amendment "how agents start work and use the company folder", item 5.
-it("reads a window of up to 32 KiB, shown as far as one result holds, and writes a file of up to 512 KiB", async () => {
+it("reads a window of up to 32 KiB, shown as far as one result holds, and writes a file as large as one call carries", async () => {
 	const prose = "Sales by region and month. ".repeat(1600);
 	const f = await fixture({ files: { "sales/notes.md": prose }, folders: ["sales"] });
 	const content = await f.call("company_read", { path: "sales/notes.md", offset: 0, limit: 32768 });
@@ -1668,7 +1668,7 @@ it("reads a window of up to 32 KiB, shown as far as one result holds, and writes
 			path: "sales/too-large.html",
 			operationKey: "write-too-large",
 			expectedVersion: null,
-			text: "x".repeat(512 * 1024 + 1),
+			text: "x".repeat(MAX_TOOL_ARGUMENT_BYTES + 1),
 		}),
 	).toThrow(CloudToolArgumentRefusal);
 });
@@ -1742,7 +1742,7 @@ it("refuses an edit whose text is not found once, and answers a stale version as
 	for (const value of [
 		{ oldText: "", newText: "x" },
 		{ oldText: "same", newText: "same" },
-		{ oldText: "a", newText: "x".repeat(512 * 1024 + 1) },
+		{ oldText: "a", newText: "x".repeat(MAX_TOOL_ARGUMENT_BYTES + 1) },
 	])
 		expect(() =>
 			f.tool("company_edit").parseArguments({

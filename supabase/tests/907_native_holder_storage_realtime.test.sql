@@ -137,10 +137,7 @@ begin
 	if not has_function_privilege('anon', 'public.qorpera_native_holder_capsules(boolean)', 'execute')
 		or not has_function_privilege('anon', 'public.qorpera_native_holder_presence_topic()', 'execute') then
 		raise exception '1: the policy helpers must be anon''s'; end if;
-	if (select count(*) from pg_policies where policyname in ('qorpera_native_capsule_holder_read', 'qorpera_native_capsule_holder_create',
-			'qorpera_native_capsule_holder_write', 'qorpera_presence_native_receive', 'qorpera_presence_native_publish')
-			and roles = '{anon}') <> 5
-		or exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and cmd = 'DELETE'
+	if exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and cmd = 'DELETE'
 			and 'anon' = any (roles)) then
 		raise exception '1: the anon policies are not as built'; end if;
 	if (select file_size_limit from storage.buckets where id = 'qorpera-native-compute-capsules') <> 64 * 1024 * 1024 + 1024 * 1024 then

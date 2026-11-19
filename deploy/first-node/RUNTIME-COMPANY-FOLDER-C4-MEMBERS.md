@@ -316,3 +316,87 @@ read again after every save, as today.
 
 **Follow-up (not this slice).** `qorpera_list_cloud_routines` shows every routine's title and instructions to any
 reader of the company, past the files' authority on folder-v2.
+
+## 7. A member's program file (the program kit's add, 18 November 2026)
+
+Jonas, 18 November 2026, after seeing the program page of RUNTIME-INTERFACE-APPS.md §3f: "then build step 2, add your
+own". A member puts a program of their own (an `.exe`, `.apk`, `.dmg` …) into the company's private place for
+programs. §5's route takes text only, at most 64 KiB a file, so a program's bytes get a route of their own. No SQL: the
+route uses the upload intents, the writer check and the commit §5 already uses (`qorpera_folder_renew_upload` joins
+the gateway's publisher calls; it is in the folder core since `20260928279520`).
+
+**The one path.** Only `apps/<name>/versions/<version>/<file>` takes bytes from a browser, each part passing the shared
+checks (`programUploadPath` in `cloud-client/app-program.ts`: an app's folder name, `isProgramVersion`,
+`isProgramFileName`, the last two also requiring that the joined path passes `parseCloudCompanyPath`, so no `%`, `:`,
+ending dot or space, device name such as `con`, non-NFC text or C1 control is taken). Any other path is refused (403) before anyone is asked. A file is 1 byte to 256 MiB (the folder's
+64 chunks of 4 MiB, and the web's download limit: what a member adds, members can get); more is 413, before any byte
+is staged.
+
+**The gateway route**, `/v1/member-program-uploads/<environment>`, behind the member company gateway like the other
+member routes (its Edge Function allows each step: the three JSON steps with a 16 KiB body and 25 s, a piece with
+4 MiB and the upload's 35 s), with CORS. Every request runs the writer check with the member's token first
+(`qorpera_member_folder_writer`: 401, 403, and 423 for a paused company or one being deleted, as in §5), and every
+folder call after it goes as that member with the service key.
+1. `POST …/<environment>` opens: `{schema: "qorpera.member-program-upload/v1", path, bytes, fileSha256, pieces}`,
+   `pieces` the SHA-256 of each 4 MiB piece in order (the last one shorter). The gateway writes the canonical
+   version-2 manifest (media type from the name, `appMediaType`; never executable), opens the folder's upload intent
+   as the member (`qorpera_folder_open_upload`), puts the manifest object, and keeps the upload in memory. Answer:
+   `{schema, uploadId, have}`, `have` the pieces it already holds. A member has one upload in flight on the gateway: a
+   second file is 429 while the first was touched in the last 60 s; the same file again (same path and manifest)
+   resumes the first, with its `have`, but only while its intent can still be alive: within 13 minutes of its open or
+   its last renew (an open intent lasts 15). Past that, and for a finished upload, the open starts afresh. Any request
+   of any member, and a sweep each minute, forgets an upload no request touched for 60 s, with the pieces it held. A
+   renew, a put or a seal the core refuses (403: the intent ran out or is not the member's) forgets the upload too, so
+   the member's next open starts afresh.
+2. `PUT …/<environment>/<upload>/<piece>` (`0` to `63`, `application/octet-stream`) puts one piece: exactly its size,
+   its SHA-256 the one named at the open (400 otherwise), into the store under the member's intent
+   (`qorpera_folder_authorize_object_upload`, the store's put, `qorpera_folder_confirm_object`), unless the intent
+   already holds it (`present`). The gateway hashes the pieces in order and holds at most four after the next one it
+   needs; a piece further ahead is 409 (send again after the earlier ones). A long upload renews its intent after
+   10 minutes (`qorpera_folder_renew_upload`; an open intent lasts 15).
+3. `POST …/<environment>/<upload>` finishes: `{schema: "qorpera.member-program-finish/v1", operationKey}`. All pieces
+   in (409 otherwise), the whole's SHA-256 is the one named at the open (400 otherwise, and the upload is forgotten),
+   then the seal. **Only where no file is:** the gateway reads the path as the member (`qorpera_member_folder_read`,
+   with their token). A file there already is answered `exists` and nothing is committed, unless it is this very file
+   (the same SHA-256 and size), which is answered `saved` with its version, so a finish retried after a lost answer
+   still ends well. With the path free, one `qorpera_folder_commit` as the member, with the key
+   `member:<userId>:<operationKey>` as in §5: a `mkdir` for each of `apps`, `apps/<name>`, `apps/<name>/versions` and
+   `apps/<name>/versions/<version>` (the core refuses a write whose parent is missing unless an earlier unit makes it;
+   one that exists is that unit's `conflict`, and the others go on), then `write {path, file}` with no
+   `expectedVersion`, which the core itself takes only for an absent path (core §3, Units). So the window between the
+   read and the commit is the commit's own: a file that lands there meanwhile makes the write a `conflict`, and the
+   gateway reads again (this very file: `saved`; another: `exists`). Answer:
+   `{schema: "qorpera.member-program-finish/v1", outcome, version, reason?}`, `outcome` one of `saved` (with the
+   file's version), `exists`, `denied`, `refused` (the core's refusal or review) or `conflict`, with the core's reason.
+   The same finish again answers the same. A seal that finds an object gone is 409 and forgets the upload: the
+   browser opens it again.
+4. `POST …/<environment>/<upload>/stop` forgets an upload not finished (204), but never one whose finish is running:
+   a retried finish after a lost answer still finds it.
+
+An upload never finished leaves nothing in the folder: its intent is never sealed or committed, and the core lets it
+run out. A gateway restart forgets every upload (the next piece is 404, and the browser opens it again). The finish is
+observed as `command_submit`, as §5's commits are; the gateway logs no name and no byte.
+
+**A slow line.** The member company gateway function reads a piece whole into one buffer before it forwards it, so a
+member's line meets the function's 35 s first (its sign-in check included); the gateway's own bound on reading a body
+(30 s, as its request) is only the hop from the function to node 1, which starts once the function holds the bytes. One
+4 MiB piece in 35 s needs about 1 Mbit/s up (33.6 Mbit in 35 s, 0.96 Mbit/s): the slowest line that can still finish a
+file. At that speed 48 MB takes about 7 minutes and 256 MiB about 36. Three pieces side by side need about 3 Mbit/s.
+
+**cloud-client.** `prepareCloudMemberFolderUpload(file, signal)` reads a `Blob` once, in 4 MiB slices, for each piece's
+SHA-256 (Web Crypto) and the whole's (`CloudSha256`, piece by piece, so a 256 MiB file is never held whole).
+`CloudMemberFolderClient.uploadFile(path, file, prepared, {operationKey, signal, onProgress})` opens, sends the pieces
+three at a time (`onProgress(sent, total)` after each), and finishes; it answers the finish's outcome and version
+(`CloudMemberFolderUploadResult`). A piece has 40 s of the client's own, past the function's 35 s, so the function's
+408 decides. A piece that was late (the function's 408, a 504, or the client's deadline) while others went beside it
+puts the rest of that upload down to one piece at a time and is sent again without counting as a try; a late piece
+sent alone counts. A lost answer, an outage or a deadline is tried again as `readFilePieces` tries a piece (three
+tries, a pause between); a 409 for a piece ahead waits and sends again;
+a 404 (the upload forgotten) opens it again once; any other refusal ends it with its status. The member's stop (the
+signal) ends every piece and tells the gateway to forget the upload; a finish already sent is not cut short and sends no
+stop, so its answer comes back and the caller knows whether the file was put. The same finish sent again with the same
+key and path (a new open, pieces and finish when the gateway forgot it) is answered `saved` for this very file: that is
+the replay of a finish whose answer was lost. Called again with the same file, it resumes and
+sends only what the gateway lacks.
+
+**The text part** goes through §5's route after the bytes are in place (RUNTIME-INTERFACE-APPS.md §3f).

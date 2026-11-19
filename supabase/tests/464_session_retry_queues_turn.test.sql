@@ -204,10 +204,9 @@ begin
 	-- Its own first-run wake, beside the first one, authorized as the run will check it.
 	select * into strict v_wake from public.qorpera_wake_occurrences where run_id = v_run.id;
 	if v_wake.wake_kind <> 'first-run' or v_wake.status <> 'materialized' or v_wake.source_id <> v_retry.input_id
-		or v_wake.occurrence_key <> 'input:' || v_retry.input_id || ':retry:' || v_run.id
 		or not public.qorpera_folder_wake_authorized(v_wake)
 		or not exists (select 1 from public.qorpera_wake_occurrences where run_id = v_old.id and wake_kind = 'first-run'
-			and occurrence_key = 'input:' || v_retry.input_id) then
+			and source_id = v_retry.input_id and occurrence_key is distinct from v_wake.occurrence_key) then
 		raise exception 'The retry''s wake is not as agreed: %', to_jsonb(v_wake); end if;
 	v_start := pg_temp.start();
 	if pg_temp.state() is distinct from 'started' or v_start ->> 'state' is distinct from 'started'

@@ -7,7 +7,7 @@ begin
 	select b.* into strict v_active from public.qorpera_active_runtime_bundle a
 	join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;
 	v_manifest := case when p_claude then jsonb_set(v_active.manifest, '{modelPolicy,claudeChoice}', '"thread"')
-		else v_active.manifest #- '{modelPolicy,claudeChoice}' end;
+		else v_active.manifest #- '{modelPolicy,claudeChoice}' end #- '{modelPolicy,threadEfforts}';
 	insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
 	select v_active.bundle_key, max(version) + 1, v_manifest,
 		encode(extensions.digest(convert_to(v_manifest::text, 'utf8'), 'sha256'), 'hex')
@@ -97,6 +97,7 @@ begin
 	return v_binding;
 end $$;
 
+select pg_temp.cm_activate(false) \g /dev/null
 insert into public.qorpera_claude_sign_in_members(user_id) values (pg_temp.cm_owner());
 select pg_temp.c4_login('12810000-0000-4000-8000-0000000000c1', pg_temp.cm_owner()) \g /dev/null
 
@@ -163,7 +164,7 @@ begin
 		'2: the speed answer names the models too: ' || v_result::text);
 	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, model_id, reasoning_effort, version,'
 		' updated_by_user_id) values (%L, %L, %L, 1, %L)', pg_temp.cm_session('92400000-0000-4000-8000-000000000032'), 'gpt-6-astra',
-		'xhigh', pg_temp.cm_owner()), '23514');
+		'max', pg_temp.cm_owner()), '23514');
 	perform pg_temp.base_error(format('insert into public.qorpera_session_models(session_id, reasoning_effort, version,'
 		' updated_by_user_id) values (%L, %L, 1, %L)', pg_temp.cm_session('92400000-0000-4000-8000-000000000032'), 'max',
 		pg_temp.cm_owner()), '23514');

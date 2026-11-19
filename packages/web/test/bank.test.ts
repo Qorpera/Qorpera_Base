@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BANK_INTERFACE, BANK_SUMMARY_PATH } from "../src/app/bank-page.ts";
+import { BANK_SUMMARY_PATH } from "../src/app/bank-page.ts";
 import { BANK_SETUP_PATH, BANK_SETUP_SCHEMA, parseBankSetup } from "../src/app/bank-setup.ts";
 import { BANK_SUMMARY_SCHEMA, parseBankSummary } from "../src/app/bank-summary.ts";
 import { CompanyController } from "../src/app/company.ts";
@@ -9,7 +9,6 @@ import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces, folderSources } from "../src/app/interfaces.ts";
 import { type BankConnectionClient, noteBankReturn, parseKroner, renderBank } from "../src/app/views/bank.ts";
 import { renderInterface } from "../src/app/views/interface.ts";
-import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 /* The Bank page (app/bank-page.ts, app/bank-summary.ts, app/views/bank.ts): a third page a company may switch on,
@@ -125,7 +124,6 @@ function company(on: boolean, file?: string) {
 		interfaceFolder: {
 			tables: new Map(),
 			files: file === undefined ? new Map() : new Map([[BANK_SUMMARY_PATH, file]]),
-			sources: new Map(),
 		},
 	});
 	cleanup.push(() => controller.stop());
@@ -201,10 +199,9 @@ describe("an amount the member writes (app/views/bank.ts)", () => {
 });
 
 describe("the Bank page (app/views/bank.ts)", () => {
-	it("is listed once it is switched on, before the company has a summary, with the bank emblem", () => {
+	it("is listed once it is switched on, before the company has a summary", () => {
 		expect(companyInterfaces(company(false)).map((entry) => entry.name)).toEqual([]);
 		expect(companyInterfaces(company(true)).map((entry) => entry.name)).toEqual(["bank"]);
-		expect(interfaceEmblem("bank", 40).querySelectorAll("g rect")).toHaveLength(5);
 	});
 
 	it("says there is no bank yet, or that its summary can't be read", () => {
@@ -611,7 +608,6 @@ describe("how far the bank setup is (app/bank-setup.ts)", () => {
 			BANK_SUMMARY_PATH,
 			BANK_SETUP_PATH,
 		]);
-		expect(BANK_INTERFACE).toContain(`from = "file:${BANK_SETUP_PATH}"`);
 	});
 });
 
@@ -645,7 +641,6 @@ describe("getting the company a bank from inside Qorpera (app/views/bank.ts)", (
 				files: options.setup
 					? new Map([[BANK_SETUP_PATH, JSON.stringify({ schema: BANK_SETUP_SCHEMA, ...options.setup })]])
 					: new Map(),
-				sources: new Map(),
 			},
 		});
 		const container = document.createElement("main");

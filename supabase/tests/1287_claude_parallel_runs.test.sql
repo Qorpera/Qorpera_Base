@@ -316,6 +316,133 @@ begin
 		'5: one row, a cap of 1 to 16');
 end $$;
 
+insert into public.qorpera_claude_logins(id, owner_user_id, principal_id, client_connection_id, key_id, encrypted_envelope,
+	envelope_sha256, provider_account_email)
+select v.id::uuid, pg_temp.c4_owner_id(), '12680000-0000-4000-8000-000000000050', extensions.gen_random_uuid(), 'vault-root-1',
+	convert_to(v.canary, 'UTF8'), pg_temp.p_sha(v.canary), v.email
+from (values ('12870000-0000-4000-8000-0000000000c3', 'canary-1287-second', 'second@example.test'),
+	('12870000-0000-4000-8000-0000000000c4', 'canary-1287-third', 'third@example.test')) as v(id, canary, email);
+
+create function pg_temp.p_in_use() returns text language sql as $$
+	select string_agg(right(id::text, 2) || case when in_use then '*' else '' end || ':' || status, ' ' order by id)
+	from public.qorpera_claude_logins where owner_user_id = pg_temp.c4_owner_id() and id::text like '12870000-%'
+$$;
+create function pg_temp.p_leases() returns text language sql as $$
+	select string_agg(right(lease.claude_login_id::text, 2), ' ' order by lease.claude_login_id) from public.qorpera_claude_worker_leases lease
+	where lease.owner_user_id = pg_temp.c4_owner_id() and public.qorpera_claude_worker_lease_live(lease)
+$$;
+create function pg_temp.p_release_of(p_login uuid, p_take jsonb, p_outcome text) returns jsonb language sql as $$
+	select public.qorpera_release_claude_login_renewal('12680000-0000-4000-8000-000000000050', repeat('a', 64), p_login,
+		(p_take #>> '{renewal,token}')::uuid, p_outcome)
+$$;
+
+do $$
+declare v_pass jsonb; v_binding jsonb; v_i integer; v_runs jsonb := '{}';
+begin
+	perform pg_temp.base_assert(pg_temp.p_in_use() = 'c1*:active c3:active c4:active',
+		'7: another account joins Not in use: ' || pg_temp.p_in_use());
+	update public.qorpera_claude_parallel_runs set cap = 4;
+	v_pass := pg_temp.base_materialize();
+	for v_i in 6..7 loop
+		v_runs := v_runs || jsonb_build_object((select run_id from public.qorpera_wake_occurrences
+			where id = (pg_temp.p_worker(v_i)).occurrence_id)::text, v_i);
+	end loop;
+	for v_i in 1..2 loop
+		v_binding := pg_temp.base_start(null) - array['provider', 'nativeHarness', 'model'];
+		perform pg_temp.base_assert(v_runs ? (v_binding ->> 'runId'), '7: a started run is worker 6''s or 7''s: ' || v_binding::text);
+		perform set_config('qorpera_test.p_binding_' || (v_runs ->> (v_binding ->> 'runId')), v_binding::text, false);
+	end loop;
+	perform pg_temp.base_assert(pg_temp.p_leases() = 'c1 c1', '7: each live lease records the login its run started on: '
+		|| coalesce(pg_temp.p_leases(), 'none'));
+	update public.qorpera_claude_logins set in_use = false where id = '12870000-0000-4000-8000-0000000000c1';
+	update public.qorpera_claude_logins set in_use = true where id = '12870000-0000-4000-8000-0000000000c3';
+	perform pg_temp.base_assert(public.qorpera_claude_worker_login('92400000-0000-4000-8000-000000000010', pg_temp.c4_owner_id())
+		= '12870000-0000-4000-8000-0000000000c3', '7: after the member''s switch new work takes the login In use');
+	update public.qorpera_runtime_workers set claude_login_id = '12870000-0000-4000-8000-0000000000c3'
+	where id = (pg_temp.p_worker(6)).id;
+	update public.qorpera_claude_logins set checked_at = clock_timestamp() - interval '1 hour'
+	where id in ('12870000-0000-4000-8000-0000000000c1', '12870000-0000-4000-8000-0000000000c3');
+end $$;
+
+create function pg_temp.p_s7() returns void language plpgsql security definer set search_path = pg_catalog, public as $$
+declare v jsonb; v_i integer;
+begin
+	for v_i in 6..7 loop
+		v := pg_temp.p_open(v_i);
+		perform pg_temp.base_assert(v ->> 'state' = 'open' and v ->> 'claudeLoginId' = '12870000-0000-4000-8000-0000000000c1'
+			and convert_from(decode(v ->> 'encryptedEnvelopeBase64', 'base64'), 'UTF8') = 'canary-1287-again',
+			'7: run ' || v_i || ' keeps the login it started on, after the switch and its worker''s follow-up: '
+			|| (v - 'encryptedEnvelopeBase64')::text);
+	end loop;
+	perform pg_temp.base_assert(pg_temp.p_take('open', '12870000-0000-4000-8000-0000000000c3')
+		= '{"schema":"qorpera.claude-login-renewal/v1","renewal":null,"busy":false}'::jsonb,
+		'7: the login In use with no run of its own is not checked for another login''s runs');
+	v := pg_temp.p_take('poll');
+	perform pg_temp.base_assert(v ->> 'claudeLoginId' = '12870000-0000-4000-8000-0000000000c1'
+		and pg_temp.p_release(v, 'unchanged') ->> 'state' = 'released',
+		'7: the login the live runs use is checked, though it is no longer In use: ' || (v - 'encryptedEnvelopeBase64')::text);
+end $$;
+grant execute on function pg_temp.p_s7() to qorpera_secret_broker;
+set local session authorization qorpera_secret_broker;
+select pg_temp.p_s7() \g /dev/null
+reset session authorization;
+
+do $$
+declare v_drain jsonb; v_binding jsonb; v_i integer; v_runs jsonb := '{}';
+begin
+	perform pg_temp.p_dispatch(9);
+	perform pg_temp.base_assert((pg_temp.p_worker(9)).claude_login_id = '12870000-0000-4000-8000-0000000000c3',
+		'7: a new worker is paid by the login In use');
+	v_drain := pg_temp.c4_drain();
+	perform pg_temp.base_assert(pg_temp.p_leases() = 'c1 c1 c1 c3' and (pg_temp.p_worker(9)).occurrence_id is not null,
+		'7: the waiting worker on the old login and the new one on the login In use start: '
+		|| coalesce(pg_temp.p_leases(), 'none') || ' ' || v_drain::text);
+	perform pg_temp.p_dispatch(10);
+	v_drain := pg_temp.c4_drain();
+	perform pg_temp.base_assert((pg_temp.p_worker(10)).occurrence_id is null and public.qorpera_claude_worker_waits(pg_temp.p_worker(10)),
+		'7: the cap counts the member''s runs on every login: the fifth waits: ' || v_drain::text);
+	v_drain := pg_temp.base_materialize();
+	for v_i in 8..9 loop
+		v_runs := v_runs || jsonb_build_object((select run_id from public.qorpera_wake_occurrences
+			where id = (pg_temp.p_worker(v_i)).occurrence_id)::text, v_i);
+	end loop;
+	for v_i in 1..2 loop
+		v_binding := pg_temp.base_start(null) - array['provider', 'nativeHarness', 'model'];
+		perform pg_temp.base_assert(v_runs ? (v_binding ->> 'runId'), '7: a started run is worker 8''s or 9''s: ' || v_binding::text);
+		perform set_config('qorpera_test.p_binding_' || (v_runs ->> (v_binding ->> 'runId')), v_binding::text, false);
+	end loop;
+	update public.qorpera_claude_logins set usage = jsonb_build_object('observedAt',
+		to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'windows', jsonb_build_array(jsonb_build_object(
+			'id', 'five_hour', 'label', '5-hour limit', 'usedPercent', 100,
+			'resetAt', to_char((clock_timestamp() + interval '2 hours') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))))
+	where id = '12870000-0000-4000-8000-0000000000c1';
+	update public.qorpera_claude_logins set refused_version = version, refused_at = clock_timestamp() - interval '3 minutes',
+		checked_at = clock_timestamp() - interval '1 hour'
+	where id = '12870000-0000-4000-8000-0000000000c3';
+end $$;
+
+create function pg_temp.p_s7b() returns void language plpgsql security definer set search_path = pg_catalog, public as $$
+declare v jsonb;
+begin
+	perform pg_temp.base_assert(pg_temp.p_open(9) ->> 'claudeLoginId' = '12870000-0000-4000-8000-0000000000c3',
+		'7: worker 9''s run opens the login In use');
+	v := pg_temp.p_take('poll', '12870000-0000-4000-8000-0000000000c3');
+	perform pg_temp.base_assert(pg_temp.p_release_of('12870000-0000-4000-8000-0000000000c3', v, 'refused') ->> 'state' = 'signed_out',
+		'7: a second refusal signs out the login In use: ' || (v - 'encryptedEnvelopeBase64')::text);
+	execute 'set constraints all immediate';
+	execute 'set constraints all deferred';
+	perform pg_temp.base_assert(pg_temp.p_in_use() = 'c1:active c3:revoked c4*:active',
+		'7: In use moves to the member''s login that is not used up, and every active login keeps one In use: '
+		|| pg_temp.p_in_use());
+	perform pg_temp.base_assert(pg_temp.p_open(9) = '{"schema":"qorpera.claude-login-for-run/v1","state":"refused","reason":"SIGNED_OUT"}'::jsonb
+		and pg_temp.p_open(7) ->> 'claudeLoginId' = '12870000-0000-4000-8000-0000000000c1',
+		'7: the signed-out login''s run is told so, another login''s run goes on');
+end $$;
+grant execute on function pg_temp.p_s7b() to qorpera_secret_broker;
+set local session authorization qorpera_secret_broker;
+select pg_temp.p_s7b() \g /dev/null
+reset session authorization;
+
 do $$
 declare v_role text; v_function text;
 begin

@@ -127,6 +127,7 @@ v2 keep refusing `folder-v2` (0A000, C1c-3a):
   and posting in them already runs on `folder-v2` (C1c-3a's post, then §3's room wakes).
 - The web falls back to `qorpera_request_session_turn_v2` only for a session that is not a room, and nothing creates one
   on `folder-v2`: `ensureStaffSession` and `appendPrompt` have no caller in the interface.
+  On 18 Nov 2026 #1949 removed `appendPrompt` from the web.
 - A1's legacy-removal slice can delete the plain-session paths later.
 
 ## 5. The first run's dead request: not needed

@@ -433,7 +433,8 @@ export async function machineChromiumPort(
 		try {
 			if ((await readlink(`${proc}/${pid}/exe`)) !== chromium) continue;
 			if (Number(/^Uid:\s+([0-9]+)/m.exec(await readFile(`${proc}/${pid}/status`, "utf8"))?.[1]) !== uid) continue;
-			const argv = (await readFile(`${proc}/${pid}/cmdline`, "utf8")).split("\0");
+			const words = (await readFile(`${proc}/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean);
+			const argv = words.length === 1 ? (words[0] as string).split(" ") : words;
 			if (!argv.includes(profile) || argv.some((argument) => argument.startsWith("--type="))) continue;
 			// The process's start, in clock ticks since boot: field 22 of its stat, after the command name's parenthesis.
 			const stat = await readFile(`${proc}/${pid}/stat`, "utf8");

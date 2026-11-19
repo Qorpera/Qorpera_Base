@@ -2,9 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import { ReleaseDesk } from "../src/app/views/release-desk.ts";
 import { ThreadReady } from "../src/app/views/thread-ready.ts";
-import { WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
+import { whatsNewEntry } from "../src/app/views/whats-new.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CodeReleaseAnswer, CodeReleaseSite, CodeReleases, SitePreviewAnswer } from "../src/cloud/releases.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
@@ -440,21 +439,6 @@ describe("A change is ready: the card", () => {
 		const { ready } = await card([releasesOf([gift()], true, true)]);
 		expect(labels(cardOf(ready))).toEqual(["Se den først", "Sæt live", "Ikke endnu"]);
 		expect(cardOf(ready).querySelector(".interaction-call strong")?.textContent).toBe("Klar til at gå live");
-	});
-
-	it("shares What's new's desk: both places put a change live through the one implementation", async () => {
-		const putLive = vi.spyOn(ReleaseDesk.prototype, "putLive");
-		const { ready } = await card([releasesOf([gift()]), releasesOf([live4()])]);
-		press(cardOf(ready), "Put it live");
-		await settle();
-		const controller = company();
-		const page = new WhatsNewView(controller, calls([releasesOf([gift()])], {}), controller.signal);
-		cleanup.push(() => page.dispose());
-		document.body.append(page.el);
-		await settle();
-		press(page.el, "Put it live");
-		await settle();
-		expect(putLive).toHaveBeenCalledTimes(2);
 	});
 
 	it("starts from the company's last read without one of its own, and reads which sites Qorpera took down beside it", async () => {

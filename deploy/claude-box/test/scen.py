@@ -160,6 +160,58 @@ elif kind == "attack":
         B("sudo -n sh -c \"grep -rlE --binary-files=text 'C2CAN''ARY-[A-Z0-9]+-[0-9a-f]{16}' / --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev 2>/dev/null | head; "
           "for p in /proc/[0-9]*; do grep -lE --binary-files=text 'C2CAN''ARY-[A-Z0-9]+-[0-9a-f]{16}' \\$p/environ \\$p/cmdline 2>/dev/null; done; echo hunt-done\"", "shell-hunt-root"),
     ]
+elif kind == "open":
+    where = "ls / | tr '\\n' ' '; echo; id -un"
+    steps = [
+        T("ToolSearch", "toolsearch", query="select:Monitor,EnterWorktree,ExitWorktree,TaskCreate,TaskList,TaskGet,TaskUpdate,WebSearch,CronCreate,CronList,ScheduleWakeup", max_results=20),
+        T("TaskCreate", "task-create", subject="c2 open", description="the opened tools"),
+        T("TaskList", "task-list"),
+        T("Monitor", "monitor-where", description="c2 monitor", timeout_ms=20000, command=where),
+        T("Monitor", "monitor-cred", description="c2 monitor cred", timeout_ms=10000, command="cat /slot/config/.credentials.json | head -c 300"),
+        B("sleep 4; echo waited", "after-monitor"),
+        T("Monitor", "monitor-ws", description="c2 socket", timeout_ms=5000, ws={"url": "wss://example.com/c2"}),
+        T("CronCreate", "cron-absent", cron="*/1 * * * *", prompt="C2CRON fired", recurring=True, durable=True),
+        T("ScheduleWakeup", "wakeup-absent", delaySeconds=60, reason="c2 probe", prompt="<<autonomous-loop-dynamic>>", noop=True),
+        T("Skill", "skill-planted", skill="c2skill"),
+        T("Task", "agent-planted", description="c2 planted agent", subagent_type="c2agent", prompt="C2SUB: " + where, run_in_background=False),
+        T("Task", "agent-where", description="c2 sub where", subagent_type="general-purpose", prompt="C2SUB: " + where, run_in_background=False),
+        T("Task", "agent-cred", description="c2 sub cred", subagent_type="general-purpose",
+          prompt="C2SUB: cat /slot/config/.credentials.json /proc/$PPID/environ 2>&1 | head -c 300", run_in_background=False),
+        T("WebSearch", "websearch", query="c2 probe search"),
+        {"tool": "EnterWorktree", "name": "worktree-absent", "input": {"name": "c2wt"}},
+        T("Read", "read-cred", file_path="/slot/config/.credentials.json"),
+        B(f"for f in {R}/c2-trap/*.txt; do echo \"== $f\"; cat $f; done 2>&1 | head -60; ls -la {R}/.claude {R}/.claude/worktrees 2>&1 | head -20", "markers"),
+    ]
+elif kind.startswith("open-"):
+    where = "ls / | tr '\\n' ' '; echo; id -un"
+    parts = {
+        "open-monitor": [
+            T("ToolSearch", "toolsearch", query="select:Monitor", max_results=5),
+            T("Monitor", "monitor-where", description="c2 monitor", timeout_ms=10000, command=where),
+            B("sleep 3; echo waited", "after-monitor"),
+        ],
+        "open-agent": [
+            T("Task", "agent-where", description="c2 sub where", subagent_type="general-purpose", prompt="C2SUB: " + where, run_in_background=False),
+            T("Task", "agent-read-cred", description="c2 sub read", subagent_type="general-purpose",
+              prompt="C2SUB: " + json.dumps({"tool": "Read", "input": {"file_path": "/slot/config/.credentials.json"}}), run_in_background=False),
+        ],
+        "open-worktree": [
+            T("ToolSearch", "toolsearch", query="select:EnterWorktree,ExitWorktree", max_results=5),
+            {"tool": "EnterWorktree", "name": "worktree-enter", "input": {"name": "c2wt"}},
+            B("pwd; ls -la | head -5", "in-worktree"),
+            T("ExitWorktree", "worktree-exit", action="remove", discard_changes=True),
+            B(f"for f in {R}/c2-trap/*.txt; do echo \"== $f\"; cat $f; done 2>&1 | head -20", "markers"),
+        ],
+        "open-rest": [
+            T("ToolSearch", "toolsearch", query="select:TaskCreate,TaskList,WebSearch,Monitor", max_results=5),
+            T("TaskCreate", "task-create", subject="c2 open", description="the opened tools"),
+            T("TaskList", "task-list"),
+            T("WebSearch", "websearch", query="c2 probe search"),
+            T("Skill", "skill-planted", skill="c2skill"),
+            T("Monitor", "monitor-ws", description="c2 socket", timeout_ms=5000, ws={"url": "wss://example.com/c2"}),
+        ],
+    }
+    steps = parts[kind]
 elif kind == "second":
     # Another member's run, at the same time: it looks for the first run's box from its own.
     steps = [

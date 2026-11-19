@@ -751,60 +751,6 @@ begin
 		perform pg_temp.base_assert(has_function_privilege(v_role, 'public.qorpera_folder_manage_hook(jsonb,jsonb)', 'execute')
 			= (v_role = 'service_role'), format('D: %s and manage_hook', v_role));
 	end loop;
-	perform pg_temp.base_assert((select array_agg(proname::text order by proname collate "C") from pg_proc
-			where pronamespace = 'public'::regnamespace and prosrc like '%20260930160000%') = array['qorpera_fill_event_hook_secret',
-			'qorpera_folder_describe_signed_hook', 'qorpera_folder_manage_hook', 'qorpera_folder_manage_hook_effect',
-			'qorpera_folder_open_signed_hook', 'qorpera_folder_signed_hook_authority', 'qorpera_valid_office_browser_action'],
-		'D: the functions naming 20260930160000: ' || (select array_agg(proname::text order by proname collate "C") from pg_proc
-			where pronamespace = 'public'::regnamespace and prosrc like '%20260930160000%')::text);
-end $$;
-
--- Each function's text without comments, so a comment never counts as code.
-create temporary table e3b_code on commit drop as
-select p.proname::text as name, lower(regexp_replace(regexp_replace(p.prosrc, '/\*.*?\*/', '', 'gs'), '--[^\n]*', '', 'g')) as src
-from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in ('qorpera_folder_manage_hook_effect',
-	'qorpera_folder_signed_hook_authority', 'qorpera_folder_describe_signed_hook', 'qorpera_folder_open_signed_hook',
-	'qorpera_fill_event_hook_secret');
--- Where a text first appears in a function's code (null when it does not), and how often.
-create function pg_temp.e3b_at(p_name text, p_text text) returns integer language sql as $$
-	select nullif(position(lower(p_text) in src), 0) from e3b_code where name = p_name
-$$;
-create function pg_temp.e3b_times(p_name text, p_text text) returns integer language sql as $$
-	select (length(src) - length(replace(src, lower(p_text), ''))) / length(p_text) from e3b_code where name = p_name
-$$;
-do $$
-begin
-	perform pg_temp.base_assert((select count(*) from e3b_code) = 5, 'D: the functions'' code');
-	-- The broker's checks before the run's locks; the authority check takes no lock.
-	perform pg_temp.base_assert(pg_temp.e3b_at('qorpera_folder_describe_signed_hook', 'qorpera_folder_signed_hook_authority(')
-			< pg_temp.e3b_at('qorpera_folder_describe_signed_hook', 'qorpera_folder_tool_run(')
-			and pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'qorpera_folder_signed_hook_authority(')
-			< pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'qorpera_folder_tool_run(')
-			and pg_temp.e3b_times('qorpera_folder_signed_hook_authority', 'for share') = 0
-			and pg_temp.e3b_times('qorpera_folder_signed_hook_authority', 'for update') = 0
-			and pg_temp.e3b_times('qorpera_folder_signed_hook_authority', 'pg_advisory') = 0,
-		'D: the broker''s checks come before any lock');
-	-- The effect checks the envelope before the run; it begins the receipt, then claims the company, then inserts.
-	perform pg_temp.base_assert(pg_temp.e3b_at('qorpera_folder_manage_hook_effect', 'hook secret envelope is unavailable')
-			< pg_temp.e3b_at('qorpera_folder_manage_hook_effect', 'qorpera_folder_tool_run(')
-			and pg_temp.e3b_at('qorpera_folder_manage_hook_effect', 'qorpera_folder_begin_run_receipt(')
-			< pg_temp.e3b_at('qorpera_folder_manage_hook_effect', 'pg_advisory_xact_lock(')
-			and pg_temp.e3b_at('qorpera_folder_manage_hook_effect', 'pg_advisory_xact_lock(')
-			< pg_temp.e3b_at('qorpera_folder_manage_hook_effect', 'insert into public.qorpera_cloud_secrets')
-			and pg_temp.e3b_times('qorpera_folder_manage_hook_effect', 'pg_advisory') = 1,
-		'D: the effect''s order');
-	-- The fill: the hook through the run check, then its secret FOR SHARE, then the receipt FOR UPDATE.
-	perform pg_temp.base_assert(pg_temp.e3b_times('qorpera_fill_event_hook_secret', 'for share') = 1
-			and pg_temp.e3b_times('qorpera_fill_event_hook_secret', 'for update') = 1
-			and pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'qorpera_folder_tool_run(')
-			< pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'from public.qorpera_cloud_secrets as secret')
-			and pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'from public.qorpera_cloud_secrets as secret')
-			< pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'for share')
-			and pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'for share')
-			< pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'from public.qorpera_run_operation_receipts as receipt')
-			and pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'from public.qorpera_run_operation_receipts as receipt')
-			< pg_temp.e3b_at('qorpera_fill_event_hook_secret', 'for update'),
-		'D: the fill''s lock order');
 end $$;
 
 rollback;

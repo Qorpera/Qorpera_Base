@@ -166,6 +166,26 @@ describe("the product's member folder transport", () => {
 		expect(objects()).toBe(6);
 	});
 
+	it("deletes what the browser kept on disk at sign-out, with or without a company opened", async () => {
+		const deleted: string[] = [];
+		vi.stubGlobal("indexedDB", {
+			deleteDatabase: (name: string) => {
+				deleted.push(name);
+				const request: { onsuccess?: () => void } = {};
+				queueMicrotask(() => request.onsuccess?.());
+				return request;
+			},
+		});
+		forgetMemberFiles();
+		expect(deleted).toEqual(["qorpera-kept-objects"]);
+		const f = await setup();
+		const folder = f.company.folder();
+		const entry = (await folder.read("notes.txt", f.signal)).entry!;
+		await folder.readFile(entry.file!, f.signal, undefined, { cached: true });
+		forgetMemberFiles();
+		await vi.waitFor(() => expect(deleted).toEqual(["qorpera-kept-objects", "qorpera-kept-objects"]));
+	});
+
 	it("refuses a different member's token before anything is sent", async () => {
 		const f = await setup();
 		f.auth(userB);

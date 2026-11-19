@@ -21,6 +21,7 @@ import {
 	CompanyData,
 	type CompanyDataClient,
 	companyConcepts,
+	PageFiles,
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
@@ -91,6 +92,14 @@ function fakeFolder(files: Record<string, string | Uint8Array>) {
 		readFile: async (file: { fileSha256: string }) => byHash.get(file.fileSha256)!.data,
 	} as never as Parameters<typeof assembleApp>[0] & { reads: string[] };
 }
+
+const textOf = (blob: Blob | undefined) =>
+	new Promise<string>((resolve, reject) => {
+		if (!blob) return reject(new Error("no file"));
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result as string);
+		reader.readAsText(blob);
+	});
 
 describe("an app's paths", () => {
 	it("resolves a page's references inside the app's folder only", () => {
@@ -196,15 +205,18 @@ describe("putting an app's page together", () => {
 			"apps/secret.png": PNG,
 		});
 
-	it("puts an app's videos in, each up to its own limit, outside the limit of the rest", async () => {
-		const big = new Uint8Array(1024 * 1024);
+	it("sends small videos with the page, and marks large ones to come when their element needs them", async () => {
+		const small = new Uint8Array(1024 * 1024);
 		const assembled = await assembleApp(
 			fakeFolder({
 				"apps/ideas/index.html":
-					'<!doctype html><html><body><video src="a.mp4" controls></video><video><source src="clips/b.webm"></video><video src="../c.mp4"></video></body></html>',
-				"apps/ideas/a.mp4": big,
-				"apps/ideas/clips/b.webm": big,
-				"apps/c.mp4": big,
+					'<!doctype html><html><body><video src="a.mp4" controls></video><video><source src="clips/b.webm"></video><video src="../c.mp4"></video><video src="film.mp4" poster="still.avif"></video><audio src="voice.mp3"></audio><video src="none.mp4"></video></body></html>',
+				"apps/ideas/a.mp4": small,
+				"apps/ideas/clips/b.webm": small,
+				"apps/ideas/film.mp4": new Uint8Array(60 * 1024 * 1024),
+				"apps/ideas/still.avif": new Uint8Array(10),
+				"apps/ideas/voice.mp3": new Uint8Array(10),
+				"apps/c.mp4": small,
 			}) as never,
 			{ path: "apps/ideas", entry: "index.html" },
 			new AbortController().signal,
@@ -212,19 +224,87 @@ describe("putting an app's page together", () => {
 		expect(assembled.ok).toBe(true);
 		if (!assembled.ok) return;
 		const page = new DOMParser().parseFromString(assembled.page, "text/html");
-		expect(page.querySelector("video")?.getAttribute("src")?.startsWith("data:video/mp4;base64,")).toBe(true);
-		expect(page.querySelector("source")?.getAttribute("src")?.startsWith("data:video/webm;base64,")).toBe(true);
+		const videos = [...page.querySelectorAll("video")];
+		const handed = new Map(assembled.framed.files);
+		const sent = (token: string | null | undefined) => handed.get(token ?? "")?.type;
+		expect(sent(videos[0]?.getAttribute("src"))).toBe("video/mp4");
+		expect(sent(page.querySelector("source")?.getAttribute("src"))).toBe("video/webm");
+		expect(sent(videos[3]?.getAttribute("poster"))).toBe("image/avif");
+		expect(sent(page.querySelector("audio")?.getAttribute("src"))).toBe("audio/mpeg");
 		// Out of the app's own folder, it stays as written and the frame's policy blocks it.
-		expect(page.querySelectorAll("video")[2]?.getAttribute("src")).toBe("../c.mp4");
-		const tooBig = await assembleApp(
-			fakeFolder({
-				"apps/ideas/index.html": '<!doctype html><html><body><video src="a.mp4"></video></body></html>',
-				"apps/ideas/a.mp4": new Uint8Array(13 * 1024 * 1024),
-			}) as never,
-			{ path: "apps/ideas", entry: "index.html" },
+		expect(videos[2]?.getAttribute("src")).toBe("../c.mp4");
+		expect(videos[3]?.hasAttribute("src")).toBe(false);
+		expect(videos[3]?.getAttribute("data-qorpera-src")).toBe("film.mp4");
+		expect([...handed.values()].every((blob) => blob.size < 2 * 1024 * 1024)).toBe(true);
+		expect(videos[4]?.hasAttribute("src")).toBe(false);
+		expect(assembled.framed.missing).toEqual(["none.mp4"]);
+		expect(assembled.key).toContain("film.mp4 ");
+	});
+
+	it("keeps no cap on an app: any number of files of any kind and size", async () => {
+		const files: Record<string, string | Uint8Array> = {
+			"apps/big/index.html": `<link rel="stylesheet" href="look.css">${Array.from({ length: 200 }, (_, n) => `<img src="p/${n}.webp">`).join("")}<script src="three.min.js"></script><img src="huge.png" hidden>`,
+			"apps/big/look.css": '@font-face{font-family:Brand;src:url("type/brand.woff2")}',
+			"apps/big/type/brand.woff2": new Uint8Array(40_000),
+			"apps/big/three.min.js": `window.T=${JSON.stringify("x".repeat(700_000))};`,
+			"apps/big/huge.png": new Uint8Array(20 * 1024 * 1024),
+		};
+		for (let n = 0; n < 200; n++) files[`apps/big/p/${n}.webp`] = new Uint8Array(20_000).fill(n);
+		const progress: [number, number][] = [];
+		const assembled = await assembleApp(
+			fakeFolder(files) as never,
+			{ path: "apps/big", entry: "index.html" },
+			new AbortController().signal,
+			undefined,
+			(read, of) => progress.push([read, of]),
+		);
+		if (!assembled.ok) throw new Error(assembled.message);
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const handed = new Map(assembled.framed.files);
+		const script = page.querySelector("script");
+		expect(handed.get(script?.getAttribute("src") ?? "")?.type).toBe("text/javascript");
+		expect(handed.get(script?.getAttribute("src") ?? "")?.size).toBeGreaterThan(700_000);
+		expect(page.querySelector("style")?.textContent).toMatch(/url\("qorpera-file-[0-9a-f]{32}-woff2"\)/);
+		expect(handed.get(page.querySelector("img[hidden]")?.getAttribute("src") ?? "")?.size).toBe(20 * 1024 * 1024);
+		expect(page.querySelectorAll("img:not([hidden])")).toHaveLength(200);
+		expect(page.querySelectorAll("img:not([hidden])[src]")).toHaveLength(24);
+		expect(page.querySelectorAll("img[data-qorpera-src]")).toHaveLength(176);
+		expect(progress.at(-1)?.[0]).toBe(progress.at(-1)?.[1]);
+	});
+
+	it("reads a large file of the first paint piece by piece into its blob, never whole", async () => {
+		const big = new Uint8Array(9 * 1024 * 1024).fill(7);
+		const f = fakeFolder({
+			"apps/kit/index.html": '<div hidden><img src="sheet.webp"></div><img src="small.png">',
+			"apps/kit/sheet.webp": big,
+			"apps/kit/small.png": new Uint8Array(10),
+		});
+		const whole = vi.spyOn(f, "readFile");
+		const pieces = vi.fn(
+			async (
+				file: { bytes: number },
+				_signal: AbortSignal,
+				onPiece: (piece: Uint8Array, index: number, count: number) => void,
+			) => {
+				const count = Math.ceil(file.bytes / (4 * 1024 * 1024));
+				for (let index = 0; index < count; index++)
+					onPiece(big.subarray(index * 4 * 1024 * 1024, (index + 1) * 4 * 1024 * 1024), index, count);
+			},
+		);
+		const assembled = await assembleApp(
+			Object.assign(f, { readFilePieces: pieces }) as never,
+			{ path: "apps/kit", entry: "index.html" },
 			new AbortController().signal,
 		);
-		expect(tooBig.ok).toBe(false);
+		if (!assembled.ok) throw new Error(assembled.message);
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const handed = new Map(assembled.framed.files);
+		expect(handed.get(page.querySelector("[hidden] img")?.getAttribute("src") ?? "")?.size).toBe(big.byteLength);
+		expect(pieces).toHaveBeenCalledOnce();
+		expect(whole.mock.calls.map(([file]) => (file as { bytes: number }).bytes).sort()).toEqual(
+			[10, '<div hidden><img src="sheet.webp"></div><img src="small.png">'.length].sort(),
+		);
+		expect(assembled.files).toBe(3);
 	});
 
 	it("puts an explainer together as any app: its engine, its scenes and its voice clips, in a dark page", async () => {
@@ -257,7 +337,6 @@ describe("putting an app's page together", () => {
 				"apps/fee/engine.js": "window.Video = class {};",
 				"apps/fee/scenes.js": 'V.part("The fee");',
 				"apps/fee/voice/3f0a9c1e.mp4": new Uint8Array([0, 0, 0, 28]),
-				// The second clip is listed in the page and gone from the folder: it stays a name the frame can't load.
 			}) as never,
 			{ path: "apps/fee", entry: "index.html" },
 			new AbortController().signal,
@@ -279,7 +358,10 @@ describe("putting an app's page together", () => {
 		const clips = [...handed.querySelectorAll("audio[data-caption] > source")].map((source) =>
 			source.getAttribute("src"),
 		);
-		expect(clips).toEqual(["data:video/mp4;base64,AAAAHA==", "voice/0000beef.mp4"]);
+		expect(clips[0]).toMatch(/^qorpera-file-[0-9a-f]{32}-mp4$/);
+		expect(clips[1]).toBeNull();
+		expect(assembled.framed.missing).toEqual(["voice/0000beef.mp4"]);
+		expect(await textOf(new Map(assembled.framed.files).get(clips[0] ?? ""))).toBe("\0\0\0\u001c");
 		expect(handed.querySelector("audio")?.getAttribute("data-seconds")).toBe("5.42");
 	});
 
@@ -292,10 +374,12 @@ describe("putting an app's page together", () => {
 		expect(assembled.ok).toBe(true);
 		if (!assembled.ok) return;
 		const page = new DOMParser().parseFromString(assembled.page, "text/html");
-		expect(page.querySelector("style")?.textContent).toBe('body{background:url("data:image/png;base64,iVBORw==")}');
+		const logo = /url\("(qorpera-file-[0-9a-f]{32}-png)"\)/.exec(page.querySelector("style")?.textContent ?? "")?.[1];
+		expect(page.querySelector("style")?.textContent).toBe(`body{background:url("${logo}")}`);
+		expect(new Map(assembled.framed.files).get(logo ?? "")?.type).toBe("image/png");
 		expect(page.querySelector("link")?.getAttribute("href")).toBe("https://cdn.test/x.css");
 		const images = [...page.querySelectorAll("img")].map((image) => image.getAttribute("src"));
-		expect(images).toEqual(["data:image/png;base64,iVBORw==", "../secret.png"]);
+		expect(images).toEqual([logo, "../secret.png"]);
 		const script = page.querySelector("script");
 		expect(script?.hasAttribute("src")).toBe(false);
 		// A script's text can't end its own element early.
@@ -332,9 +416,13 @@ describe("putting an app's page together", () => {
 		expect(assembled.ok).toBe(true);
 		if (!assembled.ok) return;
 		const page = new DOMParser().parseFromString(assembled.page, "text/html");
-		const sources = [...page.querySelectorAll("img")].map((image) => atob(image.getAttribute("src")!.split(",")[1]!));
+		const handed = new Map(assembled.framed.files);
+		const sources = await Promise.all(
+			[...page.querySelectorAll("img")].map((image) => textOf(handed.get(image.getAttribute("src")!))),
+		);
 		expect(sources).toEqual([...names.map((_, index) => String.fromCharCode(65 + index)), "A"]);
-		expect(page.querySelector("style")?.textContent).toBe('b{background:url("data:image/png;base64,Qg==")}');
+		const second = page.querySelectorAll("img")[1]?.getAttribute("src");
+		expect(page.querySelector("style")?.textContent).toBe(`b{background:url("${second}")}`);
 		expect(most).toBeGreaterThan(1);
 		expect(most).toBeLessThanOrEqual(8);
 		expect(f.reads.filter((path) => path === "apps/many/p0.png")).toHaveLength(1);
@@ -455,6 +543,273 @@ describe("putting an app's page together", () => {
 	});
 });
 
+describe("an app's module scripts", () => {
+	const signal = new AbortController().signal;
+	const open = async (files: Record<string, string>, entry = "index.html", path = "apps/mod") => {
+		const assembled = await assembleApp(fakeFolder(files) as never, { path, entry }, signal);
+		if (!assembled.ok) throw new Error(assembled.message);
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const handed = new Map(assembled.framed.files);
+		const map = JSON.parse(page.querySelector("script[type=importmap]")?.textContent ?? "{}") as {
+			imports: Record<string, string>;
+		};
+		const source = (path: string) => textOf(handed.get(map.imports[`qorpera-module:/${path}`] ?? ""));
+		return { assembled, page, handed, map, source, said: assembled.framed.said ?? [] };
+	};
+
+	it("binds a module page's whole graph: module src, inline, relative at any depth, export from, side effects and a cycle", async () => {
+		const { page, map, source, said, handed } = await open({
+			"apps/mod/index.html":
+				'<script type="module" src="main.js"></script><script type="module">import { a } from "./lib/a.js"; a();</script>',
+			"apps/mod/main.js":
+				'import "./lib/side.js";\nexport * from "./lib/a.js";\nimport { b } from "./lib/deep/b.js";\nb();',
+			"apps/mod/lib/a.js": 'import { b } from "./deep/b.js";\nexport const a = () => b();',
+			"apps/mod/lib/deep/b.js":
+				'import { a } from "../a.js";\nimport { c } from "../../c.js";\nexport const b = () => c(a);',
+			"apps/mod/c.js": "export const c = (f) => f;",
+			"apps/mod/lib/side.js": "globalThis.side = 1;",
+		});
+		expect(said).toEqual([]);
+		expect(Object.keys(map.imports).sort()).toEqual(
+			["c.js", "lib/a.js", "lib/deep/b.js", "lib/side.js", "main.js"]
+				.map((path) => `qorpera-module:/${path}`)
+				.sort(),
+		);
+		expect(page.head.firstElementChild?.getAttribute("type")).toBe("importmap");
+		const main = page.querySelector("script[src]");
+		expect(main?.getAttribute("src")).toBe(map.imports["qorpera-module:/main.js"]);
+		expect(page.querySelector("script[type=module]:not([src])")?.textContent).toBe(
+			'import { a } from "qorpera-module:/lib/a.js"; a();',
+		);
+		expect(await source("main.js")).toBe(
+			'import "qorpera-module:/lib/side.js";\nexport * from "qorpera-module:/lib/a.js";\nimport { b } from "qorpera-module:/lib/deep/b.js";\nb();\n//# sourceURL=qorpera-module:/main.js',
+		);
+		expect(await source("lib/deep/b.js")).toContain('import { a } from "qorpera-module:/lib/a.js";');
+		expect(await source("lib/deep/b.js")).toContain('import { c } from "qorpera-module:/c.js";');
+		expect(await source("lib/a.js")).toContain('import { b } from "qorpera-module:/lib/deep/b.js";');
+		expect([...handed.values()].every((blob) => blob.type === "text/javascript")).toBe(true);
+		expect(Object.values(map.imports).every((token) => /^qorpera-file-[0-9a-f]{32}-module$/.test(token))).toBe(true);
+	});
+
+	it("resolves bare names through the page's import map, exact and by prefix, and literal dynamic imports", async () => {
+		const { page, map, source, said } = await open({
+			"apps/mod/index.html":
+				'<script type="importmap">{"imports": {"three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/"}}</script><script type="module" src="viewer.js"></script>',
+			"apps/mod/viewer.js":
+				"import * as THREE from 'three';\nimport { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';\nconst later = await import('./later.js');\nconst any = await import(name);\nconst url = new URL('./model.glb', import.meta.url);",
+			"apps/mod/vendor/three.module.js": "export const REVISION = '186';",
+			"apps/mod/vendor/addons/loaders/GLTFLoader.js":
+				"import { REVISION } from 'three';\nexport class GLTFLoader {}",
+			"apps/mod/later.js": "export default 1;",
+		});
+		expect(said).toEqual([]);
+		expect(page.querySelectorAll("script[type=importmap]")).toHaveLength(1);
+		const viewer = await source("viewer.js");
+		expect(viewer).toContain("import * as THREE from 'qorpera-module:/vendor/three.module.js';");
+		expect(viewer).toContain("import { GLTFLoader } from 'qorpera-module:/vendor/addons/loaders/GLTFLoader.js';");
+		expect(viewer).toContain('const later = await import("qorpera-module:/later.js");');
+		expect(viewer).toContain("const any = await import(name);");
+		expect(viewer).toContain(
+			`const url = new URL('./model.glb', ${JSON.stringify(new URL("./page-preview/viewer.js", document.baseURI).href)});`,
+		);
+		expect(await source("vendor/addons/loaders/GLTFLoader.js")).toContain(
+			"import { REVISION } from 'qorpera-module:/vendor/three.module.js';",
+		);
+		expect(map.imports.three).toBe(map.imports["qorpera-module:/vendor/three.module.js"]);
+	});
+
+	it("refuses what is not a file of the page's folder, each with a plain line, and leaves it as written", async () => {
+		const { source, said } = await open({
+			"apps/mod/index.html": '<script type="module" src="viewer.js"></script>',
+			"apps/mod/viewer.js":
+				"import 'https://cdn.example/three.js';\nimport 'lodash';\nimport '../secret.js';\nimport '/apps/mod/x.js';\nimport './gone.js';\nimport 'data:text/javascript,1';",
+			"apps/secret.js": "1",
+		});
+		expect(said).toEqual([
+			"viewer.js imports https://cdn.example/three.js, which is not a file of the page's folder",
+			"viewer.js imports lodash, which the page's import map does not name",
+			"viewer.js imports ../secret.js, which is outside the page's folder",
+			"viewer.js imports /apps/mod/x.js, which is not a file of the page's folder",
+			"viewer.js imports ./gone.js, which is not in the page's folder",
+		]);
+		const viewer = await source("viewer.js");
+		expect(viewer).toContain("import 'https://cdn.example/three.js';");
+		expect(viewer).toContain("import '../secret.js';");
+		expect(viewer).toContain("import 'qorpera-module:/gone.js';");
+		expect(viewer).toContain("import 'data:text/javascript,1';");
+	});
+
+	it("binds JSON and CSS module imports as they are, and refuses another kind with a plain line", async () => {
+		const { map, source, said, handed } = await open({
+			"apps/mod/index.html": '<script type="module" src="viewer.js"></script>',
+			"apps/mod/viewer.js":
+				'import config from "./config.json" with { type: "json" };\nimport sheet from \'./look.css\' with {type:\'css\'};\nconst more = await import("./more.json", { with: { type: "json" } });\nimport notes from "./notes.txt" with { type: "text" };\nimport plain from "./plain.js" with { };',
+			"apps/mod/config.json": '{ "name": "klokkesten" }\n',
+			"apps/mod/more.json": '{ "count": 3 }',
+			"apps/mod/look.css": "p { color: red }",
+			"apps/mod/notes.txt": "notes",
+			"apps/mod/plain.js": "export default 1;",
+		});
+		expect(said).toEqual(["viewer.js imports ./notes.txt as text, which a page can't import"]);
+		const viewer = await source("viewer.js");
+		expect(viewer).toContain('import config from "qorpera-module:/config.json?type=json" with { type: "json" };');
+		expect(viewer).toContain("import sheet from 'qorpera-module:/look.css?type=css' with {type:'css'};");
+		expect(viewer).toContain('await import("qorpera-module:/more.json?type=json", { with: { type: "json" } });');
+		expect(viewer).toContain('import notes from "./notes.txt" with { type: "text" };');
+		expect(viewer).toContain('import plain from "qorpera-module:/plain.js" with { };');
+		const file = (virtual: string) => handed.get(map.imports[virtual] ?? "");
+		expect(await textOf(file("qorpera-module:/config.json?type=json"))).toBe('{ "name": "klokkesten" }\n');
+		expect(file("qorpera-module:/config.json?type=json")?.type).toBe("application/json");
+		expect(map.imports["qorpera-module:/config.json?type=json"]).toMatch(/^qorpera-file-[0-9a-f]{32}-json$/);
+		expect(map.imports["qorpera-module:/look.css?type=css"]).toBe(`data:text/css;base64,${btoa("p { color: red }")}`);
+		expect(await textOf(file("qorpera-module:/more.json?type=json"))).toBe('{ "count": 3 }');
+		expect(Object.keys(map.imports).some((key) => key.includes("notes"))).toBe(false);
+	});
+
+	it("maps an import-map prefix that names the app's own folder, from the root and from a page below it", async () => {
+		const fromRoot = await open({
+			"apps/mod/index.html":
+				'<script type="importmap">{"imports": {"@/": "./", "app/": "./"}}</script><script type="module">import "@/lib/x.js"; import "app/y.js";</script>',
+			"apps/mod/lib/x.js": "1",
+			"apps/mod/y.js": "2",
+		});
+		expect(fromRoot.said).toEqual([]);
+		expect(fromRoot.page.querySelector("script[type=module]")?.textContent).toBe(
+			'import "qorpera-module:/lib/x.js"; import "qorpera-module:/y.js";',
+		);
+		const fromBelow = await open(
+			{
+				"apps/mod/pages/index.html":
+					'<script type="importmap">{"imports": {"~/": "../", "out/": "../../"}}</script><script type="module">import "~/lib/x.js"; import "out/z.js";</script>',
+				"apps/mod/lib/x.js": "1",
+			},
+			"pages/index.html",
+		);
+		expect(fromBelow.said).toEqual([
+			"the page imports out/z.js, which the page's import map names outside its folder",
+		]);
+		expect(fromBelow.page.querySelector("script[type=module]")?.textContent).toBe(
+			'import "qorpera-module:/lib/x.js"; import "out/z.js";',
+		);
+	});
+
+	it("gives import.meta.url with each part of a path escaped, so a neighbour resolves to the right file", async () => {
+		const { source, said, map } = await open({
+			"apps/mod/index.html": '<script type="module" src="two%20words/m%C3%B8de%20%26%20co.js"></script>',
+			"apps/mod/two words/møde & co.js": "const near = new URL('./near.txt', import.meta.url);",
+		});
+		expect([said, Object.keys(map.imports)]).toEqual([[], ["qorpera-module:/two%20words/m%C3%B8de%20%26%20co.js"]]);
+		const url = new URL("./page-preview/two%20words/m%C3%B8de%20%26%20co.js", document.baseURI).href;
+		expect(await source("two%20words/m%C3%B8de%20%26%20co.js")).toContain(
+			`new URL('./near.txt', ${JSON.stringify(url)})`,
+		);
+		const near = new URL("./near.txt", url).href.slice(new URL("./page-preview/", document.baseURI).href.length);
+		expect(resolveAppPath("", near)).toBe("two words/near.txt");
+	});
+
+	it("reads a large module piece by piece and binds a module the page names twice once", async () => {
+		const bytes = new TextEncoder().encode(`export const big = "${"x".repeat(9 * 1024 * 1024)}";`);
+		const f = fakeFolder({
+			"apps/mod/index.html":
+				'<script type="module" src="big.js"></script><script type="module">import { big } from "./big.js";</script>',
+			"apps/mod/big.js": bytes,
+		});
+		const whole = vi.spyOn(f, "readFile");
+		const pieces = vi.fn(
+			async (
+				file: { bytes: number },
+				_signal: AbortSignal,
+				onPiece: (piece: Uint8Array, index: number, count: number) => void,
+			) => {
+				const count = Math.ceil(file.bytes / (4 * 1024 * 1024));
+				for (let index = 0; index < count; index++)
+					onPiece(bytes.subarray(index * 4 * 1024 * 1024, (index + 1) * 4 * 1024 * 1024), index, count);
+			},
+		);
+		const assembled = await assembleApp(
+			Object.assign(f, { readFilePieces: pieces }) as never,
+			{ path: "apps/mod", entry: "index.html" },
+			signal,
+		);
+		if (!assembled.ok) throw new Error(assembled.message);
+		expect(pieces).toHaveBeenCalledOnce();
+		expect(whole.mock.calls.map(([file]) => (file as { bytes: number }).bytes)).not.toContain(bytes.length);
+		const modules = (assembled.framed.files ?? []).filter(([token]) => token.endsWith("-module"));
+		expect(modules).toHaveLength(1);
+		expect(modules[0]?.[1].size).toBe(bytes.length + "\n//# sourceURL=qorpera-module:/big.js".length);
+	});
+
+	it("leaves a page with no module script as it was", async () => {
+		const { assembled, page } = await open({
+			"apps/mod/index.html": '<script src="app.js"></script><p>Hi</p>',
+			"apps/mod/app.js": "1",
+		});
+		expect(page.querySelector("script[type=importmap]")).toBeNull();
+		expect(assembled.framed.said).toBeUndefined();
+		expect(page.querySelector("script")?.textContent).toBe("1");
+	});
+});
+
+describe("a page opened from the company folder by itself", () => {
+	const files = () =>
+		fakeFolder({
+			"marketing/jordro/index.html":
+				'<link rel="stylesheet" href="look.css"><img src="hero.webp"><video src="film/ad.mp4"></video><img src="../secret.png">',
+			"marketing/jordro/look.css": "@font-face{font-family:J;src:url(type/j.woff2)}",
+			"marketing/jordro/type/j.woff2": new Uint8Array(30),
+			"marketing/jordro/hero.webp": new Uint8Array(20),
+			"marketing/jordro/film/ad.mp4": new Uint8Array(10),
+			"marketing/secret.png": new Uint8Array(5),
+			"bank/statement.pdf": new Uint8Array(5),
+			"QorperaOS/vision/vision.md": "x",
+		});
+
+	it("loads the files beside it and below it, as an app's page does", async () => {
+		const f = files();
+		const assembled = await assembleApp(
+			f,
+			{ path: "marketing/jordro", entry: "index.html" },
+			new AbortController().signal,
+		);
+		if (!assembled.ok) throw new Error(assembled.message);
+		expect([...new Map(assembled.framed.files).values()].map((blob) => blob.type).sort()).toEqual([
+			"font/woff2",
+			"image/webp",
+			"video/mp4",
+		]);
+		expect(assembled.page).toContain('src="../secret.png"');
+		expect(f.reads.every((path) => path.startsWith("marketing/jordro/"))).toBe(true);
+	});
+
+	it("reads only the files in its own folder and below, never a platform folder, and makes no other call", async () => {
+		const f = files();
+		const signal = new AbortController().signal;
+		const page = new PageFiles(f, "marketing/jordro", signal);
+		const read = (path: string, base: string) => page.answer({ method: "file", params: { path, base } });
+		const hero = await read("hero.webp", "");
+		expect(hero.ok && hero.value instanceof Blob && hero.value.type).toBe("image/webp");
+		expect((await read("j.woff2", "type")).ok).toBe(true);
+		for (const [path, base] of [
+			["../secret.png", ""] as const,
+			["../../bank/statement.pdf", ""],
+			["/marketing/secret.png", ""],
+			["hero.webp", "../.."],
+			["https://example.com/x.png", ""],
+			["missing.png", ""],
+		])
+			expect((await read(path, base)).ok, `${base} ${path}`).toBe(false);
+		for (const method of ["read", "list", "table", "agents", "todos", "query", "answer", "setRow", "tell", "open"])
+			expect((await page.answer({ method, params: { path: "hero.webp" } })).ok, method).toBe(false);
+		expect(f.reads.every((path) => path.startsWith("marketing/jordro/"))).toBe(true);
+		for (const root of ["bank", "QorperaOS/vision"]) {
+			const closed = new PageFiles(f, root, signal);
+			expect((await closed.answer({ method: "file", params: { path: "statement.pdf", base: "" } })).ok).toBe(false);
+			expect((await closed.answer({ method: "file", params: { path: "vision.md", base: "" } })).ok).toBe(false);
+		}
+		expect(f.reads.some((path) => path.startsWith("bank/") || path.startsWith("QorperaOS/"))).toBe(false);
+	});
+});
+
 describe("the company's apps", () => {
 	it("lists each app with its manifest, or its problems", async () => {
 		const f = fakeFolder({
@@ -521,11 +876,11 @@ describe("the company's apps", () => {
 	it("reads ahead the most recently changed apps first, and stops at the round's bytes", async () => {
 		const picture = (fill: number) => new Uint8Array(10 * 1024 * 1024).fill(fill);
 		const f = fakeFolder({
-			"apps/old/index.html": '<img src="a.png">',
+			"apps/old/index.html": '<img hidden src="a.png">',
 			"apps/old/a.png": picture(1),
-			"apps/mid/index.html": '<img src="a.png">',
+			"apps/mid/index.html": '<img hidden src="a.png">',
 			"apps/mid/a.png": picture(2),
-			"apps/new/index.html": '<img src="a.png">',
+			"apps/new/index.html": '<img hidden src="a.png">',
 			"apps/new/a.png": picture(3),
 		});
 		const parsed = parseAppManifest('name = "App"\n');
@@ -545,7 +900,7 @@ describe("the company's apps", () => {
 		const readFile = vi.spyOn(f, "readFile");
 		await warmApps(f, [app("old", 1), app("mid", 2), app("new", 3)], new AbortController().signal);
 		expect(readFile.mock.calls.map(([file]) => (file as { bytes: number }).bytes).sort()).toEqual(
-			[17, 17, 17, 10 * 1024 * 1024, 10 * 1024 * 1024].sort(),
+			[24, 24, 24, 10 * 1024 * 1024, 10 * 1024 * 1024].sort(),
 		);
 	});
 
@@ -1347,7 +1702,7 @@ describe("an app's card in a message", () => {
 		expect(body.querySelector("a")).toBeNull();
 	});
 
-	it("says the card and the link open the app's own page, not a panel beside the chat", () => {
+	it("says the card and the link open the app's own page", () => {
 		const prose = markdown("See [Sales this week](app:sales-board) for the numbers.");
 		const [link, card] = prose.querySelectorAll<HTMLButtonElement>("[data-app-name]");
 		expect(link?.title).toBe("Open sales-board");
@@ -1355,7 +1710,6 @@ describe("an app's card in a message", () => {
 		// Drawn plain, before the company's apps are read: what it is, and that it leads somewhere.
 		expect(card?.querySelector(".app-card-note")?.textContent).toBe("App");
 		expect(card?.querySelector(".app-card-go svg")).not.toBeNull();
-		expect(prose.textContent).not.toContain("beside the chat");
 	});
 });
 

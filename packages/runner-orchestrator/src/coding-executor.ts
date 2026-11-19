@@ -224,8 +224,8 @@ export const TURN_START_UNFINISHED =
  * checks' do: the kernel keeps the words and takes the code as the turn's reason (migration 20260930743000), and a
  * member's page says the change was not saved. Codes of their own, not the code host's, so a page can tell such a
  * landing (the turn ran) from a workspace refused for the same names (the session could not start). */
-export const CODING_LAND_NAMES_REFUSED = "CODING_LAND_NAMES_REFUSED";
-export const CODING_LAND_FILE_TOO_LARGE = "CODING_LAND_FILE_TOO_LARGE";
+const CODING_LAND_NAMES_REFUSED = "CODING_LAND_NAMES_REFUSED";
+const CODING_LAND_FILE_TOO_LARGE = "CODING_LAND_FILE_TOO_LARGE";
 /** What to change after a landing the code host refused by rule (its code, and the paths it named, a null for one not
  * to be named), or whose refs it could not read, or undefined for a code this does not know. Never a plain "finish
  * again" for work that would be refused the same way. A refusal for the files' names or size ends with its code. */
@@ -271,7 +271,7 @@ export const PUBLICATION_UNFINISHED =
 /** The turn's step while the work of a session on a repository kept in Qorpera lands: its checks run, then it goes
  * into the default branch (own code storage, step 3). Set before the executor knows whether the repository has checks.
  * The web shows the founder's card line for checks by these exact words. */
-export const CODING_LANDING_STEP = "Checking and saving the change";
+const CODING_LANDING_STEP = "Checking and saving the change";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */

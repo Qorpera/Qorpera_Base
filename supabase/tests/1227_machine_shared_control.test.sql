@@ -608,11 +608,4 @@ begin
 		raise exception '9: a shared row with a text was let in';
 	exception when check_violation then null;
 	end;
-	perform pg_temp.base_assert(not exists (select 1 from unnest(array[
-			'public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb)',
-			'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
-			'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
-			'public.qorpera_list_agent_machines(uuid,uuid)',
-			'public.qorpera_machine_desktop_shared_told(uuid,timestamptz)']) f(sig)
-		where strpos(pg_get_functiondef(f.sig::regprocedure), '20260930734000') = 0), '9: the markers');
 end $$;

@@ -27,6 +27,9 @@ const MAX_HELLO_BYTES = 65_536;
 // Bounds per connection only: 8 at once, 5 s to connect and 30 s idle. A run's relay counts no bytes and no connections
 // over its life (no caps on runs, 5 Oct 2026; it stopped a run after 64 MiB or 128 connections until then).
 const MAX_CONNECTIONS = 8;
+// WHY: Claude Code opens a connection per call in flight (2.1.325): about a dozen as an interactive read starts, 21 for
+// a turn's 20 parallel subagents, its own ceiling; at eight they were refused and retried.
+export const NATIVE_CLAUDE_CODE_CONNECTIONS = 32;
 const IDLE_MS = 30_000;
 /** How long a connection may be silent while a picture is being made (`allowLongWaits`): Codex's images request sends
  * nothing back until the picture exists, which takes up to a few minutes, and keeps no ping on the connection (Codex
@@ -169,6 +172,10 @@ export async function startNativeCodexEgress(options: {
 	hosts?: readonly string[];
 }): Promise<NativeEgressRelay> {
 	const hosts = options.hosts ?? NATIVE_CODEX_EGRESS_HOSTS;
+	const maxConnections =
+		hosts === NATIVE_CLAUDE_CODE_EGRESS_HOSTS || hosts === NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS
+			? NATIVE_CLAUDE_CODE_CONNECTIONS
+			: MAX_CONNECTIONS;
 	if (
 		hosts !== NATIVE_CODEX_EGRESS_HOSTS &&
 		hosts !== NATIVE_CHATGPT_PLAN_EGRESS_HOSTS &&
@@ -206,7 +213,7 @@ export async function startNativeCodexEgress(options: {
 	const controller = new AbortController();
 	const signal = AbortSignal.any([options.signal, controller.signal]);
 	const server = createServer((peer) => {
-		if (signal.aborted || peers.size >= MAX_CONNECTIONS) {
+		if (signal.aborted || peers.size >= maxConnections) {
 			peer.destroy();
 			return;
 		}

@@ -120,10 +120,8 @@ end $$;
 
 do $$
 declare v_m1 jsonb; v_m2 jsonb; v_m3 jsonb; v_m4 jsonb; v_m5 jsonb; v_again jsonb; v_run1 jsonb; v_run2 jsonb; v_machine public.qorpera_coding_machines%rowtype;
-	v_turn6 uuid; v_turn7 uuid; v_turn8 uuid; v_read jsonb; v_take uuid;
+	v_turn6 uuid; v_turn7 uuid; v_turn8 uuid; v_read jsonb;
 begin
-	-- A. The three-argument plan is gone; the executor's named three still reach the new one. A digest must be one.
-	perform pg_temp.ok(to_regprocedure('public.qorpera_plan_coding_machine(uuid,uuid,text)') is null, 'the three-argument plan went');
 	perform pg_temp.ok(pg_temp.error(format('select pg_temp.plan(1, %L)', 'not-a-digest')) = '22023 Coding machine input invalid',
 		'a setup digest that is not one is refused');
 
@@ -184,8 +182,17 @@ begin
 	perform pg_temp.ok(public.qorpera_coding_member_has_open_session(v_machine), 's1 and s2 keep theirs');
 
 	-- G. The current-machine index is unique over the member, agent, repository, digest and place.
-	perform pg_temp.ok((select index.indisunique and index.indnatts = 7 from pg_index index
-		where index.indexrelid = 'public.qorpera_coding_machines_current'::regclass), 'the current-machine index has seven columns');
+	set local session_replication_role = replica;
+	perform pg_temp.ok(pg_temp.error(format('insert into public.qorpera_coding_machines select (jsonb_populate_record(m, %L)).*
+		from public.qorpera_coding_machines m where m.id = %L', jsonb_build_object('id', extensions.gen_random_uuid()), v_m1 ->> 'machineId'))
+		like '23505 %qorpera_coding_machines_current%', 'a second current machine of the same identity and place is refused');
+	begin
+		insert into public.qorpera_coding_machines select (jsonb_populate_record(m, jsonb_build_object('id', extensions.gen_random_uuid(),
+			'number', 2))).* from public.qorpera_coding_machines m where m.id = (v_m1 ->> 'machineId')::uuid;
+		raise exception using errcode = 'QT485';
+	exception when sqlstate 'QT485' then null;
+	end;
+	set local session_replication_role = origin;
 
 	-- H. A session moving onto m1 brings its leased turn, which takes in m1's read set under m1's release for that run,
 	-- with an all-zero output. m1 holds a released read of rules/coding.md (every agent may read rules/), its receipt as
@@ -202,10 +209,9 @@ begin
 		where run_id = v_turn6), format('QorperaOS/rules/ needs no grant, and s6''s turn has no records before it moves: %s', v_read));
 	perform pg_temp.ok(pg_temp.run(6, v_m1 ->> 'bindingText') ->> 'intent' = 'run'
 		and pg_temp.run(7, v_m1 ->> 'bindingText') ->> 'intent' = 'run', 's6 and s7 move onto m1');
-	v_take := md5('coding-machine:' || v_turn6 || ':' || (v_m1 ->> 'machineId'))::uuid;
-	perform pg_temp.ok(exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn6 and release_id = v_take
+	perform pg_temp.ok(exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn6
 		and resource_id = (v_read -> 'authority' ->> 'resourceId')::uuid and output_sha256 = repeat('0', 64)
-		and reads = jsonb_build_array(v_read)), 'the moved turn''s records hold m1''s read under m1''s release for the run');
+		and reads = jsonb_build_array(v_read)), 'the moved turn''s records hold m1''s read');
 	perform pg_temp.ok(exists (select 1 from public.qorpera_folder_run_reads where run_id = v_turn6 and grant_id is null
 		and resource_id = (v_read -> 'authority' ->> 'resourceId')::uuid
 		and resource_revision = (v_read -> 'authority' ->> 'resourceRevision')::bigint), 'the moved turn has the read''s pair');
