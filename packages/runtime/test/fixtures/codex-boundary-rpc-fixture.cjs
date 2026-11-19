@@ -700,6 +700,8 @@ async function handle(message) {
 			failed({ message: "PRIVATE_PROVIDER_ERROR", additionalDetails: "PRIVATE_PROVIDER_DETAILS", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } });
 		} else if (mode === "terminal-rate-error") {
 			failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } } });
+		} else if (mode === "terminal-unauthorized") {
+			failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: "unauthorized" });
 		} else if (mode === "terminal-notice-then-null") {
 			nativeError("unauthorized", false);
 			failed({ message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: null });

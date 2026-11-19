@@ -766,7 +766,7 @@ function collectChildOutput(child: NativeHarnessChild): {
 	};
 }
 
-export type NativeProviderUsageSignal = "usage_limit" | "rate_limited" | "provider_outage";
+export type NativeProviderUsageSignal = "usage_limit" | "rate_limited" | "provider_outage" | "sign_in_refused";
 
 /**
  * Typed usage signal from a harness failure (contract section 17). The
