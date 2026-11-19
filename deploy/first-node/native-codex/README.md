@@ -92,8 +92,10 @@ compaction. What moved with it:
 - `apply_patch` is offered with no environment upstream; a governed run without a home keeps 0.155.1's rule and is
   never offered it (the exact inventory check found `functions.apply_patch`).
 - The helper tools are gated as before; 0.170.0's catalog adds `request_user_input_async`,
-  `send_message_to_user_async`, `literature_search_query` and `multi_agent_v2_in_code_mode` for GPT-6.2 Sol (web
-  search is disabled and Code Mode is off in a governed run, so the last two never register).
+  `send_message_to_user_async`, `literature_search_query` and `multi_agent_v2_in_code_mode` for GPT-6.2 Sol. The
+  first two are gated; Code Mode is off, so the last never registers. `literature_search_query` is no tool of its own:
+  on a Codex login (`features.standalone_web_search`, `web_search="cached"`) it widens Codex's own `web.run` schema
+  for GPT-6.2 Sol, and a `web.run` result is fenced like any other. A plan run has no search.
 - Provider-default is GPT-6.2 Sol (it was GPT-6 Astra). Every GPT-6 and GPT-5.6 model uses Responses Lite.
 - A governed run turns `unified_image_budget` off (on since 0.170.0): it re-prepares a tool-output picture at
   original detail for a Responses Lite model, which the capture fence refuses.
@@ -105,6 +107,12 @@ the exact inventory on provider-default, `gpt-6.2-sol`, `gpt-6-astra` and `gpt-6
 entrypoints (`20261118T171157-33799-aeb0f905`); and the company-run proofs on a migrated database (first requests,
 tools on demand, run log, read token, S2, S3, answer first, home channel, home folder, S4; runs
 `20261118T172451-79284-bbeb32f6` and `20261118T173109-98897-e9a5b17e`). All with a scripted loopback provider: no login, no real model.
+
+Again on the tree with master's Codex web search (#1894, `features.standalone_web_search`), 19 Nov, same binary:
+`patched-codex-web-search` on offline-probe, `gpt-6-astra` and `gpt-6.2-sol`, with `web.run`'s result fenced and the
+hosted search refused (`20261119T220422-93087-5f49cb22`); the eleven real-binary files, 377 of 377
+(`20261119T220756-96821-7e4ba53d`); the three standalone entrypoints (`20261119T221047-658-6fbfb5aa`); and the ten
+company-run proofs (`20261119T221133-1116-5e2947ae`).
 
 ## Build
 
