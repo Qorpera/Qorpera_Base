@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+- Release v260 (a ChatGPT sign-in OpenAI refuses renews at once, backend, #1958, with migration `20260930808000` and SQL
+  test 1304; a held draft merged in the release branch at its approved head; with master's #1957, migration
+  `20260930807000` and SQL test 1303, and #1945's program `userId` in `save_app`): runtime bundle 260
+  `a6aa04f164e14df6c7550510c923919d3173cdb7a5ddcebc51d9a18b6ca3769f` (activation `20260929026099`, previous 259
+  `43df5e96327e`). The activation requires `20260930808000` (a run's host reports Codex's pinned `unauthorized` as the
+  usage signal `sign_in_refused`, which only 808000's signal check accepts). The guest moves: the native provider host
+  (`7616128c`, 5,500,517 bytes); the rest of the guest, the native Codex (`9c299f88`), the shared vault, the login helper
+  and the coding executor stay.
 - A ChatGPT sign-in OpenAI stops accepting before its renewal is due renews at once (founder, 18 Nov 2026: "Yes, build it"; contract 17, the 2026-11-18 amendment; RUNTIME-LOGIN-VAULT.md "A pass the provider refuses"; migration `20260930808000`, SQL test 1304). Seen 18 Nov: after a plan upgrade every turn on one account login failed with `NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED` while the login stayed active. Codex's pinned `unauthorized` is now the usage signal `sign_in_refused` (no other discriminant raises it; a review turn's `unauthorized` is not "busy"); recording it marks the login's current pass refused, which makes its renewal due now through the one renewal lock (the idle passes take it first) and holds new work on the login as a usage limit does, at most 30 minutes, until a newer version or `needs_sign_in`; the hold is on the login row, so deleting the reporting company does not end it. A member's message that had no effect waits and tries again on the same login (`pausedFor: "sign_in_refused"`, #1916's waits). The member's connection list carries `login_status`; a run's recovery says `sign_in_refused` once its login needs a new sign-in. Nothing moves to another login. Rolls: the migration first (alone it changes nothing until a host sends the signal), then a runtime release that moves the native provider host in the guest; no vault, helper or orchestrator change.
 - `save_app` keeps a program version's `userId` (the member who added it from the web, RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026) on the versions it does not touch, through the shared `parseProgram`; an agent's own version never has it, and a hand-in naming it is refused. No migration.
 - Release v259 (several Claude logins per member, one In use, backend, #1947, with migration `20260930804000` and SQL
