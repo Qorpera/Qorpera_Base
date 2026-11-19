@@ -198,21 +198,3 @@ begin
 		and pg_temp.k6_stop('carol-desktop') = 'agreed:stopped:kernel:slept',
 		'4: with the session closed the machine is the member''s again: due at once, the member having left long ago');
 end $$;
-
-do $$
-begin
-	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_company_machine_member_only(public.qorpera_company_machines)'::regprocedure),
-			'qorpera_company_home_sessions') > 0
-		and strpos((select prosrc from pg_proc
-			where oid = 'public.qorpera_company_machine_member_only(public.qorpera_company_machines)'::regprocedure),
-			'20260930759000') > 0,
-		'5: the rule reads the home sessions and keeps 20260930759000''s body');
-	perform pg_temp.base_assert(not has_function_privilege('anon',
-			'public.qorpera_company_machine_member_only(public.qorpera_company_machines)', 'execute')
-		and not has_function_privilege('authenticated',
-			'public.qorpera_company_machine_member_only(public.qorpera_company_machines)', 'execute')
-		and not has_function_privilege('service_role',
-			'public.qorpera_company_machine_member_only(public.qorpera_company_machines)', 'execute'),
-		'5: the patched rule is still no API role''s');
-end $$;

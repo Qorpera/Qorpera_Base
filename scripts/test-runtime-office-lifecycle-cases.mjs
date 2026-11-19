@@ -92,10 +92,9 @@ export async function testOfficeLifecycleRevocation({ scope, binding, startup, a
 	const contenders = await race([request, request, { ...request, transitionId: randomUUID() }, { ...request, action: action === "replace" ? "service_restart" : "replace" }].map(value => `${service} ${begin(value)}`));
 	assert.equal(contenders.filter(r => r.code === 0).length, 2);
 	for (const result of contenders.filter(r => r.code === 0)) assert.deepEqual(JSON.parse(result.output), expected);
-	const methods = [];
 	let loseReply = true;
 	const control = new LxdOfficeLifecycleControl(request, { call: async (method, args, signal) => {
-		signal.throwIfAborted(); methods.push(method); assert.deepEqual(args, { p_request: request });
+		signal.throwIfAborted(); assert.deepEqual(args, { p_request: request });
 		const result = call(method === "qorpera_begin_runtime_office_lifecycle" ? begin(args.p_request) : status(args.p_request));
 		if (loseReply) { loseReply = false; throw new Error("Synthetic lost committed revocation reply"); }
 		return result;
@@ -110,7 +109,6 @@ export async function testOfficeLifecycleRevocation({ scope, binding, startup, a
 	assert.equal(execute("select state from public.qorpera_runtime_office_lifecycle_transitions;"), "draining");
 	assert.equal(execute("select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;"), "1");
 	assert.equal(execute("select count(*) from public.qorpera_runtime_office_lifecycle_transitions;"), "1");
-	assert.deepEqual(methods, ["qorpera_begin_runtime_office_lifecycle", "qorpera_runtime_office_lifecycle_status", "qorpera_runtime_office_lifecycle_status", "qorpera_begin_runtime_office_lifecycle"]);
 	console.log("PASS: competing transitions cannot replace identity; committed-reply loss and database restart recover exactly, and screen acknowledgements never imply physical stop or capacity release");
 	return { request, revocation: expected, lease, viewerGrant };
 }

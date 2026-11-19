@@ -17,6 +17,7 @@
 
 import { lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { folderKey } from "@qorpera/contracts";
 import {
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_CODE_PIN,
@@ -24,6 +25,7 @@ import {
 	type ClaudeCodeBoxOptions,
 	claudeBoxStartStage,
 } from "./cloud-claude-box.ts";
+import { type ClaudeLoginUsage, claudeUsageFromRateLimitInfo } from "./cloud-claude-login-usage.ts";
 import type { ClaudeLoginFileName } from "./cloud-claude-login-vault.ts";
 import { cloudHomeRefusalWords } from "./cloud-codex-home.ts";
 import { sha256 } from "./cloud-company-folder-client.ts";
@@ -148,12 +150,20 @@ function stepWhat(tool: string, input: unknown): string {
 		for (const name of names) if (typeof fields[name] === "string" && fields[name]) return fields[name] as string;
 		return "";
 	};
-	const what =
-		tool === "Bash"
-			? (first("command").split("\n")[0] ?? "")
-			: tool === "Grep" || tool === "Glob"
-				? [first("pattern"), first("path")].filter(Boolean).join(" in ")
-				: first("file_path", "notebook_path", "path", "task_id", "shell_id");
+	const socket = fields.ws && typeof fields.ws === "object" ? (fields.ws as Record<string, unknown>).url : undefined;
+	const search = (): string => [first("pattern"), first("path")].filter(Boolean).join(" in ");
+	const byTool: Readonly<Record<string, () => string>> = {
+		Bash: () => first("command").split("\n")[0] ?? "",
+		Monitor: () => first("command").split("\n")[0] || (typeof socket === "string" ? socket : ""),
+		Grep: search,
+		Glob: search,
+		Task: () => [first("subagent_type"), first("description")].filter(Boolean).join(": "),
+		WebSearch: () => first("query"),
+		Skill: () => first("skill"),
+	};
+	const what = Object.hasOwn(byTool, tool)
+		? byTool[tool]()
+		: first("file_path", "notebook_path", "path", "task_id", "shell_id");
 	return oneLine(what, WHAT_CHARS);
 }
 
@@ -197,8 +207,8 @@ export class ClaudeWorkerStream {
 	limit: { readonly words: string; toolsAfter: number } | null = null;
 	/** Claude Code said its sign-in failed. */
 	signedOut = false;
-	/** A tool use or result came before the init line: the tools were never shown to be the eight. */
 	beforeInit = false;
+	usage: ClaudeLoginUsage | null = null;
 
 	constructor(now: () => number = () => performance.now()) {
 		this.#now = now;
@@ -222,6 +232,10 @@ export class ClaudeWorkerStream {
 					? event.tools.filter((tool): tool is string => typeof tool === "string")
 					: [],
 			};
+			return [];
+		}
+		if (event.type === "rate_limit_event") {
+			this.usage = claudeUsageFromRateLimitInfo(event.rate_limit_info) ?? this.usage;
 			return [];
 		}
 		const message = (event.message ?? {}) as Record<string, unknown>;
@@ -545,6 +559,7 @@ export interface ClaudeWorkerRunOptions {
 	readonly root: string;
 	/** Each step as it finishes, for the run's work log. Never throws back into the run. */
 	readonly step?: (step: ClaudeWorkerStep | { readonly start: { model: string; sessionId: string } }) => void;
+	readonly usage?: (usage: ClaudeLoginUsage) => void;
 	readonly signal: AbortSignal;
 	/** How long after the box starts a replaced credentials file is sealed back early (default 120 s). */
 	readonly earlySealMs?: number;
@@ -675,7 +690,9 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 			try {
 				for await (const line of box.lines) {
 					const hadInit = stream.init !== null;
+					const usage = stream.usage;
 					for (const step of stream.push(line)) options.step?.(step);
+					if (stream.usage && stream.usage !== usage) options.usage?.(stream.usage);
 					if (stream.beforeInit) {
 						toolsWrong = true;
 						break;
@@ -784,6 +801,21 @@ export function claudeWorkerLogins(client: ClaudeLoginRunClient, binding: ModelL
 			return { state: "stale", version: answer.version };
 		},
 	};
+}
+
+const CLAUDE_CODE_TEMPORARY_FILE = /^(.+)\.tmp\.[1-9][0-9]{0,9}\.[0-9a-f]{12}$/;
+
+export function claudeWorkerReportedOutputs(paths: unknown, resultsFile: string): string[] {
+	const listed = (Array.isArray(paths) ? paths : []).filter(
+		(path): path is string =>
+			typeof path === "string" && path === path.trim() && !/[\r\n]/.test(path) && Buffer.byteLength(path) <= 256,
+	);
+	const written = new Set(listed.map(folderKey));
+	return listed.filter((path) => {
+		if (path === resultsFile) return false;
+		const file = CLAUDE_CODE_TEMPORARY_FILE.exec(path)?.[1];
+		return file === undefined || !written.has(folderKey(file));
+	});
 }
 
 /**

@@ -10,15 +10,15 @@ create function pg_temp.mr_references(p_n integer, p_message_id text, p_referenc
 language plpgsql as $$
 declare
 	v_email text := '54200000-0000-4000-8000-' || lpad(p_n::text, 12, '0');
-	v_received jsonb := public.qorpera_receive_mail(v_email, array['support@mail.example.test'],
+	v_received jsonb := public.qorpera_receive_mail(v_email, array['support.base@mail.example.test'],
 		jsonb_build_object('schema', 'qorpera.mail/v1', 'emailId', v_email, 'subject', 'Hello', 'from', 'customer@example.org',
-			'to', jsonb_build_array('support@mail.example.test'), 'messageId', p_message_id, 'references', p_references,
+			'to', jsonb_build_array('support.base@mail.example.test'), 'messageId', p_message_id, 'references', p_references,
 			'text', 'Hi.')::text) -> 'results' -> 0;
 	v_receipt jsonb;
 	v_mail public.qorpera_company_mail_outbox%rowtype;
 begin
 	v_receipt := public.qorpera_send_agent_mail(current_setting('qorpera_test.base_binding')::jsonb, 'mr-' || p_n,
-		jsonb_build_object('from', 'support@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
+		jsonb_build_object('from', 'support.base@mail.example.test', 'to', jsonb_build_array('customer@example.org'),
 			'subject', 'Re: Hello', 'text', 'Thanks for writing.', 'inReplyTo', v_received ->> 'deliveryId'));
 	select * into v_mail from public.qorpera_company_mail_outbox where call_id = 'mr-' || p_n;
 	perform pg_temp.base_assert(v_received ->> 'outcome' = 'accepted' and (v_receipt ->> 'threaded')::boolean
@@ -35,7 +35,7 @@ update public.qorpera_mail_settings set domain = 'mail.example.test', enabled = 
 update public.qorpera_event_intake_settings set enabled = true, public_url = 'https://intake.example.test';
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
-	'92400000-0000-4000-8000-000000000020', 'support', 'Customer support') \g /dev/null
+	'92400000-0000-4000-8000-000000000020', 'support.base', 'Customer support') \g /dev/null
 select pg_temp.base_claims('service_role');
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'mr-ack') \g /dev/null
 

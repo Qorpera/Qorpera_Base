@@ -738,7 +738,7 @@ describe("Good will", () => {
 		await handleComputerBilling(request("good-will-card", { profileId: COMPANY }), first.deps);
 		assert.equal(first.posts[0]?.form.name, "The shop");
 		assert.equal(first.posts[0]?.form["metadata[qorpera_profile_id]"], COMPANY);
-		assert.equal(first.posts[0]?.idempotencyKey, `qorpera-good-will-customer-${COMPANY}-test`);
+		assert.equal(first.posts[0]?.idempotencyKey, "qorpera-good-will-customer-30000000-0000-4000-8000-000000000010-test");
 		assert.deepEqual(first.doorCalls[1], {
 			method: "customer_set",
 			args: { profileId: COMPANY, customerId: "cus_company", livemode: false },
@@ -786,7 +786,7 @@ describe("Good will", () => {
 		);
 		assert.deepEqual(await response.json(), { invoiced: 1, failed: 0 });
 		const [invoice, item, finalize] = f.posts;
-		assert.equal(invoice?.idempotencyKey, `qorpera-good-will-${COMPANY}-2026-11-test-invoice`);
+		assert.equal(invoice?.idempotencyKey, "qorpera-good-will-30000000-0000-4000-8000-000000000010-2026-11-test-invoice");
 		// A draft Stripe leaves alone until it is finalized, recorded before anything is added to it.
 		assert.equal(invoice?.form.auto_advance, "false");
 		assert.equal(finalize?.form.auto_advance, "true");

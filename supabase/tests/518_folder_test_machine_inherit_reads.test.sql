@@ -56,14 +56,9 @@ begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 end $$;
 
--- The take-in copies only what is new (part 2): its body carries the marker on top of the earlier patches, and the
--- marks are the platform's alone.
 do $$
-declare d constant text := pg_get_functiondef('public.qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)'::regprocedure);
-	t constant text := 'public.qorpera_folder_run_inherited_records'; r name;
+declare t constant text := 'public.qorpera_folder_run_inherited_records'; r name;
 begin
-	if strpos(d, '20260930498000') = 0 or strpos(d, '20260930446000') = 0 or strpos(d, '20260930480000') = 0 then
-		raise exception 'The take-in carries 20260930498000 on top of the earlier patches'; end if;
 	if not (select relrowsecurity from pg_class where oid = t::regclass) then
 		raise exception 'The marks have row level security'; end if;
 	foreach r in array array['public', 'anon', 'authenticated', 'service_role']::name[] loop

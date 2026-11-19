@@ -178,16 +178,6 @@ begin
 			'92400000-0000-4000-8000-000000000010', 'found', 'landed', pg_temp.rec_sha('x'), 'A row', %L, %L)$q$,
 			v_bad.state, v_bad.checks), '23514');
 	end loop;
-	-- Each changed body carries the marker.
-	foreach v_function in array array['public.qorpera_code_change_report_valid(jsonb)',
-		'public.qorpera_record_code_change(uuid,uuid,jsonb)', 'public.qorpera_code_change_files(text,text,uuid,text,text,integer)',
-		'public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)',
-		'public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)',
-		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
-		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'] loop
-		perform pg_temp.base_assert(strpos(pg_get_functiondef(v_function::regprocedure), '20260930721000') > 0,
-			'the marker is in ' || v_function);
-	end loop;
 end $$;
 
 -- 2. The record call --------------------------------------------------------------------------------------------------

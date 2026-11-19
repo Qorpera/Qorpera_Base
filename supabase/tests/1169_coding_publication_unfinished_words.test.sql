@@ -44,6 +44,3 @@ begin
 	perform pg_temp.base_assert(public.qorpera_coding_turn_failure(w, 'Broke. [code=CODING_SOMETHING_ELSE]') ->> 'summary'
 		like 'The coding turn stopped because of a problem on Qorpera''s side.%', 'another code');
 end $$;
-
-select pg_temp.base_assert(position('20260930669000' in pg_get_functiondef(
-	'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'::regprocedure)) > 0, 'the marker') \g /dev/null

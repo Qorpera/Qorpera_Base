@@ -61,7 +61,7 @@ $$;
 
 -- 1. Who may call what ----------------------------------------------------------------------------------------------------
 do $$
-declare v_name text; v_signature text;
+declare v_name text; v_signature text; v_receipts jsonb;
 begin
 	foreach v_name in array array['qorpera_site_publish_check', 'qorpera_site_publish_begin', 'qorpera_site_publish_put',
 		'qorpera_site_publish_finish', 'qorpera_site_unpublish'] loop
@@ -97,8 +97,20 @@ begin
 			and not has_table_privilege('service_role', 'public.' || v_name, 'insert'), 'No API role reads ' || v_name);
 	end loop;
 	-- Observations name both tools, as the runtime's vocabulary does.
-	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-		'''publish_site'',''unpublish_site''') > 0, 'Observations name the site tools');
+	set local role service_role;
+	v_receipts := public.qorpera_record_runtime_observation_batch(
+		(current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid,
+		(select jsonb_agg(jsonb_build_object('schema','qorpera.runtime-observation/v1','attemptId',extensions.gen_random_uuid(),
+			'parentAttemptId',null,'assignmentId',current_setting('qorpera_test.base_binding')::jsonb -> 'assignmentId',
+			'phase','start','operation',o.name,'logicalOperationSha256',repeat('7',64),
+			'observedAt','2026-11-14T12:00:00.000Z','durationMs',null,'status','started','errorCategory',null,
+			'receiptId',null,'readId',null,'inputBytes',null,'outputBytes',null,'inputTokens',null,'outputTokens',null,
+			'cachedInputTokens',null,'cacheWriteInputTokens',null,'reasoningOutputTokens',null,'totalTokens',null) order by o.name)
+		from unnest(array['publish_site', 'unpublish_site']) o(name)));
+	reset role;
+	perform pg_temp.base_assert((select bool_and(r ->> 'schema' = 'qorpera.runtime-observation-receipt/v1')
+			from jsonb_array_elements(v_receipts -> 'receipts') r) and jsonb_array_length(v_receipts -> 'receipts') = 2,
+		'Observations name the site tools: ' || v_receipts::text);
 end
 $$;
 

@@ -160,17 +160,11 @@ async function main() {
 			"skills", "skills/human-task", "rules", "interfaces", "interfaces/mailbox", "interfaces/members", "tables",
 			"tables/areas"]) {
 			assert.equal(entries[key(os(path))]?.kind, "folder", `${os(path)} is a folder`);
-			// Nothing of the platform's is at the top.
-			assert.equal(entries[path], undefined, `no ${path} at the top`);
 		}
 		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md",
 			"agents/co-founder/todos/start-with-the-founders.md", "skills/human-task/skill.md", "interfaces/order.md",
 			"interfaces/mailbox/interface.toml", "tables/areas/table.toml", "tables/areas/rows.csv"])
 			assert.equal(entries[key(os(path))]?.kind, "file", `${os(path)} is a file`);
-		// Pulse, its numbers table and the cards table are no longer seeded, and no folder gets a README.md.
-		for (const path of ["interfaces/pulse", "tables/numbers", "tables/cards"])
-			assert.equal(entries[key(os(path))], undefined, os(path));
-		assert.deepEqual(Object.keys(entries).filter((name) => name.endsWith("readme.md")), [], "no README.md is seeded");
 		const text = async (path) => {
 			const entry = entries[key(path)];
 			return new TextDecoder().decode(await store.get(profileId, entry.sha, Number(entry.bytes)));

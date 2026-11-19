@@ -106,6 +106,12 @@ const ARRIVING = `${HOME}/arriving`;
 export const HISTORY = `${HOME}/run-history`;
 export const HISTORY_SCHEMA = "qorpera.run-on-node-history/v1";
 export const HISTORY_DAYS = 30;
+export const LANE_FOLDERS = `${HOME}/lanes`;
+export const LANE_KEEP = ".keep";
+export const LANE_IDLE_DAYS = 7;
+export const LANE_TIDY_STAMP = `${HOME}/.lane-tidy`;
+export const LANE_TIDY_EVERY_MINUTES = 60;
+export const LOW_DISK_MIB = 15 * 1024;
 /** Inside a machine, CLOSED takes it out of the automatic choice (maintenance, removal); --machine still reaches
  * it. It survives a reboot. Runs already queued there still run. A machine without SET_UP, which guest-setup.sh
  * writes last, counts as closed too: its runner users may not exist yet. */
@@ -433,9 +439,21 @@ export function pruneScript() {
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`for f in ${CORES}*; do n=\${f#${CORES}}; if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
+		laneTidyLine(),
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null; docker ps -aq --filter label=${RUN_LABEL} 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");
+}
+
+export function laneTidyLine({
+	lanes = LANE_FOLDERS,
+	idleMinutes = LANE_IDLE_DAYS * 1440,
+	sudo = "sudo -n ",
+	stamp = LANE_TIDY_STAMP,
+	everyMinutes = LANE_TIDY_EVERY_MINUTES,
+} = {}) {
+	const tidy = `for d in ${lanes}/*/; do d=\${d%/}; [ -d "$d" ] && [ ! -L "$d" ] || continue; ${sudo}test -e "$d/${LANE_KEEP}" 2>/dev/null && continue; recent=$(${sudo}find "$d" \\( -mmin -${idleMinutes} -o -cmin -${idleMinutes} \\) -print -quit 2>/dev/null) || continue; [ -z "$recent" ] && ${sudo}rm -rf -- "$d"; done`;
+	return `if [ -z "$(find ${stamp} -mmin -${everyMinutes} 2>/dev/null)" ]; then touch ${stamp}; ${tidy}; fi`;
 }
 
 /** Bash for the start of a run's session: `note_history CODE` appends the run's line to the machine's run history
@@ -930,7 +948,7 @@ export function candidateMachines(machine, env) {
  * created) and tried once: a held one counts, a free one is held for an instant only (a run taking a slot right
  * then tries the next and, if none is free, retries 2 s later), and an unheld queue ticket belongs to a run that
  * died. A copy marker counts for 10 minutes; a killed copy's marker ages out. */
-export function probeScript({ locks, closed, setUp, arriving, meminfo = "/proc/meminfo" }) {
+export function probeScript({ locks, closed, setUp, arriving, meminfo = "/proc/meminfo", home = HOME }) {
 	const count = (lane, busy, waiting) => [
 		`for i in $(seq 1 ${lane.slots}); do { flock -n 5 || ${busy}=$((${busy} + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/${lane.slot}`)}"$i.lock"; done`,
 		`for t in ${shellQuote(`${locks}/${lane.queue}`)}/*; do { flock -n 5 || ${waiting}=$((${waiting} + 1)); } 2>/dev/null 5<"$t"; done`,
@@ -948,7 +966,8 @@ export function probeScript({ locks, closed, setUp, arriving, meminfo = "/proc/m
 		`arriving=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
 		// What the machine has available (MiB): a quick run waits for QUICK_MEMORY_MIB. Empty when unreadable.
 		`mem_mib=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' ${shellQuote(meminfo)} 2>/dev/null)`,
-		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving front_waiting=$front_waiting kept_busy=$kept_busy extra_busy=$extra_busy mem_mib=$mem_mib closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
+		`disk_mib=$(df -Pm ${shellQuote(home)} 2>/dev/null | awk 'NR == 2 { print $4 }')`,
+		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving front_waiting=$front_waiting kept_busy=$kept_busy extra_busy=$extra_busy mem_mib=$mem_mib disk_mib=$disk_mib closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
 	].join("\n");
 }
 
@@ -956,10 +975,15 @@ export function probeScript({ locks, closed, setUp, arriving, meminfo = "/proc/m
  * negative when runs wait. A front run counts every slot, only running runs and the front runs it would queue behind;
  * any other CPU run only the slots before the kept ones. */
 function free(probe, quick, front = false) {
+	const diskShort = lowDisk(probe) ? 100 : 0;
 	// A machine short of memory takes no quick run (quickMemoryLine): it ranks after every one with room.
-	if (quick) return QUICK_SLOTS - probe.quickBusy - probe.quickWaiting - (probe.memMiB != null && probe.memMiB < QUICK_MEMORY_MIB ? 100 : 0);
-	if (front) return CPU_SLOTS - probe.busy - probe.frontWaiting;
-	return CPU_SLOTS - KEPT_SLOTS - (probe.busy - (probe.keptBusy ?? 0)) - (probe.extraBusy ?? 0) - probe.waiting - probe.arriving;
+	if (quick) return QUICK_SLOTS - probe.quickBusy - probe.quickWaiting - (probe.memMiB != null && probe.memMiB < QUICK_MEMORY_MIB ? 100 : 0) - diskShort;
+	if (front) return CPU_SLOTS - probe.busy - probe.frontWaiting - diskShort;
+	return CPU_SLOTS - KEPT_SLOTS - (probe.busy - (probe.keptBusy ?? 0)) - (probe.extraBusy ?? 0) - probe.waiting - probe.arriving - diskShort;
+}
+
+function lowDisk(probe) {
+	return probe.diskMiB != null && probe.diskMiB < LOW_DISK_MIB;
 }
 
 /** Open to the automatic choice: answered, not closed by an operator, and set up. */
@@ -1064,7 +1088,7 @@ export function describeProbes(probes) {
 	return probes
 		.map((probe) =>
 			probe.unreachable === undefined
-				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy${probe.keptBusy ? ` (${probe.keptBusy} kept for --front runs)` : ""}${probe.extraBusy ? ` + ${probe.extraBusy} extra` : ""}, ${probe.waiting} waiting${probe.frontWaiting ? ` (${probe.frontWaiting} at the front)` : ""}${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}${probe.memMiB != null && probe.memMiB < QUICK_MEMORY_MIB ? ` (${probe.memMiB} MiB available)` : ""}`
+				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy${probe.keptBusy ? ` (${probe.keptBusy} kept for --front runs)` : ""}${probe.extraBusy ? ` + ${probe.extraBusy} extra` : ""}, ${probe.waiting} waiting${probe.frontWaiting ? ` (${probe.frontWaiting} at the front)` : ""}${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}${probe.memMiB != null && probe.memMiB < QUICK_MEMORY_MIB ? ` (${probe.memMiB} MiB available)` : ""}${lowDisk(probe) ? `, only ${(probe.diskMiB / 1024).toFixed(1)} GiB disk free` : ""}`
 				: `${probe.name} unreachable (${probe.unreachable})`,
 		)
 		.join("; ");
@@ -1150,6 +1174,7 @@ function probeOverSsh(machine, key, signal) {
 					setUp: answer.setup === "1",
 					cpus: Number(answer.cpus) || null,
 					memMiB: /^\d+$/.test(answer.mem_mib ?? "") ? Number(answer.mem_mib) : null,
+					diskMiB: /^\d+$/.test(answer.disk_mib ?? "") ? Number(answer.disk_mib) : null,
 					load: Number(answer.load) || 0,
 				});
 			else if (code === 0) unreachable(`unexpected answer: ${out.trim().slice(0, 120)}`);
