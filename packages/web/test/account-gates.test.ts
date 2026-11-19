@@ -105,6 +105,117 @@ describe("the app's sign-in gate", () => {
 	});
 });
 
+describe("a member who has no password yet", () => {
+	const emailUser = (meta: Record<string, unknown>): User =>
+		({ ...userA, app_metadata: { provider: "email", providers: ["email"] }, user_metadata: meta }) as User;
+
+	it("is asked for one before the app, and goes on once it is saved", async () => {
+		const f = fixture();
+		f.auth(emailUser({ full_name: "Mette Hansen" }));
+		const updateUser = vi.fn(async ({ data }: { password: string; data: Record<string, unknown> }) => ({
+			data: { user: emailUser({ full_name: "Mette Hansen", ...data }) },
+			error: null,
+		}));
+		Object.assign(f.cloud.supabase.auth, { updateUser });
+		dispose = mountApplication(root, f.cloud, f.api);
+		await drawn();
+		expect(root.querySelector("h1")!.textContent).toBe("Choose a password");
+		expect(root.querySelector(".frame")).toBeNull();
+		expect(root.textContent).not.toContain("Skip");
+		type("accountPasswordAsk", "nytkodeord1");
+		root.querySelector<HTMLFormElement>("form.auth-form")!.requestSubmit();
+		await drawn();
+		expect(updateUser).toHaveBeenCalledWith({ password: "nytkodeord1", data: { password_set: true } });
+		expect(root.querySelector('.auth[data-step="password"]')).toBeNull();
+		expect(root.querySelector(".frame")).not.toBeNull();
+	});
+
+	it("keeps the screen with the reason when the password is refused", async () => {
+		const f = fixture();
+		f.auth(emailUser({ full_name: "Mette Hansen" }));
+		Object.assign(f.cloud.supabase.auth, {
+			updateUser: vi.fn(async () => ({ data: { user: null }, error: new AuthError("raw", 422, "weak_password") })),
+		});
+		dispose = mountApplication(root, f.cloud, f.api);
+		await drawn();
+		type("accountPasswordAsk", "password");
+		root.querySelector<HTMLFormElement>("form.auth-form")!.requestSubmit();
+		await drawn();
+		expect(root.querySelector('.auth[data-step="password"]')).not.toBeNull();
+		expect(root.querySelector(".auth-status.is-error")!.textContent).toContain("Choose a stronger password");
+	});
+
+	it("asks the name first, then the password", async () => {
+		const f = fixture();
+		f.auth(emailUser({}));
+		Object.assign(f.cloud.supabase.auth, {
+			updateUser: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+				data: { user: emailUser({ ...data }) },
+				error: null,
+			})),
+		});
+		dispose = mountApplication(root, f.cloud, f.api);
+		await drawn();
+		expect(root.querySelector('.auth[data-step="name"]')).not.toBeNull();
+		type("accountNameAsk", "Mette Hansen");
+		root.querySelector<HTMLFormElement>("form.auth-form")!.requestSubmit();
+		await drawn();
+		expect(root.querySelector('.auth[data-step="password"]')).not.toBeNull();
+	});
+
+	it("takes the password the account already has as done", async () => {
+		const f = fixture();
+		f.auth(emailUser({ full_name: "Mette Hansen" }));
+		const updateUser = vi.fn(async (attributes: { password?: string; data: Record<string, unknown> }) =>
+			attributes.password
+				? { data: { user: null }, error: new AuthError("raw", 422, "same_password") }
+				: { data: { user: emailUser({ full_name: "Mette Hansen", ...attributes.data }) }, error: null },
+		);
+		Object.assign(f.cloud.supabase.auth, { updateUser });
+		dispose = mountApplication(root, f.cloud, f.api);
+		await drawn();
+		type("accountPasswordAsk", "hemmeligt1");
+		root.querySelector<HTMLFormElement>("form.auth-form")!.requestSubmit();
+		await drawn();
+		expect(updateUser).toHaveBeenLastCalledWith({ data: { password_set: true } });
+		expect(root.querySelector('.auth[data-step="password"]')).toBeNull();
+		expect(root.querySelector(".frame")).not.toBeNull();
+	});
+
+	it("can be left by signing out", async () => {
+		const f = fixture();
+		f.auth(emailUser({ full_name: "Mette Hansen" }));
+		const signOut = vi.fn(async () => {
+			f.auth(null);
+			return { error: null };
+		});
+		Object.assign(f.cloud.supabase.auth, { signOut });
+		dispose = mountApplication(root, f.cloud, f.api);
+		await drawn();
+		[...root.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Sign out")!.click();
+		await drawn();
+		expect(signOut).toHaveBeenCalledOnce();
+		expect(root.querySelector('.auth[data-step="password"]')).toBeNull();
+		expect(root.querySelector("h1")!.textContent).toBe("Welcome back");
+	});
+
+	it("is not asked again once a password is set, nor when the member signs in only through another provider", async () => {
+		for (const user of [
+			emailUser({ full_name: "Mette Hansen", password_set: true }),
+			{ ...userA, app_metadata: { provider: "google", providers: ["google"] } } as User,
+		]) {
+			const f = fixture();
+			f.auth(user);
+			dispose = mountApplication(root, f.cloud, f.api);
+			await drawn();
+			expect(root.querySelector('.auth[data-step="password"]')).toBeNull();
+			dispose();
+			dispose = undefined;
+			root.replaceChildren();
+		}
+	});
+});
+
 describe("the password row in Settings", () => {
 	async function settings(result: { error: AuthError | null }) {
 		vi.useRealTimers();
@@ -127,7 +238,7 @@ describe("the password row in Settings", () => {
 		input.value = "nytkodeord1";
 		save.click();
 		await settle();
-		expect(updateUser).toHaveBeenCalledWith({ password: "nytkodeord1" });
+		expect(updateUser).toHaveBeenCalledWith({ password: "nytkodeord1", data: { password_set: true } });
 		expect(input.value).toBe("");
 		expect(root.querySelector(".account-password-feedback")!.textContent).toContain("Password saved.");
 	});

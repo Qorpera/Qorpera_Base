@@ -526,3 +526,61 @@ export function renderNameAsk(auth: AuthController, container: HTMLElement, onDo
 	);
 	input.focus();
 }
+
+export function renderPasswordAsk(auth: AuthController, container: HTMLElement, onDone: () => void): void {
+	const error = h("p", { class: "auth-status is-error", role: "alert" });
+	const password = passwordField(container, "accountPasswordAsk", t("New password"), "new-password", false);
+	const submit = h("button", { type: "submit", class: "auth-primary" }, t("Save password"));
+	const email = auth.store.get().user?.email ?? "";
+	container.className = "auth";
+	container.dataset.step = "password";
+	replace(
+		container,
+		brand(),
+		h(
+			"section",
+			{ class: "auth-body", "aria-labelledby": "authTitle" },
+			crown(container),
+			h("h1", { id: "authTitle" }, t("Choose a password")),
+			h(
+				"p",
+				{ class: "auth-lead" },
+				t("From now on you sign in to {email} with a password. A code by email still works if you forget it.", {
+					email,
+				}),
+			),
+			h(
+				"form",
+				{
+					class: "auth-form",
+					onsubmit: async (event: Event) => {
+						event.preventDefault();
+						submit.disabled = true;
+						error.textContent = "";
+						try {
+							await auth.setPassword(
+								container.querySelector<HTMLInputElement>("#accountPasswordAsk")?.value ?? "",
+								{ currentCounts: true },
+							);
+							onDone();
+						} catch (failure) {
+							error.textContent =
+								failure instanceof Error ? failure.message : t("Something went wrong. Try again.");
+							submit.disabled = false;
+						}
+					},
+				},
+				...password,
+				h("p", { class: "auth-hint" }, t("At least 8 characters.")),
+				submit,
+				error,
+			),
+			h(
+				"p",
+				{ class: "auth-muted" },
+				h("button", { type: "button", class: "auth-inline", onclick: () => void auth.signOut() }, t("Sign out")),
+			),
+		),
+	);
+	container.querySelector<HTMLInputElement>("#accountPasswordAsk")?.focus();
+}
