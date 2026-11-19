@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import type { CloudMemberDataAnswer } from "@qorpera/cloud-client/cloud-member-data";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CompanyApp, readApps } from "../src/app/interface-apps.ts";
+import { type CompanyApp, CompanyData, CompanyNumbers, readApps } from "../src/app/interface-apps.ts";
 import { AppPanel, type AppPanelHost, type AppPanelTarget } from "../src/app/views/app-panel.ts";
 import { PAGE_CONTENT, PAGE_READY } from "../src/ui/page-frame.ts";
 import { folderFake } from "./folder-fake.ts";
@@ -291,5 +292,48 @@ describe("an app's base style", () => {
 		});
 		void app.panel.reload(true);
 		expect((await app.handed()).html).toContain("--q-accent: #1f6f5b;");
+	});
+});
+
+describe("an app's live values when its manifest changes", () => {
+	it("ends the watches the page may no longer ask, keeps the others, and ends all with no live read left", async () => {
+		const { fake, host } = company();
+		const answer = (etag: string): CloudMemberDataAnswer => ({
+			columns: ["n"],
+			rows: [[1]],
+			more: false,
+			etag,
+			asOf: "2026-11-14T10:00:00.000Z",
+		});
+		const lifetime = new AbortController();
+		// The company's databases: questions answered at once, the held call never answered until it is ended.
+		const data = new CompanyData(
+			() => ({
+				query: async (asked) => answer(`d-${asked.question}`),
+				watch: (_watches, signal) =>
+					new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+			}),
+			lifetime.signal,
+		);
+		const numbers = new CompanyNumbers(async (asked) => answer(`n-${asked.question}`), lifetime.signal);
+		const manifest = (reads: string) =>
+			fake.put("apps/sales/app.toml", `name = "Sales"\nposted = true\nreads = [${reads}]\n`);
+		manifest('"data", "money", "site"');
+		const app = await opened({ ...host, data, numbers });
+		for (const name of ["shop/sales", "qorpera/money-now", "qorpera/site-now"])
+			expect(await app.call("watch", { name, params: {} }), name).toMatchObject({ ok: true });
+		expect([data.questions, numbers.questions]).toEqual([1, 2]);
+		// Only site is left: the databases' and money's watches end, site's stays, on the same page.
+		manifest('"site"');
+		await host.readApps(new AbortController().signal);
+		await app.panel.reload(false);
+		expect([data.questions, numbers.questions]).toEqual([0, 1]);
+		expect(await app.call("watch", { name: "qorpera/money-now", params: {} })).toMatchObject({ ok: false });
+		// No live read left: every watch ends.
+		manifest("");
+		await host.readApps(new AbortController().signal);
+		await app.panel.reload(false);
+		expect([data.questions, numbers.questions]).toEqual([0, 0]);
+		lifetime.abort();
 	});
 });

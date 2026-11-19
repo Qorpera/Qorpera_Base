@@ -4,6 +4,7 @@ import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt
 import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
+import { askCompanyNumbers } from "../cloud/company-numbers.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
@@ -44,7 +45,14 @@ import { CompanyReading, readCompanyStanding } from "./company-reading.ts";
 import { DATA_PAGE, wantDataList } from "./data-page.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { type CompanyApp, CompanyApps, CompanyData, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
+import {
+	type CompanyApp,
+	CompanyApps,
+	CompanyData,
+	CompanyNumbers,
+	companyConcepts,
+	sharedFolderHints,
+} from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
@@ -525,6 +533,8 @@ export function mountApplication(
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
 	/** Each company's databases for its app pages: one held watch call for all of them, while the company is open. */
 	const appData = new WeakMap<CompanyController, CompanyData>();
+	/** Each company's platform numbers for its app pages (`qorpera/*`), while the company is open. */
+	const appNumbers = new WeakMap<CompanyController, CompanyNumbers>();
 	/** Notes held for the company's apps, by app, while their thread could not take them (app/app-actions.ts
 	 * `HeldNote`): kept while the company is open, whichever page the member goes to meanwhile. */
 	const heldNotes = new WeakMap<
@@ -1245,6 +1255,20 @@ export function mountApplication(
 			}
 			return data;
 		};
+		// The platform's own numbers of the company (`qorpera/money-now` and the like), asked as the member with a plain
+		// call to the cloud, so also where the build names no member gateway.
+		const numbersHost = (): CompanyNumbers => {
+			let numbers = appNumbers.get(controller);
+			if (!numbers) {
+				numbers = new CompanyNumbers(
+					(asked) => askCompanyNumbers(cloud, controller.profile.environmentId, asked),
+					controller.signal,
+					companyCurrent,
+				);
+				appNumbers.set(controller, numbers);
+			}
+			return numbers;
+		};
 		// A note an app's page asks the member to send to the agent that owns the app (RUNTIME-INTERFACE-APPS.md §5
 		// "tell"), written by the member on the bar: their own message in that agent's thread, or the Co-Founder's, on
 		// their own model account for the thread, chosen as the thread chooses it (app/tell-agent.ts).
@@ -1384,6 +1408,7 @@ export function mountApplication(
 			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
 			current: companyCurrent,
 			data: dataHost(),
+			numbers: numbersHost(),
 			tell: appNotes(),
 		});
 		sidePanel = (target) =>

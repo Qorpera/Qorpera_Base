@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	APP_NUMBERS_DATABASE,
 	appFileKind,
 	appLinkName,
+	appNumbersRead,
 	appPath,
 	appRelativePath,
 	appWriteTable,
@@ -53,6 +55,16 @@ describe("interface apps", () => {
 				kit: null,
 			},
 		});
+	});
+
+	it("reads the platform's numbers, money and site, each a read of its own beside data", () => {
+		const parsed = parseAppManifest('name = "Money"\nreads = ["money", "site", "data", "money"]\n');
+		expect(parsed.ok && parsed.manifest.reads).toEqual(["money", "site", "data"]);
+		expect(APP_NUMBERS_DATABASE).toBe("qorpera");
+		expect(["money-now", "money-balance", "money-kinds"].map(appNumbersRead)).toEqual(["money", "money", "money"]);
+		expect(["sites", "site-now", "site-pages"].map(appNumbersRead)).toEqual(["site", "site", "site"]);
+		for (const question of ["money", "money-", "site", "sitesx", "orders-now", "balance", ""])
+			expect(appNumbersRead(question), question).toBeNull();
 	});
 
 	it("names every problem with its line", () => {

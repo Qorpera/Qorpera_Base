@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `save_app`'s `reads` take `money` and `site`, the platform's own numbers of the company (company views step 3, slice W1; cloud-client's `APP_READS`, migration `20260930767000`), from the next bundle. Nothing else of the runtime changes here: `data_query` answering `qorpera`, `save_app` adding the reads for a kit's `qorpera/*` binding and the guide's words are slice R1.
 - Release v262 (master since v261's release merge: the action review reads the company's own work as inside work and a
   denial names the way forward, #1970, runtime text only; a member's waiting thread post moves with their pick of another
   login, #1968 with migration `20260930813000` and SQL test 1306, SQL only; one clock value for a scheduling pass's stamps,

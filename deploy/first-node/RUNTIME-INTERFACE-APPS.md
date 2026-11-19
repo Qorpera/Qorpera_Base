@@ -66,7 +66,7 @@ write, with the tools they already have, and need no migration.
 | `entry` | relative path to an `.html` file | `index.html` | the page that opens |
 | `owner` | agent handle | the creating agent | who made it; the app's header names it |
 | `posted` | true or false | false | shown in every member's apps drawer |
-| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions`, `data`, `reading` | `[]` | the live sources the app may read (§5) |
+| `reads` | list of `files`, `tables`, `todos`, `agents`, `questions`, `data`, `reading`, `money`, `site` | `[]` | the live sources the app may read (§5) |
 | `writes` | list of `answers` and `table:<name>`, at most 16 | `[]` | what the app may ask a member to change (§5 "Changes"); `<name>` is a company table's folder name, never `areas` |
 | `concept` | true or false | false | a concept of the company's product: it opens in the Concepts viewer (`#/c/<id>/concepts/<name>`, full screen, a side panel to pick a concept), and the drawer shows one Concepts entry for all of them, posted or not |
 | `cover` | relative path to a `.png`, `.jpg` or `.webp` in the app's folder | none | the picture of a concept in the viewer's side panel; without one, its emblem |
@@ -1026,6 +1026,9 @@ await qorpera.todos()                         // each agent's todos: agent, titl
 await qorpera.agents()                        // agents: name, role, working
 await qorpera.reading()                       // the company's reading of itself, its team and its standing (`reading`)
 await qorpera.questions()                     // the agents' open questions that point at this app
+await qorpera.query("shop/sales", params)     // a company database's question (`data`, RUNTIME-COMPANY-DATABASES.md §5)
+await qorpera.query("qorpera/money-now")      // the platform's own numbers of the company (`money`, `site`): below
+qorpera.watch(name, params, listener, failed) // the same, kept live; returns its stop
 qorpera.onChange(() => …)                     // the company's folder changed: read again
 
 await qorpera.answer(id, value)               // ask the member to answer one of those questions
@@ -1055,6 +1058,22 @@ Rules:
   frame is no preview (Jonas, 13 November 2026, on his company's question: the previews "do not load their visual").
   A card drawn before the company's apps are read gets the app's preview once they are, and follows a change to the
   app, in place: a pick and an answer being typed stay.
+- **The platform's numbers** (company views step 3, slice W1; the lane's DESIGN-3.md §E; migration `20260930767000`):
+  questions of the reserved database `qorpera`, which no company database may carry. `money` in `reads` asks
+  `qorpera/money-now`, `money-balance` (`from`, `to`), `money-expected`, `money-months` and `money-kinds` (`month`):
+  the bank's sums, never a name, a transfer's text, an account or a single payment. `site` asks `qorpera/sites` and
+  `qorpera/site-*`, the site's visits counted by site-serve (slice S1, migration `20260930768000`). Neither needs
+  `data`, and `data` reads neither: each question needs its own read (`appNumbersRead`, cloud-client
+  `interface-apps.ts`); another `qorpera/*` name is refused as no question. The web asks them as the member with a
+  plain cloud call
+  (`qorpera_member_company_numbers`, supabase/CLIENT-CONTRACT.md "The company's numbers"), so they work without a
+  member gateway too, and the cloud answers only a member who may read `bank/summary.json` (money). The answer has the
+  databases' shape, `{columns, rows, more, asOf}`. A watch is not held by any gateway: the web asks a watched
+  question again on its own clock while the tab is shown (`site-now` every 15 s, other site questions every minute,
+  money every 5 minutes; a question whose time passed while the tab was hidden at once when it is shown), and sends
+  the page an answer only when its etag changed (`CompanyNumbers`). A watch costs one call when it starts, as for the
+  databases; at most 8 a page and 24 a company. A kit's binding names them as any question:
+  `{"query": "qorpera/money-now", "column": "balance"}`.
 - **Never into the bridge:** the member's token, email, id or session, this app's own state, other members' settings,
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.
