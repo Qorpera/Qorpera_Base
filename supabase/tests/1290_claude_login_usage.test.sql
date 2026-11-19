@@ -121,6 +121,15 @@ select pg_temp.base_assert((public.qorpera_list_claude_logins('92400000-0000-400
 select pg_temp.cu_begin(repeat('1', 64)) \g /dev/null
 select pg_temp.base_assert(pg_temp.cu_state($q$select pg_temp.cu_begin(repeat('2', 64))$q$) = '55000',
 	'one read at a time');
+do $$
+begin
+	perform public.qorpera_begin_native_account_refresh('92400000-0000-4000-8000-000000000010',
+		extensions.gen_random_uuid(), repeat('4', 64));
+	perform pg_temp.base_assert(false, 'a ChatGPT refresh began beside a pending Claude read');
+exception when sqlstate '55000' then
+	perform pg_temp.base_assert(sqlerrm = 'Account refresh already in progress',
+		'a pending Claude read holds the member''s one refresh, so Settings asks ChatGPT and Claude in turn: ' || sqlerrm);
+end $$;
 select pg_temp.base_assert(pg_temp.cu_state($q$select pg_temp.cu_begin(repeat('3', 64), true, 'full')$q$) = '55000',
 	'no reset the last read did not show');
 select pg_temp.base_assert(pg_temp.cu_state($q$select pg_temp.cu_begin(repeat('3', 64), true, 'lunar')$q$) = '42501',

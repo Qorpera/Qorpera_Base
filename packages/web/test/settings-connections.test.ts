@@ -1923,30 +1923,116 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(readClaude.mock.calls.filter(([options]) => options.reset)).toHaveLength(2);
 	});
 
-	it("reads the bars again after a reset, also when another read was running meanwhile", async () => {
+	it("reads nothing while a reset holds the refresh, and reads the bars once it ends", async () => {
 		const reset = deferred<string>();
-		const meanwhile = deferred<string>();
-		let forced = 0;
-		const readClaude = vi.fn(async (options: { reset?: string; force?: boolean }) => {
-			if (options.reset) return reset.promise;
-			if (options.force && ++forced === 1) return meanwhile.promise;
-			return id(99);
-		});
+		const readClaude = vi.fn(async (options: { reset?: string; force?: boolean }) =>
+			options.reset ? reset.promise : id(99),
+		);
 		const { logins } = await claudeView(
 			login({ resets: { observedAt: new Date().toISOString(), entries: [fullReset] } }),
 			readClaude,
 		);
 		claudeCard().querySelector<HTMLButtonElement>(".connection-resets button")!.click();
 		await settle();
-		view.el.querySelector<HTMLButtonElement>(".connection-section-heading button")!.click();
+		const refresh = view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		expect(refresh.getAttribute("aria-disabled")).toBe("true");
+		refresh.click();
 		await settle();
+		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(0);
+		expect(view.el.textContent).not.toContain("Updated");
 		logins.logins[0]!.lastReset = { requestId: id(92), kind: "full", outcome: "reset", left: 2, at: timestamp };
 		reset.resolve(id(92));
 		await settle();
-		meanwhile.resolve(id(99));
 		await settle();
+		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(1);
+		expect(view.el.textContent).not.toContain("Usage could not be refreshed");
+	});
+
+	it("refreshes ChatGPT first, then each Claude login, one at a time", async () => {
+		const chatgpt = deferred<void>();
+		const first = deferred<string>();
+		const order: string[] = [];
+		const refreshAccountMetadata = vi.fn(async () => {
+			order.push("chatgpt");
+			await chatgpt.promise;
+		});
+		const readClaude = vi.fn(async (options: { loginId: string }) => {
+			order.push(options.loginId);
+			if (options.loginId === id(97)) await first.promise;
+			return id(99);
+		});
+		const logins = { signInOpen: true, readable: true, logins: [login(), login({ loginId: id(96) })] };
+		view = new ConnectionsView(
+			{
+				listConnections: vi.fn(async () => structuredClone(observed(connected))),
+				revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+				createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+				listClaudeLogins: vi.fn(async () => structuredClone(logins)),
+				refreshAccountMetadata,
+				readClaude,
+			},
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
 		await settle();
-		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(2);
+		expect(order).toEqual(["chatgpt"]);
+		chatgpt.resolve();
+		await settle();
+		expect(order).toEqual(["chatgpt", id(97)]);
+		first.resolve(id(99));
+		await settle();
+		expect(order).toEqual(["chatgpt", id(97), id(96)]);
+		expect(view.el.textContent).not.toContain("Usage could not be refreshed");
+	});
+
+	it("says what brings Claude's usage back when the last reading is old or missing", async () => {
+		const hint = "Usage updates the next time Claude works on a task.";
+		await claudeView(
+			login({
+				usage: {
+					observedAt: hours(-9),
+					windows: [{ id: "five_hour", label: "5 hours", usedPercent: 40, resetAt: hours(-4) }],
+				},
+			}),
+		);
+		expect(claudeCard().querySelector(".connection-usage")!.textContent).toContain(hint);
+		view.dispose();
+		document.body.replaceChildren();
+		await claudeView({
+			loginId: id(97),
+			clientConnectionId: id(98),
+			createdAt: timestamp,
+			providerAccountEmail: "member@example.com",
+		});
+		expect(claudeCard().querySelector(".connection-usage")!.textContent).toBe(`Usage unavailable${hint}`);
+		view.dispose();
+		document.body.replaceChildren();
+		await claudeView(login());
+		expect(claudeCard().textContent).not.toContain(hint);
+		view.dispose();
+		document.body.replaceChildren();
+		const old = { observedAt: hours(-9), windows: [{ id: "five_hour" as const, label: "5 hours", usedPercent: 40 }] };
+		const logins = {
+			signInOpen: true,
+			readable: true,
+			logins: [login({ inUse: true, usage: old }), login({ loginId: id(96), usage: old })],
+		};
+		view = new ConnectionsView(
+			{
+				listConnections: vi.fn(async () => structuredClone(observed())),
+				revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+				createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+				listClaudeLogins: vi.fn(async () => structuredClone(logins)),
+				readClaude: vi.fn(async () => id(99)),
+			},
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		expect(claudeLoginCard(id(97))!.querySelector(".connection-usage")!.textContent).toContain(hint);
+		expect(claudeLoginCard(id(96))!.querySelector(".connection-usage")!.textContent).toContain(
+			"Usage updates once this login is in use and Claude works on a task.",
+		);
 	});
 
 	it("says nothing was used and offers another try when the reset never began", async () => {
