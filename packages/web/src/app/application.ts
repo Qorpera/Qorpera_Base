@@ -19,7 +19,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
-import { createWebSites } from "../cloud/sites.ts";
+import { type CompanySite, createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
@@ -101,6 +101,7 @@ import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.t
 import { SitesView } from "./views/settings-sites.ts";
 import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
+import { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
@@ -112,6 +113,12 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /** Each company's skill lists, shared by its conversations' composers. */
 const skillLists = new WeakMap<CompanyController, SkillLists>();
+
+/** What the company's store keeps of its sites as read: how many, for the drawer's Sites entry, and the list, for the
+ * owed row's websites and their views. */
+function sitesListed(list: readonly CompanySite[]): { siteCount: number; siteList: readonly CompanySite[] } {
+	return { siteCount: list.length, siteList: list };
+}
 
 /** An app of the company a question option's preview names (`app:<name>`): its title, emblem and cover, from the
  * company's apps as last read. Undefined while they have not been read, or when no such app is there. */
@@ -493,6 +500,15 @@ export function mountApplication(
 		| undefined;
 	/** The company whose sites were read for the apps drawer. */
 	let sitesRead: CompanyController | undefined;
+	/** One of the company's websites, live with its numbers (`#/c/{id}/site/{slug}`), kept while that route shows. */
+	let siteView:
+		| {
+				readonly company: CompanyController;
+				readonly slug: string;
+				readonly view: SiteView;
+				readonly el: HTMLElement;
+		  }
+		| undefined;
 	/** The company's What's new page (`#/c/{id}/whats-new`), kept while that route shows, and the company read for the
 	 * apps drawer's entry. */
 	let whatsNewPage:
@@ -674,6 +690,8 @@ export function mountApplication(
 		conceptsView = undefined;
 		sitesPage?.view.dispose();
 		sitesPage = undefined;
+		siteView?.view.dispose();
+		siteView = undefined;
 		whatsNewPage?.view.dispose();
 		whatsNewPage = undefined;
 		newProgramPage?.view.dispose();
@@ -1817,16 +1835,34 @@ export function mountApplication(
 		if (sitesRead !== controller && state.team?.capabilities.read) {
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
-			const readSites = () =>
+			const readSites = () => {
 				void sites.list(controller.signal).then(
 					(list) => {
-						if (!controller.signal.aborted) controller.store.set({ siteCount: list.length });
+						if (controller.signal.aborted) return;
+						controller.store.set(sitesListed(list));
+						// The sites Qorpera took down (step 5.1), which the list still shows live: no owed view of one. Asked
+						// only while there is a live website to leave out; a read that did not answer leaves what the last said.
+						if (list.some((site) => site.kind === "files" && site.state === "live"))
+							void sites.access(controller.signal).then(
+								(access) => {
+									if (!controller.signal.aborted)
+										controller.store.set({ sitesTakenDown: new Set(access.takenDown.keys()) });
+								},
+								() => {},
+							);
 					},
-					() => {},
+					// Unread, the drawer has no Sites entry; a site's own page then says it can't be shown, not waits.
+					() => {
+						if (!controller.signal.aborted && controller.store.get().siteList === undefined)
+							controller.store.set({ siteList: [] });
+					},
 				);
+			};
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
-		}
+		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)
+			// A member the company's sites are never read for: a site's own page says it can't be shown, not waits.
+			controller.store.set({ siteList: [] });
 		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
@@ -1910,9 +1946,11 @@ export function mountApplication(
 					? `app:${route.id}`
 					: route.section === "staff" && route.id
 						? `agent:${route.id.toLowerCase()}`
-						: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
-							? route.section
-							: undefined,
+						: route.section === "site" && route.id
+							? `site:${route.id}`
+							: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
+								? route.section
+								: undefined,
 		);
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
@@ -1928,6 +1966,10 @@ export function mountApplication(
 		if (route.section !== "sites" || sitesPage?.company !== controller) {
 			sitesPage?.view.dispose();
 			sitesPage = undefined;
+		}
+		if (route.section !== "site" || siteView?.company !== controller || siteView.slug !== route.id) {
+			siteView?.view.dispose();
+			siteView = undefined;
 		}
 		if (route.section !== "whats-new" || whatsNewPage?.company !== controller) {
 			whatsNewPage?.view.dispose();
@@ -2444,7 +2486,7 @@ export function mountApplication(
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
 						access: { canManage: managesSites },
-						listed: (list) => controller.store.set({ siteCount: list.length }),
+						listed: (list) => controller.store.set(sitesListed(list)),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {
 							href: `#/c/${controller.profile.profileId}/whats-new`,
@@ -2468,6 +2510,50 @@ export function mountApplication(
 				}
 				sitesPage.view.update();
 				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
+			case "site": {
+				// One of the company's websites, live, with its numbers (company views step 4): the site in a frame the member
+				// is let into without its password, and the numbers watched while it shows.
+				const slug = route.id ?? "";
+				const website = () =>
+					controller.store
+						.get()
+						.siteList?.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
+				if (!siteView) {
+					// A deep link or a reload: the page waits for the company's sites to be read.
+					if (state.siteList === undefined) {
+						if (!main.querySelector(":scope > .page > .skeleton-page"))
+							replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+						return;
+					}
+					if (!website()) {
+						replace(
+							main,
+							h(
+								"section",
+								{ class: "page" },
+								notice("danger", t("This website can't be shown here right now.")),
+								h("a", { href: `#/c/${controller.profile.profileId}` }, t("Back to the company")),
+							),
+						);
+						return;
+					}
+					const sites = createWebSites(cloud, controller.profile);
+					const view = new SiteView(
+						{
+							site: website,
+							pass: (site, signal) => sites.memberPass(site, signal),
+							numbers: numbersHost(),
+							timeZone: () => controller.store.get().team?.timeZone,
+						},
+						slug,
+						controller.signal,
+					);
+					siteView = { company: controller, slug, view, el: h("section", { class: "page site-page" }, view.el) };
+				}
+				siteView.view.update();
+				if (siteView.el.parentElement !== main) replace(main, siteView.el);
 				return;
 			}
 			case "new-program": {

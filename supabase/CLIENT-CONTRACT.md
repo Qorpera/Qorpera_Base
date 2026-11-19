@@ -1883,23 +1883,22 @@ The web shows a files site in a frame on its own host (company views step 4, V1)
   origins; `null` is refused. A form POST from a document under `Referrer-Policy: no-referrer` sends `Origin: null`
   (Fetch: a non-CORS request's origin is serialized as null under that policy), and app.qorpera.com is served with
   `no-referrer` (`packages/web/public/_headers`, and the `<meta name="referrer">` of `index.html`). Its CSP also has
-  `form-action 'self'` and no `frame-src` (so `default-src 'self'` blocks a frame of a site host). So the web, as
-  built today, cannot use the door; V2 must change one of these, and the choice is a security-header decision for the
-  web's lead:
-  - **A door page (recommended: the app keeps `no-referrer`).** A static same-origin page, say `/site-door/`, with its
-    own `_headers` entry. Cloudflare Pages applies the `/*` block to it too, and a browser enforces every CSP it gets,
-    so the entry first removes what it inherits, as `/page-preview/*` does: `! Content-Security-Policy`,
-    `! X-Frame-Options` and `! Referrer-Policy`. Then it sets `Referrer-Policy: strict-origin` (it sends only
-    `https://app.qorpera.com`), `X-Frame-Options: SAMEORIGIN` (or none), and a CSP of its own with
-    `form-action https://*.qorpera.com`, `frame-ancestors 'self'` and its script from `'self'`. The page has no
-    `<meta name="referrer">` of `no-referrer`. The site view's frame loads it; the app hands it the pass by
-    `postMessage` (target origin its own, checked on receipt); the page submits the form to `action` in its own
-    document, so the frame navigates to the site.
-  - The app itself: `frame-src 'self' https://*.qorpera.com` in its CSP (the frame's every navigation is checked
-    against the app's `frame-src`, the site host after the door's 303 too). Its `form-action 'self'` and
-    `no-referrer` then stay as they are.
-  - Or the app as a whole moves to `strict-origin-when-cross-origin` and adds `https://*.qorpera.com` to
-    `form-action` (simpler; every request from the app then carries its origin as Referer).
+  `form-action 'self'` and no `frame-src` (so `default-src 'self'` blocks a frame of a site host). So the web submits
+  from **a door page** and keeps the app's own headers as they are (company views step 4, V2):
+  - `/site-door/` (`packages/web/public/site-door/`) is a static same-origin page with its own `_headers` entry.
+    Cloudflare Pages applies the `/*` block to it too, and a browser enforces every CSP it gets, so the entry first
+    removes what it inherits, as `/page-preview/*` does: `! Content-Security-Policy`, `! X-Frame-Options` and
+    `! Referrer-Policy`. Then it sets `Referrer-Policy: strict-origin` (it sends only `https://app.qorpera.com`),
+    `X-Frame-Options: SAMEORIGIN`, and `Content-Security-Policy: default-src 'none'; script-src 'self';
+    frame-src https://*.qorpera.com; base-uri 'none'; form-action https://*.qorpera.com/__qorpera/member;
+    frame-ancestors 'self'`. The page has no `<meta name="referrer">` of `no-referrer`.
+  - The site view's frame loads the door; the app hands it `{action, pass, path?, title}` by `postMessage` (target
+    origin its own, source and origin checked both ways, once); the door posts the form into a frame of its own
+    document, so that frame becomes the site, and tells the view when the site's page has loaded.
+  - The app's own CSP, `form-action 'self'` and `no-referrer` are unchanged: no Company File page or interface-app
+    frame may navigate to a site's host; only the door frames one. Not taken: adding `frame-src https://*.qorpera.com`
+    to the app's own CSP, or moving the whole app to `strict-origin-when-cross-origin` with `https://*.qorpera.com` in
+    its `form-action`.
 - The frame: own-host answers may be framed by the web's origins (`frame-ancestors 'self' <origins>`, no
   `X-Frame-Options`); a next host's may not. Views of a member's session are not counted (`site-*` questions).
 

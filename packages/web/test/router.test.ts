@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appHash, conceptsHash, parseRoute, routeHash } from "../src/app/router.ts";
+import { appHash, conceptsHash, parseRoute, routeHash, siteHash } from "../src/app/router.ts";
 import { profileA } from "./fixtures.ts";
 
 describe("company routes", () => {
@@ -51,6 +51,16 @@ describe("company routes", () => {
 		// An agent's app of that name keeps its own page.
 		expect(parseRoute(`#/c/${profileA.profileId}/a/whats-new`)).toMatchObject({ section: "app", id: "whats-new" });
 		expect(parseRoute(`#/c/${profileA.profileId}/whats-new/extra`)).toMatchObject({ section: "whats-new" });
+	});
+
+	it("opens one of the company's websites with its numbers by the site's name (company views step 4)", () => {
+		const route = parseRoute(`#/c/${profileA.profileId}/site/wristband-shop`);
+		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "site", id: "wristband-shop" });
+		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/site/wristband-shop`);
+		expect(siteHash(profileA.profileId, "wristband-shop")).toBe(routeHash(route));
+		// No name, or one no site can have: the company's home.
+		for (const bad of ["site", "site/Shop", "site/../x", "site/shop--next", `site/${"a".repeat(65)}`])
+			expect(parseRoute(`#/c/${profileA.profileId}/${bad}`)).toMatchObject({ section: "home" });
 	});
 });
 

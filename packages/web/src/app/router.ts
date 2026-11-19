@@ -9,7 +9,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * (Jonas, 8 November 2026: an app is a whole product prototype, not a panel beside the chat). "concepts" is the
  * company's concepts of its product, full screen with a side panel to pick one, `#/c/{id}/concepts` (the most
  * recently changed one) or `#/c/{id}/concepts/{name}` (Jonas, 8 November 2026). "whats-new" is What's new, the
- * changes to the company's sites made from its code, ready to go live, `#/c/{id}/whats-new` (own code storage step 4). */
+ * changes to the company's sites made from its code, ready to go live, `#/c/{id}/whats-new` (own code storage step 4).
+ * "site" is one of the company's websites, live, with its numbers, `#/c/{id}/site/{slug}` (company views step 4). */
 export type CompanySection =
 	| "home"
 	| "chat"
@@ -23,6 +24,7 @@ export type CompanySection =
 	| "concepts"
 	| "sites"
 	| "whats-new"
+	| "site"
 	| "new-program"
 	| "member";
 
@@ -59,8 +61,9 @@ export function parseRoute(hash: string): Route {
 		// A page's, an app's and a concept's names keep one rule (cloud-client isInterfaceName). This parse is in
 		// theme.js too (ui/boot.ts), whose size is pinned: keep it short.
 		const named = id !== undefined && id.length <= 64 && INTERFACE_NAME.test(id);
-		if (section === "i" && named) return { name: "company", profileId, section: "interface", id };
-		if (section === "a" && named) return { name: "company", profileId, section: "app", id };
+		// A page (`i`), an app (`a`) and a website (`site`) by its name, in one return: shorter in theme.js.
+		const by = section === "i" ? "interface" : section === "a" ? "app" : section === "site" ? section : undefined;
+		if (by && named) return { name: "company", profileId, section: by, id };
 		if (section === "concepts") return { name: "company", profileId, section: "concepts", ...(named && { id }) };
 		if ((section === "chat" || section === "staff" || section === "member") && id) {
 			return { name: "company", profileId, section, id };
@@ -98,6 +101,11 @@ export function routeHash(route: Route): string {
 /** The page of the agent's app `name` in the company `profileId`. */
 export function appHash(profileId: string, name: string): string {
 	return `#/c/${profileId}/a/${name}`;
+}
+
+/** The view of the company's website `slug` in the company `profileId`. */
+export function siteHash(profileId: string, slug: string): string {
+	return `#/c/${profileId}/site/${slug}`;
 }
 
 /** The Concepts viewer of the company `profileId`, at the concept `name`, or at its most recently changed one. */

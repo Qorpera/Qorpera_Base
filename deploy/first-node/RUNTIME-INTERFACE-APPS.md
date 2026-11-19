@@ -712,7 +712,8 @@ text cards or labelled diagram lines, and **copy the quality, not the layout**. 
 kit's sliders and chips, the explainer's arrows): for a kit, the look decides what goes in it; for a page written by
 hand, the page too. It says which apps are **views the company is owed** (company views step 4,
 lanes/company-views-20261114/DESIGN-4.md, 15 November 2026): `apps/products` (what it sells), `apps/money` (its
-money) and `apps/ads` (its ads), which members find first in the apps drawer; an agent makes one when asked, at exactly
+money) and `apps/ads` (its ads), which members find first in the apps drawer (an app of the `program` kit at one
+of those folders is a member's own program, not the view, and stays in the member's own arrangement); an agent makes one when asked, at exactly
 that folder, and never a website view, which the platform draws. The three names are one list, `OWED_APPS`
 (cloud-client `interface-apps.ts`); a save of one of them (not a concept, not icons alone) adds to its answer's `look`
 "This is the company's <name> view: members find it first in the apps drawer.", a line to know, not to fix, so `next`
@@ -866,8 +867,8 @@ Windows; `.dmg`, `.pkg` Mac; `.AppImage`, `.deb`, `.rpm`, `.flatpak`, `.tar.gz`,
 asks "What is it for?" over the five kinds, and a click answers. Two files of one kind, more than five, an empty file,
 a name the format refuses and a file past 256 MiB are refused in one plain line. A new program's name is the file's
 without its ending, a trailing version and words such as setup or installer (`Lagerliste-1.0-setup.exe` gives
-Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3`, and claimed before any
-byte goes up: a change set of its own makes `apps/<slug>`, and a folder already there (an agent's app the page did not
+Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3` and never one of the owed views' folders (`OWED_APPS`: `products`,
+`money`, `ads`; `Money.apk` gets `apps/money-2`), and claimed before any byte goes up: a change set of its own makes `apps/<slug>`, and a folder already there (an agent's app the page did not
 know of, another member's at the same moment) takes the next slug, so a member's program never lands in another app. The drawer has no rename
 for an app, so renaming is not in this step. While the file goes up the tile stands (initial, name, size) and fills with
 the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop; no spinner, and the Co-Founder's
