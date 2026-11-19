@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A stub of Anthropic's two hosts with rotating refresh tokens, logging canary tags only.
+"""A stub of Anthropic's two hosts with rotating refresh tokens, logging canary tags only. A second login's tokens
+(tags SECOND, then S1, S2, ...) rotate on a chain of their own.
 Usage: renewal-stub.py PORT STATEFILE LOGFILE CERT KEY"""
 import json, re, secrets, ssl, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -78,14 +79,15 @@ class H(BaseHTTPRequestHandler):
             rec["fields"] = sorted(req.keys())
             with lock:
                 st = state()
-                if st.get("refuse") or rec["sent"] is None or rec["sent"] != st.get("valid"):
+                chain = "S" if (rec["sent"] or "").startswith("S") else ""
+                if st.get("refuse") or rec["sent"] is None or rec["sent"] != st.get("valid" + chain):
                     rec["answer"] = "invalid_grant"
                     log(rec)
                     return self._send(400, json.dumps({"error": "invalid_grant",
                                                        "error_description": "Invalid refresh token"}))
-                st["n"] = st.get("n", 0) + 1
-                new = f"R{st['n']}"
-                st["valid"] = new
+                st["n" + chain] = st.get("n" + chain, 0) + 1
+                new = f"{chain or 'R'}{st['n' + chain]}"
+                st["valid" + chain] = new
                 st.setdefault("exp", {})[new] = time.time() + int(st.get("expiresIn", 28800))
                 save(st)
             rec["answer"] = new
