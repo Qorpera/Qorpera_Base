@@ -97,9 +97,9 @@ database with their bearer token, and carries the proof to the site's host as a 
    `pass` (exactly one) and, if it wants, `path` (a path of the site, with or without its leading `/`). The pass is
    never in a URL, so never in a log. site-serve takes it only as a POST whose `Origin` is exactly one of the web's
    origins (`QORPERA_WEB_ORIGINS`, below): any other Origin, `null` or none answers 403 before the database is asked.
-   A document under `Referrer-Policy: no-referrer` (the app's today) sends `Origin: null` with a form, so the web
-   submits from a door page with a referrer policy of its own, or changes the app's (CLIENT-CONTRACT.md, "Seen inside
-   Qorpera").
+   A document under `Referrer-Policy: no-referrer` (the app's) sends `Origin: null` with a form, so the web submits
+   from its door page `/site-door/`, which has a referrer policy of its own; the app's headers stay as they are
+   (CLIENT-CONTRACT.md, "Seen inside Qorpera").
    It redeems the pass through `qorpera_site_member_pass_redeem(host, pass)` (service role only: the right host, not
    expired, one use, the member still one of the company, the site live and not taken down, hosts on), sets the
    session cookie `__Host-qorpera_site` (12 hours, the same cookie a right password sets, the session marked as a
