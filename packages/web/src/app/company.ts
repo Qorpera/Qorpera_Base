@@ -1075,12 +1075,6 @@ export class CompanyController {
 		}
 	}
 
-	/** A company without a time zone takes the one this member's app shows times in (company-time-zone.ts; migration
-	 * 20260930739000): when the team read says the company has none (null; a cloud before the migration says nothing
-	 * and is asked nothing) and this member may act for it (never a viewer). Once: the cloud takes it only while the
-	 * company has none and answers the company's, which the team then says. Nothing shows, whatever comes of it: a call
-	 * that failed is not made again by this company's open, and a zone the cloud refused is not handed in again by this
-	 * browser. */
 	async #invitePendingSpectators(team: HostedProfileTeam): Promise<void> {
 		if (this.#spectatorsInvited || !team.capabilities.manageMembers) return;
 		this.#spectatorsInvited = true;
@@ -1097,6 +1091,12 @@ export class CompanyController {
 		}
 	}
 
+	/** A company without a time zone takes the one this member's app shows times in (company-time-zone.ts; migration
+	 * 20260930739000): when the team read says the company has none (null; a cloud before the migration says nothing
+	 * and is asked nothing) and this member may act for it (never a viewer). Once: the cloud takes it only while the
+	 * company has none and answers the company's, which the team then says. Nothing shows, whatever comes of it: a call
+	 * that failed is not made again by this company's open, and a zone the cloud refused is not handed in again by this
+	 * browser. */
 	async #offerTimeZone(team: HostedProfileTeam): Promise<void> {
 		if (this.#timeZoneOffered || team.timeZone !== null || !team.capabilities.write) return;
 		const profileId = this.profile.profileId;
