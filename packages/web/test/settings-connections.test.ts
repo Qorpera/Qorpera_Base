@@ -1934,9 +1934,12 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		);
 		claudeCard().querySelector<HTMLButtonElement>(".connection-resets button")!.click();
 		await settle();
-		view.el.querySelector<HTMLButtonElement>(".connection-section-heading button")!.click();
+		const refresh = view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		expect(refresh.getAttribute("aria-disabled")).toBe("true");
+		refresh.click();
 		await settle();
 		expect(readClaude.mock.calls.filter(([options]) => options.force === true)).toHaveLength(0);
+		expect(view.el.textContent).not.toContain("Updated");
 		logins.logins[0]!.lastReset = { requestId: id(92), kind: "full", outcome: "reset", left: 2, at: timestamp };
 		reset.resolve(id(92));
 		await settle();
@@ -2006,6 +2009,30 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		document.body.replaceChildren();
 		await claudeView(login());
 		expect(claudeCard().textContent).not.toContain(hint);
+		view.dispose();
+		document.body.replaceChildren();
+		const old = { observedAt: hours(-9), windows: [{ id: "five_hour" as const, label: "5 hours", usedPercent: 40 }] };
+		const logins = {
+			signInOpen: true,
+			readable: true,
+			logins: [login({ inUse: true, usage: old }), login({ loginId: id(96), usage: old })],
+		};
+		view = new ConnectionsView(
+			{
+				listConnections: vi.fn(async () => structuredClone(observed())),
+				revokeConnection: vi.fn(async () => ({ connectionId: id(81), status: "revoked" as const })),
+				createMemberSponsor: vi.fn(async () => ({ bindingId: id(82), version: 1 })),
+				listClaudeLogins: vi.fn(async () => structuredClone(logins)),
+				readClaude: vi.fn(async () => id(99)),
+			},
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		expect(claudeLoginCard(id(97))!.querySelector(".connection-usage")!.textContent).toContain(hint);
+		expect(claudeLoginCard(id(96))!.querySelector(".connection-usage")!.textContent).toContain(
+			"Usage updates once this login is in use and Claude works on a task.",
+		);
 	});
 
 	it("says nothing was used and offers another try when the reset never began", async () => {

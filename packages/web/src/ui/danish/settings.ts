@@ -265,6 +265,8 @@ export const SETTINGS: Record<string, string> = {
 	"Starts when you next use Claude": "Starter, når du bruger Claude næste gang",
 	"Usage updates the next time Claude works on a task.":
 		"Forbruget opdateres, næste gang Claude arbejder på en opgave.",
+	"Usage updates once this login is in use and Claude works on a task.":
+		"Forbruget opdateres, når dette login er i brug, og Claude arbejder på en opgave.",
 	"{label} remaining usage": "{label}: resterende forbrug",
 	"Preparing sign-in. The first time can take a minute or two.":
 		"Gør login klar. Første gang kan tage et minut eller to.",

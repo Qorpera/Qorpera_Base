@@ -963,7 +963,15 @@ export class ConnectionsView {
 			!this.#usageUpdating &&
 			!(login.usage && Date.now() - Date.parse(login.usage.observedAt) <= USAGE_FRESH_MS)
 		)
-			bars.append(h("span", { class: "muted" }, t("Usage updates the next time Claude works on a task.")));
+			bars.append(
+				h(
+					"span",
+					{ class: "muted" },
+					(this.#claude?.logins.length ?? 0) > 1 && !login.inUse
+						? t("Usage updates once this login is in use and Claude works on a task.")
+						: t("Usage updates the next time Claude works on a task."),
+				),
+			);
 		return [bars, ...this.#claudeResets(login, limitResetAt !== undefined)];
 	}
 	async #disconnect(connection: NativeMemberConnection): Promise<void> {
@@ -1429,7 +1437,7 @@ export class ConnectionsView {
 		// to "Add account" at the read's first redraw. A press checks the state
 		// the button was drawn in, so one before a background read's first
 		// redraw still joins that read and makes it forced.
-		const busy = this.#loading || this.#usageUpdating;
+		const busy = this.#loading || this.#usageUpdating || this.#claudeReset?.phase === "using";
 		const refresh = button(
 			this.#usageUpdating ? t("Refreshing…") : this.#updated ? t("Updated") : t("Refresh"),
 			() => {
