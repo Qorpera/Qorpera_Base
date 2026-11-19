@@ -2458,10 +2458,11 @@ conversation where a member picked `gpt-6-astra` keeps it. agent.md's own
 mapping on a native subscription (`provider-default`) still sends no model, and
 coding sessions still start on the pinned Codex's own default. Migration
 20260930816000. Built, not live: it goes live with the release that runs the
-migration; the release must first prove a real turn of the pinned Codex
-(0.155.1) on `gpt-6.2-sol`, since the provider refuses a model whose
-minimal Codex version is newer than the binary (as GPT-6 Astra was refused for
-0.147.0 on 20 September).
+migration, which must come after a release that put a Codex the provider
+offers `gpt-6.2-sol` to (0.166.0 or newer; the 0.170.0 pin) on every node,
+since the provider refuses a model whose minimal Codex version is newer than
+the binary (as GPT-6 Astra was refused for 0.147.0 on 20 September), and the
+pinned 0.155.1 is not offered it.
 
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent

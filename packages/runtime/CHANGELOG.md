@@ -8,11 +8,12 @@
   the agents indexed before), so its runs take it on the provider-mapping path; an agent.md that names a model and a
   member's GPT-6 Astra pick keep theirs. A platform update (`gpt-6-2-sol-default`, kind model) tells the agents. The web
   lists the models the cloud names, GPT-6.2 Sol first, and still knows GPT-6.1 Sol for a cloud before the migration.
-  Deploy order: the migration and the bundle that carries the update's text go in the same cut, the migration first, so
-  the agents are never told of a model they do not run. Before that cut, a real turn of the pinned Codex (0.155.1,
-  `9c299f88`) on `gpt-6.2-sol` must pass on a Codex login, and on an OpenAI API key too if production has an API-key
-  OpenAI connection (an API key does not fetch the remote model list): its built-in catalog does not list the model, and
-  the provider refuses a model newer than the client allows. Way back: a migration
+  Deploy order: the patched Codex 0.170.0 (#1944; OpenAI offers `gpt-6.2-sol` only to Codex 0.166.0 or newer, and
+  0.155.1 is not offered it) is LIVE on every node first, in an earlier cut; then one later cut runs this migration and
+  the bundle that carries the update's text, the migration first, so the agents are never told of a model they do not
+  run. Run with nodes still on Codex 0.155.1, the migration would move every agent with no model in agent.md to a model
+  its Codex cannot run, and every such run would fail at the model turn. The founder waived a real turn before the
+  release (19 Nov 2026: "don't even need to test it"); production is the first proof. Way back: a migration
   that sets the roster rows and the index default back to `gpt-6-astra` (the conversations stay on GPT-6.2 Sol).
 - Messages that waited together for a busy agent keep their arrival order (founder, 19 Nov 2026: "Yes, build it";
   contract, the 2026-11-19 amendment; migration `20260930814000`, SQL test 1295): a scheduling pass stamps the turn
