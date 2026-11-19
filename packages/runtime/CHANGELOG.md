@@ -10,6 +10,19 @@
   (`7616128c`, 5,500,517 bytes); the rest of the guest, the native Codex (`9c299f88`), the shared vault, the login helper
   and the coding executor stay.
 - A ChatGPT sign-in OpenAI stops accepting before its renewal is due renews at once (founder, 18 Nov 2026: "Yes, build it"; contract 17, the 2026-11-18 amendment; RUNTIME-LOGIN-VAULT.md "A pass the provider refuses"; migration `20260930808000`, SQL test 1304). Seen 18 Nov: after a plan upgrade every turn on one account login failed with `NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED` while the login stayed active. Codex's pinned `unauthorized` is now the usage signal `sign_in_refused` (no other discriminant raises it; a review turn's `unauthorized` is not "busy"); recording it marks the login's current pass refused, which makes its renewal due now through the one renewal lock (the idle passes take it first) and holds new work on the login as a usage limit does, at most 30 minutes, until a newer version or `needs_sign_in`; the hold is on the login row, so deleting the reporting company does not end it. A member's message that had no effect waits and tries again on the same login (`pausedFor: "sign_in_refused"`, #1916's waits). The member's connection list carries `login_status`; a run's recovery says `sign_in_refused` once its login needs a new sign-in. Nothing moves to another login. Rolls: the migration first (alone it changes nothing until a host sends the signal), then a runtime release that moves the native provider host in the guest; no vault, helper or orchestrator change.
+- A burst of saves wakes a file-change routine once (founder, 17 Nov 2026: "fix the Brooks file storm too"; stopped the
+  same day and reopened on his word of 19 Nov 2026, "Yes, reopen it", after a new company ran 67 file-change runs in a
+  night, 45 of them without a tool call; the 2026-11-17 amendment "a burst of saves wakes a file-change routine once"; migration `20260930809000`, SQL test 1305).
+  In Brooks one worker run saved 38 change sets under `strategy/` in 16 minutes, and the Brand agent's routine was woken
+  38 times. The folder listener now folds a matching change set into the routine version's waiting file wake
+  (`payload.folded` names each later change set; `versions` keeps at most 21 paths, newest version each; `more` counts
+  the rest). The wake starts 60 s after its latest change, at most 5 min after its first
+  (`qorpera_folder_file_wake_settings`; settle 0 restores one wake per change set). While one runs, a single follow-up
+  collects what is saved meanwhile. `qorpera_folder_file_wake_changes` reads the folded commits too, so the run's v1
+  file event lists every changed path of the burst, and `qorpera_folder_file_wake_readable` (the materializer's
+  authorization) and both erasure phases look at the folded commits too; a match that folds counts towards no
+  `max_occurrences`; `more` counts each unlisted path once. `qorpera_guard_wake_identity` admits only the listener's fold. Old
+  wakes and every live runtime bundle read as before. Deploy: this migration alone, any time.
 - `save_app` keeps a program version's `userId` (the member who added it from the web, RUNTIME-INTERFACE-APPS.md §3f, 18 Nov 2026) on the versions it does not touch, through the shared `parseProgram`; an agent's own version never has it, and a hand-in naming it is refused. No migration.
 - Release v259 (several Claude logins per member, one In use, backend, #1947, with migration `20260930804000` and SQL
   test 1300; a held draft merged in the release branch at its approved head): runtime bundle 259
