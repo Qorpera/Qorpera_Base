@@ -19,7 +19,7 @@
   ! X-Frame-Options
   ! Permissions-Policy
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
-  Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
+  Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src data: blob:; worker-src blob: data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN
 /assets/*
   ! Cache-Control

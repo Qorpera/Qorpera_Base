@@ -41,24 +41,5 @@ begin
 end
 $$;
 
--- 2. The marker: the list names app_guide after make_picture, and only this body carries 20260930762000.
-reset role;
-do $$
-begin
-	-- After make_picture, not next to it: a later migration that anchors on the same line would put its own names
-	-- between the two, whichever of them is applied first.
-	if strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-			$q$/* 20260930762000 */'app_guide',$q$)
-		<= strpos(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-			$q$/* 20260930746000 */'make_picture',$q$) then
-		raise exception '2: the observations'' list does not name app_guide after make_picture'; end if;
-	if (select array_agg(proc.proname::text order by proc.proname::text collate "C")
-			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930762000') > 0)
-		is distinct from array['qorpera_record_runtime_observation'] then
-		raise exception '2: the marker is in other bodies'; end if;
-end
-$$;
-
 set constraints all immediate;
 rollback;

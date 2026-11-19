@@ -1,11 +1,12 @@
 import {
 	MODELS_BEFORE_LIST,
+	modelEfforts,
 	modelName,
 	modelProvider,
-	PROVIDER_EFFORTS,
-	type SESSION_EFFORTS,
+	SESSION_EFFORTS,
 	SESSION_MODEL_BEFORE_EFFORT,
 	SESSION_MODELS,
+	type SessionEffort,
 	type SessionModel,
 	type SessionModelSelection,
 	type SessionProvider,
@@ -15,7 +16,7 @@ import { h, icon } from "../../ui/dom.ts";
 import { phrase, presentationLocale, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 
-const EFFORT_NAMES: Record<(typeof SESSION_EFFORTS)[number], string> = {
+const EFFORT_NAMES: Record<SessionEffort, string> = {
 	low: phrase("Low"),
 	medium: phrase("Medium"),
 	high: phrase("High"),
@@ -316,13 +317,15 @@ export class ComposerModels {
 
 	#selection(modelId: string): SessionModelSelection {
 		const effort = this.#observed?.reasoningEffort;
-		const efforts: readonly string[] = PROVIDER_EFFORTS[modelProvider(modelId)];
+		const efforts: readonly string[] = modelEfforts(this.#observed, modelId);
 		if (effort === undefined || efforts.includes(effort)) return { modelId };
-		return { modelId, reasoningEffort: efforts[efforts.length - 1] };
+		const rank = (SESSION_EFFORTS as readonly string[]).indexOf(effort);
+		const below = efforts.filter((item) => (SESSION_EFFORTS as readonly string[]).indexOf(item) <= rank);
+		return { modelId, reasoningEffort: below[below.length - 1] ?? efforts[efforts.length - 1] };
 	}
 
-	#efforts(): readonly (typeof SESSION_EFFORTS)[number][] {
-		return PROVIDER_EFFORTS[this.#provided()];
+	#efforts(): readonly SessionEffort[] {
+		return modelEfforts(this.#observed, this.#observed?.modelId);
 	}
 
 	#slideKey(event: KeyboardEvent): void {

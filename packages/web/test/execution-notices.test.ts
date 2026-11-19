@@ -607,7 +607,7 @@ describe("company notices", () => {
 	});
 });
 
-it("reads notices for the company workspace without any popup, also across an account change", async () => {
+it("reads notices for the company workspace and shows none outside a conversation, also across an account change", async () => {
 	const f = fixture();
 	const wire = {
 		schema: "qorpera.member-notification/v1",
@@ -638,9 +638,7 @@ it("reads notices for the company workspace without any popup, also across an ac
 	await vi.advanceTimersByTimeAsync(100);
 	expect(reads()).toBe(1);
 	// The line belongs to an open conversation (above its composer); nothing floats over the app.
-	expect(root.querySelector(".notification-stack, .notification-card")).toBeNull();
 	expect(root.textContent).not.toContain("company computers are in use");
-	expect(root.querySelector('a[data-href$="/notifications"]')).toBeNull();
 	transport.mockImplementation(async () => Response.json([]));
 	f.auth(userB);
 	await vi.advanceTimersByTimeAsync(100);

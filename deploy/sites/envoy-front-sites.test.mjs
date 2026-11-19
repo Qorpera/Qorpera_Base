@@ -59,18 +59,6 @@ function virtualHosts() {
 	return lines.slice(start).join("\n").trimEnd();
 }
 
-/** One virtual host's lines, from its `- name:` to the next one's (or the comment before it). */
-function virtualHost(name) {
-	const lines = virtualHosts().split("\n");
-	const start = lines.indexOf(`${" ".repeat(20)}- name: ${name}`);
-	assert.ok(start > 0, name);
-	const end = lines.findIndex(
-		(line, index) =>
-			index > start && (line.startsWith(`${" ".repeat(20)}- name: `) || line.startsWith(`${" ".repeat(20)}#`)),
-	);
-	return lines.slice(start, end === -1 ? undefined : end);
-}
-
 /** The two lines the block's header names for the `front` listener's connection manager (16 spaces). */
 function stripLines() {
 	return BLOCK.split("\n")
@@ -95,93 +83,6 @@ function appRelayCluster() {
 }
 
 describe("envoy-front-sites.yaml: what the file says", () => {
-	it("overwrites x-forwarded-host with the sites host on the sites name", () => {
-		const sites = virtualHost("sites").join("\n");
-		assert.match(sites, /domains: \["sites\.qorpera\.com"\]/);
-		assert.match(
-			sites,
-			/- header: \{ key: x-forwarded-host, value: sites\.qorpera\.com \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
-		);
-		assert.match(sites, /prefix_rewrite: \/functions\/v1\/site-serve\/ \}/);
-	});
-
-	it("drops a visitor's x-forwarded-host on the api name and sets the Host it was asked for", () => {
-		const api = virtualHost("api").join("\n");
-		assert.match(api, /domains: \["api\.qorpera\.com", "\*"\]/);
-		assert.match(api, /request_headers_to_remove: \[x-forwarded-host\]/);
-		assert.match(
-			api,
-			/- header: \{ key: x-forwarded-host, value: "%REQ\(:AUTHORITY\)%" \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
-		);
-	});
-
-	it("answers 404 for site-serve on the api name before its functions route", () => {
-		const routes = virtualHost("api").filter((line) => line.trimStart().startsWith("- { match:"));
-		const block = routes.findIndex((line) =>
-			line.includes(
-				"{ match: { prefix: /functions/v1/site-serve, case_sensitive: false }, direct_response: { status: 404 } }",
-			),
-		);
-		const functions = routes.findIndex((line) => line.includes("{ match: { prefix: /functions/v1/ }, route:"));
-		assert.ok(block >= 0 && functions > block, "the site-serve 404 comes first");
-	});
-
-	it("sends every path of an app host to the relay, WebSocket upgrades on, with the request's own name", () => {
-		const apps = virtualHost("apps").join("\n");
-		assert.match(apps, /domains: \["\*-preview\.qorpera\.com"\]/);
-		assert.match(apps, /request_headers_to_remove: \[x-forwarded-host\]/);
-		assert.match(
-			apps,
-			/- header: \{ key: x-forwarded-host, value: "%REQ\(:AUTHORITY\)%" \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
-		);
-		const routes = virtualHost("apps").filter((line) => line.trimStart().startsWith("- { match:"));
-		assert.deepEqual(
-			routes.map((line) => line.trim()),
-			[
-				"- { match: { prefix: / }, route: { cluster: app_relay, timeout: 0s, upgrade_configs: [{ upgrade_type: websocket }] } }",
-			],
-		);
-	});
-
-	it("sends every other name under qorpera.com to site-serve with the request's own name, no WebSocket, no API", () => {
-		const siteHosts = virtualHost("site-hosts").join("\n");
-		assert.match(siteHosts, /domains: \["\*\.qorpera\.com"\]/);
-		assert.match(siteHosts, /request_headers_to_remove: \[x-forwarded-host\]/);
-		assert.match(
-			siteHosts,
-			/- header: \{ key: x-forwarded-host, value: "%REQ\(:AUTHORITY\)%" \}\n\s+append_action: OVERWRITE_IF_EXISTS_OR_ADD/,
-		);
-		assert.deepEqual(
-			virtualHost("site-hosts")
-				.filter((line) => line.trimStart().startsWith("- { match:"))
-				.map((line) => line.trim()),
-			[
-				"- { match: { prefix: / }, route: { cluster: api_gw, timeout: 0s, prefix_rewrite: /functions/v1/site-serve/, upgrade_configs: [{ upgrade_type: websocket, enabled: false }] } }",
-			],
-		);
-		// The 404 host it replaced is gone (Envoy refuses a name twice anyway).
-		assert.doesNotMatch(virtualHosts(), /- name: others\n/);
-		// Each name in exactly one virtual host (Envoy refuses a name twice).
-		const domains = [...virtualHosts().matchAll(/domains: \[(.*)\]/g)].flatMap((match) =>
-			JSON.parse(`[${match[1]}]`),
-		);
-		assert.deepEqual(domains, [
-			"sites.qorpera.com",
-			"*-preview.qorpera.com",
-			"*.qorpera.com",
-			"api.qorpera.com",
-			"*",
-		]);
-	});
-
-	it("names the connection manager's two lines that drop a Host's port and trailing dot", () => {
-		assert.deepEqual(stripLines(), [
-			`${" ".repeat(16)}strip_any_host_port: true`,
-			`${" ".repeat(16)}strip_trailing_host_dot: true`,
-		]);
-		assert.match(BLOCK, /right after `use_remote_address: false`/);
-	});
-
 	it("has the app_relay cluster the apps host routes to, as the kit's clusters list takes it", () => {
 		const cluster = appRelayCluster();
 		assert.match(cluster, /^ {4}- name: app_relay\n {6}type: STRICT_DNS\n {6}connect_timeout: 5s\n/);

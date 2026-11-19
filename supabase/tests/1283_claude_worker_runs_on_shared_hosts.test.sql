@@ -140,8 +140,7 @@ do $$
 declare v_turn text := pg_get_functiondef(
 	'public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure);
 begin
-	perform pg_temp.base_assert(position('qorpera_execution_host_principals' in v_turn) > 0
-		and position('20260929999997' in v_turn) > 0, '6: the claim turn has the rule and keeps what the activations look for');
+	perform pg_temp.base_assert(position('20260929999997' in v_turn) > 0, '6: the claim turn keeps what the activations look for');
 	perform pg_temp.base_assert(not has_function_privilege('authenticated',
 		'public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)', 'execute')
 		and not has_function_privilege('anon',

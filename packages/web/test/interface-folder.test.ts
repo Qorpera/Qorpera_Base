@@ -7,24 +7,13 @@ import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyInterfaceFolder } from "../src/app/interface-folder.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
-import { companyInterface, companyInterfaces, folderSources, pagesOn } from "../src/app/interfaces.ts";
+import { companyInterfaces, folderSources, pagesOn } from "../src/app/interfaces.ts";
 import type { Route } from "../src/app/router.ts";
-import { renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
+import { renderInterface } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
-import {
-	fixture,
-	id,
-	profileA,
-	scrolledTo,
-	session,
-	staff,
-	stubFigureMotion,
-	team,
-	timestamp,
-	userA,
-} from "./fixtures.ts";
+import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 /* Interfaces steps I7 and C6a (RUNTIME-INTERFACES.md §10; the 2026-10-17 scope amendment): a company's pages are the
@@ -161,25 +150,6 @@ async function follow(fake: FolderFake, controller: CompanyController) {
 	};
 }
 
-/** The Members page of a company following `fake`, on screen and drawn again on every change. */
-async function shown(fake: FolderFake) {
-	vi.useFakeTimers();
-	const { controller } = company();
-	const followed = await follow(fake, controller);
-	const main = h("main");
-	document.body.append(main);
-	// The Members definition's own blocks (the board of areas), which the Members address no longer draws: it draws
-	// who each agent works for (views/members.ts).
-	const draw = (): void => {
-		const entry = companyInterface(controller, "members");
-		if (entry) renderInterfaceFile(main, controller, "members", entry.file, draw);
-		else renderInterface(main, controller, "members");
-	};
-	cleanup.push(controller.store.subscribe(draw));
-	draw();
-	return { controller, main, ...followed };
-}
-
 function rail(controller: CompanyController, f: ReturnType<typeof fixture>) {
 	const element = h("aside", { class: "rail" });
 	document.body.append(h("div", { class: "frame" }, element));
@@ -209,15 +179,6 @@ const names = (controller: CompanyController) => companyInterfaces(controller).m
 const texts = (root: ParentNode, selector: string) =>
 	[...root.querySelectorAll(selector)].map((element) => element.textContent);
 const read = (fake: FolderFake) => fake.folder.read.mock.calls.map(([path]) => path);
-const card = (main: HTMLElement, title: string) =>
-	[...main.querySelectorAll<HTMLElement>(".interface-card")].find(
-		(candidate) => candidate.querySelector(".interface-card-title")?.textContent === title,
-	);
-/** The open area's owner, supervisor and agents. */
-const fields = (main: HTMLElement) => texts(main, ".interface-detail.is-open .interface-fields dd");
-/** The areas' note on the board: its one part since C6d hides the cards, so the note carries no part title. */
-const areasNote = (main: HTMLElement) =>
-	main.querySelector<HTMLElement>(".interface-board-block .interface-note") ?? undefined;
 
 describe("the pages and the folder (I7, C6a)", () => {
 	it("never reads or draws the folder's interfaces/: Pulse, a page an agent wrote, or one named like the two", async () => {
@@ -301,38 +262,22 @@ describe("the pages and the folder (I7, C6a)", () => {
 	});
 });
 
-describe("tables from the folder", () => {
-	it("reads a table's definition and rows, parses the rows against it, and says which rows don't fit", async () => {
-		const fake = seeded();
-		fake.put(AREAS, areas(SALES, `Support,,${bea},maybe,,`));
-		const { main } = await shown(fake);
-		expect(read(fake)).toEqual(expect.arrayContaining(["QorperaOS/tables/areas/table.toml", AREAS]));
-		expect(card(main, "Sales")).toBeDefined();
-		expect(card(main, "Support")).toBeUndefined();
-		const note = areasNote(main);
-		expect(note?.querySelector("p")?.textContent).toBe("Some rows can't be shown.");
-		expect(texts(note!, "li")).toEqual([expect.stringMatching(/^Line 3: .*shared/)]);
-		card(main, "Sales")!.querySelector<HTMLButtonElement>(".interface-card-open")!.click();
-		expect(fields(main)).toEqual(["Account A", "Bea", "Ada"]);
-	});
-
-	it("shows a table whose rows file can't be read with its problem only", async () => {
-		const fake = seeded();
-		fake.put(AREAS, "name,amount\nRevenue,1200\n");
-		const { main } = await shown(fake);
-		expect(areasNote(main)?.querySelector("p")?.textContent).toBe("This table can't be read.");
-		expect(main.querySelector(".interface-card")).toBeNull();
-	});
+describe("files and tables from the folder", () => {
+	const supervisors = (controller: CompanyController) =>
+		controller.store
+			.get()
+			.interfaceFolder?.tables.get("areas")
+			?.rows.map((row) => row.supervisor);
 
 	it("reads a file source's text, and never a file whose text is outside content", async () => {
 		const fake = seeded();
 		fake.put("QorperaOS/rules/shared-areas.md", "Shared areas belong to everyone.");
-		const { main } = await shown(fake);
+		const { controller } = company();
+		await follow(fake, controller);
 		expect(read(fake)).toContain("QorperaOS/rules/shared-areas.md");
-		main.querySelector<HTMLButtonElement>("#interface-view-1")!.click();
-		const blocks = main.querySelectorAll(".interface-block");
-		expect(blocks).toHaveLength(2);
-		expect(blocks[1]?.textContent).toContain("Shared areas belong to everyone.");
+		expect(controller.store.get().interfaceFolder?.files.get("QorperaOS/rules/shared-areas.md")).toBe(
+			"Shared areas belong to everyone.",
+		);
 		const parsed = parseInterfaceFile(
 			page(
 				"Alpha",
@@ -354,69 +299,35 @@ line = "{text}"
 		expect(parsed.ok && folderSources(parsed.file).files).toEqual(["notes/today.md"]);
 	});
 
-	it("says a table can't be read when its rows failed to download, never that it is empty, until a read lands", async () => {
+	it("reads again only the files whose paths changed", async () => {
+		vi.useFakeTimers();
 		const fake = seeded();
-		fake.failDownload(AREAS);
-		const { main, hint } = await shown(fake);
-		expect(areasNote(main)?.querySelector("p")?.textContent).toBe("This table can't be read.");
-		expect(areasNote(main)?.querySelector("li")).toBeNull();
-		expect(card(main, "Sales")).toBeUndefined();
-		// The next sync reads everything again, the rows this time.
-		fake.heal(AREAS);
-		await hint();
-		await vi.waitFor(() => expect(card(main, "Sales")).toBeDefined());
-		expect(areasNote(main)).toBeUndefined();
-	});
-
-	it("draws the page again when its table recovers with no rows at all", async () => {
-		const fake = seeded();
-		// Only the first line: a table with no rows, which reads the same as one that can't be read but for that.
-		fake.put(AREAS, areas());
-		fake.failDownload(AREAS);
-		const { main, hint } = await shown(fake);
-		expect(areasNote(main)?.querySelector("p")?.textContent).toBe("This table can't be read.");
-		fake.heal(AREAS);
-		await hint();
-		await vi.waitFor(() => expect(areasNote(main)).toBeUndefined());
-		expect(main.querySelector(".interface-card")).toBeNull();
-	});
-});
-
-describe("live", () => {
-	it("reads again only the files whose paths changed, and redraws the open page in place", async () => {
-		const fake = seeded();
-		const { main, hint, joined } = await shown(fake);
+		const { controller } = company();
+		const { hint, joined } = await follow(fake, controller);
 		expect(joined()).toBe(true);
-		card(main, "Sales")!.querySelector<HTMLButtonElement>(".interface-card-open")!.click();
-		expect(fields(main)).toEqual(["Account A", "Bea", "Ada"]);
-		const scroller = main.querySelector<HTMLElement>(".interface-page")!;
-		scrolledTo(scroller, 120);
+		expect(supervisors(controller)).toEqual([bea]);
 		fake.folder.read.mockClear();
 		fake.folder.readFile.mockClear();
 		fake.folder.list.mockClear();
 		fake.put(AREAS, areas(`Sales,Deals and leads,${me},no,${me},${ada.id}`));
-		// Something else changed too, which no page reads.
 		fake.put("notes/elsewhere.md", "Not read.");
 		await hint();
-		await vi.waitFor(() => expect(fields(main)).toEqual(["Account A", "Account A", "Ada"]));
+		await vi.waitFor(() => expect(supervisors(controller)).toEqual([me]));
 		expect(read(fake)).toEqual([AREAS]);
 		expect(fake.folder.readFile).toHaveBeenCalledTimes(1);
 		expect(fake.folder.list).not.toHaveBeenCalled();
-		// The page was drawn again, where the member left it: the same area open, the same scroll.
-		const again = main.querySelector<HTMLElement>(".interface-page")!;
-		expect(again).not.toBe(scroller);
-		expect(again.scrollTop).toBe(120);
-		expect(card(main, "Sales")?.classList.contains("is-open")).toBe(true);
 	});
 
 	it("reads everything again on resync, and when what the member may read changes", async () => {
+		vi.useFakeTimers();
 		const fake = seeded();
-		const { main, hint } = await shown(fake);
+		const { controller } = company();
+		const { hint } = await follow(fake, controller);
 		fake.folder.read.mockClear();
 		fake.put(AREAS, areas(SALES, `Ops,,${bea},no,,`));
 		fake.resync();
 		await hint();
-		await vi.waitFor(() => expect(card(main, "Ops")).toBeDefined());
+		await vi.waitFor(() => expect(supervisors(controller)).toHaveLength(2));
 		expect(read(fake)).toEqual(
 			expect.arrayContaining(["QorperaOS/tables/areas/table.toml", "QorperaOS/tables/areas/rows.csv"]),
 		);

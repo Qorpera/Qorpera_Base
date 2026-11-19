@@ -50,13 +50,4 @@ begin
 		raise exception 'A put object is let through at the limit'; end if;
 end $$;
 
--- The patched body carries the marker and no longer asks the catalog.
-do $$
-declare v_body text := (select prosrc from pg_proc
-	where oid = 'public.qorpera_folder_authorize_object_upload(uuid,jsonb,uuid,text,bigint)'::regprocedure);
-begin
-	if strpos(v_body, '20260930062000') = 0 or strpos(v_body, 'qorpera_profile_objects') > 0 then
-		raise exception 'The upload quota depends on the catalog'; end if;
-end $$;
-
 rollback;

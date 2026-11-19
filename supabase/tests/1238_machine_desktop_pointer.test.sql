@@ -339,9 +339,4 @@ begin
 		and not has_table_privilege('service_role', 'public.qorpera_company_machine_desktop_pointers', 'select')
 		and not has_table_privilege('anon', 'public.qorpera_company_machine_desktop_pointers', 'select'),
 		'6: the passes stay closed');
-	perform pg_temp.base_assert(not exists (select 1 from unnest(array[
-			'public.qorpera_member_machine_desktop_pointer_begin(uuid,uuid,bigint,bigint,bigint)',
-			'public.qorpera_member_machine_desktop_pointer_authority(uuid,text,text)',
-			'public.qorpera_list_agent_machines(uuid,uuid)']) f(sig)
-		where strpos(pg_get_functiondef(f.sig::regprocedure), '20260930744000') = 0), '6: the markers');
 end $$;

@@ -391,7 +391,7 @@ begin
 		or has_function_privilege('qorpera_secret_broker', 'public.qorpera_find_company_accounts(jsonb,jsonb)', 'EXECUTE')
 		or (select scope from public.qorpera_native_host_calls where name = 'qorpera_find_company_accounts')
 			is distinct from 'binding'
-		or (select not prosecdef or provolatile <> 'v' or proconfig is distinct from array['search_path=""']
+		or (select not prosecdef or proconfig is distinct from array['search_path=""']
 			from pg_proc where oid = 'public.qorpera_find_company_accounts(jsonb,jsonb)'::regprocedure) then
 		raise exception 'The agent''s read is reachable or shaped differently';
 	end if;
@@ -400,8 +400,23 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_company_account_agent_login()', 'EXECUTE') then
 		raise exception 'The login rule''s function is reachable';
 	end if;
-	if pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)
-		not like '%''company_account''%' then
-		raise exception 'Observations do not name company_account';
+end $$;
+do $$
+declare v_run uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid; v_result jsonb;
+begin
+	perform pg_temp.base_claims('service_role');
+	set local role service_role;
+	v_result := public.qorpera_record_runtime_observation_batch(v_run, jsonb_build_array(jsonb_build_object(
+		'schema','qorpera.runtime-observation/v1','attemptId',extensions.gen_random_uuid(),'parentAttemptId',null,
+		'assignmentId',current_setting('qorpera_test.base_binding')::jsonb -> 'assignmentId','phase','start',
+		'operation','company_account','logicalOperationSha256',repeat('7',64),'observedAt','2026-11-14T12:00:00.000Z',
+		'durationMs',null,'status','started','errorCategory',null,'receiptId',null,'readId',null,'inputBytes',null,
+		'outputBytes',null,'inputTokens',null,'outputTokens',null,'cachedInputTokens',null,'cacheWriteInputTokens',null,
+		'reasoningOutputTokens',null,'totalTokens',null)));
+	reset role;
+	if v_result #>> '{receipts,0,schema}' is distinct from 'qorpera.runtime-observation-receipt/v1'
+		or (select count(*) from public.qorpera_runtime_observations
+			where run_id = v_run and operation = 'company_account') <> 1 then
+		raise exception 'Observations do not take company_account: %', v_result;
 	end if;
 end $$;

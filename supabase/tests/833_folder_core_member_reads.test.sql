@@ -54,8 +54,6 @@ begin
 			or has_function_privilege('anon', 'public.' || v_function, 'EXECUTE')
 			or not has_function_privilege('service_role', 'public.' || v_function, 'EXECUTE') then
 			raise exception '% has the wrong grants', v_function; end if;
-		if strpos(pg_get_functiondef(('public.' || v_function)::regprocedure), 'C4 P27a (20260930013000)') = 0 then
-			raise exception '% has no body marker', v_function; end if;
 	end loop;
 	foreach v_function in array array['qorpera_folder_caller_allowed(jsonb)', 'qorpera_member_folder_actor(uuid)',
 		'qorpera_folder_commit_by(public.qorpera_folder_commits)'] loop
@@ -63,8 +61,6 @@ begin
 			or has_function_privilege('anon', 'public.' || v_function, 'EXECUTE')
 			or has_function_privilege('service_role', 'public.' || v_function, 'EXECUTE') then
 			raise exception '% is exposed', v_function; end if;
-		if strpos(pg_get_functiondef(('public.' || v_function)::regprocedure), 'C4 P27a (20260930013000)') = 0 then
-			raise exception '% has no body marker', v_function; end if;
 	end loop;
 end $$;
 

@@ -8,6 +8,9 @@ const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
 const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
+const PROGRAM_UPLOAD = new RegExp(`^/v1/member-program-uploads/${UUID}(/${UUID}(/(0|[1-9]|[1-5][0-9]|6[0-3]|stop))?)?$`);
+const MAX_PROGRAM_PIECE_BYTES = 4 * 1024 * 1024;
+const MAX_PROGRAM_STEP_BYTES = 16 * 1024;
 /** A member's look at an agent's desktop computer (20260930712000): a company and a machine, and `/watching` when the
  * member says they still watch. The coding executor of the bridge's node answers it (deploy/coding-worker/README.md). */
 const MACHINE_SCREEN = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}(/watching)?$`);
@@ -120,6 +123,7 @@ const TIMEOUT_MS = 25_000;
 const UPLOAD_TIMEOUT_MS = 35_000;
 const FOLDER_UNAVAILABLE = "Company File gateway is unavailable. A submitted change may still apply.";
 const IMAGE_UNAVAILABLE = "Chat images are unavailable just now. An uploaded image may still be saved.";
+const PROGRAM_UNAVAILABLE = "Programs are unavailable just now. A finished program may still be saved.";
 
 export interface MemberCompanyGatewayOptions {
 	/** Operator-owned origin. Never selected by a request, path, or member token. */
@@ -155,10 +159,12 @@ interface RoutePolicy {
 	forwardsOrigin?: boolean;
 	/** Only a member's own unexpired token of this project goes on (memberTokenShaped): the route asks no auth service. */
 	memberToken?: boolean;
+	passesBodyThrough?: boolean;
 }
 
 function route(path: string): RoutePolicy | undefined {
-	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"], unavailable: FOLDER_UNAVAILABLE };
+	if (FOLDER_OBJECT.test(path))
+		return { method: "GET", headers: ["authorization"], unavailable: FOLDER_UNAVAILABLE, passesBodyThrough: true };
 	if (FOLDER_COMMIT.test(path))
 		return {
 			method: "POST",
@@ -227,6 +233,22 @@ function route(path: string): RoutePolicy | undefined {
 			...(verb === "watch" ? { timeoutMs: WATCH_TIMEOUT_MS } : {}),
 			unavailable: DATA_WRITES[verb] ?? "Company data is unavailable just now.",
 		};
+	const upload = PROGRAM_UPLOAD.exec(path);
+	if (upload)
+		return upload[3] && upload[3] !== "stop"
+			? {
+					method: "PUT",
+					headers: ["authorization", "content-type"],
+					maxBody: MAX_PROGRAM_PIECE_BYTES,
+					timeoutMs: UPLOAD_TIMEOUT_MS,
+					unavailable: PROGRAM_UNAVAILABLE,
+				}
+			: {
+					method: "POST",
+					headers: ["authorization", "content-type"],
+					maxBody: MAX_PROGRAM_STEP_BYTES,
+					unavailable: PROGRAM_UNAVAILABLE,
+				};
 	const erase = ERASE.exec(path);
 	if (erase)
 		return {
@@ -288,6 +310,87 @@ async function bytes(
 		signal.removeEventListener("abort", cancel);
 		reader?.releaseLock();
 	}
+}
+
+interface UpstreamWatch {
+	readonly signal: AbortSignal;
+	wait(): void;
+	rest(): void;
+}
+
+function watchUpstream(caller: AbortSignal, quietMs: number): UpstreamWatch {
+	const upstream = new AbortController();
+	const leave = () => upstream.abort();
+	let quiet: ReturnType<typeof setTimeout> | undefined;
+	if (caller.aborted) leave();
+	else caller.addEventListener("abort", leave, { once: true });
+	upstream.signal.addEventListener("abort", () => caller.removeEventListener("abort", leave), { once: true });
+	return {
+		signal: upstream.signal,
+		wait() {
+			clearTimeout(quiet);
+			quiet = setTimeout(leave, quietMs);
+		},
+		rest() {
+			clearTimeout(quiet);
+		},
+	};
+}
+
+function passedThrough(
+	body: ReadableStream<Uint8Array>,
+	limit: number,
+	watch: UpstreamWatch,
+): ReadableStream<Uint8Array> {
+	const reader = body.getReader();
+	let passed = 0;
+	let over = false;
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			const stop = (error: unknown) => {
+				if (over) return;
+				over = true;
+				watch.rest();
+				void reader.cancel().catch(() => {});
+				controller.error(error);
+			};
+			watch.signal.addEventListener("abort", () => stop(watch.signal.reason), { once: true });
+			if (watch.signal.aborted) stop(watch.signal.reason);
+		},
+		async pull(controller) {
+			if (over) return;
+			watch.wait();
+			let failure: unknown;
+			try {
+				const chunk = await reader.read();
+				if (over) return;
+				watch.rest();
+				if (chunk.done) {
+					over = true;
+					controller.close();
+					return;
+				}
+				passed += chunk.value.byteLength;
+				if (passed <= limit) {
+					controller.enqueue(chunk.value);
+					return;
+				}
+				failure = new BodyTooLarge();
+			} catch (error) {
+				failure = error;
+			}
+			if (over) return;
+			over = true;
+			watch.rest();
+			void reader.cancel().catch(() => {});
+			controller.error(failure);
+		},
+		cancel(reason) {
+			over = true;
+			watch.rest();
+			return reader.cancel(reason).catch(() => {});
+		},
+	});
 }
 
 /** Public transport for the governed member routes only. The destination verifies the
@@ -409,6 +512,7 @@ export async function forwardMemberCompanyGateway(
 			"Member gateway request could not be read",
 		);
 	}
+	const watch = policy.passesBodyThrough ? watchUpstream(request.signal, timeout) : undefined;
 	try {
 		const forwarded = new Headers();
 		for (const name of policy.headers) {
@@ -417,25 +521,37 @@ export async function forwardMemberCompanyGateway(
 		}
 		if (body) forwarded.set("content-length", String(body.byteLength));
 		if (policy.forwardsOrigin && origin) forwarded.set("origin", origin);
+		watch?.wait();
 		const response = await (options.fetchImplementation ?? fetch)(new URL(path, upstream), {
 			method: request.method,
 			headers: forwarded,
 			body,
-			signal,
+			signal: watch?.signal ?? signal,
 			redirect: "error",
 			credentials: "omit",
 		});
-		const content = await bytes(response, MAX_BYTES, signal);
+		watch?.rest();
+		const empty = [204, 205, 304].includes(response.status);
+		const answered = new Headers(headers);
 		for (const name of ["content-type", "x-qorpera-access-mode", "etag"]) {
 			const value = response.headers.get(name);
-			if (value !== null) headers.set(name, value);
+			if (value !== null) answered.set(name, value);
 		}
-		headers.set("access-control-expose-headers", "x-qorpera-access-mode, etag");
-		return new Response([204, 205, 304].includes(response.status) ? null : content, {
-			status: response.status,
-			headers,
-		});
+		answered.set("access-control-expose-headers", "x-qorpera-access-mode, etag");
+		if (watch && response.body && !empty) {
+			if (Number(response.headers.get("content-length") ?? "0") > MAX_BYTES) {
+				void response.body.cancel().catch(() => {});
+				return fail(502, policy.unavailable);
+			}
+			return new Response(passedThrough(response.body, MAX_BYTES, watch), {
+				status: response.status,
+				headers: answered,
+			});
+		}
+		const content = await bytes(response, MAX_BYTES, signal);
+		return new Response(empty ? null : content, { status: response.status, headers: answered });
 	} catch (error) {
+		watch?.rest();
 		return fail(error instanceof BodyTooLarge ? 502 : 503, policy.unavailable);
 	}
 }

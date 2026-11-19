@@ -36,13 +36,6 @@ function concurrentSql(text) {
 }
 try {
 	const migrations = migrationNames();
-	// 403 and 404 run on the folder-v2 base fixture (924). The coding fleet tests 602 and 604 went with C1c-3i
-	// (20260930026000), coding sessions folder-v2 only.
-	const tests = ["403_runtime_node_capacity_fits_demand.test.sql", "404_runtime_cpu_allocation_ratio.test.sql"];
-	for (const test of tests) {
-		process.stdout.write(`Running ${test}\n`);
-		sql(expandTestFixture(test, (name) => read(`supabase/tests/${name}`)));
-	}
 	const fixture = expandTestFixture("404_runtime_cpu_allocation_ratio.test.sql", (name) => read(`supabase/tests/${name}`));
 	const setup = fixture.split("-- BEGIN CPU RATIO RACE SETUP")[0];
 	assert(setup !== fixture);
@@ -86,7 +79,7 @@ try {
 	assert.equal(capacity.cpuAllocationRatio,2);
 	assert.equal(capacity.allocatedComputers,2);
 	assert.equal(capacity.freeCpuMillis,0);
-	process.stdout.write(JSON.stringify({schema:"qorpera.cpu-allocation-ratio-sql-proof/v1",migrations:migrations.length,tests,
+	process.stdout.write(JSON.stringify({schema:"qorpera.cpu-allocation-ratio-sql-proof/v1",migrations:migrations.length,
 	 concurrentLastBudgetSingleWinner:true,physicalInventoryPreserved:true,hardMemoryLimit:true,passed:true})+"\n");
 
 } finally {

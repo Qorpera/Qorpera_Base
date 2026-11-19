@@ -7,13 +7,10 @@ select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev
 
 -- 1. Off, in one row; the guard follows the function as it is now.
 do $$
-declare v_body text := pg_get_functiondef('public.qorpera_verify_company_path_file(uuid,text)'::regprocedure);
 begin
 	if (select count(*) from public.qorpera_folder_gc_settings) <> 1 or (select enabled from public.qorpera_folder_gc_settings) then
 		raise exception 'The folder phase starts off, in one row'; end if;
 	if public.qorpera_folder_gc_enabled() then raise exception 'Off reads as off'; end if;
-	if public.qorpera_folder_gc_version1_refused() is distinct from (strpos(v_body, 'folder-v2 refuses version 1') > 0) then
-		raise exception 'The guard reads the verify function as it is'; end if;
 	begin
 		update public.qorpera_folder_gc_settings set enabled = true;
 		if not public.qorpera_folder_gc_version1_refused() then
@@ -104,9 +101,23 @@ begin
 		or has_table_privilege('service_role', 'public.qorpera_folder_gc_settings', 'select,update')
 		or has_table_privilege('authenticated', 'public.qorpera_folder_gc_settings', 'select,update') then
 		raise exception 'Only the worker''s question is the service role''s'; end if;
-	if (select proconfig from pg_proc where oid = 'public.qorpera_folder_gc_enabled()'::regprocedure)::text ~* 'lock'
-		or (select prosrc from pg_proc where oid = 'public.qorpera_folder_gc_enabled()'::regprocedure) ~* 'for (update|share|no key update|key share)' then
-		raise exception 'The question takes no lock'; end if;
+end $$;
+do $$
+declare v_answer boolean; v_timeout text := current_setting('lock_timeout');
+begin
+	perform dblink_connect('gc_switch_holder', 'dbname=' || current_database());
+	perform dblink_exec('gc_switch_holder', 'begin');
+	perform * from dblink('gc_switch_holder', 'select enabled::text from public.qorpera_folder_gc_settings for update') as t(r text);
+	perform set_config('lock_timeout', '2s', true);
+	begin
+		v_answer := public.qorpera_folder_gc_enabled();
+	exception when lock_not_available then
+		v_answer := null;
+	end;
+	perform set_config('lock_timeout', v_timeout, true);
+	perform dblink_exec('gc_switch_holder', 'rollback');
+	perform dblink_disconnect('gc_switch_holder');
+	if v_answer is null then raise exception 'The question takes no lock'; end if;
 end $$;
 
 -- 5. The gateway tells folder GC's conflict from snapshot-v1's cleanup fence by this exact message

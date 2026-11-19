@@ -3,7 +3,7 @@ import {
 	NativeSubscriptionControlPlane,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import { ClaudeReadNotStarted, createWebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { deferred, fixture, id, profileA, timestamp, userA } from "./fixtures.ts";
 
 const accounts: NativeExecutionConnections = {
@@ -423,5 +423,233 @@ describe("account metadata refresh transport", () => {
 		expect(f.calls.map((c) => c.url)).toEqual([
 			"https://fixture.invalid/rest/v1/rpc/qorpera_get_native_account_refresh",
 		]);
+	});
+});
+
+describe("Claude reads and resets", () => {
+	function claudeSetup(begin: (attempt: number, body: Record<string, unknown>) => Response) {
+		const f = fixture();
+		f.cloud.config.nativeProviderLoginUrl = "https://fixture.invalid/functions/v1/native-provider-login/";
+		f.cloud.config.publishableKey = "sb_publishable_fixture1234";
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		const receipt = {
+			request_id: id(120),
+			profile_id: profileA.profileId,
+			compute_identity_id: id(104),
+			requested_by_user_id: userA.id,
+			expires_at: new Date(Date.now() + 300000).toISOString(),
+			status: "pending",
+		};
+		const begins: Record<string, unknown>[] = [];
+		const posts: { headers: Headers; body: Record<string, unknown> }[] = [];
+		let polls = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				if (String(url).endsWith("qorpera_begin_claude_login_read")) {
+					begins.push(body);
+					return begin(begins.length, body);
+				}
+				if (String(url).endsWith("/account-refresh")) {
+					posts.push({ headers: new Headers(init?.headers), body });
+					polls++;
+					return Response.json({
+						schema: "qorpera.native-account-refresh-result/v1",
+						request_id: body.request_id,
+						status: polls < 2 ? "preparing" : "completed",
+					});
+				}
+				throw new Error("Unexpected route");
+			}),
+		);
+		const client = createWebNativeSubscription(
+			f.cloud,
+			profileA.profileId,
+			userA.id,
+			new AbortController().signal,
+			vi.fn(),
+		);
+		return { client, receipt, begins, posts };
+	}
+
+	it("asks for a read with a capability only the vault sees, and waits until the vault answers", async () => {
+		const f = claudeSetup(() =>
+			Response.json({
+				request_id: id(120),
+				profile_id: profileA.profileId,
+				compute_identity_id: id(104),
+				requested_by_user_id: userA.id,
+				expires_at: new Date(Date.now() + 300000).toISOString(),
+				status: "pending",
+			}),
+		);
+		expect(await f.client.readClaude!({ loginId: id(130), force: true })).toBe(id(120));
+		expect(f.begins).toHaveLength(1);
+		expect(f.begins[0]).toMatchObject({
+			p_profile_id: profileA.profileId,
+			p_claude_login_id: id(130),
+			p_force: true,
+			p_reset_kind: null,
+		});
+		expect(f.begins[0]!.p_capability_sha256).toMatch(/^[0-9a-f]{64}$/);
+		expect(f.posts).toHaveLength(2);
+		const bearer = f.posts[0]!.headers.get("authorization")!.slice("Bearer ".length);
+		const digest = Array.from(
+			new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(bearer))),
+			(byte) => byte.toString(16).padStart(2, "0"),
+		).join("");
+		expect(digest).toBe(f.begins[0]!.p_capability_sha256);
+		expect(f.posts[0]!.body).toMatchObject({ request_id: id(120), refresh_capability: bearer });
+	});
+
+	it("answers at once when the reading is fresh", async () => {
+		const f = claudeSetup(() =>
+			Response.json({
+				request_id: id(121),
+				profile_id: profileA.profileId,
+				compute_identity_id: id(104),
+				requested_by_user_id: userA.id,
+				expires_at: new Date(Date.now() + 300000).toISOString(),
+				status: "completed",
+			}),
+		);
+		expect(await f.client.readClaude!({ loginId: id(131) })).toBe(id(121));
+		expect(f.begins[0]).toMatchObject({ p_claude_login_id: id(131), p_force: false, p_reset_kind: null });
+		expect(f.posts).toEqual([]);
+	});
+
+	it("waits out another read before a reset, and says a reset that never began was not started", async () => {
+		const pending = {
+			request_id: id(122),
+			profile_id: profileA.profileId,
+			compute_identity_id: id(104),
+			requested_by_user_id: userA.id,
+			expires_at: new Date(Date.now() + 300000).toISOString(),
+			status: "pending",
+		};
+		const busy = claudeSetup((attempt) =>
+			attempt === 1
+				? Response.json({ code: "55000", message: "Account refresh already in progress" }, { status: 400 })
+				: Response.json(pending),
+		);
+		expect(await busy.client.readClaude!({ loginId: id(130), reset: "full" })).toBe(id(122));
+		expect(busy.begins.map((body) => body.p_reset_kind)).toEqual(["full", "full"]);
+		const refused = claudeSetup(() =>
+			Response.json({ code: "55000", message: "No such Claude reset to use" }, { status: 400 }),
+		);
+		await expect(refused.client.readClaude!({ loginId: id(130), reset: "session" })).rejects.toBeInstanceOf(
+			ClaudeReadNotStarted,
+		);
+		expect(refused.begins).toHaveLength(1);
+		expect(refused.posts).toEqual([]);
+	});
+
+	it("lists the Claude login's usage, resets and last reset, and leaves out any part out of shape", async () => {
+		const f = fixture();
+		const login = {
+			loginId: id(97),
+			clientConnectionId: id(98),
+			createdAt: timestamp,
+			providerAccountEmail: null,
+			usage: {
+				observedAt: timestamp,
+				windows: [{ id: "five_hour", label: "5 hours", usedPercent: 28, resetAt: timestamp }],
+			},
+			resets: {
+				observedAt: timestamp,
+				entries: [{ kind: null, left: 1, refills: null, weekStays: null, useBy: timestamp, usable: "at_limit" }],
+			},
+			lastReset: { requestId: id(99), kind: "full", outcome: "reset", left: 2, at: timestamp },
+		};
+		const answers = [
+			{ schema: "qorpera.claude-logins/v1", signInOpen: true, readable: true, logins: [login] },
+			{
+				schema: "qorpera.claude-logins/v1",
+				signInOpen: false,
+				logins: [
+					{
+						...login,
+						usage: { observedAt: timestamp, windows: [{ id: "five_hour", label: "5 hours", usedPercent: 140 }] },
+						resets: { observedAt: timestamp, entries: [{ kind: "lunar", left: 1, usable: "now" }] },
+						lastReset: { requestId: id(99), kind: "full", outcome: "spent", left: 2, at: timestamp },
+					},
+				],
+			},
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json(answers.shift())),
+		);
+		const client = createWebNativeSubscription(
+			f.cloud,
+			profileA.profileId,
+			userA.id,
+			new AbortController().signal,
+			vi.fn(),
+		);
+		const listed = await client.listClaudeLogins!();
+		expect(listed.readable).toBe(true);
+		expect(listed.logins[0]).toMatchObject({
+			usage: login.usage,
+			resets: { entries: [{ kind: null, left: 1, useBy: timestamp, usable: "at_limit" }] },
+			lastReset: login.lastReset,
+		});
+		const bad = await client.listClaudeLogins!();
+		expect(bad.readable).toBe(false);
+		expect(bad.logins[0]).not.toHaveProperty("usage");
+		expect(bad.logins[0]).not.toHaveProperty("resets");
+		expect(bad.logins[0]).not.toHaveProperty("lastReset");
+	});
+
+	it("lists which Claude login is In use and until when one is used up, picks one and signs out naming the next", async () => {
+		const f = fixture();
+		const base = { clientConnectionId: id(98), createdAt: timestamp, providerAccountEmail: "work@example.com" };
+		const calls: { url: string; body: Record<string, unknown> }[] = [];
+		const answers: unknown[] = [
+			{
+				schema: "qorpera.claude-logins/v1",
+				signInOpen: true,
+				readable: true,
+				logins: [
+					{ ...base, loginId: id(97), inUse: true, usedUpUntil: "2026-11-18T20:28:00Z" },
+					{ ...base, loginId: id(96), inUse: false, usedUpUntil: null },
+				],
+			},
+			{
+				schema: "qorpera.claude-logins/v1",
+				signInOpen: true,
+				logins: [{ ...base, loginId: id(97), usedUpUntil: "soon" }],
+			},
+			{ schema: "qorpera.claude-login-use/v1", loginId: id(96), logins: [] },
+			{ schema: "qorpera.claude-login-sign-out/v1", loginId: id(97), status: "revoked" },
+		];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: RequestInit) => {
+				calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+				return Response.json(answers.shift());
+			}),
+		);
+		const client = createWebNativeSubscription(
+			f.cloud,
+			profileA.profileId,
+			userA.id,
+			new AbortController().signal,
+			vi.fn(),
+		);
+		const listed = await client.listClaudeLogins!();
+		expect(listed.logins.map((login) => [login.inUse ?? false, login.usedUpUntil])).toEqual([
+			[true, "2026-11-18T20:28:00Z"],
+			[false, undefined],
+		]);
+		await expect(client.listClaudeLogins!()).rejects.toThrow("Invalid cloud response");
+		await client.useClaude!(id(96));
+		await client.signOutClaude!(id(97), undefined, id(96));
+		expect(calls.slice(2).map((call) => [call.url.split("/rpc/")[1], call.body])).toEqual([
+			["qorpera_use_claude_login", { p_login_id: id(96) }],
+			["qorpera_sign_out_claude_login", { p_login_id: id(97), p_next_login_id: id(96) }],
+		]);
+		await expect(client.signOutClaude!(id(97), undefined, "not-a-login")).rejects.toThrow("Invalid Claude login.");
 	});
 });

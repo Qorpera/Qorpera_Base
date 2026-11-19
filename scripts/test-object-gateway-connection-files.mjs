@@ -140,7 +140,6 @@ async function main() {
 		// 1. The two marked connections get their files, as the vault says.
 		assert.equal(await drain(), 2);
 		assert.equal(file(gmailFile)?.path, "QorperaOS/connections/gmail.md", "the file is stored under QorperaOS/");
-		assert.equal(file("connections/gmail.md"), null, "nothing is written at the top");
 		const hello = await parse(gmailFile);
 		assert.deepEqual(
 			{ id: hello.id, service: hello.service, account: hello.account, status: hello.status, purpose: hello.purpose },

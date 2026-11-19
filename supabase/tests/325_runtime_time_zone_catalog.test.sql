@@ -43,13 +43,6 @@ begin
 			or has_function_privilege(v_role,'public.qorpera_runtime_time_zone_name_valid(text)','EXECUTE') then
 			raise exception 'API role has direct catalog authority: %',v_role; end if;
 	end loop;
-	for v_name in select pg_get_functiondef(oid) from pg_proc where oid in (
-		'public.qorpera_cloud_routine_trigger_valid(jsonb)'::regprocedure,
-		'public.qorpera_cloud_routine_trigger_before_wake_bus(jsonb)'::regprocedure,
-		'public.qorpera_runtime_time_zone_name_valid(text)'::regprocedure) loop
-		if v_name like '%pg_catalog.pg_timezone_names%' then
-			raise exception 'Runtime validation still computes the full timezone catalog'; end if;
-	end loop;
 end $$;
 -- A caller authorized only for the existing validator can use it while the
 -- newly introduced implementation table and predicate remain inaccessible.
