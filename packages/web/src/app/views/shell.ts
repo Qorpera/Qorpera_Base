@@ -385,6 +385,7 @@ interface RailParts {
 	 * device, each group's tile, and the keys the grid showed, so a change of them glides. */
 	appTree: AppTreeNode[];
 	appTiles: AppTile[];
+	newProgram: HTMLElement | undefined;
 	/** The member's places the arrangement refused; the next change leaves them out. */
 	appRefused: ReadonlySet<string>;
 	/** Each of the agents' apps in the drawer as it is drawn there, by the app's name (`appLook`). */
@@ -667,6 +668,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appsOrder: storedAppsOrder(company.profile.profileId),
 			appTree: [],
 			appTiles: [],
+			newProgram: undefined,
 			appRefused: new Set(),
 			appLooks: new Map(),
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
@@ -1234,7 +1236,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
 		if (
-			(section === "interface" || section === "app" || section === "sites" || section === "whats-new") &&
+			(section === "interface" ||
+				section === "app" ||
+				section === "sites" ||
+				section === "whats-new" ||
+				section === "new-program") &&
 			!parts.appsOpen
 		)
 			setAppsOpen(parts, profileId, true);
@@ -1276,7 +1282,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
+	const addsPrograms = hasApps && state.team?.capabilities.write === true;
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route, addsPrograms);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -1884,6 +1891,7 @@ function drawInterfaces(
 	concepts: number,
 	sites: number,
 	route: Route,
+	addsPrograms: boolean,
 ): void {
 	const profileId = company.profile.profileId;
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
@@ -2070,6 +2078,15 @@ function drawInterfaces(
 	parts.groupRows = groupRows;
 	parts.appTree = tree;
 	parts.appTiles = tiles;
+	if (addsPrograms) {
+		if (parts.newProgram?.textContent !== t("New program"))
+			parts.newProgram = newProgramIcon(`#/c/${profileId}/new-program`);
+		const open = route.name === "company" && route.section === "new-program";
+		parts.newProgram.classList.toggle("active", open);
+		if (open) parts.newProgram.setAttribute("aria-current", "page");
+		else parts.newProgram.removeAttribute("aria-current");
+		drawn.push(parts.newProgram);
+	} else parts.newProgram = undefined;
 	for (const [index, element] of drawn.entries()) element.style.setProperty("--i", String(index));
 	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
 	if (!parts.appsDrag.dragging) placeTiles(parts, drawn);
@@ -2437,6 +2454,15 @@ function whatsNewIcon(href: string, count: number): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("spark", 34), countBadge(count)),
 		h("span", { class: "rail-app-name" }, label),
+	);
+}
+
+function newProgramIcon(href: string): HTMLElement {
+	return h(
+		"a",
+		{ class: "rail-app rail-new-program", href, draggable: "false" },
+		h("span", { class: "rail-app-stand" }, h("span", { class: "rail-new-program-mark", "aria-hidden": "true" })),
+		h("span", { class: "rail-app-name" }, t("New program")),
 	);
 }
 
