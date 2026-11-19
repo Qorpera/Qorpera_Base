@@ -838,8 +838,8 @@ the only folder path that takes bytes from a browser: `apps/<name>/versions/<ver
 file. Then the text, through the member commit route (C4 §5) in one change set: a new program's `app.toml` (kit
 `program`, its name, no `owner`, `posted = true`, the default emblem) and `program.json` (`writeProgram`; each form with
 the size and SHA-256 of what was staged, so the page's download check holds), with `expectedVersion` when the program
-has one, so two members adding at once conflict and the second reads the newer list, takes the next version and moves
-its files there in the same change set. A member's versions are named `1`, `2` and so on (the next whole number not
+has one, so two members adding at once conflict and the second reads the newer list, takes the next version, moves
+its files there in a change set of its own, and then writes `program.json` again. A member's versions are named `1`, `2` and so on (the next whole number not
 kept). A `program.json` past the commit route's 64 KiB text cannot take a member's version: the page says "This
 program holds as many versions as it can."
 
@@ -848,6 +848,43 @@ a lower-case UUID; any other value makes the file unread). `parseProgram` keeps 
 `save_app` keeps it on the versions it does not touch, and an agent's own version never has it (a hand-in naming
 `userId` is refused: it is not a field of a hand-in). A runtime bundle from before this keeps the versions but drops
 the field when an agent saves the program: the version then reads by its day, not "added by".
+
+**The web's part** (`packages/web/src/app/program-add.ts`, `views/program-add.ts`). The apps drawer's last entry, a
+dashed tile "New program", only for a member who may write (and only while the drawer itself shows), opens
+`#/c/<profileId>/new-program`: the big line "New program" in a muted tone, one dashed drop area ("Drop a program here",
+under it "or choose a file", a real file chooser; on a phone the area reads "Choose a program"), and the Co-Founder's
+figure (`agentFigure`, as the Sites page draws it) beside the chat's own bubble: "Made something yourself? Drop it here
+and everyone in <company> can get it." A file's kind comes from its name (`.apk` Android; `.ipa` iPhone; `.exe`, `.msi`
+Windows; `.dmg`, `.pkg` Mac; `.AppImage`, `.deb`, `.rpm`, `.flatpak`, `.tar.gz`, `.tar.xz`, `.tgz` Linux); any other
+asks "What is it for?" over the five kinds, and a click answers. Two files of one kind, more than five, an empty file,
+a name the format refuses and a file past 256 MiB are refused in one plain line. A new program's name is the file's
+without its ending, a trailing version and words such as setup or installer (`Lagerliste-1.0-setup.exe` gives
+Lagerliste); its folder is the name's slug (`æ ø å` as `ae oe aa`), made free with `-2`, `-3`, and claimed before any
+byte goes up: a change set of its own makes `apps/<slug>`, and a folder already there (an agent's app the page did not
+know of, another member's at the same moment) takes the next slug, so a member's program never lands in another app. The drawer has no rename
+for an app, so renaming is not in this step. While the file goes up the tile stands (initial, name, size) and fills with
+the share that is up, under it "Putting <file> in place… 40%" and a quiet Stop; no spinner, and the Co-Founder's
+bubble reads "Putting it in place for everyone in <company>." Leaving the page or Stop ends it: what was placed is
+deleted again (a new program's claimed folder whole), once any finish already sent has answered, so nothing is
+listed. Once the last change set (`app.toml`, `program.json`, and a move before it) is sent, Stop goes and it is not
+cut short: it settles, and nothing it lists is deleted. **A lost answer** (the folder saved, the reply never came)
+changes nothing on screen it should not: every change set keeps its operation key for the life of the add, keyed by
+what it sends (the kept version's date is fixed once, so the same change set is the same request), and before Try
+again and before any delete, the change set whose answer was lost is sent again with the same key: the commit route
+replays what it did (C4 §5), and only what is known not saved is deleted, moved or written again. A file's upload keeps
+its key and path the same way, and the gateway answers `saved` for that very file. As a second check, a `program.json`
+counts as listed when it holds a version that was not there when the add began, by this member, with every file of
+the drop (by SHA-256, and only once every file is hashed). All files are hashed before any byte goes up. Dropping the
+very files of the newest version (by anyone) is refused there and then: "This is the version that is already here."
+The same files as an older version are listed again as a new version, like any other file. A refusal says too large (the
+size and the most), not allowed, the company paused, another of the member's programs still going up, someone adding
+at the same moment (Try again), that version already having this file, the company folder's own refusal in its words
+(no retry), a name the folder does not take, or the connection dropped (Try again, which continues where it stopped). After it, the
+program's own page opens (its tile, chips and Download), its drawer tile selected, the dot line "Version 1 · added by
+you" ("added by <first name>" for another member the client knows, the day otherwise). A program a member made (no
+`owner`) has "Add a version" above "Earlier versions" in its "…" menu, which opens the same drop area in the field with
+a way back; a file dropped onto its page does the same. An agent's program and a viewer get neither. There is no
+Remove: the client has no retire of an app on this branch (§3e's web part is not on master).
 
 ## 4. Web
 

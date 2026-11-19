@@ -15,6 +15,7 @@ import {
 	PageFiles,
 } from "../interface-apps.ts";
 import { AppAskBar } from "./app-ask-bar.ts";
+import type { ProgramAddHost } from "./program-add.ts";
 import { ProgramPage, readProgram } from "./program-page.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
@@ -90,6 +91,11 @@ export interface AppPanelHost extends AppBridgeHost {
 	/** The agents' open questions about the app, answered on its page (views/question-dock.ts); absent where the
 	 * company has none to show. */
 	readonly questions?: QuestionDockHost;
+	readonly programs?: {
+		readonly userId: string;
+		readonly memberName: (userId: string) => string | null;
+		readonly adds?: ProgramAddHost;
+	};
 }
 
 /** Who answers the frame's calls: the bridge of the app as its manifest was last read (`version`, the manifest's). */
@@ -630,7 +636,12 @@ export class AppPanel {
 		this.#withdraw();
 		this.#dropProgram();
 		const page = new ProgramPage(
-			{ folder: this.#host.folder, ...(this.#host.current ? { current: this.#host.current } : {}) },
+			{
+				folder: this.#host.folder,
+				...(this.#host.current ? { current: this.#host.current } : {}),
+				...this.#host.programs,
+				changed: () => void this.reload(false),
+			},
 			{ name: app.name, path: app.path, manifest: app.manifest },
 			read.program,
 			key,
