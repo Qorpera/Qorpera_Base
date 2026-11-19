@@ -21,6 +21,7 @@ import { dayLabel } from "../agent-line.ts";
 import { folderImageReader, forgetPictureUrl, pictureUrl } from "../folder-images.ts";
 import { downloadOffer, isPhoneSystem, memberSystem, PROGRAM_KIND_NAMES } from "../program-download.ts";
 import { MAX_DOWNLOAD_BYTES } from "./company-folder.ts";
+import { hasFiles, type ProgramAddHost, ProgramDrop } from "./program-add.ts";
 
 export type ProgramFolder = Pick<CloudMemberFolderClient, "read" | "readFile"> &
 	Partial<Pick<CloudMemberFolderClient, "readFilePieces">>;
@@ -29,6 +30,10 @@ export interface ProgramPageHost {
 	readonly folder: () => ProgramFolder;
 	readonly current?: () => void;
 	readonly system?: ProgramKind | null;
+	readonly userId?: string;
+	readonly memberName?: (userId: string) => string | null;
+	readonly adds?: ProgramAddHost;
+	readonly changed?: () => void;
 }
 
 export interface ProgramApp {
@@ -85,12 +90,14 @@ export class ProgramPage {
 	readonly #get = h("div", { class: "program-get" });
 	readonly #kinds = h("div", { class: "program-kinds" });
 	readonly #back = h("p", { class: "program-back" });
+	readonly #field = h("div", { class: "program-field" }, this.#thing, this.#get, this.#kinds, this.#back);
 	readonly #urls: string[] = [];
 	readonly #ratios: { phone: number; desktop: number } = { phone: PHONE_SCREEN, desktop: DESKTOP_SCREEN };
 	#shown: ProgramVersion;
 	#downloads: WebFileDownloads | undefined;
 	#busy = false;
 	#said: HTMLElement | null = null;
+	#adding: ProgramDrop | undefined;
 
 	constructor(host: ProgramPageHost, app: ProgramApp, program: Program, key: string) {
 		this.#host = host;
@@ -121,7 +128,27 @@ export class ProgramPage {
 				this.#state,
 				this.#more,
 			),
-			h("div", { class: "program-field" }, this.#thing, this.#get, this.#kinds, this.#back),
+			this.#field,
+		);
+		this.el.addEventListener(
+			"dragover",
+			(event) => {
+				if (!hasFiles(event) || !this.#canAdd() || this.#busy) return;
+				event.preventDefault();
+				if (!this.#adding) this.#openAdd();
+			},
+			{ signal: this.#lifetime.signal },
+		);
+		this.el.addEventListener(
+			"drop",
+			(event) => {
+				if (!hasFiles(event) || !this.#canAdd()) return;
+				event.preventDefault();
+				const files = [...(event.dataTransfer?.files ?? [])];
+				if (!this.#adding) this.#openAdd();
+				this.#adding?.take(files);
+			},
+			{ signal: this.#lifetime.signal },
 		);
 		this.#drawPictures();
 		this.#draw();
@@ -131,7 +158,7 @@ export class ProgramPage {
 	}
 
 	get busy(): boolean {
-		return this.#busy;
+		return this.#busy || this.#adding?.going === true;
 	}
 
 	get shown(): string {
@@ -147,6 +174,8 @@ export class ProgramPage {
 	}
 
 	dispose(): void {
+		this.#adding?.dispose();
+		this.#adding = undefined;
 		this.#lifetime.abort();
 		this.#downloads?.close();
 		for (const url of this.#urls.splice(0)) forgetPictureUrl(url);
@@ -156,11 +185,7 @@ export class ProgramPage {
 	#draw(): void {
 		const shown = this.#shown;
 		const newest = this.#program.versions[0] as ProgramVersion;
-		replace(
-			this.#state,
-			h("span", { class: "program-dot", "aria-hidden": "true" }),
-			t("Version {version} · {day}", { version: shown.version, day: versionDay(shown) }),
-		);
+		replace(this.#state, h("span", { class: "program-dot", "aria-hidden": "true" }), this.#versionLine(shown));
 		const offer = downloadOffer(shown.forms, this.#system);
 		if (!this.#program.screens.phone && !this.#program.screens.desktop) this.#drawTile(offer?.form ?? null);
 		const phone = isPhoneSystem(this.#system);
@@ -236,6 +261,56 @@ export class ProgramPage {
 					),
 		);
 		this.#back.hidden = shown === newest;
+	}
+
+	#versionLine(version: ProgramVersion): string {
+		const by = version.userId;
+		if (by !== undefined && by === this.#host.userId)
+			return t("Version {version} · added by you", { version: version.version });
+		const name = by === undefined ? null : (this.#host.memberName?.(by) ?? null);
+		return name
+			? t("Version {version} · added by {name}", { version: version.version, name })
+			: t("Version {version} · {day}", { version: version.version, day: versionDay(version) });
+	}
+
+	#canAdd(): boolean {
+		return this.#app.manifest.owner === null && this.#host.adds?.canWrite() === true;
+	}
+
+	#openAdd(): void {
+		const adds = this.#host.adds;
+		if (!adds || this.#adding || this.#busy) return;
+		const drop = new ProgramDrop(
+			adds,
+			{ kind: "version", folder: this.#app.name, name: this.#app.manifest.name },
+			() => {
+				this.#closeAdd();
+				this.#host.changed?.();
+			},
+		);
+		this.#adding = drop;
+		this.#field.classList.add("is-adding");
+		replace(
+			this.#field,
+			drop.el,
+			h(
+				"p",
+				{ class: "program-back" },
+				h(
+					"button",
+					{ type: "button", class: "program-back-button", onclick: () => this.#closeAdd() },
+					t("Back to {name}", { name: this.#app.manifest.name }),
+				),
+			),
+		);
+	}
+
+	#closeAdd(): void {
+		this.#adding?.dispose();
+		this.#adding = undefined;
+		this.#field.classList.remove("is-adding");
+		replace(this.#field, this.#thing, this.#get, this.#kinds, this.#back);
+		this.#draw();
 	}
 
 	#drawPictures(): void {
@@ -395,6 +470,12 @@ export class ProgramPage {
 	#openMenu(): void {
 		const earlier = this.#program.versions.slice(1);
 		const items: MenuEntry[] = [
+			...(this.#canAdd()
+				? [
+						{ label: t("Add a version"), disabled: this.#busy, select: () => this.#openAdd() },
+						{ kind: "separator" as const },
+					]
+				: []),
 			{ kind: "caption", label: t("Earlier versions") },
 			...(earlier.length === 0
 				? [{ label: t("None yet"), disabled: true, select: () => {} }]
