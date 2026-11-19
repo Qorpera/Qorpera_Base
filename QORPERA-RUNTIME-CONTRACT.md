@@ -2616,6 +2616,24 @@ itself. What changed:
 - The usage-limit notice names the login to its own member. The member's own
   pick of another login stays as it was.
 
+2026-11-19 amendment: the member's pick takes their post waiting in a thread
+(migration 20260930813000). On 19 Nov a member posted in an agent's thread while
+its login was at its usage limit. The post waited, as the 2026-11-05 amendment
+says, and the member then chose another login on the thread's usage card. The
+pick moved only their waiting turns (20260930580000), so the post stayed on the
+used-up login until its reset, with nothing in the thread to say so. Now:
+
+- The member's own pick of a login in an agent's thread or a group chat (one
+  chat or all chats on that login) also takes the wakes of their own posts there
+  that wait at another of their logins' usage limit, while no run holds them.
+  They go on, on the picked login, at once.
+- The same limits hold as for a waiting turn: never onto or off a ChatGPT plan,
+  never from a login that may work while the member is away onto one that may
+  not, only to a login that may pay for the poster. Another member's post and
+  every other wake (follow-up work, a routine's run) stay on their login.
+- Each move is recorded (`qorpera_wake_payer_moves`), and the wake's identity
+  guard admits exactly that recorded move of a queued wake with no run.
+
 2026-11-18 amendment: a full reading holds an account by itself (founder, 18
 November 2026: "Yes, build it"; migration 20260930807000). On 18 Nov a member
 deleted a company, and with it the only usage-limit signals of their account
